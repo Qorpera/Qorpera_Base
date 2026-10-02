@@ -6,9 +6,11 @@
 -- while real calls run (602's committed fixture and connections; this test's rows go with its cleanup at the end).
 -- 1. A caller a function refuses is refused at once while the company row is held FOR UPDATE, as an agent call's
 --    lease holds it, with the error it got before: someone outside the company and a contributor, for each function,
---    a call for a grant or a secret nobody has, and another company's broker sealing this company's capture ticket.
+--    the company's owner for a member's own connection and its grant, a call for a grant or a secret nobody has, and
+--    another company's broker sealing this company's capture ticket.
 -- 2. An admin who passes the plain checks and loses the role while the call waits for the company row is still
---    refused: the membership is read again, FOR SHARE, after the key share.
+--    refused (the Disconnect, a grant, a grant's withdrawal, the share): the membership is read again, FOR SHARE,
+--    after the key share.
 -- 3. The owner waits for the held company row, then lands.
 -- 4. An agent call first, as in production: the holder keeps the run's compute identity, which the lease locks right
 --    after the company row, so the call holds the company row and waits. Each change to the call's secret or grant
@@ -79,6 +81,24 @@ from (values ('80000000-0000-4000-8000-000000000062'::uuid,'80000000-0000-4000-8
 		'30000000-0000-4000-8000-000000000031'::uuid,'search_messages')) as grant_row(id,secret_id,agent,operation_id)
 join public.qorpera_cloud_connector_operations operation on operation.connector_id = 'gmail'
 	and operation.operation_id = grant_row.operation_id and operation.status = 'active';
+-- The contributor's own Gmail connection (055) and their grant of it to the run's agent (066), for section 1.
+insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
+	connector_id,secret_name,purpose,current_version,created_by_user_id)
+values ('80000000-0000-4000-8000-000000000055','30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020',
+	current_setting('qorpera_test.cs_authority')::uuid,'member','30000000-0000-4000-8000-000000000002','gmail','member-own',
+	'Gmail account',1,'30000000-0000-4000-8000-000000000002');
+insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
+	envelope_sha256,created_by_user_id)
+values ('80000000-0000-4000-8000-000000000055',1,current_setting('qorpera_test.cs_authority')::uuid,
+	current_setting('qorpera_test.cs_key'),'\x0102'::bytea,encode(extensions.digest('\x0102'::bytea,'sha256'),'hex'),
+	'30000000-0000-4000-8000-000000000002');
+insert into public.qorpera_cloud_secret_operation_grants(id,profile_id,environment_id,secret_id,staff_agent_id,
+	connector_id,operation_id,operation_version,tool_name,issued_by_user_id)
+select '80000000-0000-4000-8000-000000000066','30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020',
+	'80000000-0000-4000-8000-000000000055','30000000-0000-4000-8000-000000000030',operation.connector_id,
+	operation.operation_id,operation.version,operation.tool_name,'30000000-0000-4000-8000-000000000002'
+from public.qorpera_cloud_connector_operations operation
+where operation.connector_id = 'gmail' and operation.operation_id = 'delete_draft' and operation.status = 'active';
 -- The owner starts capturing a new connection: a pending ticket of the company's broker.
 do $$
 begin
@@ -169,6 +189,11 @@ begin
 		exit when dblink_is_busy('lock_first') = 0;
 		perform pg_sleep(0.025);
 	end loop;
+	-- A call still running that never waited proves nothing either way.
+	if not v_waited and dblink_is_busy('lock_first') = 1 then
+		perform dblink_exec('lock_holder', 'rollback');
+		raise exception 'Lock check: the call neither waited nor finished: %', pg_temp.lock_collect('lock_first');
+	end if;
 	if p_demote is not null and v_waited then
 		perform dblink_exec('lock_holder', format('update public.qorpera_profile_members set role = ''contributor''
 			where profile_id = ''30000000-0000-4000-8000-000000000010'' and user_id = %L', p_demote));
@@ -239,6 +264,10 @@ from (values
 		'30000000-0000-4000-8000-000000000002', '42501', 'secret grant revocation is unavailable'),
 	('owner withdrawal of a grant nobody has', pg_temp.cs_revoke_grant('80000000-0000-4000-8000-000000000069'),
 		'30000000-0000-4000-8000-000000000001', '42501', 'secret grant revocation is unavailable'),
+	('owner Disconnect of a member''s own connection', pg_temp.cs_revoke('80000000-0000-4000-8000-000000000055'),
+		'30000000-0000-4000-8000-000000000001', '42501', 'secret revocation is unavailable'),
+	('owner withdrawal of a grant of a member''s own connection', pg_temp.cs_revoke_grant('80000000-0000-4000-8000-000000000066'),
+		'30000000-0000-4000-8000-000000000001', '42501', 'secret grant revocation is unavailable'),
 	('outsider share', pg_temp.cs_share('80000000-0000-4000-8000-000000000054','30000000-0000-4000-8000-000000000031'),
 		'80000000-0000-4000-8000-000000000001', '42501', 'secret grant authority is unavailable'),
 	('contributor share', pg_temp.cs_share('80000000-0000-4000-8000-000000000054','30000000-0000-4000-8000-000000000031'),
@@ -272,7 +301,9 @@ begin
 		('grant', pg_temp.cs_grant('80000000-0000-4000-8000-000000000054','30000000-0000-4000-8000-000000000031','read_message'),
 			'secret grant authority is unavailable'),
 		('grant withdrawal', pg_temp.cs_revoke_grant('80000000-0000-4000-8000-000000000065'),
-			'secret grant revocation is unavailable')
+			'secret grant revocation is unavailable'),
+		('share', pg_temp.cs_share('80000000-0000-4000-8000-000000000054','30000000-0000-4000-8000-000000000031'),
+			'secret grant authority is unavailable')
 	loop
 		v_outcome := pg_temp.cs_single(pg_temp.cs_company(), v_call, pg_temp.cs_member('80000000-0000-4000-8000-000000000003'),
 			'80000000-0000-4000-8000-000000000003');
@@ -371,8 +402,8 @@ select pg_temp.cs_done('80000000-0000-4000-8000-000000000107');
 select pg_temp.cs_check((select count(*) from public.qorpera_cloud_secret_audit_events where event_type = 'effect_authorized'
 		and receipt_id::text like '80000000-0000-4000-8000-0000000001%') = 6
 	and (select current_version from public.qorpera_cloud_secrets where id = '80000000-0000-4000-8000-000000000052') = 2
-	and not exists (select 1 from public.qorpera_cloud_secrets where id::text like '80000000-0000-4000-8000-00000000005%'
-		and id <> '80000000-0000-4000-8000-000000000054' and status <> 'revoked')
+	and not exists (select 1 from public.qorpera_cloud_secrets where id in ('80000000-0000-4000-8000-000000000051',
+		'80000000-0000-4000-8000-000000000052','80000000-0000-4000-8000-000000000053') and status <> 'revoked')
 	and not exists (select 1 from public.qorpera_cloud_secret_operation_grants where secret_id in
 		('80000000-0000-4000-8000-000000000052','80000000-0000-4000-8000-000000000053') and status = 'active'),
 	'The calls did not leave the rows they returned');
