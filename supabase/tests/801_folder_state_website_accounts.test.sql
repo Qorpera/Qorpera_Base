@@ -92,6 +92,7 @@ begin
 		(pg_temp.site_parse('{"site":"a_b.example.com"}'), 1), (pg_temp.site_parse('{"site":"https://example.com"}'), 1),
 		(pg_temp.site_parse('{"site":"example.com:443"}'), 1), (pg_temp.site_parse('{"site":null}'), 1), (pg_temp.site_parse('{"site":7}'), 1),
 		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 64) || '.com')), 1),
+		(pg_temp.site_parse(jsonb_build_object('site', 'a.' || repeat('b', 64))), 1),
 		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 63) || '.' || repeat('b', 63) || '.' || repeat('c', 63) || '.' || repeat('d', 62))), 1),
 		-- The two-step method, the todo, the states.
 		(pg_temp.site_parse('{"twoStep":"phone"}'), 1), (pg_temp.site_parse('{"twoStep":null}'), 1),
