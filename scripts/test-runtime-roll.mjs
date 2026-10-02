@@ -219,6 +219,7 @@ async function rehearse(empty, path = "roll") {
 			assert.equal(paused(), 0, "the companies resume: " + JSON.stringify(resumed));
 		} else {
 			// 60: node B may not leave N while N work is queued; once it takes it, it empties and returns as N+1.
+			fresh(); // so that 60 reaches its queued-work check (node A live and observed)
 			assert.match(fails(p("60-runs-off-b.sql")), /still queued/);
 			assert.equal(claim(orchestratorB).work.run_id, runN2, "node B takes the queued N run");
 			// A job node B holds is running, though still queued until its runner accepts it: 60 lets B go.
