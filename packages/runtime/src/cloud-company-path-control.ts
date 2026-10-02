@@ -248,7 +248,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						postgrestError(folderCode)
 					)
 						throw new CloudCompanyFolderRpcError(folderCode, (value as { message: string }).message);
-					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
+					// PostgREST answers 42501 with 403, or with 401 for a request on the publishable key (G2-2).
+					if ((response.status === 401 || response.status === 403) && postgrestError("42501"))
+						throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
 					// Only the one-call fence acts on a missing function; every other call keeps its category.
