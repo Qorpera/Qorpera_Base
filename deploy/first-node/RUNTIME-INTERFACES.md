@@ -181,8 +181,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 - **Board parts:** each `[[view.block.part]]` has `title`, `from` (a table), `card = { title, line, figures, note }`
   and an optional `opens`. The lane of a row is its table's `holder` column (§5): a member's lane, the Shared lane
   when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or an offer.
-- **`opens`** names a `detail` block in the same view. On a wide screen it opens beside the list; on a phone it opens as
-  the next screen.
+- **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens
+  beside the list; on a phone it opens as the next screen.
 
 ### 3.3 Buttons
 
@@ -242,7 +242,7 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | `members` | id, name, picture, role, here |
 | `working` | agent, what, since |
 | `activity` | at, kind, agent, member, line: one plain sentence per run, wake, answer or change |
-| `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`), title, from, due |
+| `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`, `run` for a run that did not finish, `mention`), title, from, due |
 
 - **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block.
 - **Nothing remote, no HTML.** A `text` block draws markdown with the client's own renderer: no HTML, and images only
@@ -402,7 +402,7 @@ files (STATE-FILES §3).
 | `unknown_source` | `from` names no source of §4 |
 | `unknown_column` | a block names a column its source doesn't have, where the source's columns are fixed (§4) |
 | `unknown_button` | a block lists a button that isn't defined |
-| `unknown_target` | `opens` or `from_view` names nothing in the file |
+| `unknown_target` | `opens` names no `detail` or `mail` block in the same view, or `from_view` no view above it |
 | `too_large` | over the size or count limit |
 
 **The save check** (the database's `decide`, as `structured_rule` in the state files) refuses what needs other

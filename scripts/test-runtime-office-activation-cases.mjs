@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 
 /** Real SQL authority/concurrency with explicit synthetic physical readiness.
  * This does not attest a service, boot a guest or contact a hosted database. */
@@ -8,7 +8,10 @@ export async function testOfficeActivation({ scope, binding, instanceSha256, pro
 	const startup = { scope, computerGeneration: 1, allocationId: binding.allocationId, instanceSha256, imageSha256: "a".repeat(64), bootstrapSha256: "b".repeat(64), bootId: attestation.bootId, configurationSha256: attestation.configurationSha256, serviceInvocationId: "a".repeat(32) };
 	const prepare = (value = attestation) => `select public.qorpera_prepare_runtime_office_activation(${literal(scope)},1,'${intent}','${binding.allocationId}','${instanceSha256}','${providerBindingSha256}','${binding.providerId}','${binding.providerPolicySha256}','[]',${literal(value)});`;
 	const check = (value = startup) => `select public.qorpera_check_runtime_office_startup(${literal(value)});`;
-	const ready = (value = startup, activation = attestation.activationId, native = 9443, viewer = 9444) => `select public.qorpera_report_runtime_office_ready(${literal(value)},'${activation}',${native},${viewer});`;
+	const ready = (value = startup, activation = attestation.activationId, native = 9443, viewer = 9444, key) => `select public.qorpera_report_runtime_office_ready(${literal(value)},'${activation}',${native},${viewer}${key === undefined ? "" : `,${literal(key)} #>> '{}'`});`;
+	// The office service's fill key (company accounts A1-3): an X25519 public key, 32 bytes in base64url.
+	const fillKey = () => generateKeyPairSync("x25519").publicKey.export({ format: "der", type: "spki" }).subarray(12).toString("base64url");
+	const storedKey = () => execute(`select coalesce(fill_public_key,'none') from public.qorpera_runtime_office_activations where activation_id='${attestation.activationId}';`);
 	const activate = (invocation = startup.serviceInvocationId, activation = attestation.activationId) => `select public.qorpera_activate_runtime_office(${literal(scope)},1,'${intent}','${activation}','${binding.providerId}','${binding.providerPolicySha256}','${invocation}');`;
 	const status = `select public.qorpera_runtime_office_activation_status(${literal(scope)},1,'${intent}','${attestation.activationId}','${binding.providerId}','${binding.providerPolicySha256}');`;
 	const guest = `select public.qorpera_check_runtime_office_guest_binding(${literal(scope)},1,'${binding.allocationId}','${instanceSha256}','${startup.imageSha256}','${startup.bootstrapSha256}');`;
@@ -60,6 +63,20 @@ export async function testOfficeActivation({ scope, binding, instanceSha256, pro
 	await deny(ready({ ...startup, serviceInvocationId: "c".repeat(32) }));
 	assert.equal(call(ready()).state, "ready");
 	console.log("PASS: competing service invocations have one winner; expired readiness cannot activate or reassign its invocation");
+	// The fill key is kept on this activation once, while it is not active: a malformed key, the all-zero key or
+	// another key is refused; the same key again and a report without a key keep it.
+	const key = fillKey();
+	await deny(ready(startup, attestation.activationId, 9443, 9444, "not-a-key"));
+	await deny(ready(startup, attestation.activationId, 9443, 9444, Buffer.alloc(32).toString("base64url")));
+	assert.equal(storedKey(), "none");
+	assert.equal(call(ready(startup, attestation.activationId, 9443, 9444, key)).state, "ready");
+	assert.equal(storedKey(), key);
+	assert.equal(call(ready(startup, attestation.activationId, 9443, 9444, key)).state, "ready");
+	await deny(ready(startup, attestation.activationId, 9443, 9444, fillKey()));
+	assert.equal(call(ready()).state, "ready");
+	assert.equal(storedKey(), key);
+	await deny(ready(startup, attestation.activationId, 9443, 9444, key), owner);
+	console.log("PASS: the fill key is kept once on the activation reported ready; malformed, low-order or other keys refused");
 	// Cancellation is visible inside the same transaction and rolls back so this
 	// fixture can also exercise the final successful activation of this office.
 	const cancelled = await race([`begin; ${owner} select public.qorpera_cancel_runtime_office_start(${literal(scope)},1,'${intent}'); ${service} ${activate()} rollback;`]);
@@ -107,6 +124,8 @@ export async function testOfficeActivation({ scope, binding, instanceSha256, pro
 	assert.deepEqual(JSON.parse(active[0].output), JSON.parse(active[1].output));
 	assert.equal(call(activate()).state, "active"); assert.equal(call(status).state, "active");
 	assert.equal(call(check()).state, "active"); assert.equal(call(ready()).state, "active");
+	await deny(ready(startup, attestation.activationId, 9443, 9444, fillKey()));
+	assert.equal(call(ready(startup, attestation.activationId, 9443, 9444, key)).state, "active"); assert.equal(storedKey(), key);
 	assert.equal(call(guest).state, "authorized"); await deny(prepare());
 	await deny(check({ ...startup, serviceInvocationId: "c".repeat(32) }));
 	execute(`${service} select public.qorpera_set_runtime_office_provider(${literal(scope)},1,'${binding.providerId}','${binding.providerPolicySha256}',3,false);`);
