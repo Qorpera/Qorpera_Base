@@ -9,7 +9,7 @@
 ### Added
 
 - Added `interfaces`, `interface-query`, `interface-library` and `toml-subset` (Interfaces step I2, `deploy/first-node/RUNTIME-INTERFACES.md`; inert, nothing calls them yet):
-  - `parseInterfaceFile`, `parseTableFile`, `parseInterfaceOrderFile` and `parseTableRows` read `interfaces/<name>/interface.toml`, `tables/<name>.toml` with its CSV rows, and `interfaces/order.md`, with closed key sets and `{ line, key, code, message }` problems;
+  - `parseInterfaceFile`, `parseTableFile`, `parseInterfaceOrderFile` and `parseTableRows` read `interfaces/<name>/interface.toml`, a table folder `tables/<name>/` (`table.toml` with `rows.csv`), and `interfaces/order.md`, with closed key sets and `{ line, key, code, message }` problems;
   - `tableClaimProblems` is the "nobody assigns anybody" rule for `needs_yes` columns (take, release, an accepted offer, agents acting for their supervisor);
   - `queryInterfaceRows`, `interfaceSeries`, `interfaceLookup` and `fillInterfaceText` read rows for a block;
   - `INTERFACE_LIBRARY` and `interfaceLibraryFiles` hold Pulse, Mailbox and Members with their tables;

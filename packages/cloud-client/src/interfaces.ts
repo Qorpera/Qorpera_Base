@@ -329,15 +329,9 @@ export function interfaceStatePath(path: string): InterfaceStatePath | null {
 		}
 		return null;
 	}
-	if (parts[0] === "tables" && parts.length === 2) {
-		const file = parts[1] ?? "";
-		const dot = file.lastIndexOf(".");
-		if (dot <= 0) return null;
-		const stem = file.slice(0, dot);
-		const ext = file.slice(dot + 1);
-		if (!isInterfaceName(stem)) return null;
-		if (ext === "toml") return { kind: "table", name: stem };
-		if (ext === "csv") return { kind: "table-rows", name: stem };
+	if (parts[0] === "tables" && parts.length === 3 && isInterfaceName(parts[1] ?? "")) {
+		if (parts[2] === "table.toml") return { kind: "table", name: parts[1] ?? null };
+		if (parts[2] === "rows.csv") return { kind: "table-rows", name: parts[1] ?? null };
 	}
 	return null;
 }
@@ -356,7 +350,7 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 	if (parts[0] === "interfaces" && parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
 		return [];
 	}
-	if (parts[0] === "interfaces" && parts.length === 2 && isInterfaceName(parts[1] ?? "")) return [];
+	if (parts.length === 2 && isInterfaceName(parts[1] ?? "")) return [];
 	return [
 		problem(
 			null,
@@ -364,7 +358,7 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 			"bad_value",
 			parts[0] === "interfaces"
 				? "Under interfaces/ go order.md and one folder per interface, with interface.toml and an optional README.md."
-				: "Under tables/ go <name>.toml and <name>.csv, named with lowercase letters, digits and hyphens.",
+				: "Under tables/ goes one folder per table, named with lowercase letters, digits and hyphens, holding table.toml and rows.csv.",
 		),
 	];
 }
@@ -1620,10 +1614,20 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 	const { records, error } = splitCsv(text);
 	if (error) return fail(problem(error.line, null, "row", error.message));
 	const header = records[0];
-	const expected = table.columns.map((c) => c.name);
-	if (!header || header.fields.join(",") !== expected.join(",")) {
-		return fail(problem(1, null, "row", `The first line must be: ${expected.join(",")}`));
-	}
+	const byName = new Map(table.columns.map((c) => [c.name, c]));
+	const named = header?.fields ?? [];
+	const headerProblem = ((): string | null => {
+		if (!header) return `The first line names the columns: ${table.columns.map((c) => c.name).join(",")}`;
+		const seen = new Set<string>();
+		for (const name of named) {
+			if (!byName.has(name)) return `The first line names "${clip(name)}", which is not a column of this table.`;
+			if (seen.has(name)) return `The first line names "${clip(name)}" twice.`;
+			seen.add(name);
+		}
+		const missing = table.columns.filter((c) => !c.optional && !seen.has(c.name)).map((c) => c.name);
+		return missing.length > 0 ? `The first line leaves out ${missing.join(", ")}, which every row needs.` : null;
+	})();
+	if (headerProblem) return fail(problem(1, null, "row", headerProblem));
 	const rows: TableRow[] = [];
 	const problems: InterfaceProblem[] = [];
 	const keys = new Set<string>();
@@ -1632,20 +1636,21 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 	};
 	for (const record of records.slice(1)) {
 		if (record.fields.length === 1 && record.fields[0] === "") continue;
-		if (record.fields.length !== expected.length) {
-			note(
-				problem(record.line, null, "row", `This row has ${record.fields.length} fields, not ${expected.length}.`),
-			);
+		if (record.fields.length !== named.length) {
+			note(problem(record.line, null, "row", `This row has ${record.fields.length} fields, not ${named.length}.`));
 			continue;
 		}
 		const row: Record<string, TableValue> = {};
 		let bad: string | null = null;
-		table.columns.forEach((column, i) => {
-			if (bad) return;
-			const out = typedValue(column, record.fields[i] ?? "");
-			if ("problem" in out) bad = out.problem;
-			else row[column.name] = out.value;
-		});
+		for (const column of table.columns) {
+			const at = named.indexOf(column.name);
+			const out = typedValue(column, at < 0 ? "" : (record.fields[at] ?? ""));
+			if ("problem" in out) {
+				bad = out.problem;
+				break;
+			}
+			row[column.name] = out.value;
+		}
 		if (bad) {
 			note(problem(record.line, null, "row", `This row doesn't fit: ${bad}.`));
 			continue;
@@ -1699,7 +1704,7 @@ export function tableRowKey(table: TableFile, row: TableRow): string {
  * - release: a member clears a cell that names them;
  * - accept: the member an open offer names puts their own id in that cell (the platform's write on their yes);
  * - an agent acts for its supervisor, taking for them and releasing what they hold, and never touches the columns
- *   in `memberOnly` (who owns or supervises an area).
+ *   in `memberOnly` (an area's owner, supervisor and agents), needs_yes or not.
  * A removed row counts as clearing its cells. Anything else that changes a needs_yes column is a problem; an offer
  * itself is a request card, never a save. */
 export function tableClaimProblems(
@@ -1709,17 +1714,17 @@ export function tableClaimProblems(
 	actor: InterfaceActor,
 	options: { readonly offers?: readonly InterfaceOffer[]; readonly memberOnly?: readonly string[] } = {},
 ): InterfaceProblem[] {
-	const claimed = table.columns.filter((c) => c.needsYes);
+	const memberOnly = options.memberOnly ?? [];
+	const claimed = table.columns.filter((c) => c.needsYes || (actor.kind === "agent" && memberOnly.includes(c.name)));
 	if (claimed.length === 0) return [];
 	const self = actor.kind === "member" ? actor.memberId : actor.supervisorId;
 	const offers = options.offers ?? [];
-	const memberOnly = options.memberOnly ?? [];
 	const problems: InterfaceProblem[] = [];
 	const note = (column: string, message: string) => {
 		if (problems.length < INTERFACE_MAX_PROBLEMS) problems.push(problem(null, column, "claim", message));
 	};
-	const check = (key: string, column: string, was: string | null, now: string | null) => {
-		if (was === now) return;
+	const check = (key: string, column: string, was: TableValue, now: TableValue) => {
+		if (JSON.stringify(was) === JSON.stringify(now)) return;
 		if (actor.kind === "agent" && memberOnly.includes(column)) {
 			note(column, `Only members change ${column}; an agent can offer, never set it.`);
 			return;
@@ -1746,17 +1751,12 @@ export function tableClaimProblems(
 	for (const [key, row] of after_) {
 		const previous = before_.get(key);
 		for (const column of claimed) {
-			check(
-				key,
-				column.name,
-				(previous?.[column.name] ?? null) as string | null,
-				(row[column.name] ?? null) as string | null,
-			);
+			check(key, column.name, previous?.[column.name] ?? null, row[column.name] ?? null);
 		}
 	}
 	for (const [key, row] of before_) {
 		if (after_.has(key)) continue;
-		for (const column of claimed) check(key, column.name, (row[column.name] ?? null) as string | null, null);
+		for (const column of claimed) check(key, column.name, row[column.name] ?? null, null);
 	}
 	return problems;
 }

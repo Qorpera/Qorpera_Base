@@ -296,13 +296,16 @@ describe("paths and order", () => {
 	it("knows each interface file by its path's key", () => {
 		expect(interfaceStatePath("interfaces/pulse/interface.toml")).toEqual({ kind: "interface", name: "pulse" });
 		expect(interfaceStatePath("Interfaces/Order.md")).toEqual({ kind: "interface-order", name: null });
-		expect(interfaceStatePath("tables/numbers.toml")).toEqual({ kind: "table", name: "numbers" });
-		expect(interfaceStatePath("tables/numbers.csv")).toEqual({ kind: "table-rows", name: "numbers" });
-		expect(interfaceStatePath("tables/Big_Table.csv")).toBeNull();
+		expect(interfaceStatePath("tables/numbers/table.toml")).toEqual({ kind: "table", name: "numbers" });
+		expect(interfaceStatePath("Tables/Numbers/ROWS.csv")).toEqual({ kind: "table-rows", name: "numbers" });
+		expect(interfaceStatePath("tables/numbers.csv")).toBeNull();
+		expect(interfaceStatePath("tables/big_table/rows.csv")).toBeNull();
 		expect(interfaceStatePath("agents/x/agent.md")).toBeNull();
 		expect(interfacePathProblems("interfaces/pulse/README.md")).toEqual([]);
 		expect(interfacePathProblems("interfaces/pulse/script.js")).toHaveLength(1);
 		expect(interfacePathProblems("tables/notes.txt")).toHaveLength(1);
+		expect(interfacePathProblems("tables/numbers/notes.txt")).toHaveLength(1);
+		expect(interfacePathProblems("tables/numbers")).toEqual([]);
 		expect(interfacePathProblems("work/anything.csv")).toEqual([]);
 	});
 
@@ -328,20 +331,20 @@ describe("paths and order", () => {
 			"interfaces/members/interface.toml",
 			"interfaces/order.md",
 			"interfaces/pulse/interface.toml",
-			"tables/areas.csv",
-			"tables/areas.toml",
-			"tables/cards.csv",
-			"tables/cards.toml",
-			"tables/numbers.csv",
-			"tables/numbers.toml",
+			"tables/areas/rows.csv",
+			"tables/areas/table.toml",
+			"tables/cards/rows.csv",
+			"tables/cards/table.toml",
+			"tables/numbers/rows.csv",
+			"tables/numbers/table.toml",
 		]);
 		const pulse = parseInterfaceFile(files["interfaces/pulse/interface.toml"] ?? "");
 		expect(pulse.ok && pulse.file.id).toBe("00000000-0000-4000-8000-000000000001");
 		const order = parseInterfaceOrderFile(files["interfaces/order.md"] ?? "");
 		expect(order.ok && order.file.ids.length).toBe(3);
 		for (const name of ["numbers", "areas", "cards"]) {
-			const definition = table(files[`tables/${name}.toml`] ?? "");
-			const rows = parseTableRows(definition, files[`tables/${name}.csv`] ?? "");
+			const definition = table(files[`tables/${name}/table.toml`] ?? "");
+			const rows = parseTableRows(definition, files[`tables/${name}/rows.csv`] ?? "");
 			expect(rows).toEqual({ rows: [], problems: [], readable: true });
 		}
 	});
@@ -413,6 +416,20 @@ type = "choice"
 			"row@7",
 			"row@8",
 		]);
+	});
+
+	it("reads columns in any order and leaves out optional ones", () => {
+		const numbers = table(NUMBERS_TABLE);
+		const text = `kept_by,value,number,unit,at\n${FINANCE},12,Trials,count,2026-10-02T09:44Z\n`;
+		expect(parseTableRows(numbers, text)).toEqual({
+			rows: [
+				{ number: "Trials", at: "2026-10-02T09:44Z", value: 12, unit: "count", target: null, kept_by: FINANCE },
+			],
+			problems: [],
+			readable: true,
+		});
+		expect(parseTableRows(numbers, "number,at,value,unit,kept_by,colour\n")).toMatchObject({ readable: false });
+		expect(parseTableRows(numbers, "number,at,value,unit,kept_by,unit\n")).toMatchObject({ readable: false });
 	});
 
 	it("refuses a wrong header, a broken quote and a file over 64 KiB", () => {
@@ -530,6 +547,21 @@ describe("the claim rule", () => {
 				}),
 			),
 		).toEqual(["claim", "claim"]);
+	});
+
+	it("keeps agents out of an area's agents list", () => {
+		const all = ["owner", "supervisor", "agents"];
+		const withAgents = (agents: string[] | null): TableRow => ({ ...row("Sales", SOFIE), agents });
+		expect(
+			codes(
+				tableClaimProblems(areas, [withAgents(null)], [withAgents([FINANCE])], agentFor(SOFIE), {
+					memberOnly: all,
+				}),
+			),
+		).toEqual(["claim"]);
+		expect(
+			tableClaimProblems(areas, [withAgents(null)], [withAgents([FINANCE])], member(SOFIE), { memberOnly: all }),
+		).toEqual([]);
 	});
 
 	it("leaves rows alone that change nothing it guards", () => {

@@ -104,7 +104,7 @@ to = "{kept_by}"
 text = "About {number}: "
 `;
 
-export const NUMBERS_TABLE = `# tables/numbers.toml (rows in tables/numbers.csv)
+export const NUMBERS_TABLE = `# tables/numbers/table.toml (rows in tables/numbers/rows.csv)
 format = "qorpera.table/v0"
 
 [table]
@@ -290,7 +290,7 @@ kind = "text"
 from = "file:rules/shared-areas.md"
 `;
 
-export const AREAS_TABLE = `# tables/areas.toml (rows in tables/areas.csv)
+export const AREAS_TABLE = `# tables/areas/table.toml (rows in tables/areas/rows.csv)
 format = "qorpera.table/v0"
 
 [table]
@@ -338,7 +338,7 @@ agents = "all"
 members = "all"
 `;
 
-export const CARDS_TABLE = `# tables/cards.toml (rows in tables/cards.csv)
+export const CARDS_TABLE = `# tables/cards/table.toml (rows in tables/cards/rows.csv)
 format = "qorpera.table/v0"
 
 [table]
@@ -427,8 +427,8 @@ export function interfaceLibraryFiles(newId: () => string): Record<string, strin
 		order.push(page.id);
 		names.set(page.id, entry.name[0]?.toUpperCase() + entry.name.slice(1));
 		for (const [table, text] of Object.entries(entry.tables)) {
-			files[`tables/${table}.toml`] = fresh(text).text;
-			files[`tables/${table}.csv`] = rowsHeader(text);
+			files[`tables/${table}/table.toml`] = fresh(text).text;
+			files[`tables/${table}/rows.csv`] = rowsHeader(text);
 		}
 	}
 	files["interfaces/order.md"] = writeInterfaceOrderFile(order, names);
