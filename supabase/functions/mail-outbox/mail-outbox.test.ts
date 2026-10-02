@@ -341,11 +341,14 @@ describe("mail outbox attachments", () => {
 				job(3, { companyId: COMPANY, attachments: [{ ...file, filename: "../a.pdf" }] }),
 				job(4, { companyId: COMPANY, attachments: [{ ...file, bytes: MAX_ATTACHMENT_BYTES + 1 }] }),
 				job(5, { companyId: COMPANY, attachments: Array.from({ length: 11 }, () => file) }),
+				job(6, { companyId: COMPANY, attachments: [{ ...file, filename: `${"n".repeat(253)}.md` }] }),
+				// 203 characters, as the database counts them, in 403 UTF-16 units: read, then not in storage yet.
+				job(7, { companyId: COMPANY, attachments: [{ ...file, filename: `${"\u{1F4CE}".repeat(200)}.md` }] }),
 			],
 			sender,
 			reader(new Map()),
 		);
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 5, sent: 0, retrying: 0, failed: 0, rejected: 5 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 7, sent: 0, retrying: 1, failed: 0, rejected: 6 });
 		assert.equal(sent.length, 0);
 	});
 

@@ -247,13 +247,19 @@ select pg_temp.wake_assert(public.qorpera_claim_mail_attachment_fetches(10, '804
 -- A failed fetch is tried afresh when asked again ten minutes after it failed; sooner, the failure stands.
 select pg_temp.wake_assert(pg_temp.ask(jsonb_build_object('deliveryId', current_setting('qorpera_test.gone'),
 	'attachment', 1)) ->> 'state' = 'failed', 'Asked again at once, the failure stands');
-update public.qorpera_mail_attachment_fetches set settled_at = clock_timestamp() - interval '11 minutes'
+-- Its day starts again too: a fetch first asked for two days ago is not given up at its next claim.
+update public.qorpera_mail_attachment_fetches set settled_at = clock_timestamp() - interval '11 minutes',
+	created_at = clock_timestamp() - interval '2 days'
 where delivery_id in (current_setting('qorpera_test.gone')::uuid, current_setting('qorpera_test.late')::uuid);
 select pg_temp.wake_assert(asked ->> 'state' = 'fetching' and row.status = 'pending' and row.attempt_count = 0
 		and row.settled_at is null and row.created_at > clock_timestamp() - interval '1 minute',
 	'Asked again later, a failed fetch starts afresh: ' || asked::text)
 from (select pg_temp.ask(jsonb_build_object('deliveryId', current_setting('qorpera_test.gone'), 'attachment', 1))
 	as asked) as answer, pg_temp.fetch_row(current_setting('qorpera_test.gone')::uuid, 1) as row;
+select pg_temp.wake_assert(claim -> 0 ->> 'fetchId' = (pg_temp.fetch_row(current_setting('qorpera_test.gone')::uuid, 1)).id::text
+		and (claim -> 0 ->> 'attemptCount')::integer = 1 and jsonb_array_length(claim) = 1,
+	'The fetch started afresh is claimed as a first attempt: ' || claim::text)
+from (select public.qorpera_claim_mail_attachment_fetches(10, '80400000-0000-4000-8000-000000000009') as claim) as claimed;
 
 -- An email whose text was cleared has no attachments to fetch; one already fetched stays.
 update public.qorpera_event_deliveries set body = null

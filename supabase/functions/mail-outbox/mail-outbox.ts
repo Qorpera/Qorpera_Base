@@ -123,7 +123,8 @@ function attachments(job: Record<string, unknown>): { companyId: string | null; 
 		if (
 			typeof file.filename !== "string" ||
 			!file.filename ||
-			file.filename.length > 255 ||
+			// Characters, as the database counts them.
+			[...file.filename].length > 255 ||
 			/[\u0000-\u001f\u007f/\\]/.test(file.filename) ||
 			typeof file.manifestSha256 !== "string" ||
 			!SHA.test(file.manifestSha256) ||
