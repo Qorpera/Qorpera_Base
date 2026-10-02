@@ -31,6 +31,8 @@ begin
 	end loop;
 	if not has_function_privilege('service_role', 'public.qorpera_find_agent_mail(jsonb,jsonb)', 'EXECUTE') then
 		raise exception 'find_mail lost its caller'; end if;
+	if not exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_find_agent_mail' and scope = 'binding') then
+		raise exception 'The native host cannot reach find_mail'; end if;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_mail_box_part(text)',
 			'public.qorpera_mail_delivery_headers(text[],text,text,jsonb)'] loop
