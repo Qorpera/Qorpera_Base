@@ -262,6 +262,7 @@ describe("rail sections and pins", () => {
 		await ready;
 		await settle();
 		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Fixture conversation"]);
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
 		input.value = "cy";
 		draw();
@@ -754,6 +755,7 @@ describe("dragging agents in the rail", () => {
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(rail.querySelector(".rail-scroll")!.classList.contains("rail-dragging")).toBe(false);
 		document.dispatchEvent(pointer("pointerup", 20, 0));
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
 		input.value = "c";
 		draw();

@@ -751,7 +751,10 @@ it("keeps responsibility and project pages out of the rail even when they are re
 	// Search and the add button share the top row, search first.
 	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
 	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[href$="/new"]')).not.toBeNull();
+	// The search folds out of its button over the tabs.
+	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+	expect(document.activeElement).toBe(search);
 	search.value = "Product quality";
 	search.dispatchEvent(new Event("input"));
 	expect(rail.textContent).toContain("No matching conversations.");
@@ -799,7 +802,8 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
 	// Every keystroke filters, composed text included, and redraws never move the field.
-	search.focus();
+	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
+	expect(document.activeElement).toBe(search);
 	search.dispatchEvent(new CompositionEvent("compositionstart"));
 	search.value = "é";
 	search.dispatchEvent(new InputEvent("input", { isComposing: true }));

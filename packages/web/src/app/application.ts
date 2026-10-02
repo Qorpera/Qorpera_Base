@@ -174,7 +174,14 @@ export function mountApplication(
 		main.inert = navigationOpen && isPhoneLayout();
 	}
 	function onEscape(event: KeyboardEvent): void {
-		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
+		if (
+			event.key === "Escape" &&
+			!event.isComposing &&
+			navigationOpen &&
+			!settings &&
+			!feedback &&
+			!event.defaultPrevented
+		) {
 			setNavigationOpen(false);
 		}
 	}
@@ -747,9 +754,11 @@ export function mountApplication(
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 			});
 		if (navigationFocus) {
+			// The drawer opens on its first control: the chosen tab, or the search field when there are no tabs.
 			const target =
 				navigationFocus === "rail"
-					? rail.querySelector<HTMLInputElement>("input")
+					? (rail.querySelector<HTMLElement>(".rail-switch:not([hidden]) [role='tab'][aria-selected='true']") ??
+						rail.querySelector<HTMLInputElement>(".rail-search input"))
 					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
 						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
 			target?.focus();

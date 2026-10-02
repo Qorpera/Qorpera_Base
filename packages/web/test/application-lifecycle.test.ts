@@ -610,6 +610,12 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		// The drawer opens on its chosen tab, never on the folded search field.
+		expect(document.activeElement).toBe(f.root.querySelector(".rail [role='tab'][aria-selected='true']"));
+		// Esc that ends a composition (a dead key, an IME) leaves the drawer open.
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true }));
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);

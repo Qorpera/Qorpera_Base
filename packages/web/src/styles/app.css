@@ -433,6 +433,7 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .rail { padding-inline: 7px; }
 .rail-compact .rail-toolbar { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
 .rail-compact .rail-add { grid-area: 2 / 1; justify-self: center; margin-left: 0; }
+.rail-compact .rail-toolbar:not(.has-tabs) .rail-add { grid-row: 1; }
 .rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
 .rail-compact .rail-cofounder { padding: 6px 0 3px; }
 .rail-compact .cofounder-home { height: 64px; padding: 0; }

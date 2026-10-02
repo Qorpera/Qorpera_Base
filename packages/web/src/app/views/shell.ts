@@ -571,11 +571,18 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				created.list.scrollTop = 0;
 			}
 			created.redraw();
-			if (refocus) searchToggle.focus();
+			// Without the tabs the field stays open, so focus stays in it.
+			if (refocus) (switcher.hidden ? input : searchToggle).focus();
 		};
 		searchToggle.addEventListener("click", openSearch, { signal: company.signal });
 		searchClose.addEventListener("click", () => closeSearch(true), { signal: company.signal });
-		input.addEventListener(
+		// A press on either button keeps focus where it is (Safari and Firefox never focus a pressed button, so focus
+		// would otherwise fall to the page as the field folds); the click does the rest.
+		for (const button of [searchToggle, searchClose]) {
+			button.addEventListener("mousedown", (event) => event.preventDefault(), { signal: company.signal });
+		}
+		// Esc folds the search from anywhere in it, never while a composition is open.
+		search.addEventListener(
 			"keydown",
 			(event) => {
 				if (event.key !== "Escape" || event.isComposing || !created.searchOpen) return;
@@ -863,7 +870,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	}
 	parts.switcher.hidden = !tabbed;
 	parts.switcher.classList.toggle("on-interfaces", onInterfaces);
-	// Without the tabs the field has the row to itself and stays open.
+	// Text in the field keeps it open, so a query never filters from a folded field (the tabs can appear while the
+	// always-open field holds one). Without the tabs the field has the row to itself and stays open.
+	if (parts.input.value) parts.searchOpen = true;
 	const searchShown = !tabbed || parts.searchOpen;
 	parts.toolbar.classList.toggle("has-tabs", tabbed);
 	parts.toolbar.classList.toggle("is-searching", tabbed && parts.searchOpen);
@@ -874,6 +883,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.searchToggle.setAttribute("aria-label", searchLabel);
 	parts.searchToggle.title = searchLabel;
 	parts.searchToggle.setAttribute("aria-expanded", String(searchShown));
+	// Open, the button only points back at the field, so it leaves the Tab order.
+	parts.searchToggle.tabIndex = searchShown ? -1 : 0;
 	parts.searchClose.hidden = !(tabbed && parts.searchOpen);
 	const shownList = onInterfaces ? parts.interfaces : parts.list;
 	const turned = parts.shownTab !== undefined && parts.shownTab !== parts.tab;
@@ -886,6 +897,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.collapsed = isCollapsed(container);
 	// The open field covers the tabs, so they take no clicks or focus; the collapsed rail shows the tabs, not the field.
 	parts.switcher.inert = tabbed && parts.searchOpen && !parts.collapsed;
+	parts.switcher.setAttribute("aria-orientation", parts.collapsed ? "vertical" : "horizontal");
 	const railQuery = parts.collapsed ? "" : parts.input.value.trim().toLowerCase();
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;

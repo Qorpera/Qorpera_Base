@@ -268,6 +268,20 @@ describe("the rail's Agents | Interfaces switch", () => {
 		expect(toolbar.classList.contains("is-searching")).toBe(false);
 		expect(input.value).toBe("");
 		expect(document.activeElement).toBe(toggle);
+		// Esc folds it from its buttons too, and a press on a button keeps focus where it is.
+		toggle.click();
+		const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+		closeButton.dispatchEvent(press);
+		expect(press.defaultPrevented).toBe(true);
+		closeButton.focus();
+		closeButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(toolbar.classList.contains("is-searching")).toBe(false);
+		expect(document.activeElement).toBe(toggle);
+		// Open, the button leaves the Tab order; folded, it is the way in.
+		expect(toggle.tabIndex).toBe(0);
+		toggle.click();
+		expect(toggle.tabIndex).toBe(-1);
+		closeButton.click();
 		// Left empty, it folds back when focus moves on; with text it stays open.
 		toggle.click();
 		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
@@ -277,6 +291,18 @@ describe("the rail's Agents | Interfaces switch", () => {
 		input.dispatchEvent(new Event("input"));
 		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
 		expect(toolbar.classList.contains("is-searching")).toBe(true);
+	});
+
+	it("never filters from a folded field: text in it keeps it open", () => {
+		const { element, draw } = rail(home);
+		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
+		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
+		// As when the tabs appear while the always-open field holds a query.
+		input.value = "zzz";
+		draw();
+		expect(toolbar.classList.contains("is-searching")).toBe(true);
+		expect(input.tabIndex).toBe(0);
+		expect(element.textContent).toContain("No matching conversations.");
 	});
 
 	it("lets the route pick the tab, and marks the open interface", () => {
