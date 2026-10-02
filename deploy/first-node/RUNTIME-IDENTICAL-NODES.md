@@ -148,7 +148,7 @@ migration can go in any cut without a pause.
 3. Use (service role claims):
    - empty: `select public.qorpera_set_runtime_node_serving('<node>', false, <version>, '<reason>')`;
    - watch `qorpera_runtime_node_drain_status('<node>')` until `readyForUpdate`;
-   - clear parked warm hosts if the fast host is rebuilt;
+   - clear parked warm hosts if the fast host is rebuilt (`rebuild-exec-host.sh` with `EXEC_CLEAR_PARKED=1`);
    - return with `true`. The node is placeable at once: its version and inventory receipt did not
      change.
 
@@ -377,7 +377,7 @@ The migration is safe for the running bundle: providers keep calling the same RP
 chooser still works. The exec host's new machine key ships with the next provider build; until then a retry
 on the same slot of node 2 can still collide, as today. No activation guard is needed.
 
-## Rolling step 1: the runs switch and placement by bundle (migration `20260929996000`)
+## Rolling step 1: the runs switch and placement by bundle (migration `20260928409960`)
 
 A node release restarts only the node's run provider and orchestrator (the node agent's roles), and the
 fast host rebuild touches only the fast host. Company computers, coding machines and agent machines run on

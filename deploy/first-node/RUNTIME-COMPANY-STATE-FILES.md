@@ -300,11 +300,22 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `id` | yes | the vault record's id (`qorpera_cloud_secrets.id`) |
 | `service` | yes | the connector id (gmail, github, google_drive, …) |
 | `account` | yes | the mailbox or login, up to 254 characters |
-| `status` | yes | `connected` or `broken` |
+| `status` | yes | `connected` or `broken`; a website account also `pending` (opened, not yet verified) or `needs_person` (waiting for a step only a person can do) |
 | `actions` | yes | the catalog's operation ids every agent may use (may be empty) |
-| `connected_by` | yes | member id |
+| `connected_by` | yes | member id, or for a website account the agent that opened it |
 | `connected_at` | yes | UTC instant |
+| `site` | with `service: website`, and only then | the website's host as the vault keeps it: lowercase labels of 1–63 letters, digits and inner hyphens, at least two, up to 253 characters (`qorpera_company_account_host_valid`); a host YAML would read as a number is written in quotes |
+| `two_step` | with `service: website`, and only then | `none`, `authenticator`, `email` or `sms` |
+| `opened_for` | no; `service: website` only | the id of the todo an agent opened the account for; absent when a member handed the account over |
 | body | no | what the account is for, written by the company |
+
+- **Website accounts (A1):** an account the company owns at a website (`service: website`), kept in
+  the vault (`qorpera_company_accounts`). `site` is shown and never used: where a secret may be
+  typed stays in the vault, so editing the file can never move a password. The parse has `site`,
+  `twoStep` and `openedFor` (`null` when absent) only for a website account; any other
+  connection's parse keeps its shape. Closing an account revokes its vault row at once (A1, 2
+  October; #668), so its file is removed at close, as any disconnected connection's: no file ever
+  says closed.
 
 - **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
   may change the body only, and never creates or deletes the file.
@@ -315,7 +326,7 @@ closes the conversation; a restore reopens both, with the same conversation.
   its connector is the `service`. One file holds one account. A file saved before this slice is not
   trusted as the saved version until the platform writes it (the index points at its path).
 - **Deleting:** only the platform deletes the file, and only once the vault record is revoked
-  (refused while it is active, whether `connected` or `broken`). Disconnecting removes the file; the
+  (refused while it is active, whatever its status). Disconnecting removes the file; the
   writer treats a file already missing as done.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
@@ -1640,6 +1651,20 @@ order is free.
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
+
+**Plan (A1-7): website accounts in connection files** (A1's request of 2 October; A1 keeps the
+vault records, #653). The keys and statuses of §2's `connections/` table for `service: website`.
+Two PRs, in this order:
+- **A1-7a, the parser:** `site`, `two_step` and `opened_for`, required or refused by service; the
+  statuses `pending` and `needs_person` for a website account only; `writeConnectionFile` writes
+  them. Another connection's parse keeps its exact shape, so the rule that a member may change
+  only the text below the settings (which compares the settings with the saved version's) keeps
+  working on every file saved before.
+- **A1-7b, the database** (migration 20260929999950, SQL test 801):
+  `qorpera_company_state_parse_problems` checks the connection parse per service, with the
+  vault's host rule. Nothing else changes: the platform's save still needs the vault row active
+  with the connector `website`.
+- Then A1's vault writer writes website account files. Before it, no file has these keys.
 
 ## 9. The seeded tree
 
