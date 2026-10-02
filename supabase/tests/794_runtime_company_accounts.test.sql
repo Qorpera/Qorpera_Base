@@ -421,7 +421,7 @@ begin
 	if current_setting('qorpera_test.ca_version_stale') is distinct from '55000:The account changed meanwhile; read it again' then
 		raise exception 'A save over a stale version was not refused: %',current_setting('qorpera_test.ca_version_stale');
 	end if;
-	-- Two versions were saved; closing the account later (20260929999750) revoked its vault row, and the revoke
+	-- Two versions were saved; closing the account later (20260928429975) revoked its vault row, and the revoke
 	-- wiped every envelope at once. No member removed it.
 	if (select current_version from public.qorpera_cloud_secrets where id = v_account) is distinct from 2
 		or (select count(*) from public.qorpera_cloud_secret_versions where secret_id = v_account) is distinct from 0
