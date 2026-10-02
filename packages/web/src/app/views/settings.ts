@@ -7,6 +7,7 @@ import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { leave } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
@@ -320,7 +321,7 @@ export class SettingsView {
 		this.#friends.dispose();
 		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
-		this.el.remove();
+		leave(this.el, "is-leaving", () => this.el.remove());
 	}
 
 	#onKey = (event: KeyboardEvent): void => {

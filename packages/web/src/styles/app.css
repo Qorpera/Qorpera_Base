@@ -7,6 +7,7 @@
 @import "./founding.css";
 @import "./interfaces.css";
 @import "./dark.css";
+@import "./motion.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -394,7 +395,6 @@ label > input, label > select { font-weight: 400; }
 .rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
-.cofounder-status.failed, .rail-row-status.failed { background: var(--rail-status-failed); }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
@@ -470,9 +470,8 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
-	/* Forced colours empty both discs into rings; the failed one stays filled. */
-	/* Under .rail so it outranks the hover and selected ring colours. */
-	.rail :is(.cofounder-status, .rail-row-status).failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }
+	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
+	.rail .alert-mark::before, .rail .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
 }
 
 .avatar {

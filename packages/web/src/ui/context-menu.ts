@@ -1,5 +1,6 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { leave } from "./motion.ts";
 import { uiScale } from "./scale.ts";
 
 /* A right-click menu, Grok Bot's shape: icon rows, separators, a submenu that
@@ -203,7 +204,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			closed = true;
 			lifetime.abort();
 			closeSubmenu();
-			root.remove();
+			leave(root, "is-leaving", () => root.remove());
 			opener?.classList.remove("menu-open");
 			if (active === handle) active = undefined;
 			// Focus returns only when it was in the menu; a press elsewhere keeps its own target.

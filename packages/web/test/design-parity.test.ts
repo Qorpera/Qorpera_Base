@@ -468,11 +468,12 @@ describe("shell presentation lifecycle", () => {
 		});
 		const { rail } = mountRail(f, "file");
 		const figures = new Map(mount.mock.calls.map(([, , , , options]) => [options?.identity, options?.activity]));
+		// A failed run shows a red "!" in place of the figure; working shows the green disc.
 		const disc = (status: Element | null) =>
-			!status ? "none" : status.classList.contains("failed") ? "red" : "green";
+			!status ? "none" : status.classList.contains("alert-mark") ? "red" : "green";
 		for (const { agent, figure, line, disc: shown } of rows) {
 			const link = rail.querySelector(`a[href$="/staff/${agent.id}"]`)!;
-			const status = link.querySelector(".rail-row-status");
+			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
 			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
 			expect(disc(status), agent.displayName).toBe(shown);
@@ -490,14 +491,14 @@ describe("shell presentation lifecycle", () => {
 		// The card shows only the name; its role and state are in the link's name.
 		expect(card.querySelector("small")).toBeNull();
 		expect(card.textContent).toBe("Co-Founder");
-		expect(disc(card.querySelector(".cofounder-status"))).toBe("red");
+		expect(disc(card.querySelector(".cofounder-status, .alert-mark"))).toBe("red");
 		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
 	});
 	it("redraws the status disc as a run fails, is picked up again and is dismissed", () => {
 		stubFigureMotion();
 		const f = companyFixture();
 		const { rail, draw } = mountRail(f);
-		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] .rail-row-status`);
+		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] :is(.rail-row-status, .alert-mark)`);
 		const failed = {
 			runId: id(70),
 			staffAgentId: staff.id,
@@ -510,10 +511,10 @@ describe("shell presentation lifecycle", () => {
 		// Idle and failed share the figure and the subtitle, so a redraw must look at the disc itself.
 		f.company.store.set({ activity: [failed] });
 		draw();
-		expect(disc()?.classList.contains("failed")).toBe(true);
+		expect(disc()?.classList.contains("alert-mark")).toBe(true);
 		f.company.store.set({ activity: [{ ...failed, runId: id(71), jobStatus: "leased", activity: "working" }] });
 		draw();
-		expect(disc()?.classList.contains("failed")).toBe(false);
+		expect(disc()?.classList.contains("alert-mark")).toBe(false);
 		f.company.store.set({ activity: [failed] });
 		draw();
 		f.company.store.set({ activity: [] });
@@ -527,7 +528,7 @@ describe("shell presentation lifecycle", () => {
 		const { rail, draw } = mountRail(f);
 		const row = () =>
 			rail.querySelector<HTMLElement>(kind === "cofounder" ? ".cofounder-home" : `a[href$="/staff/${staff.id}"]`)!;
-		const disc = () => row().querySelector(".rail-row-status, .cofounder-status");
+		const disc = () => row().querySelector(".rail-row-status, .cofounder-status, .alert-mark");
 		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 		search.focus();
 		search.dispatchEvent(new CompositionEvent("compositionstart"));
@@ -548,7 +549,7 @@ describe("shell presentation lifecycle", () => {
 		f.company.store.set({ activity: [failed] });
 		draw();
 		expect(row()).not.toBe(idle);
-		expect(disc()?.classList.contains("failed")).toBe(true);
+		expect(disc()?.classList.contains("alert-mark")).toBe(true);
 		expect(row().getAttribute("aria-label")).toContain("A run did not finish");
 		f.company.store.set({ activity: [] });
 		draw();
