@@ -34,7 +34,7 @@ set -euo pipefail
 # inherited from the caller's shell. A new host is not declared for a bundle:
 # a refused declaration would delete a host that is otherwise set up. Declare
 # it after enrolment if a rolling update needs it.
-unset EXEC_PREFLIGHT_ONLY EXEC_FRESH EXEC_RUNTIME_BUNDLE_SHA256
+unset EXEC_PREFLIGHT_ONLY EXEC_FRESH EXEC_RUNTIME_BUNDLE_SHA256 EXEC_CLEAR_PARKED EXEC_START_ORCHESTRATOR
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 FINGERPRINT="${1:-}"

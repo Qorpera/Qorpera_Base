@@ -76,6 +76,8 @@ function vaultFixture(authority: Partial<CompanyAccountAuthority> = {}) {
 	const keyring = new CloudSecretKeyring({ "company-kek-1": randomBytes(32) });
 	keyrings.push(keyring);
 	const openings: CompanyAccountOpening[] = [];
+	/** The buffers the vault handed over, by reference: zeroed once the call is over. */
+	const sent: Uint8Array[] = [];
 	const fake: CompanyAccountAuthority = {
 		describeCompanyAccountOpen: vi.fn(async () => ({
 			schema: "qorpera.company-account-context/v1",
@@ -84,6 +86,7 @@ function vaultFixture(authority: Partial<CompanyAccountAuthority> = {}) {
 			keyId: "company-kek-1",
 		})),
 		openCompanyAccount: vi.fn(async (_call: CompanyAccountCall, opening: CompanyAccountOpening) => {
+			sent.push(opening.encryptedEnvelope);
 			openings.push({ ...opening, encryptedEnvelope: Uint8Array.from(opening.encryptedEnvelope) });
 			return descriptor(opening.secretId);
 		}),
@@ -93,7 +96,7 @@ function vaultFixture(authority: Partial<CompanyAccountAuthority> = {}) {
 		...authority,
 	};
 	const vault = new CompanyAccountVault({ authority: fake, keys: keyring, newId: () => accountId });
-	return { keyring, openings, authority: fake, vault };
+	return { keyring, openings, sent, authority: fake, vault };
 }
 
 describe("company account vault", () => {
@@ -116,19 +119,32 @@ describe("company account vault", () => {
 		);
 		expect(Object.keys(secret)).toEqual(["password"]);
 		expect(secret.password).toMatch(/^[A-Za-z0-9]{32}$/);
-		await expect(
-			f.keyring.use(
-				opening!.encryptedEnvelope,
-				{ companyId, environmentId, secretId: randomUUID(), version: 1, keyId: "company-kek-1" },
-				async () => "opened",
-			),
-		).rejects.toThrow();
+		const sealed = { companyId, environmentId, secretId: accountId, version: 1, keyId: "company-kek-1" };
+		for (const other of [
+			{ secretId: randomUUID() },
+			{ companyId: randomUUID() },
+			{ environmentId: randomUUID() },
+			{ version: 2 },
+		])
+			await expect(
+				f.keyring.use(opening!.encryptedEnvelope, { ...sealed, ...other }, async () => "opened"),
+				JSON.stringify(other),
+			).rejects.toThrow();
+		// The vault's own copy of the sealed bytes is wiped once the database has answered.
+		expect(f.sent[0]?.every((byte) => byte === 0)).toBe(true);
 	});
 
-	it("answers the account a repeat of the same call opened first, with its own envelope never stored", async () => {
+	it("answers the account a repeat of the same call opened first, and draws a new id for every attempt", async () => {
 		const first = "79800000-0000-4000-8000-000000000051";
 		const f = vaultFixture({ openCompanyAccount: vi.fn(async () => descriptor(first)) });
 		expect(await f.vault.handle(openRequest(), AbortSignal.timeout(5000))).toEqual(descriptor(first));
+		// With its own ids, two attempts never offer the database the same one.
+		const g = vaultFixture();
+		const vault = new CompanyAccountVault({ authority: g.authority, keys: g.keyring });
+		await vault.handle(openRequest(), AbortSignal.timeout(5000));
+		await vault.handle(openRequest(), AbortSignal.timeout(5000));
+		expect(g.openings).toHaveLength(2);
+		expect(g.openings[0]?.secretId).not.toBe(g.openings[1]?.secretId);
 	});
 
 	it("passes the database's refusals on in their own words, and nothing else", async () => {
@@ -142,6 +158,7 @@ describe("company account vault", () => {
 			["22023", "An account is opened only for an open todo of this agent"],
 			["23505", "The company already has this account; use it"],
 			["0A000", "Company accounts are switched off"],
+			["54000", "The company has too many accounts on this website"],
 		]) {
 			expect(await refusing(code!, message!).vault.handle(openRequest(), AbortSignal.timeout(5000))).toEqual({
 				schema: "qorpera.company-account-refusal/v1",
@@ -149,8 +166,21 @@ describe("company account vault", () => {
 				message,
 			});
 		}
+		// The switch is read first, so a switched-off company is refused by the first call.
+		const off = vaultFixture({
+			describeCompanyAccountOpen: vi.fn(async () => {
+				throw databaseError("0A000", "Company accounts are switched off");
+			}),
+		});
+		expect(await off.vault.handle(openRequest(), AbortSignal.timeout(5000))).toEqual({
+			schema: "qorpera.company-account-refusal/v1",
+			code: "0A000",
+			message: "Company accounts are switched off",
+		});
+		expect(off.authority.openCompanyAccount).not.toHaveBeenCalled();
 		for (const error of [
 			databaseError("42501", "company account id is taken"),
+			databaseError("55000", "Company execution is paused"),
 			databaseError("40P01", "deadlock detected"),
 			new Error("connection reset"),
 		]) {
@@ -211,6 +241,9 @@ describe("company account requests", () => {
 	});
 
 	it("reads an open and a state change, and refuses anything else", () => {
+		expect(parseCompanyAccountRequest(wire({ site: `${"a".repeat(63)}.example` }))).toMatchObject({
+			site: `${"a".repeat(63)}.example`,
+		});
 		expect(parseCompanyAccountRequest(wire({ password: { length: 20 } }))).toMatchObject({
 			action: "open",
 			site: "vercel.com",
@@ -230,6 +263,8 @@ describe("company account requests", () => {
 			wire({ action: "use" }),
 			wire({ site: "Vercel.com" }),
 			wire({ site: "https://vercel.com" }),
+			// A DNS label has at most 63 characters.
+			wire({ site: `${"a".repeat(64)}.example` }),
 			wire({ signInHosts: ["vercel.com"] }),
 			wire({ signInHosts: ["a.com", "a.com"] }),
 			wire({ login: " agents@nordlys.example" }),
@@ -254,8 +289,14 @@ describe("company account requests", () => {
 				message: "Use a todo",
 			}),
 		).toEqual({ schema: "qorpera.company-account-refusal/v1", code: "22023", message: "Use a todo" });
+		// The login as the database keeps it, even one a person typed with a stray space.
+		expect(parseCompanyAccountAnswer({ ...descriptor(), login: "\u00a0ida@nordlys.example" })).toMatchObject({
+			login: "\u00a0ida@nordlys.example",
+		});
 		for (const bad of [
 			{ ...descriptor(), keyId: "company-kek-1" },
+			{ ...descriptor(), login: "" },
+			{ schema: "qorpera.company-account-refusal/v1", code: "55000", message: "Company execution is paused" },
 			{ ...descriptor(), status: "open" },
 			{ ...descriptor(), version: 0 },
 			{ schema: "qorpera.company-account-refusal/v1", code: "42501", message: "no" },
@@ -267,10 +308,16 @@ describe("company account requests", () => {
 describe("company accounts over the broker", () => {
 	it("calls only its three broker-role functions, binding the tool call and the opening", async () => {
 		const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+		const sent: Buffer[] = [];
 		const authority = new PostgresCloudSecretBrokerAuthority({
 			database: {
 				async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[]) {
-					queries.push({ text, values });
+					// A copy of each buffer as sent: the authority wipes its own afterwards.
+					queries.push({
+						text,
+						values: values.map((value) => (Buffer.isBuffer(value) ? Buffer.from(value) : value)),
+					});
+					sent.push(...values.filter((value) => Buffer.isBuffer(value)));
 					return { rowCount: 1, rows: [{ result: { accepted: true } } as unknown as Row] };
 				},
 			},
@@ -323,6 +370,8 @@ describe("company accounts over the broker", () => {
 			"c".repeat(64),
 		]);
 		expect(queries[2]?.values.slice(6)).toEqual([accountId, "closed"]);
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.every((byte) => byte === 0)).toBe(true);
 	});
 
 	it("serves the runtime's calls with its token only, and a broker without the database calls has none", async () => {
@@ -339,10 +388,11 @@ describe("company accounts over the broker", () => {
 			setCompanyAccountState: f.authority.setCompanyAccountState,
 		};
 		const runtimeToken = randomBytes(32).toString("base64url");
+		const codingExecutorToken = randomBytes(32).toString("base64url");
 		const service = new HttpCloudSecretBrokerService(
 			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
 			runtimeToken,
-			{ codingExecutorToken: randomBytes(32).toString("base64url") },
+			{ codingExecutorToken },
 		);
 		services.push(service);
 		const port = await service.start();
@@ -362,9 +412,11 @@ describe("company accounts over the broker", () => {
 		expect(await client().companyAccount(state, AbortSignal.timeout(5000))).toEqual(
 			descriptor(accountId, "connected"),
 		);
-		await expect(
-			client(randomBytes(32).toString("base64url")).companyAccount(state, AbortSignal.timeout(5000)),
-		).rejects.toThrow("Cloud secret broker rejected the company account call");
+		for (const token of [randomBytes(32).toString("base64url"), codingExecutorToken])
+			await expect(client(token).companyAccount(state, AbortSignal.timeout(5000))).rejects.toThrow(
+				"Cloud secret broker rejected the company account call",
+			);
+		expect(f.authority.setCompanyAccountState).toHaveBeenCalledTimes(1);
 		const raw = await fetch(`http://127.0.0.1:${port}/v1/company-accounts?company=${companyId}`, {
 			method: "POST",
 			headers: { authorization: `Bearer ${runtimeToken}`, "content-type": "application/json" },

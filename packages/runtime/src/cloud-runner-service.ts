@@ -449,7 +449,11 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 						config.nativeBridgeUrl,
 						nativeBridgeToken,
 						fetch,
-						{ signal, executionBoundary: config.nativeBridgeBoundary },
+						{
+							signal,
+							executionBoundary: config.nativeBridgeBoundary,
+							publishableKey: config.publishableKey,
+						},
 					),
 				}
 			: {}),

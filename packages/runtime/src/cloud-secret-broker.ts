@@ -1064,25 +1064,36 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
-	openCompanyAccount(call: CompanyAccountCall, opening: CompanyAccountOpening, signal: AbortSignal): Promise<unknown> {
-		return this.#rpc(
-			"select public.qorpera_open_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::uuid,$9::uuid,$10::text,$11::text[],$12::text,$13::text,$14::uuid,$15::text,$16::bytea,$17::text) as result",
-			[
-				...this.#companyAccountCall(call),
-				opening.secretId,
-				opening.companyId,
-				opening.environmentId,
-				opening.site,
-				[...opening.signInHosts],
-				opening.login,
-				opening.purpose,
-				opening.todoId,
-				opening.keyId,
-				Buffer.from(opening.encryptedEnvelope),
-				opening.envelopeSha256,
-			],
-			signal,
-		);
+	async openCompanyAccount(
+		call: CompanyAccountCall,
+		opening: CompanyAccountOpening,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		const envelope = Buffer.from(opening.encryptedEnvelope);
+		try {
+			return await this.#rpc(
+				"select public.qorpera_open_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::uuid,$9::uuid,$10::text,$11::text[],$12::text,$13::text,$14::uuid,$15::text,$16::bytea,$17::text) as result",
+				[
+					...this.#companyAccountCall(call),
+					opening.secretId,
+					opening.companyId,
+					opening.environmentId,
+					opening.site,
+					[...opening.signInHosts],
+					opening.login,
+					opening.purpose,
+					opening.todoId,
+					opening.keyId,
+					envelope,
+					opening.envelopeSha256,
+				],
+				signal,
+			);
+		} finally {
+			// A query still queued for a connection after the deadline is sent with zeros; the database's
+			// digest check refuses it (42501) before anything is written.
+			envelope.fill(0);
+		}
 	}
 
 	setCompanyAccountState(

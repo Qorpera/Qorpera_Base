@@ -68,7 +68,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   may step down. A cloud without several founders omits
   them; a client then falls back to "the owner deletes, others leave".
 
-Native host entry points (G2-1, migration 20260929999500): the publishable key's role (`anon`) may also call
+Native host entry points (G2-1, migration 20260928409985): the publishable key's role (`anon`) may also call
 `qorpera_native_host_call` and `qorpera_native_host_call_long`. They are for the platform's native host inside a
 runner guest and work only with that runner job's current lease token. Clients never call them; without the token
 they answer 42501 "native host call is refused".
@@ -637,7 +637,7 @@ wake), so no agent runs and nothing is charged before it.
   `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
-- Signed hooks (20260929998000_runtime_event_signed_hooks, step W1b): the
+- Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
   descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
   also Svix's headers) hook carries `signingSecret` (`connectorId`
   `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). An owner

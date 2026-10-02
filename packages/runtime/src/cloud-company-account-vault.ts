@@ -26,10 +26,13 @@ export const COMPANY_ACCOUNT_REQUEST_SCHEMA = "qorpera.company-account-request/v
 const DESCRIPTOR_SCHEMA = "qorpera.company-account/v1";
 const REFUSAL_SCHEMA = "qorpera.company-account-refusal/v1";
 const CONTEXT_SCHEMA = "qorpera.company-account-context/v1";
-const HOST = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
+/** Lowercase DNS labels of 1-63 characters (SQL qorpera_company_account_host_valid). */
+const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-/** The database's own refusals an agent can act on; their messages hold no value. */
-const REFUSALS = new Set(["0A000", "22023", "23505", "55000"]);
+/** The database's own refusals an agent can act on; their messages hold no value. The agent reads the
+ * message, never a meaning keyed by the code. 55000 is not one: from these calls it only means the
+ * company's work is paused, which the runtime retries like any unconfirmed outcome. */
+const REFUSALS = new Set(["0A000", "22023", "23505", "54000"]);
 
 /** One company_account tool call as the runtime begun it. */
 export interface CompanyAccountCall {
@@ -218,7 +221,8 @@ export function parseCompanyAccountAnswer(value: unknown): CompanyAccountAnswer 
 		accountId: parseUuid(input.accountId, "Company account"),
 		site: host(input.site, "Company account website"),
 		signInHosts: hosts(input.signInHosts),
-		login: login(input.login),
+		// The login as the database keeps it; requests are checked more strictly than answers.
+		login: parseBoundedText(input.login, "Company account login", 254),
 		twoStep: input.twoStep as CompanyAccountDescriptor["twoStep"],
 		status: input.status as CompanyAccountDescriptor["status"],
 		version: parseInteger(input.version, "Company account version", 1, Number.MAX_SAFE_INTEGER),

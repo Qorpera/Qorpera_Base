@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-1 (20260929999500): the guest's native host reaches the database with the publishable key through two entry
+-- G2-1 (20260928409985): the guest's native host reaches the database with the publishable key through two entry
 -- points, qorpera_native_host_call (8 s) and qorpera_native_host_call_long (25 s, the lease validator), and the runner
 -- job's lease token. Test 300's fixture leases a run's job on a runner; its lease token's hash is set here to a known
 -- token's.

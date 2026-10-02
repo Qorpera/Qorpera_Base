@@ -19,7 +19,7 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
 M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off, and so is
 the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is in review
-(`20260929998000_runtime_event_signed_hooks`).
+(`20260928409980_runtime_event_signed_hooks`).
 
 ## Words
 
@@ -36,7 +36,7 @@ the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_name
 | Step | What | Slot |
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
-| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260929998000` |
+| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260928409980` |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
@@ -205,7 +205,7 @@ therefore not reported to the sender. It is recorded as `refused` with the reaso
 
 ## Verification in the vault (W1b)
 
-Migration `20260929998000_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
+Migration `20260928409980_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
 
 **Creating.** Owners and admins now create `stripe`, `github` and `hmac-sha256` hooks with
 `qorpera_create_event_hook`. The descriptor carries `signingSecret: {connectorId: "event_hook",

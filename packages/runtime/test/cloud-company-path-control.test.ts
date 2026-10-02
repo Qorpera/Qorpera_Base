@@ -28,6 +28,9 @@ describe("Company File bounded control transport", () => {
 		[403, { code: "42501", message: "PRIVATE_DENIAL", details: {}, hint: null }, false],
 		[403, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null, extra: true }, false],
 		[403, { code: "OTHER", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
+		// A request on the publishable key: PostgREST answers 42501 with 401 (G2-2, qorpera_native_host_call).
+		[401, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null }, true],
+		[401, { code: "OTHER", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
 		[500, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
 	] as const)("brands only a complete transaction denial (%i, %j)", async (status, body, denied) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));

@@ -61,6 +61,18 @@ describe("company account authenticator codes", () => {
 		expect(
 			parseCompanyAccountOtpauth(`otpauth://totp/x?secret=${seeds.SHA256}&algorithm=sha256&digits=8&period=60`),
 		).toEqual({ seed: seeds.SHA256, digits: 8, period: 60, algorithm: "SHA256" });
+		// A repeated issuer or image is not read, so it does not matter.
+		expect(
+			parseCompanyAccountOtpauth(
+				`otpauth://totp/x?secret=${seeds.SHA1}&issuer=Vercel&issuer=Vercel&image=a&image=b`,
+			),
+		).toEqual({ seed: seeds.SHA1, digits: 6, period: 30, algorithm: "SHA1" });
+		expect(parseCompanyAccountOtpauth(`otpauth://totp/x?Secret=${seeds.SHA256}&Algorithm=SHA256&Digits=8`)).toEqual({
+			seed: seeds.SHA256,
+			digits: 8,
+			period: 30,
+			algorithm: "SHA256",
+		});
 		for (const link of [
 			`otpauth://hotp/x?secret=${seeds.SHA1}&counter=1`,
 			"otpauth://totp/x",
@@ -69,6 +81,10 @@ describe("company account authenticator codes", () => {
 			`otpauth://totp/x?secret=${seeds.SHA1}&digits=4`,
 			`otpauth://totp/x?secret=${seeds.SHA1}&algorithm=MD5`,
 			`otpauth://totp/x?secret=${seeds.SHA1}&period=5`,
+			`otpauth://totp/x?secret=${seeds.SHA1}&digits=0x8`,
+			`otpauth://totp/x?secret=${seeds.SHA1}&digits=`,
+			`otpauth://totp/x?secret=${seeds.SHA1}&secret=${seeds.SHA256}`,
+			`otpauth://totp/x?secret=${seeds.SHA1}&algorithm=SHA1&ALGORITHM=SHA256`,
 			"not a link",
 		])
 			expect(() => parseCompanyAccountOtpauth(link), link).toThrow(/Company account authenticator/);
@@ -76,7 +92,15 @@ describe("company account authenticator codes", () => {
 
 	it("decodes base32 as authenticator apps accept it, and refuses what is not base32", () => {
 		expect(Buffer.from(decodeCompanyAccountBase32("gezd gnbv-gy3t qojq====")).toString("ascii")).toBe("1234567890");
-		for (const bad of ["", "GEZ1", "GEZDGNBVGY3TQOJ!", "GEZDGNBVGY3TQOJQB"])
+		// 17 and 19 characters end a quantum after 1 or 3 characters, which RFC 4648 never produces.
+		for (const bad of [
+			"",
+			"GEZ1",
+			"GEZDGNBVGY3TQOJ!",
+			"GEZDGNBVGY3TQOJQB",
+			"GEZDGNBVGY3TQOJQA",
+			"GEZDGNBVGY3TQOJQAAA",
+		])
 			expect(() => decodeCompanyAccountBase32(bad), bad).toThrow("Company account authenticator seed is malformed");
 	});
 });
@@ -106,6 +130,8 @@ describe("company account passwords", () => {
 		expect(password).toHaveLength(12);
 		expect(password).toContain("a");
 		expect(password).toContain("A");
+		// Plain modulo would have turned the first 250 into "q" (250 % 26 = 16).
+		expect(password).not.toContain("q");
 	});
 });
 

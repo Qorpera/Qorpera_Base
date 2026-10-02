@@ -1,5 +1,5 @@
 -- @fixture 730_runtime_event_intake.test.sql until "-- Paused hooks refuse; resumed ones take deliveries again"
--- Signed hooks, step W1b (20260929998000): owners create Stripe, GitHub and Standard Webhooks hooks; an owner
+-- Signed hooks, step W1b (20260928409980): owners create Stripe, GitHub and Standard Webhooks hooks; an owner
 -- saves the signing secret through the vault's capture; until then the hook answers not_ready. A signed delivery
 -- waits as received; the company's broker claims it with the sealed secret and answers verified (the sender's id
 -- and the event's type), duplicate, refused or retry. Claims are the authority's own company's, held 60 seconds;
