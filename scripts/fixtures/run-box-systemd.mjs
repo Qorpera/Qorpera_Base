@@ -4,7 +4,7 @@
  * mounted by the real folder program through the box's real folder unit; only its --connect differs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chown, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
@@ -222,6 +222,27 @@ try {
 	taken = takeReads("qorpera-shared-host-0");
 	assert.deepEqual(taken.answer.reads.map((read) => `${read.kind} ${read.path}`), ["folder docs", "file readme.md"]);
 	check("the box's read log names what each command opened or listed, with its receipt, for the slot's native host only");
+
+	// The native host's exec_command and write_stdin (2b-3), as the slot's native host account, against this box.
+	const tools = spawnSync("/usr/bin/node", ["/fixture/tools.mjs"], {
+		encoding: "utf8",
+		timeout: 60_000,
+		uid: id("-u", "qorpera-shared-host-0"),
+		gid: id("-g", "qorpera-shared-host-0"),
+	});
+	assert.equal(tools.status, 0, tools.stderr);
+	const e2e = JSON.parse(tools.stdout);
+	assert.match(e2e.read.text, /^Process exited with code 0\nWall time: [\d.]+ s\nOutput:\nthe plan, version one\nrun\.sh\n$/);
+	assert.equal(e2e.releases.length, 1, "only the answer that read something releases");
+	assert.deepEqual(e2e.releases[0].paths, ["docs/plan.md", "tools"]);
+	assert.deepEqual(e2e.releases[0].revisions, [1, 1]);
+	assert.equal(e2e.read.companyReadId, e2e.releases[0].id);
+	assert.equal(e2e.releases[0].sha, createHash("sha256").update(e2e.read.text).digest("hex"));
+	assert.match(e2e.started.text, /^Process running with session ID \d+\n/);
+	assert.match(e2e.finished.text, /^Process exited with code 0\n[\s\S]*late\n$/);
+	assert.match(e2e.long.text, /bytes not shown; the whole output is in \/tmp\/home\/output\/\d+\.log\][\s\S]*\n100000\n$/);
+	assert(Buffer.byteLength(JSON.stringify(e2e.long.text)) <= 6_000);
+	check("exec_command and write_stdin run in the box, and release what each answer read under its exact text");
 
 	// Hidden means absent, or an inaccessible stand-in (mode 0) where InaccessiblePaths= put one.
 	reply = await client.sh(

@@ -36,15 +36,21 @@ try {
 	else command(process.execPath, ["scripts/build-folder-program.mjs", "--out", program]);
 	const packaged = join(temporary, "package");
 	command(process.execPath, ["scripts/package-shared-execution-service.mjs", "--out", packaged, "--folder-program", program]);
-	await build({
-		entryPoints: [join(repository, "scripts/fixtures/run-box-folder-peer.ts")],
-		outfile: join(temporary, "peer.mjs"),
-		bundle: true,
-		platform: "node",
-		format: "esm",
-		target: "node22",
-		logLevel: "silent",
-	});
+	for (const [entry, out] of [
+		["scripts/fixtures/run-box-folder-peer.ts", "peer.mjs"],
+		// The native host's run box tools (F3 step 2b-3), against the real box.
+		["scripts/fixtures/run-box-tools-e2e.ts", "tools.mjs"],
+	])
+		await build({
+			entryPoints: [join(repository, entry)],
+			outfile: join(temporary, out),
+			bundle: true,
+			platform: "node",
+			format: "esm",
+			target: "node22",
+			logLevel: "silent",
+			banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+		});
 	const args = ["run", "-d", "--name", basename(temporary), "--pull", "never", "--network", "none", "--cgroupns", "private"];
 	// Container-only capabilities for its private systemd manager and the folder mount. The box unit itself keeps an
 	// empty capability set (the proof checks it from inside the box).
@@ -71,6 +77,7 @@ try {
 	for (const [source, target] of [
 		[packaged, "/fixture/package"],
 		[join(temporary, "peer.mjs"), "/fixture/peer.mjs"],
+		[join(temporary, "tools.mjs"), "/fixture/tools.mjs"],
 		[join(repository, "scripts/fixtures/run-box-systemd.mjs"), "/fixture/check.mjs"],
 	])
 		args.push("--mount", `type=bind,src=${source},dst=${target},readonly`);
