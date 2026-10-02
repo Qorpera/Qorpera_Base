@@ -13,7 +13,7 @@ and ends on one bundle.
 | Identical nodes change 1 (`20260928180700`) | The serving switch and `qorpera_runtime_node_drain_status` |
 | Identical nodes change 4 (`20260928182000`) | Orchestrator bundle declarations and `qorpera_runtime_bundle_roll_status` |
 | Logins in the vault change 3 (`20260928180600`) | Member runs of a vault login are pinned to no node |
-| Rolling step 1 (`20260929996000`) | The runs switch and `readyForNodeRelease` (machines stay admitted while a node empties), placement by bundle declaration (needed while dispatch roles are unset), and `qorpera_declare_runtime_node_bundle` |
+| Rolling step 1 (`20260928409960`) | The runs switch and `readyForNodeRelease` (machines stay admitted while a node empties), placement by bundle declaration (needed while dispatch roles are unset), and `qorpera_declare_runtime_node_bundle` |
 | Rolling steps 2 and 3 | The roll packets with the one-transaction switch and a pause that needs no quiet runtime (`scripts/runtime-roll.mjs`), a node release whose `order` is `schema-first` or `either`, and a fast host rebuild gated on its node's drain instead of a pause |
 
 Until these are live, cuts keep today's paused procedure.

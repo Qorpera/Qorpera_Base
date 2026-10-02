@@ -48,7 +48,7 @@ function rpc(body: string, extra: Omit<RequestInit, "body"> = {}): RequestInit &
 
 it("lists exactly the calls the host makes inside a job, with the long budget for the lease validator only", () => {
 	const migration = readFileSync(
-		new URL("../../../supabase/migrations/20260929999500_runtime_native_host_call.sql", import.meta.url),
+		new URL("../../../supabase/migrations/20260928409985_runtime_native_host_call.sql", import.meta.url),
 		"utf8",
 	);
 	const insert = migration.slice(
