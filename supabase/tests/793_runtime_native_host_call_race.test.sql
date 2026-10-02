@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-1 (20260929999500): the native host's entry point checks the runner job's lease token before any lock, so a
+-- G2-1 (20260928409985): the native host's entry point checks the runner job's lease token before any lock, so a
 -- refused call never waits for a transaction that holds the job row (the authorization-before-lock pattern of
 -- tests 755-757), and a company reader through it keeps its shared lock on the company. Test 300's fixture leases a
 -- run's job; its lease token's hash is set to a known token's.

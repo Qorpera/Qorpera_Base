@@ -68,7 +68,7 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   may step down. A cloud without several founders omits
   them; a client then falls back to "the owner deletes, others leave".
 
-Native host entry points (G2-1, migration 20260929999500): the publishable key's role (`anon`) may also call
+Native host entry points (G2-1, migration 20260928409985): the publishable key's role (`anon`) may also call
 `qorpera_native_host_call` and `qorpera_native_host_call_long`. They are for the platform's native host inside a
 runner guest and work only with that runner job's current lease token. Clients never call them; without the token
 they answer 42501 "native host call is refused".
@@ -637,7 +637,7 @@ wake), so no agent runs and nothing is charged before it.
   `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
-- Signed hooks (20260929998000_runtime_event_signed_hooks, step W1b): the
+- Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
   descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
   also Svix's headers) hook carries `signingSecret` (`connectorId`
   `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). An owner
@@ -673,6 +673,11 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
+- Plus addresses (20260929999920_runtime_company_mail_find_and_tags): `<local part>+<tag>@<mail domain>` reaches the
+  mailbox, for a tag of lowercase letters, digits, dots, hyphens and underscores (the whole local part at most 64
+  characters); mailboxes show only their own `email`. A received mail's delivery keeps `delivered-to`, `from`,
+  `subject` and `authentication-results` headers. Agents find received mail with the runtime tool `find_mail`; there
+  is no client surface.
 - Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
   tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
