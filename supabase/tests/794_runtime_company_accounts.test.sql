@@ -89,14 +89,15 @@ end
 $$;
 create function pg_temp.ca_open(p_receipt text,p_login text,p_todo text,
 	p_authority text default '79400000-0000-4000-8000-000000000040',p_capability text default repeat('c',64),
-	p_site text default 'vercel.com')
+	p_site text default 'vercel.com',p_input text default repeat('a',64),p_key text default 'company-kek-1',
+	p_sha text default null)
 returns text language plpgsql as $$
 begin
 	return pg_temp.ca_try(format('select public.qorpera_open_company_account(%L,%L,'
-		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,repeat(''a'',64),repeat(''b'',64),%L,'
-		'''{}''::text[],%L,''Hosting for the website'',%L,''company-kek-1'',%L::bytea,%L)',
-		p_authority,p_capability,'79400000-0000-4000-8000-0000000001' || p_receipt,p_site,p_login,p_todo,
-		'\x0102',pg_temp.ca_sha('\x0102')));
+		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,repeat(''b'',64),%L,'
+		'''{}''::text[],%L,''Hosting for the website'',%L,%L,%L::bytea,%L)',
+		p_authority,p_capability,'79400000-0000-4000-8000-0000000001' || p_receipt,p_input,p_site,p_login,p_todo,
+		p_key,'\x0102',coalesce(p_sha,pg_temp.ca_sha('\x0102'))));
 end
 $$;
 create function pg_temp.ca_call(p_function text,p_receipt text,p_rest text)
@@ -114,7 +115,7 @@ returns text language sql as $$
 		current_setting('qorpera_test.ca_account'),p_base,p_two_step,p_envelope,pg_temp.ca_sha(p_envelope))
 $$;
 grant execute on function pg_temp.ca_receipt(text,text), pg_temp.ca_done(text), pg_temp.ca_sha(text), pg_temp.ca_try(text),
-	pg_temp.ca_open(text,text,text,text,text,text), pg_temp.ca_call(text,text,text),
+	pg_temp.ca_open(text,text,text,text,text,text,text,text,text), pg_temp.ca_call(text,text,text),
 	pg_temp.ca_version_args(text,text,text) to qorpera_secret_broker;
 
 -- 1. Switched off, and only the broker may call.
@@ -141,6 +142,24 @@ select set_config('qorpera_test.ca_other_todo',pg_temp.ca_open('01','agents@nord
 	'79400000-0000-4000-8000-000000000062'),true);
 select set_config('qorpera_test.ca_bad_site',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_site => 'Vercel.com'),true);
+select set_config('qorpera_test.ca_bad_input',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_input => repeat('f',64)),true);
+select set_config('qorpera_test.ca_bad_digest',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_sha => repeat('0',64)),true);
+select set_config('qorpera_test.ca_bad_key',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_key => 'company-kek-0'),true);
+reset session authorization;
+-- A folder company's accounts come with their connection file (A1-7): refused for now. The run's company is
+-- read as a folder company for one call (the helper is swapped inside this rolled-back transaction, then put back).
+select set_config('qorpera_test.ca_job_v2',pg_get_functiondef('public.qorpera_job_is_folder_v2(uuid)'::regprocedure),true);
+create or replace function public.qorpera_job_is_folder_v2(p_job_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.ca_folder',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060'),true);
+reset session authorization;
+do $$ begin execute current_setting('qorpera_test.ca_job_v2'); end $$;
+set local session authorization qorpera_secret_broker;
 -- 3. Opened, then a repeat of the same call, a duplicate and a second account on the same website.
 select set_config('qorpera_test.ca_opened',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
@@ -204,6 +223,17 @@ begin
 	if current_setting('qorpera_test.ca_bad_site') not like '22023:%' then
 		raise exception 'A malformed website was accepted: %',current_setting('qorpera_test.ca_bad_site');
 	end if;
+	if current_setting('qorpera_test.ca_bad_input') <> '42501:company account effect receipt is unavailable' then
+		raise exception 'A call that is not the receipt''s was accepted: %',current_setting('qorpera_test.ca_bad_input');
+	end if;
+	if current_setting('qorpera_test.ca_bad_digest') <> '42501:company account envelope is unavailable'
+		or current_setting('qorpera_test.ca_bad_key') <> '42501:company account envelope is unavailable' then
+		raise exception 'A wrong envelope digest or key was accepted: % / %',current_setting('qorpera_test.ca_bad_digest'),
+			current_setting('qorpera_test.ca_bad_key');
+	end if;
+	if current_setting('qorpera_test.ca_folder') <> '0A000:Accounts for folder companies come with their connection file' then
+		raise exception 'A folder company opened an account: %',current_setting('qorpera_test.ca_folder');
+	end if;
 
 	v_account := current_setting('qorpera_test.ca_account')::uuid;
 	if (substring(current_setting('qorpera_test.ca_opened') from 4)::jsonb - 'accountId') is distinct from jsonb_build_object(
@@ -244,29 +274,31 @@ $$;
 
 -- 4. Use, a new version, state changes.
 set local session authorization qorpera_secret_broker;
-select pg_temp.ca_receipt('05','company_account:use:r5');
+select pg_temp.ca_receipt('05','company_account:use:' || current_setting('qorpera_test.ca_account') || ':r5');
+select set_config('qorpera_test.ca_use_other_key',pg_temp.ca_call('qorpera_use_company_account','05',
+	quote_literal(current_setting('qorpera_test.ca_account2'))),true);
 select set_config('qorpera_test.ca_use',pg_temp.ca_call('qorpera_use_company_account','05',
 	quote_literal(current_setting('qorpera_test.ca_account'))),true);
 select pg_temp.ca_done('05');
-select pg_temp.ca_receipt('06','company_account:version:r6');
+select pg_temp.ca_receipt('06','company_account:version:' || current_setting('qorpera_test.ca_account') || ':r6');
 select set_config('qorpera_test.ca_version',pg_temp.ca_call('qorpera_add_company_account_version','06',
 	pg_temp.ca_version_args('1','''authenticator''','\x0304')),true);
 select set_config('qorpera_test.ca_version_repeat',pg_temp.ca_call('qorpera_add_company_account_version','06',
 	pg_temp.ca_version_args('1','''authenticator''','\x0304')),true);
 select pg_temp.ca_done('06');
-select pg_temp.ca_receipt('07','company_account:version:r7');
+select pg_temp.ca_receipt('07','company_account:version:' || current_setting('qorpera_test.ca_account') || ':r7');
 select set_config('qorpera_test.ca_version_stale',pg_temp.ca_call('qorpera_add_company_account_version','07',
 	pg_temp.ca_version_args('1','null','\x0506')),true);
 select pg_temp.ca_done('07');
-select pg_temp.ca_receipt('08','company_account:state:r8');
+select pg_temp.ca_receipt('08','company_account:state:' || current_setting('qorpera_test.ca_account') || ':r8');
 select set_config('qorpera_test.ca_connected',pg_temp.ca_call('qorpera_set_company_account_state','08',
 	quote_literal(current_setting('qorpera_test.ca_account')) || ',''connected'''),true);
 select pg_temp.ca_done('08');
-select pg_temp.ca_receipt('09','company_account:state:r9');
+select pg_temp.ca_receipt('09','company_account:state:' || current_setting('qorpera_test.ca_account') || ':r9');
 select set_config('qorpera_test.ca_closed',pg_temp.ca_call('qorpera_set_company_account_state','09',
 	quote_literal(current_setting('qorpera_test.ca_account')) || ',''closed'''),true);
 select pg_temp.ca_done('09');
-select pg_temp.ca_receipt('10','company_account:use:r10');
+select pg_temp.ca_receipt('10','company_account:use:' || current_setting('qorpera_test.ca_account') || ':r10');
 select set_config('qorpera_test.ca_use_closed',pg_temp.ca_call('qorpera_use_company_account','10',
 	quote_literal(current_setting('qorpera_test.ca_account'))),true);
 select pg_temp.ca_done('10');
@@ -285,9 +317,14 @@ begin
 		raise exception 'The broker could not use the account: %',current_setting('qorpera_test.ca_use');
 	end if;
 	v_use := substring(current_setting('qorpera_test.ca_use') from 4)::jsonb;
-	if v_use ->> 'encryptedEnvelopeBase64' <> encode('\x0102'::bytea,'base64') or v_use ->> 'keyId' <> 'company-kek-1'
-		or (v_use ->> 'version')::bigint <> 1 or v_use ->> 'receiptId' <> '79400000-0000-4000-8000-000000000105' then
+	if v_use ->> 'encryptedEnvelopeBase64' is distinct from encode('\x0102'::bytea,'base64')
+		or v_use ->> 'envelopeSha256' is distinct from pg_temp.ca_sha('\x0102')
+		or v_use ->> 'keyId' is distinct from 'company-kek-1' or v_use ->> 'version' is distinct from '1'
+		or v_use ->> 'receiptId' is distinct from '79400000-0000-4000-8000-000000000105' then
 		raise exception 'Wrong use answer: %',v_use;
+	end if;
+	if current_setting('qorpera_test.ca_use_other_key') <> '42501:company account effect receipt is unavailable' then
+		raise exception 'A receipt for one account used another: %',current_setting('qorpera_test.ca_use_other_key');
 	end if;
 	if current_setting('qorpera_test.ca_version') not like 'ok:%'
 		or (substring(current_setting('qorpera_test.ca_version') from 4)::jsonb ->> 'version')::bigint <> 2
@@ -329,7 +366,7 @@ begin
 end
 $$;
 
--- 5. Members read the facts, never a value; an outsider reads nothing.
+-- Members act through PostgREST's role with their claims.
 create function pg_temp.ca_member(p_user uuid,p_sql text)
 returns text language plpgsql as $$
 declare v_result text;
@@ -342,6 +379,105 @@ begin
 end
 $$;
 grant execute on function pg_temp.ca_try(text) to authenticated;
+
+-- 4b. Only this company's open website accounts: another company's account, another kind of secret, and an
+--     account whose secret an owner revoked through the generic call are refused. That revoke closes the
+--     account and wipes its envelopes, so its login can be opened again.
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+values ('79400000-0000-4000-8000-000000000020','79400000-0000-4000-8000-000000000010','Environment',1,
+	'79400000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
+	connector_id,secret_name,purpose,current_version,created_by_user_id) values
+	('79400000-0000-4000-8000-000000000070','79400000-0000-4000-8000-000000000010','79400000-0000-4000-8000-000000000020',
+		'79400000-0000-4000-8000-000000000041','company',null,'website','vercel-com','The other company''s hosting',1,
+		'79400000-0000-4000-8000-000000000001'),
+	('79400000-0000-4000-8000-000000000071','29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020',
+		'79400000-0000-4000-8000-000000000040','company',null,'gmail','primary','Gmail account',1,
+		'29000000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
+	envelope_sha256,created_by_user_id) values
+	('79400000-0000-4000-8000-000000000070',1,'79400000-0000-4000-8000-000000000041','other-kek-1','\x09'::bytea,
+		pg_temp.ca_sha('\x09'),'79400000-0000-4000-8000-000000000001'),
+	('79400000-0000-4000-8000-000000000071',1,'79400000-0000-4000-8000-000000000040','company-kek-1','\x0a'::bytea,
+		pg_temp.ca_sha('\x0a'),'29000000-0000-4000-8000-000000000001');
+insert into public.qorpera_company_accounts(secret_id,profile_id,environment_id,site,login,opened_by_user_id)
+values ('79400000-0000-4000-8000-000000000070','79400000-0000-4000-8000-000000000010',
+	'79400000-0000-4000-8000-000000000020','vercel.com','team@other.example','79400000-0000-4000-8000-000000000001');
+-- An account whose secret is revoked though the account row still reads open (no path leaves it so; the use
+-- check stands on its own anyway).
+insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
+	connector_id,secret_name,purpose,current_version,created_by_user_id,status,revoked_at,revoked_by_user_id)
+values ('79400000-0000-4000-8000-000000000072','29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020',
+	'79400000-0000-4000-8000-000000000040','company',null,'website','netlify-com','Old hosting',1,
+	'29000000-0000-4000-8000-000000000001','revoked',statement_timestamp(),'29000000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
+	envelope_sha256,created_by_user_id)
+values ('79400000-0000-4000-8000-000000000072',1,'79400000-0000-4000-8000-000000000040','company-kek-1','\x0b'::bytea,
+	pg_temp.ca_sha('\x0b'),'29000000-0000-4000-8000-000000000001');
+insert into public.qorpera_company_accounts(secret_id,profile_id,environment_id,site,login,opened_by_user_id)
+values ('79400000-0000-4000-8000-000000000072','29000000-0000-4000-8000-000000000010',
+	'29000000-0000-4000-8000-000000000020','netlify.com','agents@nordlys.example','29000000-0000-4000-8000-000000000001');
+select set_config('qorpera_test.ca_account3',pg_temp.ca_id(current_setting('qorpera_test.ca_reopened')),true);
+select set_config('qorpera_test.ca_generic_revoke',pg_temp.ca_member('29000000-0000-4000-8000-000000000001',
+	format('select public.qorpera_revoke_cloud_secret(''29000000-0000-4000-8000-000000000010'',%L)',
+		current_setting('qorpera_test.ca_account3'))),true);
+set local session authorization qorpera_secret_broker;
+select pg_temp.ca_receipt('12','company_account:use:79400000-0000-4000-8000-000000000070:r12');
+select set_config('qorpera_test.ca_use_other_company',pg_temp.ca_call('qorpera_use_company_account','12',
+	'''79400000-0000-4000-8000-000000000070'''),true);
+select pg_temp.ca_done('12');
+select pg_temp.ca_receipt('13','company_account:use:79400000-0000-4000-8000-000000000071:r13');
+select set_config('qorpera_test.ca_use_gmail',pg_temp.ca_call('qorpera_use_company_account','13',
+	'''79400000-0000-4000-8000-000000000071'''),true);
+select pg_temp.ca_done('13');
+select pg_temp.ca_receipt('14','company_account:use:' || current_setting('qorpera_test.ca_account3') || ':r14');
+select set_config('qorpera_test.ca_use_revoked',pg_temp.ca_call('qorpera_use_company_account','14',
+	quote_literal(current_setting('qorpera_test.ca_account3'))),true);
+select pg_temp.ca_done('14');
+select pg_temp.ca_receipt('16','company_account:use:79400000-0000-4000-8000-000000000072:r16');
+select set_config('qorpera_test.ca_use_revoked_secret',pg_temp.ca_call('qorpera_use_company_account','16',
+	'''79400000-0000-4000-8000-000000000072'''),true);
+select pg_temp.ca_done('16');
+select pg_temp.ca_receipt('15','company_account:open:r15');
+select set_config('qorpera_test.ca_reopened_again',pg_temp.ca_open('15','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060'),true);
+select pg_temp.ca_done('15');
+reset session authorization;
+
+do $$
+declare v_account3 uuid := nullif(current_setting('qorpera_test.ca_account3'),'')::uuid;
+begin
+	if current_setting('qorpera_test.ca_use_other_company') <> '22023:The company has no such open account'
+		or current_setting('qorpera_test.ca_use_gmail') <> '22023:The company has no such open account' then
+		raise exception 'Another company''s account or another kind of secret was used: % / %',
+			current_setting('qorpera_test.ca_use_other_company'),current_setting('qorpera_test.ca_use_gmail');
+	end if;
+	if current_setting('qorpera_test.ca_generic_revoke') not like 'ok:%'
+		or (select status from public.qorpera_company_accounts where secret_id = v_account3) is distinct from 'closed'
+		or (select removed_by_user_id from public.qorpera_company_accounts where secret_id = v_account3)
+			is distinct from '29000000-0000-4000-8000-000000000001'
+		or exists (select 1 from public.qorpera_cloud_secret_versions where secret_id = v_account3) then
+		raise exception 'The generic revoke left the account open or its envelopes kept: %',
+			current_setting('qorpera_test.ca_generic_revoke');
+	end if;
+	if current_setting('qorpera_test.ca_use_revoked') <> '22023:The company has no such open account'
+		or current_setting('qorpera_test.ca_use_revoked_secret') <> '22023:The company has no such open account' then
+		raise exception 'A revoked account was used: % / %',current_setting('qorpera_test.ca_use_revoked'),
+			current_setting('qorpera_test.ca_use_revoked_secret');
+	end if;
+	if current_setting('qorpera_test.ca_reopened_again') not like 'ok:%' then
+		raise exception 'A revoked account''s login could not be opened again: %',
+			current_setting('qorpera_test.ca_reopened_again');
+	end if;
+	-- The other company's account and the Gmail secret are untouched.
+	if (select last_used_at from public.qorpera_company_accounts where secret_id = '79400000-0000-4000-8000-000000000070')
+		is not null or not exists (select 1 from public.qorpera_cloud_secret_versions
+			where secret_id = '79400000-0000-4000-8000-000000000071') then
+		raise exception 'A refused call changed another account';
+	end if;
+end
+$$;
+-- 5. Members read the facts, never a value; an outsider reads nothing.
 select set_config('qorpera_test.ca_list',pg_temp.ca_member('79400000-0000-4000-8000-000000000003',
 	'select public.qorpera_list_company_accounts(''29000000-0000-4000-8000-000000000010'',''29000000-0000-4000-8000-000000000020'')'),
 	true);
@@ -369,7 +505,7 @@ begin
 		raise exception 'A member could not read the accounts: %',current_setting('qorpera_test.ca_list');
 	end if;
 	v_list := substring(current_setting('qorpera_test.ca_list') from 4)::jsonb;
-	if jsonb_array_length(v_list) <> 3 or v_list::text ~* 'envelope|keyId|\\x0102|\\x0304' then
+	if jsonb_array_length(v_list) <> 5 or v_list::text ~* 'envelope|keyId|\\x0102|\\x0304' then
 		raise exception 'Wrong member list: %',v_list;
 	end if;
 	select item into v_first from jsonb_array_elements(v_list) as item

@@ -85,15 +85,15 @@ alter table public.qorpera_cloud_secret_audit_events
 		'capture_started','captured','rotated','grant_issued','grant_revoked','secret_revoked','effect_authorized',
 		'repository_credential_used',
 		'account_opened','account_used','account_version_added','account_state_changed','account_removed'
-	)) not valid;
-alter table public.qorpera_cloud_secret_audit_events
-	validate constraint qorpera_cloud_secret_audit_events_event_type_check;
+	));
 
 -- The checks every broker call for an agent's account work shares, in lock
--- order: plain reads of the switch, the company's folder kind and the broker
--- authority; then the run (qorpera_native_tool_locked_run, job first); then
--- the effect receipt FOR UPDATE, which must be this run's executing
--- company_account tool call for exactly this action.
+-- order: plain reads of the switch, the company's folder kind, the broker
+-- authority and the run's job (another company's run is refused before any of
+-- its rows is locked); then the run (qorpera_native_tool_locked_run, job
+-- first); then the effect receipt FOR UPDATE, which must be this run's
+-- executing company_account tool call for exactly this action and, after the
+-- opening, this account: its key is company_account:<action>:<account>:<key>.
 create function public.qorpera_company_account_call(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -101,7 +101,8 @@ create function public.qorpera_company_account_call(
 	p_receipt_id uuid,
 	p_input_sha256 text,
 	p_downstream_idempotency_sha256 text,
-	p_action text
+	p_action text,
+	p_account_id uuid
 )
 returns table (
 	run_id uuid,
@@ -135,6 +136,11 @@ begin
 	if not found or v_authority.status <> 'active' or v_authority.capability_sha256 <> p_broker_capability_sha256 then
 		raise exception 'cloud secret broker authority is unavailable' using errcode = '42501';
 	end if;
+	if (p_binding ->> 'jobId') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+		or not exists (select 1 from public.qorpera_runner_jobs as job
+			where job.id = (p_binding ->> 'jobId')::uuid and job.profile_id = v_authority.profile_id) then
+		raise exception 'cloud secret broker does not serve this company' using errcode = '42501';
+	end if;
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	if v_authority.profile_id <> v_run.profile_id then
 		raise exception 'cloud secret broker does not serve this company' using errcode = '42501';
@@ -146,14 +152,15 @@ begin
 		or v_receipt.input_sha256 <> p_input_sha256
 		or p_downstream_idempotency_sha256 !~ '^[0-9a-f]{64}$'
 		or v_receipt.downstream_idempotency_sha256 <> p_downstream_idempotency_sha256
-		or v_receipt.logical_operation_key !~ ('^company_account:' || p_action || ':[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') then
+		or v_receipt.logical_operation_key !~ ('^company_account:' || p_action || ':'
+			|| coalesce(p_account_id::text || ':', '') || '[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') then
 		raise exception 'company account effect receipt is unavailable' using errcode = '42501';
 	end if;
 	return query select v_run.id, v_run.profile_id, v_run.environment_id, v_run.staff_agent_id,
 		v_run.created_by_user_id, v_authority.id, v_authority.key_id;
 end
 $$;
-revoke all on function public.qorpera_company_account_call(uuid,text,jsonb,uuid,text,text,text)
+revoke all on function public.qorpera_company_account_call(uuid,text,jsonb,uuid,text,text,text,uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- An account as the broker and the agent's tool see it: never a value.
@@ -203,7 +210,8 @@ declare
 	v_suffix integer := 1;
 begin
 	select call.* into strict v_call from public.qorpera_company_account_call(p_broker_authority_id,
-		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'open') as call;
+		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'open', null)
+		as call;
 	-- A repeat after a lost answer finds the account its receipt opened.
 	select account.* into v_account from public.qorpera_company_accounts as account
 	where account.opened_receipt_id = p_receipt_id;
@@ -289,14 +297,17 @@ declare
 	v_secret public.qorpera_cloud_secrets%rowtype;
 	v_account public.qorpera_company_accounts%rowtype;
 begin
+	-- Only this company's website accounts are locked: any other id is refused without waiting.
 	select secret.* into v_secret from public.qorpera_cloud_secrets as secret
 	where secret.id = p_account_id and secret.profile_id = p_call_profile and secret.environment_id = p_call_environment
+		and secret.connector_id = 'website' and secret.owner_kind = 'company'
 	for update;
-	select account.* into v_account from public.qorpera_company_accounts as account
-	where account.secret_id = p_account_id
-	for update;
-	if v_secret.id is null or v_account.secret_id is null or v_secret.connector_id <> 'website'
-		or v_secret.owner_kind <> 'company' or v_secret.status <> 'active' or v_account.status = 'closed' then
+	if found then
+		select account.* into v_account from public.qorpera_company_accounts as account
+		where account.secret_id = p_account_id and account.profile_id = p_call_profile
+		for update;
+	end if;
+	if v_secret.id is null or v_account.secret_id is null or v_secret.status <> 'active' or v_account.status = 'closed' then
 		raise exception 'The company has no such open account' using errcode = '22023';
 	end if;
 	if v_secret.broker_authority_id <> p_authority_id then
@@ -328,7 +339,8 @@ declare
 	v_version public.qorpera_cloud_secret_versions%rowtype;
 begin
 	select call.* into strict v_call from public.qorpera_company_account_call(p_broker_authority_id,
-		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'use') as call;
+		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'use',
+		p_account_id) as call;
 	v_account := public.qorpera_company_account_locked(v_call.profile_id, v_call.environment_id, v_call.authority_id,
 		p_account_id);
 	select version.* into v_version from public.qorpera_cloud_secret_versions as version
@@ -379,8 +391,8 @@ declare
 	v_current bigint;
 begin
 	select call.* into strict v_call from public.qorpera_company_account_call(p_broker_authority_id,
-		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'version')
-		as call;
+		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'version',
+		p_account_id) as call;
 	if p_key_id is distinct from v_call.key_id or p_encrypted_envelope is null
 		or octet_length(p_encrypted_envelope) not between 1 and 131072
 		or p_envelope_sha256 is distinct from encode(extensions.digest(p_encrypted_envelope, 'sha256'), 'hex') then
@@ -441,8 +453,8 @@ declare
 	v_account public.qorpera_company_accounts%rowtype;
 begin
 	select call.* into strict v_call from public.qorpera_company_account_call(p_broker_authority_id,
-		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'state')
-		as call;
+		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'state',
+		p_account_id) as call;
 	if p_status is null or p_status not in ('connected','needs_person','closed') then
 		raise exception 'An account becomes connected, needs_person or closed' using errcode = '22023';
 	end if;
@@ -479,6 +491,30 @@ grant execute on function
 	public.qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text),
 	public.qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)
 	to qorpera_secret_broker;
+
+-- However a website secret is revoked (the account removal, or the generic
+-- qorpera_revoke_cloud_secret an owner or admin may call on any company
+-- secret), its envelopes are wiped and its account closed, so the login is
+-- free for a new account and nothing is left half open. The secret is already
+-- locked by the update; the account follows it, as in every account call.
+create function public.qorpera_company_account_secret_revoked()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+	delete from public.qorpera_cloud_secret_versions as version where version.secret_id = new.id;
+	update public.qorpera_company_accounts as account
+	set status = 'closed', closed_at = coalesce(account.closed_at, statement_timestamp()),
+		removed_by_user_id = coalesce(account.removed_by_user_id, new.revoked_by_user_id),
+		updated_at = statement_timestamp()
+	where account.secret_id = new.id and (account.status <> 'closed' or account.removed_by_user_id is null);
+	return null;
+end
+$$;
+revoke all on function public.qorpera_company_account_secret_revoked()
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+create trigger qorpera_company_account_secret_revoked
+	after update of status on public.qorpera_cloud_secrets
+	for each row when (new.connector_id = 'website' and old.status = 'active' and new.status = 'revoked')
+	execute function public.qorpera_company_account_secret_revoked();
 
 -- Members of the company read its accounts: the facts, never a value.
 create function public.qorpera_list_company_accounts(p_profile_id uuid, p_environment_id uuid)
@@ -547,11 +583,14 @@ begin
 	) then
 		raise exception 'company account removal is unavailable' using errcode = '42501';
 	end if;
+	-- Rank 0 first: the company row's key share, which the audit row's key needs, before the vault rows. A broker
+	-- call holding the company row (the lease's fence) and waiting for the secret then never meets this call.
+	perform 1 from public.qorpera_profiles as profile where profile.id = p_profile_id for key share;
 	select member.role into v_role from public.qorpera_profile_members as member
 	where member.profile_id = p_profile_id and member.user_id = v_user_id
 	for share;
 	select secret.* into v_secret from public.qorpera_cloud_secrets as secret
-	where secret.id = p_account_id and secret.profile_id = p_profile_id
+	where secret.id = p_account_id and secret.profile_id = p_profile_id and secret.connector_id = 'website'
 	for update;
 	select account.* into v_account from public.qorpera_company_accounts as account
 	where account.secret_id = p_account_id and account.profile_id = p_profile_id
@@ -560,7 +599,7 @@ begin
 		or v_secret.connector_id <> 'website' then
 		raise exception 'company account removal is unavailable' using errcode = '42501';
 	end if;
-	delete from public.qorpera_cloud_secret_versions as version where version.secret_id = p_account_id;
+	-- Revoking the secret wipes its envelopes and closes the account (qorpera_company_account_secret_revoked).
 	if v_secret.status = 'active' then
 		update public.qorpera_cloud_secrets as secret
 		set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = v_user_id,
