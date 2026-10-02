@@ -75,13 +75,15 @@ begin
 	for t in select * from (values
 		(pg_temp.site_parse(), 0), (pg_temp.site_parse('{"openedFor":null}'), 0), (pg_temp.site_parse('{"status":"needs_person"}'), 0),
 		(pg_temp.site_parse('{"twoStep":"none"}'), 0), (pg_temp.site_parse('{"twoStep":"email"}'), 0), (pg_temp.site_parse('{"twoStep":"sms"}'), 0),
-		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 64) || '.com')), 0),
+		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 63) || '.com')), 0),
 		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 63) || '.' || repeat('b', 63) || '.' || repeat('c', 63) || '.' || repeat('d', 61))), 0),
 		(gmail, 0), (gmail || '{"status":"broken"}', 0),
 		-- The keys: all three on a website file, none on any other.
 		(pg_temp.site_parse() - 'site', 1), (pg_temp.site_parse() - 'twoStep', 1), (pg_temp.site_parse() - 'openedFor', 1),
 		(pg_temp.site_parse('{"note":"x"}'), 1), (gmail || '{"site":"example.com"}', 1), (gmail || '{"twoStep":"none"}', 1),
 		(gmail || '{"openedFor":null}', 1),
+		-- Every website key on a connected gmail file: refused by its keys alone.
+		(pg_temp.site_parse('{"service":"gmail","status":"connected"}'), 1),
 		(pg_temp.site_parse('{"service":"gmail"}'), 1),
 		-- The site, by the vault's host rule.
 		(pg_temp.site_parse('{"site":"Portal.example.com"}'), 1), (pg_temp.site_parse('{"site":"example"}'), 1),
@@ -89,7 +91,7 @@ begin
 		(pg_temp.site_parse('{"site":"a..example.com"}'), 1), (pg_temp.site_parse('{"site":"a.example.com."}'), 1),
 		(pg_temp.site_parse('{"site":"a_b.example.com"}'), 1), (pg_temp.site_parse('{"site":"https://example.com"}'), 1),
 		(pg_temp.site_parse('{"site":"example.com:443"}'), 1), (pg_temp.site_parse('{"site":null}'), 1), (pg_temp.site_parse('{"site":7}'), 1),
-		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 65) || '.com')), 1),
+		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 64) || '.com')), 1),
 		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 63) || '.' || repeat('b', 63) || '.' || repeat('c', 63) || '.' || repeat('d', 62))), 1),
 		-- The two-step method, the todo, the states.
 		(pg_temp.site_parse('{"twoStep":"phone"}'), 1), (pg_temp.site_parse('{"twoStep":null}'), 1),
@@ -99,6 +101,19 @@ begin
 	loop
 		if pg_temp.problems(t.parse) is distinct from t.problems then
 			raise exception 'Parse % expected % problems, got %', t.parse, t.problems,
+				public.qorpera_company_state_parse_problems('connection', t.parse); end if;
+	end loop;
+	-- And the refusal names the rule broken, and only it.
+	for t in select * from (values
+		(pg_temp.site_parse() - 'site', 'keys, site'), (pg_temp.site_parse('{"site":"Portal.example.com"}'), 'site'),
+		(pg_temp.site_parse(jsonb_build_object('site', repeat('a', 64) || '.com')), 'site'),
+		(pg_temp.site_parse('{"twoStep":"phone"}'), 'twoStep'), (pg_temp.site_parse('{"openedFor":"todo-1"}'), 'openedFor'),
+		(pg_temp.site_parse('{"status":"closed"}'), 'status'), (gmail || '{"status":"pending"}', 'status'),
+		(gmail || '{"site":"example.com"}', 'keys'), (pg_temp.site_parse('{"service":"gmail","status":"connected"}'), 'keys')) v(parse, names)
+	loop
+		if public.qorpera_company_state_parse_problems('connection', t.parse) -> 0 ->> 'message' is distinct from
+			'the platform read this file differently from its rules (' || t.names || ')' then
+			raise exception 'Parse % expected the rules (%), got %', t.parse, t.names,
 				public.qorpera_company_state_parse_problems('connection', t.parse); end if;
 	end loop;
 end $$;
