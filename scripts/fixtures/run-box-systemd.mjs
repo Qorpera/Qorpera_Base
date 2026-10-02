@@ -246,7 +246,8 @@ try {
 	assert.match(e2e.started.text, /^Process running with session ID \d+\n/);
 	assert.match(e2e.finished.text, /^Process exited with code 0\n[\s\S]*late\n$/);
 	assert.match(e2e.long.text, /bytes not shown; the whole output is in \/tmp\/home\/output\/\d+\.log\][\s\S]*\n100000\n$/);
-	assert(Buffer.byteLength(JSON.stringify(e2e.long.text)) <= 6_000);
+	// What one tool result holds whole (fitsOneResult): its JSON escapes counted, room left for the provenance.
+	assert(Buffer.byteLength(JSON.stringify(e2e.long.text).replace(/[<>&\u2028\u2029]/g, "\\u0000")) <= 8192 - 3072);
 	check("exec_command and write_stdin run in the box, and release what each answer read under its exact text");
 
 	// Hidden means absent, or an inaccessible stand-in (mode 0) where InaccessiblePaths= put one.

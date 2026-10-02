@@ -10,6 +10,7 @@ import {
 	RUN_BOX_MAX_SESSION,
 	RUN_BOX_MAX_TEXT_LENGTH,
 	RUN_BOX_MAX_YIELD_MS,
+	type RunBoxErrorCode,
 	type RunBoxReply,
 	type RunBoxRequest,
 } from "@qorpera/contracts";
@@ -20,6 +21,7 @@ import {
 	type CloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import { type CloudNativeTool, type CloudToolContent, CloudToolRefusal } from "./cloud-native-tool-boundary.ts";
+import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /**
  * The run box's tools (F3 step 2b-3; deploy/first-node/RUNTIME-FOLDER-SERVICE.md, "Step 2b"): `exec_command` and
@@ -27,19 +29,19 @@ import { type CloudNativeTool, type CloudToolContent, CloudToolRefusal } from ".
  * box (2b-1) has the company folder read-only at /company, no network and no credentials; its folder program (2b-2)
  * logs what each command opens or lists. Every answer releases those reads with the run's own authority before the
  * model sees it, so the next model request's context view can cite them, and a read the run may no longer make
- * withholds the answer.
+ * withholds that answer and everything the box would show after it in the run.
  *
  * Nothing the box sends is trusted: each line is checked (`parseRunBoxReply`), bounded and fitted here.
  */
 
-/** How long a call waits for the box to appear (it starts beside the run). */
-const BOX_WAIT_MS = 10_000;
+/** How long the run's first call waits for the box to appear: it starts beside the run, and the shared execution
+ * service tries to open it for up to 60 s. Once a wait ran out, later calls look once. */
+const BOX_WAIT_MS = 60_000;
 /** Past the yield the box was asked for, how long its answer may take before the call gives up on it. */
 const ANSWER_GRACE_MS = 5_000;
-/** Output asked of the box per answer. The tool result envelope is 8 KiB and cut head-only, so the shown text, escaped
- * as JSON, must fit its own head and tail in about 6 KiB. */
+/** Output asked of the box per answer. The tool result envelope is 8 KiB and cut head-only, so the shown text is fitted
+ * to what one result holds whole (`fitsOneResult`: its JSON escapes and the envelope's provenance counted). */
 const OUTPUT_BYTES = 4_096;
-const SHOWN_JSON_BYTES = 6_000;
 const DEFAULT_EXEC_YIELD_MS = 10_000;
 const DEFAULT_WRITE_YIELD_MS = 250;
 /** What the core records in one release; more reads go in several, all with the answer's hash. */
@@ -89,9 +91,16 @@ class LineSocket {
 	static async open(path: string, signal: AbortSignal): Promise<LineSocket | undefined> {
 		const socket = connect(path);
 		const opened = await new Promise<boolean>((resolve) => {
-			socket.once("connect", () => resolve(true));
-			socket.once("error", () => resolve(false));
-			signal.addEventListener("abort", () => resolve(false), { once: true });
+			// The run's signal outlives every connection: its listener goes once the connection is decided.
+			const done = (value: boolean): void => {
+				signal.removeEventListener("abort", aborted);
+				resolve(value);
+			};
+			const aborted = (): void => done(false);
+			socket.once("connect", () => done(true));
+			socket.once("error", () => done(false));
+			signal.addEventListener("abort", aborted, { once: true });
+			if (signal.aborted) done(false);
 		});
 		if (!opened) {
 			socket.destroy();
@@ -151,13 +160,13 @@ export interface CloudRunBoxReads {
 /** The run's box: one connection, opened when first needed and again after the box restarted. */
 export class CloudRunBox {
 	readonly #paths: CloudRunBoxPaths;
-	readonly #waitMs: number;
+	#waitMs: number;
 	#connection: LineSocket | undefined;
 	/** The box's read log as last seen, and the reads it holds up to `#acked` are released. */
 	#log: string | undefined;
 	#acked = 0;
 
-	/** `waitMs`: how long a call waits for the box to appear (tests shorten it). */
+	/** `waitMs`: how long the first call waits for the box to appear (tests shorten it). */
 	constructor(paths: CloudRunBoxPaths, waitMs = BOX_WAIT_MS) {
 		this.#paths = paths;
 		this.#waitMs = waitMs;
@@ -220,6 +229,8 @@ export class CloudRunBox {
 					return { reads: [], upTo: 0, restarted: true };
 				}
 				this.#log = answer.log;
+				if (answer.more && answer.reads.length === 0)
+					throw new Error("The run box's read log said more and gave none");
 				reads.push(...answer.reads);
 				after = answer.last ?? after;
 				if (!answer.more) return { reads, upTo: after, restarted: false };
@@ -277,10 +288,12 @@ export class CloudRunBox {
 				connection.close();
 			}
 			signal.throwIfAborted();
-			if (Date.now() - started > this.#waitMs)
+			if (Date.now() - started >= this.#waitMs) {
+				this.#waitMs = 0;
 				throw new CloudToolRefusal(
 					"RUN_BOX_UNAVAILABLE: this run has no run box (it starts beside the run, on the shared execution host only); read with company_read and company_list instead",
 				);
+			}
 			await delay(250, undefined, { signal });
 		}
 	}
@@ -333,10 +346,6 @@ function releaseId(runId: string, callId: string, part: number): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-function jsonBytes(text: string): number {
-	return Buffer.byteLength(JSON.stringify(text));
-}
-
 /** Code points `[0, n)` or the last `n`, without cutting a character. */
 function firstChars(text: string, n: number): string {
 	return Array.from(text).slice(0, n).join("");
@@ -347,7 +356,7 @@ function lastChars(text: string, n: number): string {
 }
 
 /** What the model is shown of one answer: how the command stands, then its output, fitted so the result's envelope
- * keeps its tail (it is cut head-only past 8 KiB). */
+ * keeps it whole, tail included (the envelope escapes `<`, `>` and `&` again and is cut head-only past 8 KiB). */
 export function runBoxAnswerText(reply: Extract<RunBoxReply, { t: "result" }>): string {
 	const status =
 		reply.session !== null
@@ -361,18 +370,26 @@ export function runBoxAnswerText(reply: Extract<RunBoxReply, { t: "result" }>): 
 	const render = (): string => {
 		const note =
 			skipped > 0
-				? `\n[${skipped} bytes not shown${reply.logPath ? `; the whole output is in ${reply.logPath}` : ""}]\n`
+				? `\n[${skipped} bytes not shown${reply.logPath ? `; the whole output is in ${reply.logPath}` : "; narrow it with head, tail or rg"}]\n`
 				: "";
 		return `${status}\nWall time: ${(reply.wallMs / 1000).toFixed(1)} s\nOutput:\n${head}${note}${tail}`;
 	};
 	let text = render();
-	while (jsonBytes(text) > SHOWN_JSON_BYTES && (head.length > 0 || tail.length > 0)) {
+	if (!fitsOneResult(text) && tail.length === 0) {
+		// The box sent all of the output as its head: keep its end too, cutting from the middle.
+		const chars = Array.from(head);
+		const cut = Math.floor(chars.length / 4);
+		tail = chars.slice(cut).join("");
+		head = chars.slice(0, cut).join("");
+	}
+	while (!fitsOneResult(text) && (head.length > 0 || tail.length > 0)) {
 		const before = Buffer.byteLength(head) + Buffer.byteLength(tail);
-		// Keep a quarter of what remains for the head and the rest for the tail, a fifth smaller each time.
+		// A fifth smaller each time: the head alone until it is at most a quarter of what is kept, then both, so the
+		// end of the output is the last to go.
 		const headChars = Array.from(head).length;
 		const tailChars = Array.from(tail).length;
 		head = firstChars(head, Math.floor(headChars * 0.8));
-		tail = lastChars(tail, Math.floor(tailChars * 0.8));
+		if (headChars <= (headChars + tailChars) / 4) tail = lastChars(tail, Math.floor(tailChars * 0.8));
 		skipped += before - Buffer.byteLength(head) - Buffer.byteLength(tail);
 		text = render();
 	}
@@ -397,19 +414,7 @@ async function releaseAnswer(
 	let first: string | undefined;
 	for (let part = 0; part * MAX_RELEASED < reads.length; part++) {
 		const id = releaseId(runId, callId, part);
-		try {
-			await folder.release(id, reads.slice(part * MAX_RELEASED, (part + 1) * MAX_RELEASED), outputSha256, signal);
-		} catch (error) {
-			if (error instanceof CloudCompanyFolderError && error.failure === "read_revoked")
-				throw new CloudToolRefusal(
-					"READ_REVOKED: something this command read may no longer be read by you, so its output is not shown",
-				);
-			if (error instanceof CloudCompanyFolderError)
-				throw new CloudToolRefusal(
-					`COMPANY_FOLDER_UNAVAILABLE: the command ran, but what it read could not be recorded (${error.failure}), so its output is not shown; try again`,
-				);
-			throw error;
-		}
+		await folder.release(id, reads.slice(part * MAX_RELEASED, (part + 1) * MAX_RELEASED), outputSha256, signal);
 		first ??= id;
 	}
 	return first;
@@ -429,6 +434,25 @@ function yieldOf(value: JsonValue | undefined, fallback: number): number {
 	return value;
 }
 
+/** A box error in the native host's own words, from the request: the box's message is not shown. */
+function boxErrorText(code: RunBoxErrorCode, request: RunBoxRequest): string {
+	switch (code) {
+		case "WORKDIR_UNAVAILABLE":
+			return `WORKDIR_UNAVAILABLE: the run box has no directory ${request.t === "exec" ? (request.workdir ?? RUN_BOX_COMPANY) : ""}`.slice(
+				0,
+				600,
+			);
+		case "SESSION_UNKNOWN":
+			return `SESSION_UNKNOWN: no command is running as session ${request.t === "write" ? request.session : ""}; start it with exec_command`;
+		case "STDIN_CLOSED":
+			return "STDIN_CLOSED: this command's input is closed; start it with tty to write to it";
+		case "SPAWN_FAILED":
+			return "SPAWN_FAILED: the run box could not start the command; try again";
+		case "INVALID_REQUEST":
+			return "INVALID_REQUEST: the run box refused the request";
+	}
+}
+
 const BOX_DESCRIPTION =
 	`Your run box: a Linux machine of your own for this run, with the company folder read-only at ${RUN_BOX_COMPANY} (where commands start), ` +
 	"no network, and rg, fd, jq, python3 (pandas, openpyxl, python-docx, pypdf), sqlite3, pandoc, pdftotext, ImageMagick (convert), " +
@@ -442,24 +466,52 @@ export function cloudRunBoxTools(options: {
 	runId: string;
 }): CloudNativeTool[] {
 	const { box, folder, runId } = options;
+	// Set once a read was refused as revoked: what the box read may sit anywhere in it now (a copy in /tmp shows
+	// without a new read), so nothing more from it is shown in this run, and no command runs.
+	let revoked = false;
 	const answer = async (request: RunBoxRequest, callId: string, signal: AbortSignal): Promise<CloudToolContent> => {
+		if (revoked)
+			throw new CloudToolRefusal(
+				"READ_REVOKED: this run's box read something you may no longer read, so nothing more from it is shown in this run and this command was not run; read with company_read and company_list instead",
+			);
 		const reply = await box.request(request, signal);
-		if (reply.t === "error") throw new CloudToolRefusal(`${reply.code}: ${reply.message}`.slice(0, 600));
+		// The box's own words never reach the model: its message is not released.
+		if (reply.t === "error") throw new CloudToolRefusal(boxErrorText(reply.code, request));
 		if (reply.t !== "result") throw new CloudToolRefusal("RUN_BOX_UNAVAILABLE: the run box answered something else");
+		const ran =
+			reply.session === null
+				? "the command ran"
+				: `the command ran and is still running as session ${reply.session}`;
 		const text = runBoxAnswerText(reply);
 		let taken: CloudRunBoxReads;
 		try {
 			taken = await box.takeReads(signal);
 		} catch {
 			throw new CloudToolRefusal(
-				"RUN_BOX_UNAVAILABLE: the run box's read log did not answer, so this output is not shown; try again",
+				`RUN_BOX_UNAVAILABLE: ${ran}, but the run box's read log did not answer, so its output is not shown; try again`,
 			);
 		}
 		if (taken.restarted)
 			throw new CloudToolRefusal(
-				"RUN_BOX_UNAVAILABLE: the run box's folder restarted, so what this command read cannot be accounted for and its output is not shown; run it again",
+				`RUN_BOX_UNAVAILABLE: ${ran}, but the run box's folder restarted, so what it read cannot be accounted for and its output is not shown; run it again`,
 			);
-		const companyReadId = await releaseAnswer(folder, runId, callId, taken.reads, text, signal);
+		let companyReadId: string | undefined;
+		try {
+			companyReadId = await releaseAnswer(folder, runId, callId, taken.reads, text, signal);
+		} catch (error) {
+			if (error instanceof CloudCompanyFolderError && error.failure === "read_revoked") {
+				revoked = true;
+				throw new CloudToolRefusal(
+					`READ_REVOKED: ${ran}, but something it read may no longer be read by you, so its output is not shown; the box may hold what it read, so nothing more from it is shown in this run. Read with company_read and company_list instead`,
+				);
+			}
+			// Not recorded: nothing was acknowledged, so the next answer releases these reads with its own.
+			if (error instanceof CloudCompanyFolderError)
+				throw new CloudToolRefusal(
+					`COMPANY_FOLDER_UNAVAILABLE: ${ran}, but what it read could not be recorded (${error.failure}), so its output is not shown; try again`,
+				);
+			throw error;
+		}
 		// Released: the reads leave the box's log. Should this fail, the next answer releases them again.
 		await box.ackReads(taken.upTo, signal).catch(() => undefined);
 		return { kind: "text", value: text, ...(companyReadId ? { companyReadId } : {}) };

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,8 +11,14 @@ import {
 	CloudCompanyFolderError,
 	type CloudCompanyFolderRelease,
 } from "../src/cloud-company-folder-client.ts";
-import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
+import {
+	CloudNativeToolBoundary,
+	type CloudToolContext,
+	CloudToolRefusal,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
+} from "../src/cloud-native-tool-boundary.ts";
 import { CloudRunBox, cloudRunBoxTools, runBoxAnswerText } from "../src/cloud-run-box-tools.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const RUN = "80200000-0000-4000-8000-000000000001";
 const VERSION = "80200000-0000-4000-8000-0000000000a1";
@@ -32,6 +39,8 @@ class ReadLog {
 	acks: number[] = [];
 	/** The highest number a take handed out: an acknowledgement past it is refused. */
 	handed = 0;
+	/** A broken log: says more and gives nothing. */
+	stuck = false;
 	add(...reads: Record<string, unknown>[]): void {
 		for (const read of reads) this.waiting.push({ ...read, seq: this.next++ });
 	}
@@ -55,6 +64,7 @@ class ReadLog {
 			return { t: "acked", log: this.id, upTo: request.upTo };
 		}
 		this.takes.push(request.max as number);
+		if (this.stuck) return { t: "reads", log: this.id, reads: [], more: true };
 		const after = this.waiting.filter((read) => read.seq > (request.after as number));
 		const taken = after.slice(0, request.max);
 		this.handed = Math.max(this.handed, taken.at(-1)?.seq ?? 0);
@@ -123,13 +133,13 @@ function folder(failure?: CloudCompanyFolderError) {
 	return { client, releases };
 }
 
-function context(callId = "call-1"): CloudToolContext {
+function context(callId = "call-1", signal = new AbortController().signal): CloudToolContext {
 	return {
 		companyId: "80200000-0000-4000-8000-000000000002",
 		runId: RUN,
 		callId,
 		argumentSha256: "a".repeat(64),
-		signal: new AbortController().signal,
+		signal,
 	};
 }
 
@@ -230,14 +240,34 @@ describe("run box tools", () => {
 		expect(box.log.acks).toEqual([10_001]);
 	});
 
-	it("withholds the output when a read may no longer be made or cannot be recorded, and releases those reads with the next answer", async () => {
+	it("withholds a revoked read's answer and everything the box would show after it, running nothing more", async () => {
 		const box = await stage(() => ended());
-		box.log.add(read("docs/plan.md"));
+		box.log.add(read("docs/secret.md"));
 		const revoked = await tools(box.paths, folder(new CloudCompanyFolderError("read_revoked")).client);
 		await expect(
-			revoked.exec.execute(revoked.exec.parseArguments({ cmd: "cat docs/plan.md" }), context()),
+			revoked.exec.execute(revoked.exec.parseArguments({ cmd: "cp docs/secret.md /tmp/x" }), context()),
+		).rejects.toThrow(/^READ_REVOKED: the command ran, but something it read may no longer be read by you/);
+		// A copy in the box would show without a new read: the box shows nothing more in this run.
+		await expect(
+			revoked.exec.execute(revoked.exec.parseArguments({ cmd: "cat /tmp/x" }), context("call-2")),
+		).rejects.toThrow(/^READ_REVOKED: this run's box read something you may no longer read/);
+		await expect(
+			revoked.write.execute(revoked.write.parseArguments({ session_id: 1 }), context("call-3")),
 		).rejects.toThrow(/^READ_REVOKED/);
+		expect(box.requests).toHaveLength(1);
+		expect(box.log.acks).toEqual([]);
+	});
+
+	it("withholds the output when its reads cannot be recorded, and releases those reads with the next answer", async () => {
+		const box = await stage((request) =>
+			request.cmd === "sleep" ? { ...ended(), session: 6, exitCode: null } : ended(),
+		);
+		box.log.add(read("docs/plan.md"));
 		const down = await tools(box.paths, folder(new CloudCompanyFolderError("unavailable")).client);
+		// A withheld answer still says the command ran, and under which session it goes on.
+		await expect(down.exec.execute(down.exec.parseArguments({ cmd: "sleep" }), context("call-0"))).rejects.toThrow(
+			/^COMPANY_FOLDER_UNAVAILABLE: the command ran and is still running as session 6, but/,
+		);
 		await expect(down.exec.execute(down.exec.parseArguments({ cmd: "cat docs/plan.md" }), context())).rejects.toThrow(
 			/^COMPANY_FOLDER_UNAVAILABLE/,
 		);
@@ -260,7 +290,7 @@ describe("run box tools", () => {
 		box.log.restart();
 		box.log.add(read("docs/new.md"));
 		await expect(exec.execute(exec.parseArguments({ cmd: "cat docs/new.md" }), context("call-2"))).rejects.toThrow(
-			/^RUN_BOX_UNAVAILABLE: the run box's folder restarted/,
+			/^RUN_BOX_UNAVAILABLE: the command ran, but the run box's folder restarted/,
 		);
 		await exec.execute(exec.parseArguments({ cmd: "cat docs/new.md" }), context("call-3"));
 		expect(releases.map((r) => r.reads.map((read) => read.path))).toEqual([["docs/plan.md"], ["docs/new.md"]]);
@@ -283,7 +313,7 @@ describe("run box tools", () => {
 		const { client, releases } = folder();
 		const { exec } = await tools(box.paths, client);
 		await expect(exec.execute(exec.parseArguments({ cmd: "cat docs/gone.md" }), context())).rejects.toThrow(
-			/^RUN_BOX_UNAVAILABLE: the run box's folder restarted/,
+			/^RUN_BOX_UNAVAILABLE: the command ran, but the run box's folder restarted/,
 		);
 		expect(releases).toEqual([]);
 		await exec.execute(exec.parseArguments({ cmd: "cat docs/after.md" }), context("call-2"));
@@ -311,14 +341,15 @@ describe("run box tools", () => {
 	it("refuses what the box should not answer, and says when there is no box", async () => {
 		const wrong = await stage((request) =>
 			request.cmd === "error"
-				? { t: "error", code: "WORKDIR_UNAVAILABLE", message: "No directory /company/x" }
+				? { t: "error", code: "WORKDIR_UNAVAILABLE", message: "the box's own words" }
 				: request.cmd === "big"
 					? ended({ head: "x".repeat(5000), totalBytes: 5000 })
 					: "not json",
 		);
 		const { exec } = await tools(wrong.paths, folder().client);
-		await expect(exec.execute(exec.parseArguments({ cmd: "error" }), context())).rejects.toThrow(
-			/^WORKDIR_UNAVAILABLE/,
+		// The box's message is not released, so the native host words the refusal from the request.
+		await expect(exec.execute(exec.parseArguments({ cmd: "error", workdir: "docs/x" }), context())).rejects.toThrow(
+			/^WORKDIR_UNAVAILABLE: the run box has no directory docs\/x$/,
 		);
 		await expect(exec.execute(exec.parseArguments({ cmd: "big" }), context("c2"))).rejects.toThrow(
 			/^RUN_BOX_UNAVAILABLE/,
@@ -333,6 +364,19 @@ describe("run box tools", () => {
 		);
 		await expect(none.exec.execute(none.exec.parseArguments({ cmd: "ls" }), context())).rejects.toBeInstanceOf(
 			CloudToolRefusal,
+		);
+		// Once a wait ran out, later calls look once instead of waiting again.
+		const started = Date.now();
+		await expect(none.exec.execute(none.exec.parseArguments({ cmd: "ls" }), context("c2"))).rejects.toThrow(
+			/^RUN_BOX_UNAVAILABLE: this run has no run box/,
+		);
+		expect(Date.now() - started).toBeLessThan(250);
+		// A read log that says more and gives none is refused, not followed.
+		const stuck = await stage(() => ended());
+		stuck.log.stuck = true;
+		const looping = await tools(stuck.paths, folder().client);
+		await expect(looping.exec.execute(looping.exec.parseArguments({ cmd: "ls" }), context())).rejects.toThrow(
+			/^RUN_BOX_UNAVAILABLE/,
 		);
 	});
 
@@ -351,6 +395,56 @@ describe("run box tools", () => {
 		expect(write.parseArguments({ session_id: 2 })).toEqual({ session_id: 2, chars: "", yield_time_ms: 250 });
 	});
 
+	it("leaves no listener on the run's signal once a call is done", async () => {
+		const box = await stage(() => ended());
+		const { exec } = await tools(box.paths, folder().client);
+		const run = new AbortController();
+		for (let call = 0; call < 5; call++) {
+			box.log.add(read("docs/plan.md"));
+			await exec.execute(exec.parseArguments({ cmd: "cat docs/plan.md" }), context(`call-${call}`, run.signal));
+		}
+		expect(getEventListeners(run.signal, "abort")).toHaveLength(0);
+	});
+
+	it("keeps an answer whole in the real result envelope, tail included, however much the envelope escapes it", async () => {
+		const outputs: Record<string, unknown>[] = [];
+		const box = await stage(() => ({ ...ended(), ...outputs.shift() }));
+		const { authority } = nativeToolAuthorityFixture();
+		const identity = authority.identity;
+		const { client } = folder();
+		const boundary = new CloudNativeToolBoundary({
+			companyId: identity.companyId,
+			runId: identity.runId,
+			identity,
+			tools: cloudRunBoxTools({ box: new CloudRunBox(box.paths), folder: client, runId: identity.runId }),
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+		});
+		const row = '<tr><td class="a">1</td><td>&amp;</td></tr>\n';
+		const page = `<html>\n${row.repeat(90)}</html>\n`;
+		const code = "if (a && b) { x->y(); } // <T>\n".repeat(130);
+		for (const [label, output] of [
+			["page", { head: page, tail: "", skippedBytes: 0, totalBytes: Buffer.byteLength(page) }],
+			[
+				"long page",
+				{ head: page.slice(0, 2048), tail: page.slice(-2040), skippedBytes: 20_000, totalBytes: 24_088 },
+			],
+			["code", { head: code, tail: "</html>\n", skippedBytes: 0, totalBytes: Buffer.byteLength(code) + 8 }],
+		] as const) {
+			outputs.push({ output, logPath: "/tmp/home/output/12.log" });
+			box.log.add(read("docs/page.html"));
+			const reply = await boundary.invoke(`call-${label.replace(" ", "-")}`, "qorpera", "exec_command", {
+				cmd: "cat docs/page.html",
+			});
+			const envelope = reply.contentItems[0]?.text ?? "";
+			expect(Buffer.byteLength(envelope), label).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
+			const result = JSON.parse(envelope) as { status: string; content: { text: string; truncated: boolean } };
+			expect(result.status, label).toBe("ok");
+			expect(result.content.truncated, label).toBe(false);
+			expect(result.content.text.endsWith("</html>\n"), label).toBe(true);
+		}
+	});
+
 	it("fits a long answer so its tail survives the result envelope", () => {
 		const head = '\t"\\'.repeat(400);
 		const tail = `${"\n".repeat(2000)}the end\n`;
@@ -364,7 +458,9 @@ describe("run box tools", () => {
 			logPath: "/tmp/home/output/7.log",
 			wallMs: 2500,
 		});
-		expect(Buffer.byteLength(JSON.stringify(text))).toBeLessThanOrEqual(6_000);
+		expect(Buffer.byteLength(JSON.stringify(text).replace(/[<>&\u2028\u2029]/g, "\\u0000"))).toBeLessThanOrEqual(
+			MAX_CLOUD_TOOL_RESULT_BYTES - 3072,
+		);
 		expect(text.startsWith("Process exited with code 1\nWall time: 2.5 s\nOutput:\n")).toBe(true);
 		expect(text.endsWith("the end\n")).toBe(true);
 		expect(text).toMatch(/\[\d+ bytes not shown; the whole output is in \/tmp\/home\/output\/7\.log\]/);

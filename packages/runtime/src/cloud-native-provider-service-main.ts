@@ -214,8 +214,14 @@ export function nativeRunBoxConfiguration(environment: NodeJS.ProcessEnv): Cloud
 	const reads = environment.QORPERA_RUN_BOX_READS;
 	if (socket === undefined && reads === undefined) return undefined;
 	const path = /^\/run\/qorpera-shared-box\/[0-9]{1,2}\.(sock|reads)$/;
-	if (!socket?.endsWith(".sock") || !reads?.endsWith(".reads") || !path.test(socket) || !path.test(reads))
-		throw new Error("The run box needs both of its sockets under /run/qorpera-shared-box");
+	if (
+		!socket?.endsWith(".sock") ||
+		!reads?.endsWith(".reads") ||
+		!path.test(socket) ||
+		!path.test(reads) ||
+		socket.slice(0, -".sock".length) !== reads.slice(0, -".reads".length)
+	)
+		throw new Error("The run box needs both of its slot's sockets under /run/qorpera-shared-box");
 	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
 		throw new Error("The run box requires the cloud-native runtime");
 	return { socket, reads };

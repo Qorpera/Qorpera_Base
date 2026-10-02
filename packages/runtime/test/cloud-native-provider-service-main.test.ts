@@ -124,6 +124,8 @@ describe("native run box composition", () => {
 			{ ...environment, QORPERA_RUN_BOX_READS: undefined },
 			{ ...environment, QORPERA_RUN_BOX_SOCKET: "/tmp/3.sock" },
 			{ ...environment, QORPERA_RUN_BOX_READS: "/run/qorpera-shared-box/3.sock" },
+			// Both sockets are one slot's.
+			{ ...environment, QORPERA_RUN_BOX_READS: "/run/qorpera-shared-box/4.reads" },
 			{ ...environment, QORPERA_NATIVE_RUNTIME: undefined },
 		])
 			expect(() => nativeRunBoxConfiguration(bad)).toThrow();

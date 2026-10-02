@@ -308,13 +308,19 @@ harness:
 - `exec_command {cmd, workdir?, yield_time_ms? (default 10 s, at most 30 s), tty?}` answers when the command ends or
   the wait passes; a command still running keeps its session for `write_stdin {session_id, chars?, yield_time_ms?
   (default 250 ms)}`. The answer says how the command stands, then its output: all of it, or its start and end with how
-  much was left out and where the whole of it is in the box, fitted so its tail survives the 8 KiB result envelope.
+  much was left out and where the whole of it is in the box. It is fitted to what one 8 KiB result holds whole, with
+  the envelope's provenance and its second escaping of `<`, `>` and `&` counted, cutting from the middle so the end of
+  the output is the last to go.
 - Each answer takes the box's read log after the last acknowledged number and releases it with the run actor
   (`CloudCompanyFolderClient.release`, P8), under the hash of the exact text shown, before the model sees it; it cites
   the release (`companyReadId`), so the next model request's context view does, and only then acknowledges. More than
   one release's worth goes in several under the same hash; no reads, no release. A read the run may no longer make
-  withholds the answer (`READ_REVOKED`); a release that cannot be recorded does too, and its reads go with the next
-  answer. A read without a receipt goes with the nil-uuid stand-in, which the core checks again.
+  withholds the answer (`READ_REVOKED`), and everything the box would show after it in the run: what it read may sit
+  anywhere in the box now (a copy in `/tmp` shows without a new read), so later calls run nothing and say why. A
+  release that cannot be recorded withholds the answer too, and its reads go with the next answer. A withheld answer
+  says the command ran (and its session, if it still runs). A read without a receipt goes with the nil-uuid stand-in,
+  which the core checks again. The box's own error messages are not shown: the native host words them from the
+  request.
 - The host learns the log's id before the run's first command, so a folder restart during any command shows as a new
   log: that answer is withheld (its reads are gone), and the next goes on with the new log.
 - Review class "read" (no network, the folder read-only); observed as `exec_command` and `write_stdin` (migration
