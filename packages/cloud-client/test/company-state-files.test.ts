@@ -940,6 +940,10 @@ describe("human tasks and contacts (H1)", () => {
 			asks: ["VAT filing", "vat filing"],
 		});
 		expect(problems(`asks: [${"x".repeat(101)}]`)).toEqual([["asks", "value"]]);
+		expect(problems('asks: [" VAT filing", "VAT filing "]')).toEqual([
+			["asks", "value"],
+			["asks", "value"],
+		]);
 		expect(problems(`asks: [${Array.from({ length: 51 }, (_, n) => `a${n}`).join(", ")}]`)).toEqual([
 			["asks", "value"],
 		]);

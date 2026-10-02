@@ -667,7 +667,7 @@ Our accountant since 2025. Files VAT every quarter.
 | `organization` | no | one line, 1–200 bytes |
 | `email` | no | 3–254 bytes of printable ASCII (`!` to `~`, so no space), exactly one `@` with text on both sides, and a domain that neither starts nor ends with `.` |
 | `phone` | no | `+` and 6–20 digits, with single U+0020 spaces allowed between digits |
-| `asks` | no | what the contact may be asked to do: 1–50 one-line items of 1–100 bytes, no exact repeats |
+| `asks` | no | what the contact may be asked to do: 1–50 one-line items of 1–100 bytes without spaces at either end, no exact repeats |
 | body | no | up to 32 KiB trimmed: notes, then `## History` lines agents add after each task |
 
 - **Personal data.** A contact who asks to be forgotten needs an erasure of any deleted path:

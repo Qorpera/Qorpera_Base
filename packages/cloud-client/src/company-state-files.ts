@@ -1470,8 +1470,13 @@ function contact(split: Split, fields: Fields, problems: Problems): ContactFile 
 		problems.add("value", fields.line("phone"), "phone", 'phone is + and its digits, like "+45 12 34 56 78"');
 	const asks: string[] = [];
 	for (const item of fields.list("asks", false, false) ?? []) {
-		if (NOT_ONE_LINE.test(item.text) || !item.text || encoder.encode(item.text).byteLength > 100)
-			problems.add("value", item.line, "asks", "each of asks is one line of 1–100 bytes");
+		if (
+			NOT_ONE_LINE.test(item.text) ||
+			!item.text ||
+			item.text !== item.text.trim() ||
+			encoder.encode(item.text).byteLength > 100
+		)
+			problems.add("value", item.line, "asks", "each of asks is one line of 1–100 bytes, without spaces at its ends");
 		else if (asks.includes(item.text))
 			problems.add("value", item.line, "asks", `${shown(item.text)} is listed twice`);
 		else asks.push(item.text);
