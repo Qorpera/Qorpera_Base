@@ -25,7 +25,9 @@ Two things make a roll slower for some work, but pause nobody:
   B is not their home; after step 9 they would fail. The preflight query in step 1 lists each login with
   its home nodes; pick A so that no home is A. Moving them into the vault removes the wait.
 - **One fast host.** While the node with the only fast host is emptied and updated, member runs start on
-  the other node's fresh-VM path (about 17 s slower), as they do today when the fast host is full.
+  the other node's fresh-VM path (about 17 s slower), as they do today when the fast host is full. Once
+  both nodes have one (`deploy/shared-execution/README.md`, "Node 1, in this order"), the other node's
+  fast host takes them, and each node's turn rebuilds its own host (steps 5 and 8).
 
 ## Does a release roll or pause?
 

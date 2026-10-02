@@ -189,9 +189,11 @@ It sorts after change 4 because it reads its bundle declarations.
     start, or at once when the preferred node's orchestrator refused.
   - An overflow orchestrator claims when:
     - a fast host refused the run (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, or
-      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. It never does so
-      within 15 s of its own refusal of that run, read from its released claim, so two full
-      paths cannot trade a job back and forth;
+      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. For a full or
+      retiring host, only once every fast host in the run's placement has refused it recently
+      (`20260929999997`, test 810): with a host on each node, the other node's host takes it first,
+      in about 2 s instead of a fresh VM's 17 s. It never does so within 15 s of its own refusal of
+      that run, read from its released claim, so two full paths cannot trade a job back and forth;
     - no fast host may take the run;
     - or the run has waited 10 s.
   - Waits count from `queued_at`, so a retry or a sponsor handoff starts them again.
@@ -229,7 +231,10 @@ It sorts after change 4 because it reads its bundle declarations.
      select id, provider_adapter, last_heartbeat_at from public.qorpera_runner_orchestrators
      where status = 'active' and dispatch_role is null;
      ```
-3. **Set roles**, and don't use roles for member runs before every active login is in the vault:
+3. **Set roles**, and don't use roles for member runs while a login lives on node 1's disk: node 1's
+   host attaches no identity volume, so it would claim such a run and then hold it back
+   (`NODE_IDENTITY_ELSEWHERE`). As of 2 Oct none does: the two logins left on a disk (2742ef0f,
+   544fb8b7) live on node 2 and stay pinned to node 2's host, with or without roles.
    - node 2's exec host orchestrator: `fast`;
    - node 1's fresh-VM orchestrator: `overflow`;
    - node 1's fast host, once created: `fast`.

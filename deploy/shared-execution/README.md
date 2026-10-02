@@ -121,8 +121,37 @@ the ratified window is 5 minutes, `300000`).
 Design: "Identical Nodes" (https://claude.ai/artifact/8Gm5z4Jym3fpLWpeXe4t9Y) and
 `deploy/first-node/RUNTIME-IDENTICAL-NODES.md` (from change 1, #424). Every node runs one execution
 host, named `qorpera-exec-<short node name>` (`qorpera-exec-node01`, `qorpera-exec-node02`), sized so that one node alone carries the busiest five minutes of the
-last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB each (8 vCPU /
-16 GiB). The fresh-VM path stays on every node as overflow.
+last week, parked warm hosts included. The fresh-VM path stays on every node as overflow.
+
+**Sizing for light threads (2 Oct 2026).** A thread turn runs no command and gets no box (Jonas,
+2 Oct: F3's run box moves to the machines), so a slot holds only its native host with Codex
+(`MemoryMax=2G`, `CPUQuota=200%`) and its runner. The host is sized for turns at once, not heavy work:
+
+- **4 slots per node, every node the same**: `EXEC_SLOTS=4 EXEC_SLOT_CPU=1 EXEC_SLOT_GIB=3`, so
+  4 vCPU / 12 GiB. A slot's native host cannot pass 2 GiB, and the third GiB is for its runner and
+  its share of the service, the orchestrator and the page cache. A turn mostly waits on the model;
+  Codex's start (about 1.3 s) is the CPU peak, and `CPUQuota=200%` lets a slot use two vCPUs while
+  others wait.
+- **Why 4.** The busiest five minutes of the last week had 5 runs at once (28 Sep), at most 2 of
+  them members'. Both nodes together hold 8 warm slots. While one node is emptied (a rolling
+  update), the other holds 4, and a fifth run at once starts on that node's fresh-VM path (about
+  17 s) or waits for a slot: a parked warm slot gives way to a new run. Raise the count when one
+  node's peak passes 4.
+- **Every node the same.** Placement prefers the node whose fast hosts hold the fewest runs (it
+  counts runs, not slots), so a smaller host fills first. Node 2's host moves from 2 slots
+  (4 vCPU / 8 GiB) to 4 slots (4 vCPU / 12 GiB); its host allowance (4 CPU / 24 GiB) already covers
+  that.
+- **Measure, then keep or adjust.** Before node 1's host is made, read the peak memory of node 2's
+  slot units over a busy day (read-only; `memory.peak` of each unit's cgroup, which also covers a
+  unit's Codex child):
+
+  ```sh
+  lxc exec qorpera-exec-node02 --project qn25b2 -- sh -c 'for u in $(systemctl list-units --all --plain --no-legend "qorpera-shared-run-host@*" "qorpera-shared-runner@*" | cut -d" " -f1); do printf "%s %s\n" "$u" "$(cat /sys/fs/cgroup/system.slice/$u/memory.peak 2>/dev/null)"; done'
+  ```
+
+  A unit's peak restarts with the unit (each run), so sample it during busy minutes. Keep 3 GiB per
+  slot while the native host stays under 1.5 GiB and the runner under 0.5 GiB; otherwise use
+  `EXEC_SLOT_GIB=4` (16 GiB).
 
 - **`rebuild-exec-host.sh` has no node defaults.** `EXEC_VM`, `EXEC_PROJECT`, `EXEC_PACKAGE`,
   `EXEC_STAGING` and `EXEC_SLOTS` are required. The pilot default of 16 slots was wrong for
@@ -162,21 +191,31 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
 
 ### Node 1, in this order (coordinator)
 
-1. **Prerequisites.** Logins in the vault change 3 is live (`20260928180600`), so member runs are
-   no longer pinned to node 2's identity volumes. Identical nodes change 3 is live too (runs
-   follow the placement: fast hosts first, the fresh-VM orchestrator only as overflow). Until
-   then a fast host on node 1 would race node 1's fresh-VM orchestrator for the same jobs.
-2. **Quiet time.** From `lxc init` (step 5) until step 6, node 1's observer sees an instance its policy does
-   not list and reports node 1 unavailable: node 1 takes no new work. Empty node 1 first
-   (`qorpera_set_runtime_node_serving`, change 1) or pick a quiet time; new work goes to node 2
+1. **Prerequisites.**
+   - Logins in the vault change 3 is live (`20260928180600`), so member runs are not pinned to node 2's
+     identity volumes. The two logins still on node 2's disk (2742ef0f, 544fb8b7) stay pinned to node
+     2's host, with or without node 1's: the agreed exception.
+   - **Dispatch roles are set** (identical nodes change 3, `RUNTIME-IDENTICAL-NODES.md` "Rollout"): node
+     2's host `fast`, node 1's fresh-VM orchestrator `overflow`. Node 1's host and its fresh-VM
+     orchestrator register with the same adapter (`native25-phql-a1`); only the role tells them apart.
+     Without roles they would race for the same runs. The change 3 rule "every active login in the vault
+     first" was about logins on node 1's disk: none is left there, so the roles can be set now.
+   - `20260929999997` is live: after one fast host refuses a run for capacity, the fresh-VM path leaves
+     it to the other node's fast host.
+   - `NODE-EXEC-HOST-BY-ROLE.md` rollout steps 0–3 are done for node 1, so the host is listed by its job
+     from day one and a rebuild never needs a re-enrol (the release that pins its image is staged on
+     node 1 first).
+2. **Quiet time.** From `lxc init` (step 5) until step 6, node 1's observer sees an instance its policy
+   does not list and reports node 1 unavailable: node 1 takes no new work, computers included. Pick a
+   quiet minute and switch node 1's runs off first (`qorpera_set_runtime_node_runs`); node 2 serves runs
    meanwhile. Work already running on node 1 is not stopped.
-3. **Room.** Raise node 1's headroom by the host's size, 8000 mcpu and 16 GiB at 4 slots
+3. **Room.** Raise node 1's headroom by the host's size, 4000 mcpu and 12 GiB at 4 slots
    (`qorpera_configure_runtime_node`, version CAS). It must still admit node 1's company machine.
 4. **Staging.** Prepare the staging directory as root:
    - `shared-execution.env` from `shared-execution.env.example`, with node 1's native adapter
      (`QORPERA_RUNNER_PROVIDER_ADAPTER`), `QORPERA_SHARED_EXECUTION_HOST_ID=qorpera-exec-node01`,
-     node 1's `QORPERA_RUNNER_NODE_ID`, `QORPERA_SHARED_EXECUTION_SLOTS=4` (the example says 16)
-     and `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000`;
+     node 1's `QORPERA_RUNNER_NODE_ID`, `QORPERA_SHARED_EXECUTION_SLOTS=4` (the example says 16) and
+     `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000`;
    - `runner-orchestrator.env` for a **new** orchestrator id, with a
      `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=` line for the script to fill. Never copy node 2's
      id: registering it here would take over node 2's orchestrator;
@@ -186,16 +225,37 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
    logins in the vault no identity volume is attached to the host, and an attached one would
    change its inventory digest.
 5. **Create.**
-   `EXEC_VM=qorpera-exec-node01 EXEC_PROJECT=<node 1 run project> EXEC_PROFILE=<run profile> EXEC_POOL=qorpera-vm EXEC_NETWORK=qorpera0 EXEC_SLOTS=4 EXEC_PACKAGE=… EXEC_STAGING=… create-exec-host.sh <current image>`.
-   Its orchestrator stays stopped.
-6. **Enroll.** Replace node 1's inventory policy with one printed entry added
-   (`qorpera_replace_runtime_node_inventory`). Write the observer configuration and restart the
-   observer, then check that node 1 reports `ready`. Use the entry listed by its job once
-   `NODE-EXEC-HOST-BY-ROLE.md` rollout steps 0–3 are done for node 1: rebuilds then need no
-   re-enrol while the release that pins the image is staged on the node. Until then use the exact
-   entry.
-7. **Start.** Start the host's orchestrator (and return node 1 to serving if it was emptied). The first member run on node 1 should start in
-   about 2 s.
+   `EXEC_VM=qorpera-exec-node01 EXEC_PROJECT=<node 1 run project> EXEC_PROFILE=<run profile> EXEC_POOL=qorpera-vm EXEC_NETWORK=qorpera0 EXEC_SLOTS=4 EXEC_SLOT_CPU=1 EXEC_SLOT_GIB=3 EXEC_PACKAGE=… EXEC_STAGING=… create-exec-host.sh <current image>`.
+   Its orchestrator is registered and stays stopped. **Set its role before anything else:**
+   `qorpera_set_runner_orchestrator_dispatch_role(<new id>, 'fast')`. A live orchestrator without a role
+   claims at once and bypasses the placement.
+6. **Enroll by role.** Replace node 1's inventory policy with the printed entry listed by its job
+   (`"role": "execution-host"`) added (`qorpera_replace_runtime_node_inventory`). Write the observer
+   configuration and restart the observer, then check that node 1 reports `ready`.
+7. **Start.** Start the host's orchestrator and switch node 1's runs on again. The first member run on
+   node 1 should start in about 2 s; `qorpera_runtime_node_placements` rows read `CLAIM_TURN_*` with both
+   nodes.
+8. **Node 2 to the same size.** Placement counts runs, not slots, so the two hosts must match. With node
+   1's host serving, node 2's change needs no pause, only node 2 emptied of runs:
+   - switch node 2's runs off and wait for `readyForNodeRelease` (node 2's disk logins wait meanwhile);
+   - stop the host's orchestrator and its service, then check again that no slot unit and no journal is
+     left (an acquire in flight can finish during shutdown);
+   - set the VM's limits to 4 vCPU / 12 GiB, set `QORPERA_SHARED_EXECUTION_SLOTS=4` in node 2's staging,
+     and rebuild (`EXEC_SLOTS=4`): the installer makes the extra slot accounts;
+   - the limits are part of the host's configuration, so its role digest changes: replace its entry in
+     node 2's policy (the printed role digest) and sync the observer;
+   - node 2 `ready`, start the orchestrator, switch node 2's runs on.
+9. **Later, for symmetry:** a fresh-VM `overflow` orchestrator on node 2 (the node agent's orchestrator
+   role, node 2's adapter, a new id). Until then, while node 1 is emptied, node 2 has no overflow: a fifth
+   run at once waits for a slot.
+
+### In a rolling update
+
+Both nodes now have a host, so each node's turn rebuilds its own (`RUNTIME-ROLLING-UPDATE.md` steps 5
+and 8): node A's before the switch, without a bundle declaration; node B's after it, declared N+1. Each
+rebuild is gated on its own node's drain receipt and agent apply, keeps the host's role (same adapter),
+and needs no re-enrol (listed by role). While a node is emptied, its host and its fresh-VM orchestrator
+both stop claiming (one adapter), and the other node's host takes the runs, its fresh-VM path as overflow.
 
 ## Installing an execution host (pilot runbook, node 2)
 
@@ -388,7 +448,8 @@ and every fixed value matches.
 - `/etc/qorpera-node/node.json` (root, 0444): add both, same values, under
   `roles.provider.fixed`.
 
-Node 1 has no execution host: leave both unset there.
+Node 1 never sets them, its execution host included: with logins in the vault no identity volume is
+attached to a host. Only node 2's host carries the two logins still on its disk.
 
 Before the pause, read-only: every identity device already on the host must
 be an accepted identity, or node 2 reads `unavailable` from step 4 on. Take

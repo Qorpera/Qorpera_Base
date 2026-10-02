@@ -55,7 +55,7 @@ checked-in class allows only role releases. As of 2026-09-28 the known gaps are:
 - node 1 mounts the company objects `noexec`, and node 2 does not;
 - per-node coding and office workbench shares;
 - node 1 alone has the production company machine, the recovery mounts and the object gateway;
-- node 1 has no fast host;
+- node 1 has no fast host until its own is made (`deploy/shared-execution/README.md`, "Node 1, in this order");
 - the LXD project names are compared as they are. If the two nodes' run projects have different
   names (node 2's is `qn25b2`), their fast hosts show as two different hosts until the projects
   share a name or the class lists them.
