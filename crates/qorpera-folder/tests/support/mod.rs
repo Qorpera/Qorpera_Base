@@ -50,14 +50,14 @@ fn error(s: &mut Stream, c: &str) -> std::io::Result<()> {
 
 impl FakeNode {
 	pub fn start() -> FakeNode {
-		// The tests run at once in one process: a counter keeps two nodes that start together apart.
-		static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+		// Tests run in parallel threads of one process: a counter keeps their folders apart.
+		static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 		let dir = std::env::temp_dir().join(format!(
-			"qorpera-folder-node-{}-{}-{}",
+			"qorpera-folder-node-{}-{}",
 			std::process::id(),
-			NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-			std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+			NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 		));
+		let _ = std::fs::remove_dir_all(&dir);
 		std::fs::create_dir(&dir).unwrap();
 		let path = dir.join("node.sock");
 		let listener = UnixListener::bind(&path).unwrap();
