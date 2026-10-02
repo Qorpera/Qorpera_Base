@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
+	COMPANY_STATE_HUMAN_TASK_SKILL_PATH,
 	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
 	type ContactFile,
@@ -14,6 +15,10 @@ import {
 	companyStateValue,
 	freeCompanyStateName,
 	type HumanTaskFile,
+	humanTaskFolder,
+	humanTaskNotePath,
+	humanTaskPersonChange,
+	humanTaskProofPath,
 	isCompanyStateName,
 	isCompanyStateTimeZoneName,
 	parseCompanyStateFile,
@@ -1059,6 +1064,66 @@ describe("human tasks and contacts (H1)", () => {
 	});
 });
 
+describe("human tasks: the proof's names and the person's change (H2a)", () => {
+	const OPS = "7f3a9c21-44d0-4e6b-8a55-2c1f0b9e3d77";
+	const file = (status: string, extra = "", body = "## Steps\n- [ ] Order the disk\n- [x] Agree a window\n") =>
+		`---\nid: ${ID}\ntitle: Fit the disk\nstatus: ${status}\nmember: ${JONAS}\nfrom: ${OPS}\ndue: 2026-10-09T16:00:00Z\n${extra}---\n${body}`;
+	const path = "human-tasks/fit-disk.md";
+
+	it("names the task's folder, its proof and its note", () => {
+		expect(humanTaskFolder(path)).toBe("human-tasks/fit-disk");
+		expect(humanTaskProofPath(path, "photo", 1, "jpg")).toBe("human-tasks/fit-disk/proof/photo-1.jpg");
+		expect(humanTaskProofPath(path, "signature", 2, "png")).toBe("human-tasks/fit-disk/proof/signature-2.png");
+		expect(humanTaskNotePath(path)).toBe("human-tasks/fit-disk/note.md");
+		expect(() => humanTaskFolder("contacts/maria.md")).toThrow(RangeError);
+		// Only the spelling the database keeps: a compatibility or upper-case spelling is refused here, not later.
+		expect(() => humanTaskFolder("ＨＵＭＡＮ-TASKS/fit.md")).toThrow(RangeError);
+		expect(() => humanTaskFolder("human-tasks/Fit.md")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "note" as "photo", 1, "md")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "photo", 0, "jpg")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "photo", 1, "JPG")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "photo", 1, "")).toThrow(RangeError);
+	});
+
+	it("ticks one box and changes nothing else", () => {
+		const text = file("open");
+		const ticked = humanTaskPersonChange(path, text, { kind: "tick", step: 0, done: true });
+		expect(ticked).toBe(text.replace("- [ ] Order the disk", "- [x] Order the disk"));
+		expect(humanTaskPersonChange(path, ticked, { kind: "tick", step: 1, done: false })).toBe(
+			ticked.replace("- [x] Agree a window", "- [ ] Agree a window"),
+		);
+		// A carriage return and an upper-case X stay as the file had them.
+		const crlf = file("open").replaceAll("\n", "\r\n").replace("- [x]", "- [X]");
+		expect(humanTaskPersonChange(path, crlf, { kind: "tick", step: 1, done: true })).toBe(
+			crlf.replace("- [X] Agree", "- [x] Agree"),
+		);
+		expect(() => humanTaskPersonChange(path, text, { kind: "tick", step: 2, done: true })).toThrow(/no step 2/);
+		// A byte-order mark and notes in the settings stay as they were.
+		const noted = `\ufeff${file("open", "minutes: 40 # about\n")}`;
+		expect(humanTaskPersonChange(path, noted, { kind: "tick", step: 0, done: true })).toBe(
+			noted.replace("- [ ] Order the disk", "- [x] Order the disk"),
+		);
+		expect(humanTaskPersonChange(path, noted, { kind: "done" })).toBe(noted.replace("status: open", "status: done"));
+	});
+
+	it("marks a task done or declined, and only an open or returned one", () => {
+		const returned = file("returned", "reason: The serial is not readable\n");
+		const done = humanTaskPersonChange(path, returned, { kind: "done" });
+		expect(done).toBe(file("done"));
+		const declined = humanTaskPersonChange(path, file("open"), { kind: "declined", reason: "I am away that week" });
+		expect(ok(path, declined)).toMatchObject({ status: "declined", reason: "I am away that week" });
+		expect(declined).toBe(file("declined", "reason: I am away that week\n"));
+		for (const status of ["done", "accepted", "declined", "cancelled"])
+			expect(() =>
+				humanTaskPersonChange(path, file(status, status === "declined" ? "reason: x\n" : ""), { kind: "done" }),
+			).toThrow(/not the person's to change/);
+		expect(() => humanTaskPersonChange(path, file("open"), { kind: "declined", reason: "" })).toThrow(
+			/would be refused/,
+		);
+		expect(() => humanTaskPersonChange("human-tasks/x.md", "not a task", { kind: "done" })).toThrow(/parses/);
+	});
+});
+
 describe("routines", () => {
 	const weekly = `---
 id: ${ID}
@@ -1426,9 +1491,26 @@ describe("companyStateSeedTree", () => {
 			const parent = entry.path.split("/").slice(0, -1).join("/");
 			if (parent) expect(paths.slice(0, index)).toContain(parent);
 			expect(companyStatePathProblems(entry.path, entry.kind === "folder")).toEqual([]);
-			if (entry.kind === "file") expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok).toBe(true);
+			// Every structured file parses; the seeded skill is an ordinary file.
+			if (entry.kind === "file")
+				expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok ?? entry.path).toBe(
+					entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH ? entry.path : true,
+				);
 		}
 		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
+		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct).
+		expect(paths.filter((path) => !path.includes("/"))).toEqual([
+			"vision",
+			"agents",
+			"connections",
+			"human-tasks",
+			"contacts",
+			"skills",
+			"rules",
+		]);
+		const skill = tree.find((entry) => entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH)?.text ?? "";
+		expect(skill).toMatch(/^---\nname: human-task\ndescription: .+\n---\n# Human tasks\n/);
+		expect(skill).toContain("`## Steps`");
 		expect(ok("vision/vision.md", tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "")).toEqual({
 			kind: "vision",
 			name: "Nordlys Studio",
