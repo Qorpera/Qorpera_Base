@@ -82,7 +82,7 @@ export type RunBoxReply =
 	| { t: "error"; id: string; code: RunBoxErrorCode; message: string };
 
 const SIGNAL_PATTERN = /^SIG[A-Z0-9]{1,12}$/;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: output text must hold none of these.
+/** Output text must hold none of these. */
 const OUTPUT_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const LOG_PATH_PATTERN = /^\/[A-Za-z0-9._/-]{1,255}$/;
 
