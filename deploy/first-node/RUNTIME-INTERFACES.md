@@ -256,7 +256,10 @@ not exist yet is not drawn: the client contract's rule against rendering missing
   outside content:
   - `mail`'s `from_name`, `from_address` and `subject`;
   - a `file:` source's `text` under `hooks/<hook>/` (saved events, and received mail once it moves there with I11);
-  - a `file:` source's `text` under `human-tasks/<task>/` that a contact sent back.
+  - a `file:` source's `text` under `human-tasks/<task>/`, whoever sent it back.
+
+  A path counts as under `hooks/` or `human-tasks/` by its folder key, as the folder finds files: case and
+  full-width letters don't matter.
 
   A source added later names its own.
 - **Nothing remote, no HTML.** A `text` block draws markdown with the client's own renderer: no HTML, and images only
@@ -513,7 +516,7 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I5b | the account-mail mark | A1 | — |
 | I5c | the Mailbox page, dark until mail is switched on | Interfaces | I5a, I5b, I5d |
 | I5d | quotes: the input checks, the fence and the review, the composer and drafts | Interfaces, with the runtime | I5a, I5b |
-| I6 | the interface and table kinds in the save hook; seeding | F2, with Interfaces | C2's founding seed, I2 |
+| I6 | the interface and table kinds in the save hook; seeding | F2, with Interfaces | C2's founding seed, I2, I5d's `outside_value` check in the parser |
 | I7 | the web client reads definitions and tables from the folder, live | Interfaces | C4, I6 |
 | I8 | `interface_read`, `table_read`, `table_write`, `save_interface`; the review recorder takes `save_interface` | Interfaces, with F2 | C3, C2's recorder, I6 |
 | I9 | Members | Interfaces | I6, I7, C4 member writes |

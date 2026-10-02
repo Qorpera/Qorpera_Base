@@ -4435,7 +4435,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      around it.
    - A draft keeps its quotes beside its text, room drafts included, so a reload, another device or a co-editor
      keeps them.
-   - Once a draft holds a quote, a save that leaves out its quotes or changes a quote's words is refused.
+   - Once a draft holds a quote, a save that keeps a quote's words without its record, or changes a quote's words,
+     is refused. Removing a quote whole is an ordinary save.
    - A client that has lost a quote doesn't send until the member removes it or fills it in again.
    - An agent's message button sends a coworker message, which is never authority (9.2). It carries no `quotes`.
 3. **The platform checks quotes before it writes the message.**
