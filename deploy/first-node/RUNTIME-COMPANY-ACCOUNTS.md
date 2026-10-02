@@ -176,7 +176,7 @@ accounts are switched off (the read answers "switched off"). `cloud-company-acco
   1. Which way in (Jonas, 2 October), as the arguments are read, before any review, so no member is ever asked to
      approve such an opening: a service with an official connection is refused with "use it" (GitHub, Google: the
      connector catalog's) or "the company cannot add it yet" (Microsoft, Slack); a site with strict bot checks
-     (Apple, LinkedIn, X, Meta, Amazon) and a payment provider (PayPal, Stripe) are refused as a person's task in
+     (Apple, LinkedIn, X, Meta, Amazon and its regional stores) and a payment provider (PayPal, Stripe) are refused as a person's task in
      their own browser. Matched on the site and its sign-in hosts, the domain or any name under it. Banks are in the
      words only.
   2. The read with the todo key and the site: the todo's id, the mailboxes, the site's accounts.

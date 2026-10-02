@@ -40,7 +40,8 @@ function fixture(
 				schema: "qorpera.agent-company-accounts/v1",
 				runId: binding.runId,
 				mailboxes: answer.mailboxes ?? ["agents@inbox.qorpera.com"],
-				accounts: (request.site === undefined ? answer.newest : undefined) ?? answer.accounts ?? [],
+				// A read with a site answers the site's accounts; one without, the company's newest.
+				accounts: (request.site === undefined ? answer.newest : answer.accounts) ?? [],
 				...(request.todo ? { todo: { key: request.todo, id: TODO } } : {}),
 			};
 		}),
@@ -180,7 +181,8 @@ describe("company_account", () => {
 			[open({ site: "acme.ghe.com" }), "GitHub has an official connection"],
 			[open({ site: "acme.sharepoint.com" }), "Microsoft is reached only through an official connection"],
 			[open({ site: "www.threads.net" }), "Meta checks for automated browsers"],
-			[open({ site: "aws.amazon.com" }), "Amazon checks for automated browsers"],
+			[open({ site: "www.amazon.com" }), "Amazon checks for automated browsers"],
+			[open({ site: "www.amazon.de" }), "Amazon checks for automated browsers"],
 			[open({ site: "www.paypal.com" }), "PayPal is a payment provider"],
 			[open({ site: "dashboard.stripe.com" }), "Stripe is a payment provider"],
 			[open({ site: "mail.google.com" }), "Google has an official connection"],
@@ -241,7 +243,7 @@ describe("company_account", () => {
 			],
 		});
 		expect(other.text(await other.invoke(open()))).toContain(
-			`REFUSED: The company already has an account on vercel.com (${ACCOUNT}, connected, team@acme.example): use it.`,
+			`REFUSED: The company already has an account on this website, on vercel.com (${ACCOUNT}, connected, team@acme.example): use it.`,
 		);
 		expect(other.execute).not.toHaveBeenCalled();
 		// Still pending counts too; so does the same website under another name, found among the newest accounts.
@@ -251,7 +253,7 @@ describe("company_account", () => {
 			],
 		});
 		expect(pending.text(await pending.invoke(open()))).toContain(
-			"REFUSED: The company already has an account on vercel.com",
+			"REFUSED: The company already has an account on this website, on vercel.com",
 		);
 		for (const site of ["app.vercel.com", "vercel.com"]) {
 			const related = fixture({
@@ -266,10 +268,25 @@ describe("company_account", () => {
 				],
 			});
 			expect(related.text(await related.invoke(open({ site }))), site).toContain(
-				"REFUSED: The company already has an account on",
+				"REFUSED: The company already has an account on this website",
 			);
 			expect(related.execute).not.toHaveBeenCalled();
 		}
+		// An account that signs in on this site, found among the newest; the refusal names the account's own site.
+		const signsIn = fixture({
+			newest: [
+				{
+					accountId: ACCOUNT,
+					site: "vercel.app",
+					signInHosts: ["vercel.com"],
+					login: "team@acme.example",
+					status: "connected",
+				},
+			],
+		});
+		expect(signsIn.text(await signsIn.invoke(open()))).toContain(
+			`REFUSED: The company already has an account on this website, on vercel.app (${ACCOUNT}`,
+		);
 		// Its own address: the same opening again, which its receipt answers (or the vault says it exists).
 		const same = fixture({
 			accounts: [

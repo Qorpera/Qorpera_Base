@@ -65,7 +65,23 @@ const STRICT: ReadonlyArray<{ name: string; domains: readonly string[] }> = [
 	{ name: "LinkedIn", domains: ["linkedin.com"] },
 	{ name: "X", domains: ["x.com", "twitter.com"] },
 	{ name: "Meta", domains: ["facebook.com", "instagram.com", "meta.com", "threads.net"] },
-	{ name: "Amazon", domains: ["amazon.com", "aws.amazon.com"] },
+	// Amazon's stores sign in on their own sites in each country; AWS is under amazon.com.
+	{
+		name: "Amazon",
+		domains: [
+			"amazon.com",
+			"amazon.de",
+			"amazon.co.uk",
+			"amazon.se",
+			"amazon.fr",
+			"amazon.it",
+			"amazon.es",
+			"amazon.nl",
+			"amazon.pl",
+			"amazon.com.be",
+			"amazon.ie",
+		],
+	},
 ];
 /** Payment providers hold the company's money and check who signs up: a person's task too. Banks are in the words. */
 const MONEY: ReadonlyArray<{ name: string; domains: readonly string[] }> = [
@@ -400,7 +416,7 @@ export function cloudCompanyAccountTool(options: {
 			);
 			if (other)
 				throw new CloudToolRefusal(
-					`The company already has an account on ${parsed.site} (${other.accountId}, ${other.status}, ${other.login}): use it.`,
+					`The company already has an account on this website, on ${other.site} (${other.accountId}, ${other.status}, ${other.login}): use it.`,
 				);
 			const todoId = found.todo.id;
 			return run(
