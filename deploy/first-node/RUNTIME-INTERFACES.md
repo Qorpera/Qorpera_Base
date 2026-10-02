@@ -299,8 +299,7 @@ members = "all"                     # all | owners | none
 ### Rows
 
 - `rows.csv` is RFC 4180 CSV in UTF-8, with or without a byte order mark. Its first line names its columns, in any
-  order. It may leave out optional
-  columns, which then read as empty, and it names no column the definition lacks.
+  order. It may leave out optional columns, which then read as empty, and it names no column the definition lacks.
 - An empty field is allowed only in an `optional` column.
 - Two rows with the same key are refused.
 - Every save of a rows file is checked against the table's definition, within 64 KiB. The checks are: the header,
@@ -413,7 +412,8 @@ files or state:
 - the rows against their definition: the header, each row (`row`, also for CSV that doesn't split into fields), two
   rows with one key (`duplicate`);
 - a definition the rows it finds no longer fit;
-- a table's `table.toml` or `rows.csv` deleted on its own, or a `rows.csv` outside a table folder;
+- a table's `table.toml` or `rows.csv` deleted or moved on its own, a `rows.csv` outside a table folder or without
+  its `table.toml`, and any other file in a table folder than those two and `README.md`;
 - `[write]`;
 - the claim rule (§5), with `claim`;
 - `tables/areas/`: its fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
