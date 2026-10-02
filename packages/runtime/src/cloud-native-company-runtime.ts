@@ -15,6 +15,7 @@ import {
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
 } from "./cloud-codex-tool-session.ts";
+import { type CloudCompanyAccountClient, cloudCompanyAccountTool } from "./cloud-company-account-tools.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
@@ -124,6 +125,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
+	readonly #companyAccounts: CloudCompanyAccountClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
@@ -147,6 +149,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
 		chatGptPlanAuth?: CloudChatGptPlanAuth;
 		secretBroker?: CloudSecretOperationClient;
+		/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
+		companyAccounts?: CloudCompanyAccountClient;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
 		/** The coding composition (Order 9): only a node with the coding command
@@ -171,6 +175,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#chatGptPlanAuth = options.chatGptPlanAuth;
 		this.#secretBroker = options.secretBroker;
+		this.#companyAccounts = options.companyAccounts;
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
@@ -602,6 +607,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											operations,
 											broker: this.#secretBroker,
 										})
+									: []),
+								// The company's own website accounts (A1-4): not a worker's, and a folder company's come
+								// with its connection files (A1-7).
+								...(this.#companyAccounts && !work.isWorker && !context.folder
+									? [
+											cloudCompanyAccountTool({
+												binding,
+												identity,
+												control: this.#paths,
+												operations,
+												accounts: this.#companyAccounts,
+											}),
+										]
 									: []),
 								...(work.isWorker
 									? []

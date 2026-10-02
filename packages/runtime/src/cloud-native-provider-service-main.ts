@@ -471,17 +471,19 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					}),
 				),
 			...(secretBrokerOrigin && secretBrokerToken
-				? {
+				? (() => {
 						// The company routes the request to this company's broker behind the
 						// shared origin. It is this host's compute identity's company, read from
 						// the recovery authority and matched against the identity volume above;
 						// the SQL placement only runs a company's work on its own identities.
-						secretBroker: new HttpCloudSecretBrokerClient({
+						const broker = new HttpCloudSecretBrokerClient({
 							origin: secretBrokerOrigin,
 							runtimeToken: secretBrokerToken,
 							companyId: state.companyId,
-						}),
-					}
+						});
+						// The same broker serves the company's website accounts (A1-4).
+						return { secretBroker: broker, companyAccounts: broker };
+					})()
 				: {}),
 		});
 		// A vault login comes from this company's broker, under the same runtime token. A host that

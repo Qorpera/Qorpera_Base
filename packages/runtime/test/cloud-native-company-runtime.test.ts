@@ -621,6 +621,16 @@ async function fixture(
 		binarySha256,
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
+		// The vault's company accounts route comes with the broker (A1-4); this suite never opens an account.
+		...(secretBroker
+			? {
+					companyAccounts: {
+						companyAccount: async () => {
+							throw new Error("No company account expected");
+						},
+					},
+				}
+			: {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		// Folder bytes read the files a test seeds; this suite never saves a file.
 		...(folderBytes
@@ -1023,6 +1033,11 @@ it("exposes only a named typed connector operation and keeps its grant and desti
 	expect(f.reviewedTools).toEqual(["linear_issue_create"]);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
+	// With the vault, a company run is offered its accounts (A1-4).
+	const offered = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
+		(tool: { name: string }) => tool.name,
+	);
+	expect(offered).toContain("company_account");
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(
