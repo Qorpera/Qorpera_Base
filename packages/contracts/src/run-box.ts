@@ -12,7 +12,7 @@ import { isUuid, parseClosedRecord, parseInteger, WireValueError } from "./wire-
 
 export const RUN_BOX_PROTOCOL = 1;
 /** One line, either way. A request is at most a command or input of 64 KiB; a reply at most 64 KiB of output. */
-export const RUN_BOX_LINE_LIMIT = 256 * 1024;
+export const RUN_BOX_LINE_LIMIT = 262_144;
 /** A command line, and the input written in one call (UTF-16 code units). */
 export const RUN_BOX_MAX_TEXT_LENGTH = 65_536;
 /** How long one call may wait for output. A command keeps running after it; this is how long one answer waits. */
@@ -23,7 +23,7 @@ export const RUN_BOX_MAX_OUTPUT_BYTES = 65_536;
 /** The company folder inside the box, and the working directory a command starts in unless it names another. */
 export const RUN_BOX_COMPANY = "/company";
 /** The highest session number a box hands out. */
-export const RUN_BOX_MAX_SESSION = 2 ** 31 - 1;
+export const RUN_BOX_MAX_SESSION = 2_147_483_647;
 
 export type RunBoxRequest =
 	/** Start a command. It runs under bash in `workdir` (default `/company`); with `tty` it gets a terminal and keeps
