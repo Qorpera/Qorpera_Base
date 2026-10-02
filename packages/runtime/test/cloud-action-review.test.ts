@@ -53,6 +53,7 @@ describe("which calls are reviewed", () => {
 		["computer_screenshot", {}, "read"],
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
+		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
 		// An email from a company mailbox leaves the company (M2b).
 		[
 			"send_mail",
