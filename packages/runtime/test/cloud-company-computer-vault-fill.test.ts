@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CompanyComputerFillKey, sealCompanyAccountFill } from "@qorpera/runtime/cloud-company-account-fill-box";
 import {
 	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
@@ -9,7 +10,7 @@ import {
 } from "@qorpera/runtime/cloud-company-computer-guest";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	computerBinding,
 	computerEffect,
@@ -19,39 +20,100 @@ import {
 } from "./fixtures/company-computer.ts";
 
 const account = computerId(60);
-const password = "Pw-1234567890abcdEFGH";
+/** With the generator's symbols, which a page address percent-encodes. */
+const password = "Pw-1234567890@abcd#EFGH";
 
-/** One sign-in page with one password box, as far as the fill and a snapshot use it. */
+/** A synthetic PNG header the size of a page, as the guest checks it (not a real picture). */
+function pngHeader(width = 1920, height = 1200): Uint8Array {
+	const bytes = Buffer.alloc(33);
+	Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes);
+	bytes.writeUInt32BE(13, 8);
+	bytes.write("IHDR", 12);
+	bytes.writeUInt32BE(width, 16);
+	bytes.writeUInt32BE(height, 20);
+	return bytes;
+}
+
+const realGlobals = {
+	document: (globalThis as { document?: unknown }).document,
+	location: (globalThis as { location?: unknown }).location,
+};
+afterEach(() => {
+	Object.assign(globalThis, realGlobals);
+});
+
+/** A node as the page's own code sees it. */
+interface FakeNode {
+	value?: string;
+	shadowRoot?: { querySelectorAll(selector: string): FakeNode[]; textContent: string } | null;
+	matches?(selector: string): boolean;
+}
+
+/**
+ * One sign-in page with one password box. Every evaluate of the screen check runs the real in-page function
+ * against this fake document: its title and address, its text, its boxes and an open shadow root.
+ */
 function office(
 	options: { url?: string; key?: CompanyComputerFillKey | null; filled?: CompanyComputerFilledValues } = {},
 ) {
-	const location = { url: options.url ?? "https://vercel.com/login", title: "Sign in" };
+	const shown = {
+		url: options.url ?? "https://vercel.com/login",
+		title: "Sign in",
+		text: "Sign in to Vercel",
+		/** Another box on the page, not marked private (a "show password" that made a new one). */
+		other: { value: "" },
+		shadowText: "",
+	};
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
 	const typed: string[] = [];
 	const mainFrame = {};
+	const node = (box: { value: string }, marked: () => boolean): FakeNode => ({
+		get value() {
+			return box.value;
+		},
+		matches: (selector) =>
+			selector === "input, textarea" ? true : selector === `[${COMPANY_ACCOUNT_FILLED_ATTRIBUTE}]` && marked(),
+	});
+	const shadowHost: FakeNode = {
+		get shadowRoot() {
+			return { querySelectorAll: () => [], textContent: shown.shadowText };
+		},
+	};
+	const runScreenCheck = (fn: (arg: unknown) => unknown, arg: unknown) => {
+		Object.assign(globalThis, {
+			document: {
+				title: shown.title,
+				documentElement: { innerText: shown.text },
+				querySelectorAll: () => [
+					node(element, () => attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE)),
+					node(shown.other, () => false),
+					shadowHost,
+				],
+			},
+			location: { href: shown.url },
+		});
+		return fn(arg);
+	};
 	const handle = {
 		ownerFrame: async () => mainFrame,
-		// The page side of each evaluate: the focus check answers yes, every other one sees the box.
+		// The page side of the fill: the focus check before typing, then where the value landed.
 		evaluate: vi.fn(async (fn: (node: unknown, arg?: unknown) => unknown, arg?: unknown) =>
-			// The focus check before typing; then where the value landed (here, whole).
-			String(fn).includes("here: true")
-				? { here: true, length: element.value.length }
-				: String(fn).includes("activeElement")
-					? true
-					: fn(
-							{
-								tagName: element.tagName,
-								type: element.type,
-								disabled: element.disabled,
-								readOnly: element.readOnly,
-								get value() {
-									return element.value;
-								},
-								setAttribute: (name: string, value: string) => attributes.set(name, value),
+			String(fn).includes("activeElement") && !String(fn).includes("shadowRoot")
+				? true
+				: fn(
+						{
+							tagName: element.tagName,
+							type: element.type,
+							disabled: element.disabled,
+							readOnly: element.readOnly,
+							get value() {
+								return element.value;
 							},
-							arg,
-						),
+							setAttribute: (name: string, value: string) => attributes.set(name, value),
+						},
+						arg,
+					),
 		),
 		dispose: async () => undefined,
 	};
@@ -65,22 +127,23 @@ function office(
 	};
 	const page = {
 		isClosed: () => false,
-		url: () => location.url,
-		title: async () => location.title,
+		url: () => shown.url,
+		title: async () => shown.title,
 		waitForLoadState: async () => undefined,
 		mainFrame: () => mainFrame,
 		getByRole: vi.fn(() => box),
-		// The private boxes' values (none read here), or what the page shows for the screenshot check.
+		// The screen check's own function runs against the fake document; the private-box reader finds none.
 		evaluate: vi.fn(
-			async (_fn: unknown, arg?: unknown): Promise<unknown> =>
-				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE
-					? [location.title, location.url, `Your password is ${element.value}`].join("\n")
-					: [],
+			async (fn: (arg: unknown) => unknown, arg?: unknown): Promise<unknown> =>
+				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE ? runScreenCheck(fn, arg) : [],
 		),
-		screenshot: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
+		screenshot: vi.fn(async () => pngHeader()),
 		frames: () => [page],
 		isDetached: () => false,
-		locator: vi.fn(() => ({ ariaSnapshot: async () => `- paragraph: Your password is ${element.value}` })),
+		locator: vi.fn(() => ({
+			ariaSnapshot: async () =>
+				`- textbox "Subject": Quarterly invoice\n- paragraph: ${shown.text}\n- textbox "Password": ${element.value}`,
+		})),
 		context: () => ({
 			newCDPSession: async () => ({
 				send: async (method: string, params: { text: string }) => {
@@ -100,6 +163,10 @@ function office(
 		assertActive: vi.fn(async () => undefined),
 		close: vi.fn(async () => undefined),
 	};
+	const commands = {
+		run: vi.fn(async () => ({ code: 0, stdout: "", stderr: "" })),
+		capturePng: vi.fn(async () => pngHeader()),
+	};
 	const key = options.key === null ? undefined : (options.key ?? new CompanyComputerFillKey());
 	const automation = new CompanyComputerGuestAutomation({
 		binding: computerBinding(),
@@ -111,11 +178,19 @@ function office(
 		},
 		boundary: { assertReady: vi.fn(async () => undefined) },
 		browser,
-		screenshots: { publish: vi.fn() },
+		commands,
+		screenshots: {
+			publish: vi.fn(async (bytes: Uint8Array) => ({
+				assetId: computerId(50),
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+				bytes: bytes.length,
+				mediaType: "image/png" as const,
+			})),
+		},
 		...(key ? { fillKey: key } : {}),
 		...(options.filled ? { filled: options.filled } : {}),
 	});
-	return { automation, key, element, attributes, typed, page, location };
+	return { automation, key, element, attributes, typed, page, shown, commands };
 }
 
 const action = (field: "password" | "code" = "password"): CompanyComputerAction => ({
@@ -128,16 +203,26 @@ const action = (field: "password" | "code" = "password"): CompanyComputerAction 
 });
 
 /** What the vault sends for this call: the value sealed to the office's key. */
-function sealed(key: CompanyComputerFillKey, receiptId = computerEffect().receiptId, field = "password") {
+function sealed(
+	key: CompanyComputerFillKey,
+	receiptId = computerEffect().receiptId,
+	field = "password",
+	at = Date.now(),
+) {
 	const binding = computerBinding();
-	return sealCompanyAccountFill({ value: password, hosts: ["vercel.com"] }, key.publicKey, {
-		companyId: binding.companyId,
-		companyComputerId: binding.companyComputerId,
-		computerGeneration: binding.computerGeneration,
-		receiptId,
-		accountId: account,
-		field: field as "password",
-	});
+	return sealCompanyAccountFill(
+		{ value: password, hosts: ["vercel.com"] },
+		key.publicKey,
+		{
+			companyId: binding.companyId,
+			companyComputerId: binding.companyComputerId,
+			computerGeneration: binding.computerGeneration,
+			receiptId,
+			accountId: account,
+			field: field as "password",
+		},
+		at,
+	);
 }
 
 function perform(f: ReturnType<typeof office>, value: CompanyComputerAction, fill?: Record<string, string>) {
@@ -152,8 +237,15 @@ function perform(f: ReturnType<typeof office>, value: CompanyComputerAction, fil
 	);
 }
 
+const screenshot = (f: ReturnType<typeof office>, surface: "browser" | "desktop") =>
+	f.automation.perform({ kind: "screenshot", surface }, computerLease(), computerEffect(), {
+		...computerOperation(),
+		tool: "computer_screenshot",
+		arguments: { kind: "screenshot", surface },
+	});
+
 describe("vault_fill on the Company Computer", () => {
-	it("opens the box with this boot's key, types the value once and hides it from every later snapshot", async () => {
+	it("opens the box with this boot's key, types the value once and hides it from later snapshots", async () => {
 		const f = office();
 		expect(await perform(f, action(), sealed(f.key!))).toMatchObject({
 			kind: "json",
@@ -164,6 +256,7 @@ describe("vault_fill on the Company Computer", () => {
 		expect(f.attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE)).toBe(true);
 		expect(f.page.getByRole).toHaveBeenCalledWith("textbox", { name: "Password", exact: true });
 		// The page shows the value as text; the agent's snapshot does not.
+		f.shown.text = `Your password is ${password}`;
 		const snapshot = await perform(f, { kind: "browser", action: "snapshot" });
 		expect(JSON.stringify(snapshot)).not.toContain(password);
 	});
@@ -184,43 +277,74 @@ describe("vault_fill on the Company Computer", () => {
 		expect(f.typed).toEqual([]);
 	});
 
-	it("hides the value from titles and addresses, takes no picture while the page shows it, also in a later run", async () => {
+	it("hides the value in titles and addresses, also percent-encoded, in this run and a later one", async () => {
 		const filled = new CompanyComputerFilledValues();
 		const f = office({ filled });
 		await perform(f, action(), sealed(f.key!));
-		// The site echoes the password in its address and title (a GET form, a careless page).
-		f.location.url = `https://vercel.com/search?q=${password}`;
-		f.location.title = `Results for ${password}`;
-		const snapshot = await perform(f, { kind: "browser", action: "snapshot" });
-		expect(JSON.stringify(snapshot)).not.toContain(password);
-		await expect(perform(f, { kind: "screenshot", surface: "browser" })).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
-		expect(f.page.screenshot).not.toHaveBeenCalled();
-		// A later run's automation on the same screen shares the store.
+		// A form without a method puts the password in the address, as a browser encodes it.
+		f.shown.url = `https://vercel.com/login?pw=${encodeURIComponent(password)}`;
+		f.shown.title = `Results for ${password}`;
+		const snapshot = JSON.stringify(await perform(f, { kind: "browser", action: "snapshot" }));
+		const tabs = JSON.stringify(await perform(f, { kind: "browser", action: "list_tabs" }));
+		for (const value of [password, encodeURIComponent(password)]) {
+			expect(snapshot).not.toContain(value);
+			expect(tabs).not.toContain(value);
+		}
+		// A later run's automation on the same screen shares the store, and other typed text stays readable.
 		const later = office({ filled });
-		later.element.value = password;
-		later.location.title = password;
-		expect(JSON.stringify(await perform(later, { kind: "browser", action: "snapshot" }))).not.toContain(password);
-		await expect(perform(later, { kind: "browser", action: "list_tabs" })).resolves.toSatisfy(
-			(content) => !JSON.stringify(content).includes(password),
-		);
+		later.shown.url = f.shown.url;
+		const again = JSON.stringify(await perform(later, { kind: "browser", action: "snapshot" }));
+		expect(again).not.toContain(encodeURIComponent(password));
+		expect(again).toContain("Quarterly invoice");
+	});
+
+	it("takes no picture while the page shows the value as text, in an address, an unmarked box or a shadow root", async () => {
+		const shows: Array<[string, (f: ReturnType<typeof office>) => void]> = [
+			[
+				"text",
+				(f) => {
+					f.shown.text = `Your password is ${password}`;
+				},
+			],
+			[
+				"address",
+				(f) => {
+					f.shown.url = `https://vercel.com/?pw=${encodeURIComponent(password)}`;
+				},
+			],
+			[
+				"unmarked box",
+				(f) => {
+					f.shown.other.value = password;
+				},
+			],
+			[
+				"shadow root",
+				(f) => {
+					f.shown.shadowText = `Copied ${password}`;
+				},
+			],
+		];
+		for (const [where, show] of shows) {
+			for (const surface of ["browser", "desktop"] as const) {
+				const f = office();
+				await perform(f, action(), sealed(f.key!));
+				show(f);
+				await expect(screenshot(f, surface), `${where} ${surface}`).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+				expect(f.page.screenshot).not.toHaveBeenCalled();
+				expect(f.commands.capturePng).not.toHaveBeenCalled();
+			}
+		}
+		// Only in its own box, marked private and masked in a browser picture: the picture is taken.
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		await expect(screenshot(f, "browser")).resolves.toMatchObject({ kind: "json" });
+		expect(f.page.screenshot).toHaveBeenCalledOnce();
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {
 		const f = office();
-		const binding = computerBinding();
-		const old = sealCompanyAccountFill(
-			{ value: password, hosts: ["vercel.com"] },
-			f.key!.publicKey,
-			{
-				companyId: binding.companyId,
-				companyComputerId: binding.companyComputerId,
-				computerGeneration: binding.computerGeneration,
-				receiptId: computerEffect().receiptId,
-				accountId: account,
-				field: "password",
-			},
-			Date.now() - 10 * 60_000,
-		);
+		const old = sealed(f.key!, computerEffect().receiptId, "password", Date.now() - 10 * 60_000);
 		await expect(perform(f, action(), old)).rejects.toThrow("ACCOUNT_FILL_EXPIRED");
 		expect(f.typed).toEqual([]);
 	});

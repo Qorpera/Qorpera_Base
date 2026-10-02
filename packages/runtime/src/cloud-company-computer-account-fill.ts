@@ -1,6 +1,6 @@
 import type { Locator, Page } from "playwright-core";
 import type { CompanyAccountFill } from "./cloud-company-account-fill-box.ts";
-import { COMPANY_COMPUTER_PRIVATE_VALUE } from "./cloud-company-computer-private-fields.ts";
+import { COMPANY_COMPUTER_PRIVATE_VALUE, companyComputerUrlForms } from "./cloud-company-computer-private-fields.ts";
 
 /* The office's last step of a company account fill (A1-3): the value the vault sealed to this computer,
  * already opened, goes into one box of one page and nowhere else. The page must be the account's website
@@ -106,20 +106,27 @@ export async function fillCompanyAccountBox(page: Page, box: Locator, fill: Comp
 		} finally {
 			await session.detach().catch(() => undefined);
 		}
-		// Where the value went. If a page script moved the focus between the check and the typing, it is in the box
-		// that has the focus now: that box is marked private and emptied, never left showing the value.
-		const landed = await handle.evaluate((element, attribute) => {
-			const active = (globalThis as unknown as { document: { activeElement: unknown } }).document
-				.activeElement as PageBox | null;
-			if (active !== null && active === (element as unknown)) return { here: true, length: active.value.length };
-			if (active && typeof active.value === "string") {
-				active.setAttribute(attribute, "");
-				active.value = "";
-			}
-			return { here: false, length: 0 };
-		}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE);
-		if (!landed.here || landed.length !== fill.value.length)
-			throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_UNCONFIRMED");
+		// Where the value went. Whole in the box: done, even if the page has moved the focus on since (a code box
+		// that advances). Otherwise a page script moved the focus between the check and the typing: the value is in
+		// the box that has the focus now, inside open shadow roots too, which is marked private and emptied.
+		const landed = await handle.evaluate(
+			(element, { attribute, length }) => {
+				if ((element as unknown as PageBox).value.length === length) return true;
+				interface Focus extends PageBox {
+					shadowRoot?: { activeElement: Focus | null } | null;
+				}
+				let active = (globalThis as unknown as { document: { activeElement: Focus | null } }).document
+					.activeElement;
+				while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+				if (active && active !== (element as unknown) && typeof active.value === "string") {
+					active.setAttribute(attribute, "");
+					active.value = "";
+				}
+				return false;
+			},
+			{ attribute: COMPANY_ACCOUNT_FILLED_ATTRIBUTE, length: fill.value.length },
+		);
+		if (!landed) throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_UNCONFIRMED");
 	} finally {
 		await handle.dispose().catch(() => undefined);
 	}
@@ -144,6 +151,7 @@ export class CompanyComputerFilledValues {
 
 	add(value: string, field: CompanyAccountFill["field"]): void {
 		if (field === "login") return;
+		this.current();
 		this.#values.delete(value);
 		this.#values.set(value, field === "code" ? this.#now() + CODE_HIDDEN_MS : Number.POSITIVE_INFINITY);
 		while (this.#values.size > MAX_FILLED) this.#values.delete(this.#values.keys().next().value!);
@@ -156,15 +164,25 @@ export class CompanyComputerFilledValues {
 		return [...this.#values.keys()];
 	}
 
-	/** `text` with every value still hidden replaced. */
+	/** `text` (a title or an address) with every value still hidden replaced, in each spelling an address uses. */
 	hide(text: string): string {
 		let out = text;
-		for (const value of this.current()) out = out.split(value).join(COMPANY_COMPUTER_PRIVATE_VALUE);
+		for (const form of this.#forms()) out = out.replace(form, COMPANY_COMPUTER_PRIVATE_VALUE);
 		return out;
 	}
 
-	/** Whether `text` shows a value still hidden. */
+	/** Whether `text` shows a value still hidden, in any of those spellings. */
 	shows(text: string): boolean {
-		return this.current().some((value) => text.includes(value));
+		return this.#forms().some((form) => form.test(text));
+	}
+
+	/** Each value's spellings as patterns; an authenticator code only as a number of its own. */
+	#forms(): RegExp[] {
+		return this.current().flatMap((value) => {
+			const code = /^\d+$/.test(value);
+			return [...new Set([value, ...companyComputerUrlForms(value)])].map(
+				(form) => new RegExp(code ? `(?<!\\d)${form}(?!\\d)` : form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
+			);
+		});
 	}
 }

@@ -69,22 +69,27 @@ function fixture(options: {
 	url?: string | string[];
 	box?: Partial<FakeBox>;
 	inFrame?: boolean;
-	/** A page script takes the focus between the fill's check and its typing. */
-	stealFocus?: boolean;
+	/** A page script takes the focus between the fill's check and its typing (into a shadow root's box). */
+	stealFocus?: boolean | "shadow";
+	/** The page moves the focus on once the box holds the whole value (a code box that advances). */
+	advance?: boolean;
 	/** The website keeps only this many characters (it reshapes input). */
 	keeps?: number;
 }) {
 	const urls = Array.isArray(options.url) ? [...options.url] : [options.url ?? "https://vercel.com/login"];
 	const target = fakeBox(options.box);
 	const other = fakeBox({ type: "text" });
+	const host = { ...fakeBox({ tagName: "SIGN-IN" }), shadowRoot: { activeElement: other } };
 	const document = { activeElement: null as FakeBox | null };
 	const calls: string[] = [];
 	const mainFrame = {};
 	const send = vi.fn(async (method: string, params: { text: string }) => {
 		calls.push(method);
-		if (options.stealFocus) document.activeElement = other;
-		const into = document.activeElement;
+		if (options.stealFocus === "shadow") document.activeElement = host;
+		else if (options.stealFocus) document.activeElement = other;
+		const into = options.stealFocus === "shadow" ? other : document.activeElement;
 		if (into) into.value += options.keeps === undefined ? params.text : params.text.slice(0, options.keeps);
+		if (options.advance) document.activeElement = other;
 	});
 	const handle = {
 		ownerFrame: async () => (options.inFrame ? {} : mainFrame),
@@ -186,6 +191,22 @@ describe("company account fill", () => {
 		expect(f.target.value).toBe("");
 	});
 
+	it("follows the focus into a shadow root to empty the value there", async () => {
+		const f = fixture({ stealFocus: "shadow" });
+		await expect(fillCompanyAccountBox(f.page, f.box, password)).rejects.toThrow("ACCOUNT_FILL_UNCONFIRMED");
+		expect(f.other.value).toBe("");
+		expect(f.other.attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE)).toBe(true);
+	});
+
+	it("counts a box that holds the whole value as filled, even after the page moved the focus on", async () => {
+		const f = fixture({ advance: true, box: { type: "text" } });
+		f.other.value = "Office laptop";
+		await fillCompanyAccountBox(f.page, f.box, { ...password, field: "code", value: "123456" });
+		expect(f.target.value).toBe("123456");
+		expect(f.other.value).toBe("Office laptop");
+		expect(f.other.attributes.size).toBe(0);
+	});
+
 	it("says so when the box does not hold what was typed", async () => {
 		const f = fixture({ keeps: 1 });
 		await expect(fillCompanyAccountBox(f.page, f.box, password)).rejects.toThrow("ACCOUNT_FILL_UNCONFIRMED");
@@ -194,6 +215,28 @@ describe("company account fill", () => {
 });
 
 describe("filled values on one screen", () => {
+	it("hides a password in each spelling a page address uses, and a code only as a number of its own", () => {
+		const filled = new CompanyComputerFilledValues();
+		filled.add("Pw-1234567890@abcd#EF+GH", "password");
+		filled.add("123456", "code");
+		expect(filled.hide("https://x.example/?pw=Pw-1234567890%40abcd%23EF%2BGH")).toBe(
+			"https://x.example/?pw=[hidden]",
+		);
+		expect(filled.shows("https://x.example/?pw=Pw-1234567890%40abcd%23EF%2BGH")).toBe(true);
+		expect(filled.hide("Order 4012345678, code 123456")).toBe("Order 4012345678, code [hidden]");
+		expect(filled.shows("Order 4012345678")).toBe(false);
+	});
+
+	it("drops spent codes before it drops a password", () => {
+		let now = 0;
+		const filled = new CompanyComputerFilledValues(() => now);
+		filled.add("Pw-keep-this-one-please", "password");
+		for (let i = 0; i < 63; i++) filled.add(String(100000 + i), "code");
+		now += 5 * 60_000;
+		filled.add("234567", "code");
+		expect(filled.current()).toContain("Pw-keep-this-one-please");
+	});
+
 	it("hides passwords for good and codes for five minutes, never a login, and keeps the newest 64", () => {
 		let now = 1_000;
 		const filled = new CompanyComputerFilledValues(() => now);

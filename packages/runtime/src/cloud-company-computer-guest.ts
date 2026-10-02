@@ -368,30 +368,59 @@ export class CompanyComputerGuestAutomation {
 		if (this.#filled.current().length === 0) return;
 		for (const frame of page.frames()) {
 			let shown: unknown;
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			try {
-				shown = await frame.evaluate((attribute) => {
-					const document = (
-						globalThis as unknown as {
-							document: {
-								title: string;
-								documentElement: { innerText?: string } | null;
-								querySelectorAll(
-									selector: string,
-								): Iterable<{ value?: unknown; matches(selector: string): boolean }>;
-							};
-							location: { href: string };
+				shown = await Promise.race([
+					frame.evaluate((attribute) => {
+						interface Node {
+							value?: unknown;
+							textContent?: string | null;
+							shadowRoot?: Root | null;
+							matches?(selector: string): boolean;
 						}
-					).document;
-					const boxes = [...document.querySelectorAll("input, textarea")]
-						.filter((box) => !box.matches(`[${attribute}]`) && typeof box.value === "string")
-						.slice(0, 512)
-						.map((box) => box.value as string);
-					const text = (document.documentElement?.innerText ?? "").slice(0, 2_000_000);
-					const href = (globalThis as unknown as { location: { href: string } }).location.href;
-					return [document.title, href, text, ...boxes].join("\n");
-				}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE);
+						interface Root {
+							querySelectorAll(selector: string): Iterable<Node>;
+						}
+						const global = globalThis as unknown as {
+							document: Root & { title: string; documentElement: { innerText?: string } | null };
+							location: { href: string };
+						};
+						const document = global.document;
+						const parts = [
+							document.title,
+							global.location.href,
+							(document.documentElement?.innerText ?? "").slice(0, 2_000_000),
+						];
+						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
+						const roots: Root[] = [document];
+						let boxes = 0;
+						for (let index = 0; index < roots.length && index < 256; index++) {
+							for (const node of roots[index]!.querySelectorAll("*")) {
+								if (node.shadowRoot) {
+									roots.push(node.shadowRoot);
+									parts.push((node.shadowRoot as unknown as Node).textContent?.slice(0, 200_000) ?? "");
+								}
+								if (
+									boxes < 512 &&
+									typeof node.value === "string" &&
+									node.matches?.("input, textarea") &&
+									!node.matches(`[${attribute}]`)
+								) {
+									parts.push(node.value.slice(0, 4096));
+									boxes++;
+								}
+							}
+						}
+						return parts.join("\n");
+					}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE),
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(() => reject(new Error("timed out")), 5_000);
+					}),
+				]);
 			} catch (error) {
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			} finally {
+				clearTimeout(timer);
 			}
 			if (typeof shown !== "string")
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE"));
@@ -573,20 +602,17 @@ export class CompanyComputerGuestAutomation {
 			}
 			const page = this.#page;
 			if (action.kind === "screenshot") {
+				// Before and after the picture: a value the page shows by then is never published.
 				await this.#assertFilledNotShown(page);
-				return this.#publish(
-					await this.#pageCall(() =>
-						page.screenshot({
-							type: "png",
-							timeout: 5_000,
-							mask: companyComputerPrivateFieldMasks(page),
-						}),
-					),
-					lease,
-					effect,
-					"browser",
-					operation,
+				const png = await this.#pageCall(() =>
+					page.screenshot({
+						type: "png",
+						timeout: 5_000,
+						mask: companyComputerPrivateFieldMasks(page),
+					}),
 				);
+				await this.#assertFilledNotShown(page);
+				return this.#publish(png, lease, effect, "browser", operation);
 			}
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
@@ -663,7 +689,7 @@ export class CompanyComputerGuestAutomation {
 				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const snapshot = await this.#pageCall(async () =>
-					redactCompanyComputerSnapshot(aria, [...before, ...after, ...this.#filled.current()]),
+					redactCompanyComputerSnapshot(aria, [...before, ...after], { filled: this.#filled.current() }),
 				);
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
