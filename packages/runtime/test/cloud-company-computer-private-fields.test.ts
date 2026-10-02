@@ -31,6 +31,14 @@ describe("company computer snapshot redaction", () => {
 		);
 	});
 
+	it("refuses a snapshot that shows a vault secret with its symbols changed", () => {
+		// No spelling covers it, but its letters and digits in order are the secret.
+		const snapshot = "- paragraph: Your new password is Pw_1234567890_abcd_EFGH";
+		expect(() => redactCompanyComputerSnapshot(snapshot, [], { filled: ["Pw-1234567890@abcd#EFGH"] })).toThrow(
+			"PRIVATE_FIELD_VISIBLE",
+		);
+	});
+
 	it("leaves a page without a private value as it is", () => {
 		const snapshot = lines('- textbox "Email": agents@nordlys.example', '- button "Sign in"');
 		expect(redactCompanyComputerSnapshot(snapshot, [])).toBe(snapshot);

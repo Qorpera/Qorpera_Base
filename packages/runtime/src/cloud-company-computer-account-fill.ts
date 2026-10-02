@@ -16,7 +16,9 @@ export type CompanyAccountFillRefusal =
 	| "ACCOUNT_FILL_WRONG_SITE"
 	| "ACCOUNT_FILL_WRONG_BOX"
 	| "ACCOUNT_FILL_IN_FRAME"
-	| "ACCOUNT_FILL_UNCONFIRMED";
+	| "ACCOUNT_FILL_UNCONFIRMED"
+	/** The value went where it cannot be emptied (a closed shadow root, an editable area): the tab must go. */
+	| "ACCOUNT_FILL_LOST";
 
 export class CompanyAccountFillRefusedError extends Error {
 	readonly reason: CompanyAccountFillRefusal;
@@ -108,25 +110,27 @@ export async function fillCompanyAccountBox(page: Page, box: Locator, fill: Comp
 		}
 		// Where the value went. Whole in the box: done, even if the page has moved the focus on since (a code box
 		// that advances). Otherwise a page script moved the focus between the check and the typing: the value is in
-		// the box that has the focus now, inside open shadow roots too, which is marked private and emptied.
+		// the box that has the focus now, inside open shadow roots too, which is marked private and emptied; where it
+		// cannot be emptied, the value is lost to the page and the caller closes the tab.
 		const landed = await handle.evaluate(
 			(element, { attribute, length }) => {
-				if ((element as unknown as PageBox).value.length === length) return true;
+				if ((element as unknown as PageBox).value.length === length) return "filled";
 				interface Focus extends PageBox {
 					shadowRoot?: { activeElement: Focus | null } | null;
 				}
 				let active = (globalThis as unknown as { document: { activeElement: Focus | null } }).document
 					.activeElement;
 				while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-				if (active && active !== (element as unknown) && typeof active.value === "string") {
-					active.setAttribute(attribute, "");
-					active.value = "";
-				}
-				return false;
+				if (!active || active === (element as unknown)) return "short";
+				if (typeof active.value !== "string") return "lost";
+				active.setAttribute(attribute, "");
+				active.value = "";
+				return "emptied";
 			},
 			{ attribute: COMPANY_ACCOUNT_FILLED_ATTRIBUTE, length: fill.value.length },
 		);
-		if (!landed) throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_UNCONFIRMED");
+		if (landed === "lost") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_LOST");
+		if (landed !== "filled") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_UNCONFIRMED");
 	} finally {
 		await handle.dispose().catch(() => undefined);
 	}
@@ -176,6 +180,41 @@ export class CompanyComputerFilledValues {
 		return this.#forms().some((form) => form.test(text));
 	}
 
+	/**
+	 * Whether `text` shows a value still hidden, also after up to three decodes of percent escapes (either letter
+	 * case): a redirect that wraps an address encodes it again. A value's spellings already match one encoding.
+	 */
+	showsDecoded(text: string): boolean {
+		if (this.current().length === 0) return false;
+		let layer = text;
+		for (let depth = 0; ; depth++) {
+			if (this.shows(layer)) return true;
+			const next = percentDecoded(layer);
+			if (depth === 3 || next === layer) return false;
+			layer = next;
+		}
+	}
+
+	/** A page address the agent may read: its query and fragment (or all of it) hidden when they show a value. */
+	hideAddress(address: string): string {
+		if (!this.showsDecoded(address)) return address;
+		try {
+			const url = new URL(address);
+			const path = this.showsDecoded(url.pathname) ? `/${COMPANY_COMPUTER_PRIVATE_VALUE}` : url.pathname;
+			const out = `${url.origin}${path}${url.search ? `?${COMPANY_COMPUTER_PRIVATE_VALUE}` : ""}${url.hash ? `#${COMPANY_COMPUTER_PRIVATE_VALUE}` : ""}`;
+			// A value in the host itself (a code as a subdomain): none of the address is kept.
+			return this.showsDecoded(out) ? COMPANY_COMPUTER_PRIVATE_VALUE : out;
+		} catch {
+			return COMPANY_COMPUTER_PRIVATE_VALUE;
+		}
+	}
+
+	/** A title or other text the agent may read: wholly hidden when a value survives in any decoded layer. */
+	hideText(text: string): string {
+		const hidden = this.hide(text);
+		return this.showsDecoded(hidden) ? COMPANY_COMPUTER_PRIVATE_VALUE : hidden;
+	}
+
 	/** Each value's spellings as patterns; an authenticator code only as a number of its own. */
 	#forms(): RegExp[] {
 		return this.current().flatMap((value) => {
@@ -185,4 +224,21 @@ export class CompanyComputerFilledValues {
 			);
 		});
 	}
+}
+
+const utf8 = new TextDecoder("utf-8");
+
+/**
+ * `text` with each run of %XX escapes decoded: as UTF-8 when the run is UTF-8, else each byte as a character (as
+ * `escape` writes one). Lenient and linear: it never throws, whatever the page holds.
+ */
+function percentDecoded(text: string): string {
+	return text.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+		const bytes = Uint8Array.from(run.slice(1).split("%"), (hex) => Number.parseInt(hex, 16));
+		const decoded = utf8.decode(bytes);
+		if (!decoded.includes("\uFFFD")) return decoded;
+		let latin1 = "";
+		for (const byte of bytes) latin1 += String.fromCharCode(byte);
+		return latin1;
+	});
 }
