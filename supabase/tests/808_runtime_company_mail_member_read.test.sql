@@ -497,6 +497,13 @@ select set_config('qorpera_test.down', pg_temp.received(82, 'support@mail.exampl
 select pg_temp.wake_assert(received.subject is null and received.account = '{"unknown":true}'::jsonb,
 	'With the lookup down, the mail is stored without its subject')
 from public.qorpera_mail_received as received where received.delivery_id = current_setting('qorpera_test.down')::uuid;
+-- On reading, a failing lookup marks each thread it touches as unknown, and the Mailbox still lists.
+select pg_temp.member();
+select pg_temp.wake_assert(pg_temp.listed(pg_temp.thread_of(current_setting('qorpera_test.down')::uuid)) -> 'account'
+		= '{"unknown":true}'::jsonb
+	and not pg_temp.listed(pg_temp.thread_of(current_setting('qorpera_test.down')::uuid)) ? 'subject',
+	'A failing lookup hides, and the listing still answers');
+select pg_temp.path_claims('service_role');
 drop function public.qorpera_company_account_mail(uuid, uuid, text[]);
 alter function public.qorpera_company_account_mail_kept(uuid, uuid, text[]) rename to qorpera_company_account_mail;
 select pg_temp.member();

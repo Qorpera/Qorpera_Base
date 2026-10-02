@@ -162,7 +162,8 @@ alter table public.qorpera_mail_thread_reads enable row level security;
 revoke all on table public.qorpera_mail_thread_reads from public, anon, authenticated, service_role;
 
 -- Account mail (A1's I5b): the account a received message's addresses sign in with, once A1's lookup exists. It is
--- given the mailbox's own company and environment, never ones taken from the mail.
+-- given the mailbox's own company and environment, never ones taken from the mail. A lookup that fails answers
+-- {"unknown": true}: the mail is treated as account mail, so nothing it might hide is shown.
 create function public.qorpera_mail_account(p_profile_id uuid, p_environment_id uuid, p_delivered_to text[])
 returns jsonb
 language plpgsql
@@ -175,8 +176,12 @@ begin
 	if coalesce(cardinality(p_delivered_to), 0) = 0
 		or to_regprocedure('public.qorpera_company_account_mail(uuid,uuid,text[])') is null then
 		return null; end if;
-	execute 'select public.qorpera_company_account_mail($1, $2, $3)' into v_account
-	using p_profile_id, p_environment_id, p_delivered_to;
+	begin
+		execute 'select public.qorpera_company_account_mail($1, $2, $3)' into v_account
+		using p_profile_id, p_environment_id, p_delivered_to;
+	exception when others then
+		return jsonb_build_object('unknown', true);
+	end;
 	return case when jsonb_typeof(v_account) = 'object' then v_account end;
 end
 $$;
