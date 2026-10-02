@@ -154,7 +154,7 @@ afterEach(async () => {
 	for (const directory of temporary.splice(0)) await rm(directory, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
-async function fixture(options: { browser?: boolean } = {}) {
+async function fixture(options: { browser?: boolean; desktop?: boolean } = {}) {
 	const source = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		source.binding,
@@ -185,7 +185,11 @@ async function fixture(options: { browser?: boolean } = {}) {
 	const descriptor = {
 		state: "available" as const,
 		scope,
-		capabilities: options.browser ? ["shell" as const, "browser" as const] : ["shell" as const],
+		capabilities: [
+			"shell" as const,
+			...(options.browser ? ["browser" as const] : []),
+			...(options.desktop ? ["desktop" as const] : []),
+		],
 		resources,
 	};
 	// The persistent browser manager checks its real profile root.
@@ -646,6 +650,37 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		).rejects.toThrow();
 		expect(browsers[1].close).toHaveBeenCalledOnce();
 	});
+	it("refuses a whole-screen picture while the member's dock-opened window holds a password, though the run never joined it", async () => {
+		const f = await fixture({ browser: true, desktop: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		// The member is typing a password into the window they opened.
+		const typed = { values: ["hunter2"] };
+		const frame = { isDetached: () => false, evaluate: async () => typed.values };
+		windows.pages = [{ isClosed: () => false, frames: () => [frame] }] as never[];
+		const capture = vi
+			.spyOn(CompanyComputerLinuxCommands.prototype, "capturePng")
+			.mockRejectedValue(new Error("CAPTURE_REACHED"));
+		const session = await f.create();
+		const desktop = f.operation({ kind: "screenshot", surface: "desktop" });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(capture).not.toHaveBeenCalled();
+		// The check is about this window, not about joining it: the run still never opened or joined a browser.
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.order.some((entry) => entry.startsWith("qorpera_native_office_browser_grant"))).toBe(false);
+		// Once the box is empty the capture goes ahead.
+		typed.values = [];
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow("CAPTURE_REACHED");
+		expect(capture).toHaveBeenCalledOnce();
+		// A window the member closed is not on the screen: its stale pages are not read.
+		typed.values = ["hunter2"];
+		browsers[0].end();
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow("CAPTURE_REACHED");
+		expect(capture).toHaveBeenCalledTimes(2);
+		await session.close();
+	});
+
 	it("leaves a member's dock-opened browser alone when a run that never joined it fails a shell action", async () => {
 		const f = await fixture({ browser: true });
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
