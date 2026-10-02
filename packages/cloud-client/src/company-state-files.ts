@@ -2158,10 +2158,11 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 ## Write a good task
 - One physical outcome per task.
 - Steps a stranger could follow: where to go, what to bring, and what counts as proof. Put them under \`## Steps\`, one \`- [ ]\` line each.
-- A due date with slack before the real deadline.
+- A due date with slack before the real deadline. It must be in the future, also when you move it or return the task.
 - \`proof:\` lists what counts as done: photo, file, signature, note.
-- When the person must type a code or a password, put only a label in \`secret:\` ("Code from the SMS"). Never put a code, a password or any other secret in the task.
-- For a contact, check that their \`asks\` covers the work, and list in \`files:\` only what they may see.
+- When a member must type a code or a password, put only a label in \`secret:\` ("Code from the SMS"). Never put a code, a password or any other secret in the task. A contact's task has no secret.
+- For a contact, check that their \`asks\` covers the work and that their file has an \`email\`, and list in \`files:\` only what they may see.
+- Name a contact only by \`contact:\` (their id), never by name, in titles, steps, reasons and notes: if they ask to be forgotten, nothing else names them.
 
 ## The file
 \`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
@@ -2180,7 +2181,8 @@ export const HUMAN_TASK_PROOF_FILE_KINDS = Object.freeze(["photo", "file", "sign
 /** A task's own folder, beside its file: `human-tasks/<t>.md` → `human-tasks/<t>`. */
 export function humanTaskFolder(taskPath: string): string {
 	const where = companyStatePath(taskPath);
-	if (where?.kind !== "human-task") throw new RangeError(`Not a human task's path: ${shown(taskPath)}`);
+	if (where?.kind !== "human-task" || companyStatePathProblems(taskPath).length)
+		throw new RangeError(`Not a human task's path: ${shown(taskPath)}`);
 	return taskPath.slice(0, -3);
 }
 
