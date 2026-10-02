@@ -530,7 +530,8 @@ describe("shell presentation lifecycle", () => {
 			rail.querySelector<HTMLElement>(kind === "cofounder" ? ".cofounder-home" : `a[href$="/staff/${staff.id}"]`)!;
 		const disc = () => row().querySelector(".rail-row-status, .cofounder-status, .alert-mark");
 		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
-		search.focus();
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
+		expect(document.activeElement).toBe(search);
 		search.dispatchEvent(new CompositionEvent("compositionstart"));
 		search.value = "Fixture";
 		search.setSelectionRange(1, 3);

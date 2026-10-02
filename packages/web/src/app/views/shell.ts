@@ -557,7 +557,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		// The search button opens the field over the tabs. Esc or the close button folds it back, clears it and
 		// hands focus back to the button; so does leaving it empty.
 		const openSearch = () => {
-			if (!created.searchOpen) {
+			// Without the tabs the field is always open; nothing to unfold.
+			if (!created.searchOpen && !switcher.hidden) {
 				created.searchOpen = true;
 				created.redraw();
 			}

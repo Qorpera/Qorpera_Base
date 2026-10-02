@@ -623,6 +623,26 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
+	it("reopens the drawer on the search field while a query keeps it open over the tabs", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		const toggle = () => f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!;
+		toggle().click();
+		await draw();
+		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
+		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
+		input.value = "Fixture";
+		input.dispatchEvent(new Event("input"));
+		await draw();
+		// The tabs are inert under the open field, so the drawer comes back to the field.
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
+		toggle().click();
+		await draw();
+		expect(document.activeElement).toBe(input);
+	});
+
 	it("keeps profile-menu focus through refreshes and closes it before the mobile drawer", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
