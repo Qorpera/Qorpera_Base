@@ -132,7 +132,8 @@ test("the emergency packets: per-company savepoints, folder-v2 companies, declar
 	assert.ok(!packets["91-reverse.sql"].includes(", null)"), "91 clears no declaration");
 	assert.match(packets["91-reverse.sql"], /qorpera_declare_runtime_node_bundle\('[^']+'::uuid, '[0-9a-f]{64}'\) as roll_declare_b\nwhere not exists \(select 1 from public\.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null\);/);
 	assert.ok(packets["92-clear-declarations.sql"].includes(`qorpera_declare_runtime_node_bundle('${nodeA}'::uuid, null)`));
-	assert.ok(packets["92-clear-declarations.sql"].indexOf("'declaredNext'") < packets["92-clear-declarations.sql"].indexOf(", null)"), "92 lists what it clears first");
+	const clear = packets["92-clear-declarations.sql"];
+	assert.ok(clear.indexOf("create temporary table roll_next") < clear.indexOf(", null)"), "92 takes the list before it clears");
 	assert.ok(packets["90-pause-now.sql"].includes("set local lock_timeout = '2s';"));
 	assert.ok(packets["93-resume.sql"].includes("'runsOn'"));
 });
@@ -149,6 +150,27 @@ test("emptying one node needs the other to claim: 30 checks node B, 60 checks no
 	assert.ok(!gateOf("40-switch.sql").includes(`runs_enabled from public.qorpera_runtime_nodes where id = '${nodeB}'`), "40 does not refuse on node B");
 	assert.ok(packets["40-switch.sql"].includes("'nodeBServes'"));
 	assert.match(packets["60-runs-off-b.sql"], /claim\.status in \('claimed', 'assigned'\)[\s\S]*still queued: let node B take it first \(waiting: %; first ids: %\)/);
+});
+
+test("the row the operator reads is each packet's last statement (the runner keeps only its rows)", () => {
+	const packets = rollPackets(options());
+	const rows = {
+		"00-check.sql": "roll_check",
+		"31-drain-a.sql": "roll_drain",
+		"40-switch.sql": "roll_switched",
+		"50-check-n.sql": "roll_check_n",
+		"61-drain-b.sql": "roll_drain",
+		"80-finish.sql": "roll_finished",
+		"90-pause-now.sql": "roll_paused",
+		"92-clear-declarations.sql": "roll_clearing",
+		"93-resume.sql": "roll_resumed",
+	};
+	for (const [name, row] of Object.entries(rows)) {
+		const text = packets[name];
+		const parts = statements(text).map(([start, end]) => text.slice(start, end).trim());
+		assert.equal(parts.at(-1), "commit;", name);
+		assert.match(parts.at(-2), new RegExp(`^select [\\s\\S]* as ${row};$`), name);
+	}
 });
 
 test("--empty full switches a node off fully and returns it with both switches", () => {

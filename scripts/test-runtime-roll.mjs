@@ -253,8 +253,9 @@ async function rehearse(empty, path = "roll") {
 				heartbeat();
 				assert.equal(claim(orchestratorA), null, "node A (N+1 code) takes no N run");
 				assert.equal(claim(orchestratorB), null, "node B (N+1 code) takes no N run");
-				const clearing = JSON.parse(dryRun(p("92-clear-declarations.sql")).split("\n").find((line) => line.startsWith('{"declaredNext"')));
+				const clearing = lastJson(dryRun(p("92-clear-declarations.sql")));
 				assert.equal(clearing.declaredNext.length, 2, JSON.stringify(clearing));
+				assert.equal(clearing.stillDeclared, 0, JSON.stringify(clearing));
 				commit("92-clear-declarations.sql");
 				const resumed = lastJson(commit("93-resume.sql"));
 				assert.equal(paused(), 0, "the companies resume: " + JSON.stringify(resumed));

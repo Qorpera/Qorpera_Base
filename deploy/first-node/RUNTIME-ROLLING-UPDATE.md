@@ -344,6 +344,10 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
   - Each company waits at most 2 s for its lock, so a long list stays inside the statement timeout.
   - `93-resume` resumes the same way.
   - The runner commits these files only when told to (`QORPERA_ROLL_EMERGENCY=<file>`).
+- The runner keeps only the rows of a packet's last statement, so each packet whose result the operator
+  reads ends with it: `roll_check` (00), `roll_drain` (31, 61), `roll_switched` (40), `roll_check_n` (50),
+  `roll_finished` (80), `roll_paused` (90), `roll_clearing` (92: `declaredNext` and `stillDeclared`) and
+  `roll_resumed` (93).
 - `node scripts/runtime-roll.mjs compare <00-check result> <50-check-n result>` lists N inputs that became
   pending after the check (live N work, step 7). It exits 1 when there are any.
 
