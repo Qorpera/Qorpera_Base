@@ -17,9 +17,9 @@ the technical design. The Q1 page is the plain one.
 Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live (v151,
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
-M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off; the founder's
-sender-name rule is in review (`20260928319810_runtime_company_mail_sender_names`). W1b takes a fresh slot when it
-starts.
+M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off, and so is
+the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is in review
+(`20260928409980_runtime_event_signed_hooks`).
 
 ## Words
 
@@ -36,7 +36,7 @@ starts.
 | Step | What | Slot |
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
-| W1b | Signed hooks: the vault verifies Stripe, GitHub and HMAC signatures | registered when started |
+| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260928409980` |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
@@ -106,12 +106,14 @@ taking the Company File row.
   access to any service or company data, and every event is outside content anyway (below). Use it
   for senders that cannot sign, such as a website form. Addresses also appear in the platform's
   request logs, which only operators read.
-- `stripe`, `github`, `hmac-sha256`: the sender signs each delivery with a shared secret. The secret
-  is a company vault secret with connector `event_hook` and the secret name `h<hook id without
-  hyphens>`, captured by a member through the existing vault capture
-  (`qorpera_begin_cloud_secret_capture`). Binding it to the hook's id means a new hook never picks up
-  a removed hook's secret. Agents never see it. Until that secret exists, and until W1b ships, the
-  hook refuses deliveries (`not_ready`, HTTP 409).
+- `stripe`, `github`, `hmac-sha256`: the sender signs each delivery with a shared secret, in Stripe's,
+  GitHub's or the Standard Webhooks scheme (`hmac-sha256`, which Svix's senders also use). The secret
+  is a company vault secret with connector `event_hook`, the secret name `h<hook id without
+  hyphens>` and the field `signing_secret`, captured by an owner or admin through the existing vault
+  capture (`qorpera_begin_cloud_secret_capture`); the hook's descriptor names it (`signingSecret`).
+  Binding it to the hook's id means a new hook never picks up a removed hook's secret, and removing
+  the hook revokes it. Agents never see it. Until that secret exists the hook refuses deliveries
+  (`not_ready`, HTTP 409).
 
 **Who manages hooks (W1a).** Owners and admins, through
 `qorpera_create_event_hook`, `qorpera_set_event_hook_status` and `qorpera_list_event_hooks`.
@@ -149,8 +151,8 @@ Table `qorpera_event_deliveries`:
 | `hook_id`, `profile_id` | the hook and its company |
 | `received_at` | when the intake took it |
 | `status` | `received` (waits for the vault), `verified`, `refused` or `duplicate` |
-| `delivery_key` | the sender's own id once verified: Stripe's `evt_…`, GitHub's `X-GitHub-Delivery`, or `X-Qorpera-Delivery` / `Idempotency-Key`; for a sender without one, `body:<sha256>:<delivery id>` |
-| `event_type` | Stripe's `type`, GitHub's `X-GitHub-Event` (with `.action` when the body has one), `X-Qorpera-Event`, or null |
+| `delivery_key` | the sender's own id once verified. Address hooks: `X-Qorpera-Delivery` / `Idempotency-Key`, or for a sender without one `body:<sha256>:<delivery id>`. Signed hooks (W1b) take an id the signature covers: Stripe's `evt_…`, the Standard Webhooks `webhook-id`, and for GitHub, which signs no id, `sig:<signature>` |
+| `event_type` | `X-Qorpera-Event`; Stripe's `type`; GitHub's `X-GitHub-Event` (with `.action` when the body has one); the Standard Webhooks body's `type`; or null |
 | `content_type`, `headers` | the content type, and an allowed list of headers (below), at most 8 KiB |
 | `body`, `body_sha256`, `body_bytes` | the raw body; the body and the headers are cleared after 7 days, the rest kept 30 days |
 | `verified_at`, `reason` | when it was verified, or why it was refused (at most 500 characters) |
@@ -170,7 +172,9 @@ Table `qorpera_event_deliveries`:
   second identical alert is real). A duplicate is recorded without its body and
   answered 200, so the sender stops retrying. Deduplication runs only after verification. Otherwise
   someone who knows an address could send a fake delivery with a real event's id ahead of it and have
-  the real one dropped.
+  the real one dropped. For the same reason a signed hook's sender id is always one the signature
+  covers (W1b): a replay of a signed delivery under another id would otherwise verify and take the
+  id of an event still to come.
 - **Size.** The function refuses a body over 256 KiB before reading it (`Content-Length`) or while
   reading it (a stream cap). The database refuses a body over the hook's `max_body_bytes` (413).
 - **Retention.** `qorpera_purge_event_deliveries(limit)` refuses deliveries still waiting for the
@@ -201,28 +205,86 @@ therefore not reported to the sender. It is recorded as `refused` with the reaso
 
 ## Verification in the vault (W1b)
 
-Every broker, both the per-company brokers and the shared vault, runs a verification loop for the
-companies it serves:
+Migration `20260928409980_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
 
-1. `qorpera_claim_event_verifications(authority, capability, limit)` claims up to 32 `received`
-   deliveries of its companies for 60 seconds. For each it returns the body, the kept headers, the
-   hook's proof, and the current version of the hook's `event_hook` secret (key id and envelope),
-   refusing a revoked secret.
-2. The broker unwraps the secret in memory and checks the signature:
-   - `stripe`: `Stripe-Signature` `t=` and `v1=` values; HMAC-SHA256 of `t.body`; 300 seconds
-     tolerance measured against `received_at`; the event id `evt_…` and `type` from the body.
-   - `github`: `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 of the body; the key is
-     `X-GitHub-Delivery`, the type is `X-GitHub-Event` plus `.action`.
-   - `hmac-sha256`: `X-Qorpera-Signature: v1=<hex>` over `<X-Qorpera-Timestamp>.<body>`, 300 seconds
-     tolerance; for senders the company controls, such as its own backend.
-   Comparisons are constant time. The secret never leaves the broker's memory.
+**Creating.** Owners and admins now create `stripe`, `github` and `hmac-sha256` hooks with
+`qorpera_create_event_hook`. The descriptor carries `signingSecret: {connectorId: "event_hook",
+secretName, ready}`. An owner or admin saves the sender's signing secret (Stripe's `whsec_…`, GitHub's
+webhook secret, or a Standard Webhooks `whsec_…` secret, which the company makes for its own backend or a
+Svix sender shows) through the vault's capture with that connector and name and the field
+`signing_secret`; `ready` turns true once it is in the vault. Until then the hook answers `not_ready`.
+Capture needs the company's vault (a broker authority), so a company without one cannot make a signed
+hook ready. A new version of the secret (the capture with the existing secret id) takes effect at the
+next claim. Removing the hook, by whatever path, revokes the secret with an audit event, as a member's
+revoke would (a trigger on the hook's status).
+
+**Receiving.** With the secret in the vault, a signed delivery is stored as `received` with no
+sender id and no type, counted against the limits like any other, and answered 202 `accepted`. A
+bad signature is therefore never reported to the sender; it is recorded as `refused`.
+
+**Checking.** Every broker checks the deliveries of the companies it serves, on each company's own
+broker authority. A company's own broker claims for its company on every pass. The shared vault first
+asks once which of its companies have deliveries due
+(`qorpera_broker_principal_event_verifications_due`, at most 1000 companies a call) and claims only for
+those. A pass runs every five seconds and makes up to four claims.
+
+1. `qorpera_claim_event_verifications(authority, capability, limit)`, broker role only, claims up
+   to 16 `received` deliveries of the authority's company, oldest first, for 60 seconds, counting an
+   attempt on each. Each comes with the hook's proof, the arrival in whole seconds, the kept headers,
+   the body (at most 256 KiB) and the current version of the hook's secret, sealed (key id, envelope,
+   digest). It refuses at once, and counts in `refused`, what no check could fix:
+   - a removed hook ("The hook was removed");
+   - an address hook's delivery ("The hook is not signed");
+   - a secret that is gone or revoked ("The hook's signing secret is gone");
+   - one sealed for another authority ("The hook's signing secret must be saved again");
+   - a delivery whose body is gone ("The delivery's body is gone");
+   - a delivery claimed five times ("The vault could not check it").
+   A call looks at up to four times `limit` rows, and the broker claims again while a claim refused
+   any, so a backlog of them never holds up a delivery behind it.
+2. The broker opens the secret in memory and checks the signature, comparing in constant time. The
+   sender id is always one the signature covers:
+   - `stripe`: `Stripe-Signature` `t=` and one or more `v1=`; HMAC-SHA256 of `<t>.<body>` with the
+     secret as given; within 300 seconds of the arrival. The sender id is the event's `id` (a Stripe
+     event without one is refused) and the type is its `type`, both from the signed body.
+   - `github`: `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 of the body. GitHub signs neither
+     `X-GitHub-Delivery` nor `X-GitHub-Event`, so the sender id is `sig:<signature>`: GitHub's own
+     redelivery and anyone's replay of a body are duplicates. The type is `X-GitHub-Event`, followed by
+     `.<action>` when the body has one (`pull_request.opened`). The name is unsigned: a replay under
+     another name is a duplicate once the genuine copy is verified, but someone who held the signed body
+     before GitHub's own copy arrived could land it first under another name, which a listener's `only`
+     filter would act on. GitHub signs no time, so a body replayed after its row is deleted (30 days) is
+     taken again.
+   - `hmac-sha256`: Standard Webhooks (standardwebhooks.com), under its own headers or Svix's
+     (`svix-id`, `svix-timestamp`, `svix-signature`): `webhook-signature: v1,<base64>` (one or more)
+     over `<webhook-id>.<webhook-timestamp>.<body>`, keyed by the secret's base64 key (`whsec_`
+     optional), within 300 seconds of the arrival. The sender id is `webhook-id` and the type is the
+     body's `type`.
+   A signed id the database cannot keep (over 256 characters, spaces, or `body:`) becomes
+   `sig:<signature>`. The 300 seconds are measured against the arrival, so a check that runs late
+   judges the sender's clock against when the delivery came. A refusal's reason is a fixed phrase
+   ("The Stripe signature does not match"); nothing from the delivery or the secret reaches a reason or
+   a log. An item of a claim the broker cannot read is answered `retry`; a verdict it cannot record is
+   counted, and the pass goes on (it stops after three).
 3. `qorpera_finish_event_verification(authority, capability, delivery, claim, verdict, key, type,
-   reason)` records `verified`, `duplicate` or `refused`. A claim that expired is retaken by any
-   broker that serves the company. It stamps `verified_at` with `clock_timestamp()` in a transaction
-   shorter than a minute, because event listeners' watermarks trail the clock by one minute (W2).
+   reason)`, broker role only, records the verdict when this claim still holds the delivery
+   (otherwise `stale`, changing nothing):
+   - `verified` with the sender id and the type, unless the hook was removed or its secret is gone
+     since the claim: then the delivery is refused with that reason. If the hook's current secret is no
+     longer the version the claim handed out (saved again, or replaced), the verdict is not taken: the
+     delivery is offered again at once and checked with the current version (answer `retry`). A sender id is unique per hook
+     among verified deliveries, as for address hooks; a second one becomes `duplicate` without its
+     body. Each verdict is its own short transaction stamping `verified_at` with `clock_timestamp()`,
+     as event wakes need (W2).
+   - `refused` with the reason.
+   - `retry` when the broker could not open the secret (a key this copy of the vault lacks, or a
+     damaged envelope). The delivery is offered again after a minute, then five times longer after
+     each attempt (1, 5, 25 and 125 minutes); the fifth attempt's retry refuses it ("The vault could not
+     check it"), about two and a half hours after it arrived.
+   A claim whose broker stopped expires after 60 seconds and counts as an attempt. A delivery the vault
+   refuses keeps no body; one the purge refuses keeps it until the seven-day clear. The shared vault's due
+   list takes the lowest company ids first when more than 1000 companies are due at once.
 
-A delivery still `received` after 24 hours is refused with "not verified in time". The broker HMAC
-helpers are shared with the intake function's tests, so both sides agree on every format.
+A delivery still `received` after 24 hours is refused by the purge ("Not verified in time").
 
 ## Event wakes (W2)
 
@@ -495,6 +557,35 @@ mail sent automatically. After it is live:
    waited a day once sending is back), or `select cron.unschedule('qorpera-mail-outbox')`, which also stops the
    seven-day clearing of sent texts.
 
+## Deploy (W1b)
+
+The migration adds five columns and a partial index to `qorpera_event_deliveries`, two helper functions, a
+trigger on the hooks' status and the broker's three functions, and patches three existing functions by exact
+text: `qorpera_create_event_hook` (signed proofs are allowed), `qorpera_event_hook_descriptor`
+(`signingSecret`) and `qorpera_receive_event` (a signed delivery is stored as `received`). No Edge Function
+changes: the intake already keeps the Standard Webhooks and Svix headers. Before merging, compare the anchors
+with master again (RUNTIME-RELEASE-TRAIN.md).
+
+1. Apply the migration. Until the brokers run the new build, signed deliveries wait as `received`, and the
+   purge refuses them after 24 hours.
+2. Roll the broker build carrying this runtime (`node scripts/package-cloud-secret-broker.mjs`) to the shared
+   vault (node 1 and node 2's standby) and to every company broker unit still running, after the migration: a
+   build that runs before it logs an error line every five seconds ("Event verification: a pass stopped on an
+   error" from a company broker, "Shared vault: a background pass failed" from the shared vault).
+3. Check by count: `select status, count(*) from public.qorpera_event_deliveries where received_at > now() -
+   interval '1 day' group by 1`. Nothing should stay `received` for more than a few seconds. `journalctl -u
+   <unit>` logs a count line only when a pass refused, retried, found a stale claim or could not record a
+   verdict.
+4. Acceptance on a test company:
+   - An owner creates a `github` hook, saves a secret through the capture, and points a repository webhook
+     (content type JSON) at the hook's address with the same secret. The ping and an opened issue arrive
+     `verified` with types `ping` and `issues.opened` and a `sig:` sender id. A redelivery from GitHub's page
+     becomes `duplicate`. A webhook with a different secret is `refused` ("The GitHub signature does not
+     match"). A routine listening on the hook wakes on the issue (W2).
+   - An `hmac-sha256` hook takes a delivery signed with a Standard Webhooks library (`new Webhook(secret)
+     .sign(id, timestamp, body)`), keyed by its `webhook-id`.
+   - Removing the hook revokes its secret.
+
 ## Deploy (W1a)
 
 The migration adds tables and functions that nothing calls yet, and patches `qorpera_folder_enable`
@@ -525,7 +616,9 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
   exist.
 - A hook's address grants only posting into that hook. Deliveries wake agents only after the proof
   holds, and their content is outside content.
-- Duplicates are decided after verification, so a forged early copy cannot suppress a real event.
+- Duplicates are decided after verification, so a forged early copy cannot suppress a real event; a
+  signed hook's sender id is always covered by the signature (W1b), so a replay cannot take a coming
+  event's id either.
 - Limits bound storage: at most `per_minute × max_body_bytes` a minute per hook (30 MiB at the
   maximums), the company's hourly budget across all its hooks (64 MiB by default), and the platform
   switch. Refused requests write nothing.
@@ -533,4 +626,9 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
   deliveries with the company (foreign keys cascade; test 730 runs the purge). Its usage rows hold
   only counts and expire within a day.
 - No table is readable by `anon`, `authenticated` or the broker role. Members read through the
-  listed functions, and the broker reads only through its two functions (W1b).
+  listed functions, and the broker reads only through its claim and finish functions (W1b), each
+  checking the broker authority's capability and confined to that authority's company, and the shared
+  vault's due list, which checks the principal's capability and names only its own companies.
+- A hook's signing secret is opened only in the memory of the broker that serves its company. The
+  database hands the broker the sealed envelope and receives back a verdict: a sender id, a type or a
+  fixed reason. A secret sealed for another authority is refused, not retried.

@@ -1,6 +1,7 @@
 /** Company state files (contract 5.6): the files of the company folder that have a fixed
  * format — the vision, an agent, the sidebar's sections, a group chat, a connection, a
- * company review rule, a routine, a todo and a worker's brief and results. Every writer (the
+ * company review rule, a routine, a todo, a worker's brief and results, and (H1) a human task
+ * and a contact. Every writer (the
  * runtime's tools, the web app, the object gateway and the folder service) reads them through
  * this one parser, so a file means the same thing whoever saves it. The database checks the
  * rules that need its state and keeps the indexes (RUNTIME-COMPANY-STATE-FILES.md). Browser-safe.
@@ -10,6 +11,7 @@
  * `- item` per line below the key), and `#` after a space starts a note. Each kind has a
  * closed set of keys. The same bytes always give the same result, problems included. */
 
+import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
@@ -22,7 +24,9 @@ export type CompanyStateFileKind =
 	| "worker-brief"
 	| "worker-results"
 	| "connection"
-	| "rule";
+	| "rule"
+	| "human-task"
+	| "contact";
 
 /** One reason a file cannot be saved. Lines count from 1 over the whole file. */
 export interface CompanyStateProblem {
@@ -88,6 +92,39 @@ export const AGENT_MODELS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-lu
 /** Effort an agent or a routine may ask for; runs accept these three today. */
 export const COMPANY_STATE_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
 export const ROUTINE_WHEN = Object.freeze(["every", "weekly", "window", "once", "file-change"] as const);
+
+/** A human task's statuses: the agent sets open, accepted, returned and cancelled; the person done
+ * and declined (H2). */
+export const HUMAN_TASK_STATUSES = Object.freeze([
+	"open",
+	"done",
+	"accepted",
+	"returned",
+	"declined",
+	"cancelled",
+] as const);
+/** What counts as a human task's proof. */
+export const HUMAN_TASK_PROOF = Object.freeze(["photo", "file", "signature", "note"] as const);
+/** The kind of step a website demands of a person (A1, company accounts). */
+export const HUMAN_TASK_STEPS = Object.freeze([
+	"sign_in",
+	"captcha",
+	"phone_code",
+	"id_check",
+	"payment",
+	"create_account",
+	"other",
+] as const);
+/** Where a contact's task may not point `files`: the company's people, other tasks, accounts and
+ * rules are not for outside readers. Compared on the path's key. */
+export const HUMAN_TASK_CONTACT_REFUSED_ROOTS = Object.freeze([
+	"agents",
+	"contacts",
+	"human-tasks",
+	"connections",
+	"rules",
+	"hooks",
+] as const);
 
 export type AgentColour = (typeof AGENT_COLOURS)[number];
 export type AgentFigure = (typeof STAFF_CHARACTER_IDS)[number];
@@ -224,6 +261,56 @@ export interface WorkerResultsFile {
 	readonly report: string;
 }
 
+/** One step of a human task's checklist: its line in the file, its text and whether it is ticked. */
+export interface HumanTaskStep {
+	readonly line: number;
+	readonly text: string;
+	readonly done: boolean;
+}
+
+export interface HumanTaskFile {
+	readonly kind: "human-task";
+	readonly id: string;
+	readonly title: string;
+	readonly status: (typeof HUMAN_TASK_STATUSES)[number];
+	/** Exactly one of the two: the member it is for, or the contact (a contact file's id). */
+	readonly member: string | null;
+	readonly contact: string | null;
+	/** The asking agent's id. */
+	readonly from: string;
+	/** The id of the asking agent's todo that waits on the task. */
+	readonly todo: string | null;
+	readonly due: string;
+	readonly minutes: number | null;
+	readonly proof: readonly (typeof HUMAN_TASK_PROOF)[number][];
+	/** Company-folder paths of files the person needs, as written. */
+	readonly files: readonly string[];
+	readonly reason: string | null;
+	/** The label of the one secret the person enters; its value goes to the vault. */
+	readonly secret: string | null;
+	readonly secretState: "asked" | "saved" | null;
+	/** The id of the connections/ file the step is for. */
+	readonly connection: string | null;
+	readonly step: (typeof HUMAN_TASK_STEPS)[number] | null;
+	/** The body, trimmed: why, the steps and what done looks like. */
+	readonly instructions: string;
+	/** The checklist of the body's `## Steps` section. */
+	readonly steps: readonly HumanTaskStep[];
+}
+
+export interface ContactFile {
+	readonly kind: "contact";
+	readonly id: string;
+	readonly name: string;
+	readonly organization: string | null;
+	readonly email: string | null;
+	readonly phone: string | null;
+	/** What the contact may be asked to do. */
+	readonly asks: readonly string[];
+	/** The body, trimmed: notes, then `## History` lines; "" when there is none. */
+	readonly notes: string;
+}
+
 export type CompanyStateFile =
 	| VisionFile
 	| AgentFile
@@ -234,7 +321,9 @@ export type CompanyStateFile =
 	| RoutineFile
 	| TodoFile
 	| WorkerBriefFile
-	| WorkerResultsFile;
+	| WorkerResultsFile
+	| HumanTaskFile
+	| ContactFile;
 
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
@@ -243,7 +332,7 @@ export interface CompanyStatePath {
 	readonly agent: string | null;
 	/** The group's folder name, for `group.md`. */
 	readonly group: string | null;
-	/** The file's own name without `.md`: routine, todo, rule and connection files. */
+	/** The file's own name without `.md`: routine, todo, rule, connection, human-task and contact files. */
 	readonly name: string | null;
 	/** The todo and worker folder names, for a worker's brief and results. */
 	readonly todo: string | null;
@@ -274,6 +363,9 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	if (parts.length === 2 && a === "connections" && stem(b) !== null)
 		return { kind: "connection", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "rules" && stem(b) !== null) return { kind: "rule", ...none, name: stem(b) };
+	if (parts.length === 2 && a === "human-tasks" && stem(b) !== null)
+		return { kind: "human-task", ...none, name: stem(b) };
+	if (parts.length === 2 && a === "contacts" && stem(b) !== null) return { kind: "contact", ...none, name: stem(b) };
 	if (a !== "agents" || b === undefined || b === "sections.md") return null;
 	if (b === "groups")
 		return parts.length === 4 && d === "group.md" ? { kind: "group", ...none, group: c ?? null } : null;
@@ -785,7 +877,14 @@ class Fields {
 			return null;
 		}
 		if (!value.items) {
-			this.problems.add("missing", value.line, key, `${key} has no items; write ${key}: [] for an empty list`);
+			this.problems.add(
+				"missing",
+				value.line,
+				key,
+				empty
+					? `${key} has no items; write ${key}: [] for an empty list`
+					: `${key} has no items; give it one or remove the line`,
+			);
 			return null;
 		}
 		const items = [...value.items];
@@ -1205,10 +1304,221 @@ function workerResults(split: Split, fields: Fields, problems: Problems): Worker
 	return { kind: "worker-results", outcome, reportedAt, decision, note, report };
 }
 
+/** The checklist of a task's body: the lines of the first section whose heading is exactly
+ * `## Steps` (as `sections.md` reads headings), up to the next line that starts with `# ` or
+ * `## `, that start at column 0 with `- [ ] `, `- [x] ` or `- [X] `. Other lines are text. */
+function humanTaskSteps(split: Split, problems: Problems): HumanTaskStep[] {
+	const lines = split.body.split("\n");
+	const start = lines.findIndex((line) => line.startsWith("## ") && headingText(line.slice(2)) === "Steps");
+	if (start < 0) return [];
+	const steps: HumanTaskStep[] = [];
+	for (let index = start + 1; index < lines.length; index++) {
+		const line = lines[index] ?? "";
+		if (line.startsWith("# ") || line.startsWith("## ")) break;
+		const box = line.startsWith("- [ ] ")
+			? false
+			: line.startsWith("- [x] ") || line.startsWith("- [X] ")
+				? true
+				: null;
+		if (box === null) continue;
+		const number = split.bodyLine + index;
+		const text = trimSpaces(line.slice(6));
+		if (!text || NOT_ONE_LINE.test(text) || encoder.encode(text).byteLength > 500)
+			problems.add(
+				"body",
+				number,
+				null,
+				!text ? "a step has no text after its box" : "a step is one line of 1–500 bytes, without tabs",
+			);
+		else steps.push({ line: number, text, done: box });
+	}
+	if (steps.length > 50) problems.add("body", split.bodyLine + start, null, "a task has at most 50 steps");
+	return steps;
+}
+
+/** Whether the company folder can hold a file at this path (`parseCloudCompanyPath`, as SQL's
+ * `qorpera_company_path_valid`). */
+function holdablePath(path: string): boolean {
+	try {
+		parseCloudCompanyPath(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** A task's `files`: literal paths the company folder can hold (the core's path rule), at most 20,
+ * each written once (compared by key). On a contact's task, never under the roots outside readers
+ * may not see. */
+function humanTaskFiles(fields: Fields, problems: Problems, forContact: boolean): string[] {
+	const files: string[] = [];
+	const seen = new Set<string>();
+	const items = fields.list("files", false, false) ?? [];
+	if (items.length > 20) problems.add("value", fields.line("files"), "files", "a task lists at most 20 files");
+	for (const item of items) {
+		const path = item.text;
+		const key = companyPathKey(path);
+		if (!item.quoted && ambiguousPlain(path))
+			problems.add("quote", item.line, "files", `put ${shown(path)} in double quotes`);
+		else if (NOT_ONE_LINE.test(path) || !holdablePath(path))
+			problems.add(
+				"value",
+				item.line,
+				"files",
+				`"${shown(path)}" is not a file's path in the company folder, like sales/q3-draft.pdf`,
+			);
+		else if (seen.has(key)) problems.add("value", item.line, "files", `${shown(path)} is listed twice`);
+		else if (forContact && HUMAN_TASK_CONTACT_REFUSED_ROOTS.some((root) => key.startsWith(`${root}/`)))
+			problems.add(
+				"value",
+				item.line,
+				"files",
+				`a contact's task cannot show ${shown(path)}: files under ${HUMAN_TASK_CONTACT_REFUSED_ROOTS.join("/, ")}/ stay inside the company`,
+			);
+		else {
+			seen.add(key);
+			files.push(path);
+		}
+	}
+	return files;
+}
+
+function humanTask(split: Split, fields: Fields, problems: Problems): HumanTaskFile | null {
+	const id = fields.id("id", true);
+	const title = fields.text("title", true, 200, { bytes: true });
+	const status = fields.choice("status", true, HUMAN_TASK_STATUSES);
+	const member = fields.id("member", false);
+	const contact = fields.id("contact", false);
+	const forContact = fields.values.has("contact");
+	if (fields.values.has("member") === forContact)
+		problems.add(
+			forContact ? "value" : "missing",
+			fields.line("contact"),
+			"member",
+			"a task is for exactly one person: give member (a member) or contact (a contact), not both",
+		);
+	const from = fields.id("from", true);
+	const todo = fields.id("todo", false);
+	const due = fields.instant("due", true);
+	const minutes = fields.whole("minutes", false, 1, 480);
+	const proof: (typeof HUMAN_TASK_PROOF)[number][] = [];
+	for (const item of fields.list("proof", false, false) ?? []) {
+		const kind = item.text as (typeof HUMAN_TASK_PROOF)[number];
+		if (!HUMAN_TASK_PROOF.includes(kind))
+			problems.add(
+				"value",
+				item.line,
+				"proof",
+				`proof is ${HUMAN_TASK_PROOF.join(", ")} (found "${shown(item.text)}")`,
+			);
+		else if (proof.includes(kind)) problems.add("value", item.line, "proof", `${kind} is listed twice`);
+		else proof.push(kind);
+	}
+	const files = humanTaskFiles(fields, problems, forContact);
+	const reason = fields.text("reason", false, 500, { bytes: true });
+	if (status === "returned" || status === "declined") {
+		if (!fields.values.has("reason"))
+			problems.add("missing", fields.line("status"), "reason", `a ${status} task says why in reason`);
+	} else if (status !== null && status !== "cancelled" && fields.values.has("reason"))
+		problems.add("value", fields.line("reason"), "reason", "reason goes with returned, declined or cancelled");
+	const secret = fields.text("secret", false, 100, { bytes: true });
+	const secretState = fields.choice("secret_state", false, ["asked", "saved"] as const);
+	if (fields.values.has("secret") !== fields.values.has("secret_state"))
+		problems.add(
+			"missing",
+			fields.line("secret") ?? fields.line("secret_state"),
+			fields.values.has("secret") ? "secret_state" : "secret",
+			"secret and secret_state go together",
+		);
+	if (forContact)
+		for (const key of ["secret", "secret_state"])
+			if (fields.values.has(key))
+				problems.add("value", fields.line(key), key, `${key} is for a member's task; a contact only uploads`);
+	const connection = fields.id("connection", false);
+	const step = fields.choice("step", false, HUMAN_TASK_STEPS);
+	const instructions = body(split, problems, "why, the steps and what done looks like", true, 32768);
+	const steps = humanTaskSteps(split, problems);
+	fields.close("a human task");
+	if (problems.list.length || !id || !title || !status || !from || !due || instructions === null) return null;
+	return {
+		kind: "human-task",
+		id,
+		title,
+		status,
+		member,
+		contact,
+		from,
+		todo,
+		due,
+		minutes,
+		proof,
+		files,
+		reason,
+		secret,
+		secretState,
+		connection,
+		step,
+		instructions,
+		steps,
+	};
+}
+
+/** An email address as a contact file holds it: printable ASCII without spaces, one @. */
+const CONTACT_EMAIL = /^[!-?A-~]+@[!-?A-~]+$/;
+/** A phone number: + and 6–20 digits, single spaces allowed between digits. */
+const CONTACT_PHONE = /^\+[0-9](?: ?[0-9]){5,19}$/;
+
+function contact(split: Split, fields: Fields, problems: Problems): ContactFile | null {
+	const id = fields.id("id", true);
+	const name = fields.text("name", true, 200, { bytes: true });
+	const organization = fields.text("organization", false, 200, { bytes: true });
+	const email = fields.text("email", false, 254, { min: 3, bytes: true });
+	if (email !== null) {
+		const domain = email.slice(email.indexOf("@") + 1);
+		if (!CONTACT_EMAIL.test(email) || domain.startsWith(".") || domain.endsWith("."))
+			problems.add("value", fields.line("email"), "email", "email is an address like maria@example.com");
+	}
+	const phone = fields.text("phone", false, 64);
+	if (phone !== null && !CONTACT_PHONE.test(phone))
+		problems.add("value", fields.line("phone"), "phone", 'phone is + and its digits, like "+45 12 34 56 78"');
+	const asks: string[] = [];
+	for (const item of fields.list("asks", false, false) ?? []) {
+		if (!item.quoted && ambiguousPlain(item.text))
+			problems.add("quote", item.line, "asks", `put ${shown(item.text)} in double quotes`);
+		else if (
+			NOT_ONE_LINE.test(item.text) ||
+			!item.text ||
+			item.text !== item.text.trim() ||
+			encoder.encode(item.text).byteLength > 100
+		)
+			problems.add(
+				"value",
+				item.line,
+				"asks",
+				"each of asks is one line of 1–100 bytes, without spaces at its ends",
+			);
+		else if (asks.includes(item.text))
+			problems.add("value", item.line, "asks", `${shown(item.text)} is listed twice`);
+		else asks.push(item.text);
+	}
+	if (asks.length > 50) problems.add("value", fields.line("asks"), "asks", "asks has at most 50 entries");
+	const notes = body(split, problems, "the notes", false, 32768);
+	fields.close("a contact");
+	if (problems.list.length || !id || !name || notes === null) return null;
+	return { kind: "contact", id, name, organization, email, phone, asks, notes };
+}
+
 /** Where a folder sits in the layout of structured files, or null for an ordinary folder. A
  * folder at one of these places is checked like the files it will hold. */
 function structuredFolderNames(parts: readonly string[]): [number, string][] | null {
 	const [a, b, c, d, e] = parts;
+	// The two top folders have no name of their own; they are places so a wrong spelling cannot be made.
+	if (a === "contacts") return parts.length === 1 ? [] : null;
+	if (a === "human-tasks") {
+		if (parts.length === 1) return [];
+		if (parts.length === 2 || (parts.length === 3 && c === "proof")) return [[1, "a human task's folder"]];
+		return null;
+	}
 	if (a !== "agents" || b === undefined || b === "sections.md") return null;
 	if (b === "groups") return parts.length === 3 ? [[2, "a group chat's folder"]] : parts.length === 2 ? [] : null;
 	if (parts.length === 2) return [[1, "an agent's folder"]];
@@ -1249,7 +1559,13 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		if (where.kind === "group") named.push([written[2], "a group chat's folder"]);
 		else if (where.agent !== null) named.push([written[1], "an agent's folder"]);
 		if (where.kind === "routine" || where.kind === "todo") named.push([written[3]?.slice(0, -3), "the file"]);
-		if (where.kind === "rule" || where.kind === "connection") named.push([written[1]?.slice(0, -3), "the file"]);
+		if (
+			where.kind === "rule" ||
+			where.kind === "connection" ||
+			where.kind === "human-task" ||
+			where.kind === "contact"
+		)
+			named.push([written[1]?.slice(0, -3), "the file"]);
 		if (where.kind === "worker-brief" || where.kind === "worker-results")
 			named.push([written[3], "the todo's folder"], [written[4], "the worker's folder"]);
 	}
@@ -1266,6 +1582,7 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 						"an agent's folder": "agent",
 						"the todo's folder": "todo",
 						"the worker's folder": "worker",
+						"a human task's folder": "task",
 					}[what] ??
 						"file")
 				}`,
@@ -1347,6 +1664,12 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 			break;
 		case "worker-results":
 			file = workerResults(parts, fields, problems);
+			break;
+		case "human-task":
+			file = humanTask(parts, fields, problems);
+			break;
+		case "contact":
+			file = contact(parts, fields, problems);
 			break;
 	}
 	if (!file || problems.list.length) return refused();
@@ -1563,6 +1886,49 @@ export function writeWorkerResultsFile(file: Omit<WorkerResultsFile, "kind">): s
 			["note", file.note === null ? null : companyStateValue(file.note)],
 		],
 		file.report,
+	);
+}
+
+/** `names` puts the member's, contact's and asking agent's names beside their ids, for reading. */
+export function writeHumanTaskFile(
+	file: Omit<HumanTaskFile, "kind" | "steps">,
+	names?: ReadonlyMap<string, string>,
+): string {
+	const withName = (id: string | null) => (id === null ? null : `${id}${note(names?.get(id))}`);
+	return document(
+		[
+			["id", file.id],
+			["title", companyStateValue(file.title)],
+			["status", file.status],
+			["member", withName(file.member)],
+			["contact", withName(file.contact)],
+			["from", withName(file.from)],
+			["todo", withName(file.todo)],
+			["due", file.due],
+			["minutes", file.minutes === null ? null : String(file.minutes)],
+			["proof", file.proof.length ? listValue(file.proof) : null],
+			["files", file.files.length ? listValue(file.files) : null],
+			["reason", file.reason === null ? null : companyStateValue(file.reason)],
+			["secret", file.secret === null ? null : companyStateValue(file.secret)],
+			["secret_state", file.secretState],
+			["connection", file.connection],
+			["step", file.step],
+		],
+		file.instructions,
+	);
+}
+
+export function writeContactFile(file: Omit<ContactFile, "kind">): string {
+	return document(
+		[
+			["id", file.id],
+			["name", companyStateValue(file.name)],
+			["organization", file.organization === null ? null : companyStateValue(file.organization)],
+			["email", file.email === null ? null : companyStateValue(file.email)],
+			["phone", file.phone === null ? null : companyStateValue(file.phone)],
+			["asks", file.asks.length ? listValue(file.asks) : null],
+		],
+		file.notes,
 	);
 }
 

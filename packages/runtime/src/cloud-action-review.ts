@@ -508,6 +508,12 @@ export function describeCloudAction(
 		// Pausing, resuming, removing or ending one names it by its key alone.
 		const key = text(args.routineKey);
 		target = text(args.title) || text(args.name) || (key ? readable(key) : null);
+		// A resume also undoes a member's Stop or a suspension the member may not remember.
+		if (args.action === "resume")
+			add(
+				"effect",
+				"Switches the routine back on, also after a member stopped it or its model account stopped working",
+			);
 		add("schedule", routineSchedule(args, timeZone));
 		quote("intent", args.intent, CONTENT_BYTES);
 	} else if (tool.name === "decide_routine") {
@@ -715,7 +721,9 @@ export interface CloudActionReviewControl {
 	call(method: CloudActionReviewRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
-export type CloudActionGateResult = { run: true } | { run: false; text: string };
+/** A reviewed call that may run carries its approval's id (the action review row), which a folder writer records as
+ * the review of the change set it commits (RUNTIME-COMPANY-FOLDER-C2.md, R1). Reads and internal calls carry none. */
+export type CloudActionGateResult = { run: true; reviewId?: string } | { run: false; text: string };
 
 /** One acting call as the boundary hands it to the review. */
 export interface CloudActionCall {
@@ -731,6 +739,14 @@ function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw new Error("Action review response is invalid");
 	return value as Record<string, unknown>;
+}
+
+/** The approval a reviewed call runs on. Its id is only passed on: the recorder checks it in SQL, and a call without
+ * one can still run, but cannot save a reviewed folder change. */
+function approved(reviewId: unknown): CloudActionGateResult {
+	return typeof reviewId === "string" && UUID.test(reviewId)
+		? { run: true, reviewId: reviewId.toLowerCase() }
+		: { run: true };
 }
 
 function name(value: unknown, fallback: string): string {
@@ -798,7 +814,7 @@ export class CloudActionReviewGate {
 				signal,
 			),
 		);
-		if (begin.state === "approved") return { run: true };
+		if (begin.state === "approved") return approved(begin.reviewId);
 		if (begin.state === "declined")
 			return {
 				run: false,
@@ -882,7 +898,7 @@ export class CloudActionReviewGate {
 			),
 		);
 		const reason = name(recorded.reason, verdict.reason);
-		if (recorded.decision === "allow") return { run: true };
+		if (recorded.decision === "allow") return approved(recorded.reviewId);
 		if (recorded.decision === "deny")
 			return {
 				run: false,
@@ -926,7 +942,7 @@ export class CloudActionReviewGate {
 					signal,
 				),
 			);
-			if (state.state === "approved") return { run: true };
+			if (state.state === "approved") return approved(reviewId);
 			if (state.state === "declined")
 				return {
 					run: false,
