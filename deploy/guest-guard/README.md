@@ -10,7 +10,7 @@ arrives from a guest bridge, by input interface:
 
 - The source must be an address of that bridge's own subnet, and never the bridge's gateway (no spoofing).
 - New connections are checked against the rules; replies, and connections the node opens to a guest, pass.
-  An ICMP error from a guest must concern a connection the guest is part of.
+  An ICMP error from a guest must concern a connection with an endpoint on the guest's own bridge.
 - Refused connections answer at once (TCP reset, otherwise ICMP admin-prohibited), so a blocked call fails
   fast instead of timing out. Spoofed, invalid and foreign ICMP-error packets, IPv6, and broadcast or
   multicast copies are dropped quietly.
@@ -142,12 +142,15 @@ As root on one node at a time, from a checkout at the reviewed head. `G` below i
 4. **Phase 1, enforce.**
 
    ```bash
+   G enforce
    echo enforce > /etc/qorpera-guest-guard/mode
    systemctl enable --now qorpera-guest-guard.service
    ```
 
-   Enabling loads the guard at every boot, before LXD starts any guest. `--now` replaces the observe table in
-   one transaction, so there is no moment without it. Then check:
+   `G enforce` runs first, by hand: it compares the bridges with the rules and refuses on a mismatch, before
+   anything is enabled. Each load replaces the table in one transaction, so there is no moment without it.
+   Enabling then loads the guard at every boot, before LXD starts any guest. At boot the bridges do not exist
+   yet, so the comparison cannot run there; `G verify` repeats it. Then check:
    - `G verify` says `loaded enforce, wanted enforce; br_netfilter 1` and exits 0;
    - `G probe qn25b2 qorpera-exec-node02` ends with `unexpected results: 0`;
    - an agent run with the Company File, a coding turn, and waking the Company Computer and opening its
@@ -161,10 +164,12 @@ As root on one node at a time, from a checkout at the reviewed head. `G` below i
 
    ```bash
    systemctl disable --now qorpera-guest-guard.service
+   G remove
    rm -f /etc/qorpera-guest-guard/mode
    ```
 
-   Stopping the unit deletes the table. In phase 0 (loaded by hand): `G remove && rm -f /etc/qorpera-guest-guard/mode`.
+   Stopping the unit deletes the table; `G remove` also covers a table loaded by hand (phase 0), and does
+   nothing when it is already gone.
    Without a mode file the guard is not wanted, and `G verify` checks that no table is loaded. To switch
    modes without a gap, change the mode file and `systemctl reload qorpera-guest-guard.service` (not
    `restart`, which removes the table for a moment).
@@ -184,16 +189,21 @@ layer-2 control: the guard does not see non-IP frames or VLAN-tagged frames.
   `flush ruleset`, which deletes this table and LXD's own tables. The unit is ordered after
   `nftables.service` in case it is ever enabled again.
 - If the guard fails to load at boot, LXD still starts and guests run without it. `G verify` is the check for
-  monitoring and node parity: exit 0 only when the loaded mode is the mode file's (no file: no table) and,
-  while loaded, br_netfilter is on.
+  monitoring and node parity: exit 0 only when the loaded mode is the mode file's (no file: no table),
+  br_netfilter is on while loaded, and in enforce every bridge still matches the rules (a bridge recreated
+  with another subnet would otherwise lose its guests unnoticed).
+- A leftover bridge that does not match (for example a build bridge with IPv6 left on) stops enforce for
+  the whole node. Delete or fix the bridge; `QORPERA_GUEST_GUARD_FORCE=1` turns the comparison off for every
+  bridge.
 - A new guest bridge goes into `guest_bridges`, `bridge_subnets` and `bridge_gateways`; `G check` names a
   bridge that is missing.
 - A new host service that guests call goes into `allowed_services` in a reviewed change.
 - Our public address `93.164.62.162` is written into `internal4`. If TDC changes it, change the file.
 - Anything a guest sends out `tailscale0` that is not listed is refused. If a later step (the agent exit)
   routes guests through a Tailscale exit node, that rule has to change with it.
-- The kernel already drops packets whose source is one of the node's own addresses (martian source), so the
-  gateway-address rule is a second line.
+- For packets to the node or through it, the kernel already drops a source that is one of the node's own
+  addresses (martian source) before the guard sees them. For packets between two guests on one bridge, the
+  guard's gateway-address rule is the only check.
 - The guard sees guests' traffic before LXD's NAT, so it knows the guest's own address. The NAS does not: see
   below.
 

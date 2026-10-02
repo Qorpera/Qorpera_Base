@@ -5,7 +5,7 @@
 set -euo pipefail
 
 EXPECTED_RULES_SHA256="f165865f66093ed404025807f2d31a2ac3e79458e05277fd038a92ad9327bd4a"
-EXPECTED_TOOL_SHA256="d873bb8dc9930cbf872e86c029b4172178e3273583856fb96d86cf387fa87a5e"
+EXPECTED_TOOL_SHA256="4d24916b00bd672b27f2dc14b78be0b27e06654b32c762852134ad3556dfe1c8"
 EXPECTED_UNIT_SHA256="6ef1d6ee3e1203eba9c486228e20cabfe967dd83542093e31ccf6768cab1dd0e"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 INSTALL_ROOT="/usr/local/libexec/qorpera-guest-guard"
@@ -37,4 +37,4 @@ install -m 0755 "$SOURCE_ROOT/qorpera-guest-guard.sh" "$INSTALL_ROOT/qorpera-gue
 install -m 0644 "$SOURCE_ROOT/qorpera-guest-guard.service" /etc/systemd/system/qorpera-guest-guard.service
 systemctl daemon-reload
 "$INSTALL_ROOT/qorpera-guest-guard.sh" check
-echo "Installed. Nothing is loaded or enabled; next: $INSTALL_ROOT/qorpera-guest-guard.sh observe"
+echo "Installed. Nothing is loaded or enabled; next: README.md step 3 (observe through the mode file)"

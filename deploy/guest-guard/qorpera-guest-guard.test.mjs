@@ -187,6 +187,11 @@ esac
 		writeFileSync(join(dir, "brnf"), "0\n");
 		assert.equal(run(["verify"]).status, 1, "br_netfilter off");
 		writeFileSync(join(dir, "brnf"), "1\n");
+		bridges({ "machine-net": { route: "10.88.4.0/24 src 10.88.4.1\n" } });
+		const drifted = run(["verify"]);
+		assert.equal(drifted.status, 1, "a bridge changed after enforce");
+		assert.match(drifted.stderr, /a bridge no longer matches the rules/);
+		bridges({});
 		run(["remove"]);
 		mode(undefined);
 		const off = run(["verify"]);

@@ -58,7 +58,7 @@ batch() {
 # 0: loaded, 1: not loaded. Anything else nft says (no permission, no netlink) stops the script.
 loaded() {
 	local err
-	if err=$(nft list table $table 2>&1 >/dev/null); then return 0; fi
+	if err=$(LC_ALL=C nft list table $table 2>&1 >/dev/null); then return 0; fi
 	[[ $err == *"No such file or directory"* ]] && return 1
 	die "nft cannot read the table: $err"
 }
@@ -106,6 +106,10 @@ compare_bridges() {
 	while read -r bridge _; do guarded[$bridge]=1; done < <(set_elements guest_bridges)
 	while read -r bridge subnet; do subnets[$bridge]=$subnet; done < <(set_elements bridge_subnets)
 	while read -r bridge gateway; do gateways[$bridge]=$gateway; done < <(set_elements bridge_gateways)
+	((${#guarded[@]} > 0 && ${#subnets[@]} > 0 && ${#gateways[@]} > 0)) || {
+		echo "MISMATCH cannot read guest_bridges, bridge_subnets or bridge_gateways from $rules"
+		return 1
+	}
 	for bridge in $(ip -o link show type bridge | awk -F': ' '{print $2}' | cut -d@ -f1); do
 		if [[ -z ${guarded[$bridge]:-} ]]; then
 			echo "NOT GUARDED bridge $bridge (add it to guest_bridges, bridge_subnets and bridge_gateways)"
@@ -215,6 +219,13 @@ verify)
 	echo "qorpera-guest-guard: loaded $actual, wanted $wanted; br_netfilter $netfilter"
 	[[ $actual == "$wanted" ]]
 	[[ $actual == "not loaded" || $netfilter == 1 ]]
+	# The comparison cannot run at boot (LXD creates the bridges later), so verify repeats it.
+	if [[ $actual == enforce ]]; then
+		compare_bridges >/dev/null || [[ $? -eq 2 ]] || {
+			compare_bridges | grep '^MISMATCH' >&2 || true
+			die "a bridge no longer matches the rules"
+		}
+	fi
 	;;
 status)
 	echo "mode: $(current_mode)"
