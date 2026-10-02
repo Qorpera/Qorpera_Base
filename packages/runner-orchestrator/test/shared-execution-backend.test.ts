@@ -1156,6 +1156,10 @@ describe("run boxes (F3)", () => {
 		const f = await fixture({ runBox: true });
 		f.viewAnswers.push("run-unavailable", "run-unavailable");
 		await deliverRun(f);
+		// The native host learns the slot's box sockets, for its exec_command and write_stdin (2b-3).
+		expect(await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8")).toContain(
+			"QORPERA_RUN_BOX_SOCKET=/run/qorpera-shared-box/0.sock\nQORPERA_RUN_BOX_READS=/run/qorpera-shared-box/0.reads\n",
+		);
 		await until(async () => (await boxState(f)) === "open", "the box opens");
 		const opens = f.rpc.filter((call) => call.name === "qorpera_folder_view_open");
 		expect(opens).toHaveLength(3);
@@ -1219,6 +1223,9 @@ describe("run boxes (F3)", () => {
 		}
 		const off = await fixture();
 		await deliverRun(off);
+		expect(await readFile(join(off.runRoot, "slots", "0", "native-provider.env"), "utf-8")).not.toContain(
+			"QORPERA_RUN_BOX",
+		);
 		await off.backend.reconcile();
 		expect(off.rpc.some((call) => call.name.startsWith("qorpera_folder_view"))).toBe(false);
 		expect((await journal(off)).box).toBeUndefined();

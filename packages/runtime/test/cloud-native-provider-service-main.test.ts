@@ -1,6 +1,7 @@
 import {
 	nativeCompanyComputerConfiguration,
 	nativeCompanyRuntimeConfiguration,
+	nativeRunBoxConfiguration,
 	nativeWarmIdleMs,
 } from "@qorpera/runtime/cloud-native-provider-service-main";
 import { systemdCredentialMetadataIsSafe } from "@qorpera/runtime/systemd-credential";
@@ -104,6 +105,28 @@ describe("native Company Computer service composition", () => {
 			{ QORPERA_COMPANY_COMPUTER_TOKEN: "A".repeat(43) },
 		])
 			expect(() => nativeCompanyComputerConfiguration(environment)).toThrow();
+	});
+});
+
+describe("native run box composition", () => {
+	it("takes the slot's two box sockets together, with the governed runtime, or nothing", () => {
+		expect(nativeRunBoxConfiguration({})).toBeUndefined();
+		const environment = {
+			QORPERA_NATIVE_RUNTIME: "company-path-v1",
+			QORPERA_RUN_BOX_SOCKET: "/run/qorpera-shared-box/3.sock",
+			QORPERA_RUN_BOX_READS: "/run/qorpera-shared-box/3.reads",
+		};
+		expect(nativeRunBoxConfiguration(environment)).toEqual({
+			socket: "/run/qorpera-shared-box/3.sock",
+			reads: "/run/qorpera-shared-box/3.reads",
+		});
+		for (const bad of [
+			{ ...environment, QORPERA_RUN_BOX_READS: undefined },
+			{ ...environment, QORPERA_RUN_BOX_SOCKET: "/tmp/3.sock" },
+			{ ...environment, QORPERA_RUN_BOX_READS: "/run/qorpera-shared-box/3.sock" },
+			{ ...environment, QORPERA_NATIVE_RUNTIME: undefined },
+		])
+			expect(() => nativeRunBoxConfiguration(bad)).toThrow();
 	});
 });
 

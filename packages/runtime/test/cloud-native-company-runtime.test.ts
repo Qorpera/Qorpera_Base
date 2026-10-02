@@ -70,6 +70,7 @@ async function fixture(
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
 	folderBytes = false,
+	runBox = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -622,6 +623,10 @@ async function fixture(
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// A run box's sockets only offer its tools here; this suite never runs a command.
+		...(runBox
+			? { runBox: { socket: "/run/qorpera-shared-box/0.sock", reads: "/run/qorpera-shared-box/0.reads" } }
+			: {}),
 		// Folder bytes read the files a test seeds; this suite never saves a file.
 		...(folderBytes
 			? {
@@ -1204,6 +1209,19 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	expect(
 		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
 	).toBe(true);
+});
+
+it("offers the run box's tools to a folder-v2 run on a host with a box, and to no other run", async () => {
+	const names = async (folder: boolean, runBox: boolean): Promise<string[]> => {
+		const f = await fixture("company-dynamic", false, undefined, false, true, runBox);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		return evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	};
+	expect(await names(true, true)).toEqual(expect.arrayContaining(["exec_command", "write_stdin"]));
+	expect(await names(true, false)).not.toContain("exec_command");
+	expect(await names(false, true)).not.toContain("exec_command");
 });
 
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
