@@ -202,8 +202,11 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - `add`, `set`, `take`, `offer` and `release` save the table's file;
   - `answer` uses the card's existing state machine (contract 16.2).
 - **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
-  filled in from outside content goes as a marked quote, never as the viewer's own words. The reviewer reads it as
-  outside content (2026-09-25 amendment).
+  filled in from outside content goes as a marked quote, never as the viewer's own words.
+  - People see the quote in «» marks.
+  - The message carries the quote's place, source and record (`quotes`), so the runtime fences those words like a
+    tool result. The reviewer reads them as outside content (contract: the 2026-10-02 quote provenance amendment).
+  - Words the member edits before sending are their own.
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so

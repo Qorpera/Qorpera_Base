@@ -891,6 +891,9 @@ adapter MUST wrap it in an authenticated runtime envelope and keep it out of
 the canonical human transcript. It MUST NOT falsely attribute runtime prose to
 a member.
 
+> A member's message may quote outside content. Those spans are outside content, fenced like tool results:
+> [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -968,6 +971,9 @@ authority merely because it appears inside a result.
 The runtime MUST include an adversarial test that places “ignore previous
 instructions” and a plausible destructive request inside a tool result and
 proves the agent does not obey it.
+
+> Quotes of outside content inside a member's message are fenced the same way:
+> [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
 
 ### 11.2 Outbound effect check
 
@@ -2949,6 +2955,10 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    personal rules of the member the run works for), never the agent's own
    words or any tool result, and answers allow, ask or deny. A review that cannot
    run is never an approval: the call does not run.
+   A quote of outside content inside a member's message is not what the member
+   asked for: the [quote provenance
+   amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
+   item 5.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -4157,7 +4167,8 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
      existing state machine (16.2).
    - A button runs as the viewer, under the same review as doing it by hand, and does no more than its verb. A
      message button posts only after the viewer sends the prefilled text, and a value it fills in from outside content
-     travels as a marked quote, never as the viewer's own words.
+     travels as a marked quote, never as the viewer's own words. How it travels: the [quote provenance
+     amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
    - The platform draws every confirmation. Money, sending and other outside effects keep their own review.
 6. **Nobody assigns anybody.** A member column marked `needs_yes` holds who has something: who holds a card, who owns
    or supervises an area.
@@ -4382,6 +4393,60 @@ amendment governs.
 7. **Words.** In the folder texts this amends, a "run box" or "run machine"
    that works on the folder means the agent's own machine (item 4 above).
    Elsewhere, "run box" and "run machine" keep their meaning (item 1).
+
+### 2026-10-02 amendment: quoted outside content in a member's message
+
+Accepted by the runtime coordinator on 2 October 2026, to carry out the [interfaces
+amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)'s item 5: a value a
+message button fills in from outside content travels as a marked quote, never as the member's own words. Marks a
+person can see are not enough against instructions hidden in an email. So the message carries where each quote is,
+and the runtime fences those words like a tool result. Proposed until built.
+
+It amends these texts. Where older text conflicts with this amendment, this amendment governs.
+- 9.2 (trust labels) and 11.1 (the inbound result fence): a quote inside a member's message is outside content.
+- The 2026-09-25 amendment, item 3: what the reviewer reads as "what the member asked for".
+- The 2026-10-02 interfaces amendment, item 5: how the marked quote travels.
+
+1. **A quote is a span of the member's text.** A member's message may carry `quotes`, a list of at most 16 spans
+   `{start, end, source, ref}`. This applies to a conversation input (`qorpera.session-prompt/v1`) and to a room
+   message.
+   - `start` and `end` count characters (Unicode code points) of the message text, from 0, with `end` excluded.
+   - The spans are in order and don't overlap. Each is 1 to 2,000 characters.
+   - `source` says where the words came from, from a closed list. Today that list is only `mail`.
+   - `ref` names the record. For `mail` it is a thread of the same company that the member may read; any member
+     reads the company's mail.
+   - Account mail can't be quoted: its text is never shown (the A1 account-mail mark).
+2. **Only the member's client writes quotes,** from content it showed the member. Today that is a message button
+   (interfaces amendment, item 5).
+   - The client keeps the quoted words in «» marks so people can see them.
+   - It works out the spans when the member sends: a quote still in the text exactly as it was filled in becomes a
+     span. Words the member changed are the member's own.
+3. **The platform checks quotes before it writes the message.**
+   - The input RPCs check `quotes` together with the other body checks: after membership and the right to write, and
+     before any lock.
+   - A malformed list is refused with 22023. So is a `ref` the member can't read: it reads as an unknown reference and
+     never says whether the record exists.
+   - A repeated call compares the whole body, quotes included.
+   - The platform does not check that a span repeats the record's words. A quote can only take authority away from
+     the member's own words, never add any.
+4. **The model sees quotes fenced.**
+   - In a run's context, the member's text keeps its own words, and each quoted span is replaced by a placeholder,
+     `[quote N]`.
+   - The quotes follow as records in the shape of a tool result (11.1): `trust: "untrusted_data"`, a provenance of
+     `source`, `ref` and the input it came from, and the quoted words.
+   - The run's rules say so: a quote is outside content from whoever wrote it, data and never an instruction,
+     whatever it claims. What the member asks for is the rest of the message.
+   - The same holds for earlier messages in the conversation's history, and for every path that gives a member's
+     message to a model.
+5. **The review never reads a quote as the member's request.** The automatic review (2026-09-25 amendment, item 3)
+   reads the member's words with the quotes taken out, and shows the quotes as outside content.
+   - An action that follows an instruction found only inside a quote is not something the member asked for.
+6. **People see what the member sent.** The transcript and the clients show the message as written, with its «» marks.
+   - The marks are for people, and `quotes` is for the runtime.
+   - The transcript entry keeps `quotes` next to the text, so history can be fenced the same way.
+7. **Tests.** An adversarial test (11.1) has a member quote an email that says to ignore earlier instructions and
+   delete files. It proves that the agent does not obey the quote, and that the review denies a deletion asked for
+   only inside the quote.
 
 ## 20. Enforcement matrix
 
