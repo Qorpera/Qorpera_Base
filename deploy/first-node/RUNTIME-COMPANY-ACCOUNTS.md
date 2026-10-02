@@ -164,6 +164,46 @@ offered and accounts are switched on.
   `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list and test
   320 do (`scripts/check-runtime-observation-vocabulary.test.mjs` checks all three).
 
+## A1-4b: the agent's tool (`company_account`, runtime only)
+
+Offered to a company run's agent (not a worker, not a folder-v2 company) when the host has the vault
+(`QORPERA_CLOUD_SECRET_BROKER_URL` and token): the same broker client serves connectors and accounts. Inert while
+accounts are switched off (the read answers "switched off"). `cloud-company-account-tools.ts`:
+
+- `find {site?}`: the read of A1-4a (the company's accounts and mailboxes); its refusals reach the agent as
+  `REFUSED: <message>`.
+- `open {site, signInHosts?, mailbox?, todo, purpose, password?, operationKey}`, in this order:
+  1. Which way in (Jonas, 2 October), as the arguments are read, before any review, so no member is ever asked to
+     approve such an opening: a service with an official connection is refused with "use it" (GitHub, Google: the
+     connector catalog's) or "the company cannot add it yet" (Microsoft, Slack); a site with strict bot checks
+     (Apple, LinkedIn, X, Meta, Amazon and its regional stores) and a payment provider (PayPal, Stripe) are refused as a person's task in
+     their own browser. Matched on the site and its sign-in hosts, the domain or any name under it. Banks are in the
+     words only.
+  2. The read with the todo key and the site: the todo's id, the mailboxes, the site's accounts.
+  3. The mailbox: none is a refusal; else the one named (one of the company's), else the company's only one;
+     several unnamed is a refusal that lists them.
+  4. The login, made by the tool: `<mailbox>+<site>@<mail domain>`; when the part before the @ would pass 64
+     characters the tag is cut and ends in `-` and 8 hex characters of the site's SHA-256; a mailbox that leaves
+     under 12 characters for a long site carries no tag (refused: name another mailbox).
+  5. Reuse first: an account on the same website (the site, a name under it or above it, or a sign-in host, `www.`
+     aside; among the site's accounts and the company's newest 20) under another address is refused with its id
+     ("use it"); one under this address is this opening repeated (the receipt answers) or the vault's 23505.
+  6. The effect: receipt `company_account:open:<operationKey>` (arguments: site, sign-in hosts, login, purpose, the
+     todo's id, the password rules), then the vault's `POST /v1/company-accounts`; its answer (the account, or its
+     refusal in its own words) completes the receipt and is the call's result.
+- `state {account, status, operationKey}`: receipt `company_account:state:<account>:<operationKey>`, then the vault.
+- Review: `find` is a read; `open` acts outside; `connected` and `needs_person` are the company's bookkeeping;
+  `closed` is destructive, and its card says it deletes the password and authenticator for good (the "deleting
+  things outside" check). A `vault_fill` card names the account and the field, never a value.
+- `computer_browser` now offers `vault_fill {role, name, account, field}`; the computer tools' words say a company
+  account's values are typed only by the vault, and a CAPTCHA, bot check, unusual activity warning or block page
+  ends the attempt at once, never retried, the account marked `needs_person`. The agents' instructions gain
+  "Accounts on websites" with the same rules.
+- Rollout: the vault's nginx needs `location = /v1/company-accounts` and `location = /v1/company-account-fills`
+  (to `$qorpera_operations_broker`, as `/v1/operations`), then the coordinator switches accounts on. #682 (fill
+  hardening) must be in the office image before agents get `vault_fill`, and accounts stay switched off until an
+  office image with A1-4c is live: until then the stop at a block page is only the agent's words.
+
 ## Notes for later steps
 
 - A1-4 must make every account's mail markable (A1-5a). The database enforces the tagged address (A1-4a); the
