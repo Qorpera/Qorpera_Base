@@ -136,11 +136,37 @@ codes and reset links, so it is shown only as "<site> · sign-in mail · used by
   company's accounts (the planner uses the company index, or `qorpera_company_accounts_login` (profile,
   environment, lower(login)) when companies hold many accounts on average).
 
+## A1-4a: the account tool's database side (migration `20260929999965`, SQL test 813)
+
+The agent's account tool (A1-4b) needs three things the vault's calls do not give it. Inert until that tool is
+offered and accounts are switched on.
+
+- `qorpera_find_company_accounts(p_binding, p_request)`: one read for the running agent, a native host call bound
+  to its run (G2-1 scope `binding`, budget standard; listed in `NATIVE_HOST_CALLS` and the path control). The
+  request is `{todo?, site?}`:
+  - the company's accounts that are not closed, newest first, at most 20 with `more` when there are others; on
+    one website when `site` is named, as the account's site or one of its sign-in hosts, in any letter case;
+  - each account's id, site, sign-in hosts, login, two-step, status, whether this agent opened it, and when it
+    was last used, never a value, envelope or key id;
+  - the company's mailbox addresses (removed ones left out), for the tagged login;
+  - with `todo` (a todo key), that todo's id, when it is this agent's own open or blocked todo (22023 otherwise):
+    agents know a todo by its key, and the opening names it by id.
+  It refuses 0A000 while accounts are switched off and for folder-v2 companies, and 22023 for any other request
+  shape. Granted to the service role only.
+- An agent's account signs up with a tagged address of one of the company's mailboxes. A trigger on
+  `qorpera_company_accounts` (before insert, for an agent's opening only) refuses any other login with 22023,
+  which the vault passes to the agent as a refusal it can act on: `<mailbox>+<tag>@<mail domain>`, the mailbox
+  the company's and not removed, the tag 1 to 64 of `[a-z0-9._-]`, the domain the platform's mail domain, in any
+  letter case. A member's hand-over (A1-6) keeps any login. With no mail domain or no mailbox, no agent opens an
+  account: an owner adds a mailbox first.
+- Observations name the tool `company_account` (`qorpera_record_runtime_observation`, an exact-text patch).
+
 ## Notes for later steps
 
-- A1-4 must make every account's mail markable (A1-5a), since nothing in the database enforces it:
-  - The account tool makes the login itself, `<handle>+<tag>@<mail domain>` from the agent's mailbox and the
-    site; the agent never picks it, and no account is opened on the bare mailbox address.
+- A1-4 must make every account's mail markable (A1-5a). The database enforces the tagged address (A1-4a); the
+  rest is the tool's:
+  - The account tool makes the login itself, `<mailbox>+<tag>@<mail domain>` from one of the company's mailboxes
+    and the site; the agent never picks it, and no account is opened on the bare mailbox address.
   - The tag is at most 64 characters of `[a-z0-9._-]` (Q1's limit), while a site name can be 253: a long site
     gets a shortened tag (for example its first 55 characters, `-` and 8 hex characters of its hash).
   - The account row is opened before the address is typed into any form, also for sign-ups that start with the
