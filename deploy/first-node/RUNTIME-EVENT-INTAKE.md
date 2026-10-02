@@ -374,12 +374,13 @@ Item 33 of section 21 carries the adversarial event case of item 10.
     as the fence does: the tool's JSON is one string inside the fence's JSON, `< > & U+2028 U+2029`
     take six bytes, and 3 KiB stay free for the fence's provenance (as `read_context` keeps). The cut
     falls at a character (text) or after whole three bytes (base64), and `next` points right after it.
-    The hook, type, content type and headers count too. Headers that would leave the body less than
-    1 KiB are cut first, every value to the same number of characters, and the piece says
-    `headersCut`.
-  - A piece is about 4,000 characters of plain text, fewer when characters need escaping (quoted
-    or HTML text about 2,000), or about 3 KiB of bytes as base64. A 256 KiB email takes about 70
-    reads.
+    The hook, type and content type count too.
+  - The headers come with the first piece (offset 0) only, so a sender's long `From` or `Subject`
+    cannot shrink every piece. There, headers that would leave the body less than 1 KiB are cut
+    first, every value to the same number of characters, and the piece says `headersCut`.
+  - A piece is about 4,500 characters of plain text, fewer when characters need escaping (dense
+    HTML about 2,000 to 3,000), or about 3.4 KiB of bytes as base64. A 256 KiB email takes about 55
+    reads as plain text and up to about 120 when it is mostly dense HTML.
   - The tool refuses a receipt whose `next` is not exactly its offset plus the piece it carries (code
     points for text, bytes for base64), or whose `done` contradicts `next`. The database's pieces
     hold to this; the SQL is unchanged.

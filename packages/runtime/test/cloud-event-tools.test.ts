@@ -120,6 +120,33 @@ describe("agent event tools", () => {
 		}
 	});
 
+	it("accepts what the database gives past the end, after the body is cleared, and a padded last piece", async () => {
+		for (const [callId, offset, piece] of [
+			["a1", 10, { encoding: "utf8", offset: 10, text: "", total: 10, done: true }],
+			["a2", 0, { bodyCleared: true, done: true }],
+			["a3", 10, { bodyCleared: true, done: true }],
+			["a4", 24576, { encoding: "base64", offset: 24576, data: "/w==", total: 24577, done: true }],
+			["a5", 24576, { encoding: "base64", offset: 24576, data: "AA==", total: 24600, done: false, next: 24577 }],
+			["a6", 99999, { encoding: "base64", offset: 99999, data: "", total: 24577, done: true }],
+		] as const) {
+			const f = await fixture((_method, args, runId) => ({
+				schema: "qorpera.agent-event/v1",
+				runId,
+				deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
+				hook: { id: HOOK, name: "forms" },
+				headers: {},
+				bytes: 0,
+				...piece,
+			}));
+			try {
+				const read = await f.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset });
+				expect(read.success, callId).toBe(true);
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
 	it("passes a next piece's offset on, and refuses one that skips, stands still or contradicts done", async () => {
 		const receipt =
 			(piece: Record<string, unknown>) => (_method: string, args: Record<string, unknown>, runId: string) => ({
@@ -156,6 +183,7 @@ describe("agent event tools", () => {
 			["n9", { encoding: "base64", data: "AAA", next: 12 }],
 			["n10", { offset: 0, next: 12 }],
 			["n11", { headers: { "content-type": 1 }, next: 12 }],
+			["n12", { encoding: "base64", data: "AA==", next: 13 }],
 		] as const) {
 			const other = await fixture(receipt(piece));
 			try {
@@ -267,10 +295,11 @@ describe("agent event tools", () => {
 				const characters = [...body.toString("utf8")].length;
 				// The database alone would have given far fewer, larger pieces: the runtime cut every one but the last.
 				expect(pieces.length).toBeGreaterThan(Math.ceil(characters / 16000) * 2);
-				for (const piece of pieces) {
+				for (const [place, piece] of pieces.entries()) {
 					expect(piece.encoding).toBe("utf8");
 					expect(piece.total).toBe(characters);
-					expect(piece.headers).toEqual(mailHeaders);
+					// The headers come with the first piece only.
+					expect(piece.headers).toEqual(place === 0 ? mailHeaders : undefined);
 					expect(piece.headersCut).toBeUndefined();
 				}
 			} finally {
@@ -297,7 +326,7 @@ describe("agent event tools", () => {
 			}
 		});
 
-		it("cuts headers too long to leave the body room, every value to one length, and still reads it all", async () => {
+		it("cuts headers too long to leave the body room, every value to one length, and still reads it all fast", async () => {
 			// As long as the intake keeps them: each value at most 2048 characters, all within 8 KiB of JSON.
 			const headers = {
 				"delivered-to": "agents@northwind.qorpera.mail",
@@ -310,23 +339,32 @@ describe("agent event tools", () => {
 			try {
 				const pieces = await readAll(f);
 				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
-				for (const piece of pieces) {
-					expect(piece.headersCut).toBe(true);
-					const kept = piece.headers as Record<string, string>;
-					const most = Math.max(...Object.values(kept).map((value) => [...value].length));
-					for (const [name, value] of Object.entries(headers)) {
-						expect(value.startsWith(kept[name]), name).toBe(true);
-						expect([...kept[name]].length, name).toBe(Math.min([...value].length, most));
-					}
-					// Every piece but the last keeps about a kilobyte of the result for the body.
-					if (!piece.done)
-						expect(
-							Buffer.byteLength(
-								JSON.stringify(JSON.stringify(piece.text)).replace(/[<>&\u2028\u2029]/g, "\\u0000"),
-							),
-						).toBeGreaterThan(1000);
+				const [first, ...rest] = pieces;
+				expect(first.headersCut).toBe(true);
+				const kept = first.headers as Record<string, string>;
+				const most = Math.max(...Object.values(kept).map((value) => [...value].length));
+				for (const [name, value] of Object.entries(headers)) {
+					expect(value.startsWith(kept[name]), name).toBe(true);
+					expect([...kept[name]].length, name).toBe(Math.min([...value].length, most));
 				}
-				expect(pieces[0].headers).toMatchObject({ "delivered-to": headers["delivered-to"] });
+				expect(kept["delivered-to"]).toBe(headers["delivered-to"]);
+				// The first piece keeps about a kilobyte of the result for the body.
+				expect(
+					Buffer.byteLength(
+						JSON.stringify(JSON.stringify(first.text)).replace(/[<>&\u2028\u2029]/g, "\\u0000"),
+					),
+				).toBeGreaterThan(1000);
+				// The rest carry no headers, so a sender's long ones cannot make the body slow to read.
+				for (const piece of rest) {
+					expect(piece.headers).toBeUndefined();
+					expect(piece.headersCut).toBeUndefined();
+				}
+				const plain = await delivery(body, mailHeaders);
+				try {
+					expect(pieces.length).toBeLessThanOrEqual((await readAll(plain)).length + 1);
+				} finally {
+					plain.run.close();
+				}
 			} finally {
 				f.run.close();
 			}

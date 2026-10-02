@@ -56,8 +56,9 @@ function fencedBytes(value: Record<string, unknown>): number {
  * A read_event receipt cut to what one tool result shows whole. The fence cuts a result's tail and the keys are
  * sorted, so a piece too long for it would lose the end of its text while next survived, and reading on from next
  * would skip what was cut. The piece is cut here instead, at a character (text) or after a whole three bytes
- * (base64), and next points right after it. Headers that would leave the body less than PIECE_BODY_FLOOR_BYTES are
- * cut first, every value to the same number of characters.
+ * (base64), and next points right after it. Headers come with the first piece only, so a sender's long headers
+ * cannot shrink every piece; there, headers that would leave the body less than PIECE_BODY_FLOOR_BYTES are cut first,
+ * every value to the same number of characters.
  */
 function fittedEventPiece(receipt: Record<string, unknown>): Record<string, unknown> {
 	const budget = MAX_CLOUD_TOOL_RESULT_BYTES - PIECE_FENCE_RESERVE_BYTES;
@@ -77,11 +78,11 @@ function fittedEventPiece(receipt: Record<string, unknown>): Record<string, unkn
 					next: offset + (characters ? count : count * 3),
 				};
 	let fitted = receipt;
-	const headers = Object.entries(receipt.headers as Record<string, string>).map(
+	const headers = Object.entries((receipt.headers ?? {}) as Record<string, string>).map(
 		([name, value]) => [name, [...value]] as const,
 	);
 	const floor = units > 0 ? PIECE_BODY_FLOOR_BYTES : 0;
-	if (fencedBytes(cut(receipt, 0)) + floor > budget) {
+	if (headers.length > 0 && fencedBytes(cut(receipt, 0)) + floor > budget) {
 		const shortened = (most: number) => ({
 			...receipt,
 			headers: Object.fromEntries(headers.map(([name, value]) => [name, value.slice(0, most).join("")])),
@@ -132,7 +133,7 @@ export const CLOUD_LIST_HOOKS_TOOL_DESCRIPTION =
 
 export const CLOUD_READ_EVENT_TOOL_DESCRIPTION =
 	"Read one event that arrived at one of your company's hooks, by its deliveryId from wake.payload.events. " +
-	"The result has the hook, the event type, when it arrived, the content type, the kept headers, and a piece of the body cut to fit one result: text (encoding utf8), about 4,000 characters of plain text and fewer where characters need escaping, such as quotes and HTML, or base64 data of about 3 KiB for anything else. " +
+	"The result has the hook, the event type, when it arrived, the content type, the kept headers (with the first piece, offset 0), and a piece of the body cut to fit one result: text (encoding utf8), about 4,000 characters of plain text and fewer where characters need escaping, such as quotes and HTML, or base64 data of about 3 KiB for anything else. " +
 	"Headers too long to leave the body room are cut short, every value to the same length (headersCut). " +
 	"An email lists its attachments (filename, contentType, size) without their contents: save one into the company folder with save_attachment, by its place in that list. " +
 	"done tells you whether more follows; read on with offset set to next (characters for text, bytes for base64), and total is the whole body's length in the same unit. bodyCleared means the body was deleted after 7 days. " +
@@ -258,7 +259,7 @@ export function cloudEventTools(
 				r?.encoding === "utf8" && typeof r.text === "string"
 					? [...r.text].length
 					: r?.encoding === "base64" && typeof r.data === "string" && BASE64.test(r.data)
-						? (r.data.length / 4) * 3
+						? Buffer.byteLength(r.data, "base64")
 						: undefined;
 			if (
 				!r ||
@@ -280,7 +281,9 @@ export function cloudEventTools(
 						(r.next !== undefined && (shown === 0 || r.next !== offset + shown)))
 			)
 				throw new Error("Event receipt differs");
-			return { kind: "text", value: cloudToolJsonText(fittedEventPiece(r)) };
+			// The headers belong to the event: they come with its first piece, and the rest leave them out.
+			const { headers: _headers, ...rest } = r;
+			return { kind: "text", value: cloudToolJsonText(fittedEventPiece(offset === 0 ? r : rest)) };
 		},
 	};
 	const sendMail: CloudNativeTool = {
