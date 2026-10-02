@@ -276,13 +276,23 @@ execution host (`deploy/shared-execution/README.md`, "Run boxes"):
 
 **2b-2, the read log (this draft, on top of 2b-1).** The box's folder program logs every version the box opens or lists
 (the program sees every open, cached pages or not, and every listing), with the receipt the node listed it with, and
-gives the log to the slot's native host on a second socket, `/run/qorpera-shared-box/N.reads` (only that account can
-open it; `{"t":"take","max":N}` answers `{"t":"reads","reads":[{path, kind, version, authority?}],"more"}` and empties
-what it gave). A version opened again after a take is logged again, so each answer's release names what its commands
-read. The node's listings carry each entry's receipt for an agent's view: from the core's listing, or, for a path the
-feed brought, the path's earlier receipt or its folder's; a new receipt (after an access change) reaches the machines
-like any change. A stale or missing receipt costs the core a per-path check at release, never a wrong record. Proof:
-the folder program's FUSE test, the service tests, and the systemd proof taking the log as the native host.
+gives the log to the slot's native host on a second socket, `/run/qorpera-shared-box/N.reads`, which only that account
+can open:
+- `{"t":"take","after":S,"max":N}` answers `{"t":"reads","log":L,"reads":[{seq, path, kind, version, authority?}],
+  "more"}`, the oldest reads numbered after S. Taking removes nothing.
+- `{"t":"ack","upTo":S}` drops the reads up to S once the host released them, so a release that failed is taken again
+  with the next answer. `L` names the program's log: a new one means a restart, and the host withholds that answer.
+- A version read again while it waits is not logged twice; once acknowledged, it is logged again, so each answer's
+  release names what its commands read. A lookup or `stat` is not a read. A waiting read costs about 0.6 KB in the
+  folder unit's memory.
+The node's listings carry each entry's receipt for an agent's view: from the core's listing, or, for a path the feed
+brought, the path's earlier receipt or the nearest folder's above it that has one; a new receipt (after an access
+change) reaches the machines like any change, which drops their cached pages for those paths. A stale receipt costs
+the core a per-path check at release, never a wrong record. A read with none (a new top-level path, until the next
+listing) is sent by the native host with an empty receipt, which the core checks the same way (proposal P9 for F1:
+let the release take a read without one). The receipt check is exact (four fields), so the core and the folder service
+change together. Proof: the folder program's FUSE test, the service tests, and the systemd proof taking the log as the
+native host.
 
 **2b-3, the tools (next).** `exec_command` and `write_stdin` in the `qorpera` namespace, run by the native host
 through the box socket: review class "read" while the mount is read-only, answers fitted to the tool result size,

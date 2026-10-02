@@ -139,22 +139,32 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 	assert!(!mounted(&company));
 }
 
-/// The run's native host's side of the read log: everything logged since the last take.
+/// The run's native host's side of the read log: everything waiting, page by page, then acknowledged.
 fn take(socket: &Path) -> Vec<serde_json::Value> {
 	let mut stream = UnixStream::connect(socket).unwrap();
-	let mut out = Vec::new();
 	let mut reader = BufReader::new(stream.try_clone().unwrap());
-	loop {
-		stream.write_all(b"{\"t\":\"take\",\"max\":2}\n").unwrap();
+	let mut ask = |request: String| {
+		stream.write_all(format!("{request}\n").as_bytes()).unwrap();
 		let mut line = String::new();
 		reader.read_line(&mut line).unwrap();
-		let answer: serde_json::Value = serde_json::from_str(&line).unwrap();
+		serde_json::from_str::<serde_json::Value>(&line).unwrap()
+	};
+	let mut out = Vec::new();
+	let mut after = 0;
+	loop {
+		let answer = ask(format!("{{\"t\":\"take\",\"after\":{after},\"max\":2}}"));
 		assert_eq!(answer["t"], "reads");
-		out.extend(answer["reads"].as_array().unwrap().iter().cloned());
+		let page = answer["reads"].as_array().unwrap().clone();
+		if let Some(last) = page.last() {
+			after = last["seq"].as_u64().unwrap();
+		}
+		out.extend(page);
 		if answer["more"] == false {
-			return out;
+			break;
 		}
 	}
+	assert_eq!(ask(format!("{{\"t\":\"ack\",\"upTo\":{after}}}"))["t"], "acked");
+	out
 }
 
 fn read_paths(reads: &[serde_json::Value]) -> Vec<String> {
@@ -181,7 +191,7 @@ fn a_run_box_mount_logs_every_open_and_listing_until_its_host_takes_them() {
 	assert_eq!(reads[1]["kind"], "file");
 	assert_eq!(reads[1]["authority"]["resourceId"], RESOURCE);
 	assert_eq!(reads[1]["authority"]["resourceRevision"], 1);
-	assert!(take(&socket).is_empty(), "taken reads leave the log");
+	assert!(take(&socket).is_empty(), "acknowledged reads leave the log");
 
 	// The next answer's command reads the same file from the page cache: still its read. A new version is another.
 	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan");

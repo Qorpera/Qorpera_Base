@@ -16,7 +16,8 @@ export interface TreeEntry {
 	readonly mtimeMs: number;
 	readonly implicit: boolean;
 	/** The core's read receipt (an agent's view only): from its listing, or, for a path the feed brought, the path's
-	 * earlier one or its folder's, which the core checks again if it no longer holds. */
+	 * earlier one or the nearest folder's above it that has one, which the core checks again if it no longer holds. A
+	 * new top-level path has none until the next listing: its reads go with an empty receipt, which the core checks. */
 	readonly authority?: CoreReceipt;
 }
 
@@ -171,7 +172,7 @@ export class ViewTree {
 		}
 		const previous = this.#entries.get(e.path);
 		if (previous?.kind === "folder" && e.kind === "file") changed.push(...this.#removeBelow(e.path));
-		const next = entryOf(e, previous, this.#entries.get(parentOf(e.path)));
+		const next = entryOf(e, previous, this.#withReceipt(parentOf(e.path)));
 		if (!previous || !same(previous, next) || previous.implicit) changed.push(e.path);
 		this.#link(next);
 		return changed;
@@ -213,6 +214,15 @@ export class ViewTree {
 		}
 		for (const path of after.#entries.keys()) if (!before.#entries.has(path)) changed.push(path);
 		return changed;
+	}
+
+	/** The nearest folder at or above `path` that has a receipt (a folder made only to hold a path has none). */
+	#withReceipt(path: string): TreeEntry | undefined {
+		for (let p = path; p !== ""; p = parentOf(p)) {
+			const entry = this.#entries.get(p);
+			if (entry?.authority) return entry;
+		}
+		return undefined;
 	}
 
 	#link(entry: TreeEntry): void {
