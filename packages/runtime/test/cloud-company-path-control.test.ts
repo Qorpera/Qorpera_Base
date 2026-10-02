@@ -316,6 +316,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_list",
 		"qorpera_folder_commit",
 		"qorpera_folder_record_release",
+		"qorpera_folder_run_view_open",
 		"qorpera_folder_open_upload",
 		"qorpera_folder_seal_upload",
 		"qorpera_folder_renew_upload",
