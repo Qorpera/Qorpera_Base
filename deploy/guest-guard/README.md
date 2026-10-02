@@ -142,13 +142,11 @@ As root on one node at a time, from a checkout at the reviewed head. `G` below i
 4. **Phase 1, enforce.**
 
    ```bash
-   G enforce
-   echo enforce > /etc/qorpera-guest-guard/mode
-   systemctl enable --now qorpera-guest-guard.service
+   G enforce && echo enforce > /etc/qorpera-guest-guard/mode && systemctl enable --now qorpera-guest-guard.service
    ```
 
-   `G enforce` runs first, by hand: it compares the bridges with the rules and refuses on a mismatch, before
-   anything is enabled. Each load replaces the table in one transaction, so there is no moment without it.
+   `G enforce` runs first, by hand: it compares the bridges with the rules and refuses on a mismatch, and the
+   `&&` stops the rest, so nothing is enabled. Each load replaces the table in one transaction, so there is no moment without it.
    Enabling then loads the guard at every boot, before LXD starts any guest. At boot the bridges do not exist
    yet, so the comparison cannot run there; `G verify` repeats it. Then check:
    - `G verify` says `loaded enforce, wanted enforce; br_netfilter 1` and exits 0;
@@ -194,7 +192,7 @@ layer-2 control: the guard does not see non-IP frames or VLAN-tagged frames.
   with another subnet would otherwise lose its guests unnoticed).
 - A leftover bridge that does not match (for example a build bridge with IPv6 left on) stops enforce for
   the whole node. Delete or fix the bridge; `QORPERA_GUEST_GUARD_FORCE=1` turns the comparison off for every
-  bridge.
+  bridge, and `G verify` keeps failing on that node until the bridge matches.
 - A new guest bridge goes into `guest_bridges`, `bridge_subnets` and `bridge_gateways`; `G check` names a
   bridge that is missing.
 - A new host service that guests call goes into `allowed_services` in a reviewed change.
