@@ -19,7 +19,7 @@ https://claude.ai/artifact/GfmXyKyFSC4M5ULeTBC72e ("Company Accounts").
 - The account file `connections/<stem>.md` (F2 format, written by the vault's writer, A1-7) shows `site`,
   `two_step` and `opened_for`; folder-v2 companies are refused until then.
 
-## A1-1: the vault's records (migration `20260929999700`, SQL tests 794 and 795)
+## A1-1: the vault's records (migration `20260929999700`, SQL tests 794 and 797)
 
 Switched off: `qorpera_company_account_settings.enabled` (single row, false). The coordinator turns it on with
 `update public.qorpera_company_account_settings set enabled = true;` once the broker (A1-2) and the computer
@@ -61,13 +61,13 @@ wait (up to 25 s), as for every native tool call.
   anyway), the member row, the secret, the account. Revokes the secret (the trigger below wipes the envelopes and
   closes the account), records `removed_by_user_id`, and audits `account_removed` once; a repeat changes nothing.
   Taking the company row's key share first means a broker call that holds the company row through its lease
-  waits for the removal instead of deadlocking with it (test 795). The account on the website stays open; no
+  waits for the removal instead of deadlocking with it (test 797). The account on the website stays open; no
   agent can use it any more.
 
 ### Elsewhere
 
 - The audit's event types gain `account_opened`, `account_used`, `account_version_added`,
-  `account_state_changed`, `account_removed` (constraint replaced `not valid`, then validated).
+  `account_state_changed`, `account_removed` (the constraint is replaced under the migration's 3 s lock timeout).
 - Company delete: `qorpera_purge_company` removes the rows with the company (both tables carry `profile_id`).
 - `qorpera_list_cloud_secret_connections` lists `website` secrets too; the web's services view shows only its
   hosted connectors.

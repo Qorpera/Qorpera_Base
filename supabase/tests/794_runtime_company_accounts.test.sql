@@ -195,25 +195,25 @@ begin
 	if current_setting('qorpera_test.ca_opened') not like 'ok:%' then
 		raise exception 'The account did not open: %',current_setting('qorpera_test.ca_opened');
 	end if;
-	if current_setting('qorpera_test.ca_off') <> '0A000:Company accounts are switched off' then
+	if current_setting('qorpera_test.ca_off') is distinct from '0A000:Company accounts are switched off' then
 		raise exception 'A switched-off vault opened an account: %',current_setting('qorpera_test.ca_off');
 	end if;
-	if current_setting('qorpera_test.ca_not_broker') <> '42501:cloud secret broker authority is required' then
+	if current_setting('qorpera_test.ca_not_broker') is distinct from '42501:cloud secret broker authority is required' then
 		raise exception 'A caller other than the broker was not refused: %',current_setting('qorpera_test.ca_not_broker');
 	end if;
-	if current_setting('qorpera_test.ca_other_broker') <> '42501:cloud secret broker does not serve this company' then
+	if current_setting('qorpera_test.ca_other_broker') is distinct from '42501:cloud secret broker does not serve this company' then
 		raise exception 'Another company''s broker was not refused: %',current_setting('qorpera_test.ca_other_broker');
 	end if;
-	if current_setting('qorpera_test.ca_capability') <> '42501:cloud secret broker authority is unavailable' then
+	if current_setting('qorpera_test.ca_capability') is distinct from '42501:cloud secret broker authority is unavailable' then
 		raise exception 'A wrong broker capability was not refused: %',current_setting('qorpera_test.ca_capability');
 	end if;
-	if current_setting('qorpera_test.ca_wrong_action') <> '42501:company account effect receipt is unavailable'
-		or current_setting('qorpera_test.ca_finished') <> '42501:company account effect receipt is unavailable' then
+	if current_setting('qorpera_test.ca_wrong_action') is distinct from '42501:company account effect receipt is unavailable'
+		or current_setting('qorpera_test.ca_finished') is distinct from '42501:company account effect receipt is unavailable' then
 		raise exception 'A receipt for another action, or a finished one, opened an account: % / %',
 			current_setting('qorpera_test.ca_wrong_action'),current_setting('qorpera_test.ca_finished');
 	end if;
 	-- Never unprompted: no todo, a finished one, or another agent's.
-	if current_setting('qorpera_test.ca_no_todo') <> '22023:An account is opened only for an open todo of this agent'
+	if current_setting('qorpera_test.ca_no_todo') is distinct from '22023:An account is opened only for an open todo of this agent'
 		or current_setting('qorpera_test.ca_done_todo') is distinct from current_setting('qorpera_test.ca_no_todo')
 		or current_setting('qorpera_test.ca_other_todo') is distinct from current_setting('qorpera_test.ca_no_todo') then
 		raise exception 'An account opened without an open todo of the agent: % / % / %',
@@ -223,15 +223,15 @@ begin
 	if current_setting('qorpera_test.ca_bad_site') not like '22023:%' then
 		raise exception 'A malformed website was accepted: %',current_setting('qorpera_test.ca_bad_site');
 	end if;
-	if current_setting('qorpera_test.ca_bad_input') <> '42501:company account effect receipt is unavailable' then
+	if current_setting('qorpera_test.ca_bad_input') is distinct from '42501:company account effect receipt is unavailable' then
 		raise exception 'A call that is not the receipt''s was accepted: %',current_setting('qorpera_test.ca_bad_input');
 	end if;
-	if current_setting('qorpera_test.ca_bad_digest') <> '42501:company account envelope is unavailable'
-		or current_setting('qorpera_test.ca_bad_key') <> '42501:company account envelope is unavailable' then
+	if current_setting('qorpera_test.ca_bad_digest') is distinct from '42501:company account envelope is unavailable'
+		or current_setting('qorpera_test.ca_bad_key') is distinct from '42501:company account envelope is unavailable' then
 		raise exception 'A wrong envelope digest or key was accepted: % / %',current_setting('qorpera_test.ca_bad_digest'),
 			current_setting('qorpera_test.ca_bad_key');
 	end if;
-	if current_setting('qorpera_test.ca_folder') <> '0A000:Accounts for folder companies come with their connection file' then
+	if current_setting('qorpera_test.ca_folder') is distinct from '0A000:Accounts for folder companies come with their connection file' then
 		raise exception 'A folder company opened an account: %',current_setting('qorpera_test.ca_folder');
 	end if;
 
@@ -244,25 +244,26 @@ begin
 	if current_setting('qorpera_test.ca_repeat') is distinct from current_setting('qorpera_test.ca_opened') then
 		raise exception 'A repeat after a lost answer did not find its account: %',current_setting('qorpera_test.ca_repeat');
 	end if;
-	if current_setting('qorpera_test.ca_duplicate') <> '23505:The company already has this account; use it' then
+	if current_setting('qorpera_test.ca_duplicate') is distinct from '23505:The company already has this account; use it' then
 		raise exception 'The same login opened twice: %',current_setting('qorpera_test.ca_duplicate');
 	end if;
 	select secret.* into strict v_secret from public.qorpera_cloud_secrets as secret where secret.id = v_account;
 	select account.* into strict v_row from public.qorpera_company_accounts as account where account.secret_id = v_account;
-	if v_secret.connector_id <> 'website' or v_secret.owner_kind <> 'company' or v_secret.owner_user_id is not null
-		or v_secret.secret_name <> 'vercel-com' or v_secret.current_version <> 1 or v_secret.status <> 'active'
-		or v_secret.broker_authority_id <> '79400000-0000-4000-8000-000000000040'
-		or v_secret.created_by_user_id <> '29000000-0000-4000-8000-000000000001' then
+	if v_secret.connector_id is distinct from 'website' or v_secret.owner_kind is distinct from 'company' or v_secret.owner_user_id is not null
+		or v_secret.secret_name is distinct from 'vercel-com' or v_secret.current_version is distinct from 1 or v_secret.status is distinct from 'active'
+		or v_secret.broker_authority_id is distinct from '79400000-0000-4000-8000-000000000040'
+		or v_secret.created_by_user_id is distinct from '29000000-0000-4000-8000-000000000001' then
 		raise exception 'Wrong vault secret: %',row_to_json(v_secret);
 	end if;
-	if v_row.opened_for_todo_id <> '79400000-0000-4000-8000-000000000060'
-		or v_row.opened_by_staff_agent_id <> '29000000-0000-4000-8000-000000000030'
-		or v_row.opened_receipt_id <> '79400000-0000-4000-8000-000000000101'
-		or v_row.opened_by_user_id <> '29000000-0000-4000-8000-000000000001' or v_row.status <> 'pending' then
+	if v_row.opened_for_todo_id is distinct from '79400000-0000-4000-8000-000000000060'
+		or v_row.opened_by_staff_agent_id is distinct from '29000000-0000-4000-8000-000000000030'
+		or v_row.opened_receipt_id is distinct from '79400000-0000-4000-8000-000000000101'
+		or v_row.opened_by_user_id is distinct from '29000000-0000-4000-8000-000000000001'
+		or v_row.status is distinct from 'pending' then
 		raise exception 'Wrong account row: %',row_to_json(v_row);
 	end if;
-	if (select count(*) from public.qorpera_company_accounts) <> 2
-		or (select count(*) from public.qorpera_cloud_secret_versions where secret_id = v_account) <> 1 then
+	if (select count(*) from public.qorpera_company_accounts) is distinct from 2
+		or (select count(*) from public.qorpera_cloud_secret_versions where secret_id = v_account) is distinct from 1 then
 		raise exception 'The repeat or the duplicate wrote rows';
 	end if;
 	if (select secret_name from public.qorpera_cloud_secrets where id = current_setting('qorpera_test.ca_account2')::uuid)
@@ -323,22 +324,22 @@ begin
 		or v_use ->> 'receiptId' is distinct from '79400000-0000-4000-8000-000000000105' then
 		raise exception 'Wrong use answer: %',v_use;
 	end if;
-	if current_setting('qorpera_test.ca_use_other_key') <> '42501:company account effect receipt is unavailable' then
+	if current_setting('qorpera_test.ca_use_other_key') is distinct from '42501:company account effect receipt is unavailable' then
 		raise exception 'A receipt for one account used another: %',current_setting('qorpera_test.ca_use_other_key');
 	end if;
 	if current_setting('qorpera_test.ca_version') not like 'ok:%'
-		or (substring(current_setting('qorpera_test.ca_version') from 4)::jsonb ->> 'version')::bigint <> 2
-		or substring(current_setting('qorpera_test.ca_version') from 4)::jsonb ->> 'twoStep' <> 'authenticator' then
+		or (substring(current_setting('qorpera_test.ca_version') from 4)::jsonb ->> 'version')::bigint is distinct from 2
+		or substring(current_setting('qorpera_test.ca_version') from 4)::jsonb ->> 'twoStep' is distinct from 'authenticator' then
 		raise exception 'The new version was not saved: %',current_setting('qorpera_test.ca_version');
 	end if;
 	if current_setting('qorpera_test.ca_version_repeat') is distinct from current_setting('qorpera_test.ca_version') then
 		raise exception 'A repeated version save did not find its version: %',current_setting('qorpera_test.ca_version_repeat');
 	end if;
-	if current_setting('qorpera_test.ca_version_stale') <> '55000:The account changed meanwhile; read it again' then
+	if current_setting('qorpera_test.ca_version_stale') is distinct from '55000:The account changed meanwhile; read it again' then
 		raise exception 'A save over a stale version was not refused: %',current_setting('qorpera_test.ca_version_stale');
 	end if;
-	if (select current_version from public.qorpera_cloud_secrets where id = v_account) <> 2
-		or (select count(*) from public.qorpera_cloud_secret_versions where secret_id = v_account) <> 2 then
+	if (select current_version from public.qorpera_cloud_secrets where id = v_account) is distinct from 2
+		or (select count(*) from public.qorpera_cloud_secret_versions where secret_id = v_account) is distinct from 2 then
 		raise exception 'Wrong versions after the save';
 	end if;
 	if current_setting('qorpera_test.ca_connected') not like 'ok:%"status": "connected"%'
@@ -348,10 +349,10 @@ begin
 	end if;
 	select account.* into strict v_row from public.qorpera_company_accounts as account where account.secret_id = v_account;
 	if v_row.connected_at is null or v_row.closed_at is null or v_row.last_used_at is null
-		or v_row.last_used_by_staff_agent_id <> '29000000-0000-4000-8000-000000000030' then
+		or v_row.last_used_by_staff_agent_id is distinct from '29000000-0000-4000-8000-000000000030' then
 		raise exception 'Wrong account after use and state changes: %',row_to_json(v_row);
 	end if;
-	if current_setting('qorpera_test.ca_use_closed') <> '22023:The company has no such open account' then
+	if current_setting('qorpera_test.ca_use_closed') is distinct from '22023:The company has no such open account' then
 		raise exception 'A closed account was used: %',current_setting('qorpera_test.ca_use_closed');
 	end if;
 	if current_setting('qorpera_test.ca_reopened') not like 'ok:%' then
@@ -447,8 +448,8 @@ reset session authorization;
 do $$
 declare v_account3 uuid := nullif(current_setting('qorpera_test.ca_account3'),'')::uuid;
 begin
-	if current_setting('qorpera_test.ca_use_other_company') <> '22023:The company has no such open account'
-		or current_setting('qorpera_test.ca_use_gmail') <> '22023:The company has no such open account' then
+	if current_setting('qorpera_test.ca_use_other_company') is distinct from '22023:The company has no such open account'
+		or current_setting('qorpera_test.ca_use_gmail') is distinct from '22023:The company has no such open account' then
 		raise exception 'Another company''s account or another kind of secret was used: % / %',
 			current_setting('qorpera_test.ca_use_other_company'),current_setting('qorpera_test.ca_use_gmail');
 	end if;
@@ -460,8 +461,8 @@ begin
 		raise exception 'The generic revoke left the account open or its envelopes kept: %',
 			current_setting('qorpera_test.ca_generic_revoke');
 	end if;
-	if current_setting('qorpera_test.ca_use_revoked') <> '22023:The company has no such open account'
-		or current_setting('qorpera_test.ca_use_revoked_secret') <> '22023:The company has no such open account' then
+	if current_setting('qorpera_test.ca_use_revoked') is distinct from '22023:The company has no such open account'
+		or current_setting('qorpera_test.ca_use_revoked_secret') is distinct from '22023:The company has no such open account' then
 		raise exception 'A revoked account was used: % / %',current_setting('qorpera_test.ca_use_revoked'),
 			current_setting('qorpera_test.ca_use_revoked_secret');
 	end if;
@@ -505,24 +506,25 @@ begin
 		raise exception 'A member could not read the accounts: %',current_setting('qorpera_test.ca_list');
 	end if;
 	v_list := substring(current_setting('qorpera_test.ca_list') from 4)::jsonb;
-	if jsonb_array_length(v_list) <> 5 or v_list::text ~* 'envelope|keyId|\\x0102|\\x0304' then
+	if jsonb_array_length(v_list) is distinct from 5 or v_list::text ~* 'envelope|keyId|\\x0102|\\x0304' then
 		raise exception 'Wrong member list: %',v_list;
 	end if;
 	select item into v_first from jsonb_array_elements(v_list) as item
 	where item ->> 'accountId' = current_setting('qorpera_test.ca_account');
-	if v_first ->> 'status' <> 'closed' or v_first ->> 'twoStep' <> 'authenticator'
+	if v_first ->> 'status' is distinct from 'closed' or v_first ->> 'twoStep' is distinct from 'authenticator'
 		or v_first -> 'openedFor' is distinct from jsonb_build_object('todoId','79400000-0000-4000-8000-000000000060',
 			'title','Put the website online')
 		or v_first -> 'openedBy' is distinct from jsonb_build_object('kind','agent',
 			'staffAgentId','29000000-0000-4000-8000-000000000030','name','Agent')
-		or v_first #>> '{lastUsedBy,name}' <> 'Agent' or v_first ->> 'purpose' <> 'Hosting for the website' then
+		or v_first #>> '{lastUsedBy,name}' is distinct from 'Agent'
+		or v_first ->> 'purpose' is distinct from 'Hosting for the website' then
 		raise exception 'Wrong listed account: %',v_first;
 	end if;
-	if current_setting('qorpera_test.ca_list_outsider') <> '42501:company accounts are unavailable' then
+	if current_setting('qorpera_test.ca_list_outsider') is distinct from '42501:company accounts are unavailable' then
 		raise exception 'An outsider read the accounts: %',current_setting('qorpera_test.ca_list_outsider');
 	end if;
-	if current_setting('qorpera_test.ca_remove_contributor') <> '42501:company account removal is unavailable'
-		or current_setting('qorpera_test.ca_remove_outsider') <> '42501:company account removal is unavailable' then
+	if current_setting('qorpera_test.ca_remove_contributor') is distinct from '42501:company account removal is unavailable'
+		or current_setting('qorpera_test.ca_remove_outsider') is distinct from '42501:company account removal is unavailable' then
 		raise exception 'A removal without authority was not refused: % / %',
 			current_setting('qorpera_test.ca_remove_contributor'),current_setting('qorpera_test.ca_remove_outsider');
 	end if;
@@ -534,14 +536,14 @@ begin
 	if exists (select 1 from public.qorpera_cloud_secret_versions where secret_id = v_account2) then
 		raise exception 'A removed account kept its envelopes';
 	end if;
-	if (select status from public.qorpera_cloud_secrets where id = v_account2) <> 'revoked'
-		or (select status from public.qorpera_company_accounts where secret_id = v_account2) <> 'closed'
+	if (select status from public.qorpera_cloud_secrets where id = v_account2) is distinct from 'revoked'
+		or (select status from public.qorpera_company_accounts where secret_id = v_account2) is distinct from 'closed'
 		or (select removed_by_user_id from public.qorpera_company_accounts where secret_id = v_account2)
-			<> '79400000-0000-4000-8000-000000000003' then
+			is distinct from '79400000-0000-4000-8000-000000000003' then
 		raise exception 'The removed account is not closed and revoked';
 	end if;
 	if (select count(*) from public.qorpera_cloud_secret_audit_events where event_type = 'account_removed'
-		and actor_user_id = '79400000-0000-4000-8000-000000000003') <> 1 then
+		and actor_user_id = '79400000-0000-4000-8000-000000000003') is distinct from 1 then
 		raise exception 'The removal was not audited once';
 	end if;
 	-- The other accounts keep their envelopes.
