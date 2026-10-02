@@ -1434,7 +1434,8 @@ building:
   `human-tasks` its folders must also pass the task-folder name rule.
 - A task or contact save takes no lock and its review class stays plain (785 §7).
 - Proof besides 785 and 700 §7: 6,000 random files written by `writeHumanTaskFile` and `writeContactFile`; every parse
-  the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 68 mutants of the migration (every rule, limit, place and root, the round-1 reviewer's included) are each caught by 785.
+  the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 68 mutants of the migration (every rule,
+  limit, place and root, the round-1 reviewer's included) are each caught by 785.
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
