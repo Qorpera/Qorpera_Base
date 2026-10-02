@@ -693,8 +693,9 @@ Our accountant since 2025. Files VAT every quarter.
 
 - **Personal data.** A contact who asks to be forgotten needs an erasure of any deleted path:
   core §8 today erases only a deleted agent's folder, and is not built yet (C2). That widening is
-  F1's, and lands before H5 sends any link. It covers the contact file, the folders of that
-  contact's tasks, and path names in commit units, as core §8 does for agents. It cannot find
+  F2's (the coordinator's plan of 2 October 2026), and lands before H5 sends any link. It covers
+  the contact file, the folders of that contact's tasks, and path names in commit units, as core
+  §8 does for agents. It cannot find
   free text elsewhere (task titles and bodies, `reason`, `## History` lines, agents' memory),
   which a member removes by hand. The writing skill tells agents to name a contact by id only.
 - **What H1 does not decide (H2):** that `asks` covers a task's work is the agent's judgement (the
@@ -1682,7 +1683,7 @@ choices made while building:
   final-task check into the same rule).
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
-screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
+screens; H4 the emails; H5 the contact links, after F2 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
 
 **Plan (A1-7): website accounts in connection files** (A1's request of 2 October; A1 keeps the
