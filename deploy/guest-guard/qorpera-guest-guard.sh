@@ -2,11 +2,11 @@
 # Qorpera guest guard (E-1): loads, switches, shows or removes the nftables table that keeps machines on our
 # LXD bridges away from the NAS, the office network, the nodes, Tailscale and each other. Run as root.
 #
-#   qorpera-guest-guard.sh check          parse both modes against the kernel and inspect this node; change nothing
+#   qorpera-guest-guard.sh check          parse both modes and compare this node's bridges with the rules
 #   qorpera-guest-guard.sh observe        load: count and log what would be refused, refuse nothing
-#   qorpera-guest-guard.sh enforce        load: refuse it (TCP reset or ICMP; spoofed, invalid, broadcast: drop)
+#   qorpera-guest-guard.sh enforce        load: refuse it; refused when a bridge does not match the rules
 #   qorpera-guest-guard.sh boot           load the mode named in /etc/qorpera-guest-guard/mode (the unit)
-#   qorpera-guest-guard.sh verify         exit 0 only when the loaded mode matches the mode file
+#   qorpera-guest-guard.sh verify         exit 0 only when the loaded mode is the mode file's (none: not loaded)
 #   qorpera-guest-guard.sh status         mode, counters and this node's bridges
 #   qorpera-guest-guard.sh log [SINCE]    refused flows from the kernel log, counted (default: -2h)
 #   qorpera-guest-guard.sh summarize      the same count, reading kernel log lines from stdin
@@ -14,6 +14,11 @@
 #   qorpera-guest-guard.sh probe PROJECT INSTANCE
 #                                         connect tests from inside one guest on qorpera0 (lxc exec)
 set -euo pipefail
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || {
+	echo "qorpera-guest-guard: needs bash 4.4 or later" >&2
+	exit 69
+}
+shopt -s inherit_errexit
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 rules=${QORPERA_GUEST_GUARD_RULES:-$here/qorpera-guest-guard.nft}
@@ -36,7 +41,7 @@ batch() {
 	[[ -r $rules ]] || die "cannot read $rules; the loaded table is unchanged"
 	grep -q '^table inet qorpera_guest_guard {$' "$rules" || die "$rules does not define the table; the loaded table is unchanged"
 	printf 'table %s\ndelete table %s\n' "$table" "$table"
-	cat "$rules"
+	cat -- "$rules" || die "cannot read $rules; the loaded table is unchanged"
 	if [[ $1 == enforce ]]; then
 		printf 'add rule %s %s\n' \
 			"$table" "refuse_forward meta l4proto tcp reject with tcp reset" \
@@ -44,11 +49,19 @@ batch() {
 			"$table" "refuse_input meta l4proto tcp reject with tcp reset" \
 			"$table" "refuse_input reject with icmpx admin-prohibited" \
 			"$table" "refuse_spoofed drop" \
+			"$table" "refuse_invalid drop" \
+			"$table" "refuse_related drop" \
 			"$table" "refuse_quiet drop"
 	fi
 }
 
-loaded() { nft list table $table >/dev/null 2>&1; }
+# 0: loaded, 1: not loaded. Anything else nft says (no permission, no netlink) stops the script.
+loaded() {
+	local err
+	if err=$(nft list table $table 2>&1 >/dev/null); then return 0; fi
+	[[ $err == *"No such file or directory"* ]] && return 1
+	die "nft cannot read the table: $err"
+}
 
 current_mode() {
 	local chain
@@ -60,9 +73,14 @@ current_mode() {
 	if [[ $chain == *reject* ]]; then echo enforce; else echo observe; fi
 }
 
+# The mode file says observe or enforce; without it the guard is not wanted.
 wanted_mode() {
 	local mode
-	mode=$(cat "$mode_file" 2>/dev/null || echo observe)
+	if [[ ! -e $mode_file ]]; then
+		echo "not loaded"
+		return
+	fi
+	mode=$(cat -- "$mode_file")
 	[[ $mode == observe || $mode == enforce ]] || {
 		echo "qorpera-guest-guard: $mode_file says '$mode'; expected observe or enforce" >&2
 		exit 78
@@ -70,9 +88,59 @@ wanted_mode() {
 	echo "$mode"
 }
 
+# The elements of one set in the rules file, one "bridge value" per line.
+set_elements() {
+	awk -v name="$1" '
+		$0 ~ "^\tset " name " \\{$" { inside = 1; next }
+		inside && /^\t}$/ { inside = 0 }
+		inside { print }
+	' "$rules" | grep -o '"[A-Za-z0-9_.-]*"\( \. [0-9./]*\)\{0,1\}' | sed 's/"\([^"]*\)"\( \. \)\{0,1\}/\1 /'
+}
+
+# Compares the bridges on this node with the rules. Prints one line per bridge; a line starting with
+# MISMATCH means enforce would cut that bridge's guests off (or miss them), NOT GUARDED a bridge the rules do
+# not name. Returns 1 when there is a mismatch, 2 when there is only an unguarded bridge.
+compare_bridges() {
+	local bridge subnet gateway prefix route v6 status=0
+	local -A subnets=() gateways=() guarded=()
+	while read -r bridge _; do guarded[$bridge]=1; done < <(set_elements guest_bridges)
+	while read -r bridge subnet; do subnets[$bridge]=$subnet; done < <(set_elements bridge_subnets)
+	while read -r bridge gateway; do gateways[$bridge]=$gateway; done < <(set_elements bridge_gateways)
+	for bridge in $(ip -o link show type bridge | awk -F': ' '{print $2}' | cut -d@ -f1); do
+		if [[ -z ${guarded[$bridge]:-} ]]; then
+			echo "NOT GUARDED bridge $bridge (add it to guest_bridges, bridge_subnets and bridge_gateways)"
+			[[ $status -eq 1 ]] || status=2
+			continue
+		fi
+		subnet=${subnets[$bridge]:-}
+		gateway=${gateways[$bridge]:-}
+		prefix=${subnet#*/}
+		route=$(ip -o -4 route show dev "$bridge" proto kernel scope link | awk '{ for (i = 2; i < NF; i++) if ($i == "src") print $1, $(i + 1) }' | tr '\n' ' ')
+		v6=$(ip -o -6 addr show dev "$bridge" scope global | awk '{print $4}' | tr '\n' ' ')
+		if [[ $route != "$subnet $gateway " ]]; then
+			echo "MISMATCH bridge $bridge: has '${route% }' (network and address), rules say '$subnet $gateway'"
+			status=1
+		elif [[ -n $v6 ]]; then
+			echo "MISMATCH bridge $bridge: has IPv6 ${v6% }; the guard drops all guest IPv6, so guests would time out"
+			status=1
+		else
+			echo "bridge $bridge: matches ($gateway/$prefix)"
+		fi
+	done
+	return $status
+}
+
+br_netfilter() { cat "${QORPERA_GUEST_GUARD_BR_NETFILTER:-/proc/sys/net/bridge/bridge-nf-call-iptables}" 2>/dev/null || echo "not loaded"; }
+
 # The batch is built and dry-run in full before it is applied, so a bad file never removes a loaded table.
 load() {
 	local text
+	if [[ $1 == enforce && ${QORPERA_GUEST_GUARD_FORCE:-0} != 1 ]]; then
+		compare_bridges >/dev/null || [[ $? -eq 2 ]] || {
+			compare_bridges | grep '^MISMATCH' >&2 || true
+			die "refusing to enforce: a bridge does not match the rules (QORPERA_GUEST_GUARD_FORCE=1 overrides)"
+		}
+	fi
 	text=$(batch "$1")
 	nft -c -f /dev/stdin <<<"$text"
 	nft -f /dev/stdin <<<"$text"
@@ -97,20 +165,13 @@ summarize() {
 }
 
 check() {
-	local bridge addresses
+	local status=0
 	batch enforce | nft -c -f /dev/stdin
-	echo "rules parse (both modes); current mode: $(current_mode)"
-	for bridge in $(ip -o link show type bridge | awk -F': ' '{print $2}' | cut -d@ -f1); do
-		addresses=$(ip -o addr show dev "$bridge" | awk '{print $4}' | tr '\n' ' ')
-		if grep -q "\"$bridge\" \. " "$rules"; then
-			echo "bridge $bridge: guarded; addresses: ${addresses:-none}"
-		else
-			echo "bridge $bridge: NOT GUARDED (add it to guest_bridges, bridge_subnets and bridge_gateways); addresses: ${addresses:-none}"
-		fi
-		if [[ $addresses == *:* ]]; then echo "  bridge $bridge has IPv6; the guard refuses all guest IPv6"; fi
-	done
-	echo "br_netfilter: $(cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo 'not loaded') (1: guests on one bridge are checked against each other too)"
+	echo "rules parse (both modes); current mode: $(current_mode); mode file: $(wanted_mode)"
+	compare_bridges || status=$?
+	echo "br_netfilter: $(br_netfilter) (1: guests on one bridge are checked against each other too)"
 	echo "nftables.service: $(systemctl is-enabled nftables.service 2>/dev/null || true) (must stay disabled: /etc/nftables.conf flushes every table)"
+	return $status
 }
 
 probe() {
@@ -144,13 +205,16 @@ check) check ;;
 observe | enforce) load "$1" ;;
 boot)
 	mode=$(wanted_mode)
+	[[ $mode != "not loaded" ]] || die "no mode file ($mode_file); nothing to load"
 	load "$mode"
 	;;
 verify)
 	wanted=$(wanted_mode)
 	actual=$(current_mode)
-	echo "qorpera-guest-guard: loaded $actual, wanted $wanted"
+	netfilter=$(br_netfilter)
+	echo "qorpera-guest-guard: loaded $actual, wanted $wanted; br_netfilter $netfilter"
 	[[ $actual == "$wanted" ]]
+	[[ $actual == "not loaded" || $netfilter == 1 ]]
 	;;
 status)
 	echo "mode: $(current_mode)"

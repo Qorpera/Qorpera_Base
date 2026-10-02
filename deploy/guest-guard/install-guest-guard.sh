@@ -4,8 +4,8 @@
 # against the kernel. It loads nothing and enables nothing: README.md has the observe and enforce steps.
 set -euo pipefail
 
-EXPECTED_RULES_SHA256="cdda31ab917b0e2ac2ac969ed657876051379a0bc14483de837a6b321bd2caae"
-EXPECTED_TOOL_SHA256="576782f58e9268a6b436c94b237cd889b1e648ead1c580900f16577e83fa6bf2"
+EXPECTED_RULES_SHA256="f165865f66093ed404025807f2d31a2ac3e79458e05277fd038a92ad9327bd4a"
+EXPECTED_TOOL_SHA256="d873bb8dc9930cbf872e86c029b4172178e3273583856fb96d86cf387fa87a5e"
 EXPECTED_UNIT_SHA256="6ef1d6ee3e1203eba9c486228e20cabfe967dd83542093e31ccf6768cab1dd0e"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 INSTALL_ROOT="/usr/local/libexec/qorpera-guest-guard"

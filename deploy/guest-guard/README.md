@@ -8,11 +8,12 @@ other bridges, or each other.
 One nftables table, `inet qorpera_guest_guard`, the same file on every node. It looks at every packet that
 arrives from a guest bridge, by input interface:
 
-- The source must be an address of that bridge's own subnet (no spoofing).
+- The source must be an address of that bridge's own subnet, and never the bridge's gateway (no spoofing).
 - New connections are checked against the rules; replies, and connections the node opens to a guest, pass.
+  An ICMP error from a guest must concern a connection the guest is part of.
 - Refused connections answer at once (TCP reset, otherwise ICMP admin-prohibited), so a blocked call fails
-  fast instead of timing out. Spoofed packets, invalid packets, IPv6 and broadcast or multicast copies are
-  dropped quietly.
+  fast instead of timing out. Spoofed, invalid and foreign ICMP-error packets, IPv6, and broadcast or
+  multicast copies are dropped quietly.
 
 This is step E-1 of the agent exit design (https://claude.ai/artifact/GPjfKe2YagNeMzkQMrY95r). It comes
 first because it closes a hole that exists today.
@@ -107,23 +108,34 @@ As root on one node at a time, from a checkout at the reviewed head. `G` below i
    `allowed_services`, add it in a reviewed change before phase 1.
 
 2. **Install.** `bash deploy/guest-guard/install-guest-guard.sh`. It verifies the pins, copies the files,
-   reloads systemd and runs `G check`. The check parses both modes against the kernel, lists each bridge
-   with its addresses and says whether it is guarded, and reports br_netfilter and `nftables.service`. It
-   loads and enables nothing.
+   reloads systemd and runs `G check`, and loads and enables nothing. The check parses both modes against
+   the kernel and compares every bridge on the node with the rules:
+   - `bridge <name>: matches`: its network and address are the rules' `bridge_subnets` and `bridge_gateways`;
+   - `MISMATCH`: a different network or address, or a global IPv6 address. Enforce would cut that bridge's
+     guests off (or leave them waiting on IPv6), so `G enforce` refuses until the rules or the bridge are
+     fixed. `QORPERA_GUEST_GUARD_FORCE=1` overrides, for a deliberate exception only;
+   - `NOT GUARDED`: a bridge the rules do not name. Its guests are not checked.
 
-3. **Phase 0, observe (about an hour).** `G observe`. Nothing is refused. Every refused flow is counted, and
-   logged once an hour per flow (bridge, source, destination, protocol, port), so a rare flow is never
-   crowded out by a frequent one. Spoofed packets are logged too; broadcast, multicast, IPv6 and invalid
-   packets are only counted (`refused_quiet`). This lasts until reboot. During the hour, run one of each:
+   It also reports br_netfilter and `nftables.service`. It exits 1 on a mismatch, 2 on an unguarded bridge.
+
+3. **Phase 0, observe (about an hour).** `echo observe > /etc/qorpera-guest-guard/mode && G boot`. The unit
+   stays disabled, so a reboot ends phase 0. Nothing is refused. Every refused packet is counted, and each
+   refused flow is logged once an hour (TCP and UDP per port, other protocols per protocol; up to 10 new
+   flows a second), so a frequent flow does not hide a rare one. Spoofed packets are logged too. Invalid
+   packets (`refused_invalid`), foreign ICMP errors (`refused_related`), and IPv6 and broadcast or
+   multicast copies (`refused_quiet`) are only counted. During the hour, run one of each:
    an agent run that reads or writes the Company File, a coding turn, the Company Computer viewer, and if
    possible a model sign-in or restore whose key stays on a node (it calls the recovery authority). Read it
    with:
    - `G status`: the mode and the counters `allowed_services_used`, `refused_forward`, `refused_input`,
-     `refused_spoofed` and `refused_quiet`;
+     `refused_spoofed`, `refused_invalid`, `refused_related` and `refused_quiet`;
    - `G log -1h`: the logged flows, counted by direction, bridge, source, destination, protocol and port.
 
-   Expected: no forward, input or spoofed line from normal work. A line that comes from normal work (not from
-   a probe) is a flow this inventory missed. Add it to `allowed_services` in a reviewed change before phase 1.
+   Expected: no forward, input or spoofed line from normal work, and `refused_invalid` and `refused_related`
+   near zero. One exception: a guest that runs nested NAT whose own table lets invalid packets out unchanged
+   (#411's per-screen table in office VMs) can show `spoofed` lines with a `10.253.x.x` source; those are
+   dropped in enforce and harm nothing. Any other line from normal work (not from a probe) is a flow this
+   inventory missed. Add it to `allowed_services` in a reviewed change before phase 1.
    `G probe qn25b2 qorpera-exec-node02` runs the connect tests from inside the fast host; in observe mode the
    expected-closed targets still connect and are only counted.
 
@@ -136,7 +148,7 @@ As root on one node at a time, from a checkout at the reviewed head. `G` below i
 
    Enabling loads the guard at every boot, before LXD starts any guest. `--now` replaces the observe table in
    one transaction, so there is no moment without it. Then check:
-   - `G verify` says `loaded enforce, wanted enforce`;
+   - `G verify` says `loaded enforce, wanted enforce; br_netfilter 1` and exits 0;
    - `G probe qn25b2 qorpera-exec-node02` ends with `unexpected results: 0`;
    - an agent run with the Company File, a coding turn, and waking the Company Computer and opening its
      viewer all work;
@@ -149,11 +161,13 @@ As root on one node at a time, from a checkout at the reviewed head. `G` below i
 
    ```bash
    systemctl disable --now qorpera-guest-guard.service
+   rm -f /etc/qorpera-guest-guard/mode
    ```
 
-   Stopping the unit deletes the table. If it was loaded by hand (phase 0), `G remove`. To switch modes
-   without a gap, change the mode file and `systemctl reload qorpera-guest-guard.service` (not `restart`,
-   which removes the table for a moment).
+   Stopping the unit deletes the table. In phase 0 (loaded by hand): `G remove && rm -f /etc/qorpera-guest-guard/mode`.
+   Without a mode file the guard is not wanted, and `G verify` checks that no table is loaded. To switch
+   modes without a gap, change the mode file and `systemctl reload qorpera-guest-guard.service` (not
+   `restart`, which removes the table for a moment).
 
 ## Guests on one bridge
 
@@ -169,12 +183,17 @@ layer-2 control: the guard does not see non-IP frames or VLAN-tagged frames.
 - Never run `nft -f /etc/nftables.conf` and keep `nftables.service` disabled: that file starts with
   `flush ruleset`, which deletes this table and LXD's own tables. The unit is ordered after
   `nftables.service` in case it is ever enabled again.
-- If the guard fails to load at boot, LXD still starts and guests run without it. `G verify` (exit 1 when the
-  loaded mode is not the mode file's) is the check for monitoring and node parity.
+- If the guard fails to load at boot, LXD still starts and guests run without it. `G verify` is the check for
+  monitoring and node parity: exit 0 only when the loaded mode is the mode file's (no file: no table) and,
+  while loaded, br_netfilter is on.
 - A new guest bridge goes into `guest_bridges`, `bridge_subnets` and `bridge_gateways`; `G check` names a
   bridge that is missing.
 - A new host service that guests call goes into `allowed_services` in a reviewed change.
 - Our public address `93.164.62.162` is written into `internal4`. If TDC changes it, change the file.
+- Anything a guest sends out `tailscale0` that is not listed is refused. If a later step (the agent exit)
+  routes guests through a Tailscale exit node, that rule has to change with it.
+- The kernel already drops packets whose source is one of the node's own addresses (martian source), so the
+  gateway-address rule is a second line.
 - The guard sees guests' traffic before LXD's NAT, so it knows the guest's own address. The NAS does not: see
   below.
 
