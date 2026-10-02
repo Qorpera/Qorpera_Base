@@ -118,6 +118,50 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   any more, so closing is a "deleting things outside" step the company's review rules check (A1-4); after it only the
   website's own account recovery gets back in. Accounts closed before this migration are revoked by it.
 
+## A1-4c: the computer stops at a page that asks for a person (office guest code, with an office image)
+
+Jonas, 2 October: on a block, CAPTCHA or "unusual activity" page, stop at once, mark the account `needs_person`,
+never retry. The office enforces the stop and the never for the browser and the desktop; the agent marks the
+account (A1-4b's words). Nothing tries to pass such a check.
+
+- `cloud-company-computer-site-stops.ts` reads a tab. First the frames inside it (a list the browser keeps, so a
+  page that does not answer still shows them): a shown frame of a CAPTCHA or human check service (reCAPTCHA,
+  hCaptcha, Cloudflare's challenges, Arkose and GitHub's octocaptcha, DataDome, HUMAN, AWS WAF). Never the page
+  itself (a service's own website), never reCAPTCHA's invisible badge (`size=invisible`), never a hidden frame; a
+  frame whose visibility cannot be read within 1 s counts. Then, within 2 s, its title and the top 4,000 characters
+  of its text: an interstitial's whole title counts on any page ("Just a moment...", "Attention Required! |
+  Cloudflare", "Pardon Our Interruption", "Access to this page has been denied", "Robot Check"; "Access Denied" only
+  on a short page, since a long one is an application's own permission page);
+  words ("not a robot", "verify you are human", "checking your browser", "unusual activity", "you have been
+  blocked", "request is blocked", …) count only when the whole text is at most 3,000 characters, so an ordinary page
+  that mentions them (a question about "access denied" errors, an article about CAPTCHAs) is not taken for one.
+  Curly apostrophes and the ellipsis character read as plain ones. English only; frames catch widget checks in any
+  language.
+- Before every page action (navigate, click, fill, press, vault_fill) the office reads the page first. A page that
+  shows such a check now gets nothing clicked or typed, whatever its address; its site is recorded. A page action
+  on a recorded site (the site, a name under it or a parent of it, `www.` and a trailing dot aside) is refused before
+  it starts. A navigation is checked by its destination, so going to another site stays open.
+- After the action, a page that now shows such a check, or lands on a recorded site (a link or a redirect), records
+  the site it shows, nothing else: never the site a navigation or a link left (a search page or a mail page), nor an
+  address the agent asked for that redirected elsewhere (a link tracker such as `www.google.com/url`).
+- The answers are the call's results, not errors (an error reaches the agent only as an unconfirmed outcome, and
+  leaves its receipt executing): a refusal is `{completed: false, refused: {code: "SITE_STOPPED", message}}`, an
+  action that landed on such a page is `{completed: true, stop: "SITE_STOP_<REASON>", message}`, and a snapshot
+  still shows the page with `stop` and `message`. The message tells the agent to stop, never retry, mark the account
+  `needs_person` and tell a member. The receipt completes, so the agent's next call (company_account state) runs.
+- Desktop click, scroll, press and type are refused the same way while a shown tab of the screen's browser is on a
+  recorded site or shows such a check (a tab whose visibility cannot be read counts as shown); moving the pointer
+  and screenshots stay allowed. Members are not affected: their input never goes through the agent's actions. A
+  shell can still send input to the display; the agent's words (A1-4b) cover it.
+- Known limits: a visible Cloudflare Turnstile box on an ordinary contact or sign-up form counts as a stop (a person
+  continues there); a page still building itself by script right after a navigation is read early, so its title
+  alone decides, and a short page that mentions "suspicious activity" or "automated traffic" (a login notice, a
+  cookie page) counts, as does a short page that uses CAPTCHA words (a short reCAPTCHA admin page).
+- The record is the office service's, for all the computer's screens, while it runs; a restart clears it, and the
+  account's `needs_person` stays in the database (it does not stop a vault fill by itself: a person's step may
+  clear it). Read actions (snapshot, list_tabs, select_tab, screenshots) stay allowed, so the agent can describe the
+  page and a member can take over.
+
 ## A1-5a: which mail is an account's own (migration `20260928439960`, SQL test 809)
 
 Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
