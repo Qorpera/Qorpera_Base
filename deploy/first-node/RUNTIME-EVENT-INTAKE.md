@@ -20,8 +20,8 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off, and so is
 the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is merged
 (`20260928409980_runtime_event_signed_hooks`, release v165, then a broker roll). Plus addresses and find_mail are in
-review (`20260929999920_runtime_company_mail_find_and_tags`), and so are attachments
-(`20260929999940_runtime_company_mail_attachments`, M2c-1).
+review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachments
+(`20260928429984_runtime_company_mail_attachments`, M2c-1).
 
 ## Words
 
@@ -44,7 +44,7 @@ review (`20260929999920_runtime_company_mail_find_and_tags`), and so are attachm
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
 | M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
 | M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
-| M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260929999940` |
+| M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260928429984` |
 | M2c-2 | Threads and sent mail as files in the folder | registered when started |
 | I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260929999998` |
 
@@ -496,7 +496,7 @@ Switched off, the claim sends nothing and queued email waits; the first claim af
 fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
 Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
 
-**Plus addresses and find_mail** (migration `20260929999920_runtime_company_mail_find_and_tags`, agreed with A1 on 2
+**Plus addresses and find_mail** (migration `20260928429982_runtime_company_mail_find_and_tags`, agreed with A1 on 2
 October, for accounts the company owns).
 - **Plus addresses.** `local+tag@<mail domain>` reaches the mailbox `local@`, so an agent can open a second account
   on one site (`agents+stripe@`). The tag is lowercase letters, digits, dots, hyphens and underscores, and the whole
@@ -539,7 +539,7 @@ October, for accounts the company owns).
 `Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
 them. No email looks like it comes from Qorpera (above).
 
-**Attachments (M2c-1)** (migration `20260929999940_runtime_company_mail_attachments`; Jonas, 2 October: agents send
+**Attachments (M2c-1)** (migration `20260928429984_runtime_company_mail_attachments`; Jonas, 2 October: agents send
 and receive files by mail, and a received attachment is fetched when an agent saves it, not when the mail arrives).
 - **Received.** The mail door keeps each attachment's description (`id`, `filename`, `contentType`, `size`); the
   provider keeps the bytes for 30 days, and its download addresses last an hour. An agent saves one into the company

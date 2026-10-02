@@ -300,7 +300,7 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     caller sends (capture capability, tokens, digests, operation facts), so that a NULL argument is refused:
     for example `is distinct from` against a NOT NULL column, `coalesce(<test>, true)` around a pattern or
     length test, an explicit `is null` check, or a match in `where … = p_…`. A plain `<>`, `!~` or
-    `not between` is unknown for a NULL argument and skips the refusal. Migration `20260929999990` fixed the
+    `not between` is unknown for a NULL argument and skips the refusal. Migration `20260928429988` fixed the
     last three functions that did not (capture describe and seal, operation authorization); SQL test 806
     sends them NULLs. A new broker function follows the same rule and gets the same kind of test.
   - An operator creates the principal once (`insert` with the capability hash and the start time). One

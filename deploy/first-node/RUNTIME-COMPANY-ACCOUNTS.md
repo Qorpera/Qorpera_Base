@@ -45,7 +45,7 @@ passes as unknown.
 | `qorpera_describe_company_account_open(authority, capability, binding, receipt, input, downstream)` | `open` | What the broker needs before it seals version 1: the run's company and environment and the company's key id, after the same checks as the opening (no write). |
 | `qorpera_use_company_account(…, account)` | `use` | Returns the current version's envelope with its associated data (company, environment, account id, version, key id), and the site, sign-in hosts, login and two-step, to the broker, for a fill, a code or a password change. Refuses a closed or revoked account (22023). Records `last_used_at`/agent and an `account_used` event. |
 | `qorpera_add_company_account_version(…, account, base_version, two_step, key_id, envelope, envelope_sha256)` | `version` | Compare-and-swap over `base_version` (55000 "read it again" when it moved; never 40001). A repeat finds its own version by digest. May set `two_step`. `account_version_added` event. |
-| `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. Closing revokes the vault row, which wipes every envelope (20260929999750); a repeat close answers the closed account. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
+| `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. Closing revokes the vault row, which wipes every envelope (20260928429975); a repeat close answers the closed account. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
 
 The account row and its secret are locked `FOR UPDATE` (secret first) only by the version, state and use calls,
 after the receipt, and only when the secret is this company's `website` secret: any other id (another company's
@@ -80,7 +80,7 @@ wait (up to 25 s), as for every native tool call. Through the vault the database
   deletes the secret's envelope versions and closes its account (`removed_by_user_id` from the revoker), so
   nothing is left half open and the login is free for a new account.
 
-## A1-3a: filling in the database (migration `20260929999750`, SQL test 807)
+## A1-3a: filling in the database (migration `20260928429975`, SQL test 807)
 
 The office never talks to the vault. The office service makes an X25519 key pair in memory when it starts and
 reports the public half with its readiness; the native host already carries every computer action to the office,

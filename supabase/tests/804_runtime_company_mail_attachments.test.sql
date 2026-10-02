@@ -1,5 +1,5 @@
 -- @fixture 733_runtime_company_mail_sending.test.sql until "-- Switched off, nothing is queued."
--- Company mail attachments, step M2c-1 (20260929999940): an agent asks for a received email's attachment, which the
+-- Company mail attachments, step M2c-1 (20260928429984): an agent asks for a received email's attachment, which the
 -- platform's worker fetches once into the company's objects and the runtime then writes as a company file; the
 -- request checks the email is the company's and the attachment is one it lists, at most 40 MiB, while the email's
 -- text is kept; the worker claims fetches under a lease, completes them with chunks the catalog holds, and tries a

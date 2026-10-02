@@ -1,5 +1,5 @@
 -- @fixture 290_company_file_path_gateway.test.sql until "create function pg_temp.path_plan("
--- 20260929999990: the vault's functions refuse a missing proof. The shared vault's database login
+-- 20260928429988: the vault's functions refuse a missing proof. The shared vault's database login
 -- (qorpera_secret_broker) serves every company, and the capability hash is the only proof that a call is for one.
 -- `a <> b` and `x !~ p` are unknown, not true, when a side is NULL, and an unknown condition skipped the refusal:
 -- a NULL capability, capture capability, digest, envelope or operation fact passed. Real admission, assignment and
