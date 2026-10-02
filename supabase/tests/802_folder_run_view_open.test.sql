@@ -105,14 +105,18 @@ begin
 	perform set_config('qorpera_test.search_view', v_view::text, false);
 end $$;
 
--- 2. A second open in the same job (a native host that started again) supersedes the first.
+-- 2. A second open in the same job (a native host that started again) supersedes the first, and only this job's run
+-- view: another job's stays open.
 do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
 	p jsonb := current_setting('qorpera_test.search_actor')::jsonb; v_first jsonb := current_setting('qorpera_test.search_view')::jsonb;
-	v_second jsonb; x jsonb;
+	v_second jsonb; x jsonb; v_neighbour jsonb := pg_temp.human() -> 'actor'; v_theirs jsonb;
 begin
+	v_theirs := public.qorpera_folder_run_view_open(c_env, v_neighbour);
 	v_second := public.qorpera_folder_run_view_open(c_env, p);
+	if public.qorpera_folder_view_renew((v_theirs ->> 'viewId')::uuid, v_theirs ->> 'pass') ->> 'state' <> 'open' then
+		raise exception 'Another job''s run view was closed by this job''s open'; end if;
 	x := public.qorpera_folder_view_renew((v_first ->> 'viewId')::uuid, v_first ->> 'pass');
 	if x ->> 'state' <> 'closed' or x ->> 'reason' <> 'superseded' then raise exception 'The first view: %', x; end if;
 	if public.qorpera_folder_view_renew((v_second ->> 'viewId')::uuid, v_second ->> 'pass') ->> 'state' <> 'open' then
@@ -164,3 +168,5 @@ begin
 			and budget = 'standard') then
 		raise exception 'The native host cannot reach the run view open'; end if;
 end $$;
+
+rollback;

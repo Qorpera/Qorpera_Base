@@ -1,14 +1,16 @@
--- F3, the server-side folder search (deploy/first-node/RUNTIME-FOLDER-SERVICE.md, "Server-side search"): the native
--- host opens its run's own folder view, through G2's native host entry point. Founder decision "Light threads"
--- (2 October 2026): a chat turn has no shell, and agents search the folder on the node's folder service with the run's
--- own view, so a folder shared with only some agents is there exactly for them.
+-- F3, the server-side folder search (the node's folder service; PR #687 and the F3 stack): the native host opens its
+-- run's own folder view, through G2's native host entry point. Founder decision "Light threads" (2 October 2026): a
+-- chat turn has no shell, and agents search the folder on the node's folder service with the run's own view, so a
+-- folder shared with only some agents is there exactly for them.
 --
 -- qorpera_folder_run_view_open(p_environment_id, p_actor) opens the view of kind run_box with the run actor as its
 -- opener (qorpera_folder_view_open's own run_box path) and returns {schema, viewId, pass, leaseUntil}. The node's
 -- folder service renews it while it serves it (qorpera_folder_view_renew, by its pass); the run's completion closes
 -- it. A second open in the same job (a native host that started again) first closes this job's open run view as
--- superseded, so the one-open-run-box index never refuses it, and the folder service's renew of the old one answers
--- closed.
+-- superseded, and the folder service's renew of the old one answers closed. Two first opens at once both find no open
+-- view; the later one meets the earlier one's view at the one-open-run-box index once it commits, and closes it and
+-- opens again: the last opener's view wins either way. A superseded run view's read set is not carried over (a
+-- desktop's is): the run's own read set, which its releases fill, is the one that counts.
 --
 -- G2: listed in qorpera_native_host_calls with scope folder (p_environment_id and p_actor must be this job's run).
 -- The release that goes with each answer is qorpera_folder_record_release with the run actor, already listed (P8 in
@@ -23,6 +25,7 @@ set local lock_timeout = '3s';
 
 create function public.qorpera_folder_run_view_open(p_environment_id uuid, p_actor jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_attempt integer;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if jsonb_typeof(p_actor) is distinct from 'object' or p_actor ->> 'kind' is distinct from 'run'
@@ -37,11 +40,19 @@ begin
 			and j.lease_expires_at > clock_timestamp()) then
 		raise exception 'Folder run is not current' using errcode = '42501'; end if;
 	perform 1 from public.qorpera_runner_jobs where id = (p_actor ->> 'jobId')::uuid for key share;
-	perform 1 from public.qorpera_folder_views where kind = 'run_box' and job_id = (p_actor ->> 'jobId')::uuid and state = 'open'
-	order by id for update;
-	update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
-	where kind = 'run_box' and job_id = (p_actor ->> 'jobId')::uuid and state = 'open';
-	return public.qorpera_folder_view_open(p_environment_id, p_actor, 'run_box', '{}'::jsonb);
+	for v_attempt in 1..2 loop
+		begin
+			perform 1 from public.qorpera_folder_views where kind = 'run_box' and job_id = (p_actor ->> 'jobId')::uuid
+				and state = 'open' order by id for update;
+			update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(), close_reason = 'superseded'
+			where kind = 'run_box' and job_id = (p_actor ->> 'jobId')::uuid and state = 'open';
+			return public.qorpera_folder_view_open(p_environment_id, p_actor, 'run_box', '{}'::jsonb);
+		exception when unique_violation then
+			-- Another open of this job committed its view while this one was being made: close it too, and open again
+			-- (the locks taken inside this attempt go with it, and are taken again in the same order).
+			if v_attempt = 2 then raise; end if;
+		end;
+	end loop;
 end $$;
 
 revoke all on function public.qorpera_folder_run_view_open(uuid, jsonb) from public, anon, authenticated, service_role;
