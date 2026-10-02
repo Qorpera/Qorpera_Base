@@ -116,6 +116,12 @@ begin
 	if v_result not like '42501:%' then
 		raise exception 'Another run''s binding was answered: %', v_result;
 	end if;
+	-- The run's own id with another lease: the lease is checked too, not only the run.
+	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(jsonb_set(current_setting('
+		'''qorpera_test.path_binding'')::jsonb, ''{leaseId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
+	if v_result not like '42501:%' then
+		raise exception 'Another lease''s binding was answered: %', v_result;
+	end if;
 	reset role;
 end $$;
 
@@ -125,7 +131,8 @@ declare v_request text;
 begin
 	foreach v_request in array array['''{"other": "x"}''::jsonb', '''{"todo": 1}''::jsonb', '''{"todo": "Bad Key"}''::jsonb',
 		'''{"site": "not a host"}''::jsonb', '''{"site": ""}''::jsonb', '''[]''::jsonb', 'null::jsonb'] loop
-		if coalesce(pg_temp.fa_refused(v_request), '') not like '22023:Account search is invalid%' then
+		if coalesce(pg_temp.fa_refused(v_request), '') not like '22023:Account search is invalid%'
+			or pg_temp.fa_answer(pg_temp.fa_find(v_request)) ?| array['accounts', 'mailboxes', 'todo'] then
 			raise exception 'A malformed request was answered: % -> %', v_request, pg_temp.fa_find(v_request);
 		end if;
 	end loop;
@@ -258,10 +265,12 @@ select set_config('qorpera_test.fa_other_company_box', pg_temp.ca_open('81', 'bi
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
 select set_config('qorpera_test.fa_other_environment_box', pg_temp.ca_open('81', 'ops+netlify.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
--- A look-alike letter (U+0130, the Kelvin sign) is refused before any lowering.
-select set_config('qorpera_test.fa_lookalike', pg_temp.ca_open('81', 'agents+netlify.com@nordlys.examplİ',
+-- A look-alike letter (U+0130, the Kelvin sign) in the tag is refused before any lowering: under a Unicode
+-- collation lower() makes it netlify.com or key.example, which every later check would take (on a C-locale
+-- cluster the tag rule refuses it as well).
+select set_config('qorpera_test.fa_lookalike', pg_temp.ca_open('81', 'agents+netl' || chr(304) || 'fy.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
-select set_config('qorpera_test.fa_kelvin', pg_temp.ca_open('81', 'agents+netlify.com@nordlys.exampl' || chr(8490),
+select set_config('qorpera_test.fa_kelvin', pg_temp.ca_open('81', 'agents+' || chr(8490) || 'ey.example@nordlys.example',
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
 select set_config('qorpera_test.fa_bad_tag', pg_temp.ca_open('81', 'agents+netlify com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
