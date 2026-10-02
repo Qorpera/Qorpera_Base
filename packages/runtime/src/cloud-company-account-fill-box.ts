@@ -30,6 +30,8 @@ const SPKI_X25519 = Buffer.from("302a300506032b656e032100", "hex");
 const MAX_VALUE = 256;
 /** A sealed value is typed within this long or never: an authenticator code lives 30 s. */
 export const COMPANY_ACCOUNT_FILL_LIFETIME_MS = 90_000;
+/** How far apart the vault's and the computer's clocks may be. */
+const CLOCK_SKEW_MS = 60_000;
 
 export type CompanyAccountFillField = "login" | "password" | "new_password" | "code";
 const FIELDS: readonly CompanyAccountFillField[] = ["login", "password", "new_password", "code"];
@@ -168,7 +170,12 @@ export class CompanyComputerFillKey {
 				!Number.isSafeInteger(payload.notAfterMs)
 			)
 				throw new Error("Company account fill is malformed");
-			if ((payload.notAfterMs as number) < nowMs) throw new Error("Company account fill expired");
+			// Spent, or dated further ahead than a box ever lives (the vault's clock runs ahead): never typed.
+			if (
+				(payload.notAfterMs as number) < nowMs ||
+				(payload.notAfterMs as number) > nowMs + COMPANY_ACCOUNT_FILL_LIFETIME_MS + CLOCK_SKEW_MS
+			)
+				throw new Error("Company account fill expired");
 			return {
 				field: expected.field,
 				value: payload.value,

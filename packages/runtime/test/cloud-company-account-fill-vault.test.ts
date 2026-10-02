@@ -49,7 +49,9 @@ function request(field = "password"): CompanyAccountFillRequest {
 }
 
 /** The vault with a real keyring, an account sealed in it, and the database's fill answer for one computer. */
-function fixture(options: { totp?: boolean; field?: string; context?: Record<string, unknown>; now?: number } = {}) {
+function fixture(
+	options: { totp?: boolean; field?: string; context?: Record<string, unknown>; now?: number; oneLine?: boolean } = {},
+) {
 	const keyring = new CloudSecretKeyring({ "company-kek-1": randomBytes(32) });
 	keyrings.push(keyring);
 	const computer = new CompanyComputerFillKey();
@@ -72,7 +74,14 @@ function fixture(options: { totp?: boolean; field?: string; context?: Record<str
 		companyId,
 		environmentId,
 		keyId: "company-kek-1",
-		encryptedEnvelopeBase64: Buffer.from(envelope).toString("base64"),
+		// As PostgreSQL's encode(…, 'base64') writes it: a line break every 76 characters.
+		encryptedEnvelopeBase64: options.oneLine
+			? Buffer.from(envelope).toString("base64")
+			: (
+					Buffer.from(envelope)
+						.toString("base64")
+						.match(/.{1,76}/g) ?? []
+				).join("\n"),
 		envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
 		receiptId,
 		field: options.field ?? "password",
@@ -133,15 +142,28 @@ describe("company account fill in the vault", () => {
 		}
 	});
 
+	it("reads the envelope in PostgreSQL's spelling and in one line alike", async () => {
+		const f = fixture();
+		expect((await f.vault.fill(request(), AbortSignal.timeout(5000))).schema).toBe(
+			"qorpera.company-account-fill-answer/v1",
+		);
+		const context = await f.authority.readCompanyAccountFill(request(), AbortSignal.timeout(5000));
+		const spelled = (context as { encryptedEnvelopeBase64: string }).encryptedEnvelopeBase64;
+		expect(spelled.split("\n").length).toBeGreaterThan(5);
+		const g = fixture({ oneLine: true });
+		const answer = await g.vault.fill(request(), AbortSignal.timeout(5000));
+		expect(answer.schema).toBe("qorpera.company-account-fill-answer/v1");
+	});
+
 	it("waits for the next code when the current one has less than three seconds left", async () => {
 		// 28.5 s into a 30 s period.
 		const late = now + 28_500;
 		const f = fixture({ field: "code", now: late });
 		const answer = await f.vault.fill(request("code"), AbortSignal.timeout(5000));
-		expect(f.wait).toHaveBeenCalledWith(1_500);
+		expect(f.wait).toHaveBeenCalledWith(1_550);
 		const box = (answer as { box: Record<string, string> }).box;
 		expect(f.computer.open(box, f.identity("code"), f.clock()).value).toBe(
-			companyAccountTotpCode({ seed, digits: 6, period: 30, algorithm: "SHA1" }, late + 1_500),
+			companyAccountTotpCode({ seed, digits: 6, period: 30, algorithm: "SHA1" }, late + 1_550),
 		);
 	});
 
@@ -270,9 +292,9 @@ describe("company account fill over the broker", () => {
 				allowLoopback: true,
 			});
 		const answer = await client(runtimeToken).companyAccountFill(request(), AbortSignal.timeout(5000));
-		expect(f.computer.open((answer as { box: Record<string, string> }).box, f.identity("password"), now).value).toBe(
-			password,
-		);
+		expect(
+			f.computer.open((answer as { box: Record<string, string> }).box, f.identity("password"), Date.now()).value,
+		).toBe(password);
 		for (const token of [randomBytes(32).toString("base64url"), codingExecutorToken])
 			await expect(client(token).companyAccountFill(request(), AbortSignal.timeout(5000))).rejects.toThrow(
 				"Cloud secret broker rejected the company account fill",

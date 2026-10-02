@@ -1,5 +1,8 @@
 import { CompanyComputerFillKey, sealCompanyAccountFill } from "@qorpera/runtime/cloud-company-account-fill-box";
-import { COMPANY_ACCOUNT_FILLED_ATTRIBUTE } from "@qorpera/runtime/cloud-company-computer-account-fill";
+import {
+	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
+	CompanyComputerFilledValues,
+} from "@qorpera/runtime/cloud-company-computer-account-fill";
 import {
 	type CompanyComputerBrowserSession,
 	CompanyComputerGuestAutomation,
@@ -19,7 +22,10 @@ const account = computerId(60);
 const password = "Pw-1234567890abcdEFGH";
 
 /** One sign-in page with one password box, as far as the fill and a snapshot use it. */
-function office(options: { url?: string; key?: CompanyComputerFillKey | null } = {}) {
+function office(
+	options: { url?: string; key?: CompanyComputerFillKey | null; filled?: CompanyComputerFilledValues } = {},
+) {
+	const location = { url: options.url ?? "https://vercel.com/login", title: "Sign in" };
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
 	const typed: string[] = [];
@@ -28,21 +34,24 @@ function office(options: { url?: string; key?: CompanyComputerFillKey | null } =
 		ownerFrame: async () => mainFrame,
 		// The page side of each evaluate: the focus check answers yes, every other one sees the box.
 		evaluate: vi.fn(async (fn: (node: unknown, arg?: unknown) => unknown, arg?: unknown) =>
-			String(fn).includes("activeElement")
-				? true
-				: fn(
-						{
-							tagName: element.tagName,
-							type: element.type,
-							disabled: element.disabled,
-							readOnly: element.readOnly,
-							get value() {
-								return element.value;
+			// The focus check before typing; then where the value landed (here, whole).
+			String(fn).includes("here: true")
+				? { here: true, length: element.value.length }
+				: String(fn).includes("activeElement")
+					? true
+					: fn(
+							{
+								tagName: element.tagName,
+								type: element.type,
+								disabled: element.disabled,
+								readOnly: element.readOnly,
+								get value() {
+									return element.value;
+								},
+								setAttribute: (name: string, value: string) => attributes.set(name, value),
 							},
-							setAttribute: (name: string, value: string) => attributes.set(name, value),
-						},
-						arg,
-					),
+							arg,
+						),
 		),
 		dispose: async () => undefined,
 	};
@@ -56,12 +65,19 @@ function office(options: { url?: string; key?: CompanyComputerFillKey | null } =
 	};
 	const page = {
 		isClosed: () => false,
-		url: () => options.url ?? "https://vercel.com/login",
-		title: async () => "Sign in",
+		url: () => location.url,
+		title: async () => location.title,
+		waitForLoadState: async () => undefined,
 		mainFrame: () => mainFrame,
 		getByRole: vi.fn(() => box),
-		// The private boxes' values (none read here) and the page's text for a snapshot.
-		evaluate: vi.fn(async (): Promise<string[]> => []),
+		// The private boxes' values (none read here), or what the page shows for the screenshot check.
+		evaluate: vi.fn(
+			async (_fn: unknown, arg?: unknown): Promise<unknown> =>
+				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE
+					? [location.title, location.url, `Your password is ${element.value}`].join("\n")
+					: [],
+		),
+		screenshot: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
 		frames: () => [page],
 		isDetached: () => false,
 		locator: vi.fn(() => ({ ariaSnapshot: async () => `- paragraph: Your password is ${element.value}` })),
@@ -97,8 +113,9 @@ function office(options: { url?: string; key?: CompanyComputerFillKey | null } =
 		browser,
 		screenshots: { publish: vi.fn() },
 		...(key ? { fillKey: key } : {}),
+		...(options.filled ? { filled: options.filled } : {}),
 	});
-	return { automation, key, element, attributes, typed, page };
+	return { automation, key, element, attributes, typed, page, location };
 }
 
 const action = (field: "password" | "code" = "password"): CompanyComputerAction => ({
@@ -164,6 +181,47 @@ describe("vault_fill on the Company Computer", () => {
 		const f = office();
 		await expect(perform(f, action(), sealed(f.key!, computerId(11)))).rejects.toThrow("ACCOUNT_FILL_UNOPENED");
 		await expect(perform(f, action("code"), sealed(f.key!))).rejects.toThrow("ACCOUNT_FILL_UNOPENED");
+		expect(f.typed).toEqual([]);
+	});
+
+	it("hides the value from titles and addresses, takes no picture while the page shows it, also in a later run", async () => {
+		const filled = new CompanyComputerFilledValues();
+		const f = office({ filled });
+		await perform(f, action(), sealed(f.key!));
+		// The site echoes the password in its address and title (a GET form, a careless page).
+		f.location.url = `https://vercel.com/search?q=${password}`;
+		f.location.title = `Results for ${password}`;
+		const snapshot = await perform(f, { kind: "browser", action: "snapshot" });
+		expect(JSON.stringify(snapshot)).not.toContain(password);
+		await expect(perform(f, { kind: "screenshot", surface: "browser" })).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(f.page.screenshot).not.toHaveBeenCalled();
+		// A later run's automation on the same screen shares the store.
+		const later = office({ filled });
+		later.element.value = password;
+		later.location.title = password;
+		expect(JSON.stringify(await perform(later, { kind: "browser", action: "snapshot" }))).not.toContain(password);
+		await expect(perform(later, { kind: "browser", action: "list_tabs" })).resolves.toSatisfy(
+			(content) => !JSON.stringify(content).includes(password),
+		);
+	});
+
+	it("tells a spent box apart from one that is not for this call", async () => {
+		const f = office();
+		const binding = computerBinding();
+		const old = sealCompanyAccountFill(
+			{ value: password, hosts: ["vercel.com"] },
+			f.key!.publicKey,
+			{
+				companyId: binding.companyId,
+				companyComputerId: binding.companyComputerId,
+				computerGeneration: binding.computerGeneration,
+				receiptId: computerEffect().receiptId,
+				accountId: account,
+				field: "password",
+			},
+			Date.now() - 10 * 60_000,
+		);
+		await expect(perform(f, action(), old)).rejects.toThrow("ACCOUNT_FILL_EXPIRED");
 		expect(f.typed).toEqual([]);
 	});
 

@@ -14,7 +14,12 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { BrowserContext, Page } from "playwright-core";
 import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
-import { CompanyAccountFillRefusedError, fillCompanyAccountBox } from "./cloud-company-computer-account-fill.ts";
+import {
+	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
+	CompanyAccountFillRefusedError,
+	CompanyComputerFilledValues,
+	fillCompanyAccountBox,
+} from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
@@ -320,8 +325,8 @@ export class CompanyComputerGuestAutomation {
 	readonly #tabIds = new Map<Page, string>();
 	/** This office service's boot key: it alone opens what the vault sealed for a vault_fill (A1-3). */
 	readonly #fillKey: CompanyComputerFillKey | undefined;
-	/** Secrets the vault typed here, hidden wherever a snapshot shows them, as private boxes' values are. */
-	readonly #filled = new Set<string>();
+	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
+	readonly #filled: CompanyComputerFilledValues;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -337,6 +342,7 @@ export class CompanyComputerGuestAutomation {
 		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
 		fillKey?: CompanyComputerFillKey;
+		filled?: CompanyComputerFilledValues;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -351,6 +357,47 @@ export class CompanyComputerGuestAutomation {
 		this.#fileExports = options.fileExports;
 		this.#fileImports = options.fileImports;
 		this.#fillKey = options.fillKey;
+		this.#filled = options.filled ?? new CompanyComputerFilledValues();
+	}
+
+	/**
+	 * No picture while a page shows a secret the vault typed: as text, in its title or address, or in a box that is
+	 * not marked private (a "show password" that made a new box). The page is read; it is never told the value.
+	 */
+	async #assertFilledNotShown(page: Page): Promise<void> {
+		if (this.#filled.current().length === 0) return;
+		for (const frame of page.frames()) {
+			let shown: unknown;
+			try {
+				shown = await frame.evaluate((attribute) => {
+					const document = (
+						globalThis as unknown as {
+							document: {
+								title: string;
+								documentElement: { innerText?: string } | null;
+								querySelectorAll(
+									selector: string,
+								): Iterable<{ value?: unknown; matches(selector: string): boolean }>;
+							};
+							location: { href: string };
+						}
+					).document;
+					const boxes = [...document.querySelectorAll("input, textarea")]
+						.filter((box) => !box.matches(`[${attribute}]`) && typeof box.value === "string")
+						.slice(0, 512)
+						.map((box) => box.value as string);
+					const text = (document.documentElement?.innerText ?? "").slice(0, 2_000_000);
+					const href = (globalThis as unknown as { location: { href: string } }).location.href;
+					return [document.title, href, text, ...boxes].join("\n");
+				}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE);
+			} catch (error) {
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			}
+			if (typeof shown !== "string")
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE"));
+			if (this.#filled.shows(shown))
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+		}
 	}
 
 	/**
@@ -395,6 +442,7 @@ export class CompanyComputerGuestAutomation {
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
 			}
 			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+			await this.#assertFilledNotShown(page);
 		}
 	}
 
@@ -486,8 +534,8 @@ export class CompanyComputerGuestAutomation {
 					if (page.isClosed()) continue;
 					tabs.push({
 						tabId: this.#tabIds.get(page)!,
-						titlePreview: tabPreview(title, 128),
-						urlPreview: tabPreview(page.url(), 256),
+						titlePreview: tabPreview(this.#filled.hide(title), 128),
+						urlPreview: tabPreview(this.#filled.hide(page.url()), 256),
 					});
 				}
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -525,6 +573,7 @@ export class CompanyComputerGuestAutomation {
 			}
 			const page = this.#page;
 			if (action.kind === "screenshot") {
+				await this.#assertFilledNotShown(page);
 				return this.#publish(
 					await this.#pageCall(() =>
 						page.screenshot({
@@ -583,15 +632,20 @@ export class CompanyComputerGuestAutomation {
 						accountId: action.account,
 						field: action.field,
 					});
-				} catch {
-					throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNOPENED");
+				} catch (error) {
+					// A spent box (or computers' clocks far apart) is told apart from one for another call or key.
+					throw new CompanyComputerActionNotStartedError(
+						error instanceof Error && error.message === "Company account fill expired"
+							? "ACCOUNT_FILL_EXPIRED"
+							: "ACCOUNT_FILL_UNOPENED",
+					);
 				}
 				const box = page.getByRole(action.role, { name: action.name, exact: true });
 				if ((await this.#pageCall(() => box.count())) !== 1)
 					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
-				if (opened.field !== "login") this.#filled.add(opened.value);
+				this.#filled.add(opened.value, opened.field);
 				try {
 					await fillCompanyAccountBox(page, box, opened);
 				} catch (error) {
@@ -609,7 +663,7 @@ export class CompanyComputerGuestAutomation {
 				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const snapshot = await this.#pageCall(async () =>
-					redactCompanyComputerSnapshot(aria, [...before, ...after, ...this.#filled]),
+					redactCompanyComputerSnapshot(aria, [...before, ...after, ...this.#filled.current()]),
 				);
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -618,8 +672,8 @@ export class CompanyComputerGuestAutomation {
 					kind: "json",
 					value: {
 						tabId: this.#tabIds.get(page)!,
-						url: page.url(),
-						title: title.slice(0, 1024),
+						url: this.#filled.hide(page.url()),
+						title: this.#filled.hide(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
 						truncated: snapshot.length > 16_384,
 					},

@@ -174,7 +174,8 @@ export class CompanyComputerActionNotStartedError extends Error {
 			| "BROWSER_TARGET_CLOSED"
 			// A vault_fill that cannot be opened here (company accounts A1-3): nothing was typed.
 			| "ACCOUNT_FILL_UNAVAILABLE"
-			| "ACCOUNT_FILL_UNOPENED",
+			| "ACCOUNT_FILL_UNOPENED"
+			| "ACCOUNT_FILL_EXPIRED",
 	) {
 		super(message);
 		this.name = "CompanyComputerActionNotStartedError";

@@ -1034,7 +1034,8 @@ export class HttpCloudSecretBrokerClient {
 					bytes.fill(0);
 				}
 			},
-			35_000,
+			// Inside the tool call's 30 s, leaving the office time to type.
+			20_000,
 			signal,
 		);
 	}

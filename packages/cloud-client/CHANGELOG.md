@@ -8,6 +8,7 @@
 
 ### Added
 
+- `CompanyComputerEffectContext.fill`: a company account fill's box, sealed to the computer's boot key, carried beside a `vault_fill` action (company accounts A1-3b); `CompanyComputerActionNotStartedError` takes `ACCOUNT_FILL_UNAVAILABLE`, `ACCOUNT_FILL_UNOPENED` and `ACCOUNT_FILL_EXPIRED`.
 - Company state files read two more kinds (F2's H1, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2): `human-tasks/<name>.md`, work an agent hands to a member or a contact (status, the person, the asking agent and its todo, due, minutes, proof, files, reason, the secret's label and state, and for a takeover the connection and step; the `## Steps` checklist parsed with its line numbers; `files` entries held to the folder's path rule), and `contacts/<name>.md`, an outside person or firm (name, organization, email, phone, asks; notes in the body). `writeHumanTaskFile` and `writeContactFile` write them; the path checks cover `human-tasks/<t>`, `human-tasks/<t>/proof` and the two top folders. Inert until the database knows the kinds (H1b) and keeps their index (H2).
 - `CloudRunnerControlRequest` has a `start` action: an acceptance plus, in the same transaction, the broker description and (with `nativeLeaseSeconds`) the native authority.
 - `CloudRoutineEventTrigger`: a routine listener on one of the company's hooks (`kind: "listener"`, `source: "event"`, `hookId`, optional `only` event types). `parseCloudRoutineTrigger` reads it with the cloud's rules and `describeCloudRoutineTrigger` words it ("When a hook receives an event", or the event types).

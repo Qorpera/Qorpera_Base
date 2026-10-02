@@ -17,7 +17,7 @@ import {
 	parseCompanyComputerFileExport,
 	parseCompanyComputerFileImport,
 } from "@qorpera/cloud-client/cloud-file-transfer";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
 import {
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
@@ -171,8 +171,8 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 			// A company account's value the vault types into one box (A1-3); the action never holds the value.
 			keys(input, ["kind", "action", "role", "name", "account", "field"]);
 			if (input.role !== "textbox" && input.role !== "spinbutton") throw new Error("INVALID_COMPUTER_ARGUMENTS");
-			if (typeof input.account !== "string" || !COMPANY_COMPUTER_UUID.test(input.account))
-				throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			const account = normalizeUuid(input.account);
+			if (account === null) throw new Error("INVALID_COMPUTER_ARGUMENTS");
 			if (input.field !== "login" && input.field !== "password" && input.field !== "code")
 				throw new Error("INVALID_COMPUTER_ARGUMENTS");
 			return {
@@ -180,7 +180,7 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 				action: "vault_fill",
 				role: input.role,
 				name: text(input.name, 512),
-				account: input.account.toLowerCase(),
+				account,
 				field: input.field,
 			};
 		}

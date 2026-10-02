@@ -238,16 +238,21 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		let fill: Readonly<Record<string, string>> | undefined;
 		const action = operation.arguments as { kind?: unknown; action?: unknown };
 		if (action.kind === "browser" && action.action === "vault_fill") {
-			if (!this.#accountFills) throw new Error("COMPANY_ACCOUNT_FILL_UNAVAILABLE");
-			const answer = await this.#accountFills.companyAccountFill(
-				{
-					binding: this.#run.binding,
-					receiptId: context.receiptId,
-					idempotencyKey: context.idempotencyKey,
-					envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
-				},
-				signal,
-			);
+			const answer = this.#accountFills
+				? await this.#accountFills.companyAccountFill(
+						{
+							binding: this.#run.binding,
+							receiptId: context.receiptId,
+							idempotencyKey: context.idempotencyKey,
+							envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
+						},
+						signal,
+					)
+				: ({
+						schema: "qorpera.company-account-refusal/v1",
+						code: "0A000",
+						message: "Company accounts are not set up for this company's computers",
+					} as const);
 			if (answer.schema !== "qorpera.company-account-fill-answer/v1")
 				return {
 					kind: "json",

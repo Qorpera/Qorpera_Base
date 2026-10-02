@@ -492,10 +492,16 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		});
 		expect(f.perform).not.toHaveBeenCalled();
 		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
+		// A host without the vault refuses the same way: nothing started, nothing sent to the office.
 		const g = await fixture({ capabilities: ["browser"] });
-		await expect(
-			g.endpoint.perform({ ...operation, target: g.operation.target }, g.lease, g.context),
-		).rejects.toThrow("COMPANY_ACCOUNT_FILL_UNAVAILABLE");
+		expect(await g.endpoint.perform({ ...operation, target: g.operation.target }, g.lease, g.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_fill",
+				completed: false,
+				refused: { code: "0A000", message: "Company accounts are not set up for this company's computers" },
+			},
+		});
 		expect(g.perform).not.toHaveBeenCalled();
 	});
 

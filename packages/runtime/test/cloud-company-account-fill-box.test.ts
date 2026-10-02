@@ -52,6 +52,12 @@ describe("company account fill box", () => {
 		expect(() => key.open(box, identity, now + COMPANY_ACCOUNT_FILL_LIFETIME_MS + 1)).toThrow(
 			"Company account fill expired",
 		);
+		// Sealed by a vault whose clock runs more than a minute ahead: never typed either.
+		const ahead = sealCompanyAccountFill(fill, key.publicKey, identity, now + 61_000);
+		expect(() => key.open(ahead, identity, now)).toThrow("Company account fill expired");
+		expect(key.open(sealCompanyAccountFill(fill, key.publicKey, identity, now + 59_000), identity, now).value).toBe(
+			fill.value,
+		);
 		for (const part of ["ciphertext", "iv", "tag", "ephemeralPublicKey"]) {
 			const bytes = Buffer.from(box[part]!, "base64url");
 			bytes[0] = bytes[0]! ^ 1;

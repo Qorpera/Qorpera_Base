@@ -424,10 +424,11 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			action: "vault_fill",
 			role: "textbox",
 			name: "Password",
-			account: computerId(60).toUpperCase(),
+			account: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
 			field: "password",
 		};
-		expect(parseCompanyComputerAction(fill)).toEqual({ ...fill, account: computerId(60) });
+		// An id in either letter case is read in the lower case the database prints.
+		expect(parseCompanyComputerAction(fill)).toEqual({ ...fill, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
 		expect(parseCompanyComputerAction({ ...fill, role: "spinbutton", field: "code" })).toMatchObject({
 			field: "code",
 		});

@@ -341,20 +341,22 @@ function fillContext(value: unknown): FillContext {
 		status: facts.status,
 		version: facts.version,
 	}) as CompanyAccountDescriptor;
+	// PostgreSQL's encode(…, 'base64') breaks lines every 76 characters; the line breaks carry nothing.
+	const base64 = typeof encryptedEnvelopeBase64 === "string" ? encryptedEnvelopeBase64.replace(/\n/g, "") : null;
 	if (
 		typeof keyId !== "string" ||
 		!KEY_ID.test(keyId) ||
-		typeof encryptedEnvelopeBase64 !== "string" ||
-		!/^[A-Za-z0-9+/]+={0,2}$/.test(encryptedEnvelopeBase64) ||
+		base64 === null ||
+		!/^[A-Za-z0-9+/]+={0,2}$/.test(base64) ||
 		typeof envelopeSha256 !== "string" ||
 		!SHA256.test(envelopeSha256) ||
 		(field !== "login" && field !== "password" && field !== "code") ||
 		typeof fillPublicKey !== "string"
 	)
 		throw new Error("Company account fill context is malformed");
-	const envelope = Buffer.from(encryptedEnvelopeBase64, "base64");
+	const envelope = Buffer.from(base64, "base64");
 	if (
-		envelope.toString("base64") !== encryptedEnvelopeBase64 ||
+		envelope.toString("base64") !== base64 ||
 		createHash("sha256").update(envelope).digest("hex") !== envelopeSha256
 	) {
 		envelope.fill(0);
@@ -452,9 +454,13 @@ export class CompanyAccountVault {
 						code: "22023",
 						message: "This account has no authenticator in the vault; its code comes by mail or text",
 					};
+				// A timer and the wall clock can disagree by a little: look again after each wait.
 				const period = totp.period * 1000;
-				const left = period - (this.#now() % period);
-				if (left < CODE_MARGIN_MS) await this.#wait(left, signal);
+				for (let attempt = 0; attempt < 3; attempt++) {
+					const left = period - (this.#now() % period);
+					if (left >= CODE_MARGIN_MS) break;
+					await this.#wait(left + 50, signal);
+				}
 				value = companyAccountTotpCode(totp, this.#now());
 			}
 			const box = sealCompanyAccountFill(
