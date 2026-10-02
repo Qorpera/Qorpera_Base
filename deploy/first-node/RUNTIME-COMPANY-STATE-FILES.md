@@ -1391,7 +1391,7 @@ saved), no seeding. Two PRs, released in this order:
   runtime bundle active, the object gateway and the folder service deployed), since SQL refuses
   a structured key that carries no parse (`qorpera_company_state_checked`), and a writer sends a
   parse only for the kinds its parser knows.
-- **H1b, the database** (one migration, 20260929999000, after H1a is live). It replaces:
+- **H1b, the database** (one migration, 20260928429900, after H1a is live). It replaces:
   - `qorpera_structured_path_kind`: `human-tasks/<name>.md` and `contacts/<name>.md`;
   - `qorpera_structured_folder_names`: the four folder places;
   - `qorpera_company_state_path_problems`: the file name at position 2 for both kinds;
@@ -1432,7 +1432,7 @@ while building:
   platform finds from `from` when the person opens the task, also when a company runs several machines. The file
   names nothing that can go stale; `step` and `connection` say what to do and for which account.
 
-**Built (H1b): the database** (migration 20260929999000, SQL test 785), as planned, with these choices made while
+**Built (H1b): the database** (migration 20260928429900, SQL test 785), as planned, with these choices made while
 building:
 - The seven functions are patched by exact anchors, each of which must match once or the migration stops, so a
   definition changed since is caught rather than overwritten. Each patch carries the marker `20260929999000` in a
@@ -1648,7 +1648,7 @@ order is free.
   task, and only when the result parses. The web (H3) and the link service (H5) use it, so the person's
   change is the same bytes everywhere.
 
-**Built (H2b): the database** (migration 20260929999980, SQL test 803; test 785 updated), as planned, with these
+**Built (H2b): the database** (migration 20260928429986, SQL test 803; test 785 updated), as planned, with these
 choices made while building:
 - The two tables carry `folder_key` beside `folder_path`, indexed with the environment (not unique), so the rules find
   a task by its file's key without folding every row.
