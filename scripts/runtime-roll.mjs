@@ -354,7 +354,7 @@ begin
 		select job.id, row_number() over (order by job.id) rank from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id
 		where job.status = 'queued' and run.runtime_bundle_sha256 = ${literal(from.sha)}
 			and not exists (select 1 from public.qorpera_runner_job_claims claim where claim.job_id = job.id and claim.status in ('claimed', 'assigned'))) queued;
-	if v_count > 0 then raise exception 'Work of the old bundle is still queued: let node B take it first (% jobs: %)', v_count, v_jobs; end if;
+	if v_count > 0 then raise exception 'Work of the old bundle is still queued: let node B take it first (waiting: %; first ids: %)', v_count, v_jobs; end if;
 end $roll_queued$;`,
 		...off(nodeB),
 	]);

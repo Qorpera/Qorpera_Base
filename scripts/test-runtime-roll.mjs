@@ -49,6 +49,11 @@ const observe = (id, machine) => `select public.qorpera_test_observe_runtime_nod
 	schema: "qorpera.runtime-node-observation/v1", nodeId: id, machineIdSha256: machine, observationId: randomUUID(),
 	observedAt: new Date().toISOString(), cpuMillis: 32000, memoryBytes: 68719476736, state: "ready" })});`;
 const observeBoth = () => sql(`${service} ${observe(nodeA, "a".repeat(64))} ${observe(nodeB, "b".repeat(64))}`);
+// Right before a gated packet: the observation first, then the heartbeat, whose window (30 s) is the shorter.
+const fresh = () => {
+	observeBoth();
+	heartbeat();
+};
 const heartbeat = () =>
 	sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() where id in ('${orchestratorA}','${orchestratorB}');`);
 // A queued run of the fixture conversation, of the active bundle (the wake fixture's own helper, by base run).
@@ -165,6 +170,7 @@ async function rehearse(empty, path = "roll") {
 		commit(`10-migration-${migration.name}`);
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
 		assert.match(fails(p(`10-migration-${migration.name}`)), /already recorded/);
+		fresh();
 		commit("20-declare-b.sql");
 		// 30: node A takes no runs; its orchestrator claims nothing, node B's takes the N run. Node B must
 		// be able to claim first: with its orchestrator silent, 30 refuses.
@@ -172,8 +178,7 @@ async function rehearse(empty, path = "roll") {
 			sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() - interval '5 minutes' where id = '${orchestrator}';`);
 		stale(orchestratorB);
 		assert.match(fails(p("30-runs-off-a.sql")), /node B is not running/);
-		heartbeat();
-		observeBoth(); // 30 needs node B observed within the last minute
+		fresh(); // 30 needs node B's heartbeat and observation
 		commit("30-runs-off-a.sql");
 		assert.equal(claim(orchestratorA), null, "node A claims nothing while its runs are off");
 		assert.equal(claim(orchestratorB).work.run_id, runN, "node B takes the N run");
@@ -184,8 +189,7 @@ async function rehearse(empty, path = "roll") {
 		stale(orchestratorA);
 		assert.match(fails(p("40-switch.sql")), /node A is not running/);
 		assert.deepEqual(active(), [String(from.version), from.sha], "a refused switch changes nothing");
-		heartbeat();
-		observeBoth();
+		fresh();
 		const switched = lastJson(commit("40-switch.sql"));
 		assert.equal(switched.nodeBServes, true, "the switch reports node B still serving N");
 		assert.deepEqual(active(), [String(to.version), to.sha]);
@@ -218,8 +222,7 @@ async function rehearse(empty, path = "roll") {
 			assert.match(fails(p("60-runs-off-b.sql")), /still queued/);
 			assert.equal(claim(orchestratorB).work.run_id, runN2, "node B takes the queued N run");
 			// A job node B holds is running, though still queued until its runner accepts it: 60 lets B go.
-			heartbeat();
-			observeBoth();
+			fresh();
 			dryRun(p("60-runs-off-b.sql"));
 			assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
 			finish(runN);
@@ -227,12 +230,10 @@ async function rehearse(empty, path = "roll") {
 			// Node A must be able to claim before node B leaves.
 			stale(orchestratorA);
 			assert.match(fails(p("60-runs-off-b.sql")), /node A is not running/);
-			heartbeat();
-			observeBoth(); // 60 needs node A observed within the last minute
+			fresh(); // 60 needs node A's heartbeat and observation
 			commit("60-runs-off-b.sql");
 			assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status[ready], true);
-			heartbeat();
-			observeBoth();
+			fresh();
 			commit("70-return-b.sql");
 			assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
 			// 80: declarations cleared, both nodes serve runs.
