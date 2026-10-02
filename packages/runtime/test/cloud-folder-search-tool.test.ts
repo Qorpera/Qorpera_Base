@@ -217,6 +217,10 @@ describe("company_search", () => {
 		await expect(
 			search.execute(search.parseArguments({ query: "x", cursor: "A".repeat(16) }), context("call-3")),
 		).rejects.toThrow(/^CURSOR_UNKNOWN/);
+		// A token goes on only with the search that gave it.
+		await expect(
+			search.execute(search.parseArguments({ query: "other", cursor }), context("call-4")),
+		).rejects.toThrow(/^CURSOR_OTHER_SEARCH/);
 		expect(n.searches).toHaveLength(2);
 	});
 
@@ -231,6 +235,8 @@ describe("company_search", () => {
 		};
 		const text = folderSearchText({ hits, searched: 1, binary: 0, reads: [], next: null }, seal);
 		expect(fitsOneResult(text)).toBe(true);
+		// One token per page, however many layouts were tried.
+		expect(sealed).toHaveLength(1);
 		const shown = text.split("\n").filter((line) => line.startsWith("page.html:")).length;
 		expect(shown).toBeGreaterThan(0);
 		expect(shown).toBeLessThan(40);
@@ -320,11 +326,13 @@ describe("company_search", () => {
 		cancelled.abort();
 		await expect(
 			t.execute(t.parseArguments({ query: "y" }), { ...context("call-2"), signal: cancelled.signal }),
-		).rejects.toBeInstanceOf(CloudToolRefusal);
+		).rejects.toThrow(/abort/i);
 		search.close();
 		await expect(t.execute(t.parseArguments({ query: "z" }), context("call-3"))).rejects.toThrow(
 			/^COMPANY_FOLDER_UNAVAILABLE/,
 		);
+		// Give the stand-in node a moment to see anything that was sent.
+		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(n.searches.map((s) => s.query)).toEqual(["x"]);
 	});
 

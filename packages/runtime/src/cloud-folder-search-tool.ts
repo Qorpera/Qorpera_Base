@@ -35,8 +35,8 @@ const PROTOCOL = 1;
 const KIND = { hello: 0x48, helloOk: 0x68, search: 0x53, found: 0x73, error: 0x65 } as const;
 const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** How long the node may take to answer a hello (it lists the whole view the first time, which a large folder takes a
- * while for, and throws away if the caller leaves) and a page (about 2 s of work). The call's own signal ends either
- * sooner. */
+ * while for, and throws away if the caller leaves) and a page (about 2 s of work). The end of the run's tool session
+ * cuts either short. */
 const HELLO_MS = 600_000;
 const PAGE_MS = 60_000;
 /** Codes the node answers one request with, leaving the connection usable. */
@@ -217,9 +217,9 @@ export class CloudFolderSearch {
 	#closed = false;
 	/** Pages go one at a time: the node answers a connection's requests in turn, and one view serves the run. */
 	#turn: Promise<unknown> = Promise.resolve();
-	/** Where each page said to go on, kept here: the model holds only an opaque token, so it never reads (or forges) a
-	 * path the page did not show. Kept for the run. */
-	readonly #cursors = new Map<string, SearchCursor>();
+	/** Where each page said to go on, and the search it belongs to, kept here: the model holds only an opaque token, so
+	 * it never reads (or forges) a path the page did not show. Kept for the run. */
+	readonly #cursors = new Map<string, { readonly cursor: SearchCursor; readonly search: string }>();
 
 	constructor(options: { socketPath: string; folder: CloudCompanyFolderClient; environmentId: string }) {
 		this.#socketPath = options.socketPath;
@@ -237,6 +237,8 @@ export class CloudFolderSearch {
 	/** A view the node no longer serves (closed or superseded) is opened again once. A page that did not come back
 	 * ends the connection, so a late answer never reaches the next request. */
 	async #page(request: Record<string, unknown>, signal: AbortSignal): Promise<SearchPage> {
+		// A call cancelled while it waited its turn sends nothing.
+		signal.throwIfAborted();
 		for (let attempt = 0; ; attempt++) {
 			try {
 				const link = await this.#connect(signal);
@@ -271,16 +273,18 @@ export class CloudFolderSearch {
 		return this.#link;
 	}
 
-	/** A token for where a page said to go on. */
-	seal(cursor: SearchCursor): string {
+	/** A token for where a page of `search` said to go on. */
+	seal(cursor: SearchCursor, search: string): string {
 		const token = randomBytes(12).toString("base64url");
-		this.#cursors.set(token, cursor);
+		this.#cursors.set(token, { cursor, search });
 		return token;
 	}
 
-	/** Where a token said to go on, if this run gave it. */
-	open(token: string): SearchCursor | undefined {
-		return this.#cursors.get(token);
+	/** Where a token said to go on, if this run gave it for this same search. */
+	open(token: string, search: string): SearchCursor | "other" | undefined {
+		const sealed = this.#cursors.get(token);
+		if (!sealed) return undefined;
+		return sealed.search === search ? sealed.cursor : "other";
 	}
 
 	close(): void {
@@ -370,18 +374,10 @@ function resumeAt(hit: SearchHit): SearchCursor {
  * the first hit is always shown (its line cut, and at worst its path, if that is what fits). `seal` turns where to go
  * on into the token the model passes back. */
 export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) => string): string {
-	const tokens = new Map<number, string>();
-	const token = (shown: number, cursor: SearchCursor): string => {
-		let sealed = tokens.get(shown);
-		if (sealed === undefined) {
-			sealed = seal(cursor);
-			tokens.set(shown, sealed);
-		}
-		return sealed;
-	};
 	const shownHit = (h: SearchHit, text = h.text): string =>
 		h.line === 0 ? `${h.path}${h.kind === "folder" ? "/" : ""}` : `${h.path}:${h.line}: ${text}`;
-	const render = (shown: number, first?: string): string => {
+	// Laid out with a stand-in token of a real token's length (16 characters, nothing to escape), and sealed once.
+	const lay = (shown: number, first?: string, token = "x".repeat(16)) => {
 		const lines = page.hits.slice(0, shown).map((h, i) => (i === 0 && first !== undefined ? first : shownHit(h)));
 		const cut = shown < page.hits.length;
 		const next = cut ? resumeAt(page.hits[shown]!) : page.next;
@@ -390,25 +386,29 @@ export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) 
 			? "Part of a page"
 			: `${page.searched} file${page.searched === 1 ? "" : "s"} searched` +
 				(page.binary > 0 ? `, ${page.binary} binary passed over` : "");
-		const more = next ? `. More: call again with cursor ${token(shown, next)}` : ". Nothing more.";
-		return `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`;
+		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
+		return { text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`, next };
+	};
+	const sealed = (shown: number, first?: string): string => {
+		const { text, next } = lay(shown, first);
+		return next ? lay(shown, first, seal(next)).text : text;
 	};
 	let shown = page.hits.length;
-	while (shown > 1 && !fitsOneResult(render(shown))) shown--;
-	if (shown === 0 || fitsOneResult(render(shown))) return render(shown);
+	while (shown > 1 && !fitsOneResult(lay(shown).text)) shown--;
+	if (shown === 0 || fitsOneResult(lay(shown).text)) return sealed(shown);
 	// One hit that does not fit whole: its line shorter and shorter, then its path.
 	const hit = page.hits[0]!;
 	const chars = Array.from(hit.text);
 	for (let keep = chars.length; keep >= 0; keep = keep === 0 ? -1 : Math.floor(keep / 2)) {
-		const text = render(1, shownHit(hit, `${chars.slice(0, keep).join("")}${keep < chars.length ? "…" : ""}`));
-		if (fitsOneResult(text)) return text;
+		const first = shownHit(hit, `${chars.slice(0, keep).join("")}${keep < chars.length ? "…" : ""}`);
+		if (fitsOneResult(lay(1, first).text)) return sealed(1, first);
 	}
 	const path = Array.from(hit.path);
 	for (let keep = path.length; keep > 0; keep = Math.floor(keep / 2)) {
-		const text = render(1, `${path.slice(0, keep).join("")}… (path cut)`);
-		if (fitsOneResult(text)) return text;
+		const first = `${path.slice(0, keep).join("")}… (path cut)`;
+		if (fitsOneResult(lay(1, first).text)) return sealed(1, first);
 	}
-	return render(0);
+	return sealed(0);
 }
 
 /** The release ids of one answer: derived from the run, the call and the text shown, so a replay of the same answer
@@ -517,10 +517,16 @@ export function cloudFolderSearchTool(options: {
 				case_sensitive: boolean;
 				cursor: string | null;
 			};
-			const after = input.cursor === null ? null : search.open(input.cursor);
+			// A cursor goes on only with the search that gave it.
+			const asked = JSON.stringify([input.query, input.path, input.glob, input.names_only, input.case_sensitive]);
+			const after = input.cursor === null ? null : search.open(input.cursor, asked);
 			if (after === undefined)
 				throw new CloudToolRefusal(
 					"CURSOR_UNKNOWN: that cursor is not one this run's search gave (cursors last for the run); search again",
+				);
+			if (after === "other")
+				throw new CloudToolRefusal(
+					"CURSOR_OTHER_SEARCH: that cursor belongs to another search; repeat that search's query, path, glob and flags with it, or search without a cursor",
 				);
 			let page: SearchPage;
 			try {
@@ -545,7 +551,7 @@ export function cloudFolderSearchTool(options: {
 					"COMPANY_FOLDER_UNAVAILABLE: the folder could not be searched now; try again, or read with company_read",
 				);
 			}
-			const text = folderSearchText(page, (cursor) => search.seal(cursor));
+			const text = folderSearchText(page, (cursor) => search.seal(cursor, asked));
 			// Released before the model sees the page, under the hash of exactly this text; cited by its first release.
 			let companyReadId: string | undefined;
 			const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
