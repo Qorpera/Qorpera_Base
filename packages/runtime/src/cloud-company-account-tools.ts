@@ -42,12 +42,20 @@ const LOCAL_PART = 64;
  */
 const OFFICIAL: ReadonlyArray<{ name: string; domains: readonly string[]; connected: boolean }> = [
 	// The connector catalog's GitHub, Gmail and Google Drive (cloud-connector-catalog.ts).
-	{ name: "GitHub", domains: ["github.com"], connected: true },
+	{ name: "GitHub", domains: ["github.com", "ghe.com"], connected: true },
 	{ name: "Google", domains: ["google.com", "gmail.com", "googleapis.com", "youtube.com"], connected: true },
 	// An official connection the company cannot add yet.
 	{
 		name: "Microsoft",
-		domains: ["microsoft.com", "microsoftonline.com", "live.com", "outlook.com", "office.com", "azure.com"],
+		domains: [
+			"microsoft.com",
+			"microsoftonline.com",
+			"live.com",
+			"outlook.com",
+			"office.com",
+			"azure.com",
+			"sharepoint.com",
+		],
 		connected: false,
 	},
 	{ name: "Slack", domains: ["slack.com"], connected: false },
@@ -56,7 +64,13 @@ const STRICT: ReadonlyArray<{ name: string; domains: readonly string[] }> = [
 	{ name: "Apple", domains: ["apple.com", "icloud.com"] },
 	{ name: "LinkedIn", domains: ["linkedin.com"] },
 	{ name: "X", domains: ["x.com", "twitter.com"] },
-	{ name: "Meta", domains: ["facebook.com", "instagram.com", "meta.com"] },
+	{ name: "Meta", domains: ["facebook.com", "instagram.com", "meta.com", "threads.net"] },
+	{ name: "Amazon", domains: ["amazon.com", "aws.amazon.com"] },
+];
+/** Payment providers hold the company's money and check who signs up: a person's task too. Banks are in the words. */
+const MONEY: ReadonlyArray<{ name: string; domains: readonly string[] }> = [
+	{ name: "PayPal", domains: ["paypal.com"] },
+	{ name: "Stripe", domains: ["stripe.com"] },
 ];
 
 const under = (host: string, domains: readonly string[]) =>
@@ -72,26 +86,35 @@ export function companyAccountWayIn(hosts: readonly string[]): string | undefine
 	const strict = STRICT.find((service) => hosts.some((host) => under(host, service.domains)));
 	if (strict)
 		return `${strict.name} checks for automated browsers: an account there is a person's task in their own browser. Prepare the steps and ask a member; never ask anyone for its password.`;
+	const money = MONEY.find((service) => hosts.some((host) => under(host, service.domains)));
+	if (money)
+		return `${money.name} is a payment provider: an account there is a person's task in their own browser. Prepare the steps and ask a member; never ask anyone for its password.`;
 	return undefined;
+}
+
+/** Whether two hosts are one website: the same, or one a name under the other, `www.` aside. */
+export function companyAccountSameWebsite(a: string, b: string): boolean {
+	const x = a.replace(/^www\./, "");
+	const y = b.replace(/^www\./, "");
+	return x === y || x.endsWith(`.${y}`) || y.endsWith(`.${x}`);
 }
 
 /**
  * The account's own address: `<mailbox>+<tag>@<mail domain>`, the tag the site (find_mail's tags, 1 to 64 of
- * [a-z0-9._-]), shortened with part of its hash when the address would pass 64 characters before the @.
+ * [a-z0-9._-]), shortened with part of its hash when the address would pass 64 characters before the @; undefined
+ * when the mailbox leaves too little room for that.
  */
 export function companyAccountLogin(mailbox: string, site: string): string | undefined {
 	const parts = MAILBOX.exec(mailbox);
 	if (!parts) return undefined;
 	const [, local, , domain] = parts as unknown as [string, string, string, string];
+	// Room for at least a short site part and 8 hex characters of its hash, so two sites rarely share a login.
 	const room = Math.min(64, LOCAL_PART - local.length - 1);
-	if (room < 1) return undefined;
-	const hash = createHash("sha256").update(site).digest("hex");
+	if (room < 12 && site.length > room) return undefined;
 	const tag =
 		site.length <= room
 			? site
-			: room >= 12
-				? `${site.slice(0, room - 9).replace(/[.-]+$/, "")}-${hash.slice(0, 8)}`
-				: hash.slice(0, room);
+			: `${site.slice(0, room - 9).replace(/[.-]+$/, "")}-${createHash("sha256").update(site).digest("hex").slice(0, 8)}`;
 	return `${local}+${tag}@${domain}`;
 }
 
@@ -149,6 +172,9 @@ export function parseCompanyAccountArguments(value: unknown): Parsed {
 		const signInHosts = hosts.map(host);
 		if (new Set(signInHosts).size !== signInHosts.length || signInHosts.includes(site))
 			throw new CloudToolArgumentRefusal("signInHosts are other host names than the site, each once");
+		// Which way in, as the arguments are read: before any review, so no member is ever asked to approve it.
+		const wayIn = companyAccountWayIn([site, ...signInHosts]);
+		if (wayIn) throw new CloudToolArgumentRefusal(wayIn);
 		if (a.mailbox !== undefined && (typeof a.mailbox !== "string" || !MAILBOX.test(a.mailbox.trim().toLowerCase())))
 			throw new CloudToolArgumentRefusal("mailbox is one of the company's mailbox addresses");
 		if (typeof a.todo !== "string" || !TODO_KEY.test(a.todo))
@@ -199,12 +225,12 @@ export function parseCompanyAccountArguments(value: unknown): Parsed {
 
 export const CLOUD_COMPANY_ACCOUNT_TOOL_DESCRIPTION =
 	"The company's own accounts on websites, for work an open todo of yours needs. Look first: find lists the company's accounts (on one site with site) and its mailboxes; use an account that serves rather than opening another. " +
-	"Which way in: a service with an official connection (GitHub, Google, Microsoft, Slack) is reached through it, never by a website sign-up or sign-in; a site with strict bot checks (Apple, LinkedIn, X, Facebook, Instagram, banks and payment providers) is a person's task in their own browser: prepare the steps and ask a member. Never ask anyone for a password. " +
-	"open, before you type anything into a sign-up form, makes the account with the company's own address (one of its mailboxes with the site as a +tag: the login you type) and a password only the vault knows, for your todo (its key). Give the website's own sign-in hosts when it signs in elsewhere (accounts.example.com), and its password rules when it has them (length, symbols). " +
+	"Which way in: a service with an official connection (GitHub, Google, Microsoft, Slack) is reached through it, never by a website sign-up or sign-in; a site with strict bot checks (Apple, LinkedIn, X, Facebook, Instagram, Amazon) and banks and payment providers (PayPal, Stripe) are a person's task in their own browser: prepare the steps and ask a member. Never ask anyone for a password. " +
+	"open, before you type anything into a sign-up form, makes the account with the company's own address (one of its mailboxes with the site as a +tag: the account's login) and a password only the vault knows, for your todo (its key). Give the website's own sign-in hosts when it signs in elsewhere (accounts.example.com), and its password rules when it has them (length, symbols). " +
 	"Type the login, password or an authenticator code only with computer_browser vault_fill {role, name, account, field}; never type a password yourself. Find the website's confirmation with find_mail to the account's login. " +
 	"A page that shows a CAPTCHA, a bot check, an unusual activity warning or a block ends the attempt at once: never retry it; set the account needs_person and tell a member what a person must do. " +
 	"state records the website's answer: connected once it accepted the account, needs_person when a step needs a person; closed deletes the company's password and authenticator for good, so close only an account the company no longer needs. " +
-	"An open or a state change with the same operationKey and arguments is the same call.";
+	"The vault's answer, the account or why it refused, is the call's result. An open or a state change with the same operationKey and arguments is the same call; a different one needs a new operationKey.";
 
 /** The tool, for a company run (not a worker, not a folder company: their accounts come with A1-7). */
 export function cloudCompanyAccountTool(options: {
@@ -346,24 +372,16 @@ export function cloudCompanyAccountTool(options: {
 					}),
 					context,
 				);
-			const wayIn = companyAccountWayIn([parsed.site, ...parsed.signInHosts]);
-			if (wayIn) throw new CloudToolRefusal(wayIn);
 			const found = await find({ todo: parsed.todo, site: parsed.site }, context.signal);
 			if (!found.todo) throw new Error("Account read differs");
-			const mailbox =
-				parsed.mailbox ??
-				(found.mailboxes.length === 1
-					? found.mailboxes[0]
-					: found.mailboxes.length === 0
-						? undefined
-						: (() => {
-								throw new CloudToolRefusal(
-									`Name the mailbox the account signs up with: one of ${found.mailboxes.join(", ")}`,
-								);
-							})());
-			if (!mailbox)
+			if (found.mailboxes.length === 0)
 				throw new CloudToolRefusal(
 					"The company has no mailbox: an account signs up with one. Ask an owner to add a mailbox.",
+				);
+			const mailbox = parsed.mailbox ?? (found.mailboxes.length === 1 ? found.mailboxes[0] : undefined);
+			if (!mailbox)
+				throw new CloudToolRefusal(
+					`Name the mailbox the account signs up with: one of ${found.mailboxes.join(", ")}`,
 				);
 			if (!found.mailboxes.includes(mailbox))
 				throw new CloudToolRefusal(
@@ -371,9 +389,15 @@ export function cloudCompanyAccountTool(options: {
 				);
 			const login = companyAccountLogin(mailbox, parsed.site);
 			if (!login) throw new CloudToolRefusal(`${mailbox} is too long to carry a +tag: name another mailbox`);
-			// Reuse first: an account on this site under another address serves; one under this address is the same
-			// opening repeated, or the vault answers that it exists.
-			const other = found.accounts.find((account) => account.login.toLowerCase() !== login);
+			// Reuse first: an account on this website (its own host, a name under it or above it, its sign-in hosts) under
+			// another address serves; one under this address is the same opening repeated, or the vault answers that it
+			// exists. The company's newest accounts are looked at too, for one on a name above or under the site.
+			const newest = await find({}, context.signal);
+			const other = [...found.accounts, ...newest.accounts].find(
+				(account) =>
+					account.login.toLowerCase() !== login &&
+					[account.site, ...account.signInHosts].some((known) => companyAccountSameWebsite(known, parsed.site)),
+			);
 			if (other)
 				throw new CloudToolRefusal(
 					`The company already has an account on ${parsed.site} (${other.accountId}, ${other.status}, ${other.login}): use it.`,

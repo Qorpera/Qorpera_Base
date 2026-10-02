@@ -621,16 +621,13 @@ async function fixture(
 		binarySha256,
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
-		// The vault's company accounts route comes with the broker (A1-4); this suite never opens an account.
-		...(secretBroker
-			? {
-					companyAccounts: {
-						companyAccount: async () => {
-							throw new Error("No company account expected");
-						},
-					},
-				}
-			: {}),
+		// The vault's company accounts route (A1-4) on every host here: who is offered company_account is the runtime's
+		// choice. This suite never opens an account.
+		companyAccounts: {
+			companyAccount: async () => {
+				throw new Error("No company account expected");
+			},
+		},
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 		// Folder bytes read the files a test seeds; this suite never saves a file.
 		...(folderBytes
@@ -916,6 +913,7 @@ it.each([
 				"send_mail",
 				"find_mail",
 				"save_attachment",
+				"company_account",
 				"read_context",
 				"read_skill",
 				"recall_memory",
@@ -1510,6 +1508,8 @@ it.each([
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+		// A folder company's accounts come with its connection files (A1-7): no company_account yet.
+		expect(tools.some((tool) => tool.name === "company_account")).toBe(!folder);
 		const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
 		expect(todo.includes("Each todo is a file in your folder")).toBe(files);
 		expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
