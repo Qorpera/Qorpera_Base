@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, normalizeUuid, UUID_PATTERN } from "@qorpera/contracts";
 import type { CompanyAccountAnswer, CompanyAccountRequest } from "./cloud-company-account-vault.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
@@ -27,7 +27,6 @@ export interface CloudCompanyAccountClient {
 }
 
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TODO_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** As the receipt's logical key takes it after `company_account:<action>:`. */
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -184,13 +183,13 @@ export function parseCompanyAccountArguments(value: unknown): Parsed {
 	if (a.action === "state") {
 		if (Object.keys(a).some((key) => !STATE_KEYS.has(key)))
 			throw new CloudToolArgumentRefusal("state takes only account, status and operationKey");
-		if (typeof a.account !== "string" || !UUID.test(a.account.toLowerCase()))
-			throw new CloudToolArgumentRefusal("account is an account's id from find or open");
+		const account = normalizeUuid(a.account);
+		if (!account) throw new CloudToolArgumentRefusal("account is an account's id from find or open");
 		if (a.status !== "connected" && a.status !== "needs_person" && a.status !== "closed")
 			throw new CloudToolArgumentRefusal("status is connected, needs_person or closed");
 		return {
 			action: "state",
-			account: a.account.toLowerCase(),
+			account,
 			status: a.status,
 			operationKey: operationKey(a.operationKey),
 		};
@@ -311,7 +310,7 @@ export function cloudCompanyAccountTool(options: {
 					additionalProperties: false,
 					properties: { length: { type: "integer", minimum: 12, maximum: 64 }, symbols: { type: "boolean" } },
 				},
-				account: { type: "string", pattern: UUID.source },
+				account: { type: "string", pattern: UUID_PATTERN.source },
 				status: { enum: ["connected", "needs_person", "closed"] },
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
 			},
