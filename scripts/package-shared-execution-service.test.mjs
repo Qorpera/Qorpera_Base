@@ -56,6 +56,7 @@ test("packages and pins the shared execution service", async () => {
 				"qorpera-shared-box@.service",
 				"qorpera-shared-box@.socket",
 				"qorpera-shared-box-folder@.service",
+				"qorpera-shared-box-reads@.socket",
 				"shared-execution.env.example",
 			].sort((a, b) => a.localeCompare(b, "en")),
 		);
@@ -109,7 +110,12 @@ test("packages and pins the shared execution service", async () => {
 		assert.ok(!/LoadCredential|EnvironmentFile|SupplementaryGroups/.test(boxUnit), "the box holds no credential");
 		assert.match(boxSocket, /^SocketUser=qorpera-shared-host-%i$/m);
 		assert.match(boxSocket, /^SocketMode=0600$/m);
-		assert.match(boxFolder, /--view-file \/run\/qorpera-shared-execution\/slots\/%i\/box-view\.json --mountpoint \/srv\/qorpera-folder\/box-%i --allow-other yes$/m);
+		assert.match(boxFolder, /--view-file \/run\/qorpera-shared-execution\/slots\/%i\/box-view\.json --mountpoint \/srv\/qorpera-folder\/box-%i --allow-other yes --reads systemd$/m);
+		assert.match(boxFolder, /^Sockets=qorpera-shared-box-reads@%i\.socket$/m);
+		const readsSocket = contents.get("qorpera-shared-box-reads@.socket").toString("utf-8");
+		assert.match(readsSocket, /^SocketUser=qorpera-shared-host-%i$/m);
+		assert.match(readsSocket, /^SocketMode=0600$/m);
+		assert.match(readsSocket, /^Service=qorpera-shared-box-folder@%i\.service$/m);
 		assert.match(runnerUnit, /^InaccessiblePaths=.* -\/run\/qorpera-shared-box( |$)/m);
 		const installer = contents.get("install-shared-execution-guest.sh").toString("utf-8");
 		const expectedPins = [
@@ -122,6 +128,7 @@ test("packages and pins the shared execution service", async () => {
 			`EXPECTED_BOX_UNIT_SHA256="${sha256(contents.get("qorpera-shared-box@.service"))}"`,
 			`EXPECTED_BOX_SOCKET_SHA256="${sha256(contents.get("qorpera-shared-box@.socket"))}"`,
 			`EXPECTED_BOX_FOLDER_UNIT_SHA256="${sha256(contents.get("qorpera-shared-box-folder@.service"))}"`,
+			`EXPECTED_BOX_READS_SOCKET_SHA256="${sha256(contents.get("qorpera-shared-box-reads@.socket"))}"`,
 		];
 		if (process.platform === "linux" && process.arch === "x64") {
 			expectedPins.push(

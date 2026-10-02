@@ -263,6 +263,7 @@ async function fixture(
 			open: options.runBox === true,
 			unitPrefix: "qorpera-shared-box@",
 			folderUnitPrefix: "qorpera-shared-box-folder@",
+			readsUnitPrefix: "qorpera-shared-box-reads@",
 		},
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
@@ -1129,6 +1130,7 @@ describe("run boxes (F3)", () => {
 	const box = (slot: number) => [
 		`qorpera-shared-box@${slot}.service`,
 		`qorpera-shared-box@${slot}.socket`,
+		`qorpera-shared-box-reads@${slot}.socket`,
 		`qorpera-shared-box-folder@${slot}.service`,
 	];
 
@@ -1275,14 +1277,14 @@ describe("run boxes (F3)", () => {
 		off.units.log.length = 0;
 		off.units.activeUnits.delete("qorpera-shared-runner@0.service");
 		await off.backend.reconcile();
-		expect(off.units.log.slice(0, 3)).toEqual(box(0).map((unit) => `stop ${unit}`));
+		expect(off.units.log.slice(0, box(0).length)).toEqual(box(0).map((unit) => `stop ${unit}`));
 		expect(box(0).some((unit) => off.units.activeUnits.has(unit))).toBe(false);
 
 		// A box left on the slot (from before a crash) stops before a new run's sandbox starts there.
 		const f = await fixture({ runBox: true });
 		for (const unit of box(0)) f.units.activeUnits.add(unit);
 		await deliverRun(f);
-		expect(f.units.log.slice(0, 3)).toEqual(box(0).map((unit) => `stop ${unit}`));
+		expect(f.units.log.slice(0, box(0).length)).toEqual(box(0).map((unit) => `stop ${unit}`));
 		await until(async () => (await boxState(f)) === "open", "the box opens");
 		expect(f.units.log.at(-1)).toBe("start qorpera-shared-box@0.service");
 	});

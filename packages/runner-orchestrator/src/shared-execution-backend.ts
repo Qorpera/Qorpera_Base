@@ -149,6 +149,8 @@ export interface SharedExecutionProviderConfig {
 		unitPrefix: string;
 		/** `<folderUnitPrefix>N.service`: the run's view of the company folder, mounted for the box. */
 		folderUnitPrefix: string;
+		/** `<readsUnitPrefix>N.socket`: the folder mount's read log, which only the slot's native host can open. */
+		readsUnitPrefix: string;
 	};
 }
 
@@ -423,12 +425,14 @@ function validateConfig(config: SharedExecutionProviderConfig): void {
 		config.runBox &&
 		(!UNIT_PREFIX_PATTERN.test(config.runBox.unitPrefix) ||
 			!UNIT_PREFIX_PATTERN.test(config.runBox.folderUnitPrefix) ||
+			!UNIT_PREFIX_PATTERN.test(config.runBox.readsUnitPrefix) ||
 			new Set([
 				config.hostUnitPrefix,
 				config.runnerUnitPrefix,
 				config.runBox.unitPrefix,
 				config.runBox.folderUnitPrefix,
-			]).size !== 4)
+				config.runBox.readsUnitPrefix,
+			]).size !== 5)
 	)
 		throw new Error("Run box unit prefixes must name distinct systemd templates");
 }
@@ -1156,13 +1160,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return `${kind === "host" ? this.#config.hostUnitPrefix : this.#config.runnerUnitPrefix}${slot}.service`;
 	}
 
-	/** The box, its socket and its folder mount, in the order they stop. */
+	/** The box, its socket, its read log's socket and its folder mount, in the order they stop. */
 	#boxUnits(slot: number): string[] {
 		const box = this.#config.runBox;
 		if (!box) return [];
 		return [
 			`${box.unitPrefix}${slot}.service`,
 			`${box.unitPrefix}${slot}.socket`,
+			`${box.readsUnitPrefix}${slot}.socket`,
 			`${box.folderUnitPrefix}${slot}.service`,
 		];
 	}

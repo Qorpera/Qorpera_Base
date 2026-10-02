@@ -31,6 +31,13 @@ core.seed([
 	await storeFile(share, "tools/run.sh", "#!/bin/sh\necho ran\n", 1, 4, { executable: true }),
 ]);
 core.openView(viewId, pass);
+// A run box view acts as the run's agent: the core lists each entry with its read receipt.
+core.receipts = () => ({
+	resourceId: "7a6e2a1c-4b1d-4c2e-9f3a-5d6c7b8a9e01",
+	resourceRevision: 1,
+	grantId: "7a6e2a1c-4b1d-4c2e-9f3a-5d6c7b8a9e02",
+	grantRevision: 1,
+});
 const service = new FolderService({ core, objects: new NasObjects({ root: share, cacheBytes: 64 * 1024 * 1024 }), grants: grants() });
 const internal = `${socketPath}.service`;
 const server = createFolderServer(service, () => {});

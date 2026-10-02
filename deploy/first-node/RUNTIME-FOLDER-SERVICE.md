@@ -42,7 +42,7 @@ TypeScript: `packages/object-gateway/src/folder-service/protocol.ts`.
 | `B` | bridge → service, first and only once | `{cid, lookup: "found" \| "none" \| "unavailable", machine?: {project, name, physicalId}}` |
 | `H` | machine → service, first from the machine | `{protocol: 1, environmentId, viewId, pass, role: "io" or "feed"}` |
 | `h` | service → machine | `{protocol, viewId, asOfSeq, readOnly: true}` |
-| `L` / `l` | io | `{path, after?}` / `{entries: [{name, kind, size, mtimeMs, executable, version}], next}` (`next` null on the last page), 1,000 per page, names in UTF-8 byte order; a name over 255 bytes is never listed |
+| `L` / `l` | io | `{path, after?}` / `{entries: [{name, kind, size, mtimeMs, executable, version, authority?}], next}` (`next` null on the last page), 1,000 per page, names in UTF-8 byte order; a name over 255 bytes is never listed. `authority` (step 2b-2) is the core's read receipt `{resourceId, resourceRevision, grantId, grantRevision}`, only in an agent's view (a run box's) |
 | `R` / `d` | io | `{path, version, offset, length ≤ 1 MiB}` / the bytes |
 | `c` | feed, service → machine | `{seq, resync, paths}`; no paths is a heartbeat (every 15 s) |
 | `a` | feed, machine → service | `{seq}` |
@@ -190,6 +190,8 @@ For step 2 (the run box), recorded now so they are planned:
   view rows, so it gives the drain nothing to count; an in-place folder service update needs no drain.
 - **P8.** The runtime releases a command's reads with the run actor (only run releases can be cited by a context
   view); a release over 10,000 reads is split, and a context output may need to cite several.
+- **P9.** `qorpera_folder_record_release` takes a read without a receipt and checks its path, instead of refusing the
+  release (22023); today the run box's tools send a nil-uuid stand-in for such a read (step 2b-2).
 
 ## Rollout (coordinator)
 
@@ -274,8 +276,28 @@ execution host (`deploy/shared-execution/README.md`, "Run boxes"):
   and no box for a refused view.
 - Inert until `QORPERA_SHARED_EXECUTION_RUN_BOX=on`, and without real folder-v2 runs (C3, C4, C1c-3d–3m) nothing opens.
 
-**2b-2, the read log (next).** The folder service keeps, per view, which file versions the box read, and hands them to
-the run's native host on request, so its tools can release them as the run's reads.
+**2b-2, the read log (this draft, on top of 2b-1).** The box's folder program logs every version the box opens or lists
+(the program sees every open, cached pages or not, and every listing), with the receipt the node listed it with, and
+gives the log to the slot's native host on a second socket, `/run/qorpera-shared-box/N.reads`, which only that account
+can open:
+- `{"t":"take","after":S,"max":N}` answers `{"t":"reads","log":L,"reads":[{seq, path, kind, version, authority?}],
+  "more"}`, the oldest reads numbered after S. Taking removes nothing.
+- `{"t":"ack","log":L,"upTo":S}` drops the reads up to S once the host released them, so a release that failed is
+  taken again with the next answer. `L` names the program's log: a new one means a restart, and the host withholds
+  that answer; an ack for another log, or past what was handed out, drops nothing.
+- A version read again while it waits unread is not logged twice; read again after it was handed out, it moves to the
+  end under a new number; acknowledged, it is logged again. So each answer's release names what its commands read.
+  A lookup or `stat` is not a read. A waiting read costs about 0.6 KB in the folder unit's memory.
+
+The node's listings carry each entry's receipt for an agent's view: from the core's listing, or, for a path the feed
+brought, the path's earlier receipt or the nearest folder's above it that has one; a new receipt (after an access
+change) reaches the machines like any change, which drops their cached pages for those paths. A stale receipt costs
+the core a per-path check at release, never a wrong record. A read with none (a new top-level path, until the next
+listing) is sent by the native host with the nil-uuid stand-in (resource `00000000-0000-0000-0000-000000000000`,
+revision 0, no grant), which the core checks the same way (proposal P9 for F1: let the release take a read without
+one). The receipt check is exact (four fields), so the core and the folder service
+change together. Proof: the folder program's FUSE test, the service tests, and the systemd proof taking the log as the
+native host.
 
 **2b-3, the tools (next).** `exec_command` and `write_stdin` in the `qorpera` namespace, run by the native host
 through the box socket: review class "read" while the mount is read-only, answers fitted to the tool result size,

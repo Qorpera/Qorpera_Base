@@ -9,7 +9,7 @@
 # is replaced.
 set -euo pipefail
 
-EXPECTED_SERVICE_SHA256="1c3472285b78201d5b04f33f26f1d892f9cbba0c9435d669569563f016f51bf1"
+EXPECTED_SERVICE_SHA256="1e544f7f1978adf12f951311f44130da96b3f554de13e99a9f78fb0f80e2c3e8"
 EXPECTED_SERVICE_UNIT_SHA256="f673571b39062b664ec2543b46d7b6728c70c4a00ede09dbc327c6a3b0e4b375"
 EXPECTED_HOST_UNIT_SHA256="69f0bb557d70125ee8cc7991699af00c8328220d30fec37b154ca8acea7fca06"
 EXPECTED_RUNNER_UNIT_SHA256="1e746f965b2d82ac8353f68adcda2dddeeb948aaf9206ad1fb10df63cfb859d4"
@@ -17,13 +17,14 @@ EXPECTED_ENV_EXAMPLE_SHA256="0780a9f852eaecaa5cd7fe849235c0b4093c1f18cd935fad3f9
 EXPECTED_ORCHESTRATOR_SHA256="2a6605135bbdb66a6879298d3d04571cf429738d6b5361d874e7bdec7b940957"
 EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
 # The folder program's recorded build (deploy/folder-service/folder-program-linux-x64.json) and its mount unit.
-EXPECTED_FOLDER_PROGRAM_SHA256="214e6ea47db0b7f6cf946bd90207a7352dd35cd05c247cb07d121d93a4e33b43"
+EXPECTED_FOLDER_PROGRAM_SHA256="ec6e31171448b4c682e34053978563c977bf697baecab93f0e1fe4236a65a072"
 EXPECTED_FOLDER_MOUNT_UNIT_SHA256="778e1d8475a757cc013bb81e48404e0738fdb2de6e882ed6052bbd8efba1719e"
 # The run box (F3 step 2b).
 EXPECTED_BOX_HOST_SHA256="2e9c92e5fe3c8bcae9c9505ea9155f4b80582f42bb516ca2c3a1f0ae90e57a2a"
 EXPECTED_BOX_UNIT_SHA256="19d26d9206480999a39cfb14c8027bdc86339fc8172e99b1da941116a3c57d96"
 EXPECTED_BOX_SOCKET_SHA256="3dc1ded7bcc1084df6857d2c6c477377a240c6dfa4a37f0cb5ea9c33ed02158e"
-EXPECTED_BOX_FOLDER_UNIT_SHA256="7a690e05173c77ca57536a6dd4ecaf49aa2165ceca9c63044058b53afa4e6a90"
+EXPECTED_BOX_READS_SOCKET_SHA256="794558361d2caa6280c24499815dadae0d79ccf6f025e8e4ff12d9612bb7f465"
+EXPECTED_BOX_FOLDER_UNIT_SHA256="ce2549422215f81676e3885fa8885d958a304cdbfeba8fbdcf1307c342fcfac7"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -89,6 +90,7 @@ verify_sha256 "${STAGING_ROOT}/qorpera-shared-box-host.mjs" "${EXPECTED_BOX_HOST
 verify_sha256 "${STAGING_ROOT}/qorpera-shared-box@.service" "${EXPECTED_BOX_UNIT_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-shared-box@.socket" "${EXPECTED_BOX_SOCKET_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-shared-box-folder@.service" "${EXPECTED_BOX_FOLDER_UNIT_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-shared-box-reads@.socket" "${EXPECTED_BOX_READS_SOCKET_SHA256}"
 
 # A long-lived host must stay the pinned image: no unattended package upgrades,
 # no needrestart restarting the sandboxes under a run.
@@ -146,6 +148,7 @@ install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-shared-box-host.mjs" "$
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box@.service" /etc/systemd/system/qorpera-shared-box@.service
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box@.socket" /etc/systemd/system/qorpera-shared-box@.socket
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box-folder@.service" /etc/systemd/system/qorpera-shared-box-folder@.service
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box-reads@.socket" /etc/systemd/system/qorpera-shared-box-reads@.socket
 install -d -o root -g root -m 0755 /company
 # The boxes' sockets live here; it exists from boot, so the runner unit's InaccessiblePaths always hides it.
 printf 'd /run/qorpera-shared-box 0755 root root -\n' > /etc/tmpfiles.d/qorpera-shared-box.conf
@@ -162,7 +165,8 @@ fi
 /usr/bin/systemd-analyze verify /etc/systemd/system/qorpera-shared-execution.service \
 	/etc/systemd/system/qorpera-shared-run-host@.service /etc/systemd/system/qorpera-shared-runner@.service \
 	/etc/systemd/system/qorpera-runner-orchestrator.service /etc/systemd/system/qorpera-shared-box@.service \
-	/etc/systemd/system/qorpera-shared-box@.socket /etc/systemd/system/qorpera-shared-box-folder@.service
+	/etc/systemd/system/qorpera-shared-box@.socket /etc/systemd/system/qorpera-shared-box-folder@.service \
+	/etc/systemd/system/qorpera-shared-box-reads@.socket
 systemctl daemon-reload
 # Nothing starts here. The operator writes /etc/qorpera/shared-execution.env,
 # the credentials directory and /etc/qorpera/runner-orchestrator.env, attaches

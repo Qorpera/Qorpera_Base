@@ -4,13 +4,18 @@ Documentation=https://github.com/Qorpera/Qorpera_Base
 # The shared execution service writes the run's view file and starts the box, which pulls this mount in and binds it.
 # When the box stops, nothing needs the mount any more and it stops too.
 StopWhenUnneeded=yes
+# The box's read log, which only the slot's native host can open.
+Requires=qorpera-shared-box-reads@%i.socket
+After=qorpera-shared-box-reads@%i.socket
 
 [Service]
 Type=exec
+Sockets=qorpera-shared-box-reads@%i.socket
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /srv/qorpera-folder
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /srv/qorpera-folder/box-%i
-# allow_other: the box runs as the slot's box account. Every file is root's and read-only to it.
-ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-shared-execution/slots/%i/box-view.json --mountpoint /srv/qorpera-folder/box-%i --allow-other yes
+# allow_other: the box runs as the slot's box account. Every file is root's and read-only to it. --reads: every version
+# the box opens or lists is logged for the native host, which releases them as the run's reads.
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-shared-execution/slots/%i/box-view.json --mountpoint /srv/qorpera-folder/box-%i --allow-other yes --reads systemd
 # Started means mounted: the box binds the mount as it starts. A program that ended (a refused view) fails the start at once.
 ExecStartPost=/bin/sh -c 'until /usr/bin/mountpoint -q /srv/qorpera-folder/box-%i; do kill -0 "$$MAINPID" 2>/dev/null || exit 1; sleep 0.05; done'
 TimeoutStartSec=30s

@@ -5,6 +5,7 @@
  * messages carry JSON; a read reply carries the bytes as they are. */
 
 import { isUuid } from "@qorpera/contracts";
+import type { CoreReceipt } from "./core.ts";
 
 export const PROTOCOL = 1;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
@@ -121,6 +122,8 @@ export interface WireEntry {
 	readonly executable: boolean;
 	/** The core's version id of the path (a uuid), opaque to the machine. */
 	readonly version: string;
+	/** The core's read receipt, in an agent's view (a run box's), for the box's read log. */
+	readonly authority?: CoreReceipt;
 }
 
 export interface ListRequest {

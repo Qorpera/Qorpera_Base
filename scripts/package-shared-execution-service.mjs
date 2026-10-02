@@ -68,6 +68,7 @@ const copies = [
 	"deploy/shared-execution/qorpera-shared-box@.service",
 	"deploy/shared-execution/qorpera-shared-box@.socket",
 	"deploy/shared-execution/qorpera-shared-box-folder@.service",
+	"deploy/shared-execution/qorpera-shared-box-reads@.socket",
 ];
 for (const source of copies) {
 	await copyFile(resolve(repositoryRoot, source), resolve(outputRoot, source.split("/").at(-1)));

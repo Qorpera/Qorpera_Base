@@ -16,8 +16,8 @@ What does **not** change:
   two unit templates, the slot accounts, the co-located orchestrator, the
   folder program with its mount unit (F3, `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`:
   installed, pinned, started by nothing here), and the run box (F3 step 2b,
-  "Run boxes" below: a third account per slot, its host program, unit, socket
-  and folder unit; off unless `QORPERA_SHARED_EXECUTION_RUN_BOX=on`);
+  "Run boxes" below: a third account per slot, its host program, unit, socket,
+  folder unit and read log socket; off unless `QORPERA_SHARED_EXECUTION_RUN_BOX=on`);
 - the control plane: the same runner rows (`qorpera_provision_execution_runner`),
   the same company-ceiling reservation per sandbox
   (`qorpera_reserve_runtime_machine` / `qorpera_release_runtime_machine`), the
@@ -44,10 +44,11 @@ What does **not** change:
 | `/opt/qorpera-folder/qorpera-folder`, `/etc/systemd/system/qorpera-folder-mount@.service` | root | the folder program and its mount unit (F3; pinned, started by nothing in this package) |
 | `/etc/qorpera-folder/mounts/<id>.json` | root 0600 in 0700 | a mount's view file (its company folder, view id and pass) |
 | `/srv/qorpera-folder/<id>` | root 0755 in a root 0700 `/srv/qorpera-folder` | a mount (read-only, served to its mounting account only); hidden, with `/etc/qorpera-folder`, from both slot units |
-| `/opt/qorpera/shared-execution/qorpera-shared-box-host.mjs`, `qorpera-shared-box@.service`, `qorpera-shared-box@.socket`, `qorpera-shared-box-folder@.service` | root | the run box (F3 step 2b): its host program, unit, socket and folder unit; started by the service for a folder-v2 run |
+| `/opt/qorpera/shared-execution/qorpera-shared-box-host.mjs`, `qorpera-shared-box@.service`, `qorpera-shared-box@.socket`, `qorpera-shared-box-folder@.service`, `qorpera-shared-box-reads@.socket` | root | the run box (F3 step 2b): its host program, unit, socket, folder unit and read log socket; started by the service for a folder-v2 run |
 | `/run/qorpera-shared-execution/slots/<n>/box-view.json` | root 0600, tmpfs | the run's view of the company folder (company folder, view id, pass), for the box's folder unit |
 | `/srv/qorpera-folder/box-<n>` | root, FUSE, `allow_other` | the run's company folder, read-only; bound into the box as `/company` |
 | `/run/qorpera-shared-box/<n>.sock` | `qorpera-shared-host-<n>` 0600 | the box's socket: only the slot's native host opens it |
+| `/run/qorpera-shared-box/<n>.reads` | `qorpera-shared-host-<n>` 0600 | the box's read log (`qorpera-shared-box-reads@.socket`, served by the folder unit): what the box opened or listed, for the native host to release |
 | `/company` | root 0755, empty | the box's mount point (made by the installer, so systemd creates nothing on the host) |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
@@ -537,15 +538,16 @@ gets a box of its own on its slot (`deploy/first-node/RUNTIME-FOLDER-SERVICE.md`
    stopped first: when a sandbox starts there, and again before the start; a
    new run's box always starts empty. It pulls in its socket and
    `qorpera-shared-box-folder@<n>.service`, which mounts the view with
-   `allow_other` (through the node's folder bridge, like any mount) and is
-   started only once the folder is mounted.
+   `allow_other` (through the node's folder bridge, like any mount), serves the
+   box's read log on `qorpera-shared-box-reads@<n>.socket`, and is started only
+   once the folder is mounted.
 3. Retire stops the box first, also when the native host parks: the box, its
-   socket and its folder unit, so every command ends with the run. With the box
-   down, the service removes the view's file and, after its lock, closes the
-   view (best effort: the run's end and the lease close it anyway). The box's
-   unit names are always known, so this holds while boxes are switched off too.
-   A box no live run holds is stopped on the next pass, and evicting a warm
-   slot stops one too, before the slot is wiped.
+   socket, its read log's socket and its folder unit, so every command ends
+   with the run. With the box down, the service removes the view's file and,
+   after its lock, closes the view (best effort: the run's end and the lease
+   close it anyway). The box's unit names are always known, so this holds while
+   boxes are switched off too. A box no live run holds is stopped on the next
+   pass, and evicting a warm slot stops one too, before the slot is wiped.
 
 The box (`qorpera-shared-box@.service`) runs the box host as the slot's third
 account, `qorpera-shared-box-<n>`, with the company folder read-only at

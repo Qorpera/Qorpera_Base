@@ -109,7 +109,12 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 			? { warmIdleMs: integer("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS", 300_000, 1, 5 * 60_000) }
 			: {}),
 		// F3 run boxes: new runs get one only when switched on; a box still running stops with its run either way.
-		runBox: { open: runBoxes(), unitPrefix: "qorpera-shared-box@", folderUnitPrefix: "qorpera-shared-box-folder@" },
+		runBox: {
+			open: runBoxes(),
+			unitPrefix: "qorpera-shared-box@",
+			folderUnitPrefix: "qorpera-shared-box-folder@",
+			readsUnitPrefix: "qorpera-shared-box-reads@",
+		},
 	};
 	return { config, providerToken, host, port: integer("QORPERA_RUNNER_PROVIDER_PORT", 18_450, 1, 65_535) };
 }
