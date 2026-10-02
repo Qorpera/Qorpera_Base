@@ -151,7 +151,7 @@ fn take(socket: &Path) -> Vec<serde_json::Value> {
 	};
 	let mut out = Vec::new();
 	let mut after = 0;
-	let mut log = String::new();
+	let mut log;
 	loop {
 		let answer = ask(format!("{{\"t\":\"take\",\"after\":{after},\"max\":2}}"));
 		assert_eq!(answer["t"], "reads");

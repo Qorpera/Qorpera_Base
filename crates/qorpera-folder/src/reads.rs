@@ -291,13 +291,14 @@ mod tests {
 		assert_eq!(log.take(0, 2).0, first);
 		// v1 is read again after it was handed out: it moves to the end under a new number, for the next answer.
 		log.note("docs/plan.md", EntryKind::File, "v1", Some(&receipt(1)));
-		let (rest, more) = log.take(2, MAX_TAKE);
-		assert!(!more);
-		assert_eq!(rest.iter().map(|r| (r.seq, r.version.as_str())).collect::<Vec<_>>(), [(3, "v2"), (4, "v1")]);
+		assert_eq!(log.len(), 3);
 		// Waiting and not handed out since: not logged twice.
 		log.note("docs/plan.md", EntryKind::File, "v2", Some(&receipt(2)));
 		log.note("docs/plan.md", EntryKind::File, "v1", Some(&receipt(1)));
 		assert_eq!(log.len(), 3);
+		let (rest, more) = log.take(2, MAX_TAKE);
+		assert!(!more);
+		assert_eq!(rest.iter().map(|r| (r.seq, r.version.as_str())).collect::<Vec<_>>(), [(3, "v2"), (4, "v1")]);
 		assert!(!log.ack(5), "never past what was handed out");
 		assert!(log.ack(2));
 		assert_eq!(log.take(0, MAX_TAKE).0.iter().map(|r| r.seq).collect::<Vec<_>>(), [3, 4]);
