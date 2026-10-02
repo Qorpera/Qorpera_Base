@@ -71,6 +71,10 @@ interface PageState {
 	error: string | null;
 	/** Whether the error has been drawn once: later redraws keep it on the page without announcing it again. */
 	errorShown: boolean;
+	/** How many errors this page has had, so the same words failing again are drawn and announced again. */
+	errors: number;
+	/** The message buttons whose thread is still opening: they stay disabled through redraws. */
+	pending: string[];
 	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
 	focus: string | null;
 }
@@ -78,7 +82,17 @@ const pages = new Map<string, PageState>();
 function pageState(key: string): PageState {
 	let state = pages.get(key);
 	if (!state) {
-		state = { view: null, open: {}, sort: {}, filter: {}, error: null, errorShown: false, focus: null };
+		state = {
+			view: null,
+			open: {},
+			sort: {},
+			filter: {},
+			error: null,
+			errorShown: false,
+			errors: 0,
+			pending: [],
+			focus: null,
+		};
 		pages.set(key, state);
 	}
 	return state;
@@ -250,17 +264,24 @@ export function renderInterfaceFile(
 		}
 		return plainText(value as never);
 	};
-	// The agents a page names, draws or offers a button for, by how they look and whether they still work here.
+	// The agents a page names, draws or offers a button for (a button may name one by id), by how they look and
+	// whether they still work here.
+	const buttonAgents = file.buttons.flatMap((button) =>
+		[button.to, button.target?.startsWith("agent:") ? button.target.slice("agent:".length) : null].filter(
+			(id): id is string => id !== null && !id.startsWith("{") && id !== "co-founder",
+		),
+	);
 	const agentLooks = [
-		...new Set(
-			blocks.flatMap(({ rows }) =>
+		...new Set([
+			...buttonAgents,
+			...blocks.flatMap(({ rows }) =>
 				rows.flatMap(({ row }) =>
 					Object.entries(row).flatMap(([column, value]) =>
 						AGENT_COLUMNS.has(column) && typeof value === "string" ? [value] : [],
 					),
 				),
 			),
-		),
+		]),
 	].map((id) => {
 		const agent = company.staffById(id);
 		return [id, agent?.displayName, agent?.appearance, agent?.employmentStatus];
@@ -288,6 +309,8 @@ export function renderInterfaceFile(
 		page.sort,
 		page.filter,
 		page.error,
+		page.errors,
+		page.pending,
 		canWrite,
 		listed,
 		cofounder,
@@ -306,7 +329,7 @@ export function renderInterfaceFile(
 		canWrite,
 		stillShown: () => {
 			const shown = container.firstElementChild;
-			return shown instanceof HTMLElement && shown.dataset.interface === name;
+			return shown instanceof HTMLElement && shown.dataset.interface === name && shown.dataset.profile === profileId;
 		},
 	};
 	const errorFirst = page.error !== null && !page.errorShown;
@@ -320,7 +343,7 @@ export function renderInterfaceFile(
 			const tabbed = views.length > 1;
 			return h(
 				"section",
-				{ class: "interface", "data-interface": name },
+				{ class: "interface", "data-interface": name, "data-profile": profileId },
 				h(
 					"header",
 					{ class: "interface-head" },
@@ -540,13 +563,17 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		({ row }) => !needle || columns.some((column) => text(row, column).toLocaleLowerCase().includes(needle)),
 	);
 	if (sort) {
-		// An agent's column sorts by the name shown, yes/no by its word; numbers and times by their value.
+		// An agent's column sorts by the name shown, what waits by its label, yes/no by its word; numbers and times
+		// by their value. Empty cells come last, as values sort.
 		const byText =
-			AGENT_COLUMNS.has(sort.column) || drawn.rows.some(({ row }) => typeof row[sort.column] === "boolean");
+			AGENT_COLUMNS.has(sort.column) ||
+			(source === "waiting" && sort.column === "kind") ||
+			drawn.rows.some(({ row }) => typeof row[sort.column] === "boolean");
 		const locale = presentationLocale();
+		const byWords = (a: string, b: string) => (a === b ? 0 : !a ? 1 : !b ? -1 : a.localeCompare(b, locale));
 		shown.sort((a, b) => {
 			const order = byText
-				? text(a.row, sort.column).localeCompare(text(b.row, sort.column), locale)
+				? byWords(text(a.row, sort.column), text(b.row, sort.column))
 				: compareInterfaceValues(interfaceCell(a.row, sort.column), interfaceCell(b.row, sort.column));
 			return sort.descending ? -order : order;
 		});
@@ -762,18 +789,34 @@ function rowButtons(
 		}
 		const agent = messageTarget(context, drawnButton.to, item.row);
 		if (!agent || !context.canWrite) return [];
+		const pendingKey = focus(index);
+		const pending = () => context.page.pending.includes(pendingKey);
 		const action = h(
 			"button",
-			{ type: "button", class: "interface-button", "data-focus-key": focus(index), ...describe },
+			{
+				type: "button",
+				class: "interface-button",
+				"data-focus-key": pendingKey,
+				disabled: pending(),
+				...describe,
+			},
 			label(drawnButton.label),
 		);
 		action.addEventListener("click", () => {
+			// One click puts the text in the composer once, however often the page redraws while the thread opens.
+			if (pending()) return;
 			action.disabled = true;
+			context.page.pending = [...context.page.pending, pendingKey];
 			context.page.error = null;
-			void messageAgent(context, agent, drawnButton, item.row, drawn.source).catch((error: unknown) => {
+			const done = () => {
+				context.page.pending = context.page.pending.filter((key) => key !== pendingKey);
+			};
+			void messageAgent(context, agent, drawnButton, item.row, drawn.source).then(done, (error: unknown) => {
+				done();
 				action.disabled = false;
 				context.page.error = describeError(error);
 				context.page.errorShown = false;
+				context.page.errors += 1;
 				// The member may have gone on to another page; this page draws the error only where it still shows.
 				if (context.stillShown()) context.redraw();
 			});
@@ -829,7 +872,16 @@ export function messageText(
 			.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
 			.replace(/\s+/g, " ")
 			.trim();
-		return `«${flat.length > OUTSIDE_VALUE_MAX ? `${flat.slice(0, OUTSIDE_VALUE_MAX - 1).trimEnd()}…` : flat}»`;
+		// Cut by characters, never inside one (an emoji is two UTF-16 units).
+		const characters = [...flat];
+		return `«${
+			characters.length > OUTSIDE_VALUE_MAX
+				? `${characters
+						.slice(0, OUTSIDE_VALUE_MAX - 1)
+						.join("")
+						.trimEnd()}…`
+				: flat
+		}»`;
 	});
 	return quoted ? `${filled}\n\n> ${t("Text in «» is quoted from outside content, not written by me.")}` : filled;
 }

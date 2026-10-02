@@ -910,6 +910,122 @@ columns = ["from", "title"]
 		expect(texts(main, ".interface-table tbody td:first-child")).toEqual(["Amy", "Zed"]);
 	});
 
+	it("draws a late message error only on the same company's page", async () => {
+		const { controller } = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]);
+		let fail!: (error: Error) => void;
+		vi.spyOn(controller, "openStaffConversation").mockReturnValue(
+			new Promise<string>((_resolve, reject) => {
+				fail = reject;
+			}),
+		);
+		const main = mount();
+		renderInterfaceFile(main, controller, "same-name", parse(ASK));
+		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
+		// Another company's page of the same name takes the area.
+		const other = h("section", { class: "interface", "data-interface": "same-name", "data-profile": "other" });
+		main.replaceChildren(other);
+		fail(new Error("agent threads unavailable"));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(main.firstElementChild).toBe(other);
+	});
+
+	it("announces the same error again when it happens again, and puts the text in once per click", async () => {
+		const { controller } = company([run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" })]);
+		let attempts = 0;
+		vi.spyOn(controller, "openStaffConversation").mockImplementation(() => {
+			attempts += 1;
+			return Promise.reject(new Error("agent threads unavailable"));
+		});
+		const main = mount();
+		const name = `again-${Math.random()}`;
+		renderInterfaceFile(main, controller, name, parse(ASK));
+		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".notice[role=alert]")?.textContent).toContain("unavailable"));
+		const first = main.querySelector(".notice");
+		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".notice")).not.toBe(first));
+		expect(main.querySelector(".notice")?.getAttribute("role")).toBe("alert");
+		expect(attempts).toBe(2);
+
+		// While the thread opens, a redraw keeps the button disabled, so a second click adds nothing.
+		let ready!: (sessionId: string) => void;
+		vi.spyOn(controller, "openStaffConversation").mockReturnValue(
+			new Promise<string>((resolve) => {
+				ready = resolve;
+			}),
+		);
+		main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
+		controller.store.set({
+			activity: [run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }), run(ada.id, 1, {})],
+		});
+		renderInterfaceFile(main, controller, name, parse(ASK));
+		const again = main.querySelector<HTMLButtonElement>(".interface-actions button")!;
+		expect(again.disabled).toBe(true);
+		again.click();
+		ready(session.sessionId);
+		await vi.waitFor(() => expect(controller.conversation(session.sessionId).get().draft).toBeDefined());
+		expect(controller.conversation(session.sessionId).get().draft).toBe("About Bo has a run that did not finish: ");
+	});
+
+	it("cuts a long outside value between characters, never inside one", () => {
+		const nameOf = (_column: string, value: unknown) => String(value);
+		const first =
+			messageText("{subject}", { subject: `${"a".repeat(198)}😀😀😀` }, ["subject"], nameOf).split("\n")[0] ?? "";
+		expect(first).toBe(`«${"a".repeat(198)}😀…»`);
+	});
+
+	it("sorts what waits by its label, with empty cells last", () => {
+		const { controller } = company([
+			run(bo.id, 2, { activity: "needs_attention", jobStatus: "failed" }),
+			run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" }),
+		]);
+		setLanguagePreference("da");
+		try {
+			const main = mount();
+			renderInterfaceFile(
+				main,
+				controller,
+				`kind-${Math.random()}`,
+				parse(`
+[[view]]
+name = "T"
+
+[[view.block]]
+kind = "table"
+from = "waiting"
+columns = ["kind", "title"]
+`),
+			);
+			main.querySelectorAll<HTMLButtonElement>(".interface-sort")[0]!.click();
+			// "Godkendelse" (a review) before "Ufærdig kørsel" (a run), by the words shown.
+			expect(texts(main, ".interface-table tbody td:first-child")).toEqual(["Godkendelse", "Ufærdig kørsel"]);
+		} finally {
+			setLanguagePreference("system");
+		}
+	});
+
+	it("drops a button that names an agent by id once that agent leaves", () => {
+		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
+		const file = parse(
+			ASK.replace('buttons = ["ask"]', 'buttons = ["to-ada"]') +
+				`
+[[button]]
+id = "to-ada"
+verb = "message"
+label = "Ask Ada"
+to = "${ada.id}"
+text = "Hi"
+`,
+		);
+		const main = mount();
+		const name = `leaves-${Math.random()}`;
+		renderInterfaceFile(main, controller, name, file);
+		expect(texts(main, ".interface-actions button")).toEqual(["Ask Ada"]);
+		controller.store.set({ staff: [cofounder, { ...ada, employmentStatus: "archived" }, bo, cy] });
+		renderInterfaceFile(main, controller, name, file);
+		expect(main.querySelector(".interface-actions")).toBeNull();
+	});
+
 	it("names the platform's columns and kinds in Danish", () => {
 		setLanguagePreference("da");
 		try {
