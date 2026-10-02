@@ -255,7 +255,13 @@ async function fixture(
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
 		...(options.runBox
-			? { runBox: { unitPrefix: "qorpera-shared-box@", folderUnitPrefix: "qorpera-shared-box-folder@" } }
+			? {
+					runBox: {
+						unitPrefix: "qorpera-shared-box@",
+						folderUnitPrefix: "qorpera-shared-box-folder@",
+						readsUnitPrefix: "qorpera-shared-box-reads@",
+					},
+				}
 			: {}),
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
@@ -1117,6 +1123,7 @@ describe("run boxes (F3)", () => {
 	const box = (slot: number) => [
 		`qorpera-shared-box@${slot}.service`,
 		`qorpera-shared-box@${slot}.socket`,
+		`qorpera-shared-box-reads@${slot}.socket`,
 		`qorpera-shared-box-folder@${slot}.service`,
 	];
 

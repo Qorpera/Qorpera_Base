@@ -42,7 +42,7 @@ TypeScript: `packages/object-gateway/src/folder-service/protocol.ts`.
 | `B` | bridge → service, first and only once | `{cid, lookup: "found" \| "none" \| "unavailable", machine?: {project, name, physicalId}}` |
 | `H` | machine → service, first from the machine | `{protocol: 1, environmentId, viewId, pass, role: "io" or "feed"}` |
 | `h` | service → machine | `{protocol, viewId, asOfSeq, readOnly: true}` |
-| `L` / `l` | io | `{path, after?}` / `{entries: [{name, kind, size, mtimeMs, executable, version}], next}` (`next` null on the last page), 1,000 per page, names in UTF-8 byte order; a name over 255 bytes is never listed |
+| `L` / `l` | io | `{path, after?}` / `{entries: [{name, kind, size, mtimeMs, executable, version, authority?}], next}` (`next` null on the last page), 1,000 per page, names in UTF-8 byte order; a name over 255 bytes is never listed. `authority` (step 2b-2) is the core's read receipt `{resourceId, resourceRevision, grantId, grantRevision}`, only in an agent's view (a run box's) |
 | `R` / `d` | io | `{path, version, offset, length ≤ 1 MiB}` / the bytes |
 | `c` | feed, service → machine | `{seq, resync, paths}`; no paths is a heartbeat (every 15 s) |
 | `a` | feed, machine → service | `{seq}` |
@@ -274,8 +274,15 @@ execution host (`deploy/shared-execution/README.md`, "Run boxes"):
   and no box for a refused view.
 - Inert until `QORPERA_SHARED_EXECUTION_RUN_BOX=on`, and without real folder-v2 runs (C3, C4, C1c-3d–3m) nothing opens.
 
-**2b-2, the read log (next).** The folder service keeps, per view, which file versions the box read, and hands them to
-the run's native host on request, so its tools can release them as the run's reads.
+**2b-2, the read log (this draft, on top of 2b-1).** The box's folder program logs every version the box opens or lists
+(the program sees every open, cached pages or not, and every listing), with the receipt the node listed it with, and
+gives the log to the slot's native host on a second socket, `/run/qorpera-shared-box/N.reads` (only that account can
+open it; `{"t":"take","max":N}` answers `{"t":"reads","reads":[{path, kind, version, authority?}],"more"}` and empties
+what it gave). A version opened again after a take is logged again, so each answer's release names what its commands
+read. The node's listings carry each entry's receipt for an agent's view: from the core's listing, or, for a path the
+feed brought, the path's earlier receipt or its folder's; a new receipt (after an access change) reaches the machines
+like any change. A stale or missing receipt costs the core a per-path check at release, never a wrong record. Proof:
+the folder program's FUSE test, the service tests, and the systemd proof taking the log as the native host.
 
 **2b-3, the tools (next).** `exec_command` and `write_stdin` in the `qorpera` namespace, run by the native host
 through the box socket: review class "read" while the mount is read-only, answers fitted to the tool result size,

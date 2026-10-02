@@ -6,11 +6,12 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
-use std::io::{ErrorKind, Read};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use support::{FakeNode, PASS};
+use support::{FakeNode, PASS, RESOURCE};
 
 fn wanted() -> bool {
 	if std::env::var("QORPERA_FOLDER_FUSE_TESTS").as_deref() == Ok("1") {
@@ -44,6 +45,10 @@ fn mounted(path: &Path) -> bool {
 }
 
 fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
+	start_with(node, None)
+}
+
+fn start_with(node: &FakeNode, reads: Option<UnixListener>) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 	let mountpoint = node.dir.join("company");
 	std::fs::create_dir(&mountpoint).unwrap();
 	let link = Link::new(
@@ -51,7 +56,8 @@ fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 		View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() },
 		4,
 	);
-	let options = Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false };
+	let options =
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, reads };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -131,6 +137,61 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 	let stop = runner.join().unwrap();
 	assert!(matches!(stop, Stop::ViewClosed), "{stop:?}");
 	assert!(!mounted(&company));
+}
+
+/// The run's native host's side of the read log: everything logged since the last take.
+fn take(socket: &Path) -> Vec<serde_json::Value> {
+	let mut stream = UnixStream::connect(socket).unwrap();
+	let mut out = Vec::new();
+	let mut reader = BufReader::new(stream.try_clone().unwrap());
+	loop {
+		stream.write_all(b"{\"t\":\"take\",\"max\":2}\n").unwrap();
+		let mut line = String::new();
+		reader.read_line(&mut line).unwrap();
+		let answer: serde_json::Value = serde_json::from_str(&line).unwrap();
+		assert_eq!(answer["t"], "reads");
+		out.extend(answer["reads"].as_array().unwrap().iter().cloned());
+		if answer["more"] == false {
+			return out;
+		}
+	}
+}
+
+fn read_paths(reads: &[serde_json::Value]) -> Vec<String> {
+	reads.iter().map(|r| format!("{} {}", r["path"].as_str().unwrap(), r["version"].as_str().unwrap())).collect()
+}
+
+#[test]
+fn a_run_box_mount_logs_every_open_and_listing_until_its_host_takes_them() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::start();
+	node.put("docs/plan.md", "the plan", false);
+	node.put("readme.md", "hi", false);
+	let socket = node.dir.join("reads.sock");
+	let (company, runner) = start_with(&node, Some(UnixListener::bind(&socket).unwrap()));
+
+	assert_eq!(names(&company.join("docs")), ["plan.md"]);
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan");
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan");
+	let reads = take(&socket);
+	// The folder listed and the file opened, once each; the root and the second, cached open add nothing.
+	assert_eq!(read_paths(&reads), ["docs v1", "docs/plan.md v1"]);
+	assert_eq!(reads[1]["kind"], "file");
+	assert_eq!(reads[1]["authority"]["resourceId"], RESOURCE);
+	assert_eq!(reads[1]["authority"]["resourceRevision"], 1);
+	assert!(take(&socket).is_empty(), "taken reads leave the log");
+
+	// The next answer's command reads the same file from the page cache: still its read. A new version is another.
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan");
+	node.put("docs/plan.md", "the plan, again", false);
+	let plan = company.join("docs/plan.md");
+	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(&plan).ok().as_deref() == Some("the plan, again")));
+	assert_eq!(read_paths(&take(&socket)), ["docs/plan.md v1", "docs/plan.md v2"]);
+
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }
 
 #[test]

@@ -2,7 +2,9 @@
 //! in memory that a test changes while machines watch it.
 
 use qorpera_folder::frame::{kind, read_frame, write_frame};
-use qorpera_folder::proto::{code, Change, Entry, EntryKind, ErrorReply, Hello, HelloOk, ListRequest, Listing, ReadRequest, Role};
+use qorpera_folder::proto::{
+	code, Authority, Change, Entry, EntryKind, ErrorReply, Hello, HelloOk, ListRequest, Listing, ReadRequest, Role,
+};
 use qorpera_folder::transport::Stream;
 use std::collections::BTreeMap;
 use std::os::unix::net::UnixListener;
@@ -10,6 +12,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub const PASS: &str = "right-pass";
+/// The resource every entry is listed under; its revision is the entry's version, so a test can tell them apart.
+pub const RESOURCE: &str = "00000000-0000-4000-8000-000000000001";
 
 #[derive(Clone)]
 struct Node {
@@ -181,6 +185,13 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 							mtime_ms: 1_700_000_000_000,
 							executable: n.executable,
 							version: format!("v{}", n.version),
+							// As an agent's view lists it (the core's read receipt).
+							authority: Some(Authority {
+								resource_id: RESOURCE.into(),
+								resource_revision: n.version,
+								grant_id: None,
+								grant_revision: None,
+							}),
 						})
 						.collect();
 					send_json(&mut s, kind::LISTING, &Listing { entries, next: None })

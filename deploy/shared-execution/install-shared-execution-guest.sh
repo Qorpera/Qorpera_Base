@@ -23,7 +23,8 @@ EXPECTED_FOLDER_MOUNT_UNIT_SHA256="778e1d8475a757cc013bb81e48404e0738fdb2de6e882
 EXPECTED_BOX_HOST_SHA256="5e1f316f28e4b110fff2ba41fb074a24aa99e232e1040e7dbd19f7883da562a5"
 EXPECTED_BOX_UNIT_SHA256="37e036cfeeac5969c8832ef98c3da9da546347fafb1d91965765598fea68ed19"
 EXPECTED_BOX_SOCKET_SHA256="3dc1ded7bcc1084df6857d2c6c477377a240c6dfa4a37f0cb5ea9c33ed02158e"
-EXPECTED_BOX_FOLDER_UNIT_SHA256="295e2ac67c7cd53f315e8100134904e598cbf4afdcf84e2168ccffeb35bdb3b5"
+EXPECTED_BOX_READS_SOCKET_SHA256="794558361d2caa6280c24499815dadae0d79ccf6f025e8e4ff12d9612bb7f465"
+EXPECTED_BOX_FOLDER_UNIT_SHA256="07c16cbde8a7c9b4b2adc8a081541ffd9fcf0328da49ce6a87253251bbf5e0a0"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -89,6 +90,7 @@ verify_sha256 "${STAGING_ROOT}/qorpera-shared-box-host.mjs" "${EXPECTED_BOX_HOST
 verify_sha256 "${STAGING_ROOT}/qorpera-shared-box@.service" "${EXPECTED_BOX_UNIT_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-shared-box@.socket" "${EXPECTED_BOX_SOCKET_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-shared-box-folder@.service" "${EXPECTED_BOX_FOLDER_UNIT_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-shared-box-reads@.socket" "${EXPECTED_BOX_READS_SOCKET_SHA256}"
 
 # A long-lived host must stay the pinned image: no unattended package upgrades,
 # no needrestart restarting the sandboxes under a run.
@@ -146,6 +148,7 @@ install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-shared-box-host.mjs" "$
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box@.service" /etc/systemd/system/qorpera-shared-box@.service
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box@.socket" /etc/systemd/system/qorpera-shared-box@.socket
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box-folder@.service" /etc/systemd/system/qorpera-shared-box-folder@.service
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box-reads@.socket" /etc/systemd/system/qorpera-shared-box-reads@.socket
 install -d -o root -g root -m 0755 /company
 if [[ ! -c /dev/fuse ]] || ! grep -qw fuse /proc/filesystems; then
 	# Runs do not need it yet; a folder mount will not start until the image has FUSE.
@@ -158,7 +161,8 @@ fi
 /usr/bin/systemd-analyze verify /etc/systemd/system/qorpera-shared-execution.service \
 	/etc/systemd/system/qorpera-shared-run-host@.service /etc/systemd/system/qorpera-shared-runner@.service \
 	/etc/systemd/system/qorpera-runner-orchestrator.service /etc/systemd/system/qorpera-shared-box@.service \
-	/etc/systemd/system/qorpera-shared-box@.socket /etc/systemd/system/qorpera-shared-box-folder@.service
+	/etc/systemd/system/qorpera-shared-box@.socket /etc/systemd/system/qorpera-shared-box-folder@.service \
+	/etc/systemd/system/qorpera-shared-box-reads@.socket
 systemctl daemon-reload
 # Nothing starts here. The operator writes /etc/qorpera/shared-execution.env,
 # the credentials directory and /etc/qorpera/runner-orchestrator.env, attaches

@@ -298,7 +298,7 @@ mod tests {
 	use std::sync::Arc;
 
 	fn entry(name: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::File, size: 3, mtime_ms: 0, executable: false, version: "v1".into() }
+		Entry { name: name.into(), kind: EntryKind::File, size: 3, mtime_ms: 0, executable: false, version: "v1".into(), authority: None }
 	}
 
 	/// A node stand-in on a Unix socket: checks the hello, pages a listing two entries at a time, serves

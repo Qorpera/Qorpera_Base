@@ -25,6 +25,19 @@ const ok = (file, args, options) => {
 const ctl = (...args) => ok("/usr/bin/systemctl", args);
 const state = (unit) => run("/usr/bin/systemctl", ["is-active", unit]).stdout.trim();
 const id = (flag, name) => Number(ok("/usr/bin/id", [flag, name]));
+/** The native host's side of the box's read log: one take, as `account`. */
+function takeReads(account) {
+	const script =
+		"const s=require('net').connect(process.argv[1]);s.on('error',e=>{console.error(e.code);process.exit(3)});" +
+		"s.write(JSON.stringify({t:'take',max:10000})+'\\n');let b='';s.on('data',d=>{b+=d;if(b.includes('\\n')){process.stdout.write(b);s.end()}});";
+	const result = spawnSync("/usr/bin/node", ["-e", script, "/run/qorpera-shared-box/0.reads"], {
+		encoding: "utf8",
+		timeout: 10_000,
+		uid: id("-u", account),
+		gid: id("-g", account),
+	});
+	return { code: result.status, stderr: result.stderr, answer: result.status === 0 ? JSON.parse(result.stdout) : undefined };
+}
 const mounted = async (path) =>
 	(await readFile("/proc/self/mountinfo", "utf8")).split("\n").some((line) => line.split(" ")[4] === path);
 async function until(test, label, ms = 20_000) {
@@ -161,7 +174,12 @@ try {
 	const viewFile = "/run/qorpera-shared-execution/slots/0/box-view.json";
 	await writeFile(viewFile, `${JSON.stringify({ environmentId: ENV, viewId, pass })}\n`, { mode: 0o600 });
 	ctl("start", "qorpera-shared-box@0.service");
-	for (const name of ["qorpera-shared-box@0.service", "qorpera-shared-box@0.socket", "qorpera-shared-box-folder@0.service"])
+	for (const name of [
+		"qorpera-shared-box@0.service",
+		"qorpera-shared-box@0.socket",
+		"qorpera-shared-box-reads@0.socket",
+		"qorpera-shared-box-folder@0.service",
+	])
 		assert.equal(state(name), "active", name);
 	assert(await mounted("/srv/qorpera-folder/box-0"));
 	check("the box starts with its socket and its company folder mounted first");
@@ -188,6 +206,22 @@ try {
 	reply = await client.sh("touch /company/new 2>&1; echo status=$?");
 	assert.match(reply.out, /Read-only file system[\s\S]*status=1/);
 	check("a command runs as the box account in /company, reads the company folder and cannot write it");
+
+	for (const account of ["qorpera-shared-runner-0", "qorpera-shared-box-0", "qorpera-shared-host-1"]) {
+		const stranger = takeReads(account);
+		assert.equal(stranger.code, 3, account);
+		assert.match(stranger.stderr, /EACCES/);
+	}
+	let taken = takeReads("qorpera-shared-host-0");
+	assert.equal(taken.answer.t, "reads");
+	assert.equal(taken.answer.more, false);
+	assert.deepEqual(taken.answer.reads.map((read) => read.path).sort(), ["docs/plan.md", "readme.md", "tools/run.sh"]);
+	assert(taken.answer.reads.every((read) => read.kind === "file" && read.authority?.resourceRevision === 1));
+	assert.deepEqual(takeReads("qorpera-shared-host-0").answer.reads, []);
+	await client.sh("ls docs >/dev/null; cat readme.md >/dev/null");
+	taken = takeReads("qorpera-shared-host-0");
+	assert.deepEqual(taken.answer.reads.map((read) => `${read.kind} ${read.path}`), ["folder docs", "file readme.md"]);
+	check("the box's read log names what each command opened or listed, with its receipt, for the slot's native host only");
 
 	// Hidden means absent, or an inaccessible stand-in (mode 0) where InaccessiblePaths= put one.
 	reply = await client.sh(
@@ -241,9 +275,21 @@ try {
 	assert.equal(running.exitCode, null);
 	client.end();
 	// The run ends: the service stops the box, its socket and its folder.
-	ctl("stop", "qorpera-shared-box@0.service", "qorpera-shared-box@0.socket", "qorpera-shared-box-folder@0.service");
-	for (const name of ["qorpera-shared-box@0.service", "qorpera-shared-box@0.socket", "qorpera-shared-box-folder@0.service"])
+	ctl(
+		"stop",
+		"qorpera-shared-box@0.service",
+		"qorpera-shared-box@0.socket",
+		"qorpera-shared-box-reads@0.socket",
+		"qorpera-shared-box-folder@0.service",
+	);
+	for (const name of [
+		"qorpera-shared-box@0.service",
+		"qorpera-shared-box@0.socket",
+		"qorpera-shared-box-reads@0.socket",
+		"qorpera-shared-box-folder@0.service",
+	])
 		assert.notEqual(state(name), "active", name);
+	assert.equal(spawnSync("/usr/bin/test", ["-e", "/run/qorpera-shared-box/0.reads"]).status, 1);
 	assert.equal(await mounted("/srv/qorpera-folder/box-0"), false);
 	assert.equal(spawnSync("/usr/bin/test", ["-e", "/run/qorpera-shared-box/0.sock"]).status, 1);
 	assert.equal(spawnSync("/usr/bin/kill", ["-0", sleeper]).status, 1, "a background command ended with the run");
@@ -254,14 +300,20 @@ try {
 	assert.deepEqual(await again.ready(), []);
 	assert.match((await again.sh("test -e $HOME/note; echo note=$?; cat /company/readme.md")).out, /^note=1\nhello from/);
 	again.end();
-	ctl("stop", "qorpera-shared-box@0.service", "qorpera-shared-box@0.socket", "qorpera-shared-box-folder@0.service");
+	ctl(
+		"stop",
+		"qorpera-shared-box@0.service",
+		"qorpera-shared-box@0.socket",
+		"qorpera-shared-box-reads@0.socket",
+		"qorpera-shared-box-folder@0.service",
+	);
 	check("the next run's box starts empty");
 
 	await writeFile(viewFile, `${JSON.stringify({ environmentId: ENV, viewId: randomUUID(), pass })}\n`, { mode: 0o600 });
 	assert.notEqual(run("/usr/bin/systemctl", ["start", "qorpera-shared-box@0.service"]).status, 0);
 	assert.notEqual(state("qorpera-shared-box@0.service"), "active");
 	assert.equal(await mounted("/srv/qorpera-folder/box-0"), false);
-	ctl("stop", "qorpera-shared-box@0.socket");
+	ctl("stop", "qorpera-shared-box@0.socket", "qorpera-shared-box-reads@0.socket");
 	check("a view the node refuses starts no box");
 
 	console.log(

@@ -132,14 +132,18 @@ class Client {
 	}
 
 	async list(path: string): Promise<string[]> {
-		const names: string[] = [];
+		return (await this.entries(path)).map((e) => e.name as string);
+	}
+
+	async entries(path: string): Promise<Record<string, unknown>[]> {
+		const entries: Record<string, unknown>[] = [];
 		let after: string | undefined;
 		for (;;) {
 			this.send(Kind.list, after === undefined ? { path } : { path, after });
 			const { kind, body } = await this.json();
 			if (kind !== Kind.listing) throw new Error(`list ${path}: ${JSON.stringify(body)}`);
-			names.push(...(body.entries as { name: string }[]).map((e) => e.name));
-			if (body.next === undefined || body.next === null) return names;
+			entries.push(...(body.entries as Record<string, unknown>[]));
+			if (body.next === undefined || body.next === null) return entries;
 			after = body.next as string;
 		}
 	}
@@ -217,9 +221,37 @@ describe("folder core answers", () => {
 	// 20260928237000:83-155): versions and cursor versions are uuids, and a resync answer's next is null. The
 	// hosted-db script test-folder-service-core-shapes.mjs parses what the real functions return.
 	it("reads list and feed pages as the core emits them, and refuses other shapes", () => {
-		const entry = { path: "a", kind: "folder", version: v(1), seq: 3, authority: { resourceId: "x" } };
+		const entry = { path: "a", kind: "folder", version: v(1), seq: 3, authority: null };
 		const page = parseListPage({ schema: "qorpera.folder-list/v1", asOfSeq: 4, entries: [entry], next: null });
 		expect(page.entries[0]).toEqual({ path: "a", kind: "folder", version: v(1) });
+		// An agent's listing names each entry's receipt; a rules path has no grant.
+		const receipt = { resourceId: v(40), resourceRevision: 3, grantId: v(41), grantRevision: 2 };
+		const rules = { resourceId: v(42), resourceRevision: 1, grantId: null, grantRevision: null };
+		const withReceipts = parseListPage({
+			schema: "qorpera.folder-list/v1",
+			asOfSeq: 4,
+			entries: [
+				{ ...entry, authority: receipt },
+				{ ...entry, path: "rules", authority: rules },
+			],
+			next: null,
+		});
+		expect(withReceipts.entries.map((e) => e.authority)).toEqual([receipt, rules]);
+		for (const bad of [
+			{ resourceId: "x" },
+			{ ...receipt, grantId: null },
+			{ ...rules, grantRevision: 1 },
+			{ ...receipt, resourceRevision: -1 },
+			{ ...receipt, extra: 1 },
+		])
+			expect(() =>
+				parseListPage({
+					schema: "qorpera.folder-list/v1",
+					asOfSeq: 4,
+					entries: [{ ...entry, authority: bad }],
+					next: null,
+				}),
+			).toThrow("receipt");
 		// Every entry is checked in full, not only the first.
 		const fileWithoutContent = { path: "b.md", kind: "file", version: v(2) };
 		expect(() =>
@@ -352,6 +384,27 @@ describe("view tree", () => {
 			"new/n.md",
 			"new",
 		]);
+	});
+
+	it("keeps each entry's receipt, gives a path the feed brought its earlier or its folder's, and counts a new one", () => {
+		const docs = { resourceId: v(50), resourceRevision: 1, grantId: v(51), grantRevision: 1 };
+		const tree = new ViewTree();
+		tree.put({ ...folder("docs"), authority: docs });
+		tree.put({ ...file("docs/a.md"), authority: docs });
+		// The feed names no receipt: a new version keeps the path's, a new path takes its folder's.
+		tree.apply({ ...file("docs/a.md", 2), op: "write" });
+		tree.apply({ ...file("docs/b.md"), op: "write" });
+		const page = tree.children("docs", undefined, 10);
+		expect(page !== "not_found" && page !== "not_a_folder" && page.entries.map((e) => e.authority)).toEqual([
+			docs,
+			docs,
+		]);
+		// A listing after an access change brings a newer receipt: the path changed for the machines.
+		const relisted = new ViewTree();
+		relisted.put({ ...folder("docs"), authority: docs });
+		relisted.put({ ...file("docs/a.md", 2), authority: { ...docs, grantRevision: 2 } });
+		relisted.put({ ...file("docs/b.md"), authority: docs });
+		expect(ViewTree.diff(tree, relisted)).toEqual(["docs/a.md"]);
 	});
 });
 
@@ -768,6 +821,26 @@ describe("run box views", () => {
 		core.views.get(VIEW)!.pass = "x".repeat(43);
 		await service.renewLeases();
 		expect((await feed.json()).body).toMatchObject({ code: "VIEW_CLOSED", message: "The view was refused" });
+	});
+
+	it("lists each entry with the receipt the core gave the view, and a path the feed brought with its folder's", async () => {
+		const { core, service, path } = await box();
+		const receipt = (n: number) => ({ resourceId: v(60), resourceRevision: n, grantId: v(61), grantRevision: 1 });
+		core.receipts = () => receipt(1);
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		expect((await io.entries("")).map((e) => e.authority)).toEqual([receipt(1)]);
+		expect(await io.entries("docs")).toEqual([expect.objectContaining({ name: "plan.md", authority: receipt(1) })]);
+		core.write(await storeFile(join(await tempdir(), "share"), "docs/new.md", "new", 1));
+		await service.poll();
+		expect((await io.entries("docs")).map((e) => [e.name, e.authority])).toEqual([
+			["new.md", receipt(1)],
+			["plan.md", receipt(1)],
+		]);
+		// An operator mount reads as a member: its listing has no receipts.
+		const operator = await Client.open(path);
+		expect((await operator.hello("io")).kind).toBe(Kind.helloOk);
+		expect((await operator.entries("docs")).every((e) => !("authority" in e))).toBe(true);
 	});
 
 	it("takes no core view at all from a node with no run box hosts", () => {

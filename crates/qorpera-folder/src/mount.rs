@@ -8,6 +8,7 @@
 
 use crate::link::{Fail, Link};
 use crate::proto::{code, valid_name, valid_path, EntryKind, MAX_READ};
+use crate::reads::ReadLog;
 use crate::tree::{Attr, Child, Inval, Tree, ROOT};
 use fuser::{
 	Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
@@ -16,6 +17,7 @@ use fuser::{
 };
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -30,6 +32,9 @@ pub struct Options {
 	/// Let every account on the machine read the folder (a box's account, from step 2). Without it only the
 	/// account that mounted it can, root included only if it mounted it.
 	pub allow_other: bool,
+	/// A run box's mount: log every version opened or listed, and give the log to whoever connects here (the run's
+	/// native host, `reads.rs`).
+	pub reads: Option<UnixListener>,
 }
 
 /// Why the program stopped.
@@ -57,6 +62,7 @@ struct Shared {
 	handles: Mutex<HashMap<u64, Handle>>,
 	next_fh: AtomicU64,
 	ttl: Duration,
+	reads: Option<Arc<Mutex<ReadLog>>>,
 }
 
 impl Shared {
@@ -130,6 +136,13 @@ impl Shared {
 			// A newer version got its own inode and this one keeps its version (detached); a path that is gone
 			// is gone.
 			_ => self.tree.lock().unwrap().attr(ino).map(|a| (a, kept)).ok_or(libc::ENOENT),
+		}
+	}
+
+	/// A read for the run box's log (a mount without one logs nothing).
+	fn note(&self, path: &str, attr: &Attr) {
+		if let Some(log) = &self.reads {
+			log.lock().unwrap().note(path, attr.kind, &attr.version, attr.authority.as_ref());
 		}
 	}
 
@@ -218,7 +231,16 @@ impl Filesystem for FolderFs {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
-		let parent = self.s.tree.lock().unwrap().parent(ino.0).unwrap_or(ROOT);
+		let (parent, path) = {
+			let tree = self.s.tree.lock().unwrap();
+			(tree.parent(ino.0).unwrap_or(ROOT), tree.path(ino.0).map(str::to_string))
+		};
+		// Listing a folder reads it: its names are what the box sees.
+		if let (true, Some(path)) = (self.s.reads.is_some() && ino.0 != ROOT, path) {
+			if let Ok((attr, _)) = self.s.attr(ino.0) {
+				self.s.note(&path, &attr);
+			}
+		}
 		let mut entries = Vec::with_capacity(children.len() + 2);
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
 		entries.push((parent, FileType::Directory, "..".to_string()));
@@ -261,6 +283,8 @@ impl Filesystem for FolderFs {
 		// Keep cached pages across opens while the feed is up. They are this version's only: a newer version is
 		// another inode (tree.rs).
 		let flags = if self.s.ttl(kept).is_zero() { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
+		// Every open is logged, cached pages or not: what a command opened is what its answer read.
+		self.s.note(&path, &attr);
 		reply.opened(self.s.handle(Handle::File { path, version: attr.version, size: attr.size }), flags);
 	}
 
@@ -439,7 +463,11 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		handles: Mutex::new(HashMap::new()),
 		next_fh: AtomicU64::new(1),
 		ttl: options.ttl,
+		reads: options.reads.as_ref().map(|_| Arc::new(Mutex::new(ReadLog::default()))),
 	});
+	if let (Some(listener), Some(log)) = (options.reads, &shared.reads) {
+		crate::reads::serve(listener, log.clone());
+	}
 	let mut config = Config::default();
 	config.mount_options = vec![
 		MountOption::RO,

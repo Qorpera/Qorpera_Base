@@ -3,7 +3,9 @@
 The company folder inside a Qorpera machine, and the node side of its link.
 
 - `qorpera-folder mount`: shows one view of a company folder at a mount point, read-only (F3 step 1), over vsock to
-  the folder service of the node the machine runs on. Memory and the kernel's page cache only.
+  the folder service of the node the machine runs on. Memory and the kernel's page cache only. A run box's mount
+  (`--reads systemd`, F3 step 2b) also logs every version the box opens or lists, with its read receipt, and gives
+  the log to the run's native host on the socket systemd passes it (`src/reads.rs`).
 - `qorpera-folder bridge`: on a node host, takes machines' vsock connections and hands them to the folder service's
   Unix socket, naming each machine's CID.
 

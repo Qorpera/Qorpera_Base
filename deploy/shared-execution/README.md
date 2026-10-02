@@ -48,6 +48,7 @@ What does **not** change:
 | `/run/qorpera-shared-execution/slots/<n>/box-view.json` | root 0600, tmpfs | the run's view of the company folder (company folder, view id, pass), for the box's folder unit |
 | `/srv/qorpera-folder/box-<n>` | root, FUSE, `allow_other` | the run's company folder, read-only; bound into the box as `/company` |
 | `/run/qorpera-shared-box/<n>.sock` | `qorpera-shared-host-<n>` 0600 | the box's socket: only the slot's native host opens it |
+| `/run/qorpera-shared-box/<n>.reads` | `qorpera-shared-host-<n>` 0600 | the box's read log (`qorpera-shared-box-reads@.socket`, served by the folder unit): what the box opened or listed, for the native host to release |
 | `/company` | root 0755, empty | the box's mount point (made by the installer, so systemd creates nothing on the host) |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
@@ -526,7 +527,8 @@ gets a box of its own on its slot (`deploy/first-node/RUNTIME-FOLDER-SERVICE.md`
    `allow_other` (through the node's folder bridge, like any mount) and is
    started only once the folder is mounted.
 3. Retire stops the box first, also when the native host parks: the box, its
-   socket and its folder unit, so every command ends with the run. With the box
+   socket, its read log's socket and its folder unit, so every command ends
+   with the run. With the box
    down, the service closes the view (best effort: the run's end and the lease
    close it anyway) and removes its file. A box no live run holds is stopped on
    the next pass, before any slot wipe.

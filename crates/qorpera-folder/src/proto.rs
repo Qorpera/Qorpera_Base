@@ -87,6 +87,19 @@ pub enum EntryKind {
 	Folder,
 }
 
+/// The authority an agent's view lists an entry under (the core's read receipt). A run box's mount logs it with each
+/// read, and the run's native host releases it (`reads.rs`); the core checks the path again when it no longer holds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Authority {
+	pub resource_id: String,
+	pub resource_revision: u64,
+	#[serde(default)]
+	pub grant_id: Option<String>,
+	#[serde(default)]
+	pub grant_revision: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -102,6 +115,9 @@ pub struct Entry {
 	/// The path's current version: the core's id for it, opaque here.
 	#[serde(default)]
 	pub version: String,
+	/// Only in an agent's view (a run box's).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub authority: Option<Authority>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

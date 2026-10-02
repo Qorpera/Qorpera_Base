@@ -110,7 +110,13 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 			: {}),
 		// F3 run boxes: off unless set; the installer puts the box units in place.
 		...(runBoxes()
-			? { runBox: { unitPrefix: "qorpera-shared-box@", folderUnitPrefix: "qorpera-shared-box-folder@" } }
+			? {
+					runBox: {
+						unitPrefix: "qorpera-shared-box@",
+						folderUnitPrefix: "qorpera-shared-box-folder@",
+						readsUnitPrefix: "qorpera-shared-box-reads@",
+					},
+				}
 			: {}),
 	};
 	return { config, providerToken, host, port: integer("QORPERA_RUNNER_PROVIDER_PORT", 18_450, 1, 65_535) };

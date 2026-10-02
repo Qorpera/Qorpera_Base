@@ -8,12 +8,13 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "Usage:
-  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes]
+  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--reads systemd]
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
-account, mode 0600 or tighter) at <dir>, read-only, until a signal, the view's end or an unmount.
+account, mode 0600 or tighter) at <dir>, read-only, until a signal, the view's end or an unmount. With --reads
+systemd (a run box's mount) it logs what it serves and gives the log out on the socket systemd passes it.
 Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
@@ -66,7 +67,7 @@ fn number<T: std::str::FromStr>(o: &std::collections::HashMap<String, String>, k
 }
 
 fn mount(args: &[String]) -> Result<ExitCode, Usage> {
-	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other"])?;
+	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other", "reads"])?;
 	let view_file = o.get("view-file").ok_or_else(|| Usage("--view-file is required".into()))?;
 	let mountpoint = PathBuf::from(o.get("mountpoint").ok_or_else(|| Usage("--mountpoint is required".into()))?);
 	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
@@ -80,6 +81,17 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 	if !(1..=64).contains(&threads) {
 		return Err(Usage("--threads must be 1 to 64".into()));
 	}
+	let reads = match o.get("reads").map(String::as_str) {
+		None => None,
+		Some("systemd") => match qorpera_folder::reads::systemd_listener() {
+			Ok(listener) => Some(listener),
+			Err(e) => {
+				eprintln!("qorpera-folder: {e}");
+				return Ok(ExitCode::FAILURE);
+			}
+		},
+		Some(_) => return Err(Usage("--reads takes systemd".into())),
+	};
 	let view = match read_view(view_file) {
 		Ok(v) => v,
 		Err(e) => {
@@ -88,7 +100,7 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 		}
 	};
 	let link = link::Link::new(addr, view, threads);
-	match mount::run(link, mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other }) {
+	match mount::run(link, mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, reads }) {
 		Ok(mount::Stop::ViewClosed) => {
 			eprintln!("qorpera-folder: the node closed the view; unmounted");
 			Ok(ExitCode::from(EXIT_VIEW_CLOSED))
