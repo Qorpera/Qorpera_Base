@@ -7,6 +7,7 @@
 import { INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
 	type InterfaceBlock,
+	type InterfaceButton,
 	type InterfaceFile,
 	parseInterfaceFile,
 	type TableRow,
@@ -29,8 +30,8 @@ export interface InterfaceRow {
 	readonly live?: boolean;
 }
 
-/** The blocks this client draws today. */
-const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list"]);
+/** The blocks this client draws today. A `detail` block is drawn only when a drawn block in its view opens it. */
+const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail"]);
 /** The sources this client reads today, and the column `since` and ordering use. */
 const SOURCES: Readonly<Record<string, { readonly time: string | null }>> = {
 	working: { time: "since" },
@@ -55,6 +56,79 @@ export function interfaceSourceTime(source: string): string | null {
 /** Whether this client can draw a block: its kind is drawn here and it reads one source the client has. */
 export function drawableBlock(block: InterfaceBlock): boolean {
 	return DRAWN_BLOCKS.has(block.kind) && block.from.length === 1 && Object.hasOwn(SOURCES, block.from[0] ?? "");
+}
+
+/** The columns of each source that carry outside content (contract 11.1), such as an email's sender or subject.
+ * They keep their outside-content mark wherever they are shown or sent. */
+export const OUTSIDE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+	mail: ["from_name", "from_address", "subject"],
+};
+
+/** A view as drawn. A view built from another (`from_view`) takes that view's blocks, each with the view's own
+ * `where` added to its query. */
+export interface InterfaceViewShape {
+	readonly name: string;
+	readonly blocks: readonly InterfaceBlock[];
+}
+
+export function interfaceViews(file: InterfaceFile): InterfaceViewShape[] {
+	const resolved: InterfaceViewShape[] = [];
+	for (const view of file.views) {
+		// The parser lets from_view name only a view above this one, so it has been resolved already.
+		const base = view.fromView === null ? undefined : resolved.find((above) => above.name === view.fromView);
+		const where = view.where;
+		const blocks =
+			base === undefined
+				? view.blocks
+				: base.blocks.map((block) =>
+						where === null
+							? block
+							: { ...block, query: { ...block.query, where: { ...block.query.where, ...where } } },
+					);
+		resolved.push({ name: view.name, blocks });
+	}
+	return resolved;
+}
+
+/** The blocks of a view this client draws, in their order: the drawable ones, and a `detail` block that one of
+ * them opens. */
+export function viewBlocks(view: InterfaceViewShape): InterfaceBlock[] {
+	const drawn = view.blocks.filter((block) => block.kind !== "detail" && drawableBlock(block));
+	return view.blocks.filter(
+		(block) =>
+			drawn.includes(block) ||
+			(block.kind === "detail" &&
+				block.id !== null &&
+				drawableBlock(block) &&
+				drawn.some((opener) => opener.opens === block.id)),
+	);
+}
+
+/** A button as this client draws it. */
+export type DrawnButton =
+	| { readonly verb: "answer"; readonly label: string }
+	| { readonly verb: "message"; readonly label: string; readonly to: string; readonly text: string }
+	| { readonly verb: "open"; readonly label: string; readonly target: string };
+
+/** The buttons a block shows here. A member draws only what a member can do: `who = "agents"` is left out, and so
+ * are the verbs whose machinery this client lacks today (add, set, take, offer, release need tables; `open file:`
+ * needs a file route). */
+export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnButton[] {
+	return block.buttons.flatMap((name): DrawnButton[] => {
+		if (name === "answer") return [{ verb: "answer", label: t("Answer") }];
+		const button: InterfaceButton | undefined = file.buttons.find((candidate) => candidate.id === name);
+		if (!button || button.who === "agents") return [];
+		if (button.verb === "answer") return [{ verb: "answer", label: button.label }];
+		if (button.verb === "message" && button.to !== null)
+			return [{ verb: "message", label: button.label, to: button.to, text: button.text ?? "" }];
+		if (
+			button.verb === "open" &&
+			button.target !== null &&
+			(button.target === "row" || button.target.startsWith("agent:") || button.target.startsWith("interface:"))
+		)
+			return [{ verb: "open", label: button.label, target: button.target }];
+		return [];
+	});
 }
 
 function needsMet(file: InterfaceFile, company: CompanyController): boolean {
@@ -84,7 +158,7 @@ export function companyInterfaces(company: CompanyController): CompanyInterface[
 			file.status === "active" &&
 			memberMaySee(file, company) &&
 			needsMet(file, company) &&
-			file.views.some((view) => view.blocks.some(drawableBlock)),
+			interfaceViews(file).some((view) => viewBlocks(view).length > 0),
 	);
 	return [...shown.filter((entry) => entry.file.main), ...shown.filter((entry) => !entry.file.main)];
 }

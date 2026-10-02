@@ -4,6 +4,16 @@
 
 ### Added
 
+- Interface pages draw more of the fixed blocks (Interfaces step I3a; `deploy/first-node/RUNTIME-INTERFACES.md` §3):
+  - **Views** are tabs under the page's head. A view built from another (`from_view`) shows that view's blocks with its own `where` added. A view with nothing this client can draw is left out.
+  - **`table`** sorts by its headings and filters by its text. The filter keeps focus and the caret while the table redraws.
+  - **`opens` and `detail`:** a list or table row that opens shows that record's fields and text in its `detail` block, beside the list. On a phone it is the next screen, with Back. A `detail` block that nothing opens is not drawn.
+  - **Buttons** are drawn for the verbs this client can carry out:
+    - `answer` takes the member to the thread where the platform's own card waits.
+    - `open` leads to an agent's thread or another interface the member can open.
+    - `message` opens the agent's thread with the text in its composer, and nothing is sent until the member sends it. A value from outside content, such as an email's subject, goes in «» with a quoted line saying so, never as the member's own words.
+    - Buttons for agents only, and verbs that need folder tables or a file route, are not drawn.
+  - Pulse's "Needs you" cards show their Answer button.
 - The rail splits into **Agents | Interfaces** (contract, 2026-10-02 interfaces amendment, item 8; Interfaces steps I1 and I4):
   - **The top row** (rail top option A, Jonas, 2 Oct): the **Agents | Interfaces** tabs fill the row, then a search button and the add button.
     - The tabs are real tabs (`tablist`/`tab`, `aria-selected`, each list a `tabpanel`). The arrow keys move between them, and Home and End pick the first and last. A tab changes the list and leaves the page where it is; the list taking over slides in from its tab's side.

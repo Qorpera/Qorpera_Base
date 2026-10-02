@@ -71,6 +71,18 @@ export const WORKSPACE: Record<string, string> = {
 	"No matching interfaces.": "Ingen interfaces passer.",
 	"Search interfaces": "Søg i interfaces",
 	"Close search": "Luk søgning",
+	Views: "Visninger",
+	Yes: "Ja",
+	No: "Nej",
+	Actions: "Handlinger",
+	Filter: "Filtrér",
+	"Filter {title}": "Filtrér {title}",
+	"No rows match.": "Ingen rækker passer.",
+	"Choose one to see it here.": "Vælg en for at se den her.",
+	"Text in «» is quoted from outside content, not written by me.":
+		"Tekst i «» er citeret fra udefrakommende indhold og ikke skrevet af mig.",
+	"That agent isn't in this company any more.": "Den agent er ikke længere i denne virksomhed.",
+	"The Co-Founder's thread can't be opened here.": "Co-Founderens tråd kan ikke åbnes her.",
 
 	// app/interfaces.ts and app/views/interface.ts
 	"{name} needs you": "{name} har brug for dig",
