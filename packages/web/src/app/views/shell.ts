@@ -10,16 +10,19 @@ import {
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
-import { agentFigure } from "../../ui/avatar.ts";
+import { agentColor, agentFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { playOnce } from "../../ui/motion.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
 import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
+import { glideRows, measureRows } from "../../ui/rail-flip.ts";
+import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
@@ -287,6 +290,15 @@ interface RailParts {
 	connectionShown: string;
 	/** Whether the last draw found the rail collapsed, where the search field is hidden. */
 	collapsed: boolean;
+	/** The highlight that slides to the conversation opened (ui/rail-selection.ts). */
+	readonly selection: RailSelection;
+	/** Where every agent and conversation the company has listed leads: a row that comes back
+	 * (a search cleared, Hidden opened, a pin) is not new, so only a link never seen arrives. */
+	readonly known: Set<string>;
+	/** The company has finished loading once: only changes after that are animated. */
+	settled: boolean;
+	/** Mentions had been read at the last draw, so a mention now is news. */
+	mentionsRead: boolean;
 	/** The latest draw's context: the menus and the drag act on it. */
 	context?: ShellContext;
 	readonly drag: RailDrag;
@@ -372,6 +384,37 @@ const isCollapsed = (element: Element) => element.closest(".rail-compact") !== n
 
 /** Makes a parent's children exactly these, removing first and then inserting only where
  * a child is out of place, so a child that keeps its place never leaves the page. */
+/** A row built anew, once the company has loaded, says what changed (styles/motion.css): an
+ * agent that starts work gets its dot and its line, a failed run folds the figure into a red
+ * "!" (and unfolds it when the failure is dealt with), a mention's badge pops, and an agent the
+ * company never listed before is placed like a card (a new chat drops in). */
+function changedRow(
+	before: string | undefined,
+	after: string,
+	element: HTMLElement,
+	unseen: boolean,
+	mentionsRead: boolean,
+): void {
+	if (before === undefined) {
+		if (unseen) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
+		return;
+	}
+	const was = JSON.parse(before) as Partial<AgentModel>;
+	const now = JSON.parse(after) as Partial<AgentModel>;
+	if (was.state !== now.state)
+		playOnce(
+			element,
+			now.state === "failed"
+				? "state-failed"
+				: was.state === "failed"
+					? "state-recovered"
+					: now.state === "working"
+						? "state-working"
+						: "state-changed",
+		);
+	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
+}
+
 function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
 	const kept = new Set<Element>(children);
 	for (const child of [...parent.children]) if (!kept.has(child)) child.remove();
@@ -412,6 +455,10 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			locale: "",
 			connectionShown: "",
 			collapsed: false,
+			selection: new RailSelection(),
+			known: new Set(),
+			settled: false,
+			mentionsRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
@@ -479,7 +526,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 
 function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	if (!look.disc) return null;
-	return h("span", { class: look.disc === "failed" ? `${className} failed` : className, "aria-hidden": "true" });
+	// A failed run: the figure gives way to a red "!" until the failure is dealt with (styles/motion.css).
+	if (look.disc === "failed") return h("span", { class: "alert-mark", "aria-hidden": "true" });
+	return h("span", { class: className, "aria-hidden": "true" });
 }
 
 /** The tooltip. Any state also goes into the link's name, which the compact rail
@@ -563,7 +612,14 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
-		{ class: "rail-pin", href, draggable: "false", "data-agent-id": model.id, ...railLabel(model, look) },
+		{
+			class: "rail-pin",
+			href,
+			draggable: "false",
+			"data-agent-id": model.id,
+			style: `--agent-color: ${agentColor(model)}`,
+			...railLabel(model, look),
+		},
 		h(
 			"span",
 			{ class: "rail-pin-stand" },
@@ -584,6 +640,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			href,
 			draggable: "false",
 			"data-agent-id": model.id,
+			style: `--agent-color: ${agentColor(model)}`,
 			...railLabel(model, look),
 		},
 		h(
@@ -639,6 +696,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
 	if (parts.toolbar.parentElement !== container) replace(container, parts.toolbar, parts.list, parts.foot);
+	parts.selection.measure(parts.list);
+	const places = measureRows(parts.list);
 	parts.collapsed = isCollapsed(container);
 	const railQuery = parts.collapsed ? "" : parts.input.value.trim().toLowerCase();
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
@@ -678,6 +737,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				? kept
 				: { shown, element: build(model, href) };
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
+		if (entry !== kept && parts.settled)
+			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
 		rows.set(key, entry);
 		entry.element.classList.toggle("active", current);
 		if (current) entry.element.setAttribute("aria-current", "page");
@@ -955,9 +1016,18 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
 			hiddenItems.length ? hiddenGroup.el : null,
 			empty ? parts.empty : null,
+			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
+	parts.selection.move(parts.list);
+	glideRows(parts.list, places);
 	parts.rows = rows;
+	// Everything the company lists now is known from here on, drawn or not (hidden, filtered out).
+	parts.known.add(`#/c/${profileId}`);
+	for (const agent of state.staff) parts.known.add(`#/c/${profileId}/staff/${agent.id}`);
+	for (const listed of state.sessions) parts.known.add(`#/c/${profileId}/chat/${listed.sessionId}`);
+	if (!state.loading) parts.settled = true;
+	parts.mentionsRead = parts.settled && state.mentions !== undefined;
 	parts.notices = notices;
 	parts.drag.refresh();
 	// A row moved to a new place loses focus on the way, so it gets it back too.
