@@ -1,32 +1,52 @@
-/* Interfaces (contract, 2026-10-02 interfaces amendment): the rail's Agents | Interfaces switch, the Interfaces
- * tab's cards, and an interface page drawn from the fixed blocks. The switch sits above the search row like the
- * chat and code switch of a desktop app; its pill slides to the chosen side. */
+/* Interfaces (contract, 2026-10-02 interfaces amendment): the rail's Agents | Interfaces tabs, the Interfaces
+ * tab's cards, and an interface page drawn from the fixed blocks. The tabs fill the top row (rail top option A);
+ * the chosen side's thumb springs across, and the search folds out leftward over the tabs (styles/app.css). */
 
 .rail-switch {
-	position: relative; flex: none; display: grid; grid-template-columns: 1fr 1fr; margin-top: 14px; padding: 3px;
-	border-radius: 11px; background: var(--rail-search); box-shadow: inset 0 0 0 0.5px rgba(18, 18, 17, 0.08);
+	grid-area: 1 / 2; position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+	height: var(--rail-control); margin-right: calc(var(--rail-control) + 6px); padding: 3px;
+	border-radius: 11px; background: var(--rail-search); transform-origin: 0 50%;
+	/* Folding back, the tabs return once the field has started to shrink. */
+	transition: opacity var(--motion-fast) ease 80ms, transform var(--motion-base) var(--ease-spring) 80ms;
 }
-.rail-switch + .rail-toolbar { padding-top: 8px; }
+.rail-switch[hidden] { display: none; }
+.rail-toolbar.is-searching .rail-switch { opacity: 0; transform: translateX(-10px) scale(0.94); pointer-events: none; transition-delay: 0s; }
 .rail-switch-pill {
 	position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 8px;
-	background: var(--bg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-	transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+	background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 10%), 0 2px 8px rgb(0 0 0 / 6%);
+	transition: transform var(--motion-slow) var(--ease-spring);
 }
 .rail-switch.on-interfaces .rail-switch-pill { transform: translateX(100%); }
 :root[data-theme="dark"] .rail-switch-pill { background: rgb(255 255 255 / 16%); box-shadow: none; }
-:root[data-theme="dark"] .rail-switch { box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 8%); }
 .rail-switch-tab {
-	position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px; height: 30px;
-	padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--rail-small);
-	font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+	position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
+	padding: 0 4px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted);
+	font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; cursor: pointer;
+	transition: color var(--motion-base) ease;
 }
-.rail-switch-tab[aria-pressed="true"] { color: var(--text); }
-.rail-switch-tab .icon { width: 15px; height: 15px; }
+.rail-switch-tab[aria-selected="true"] { color: var(--text); }
+.rail-switch-label { overflow: hidden; text-overflow: ellipsis; }
+/* The full row names the tabs; the collapsed rail shows their icons. */
+.rail-switch-tab .icon { display: none; width: 15px; height: 15px; }
 .rail-switch-tab:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: 1px; }
-.rail-compact .rail-switch { grid-template-columns: 1fr; gap: 2px; margin-inline: 2px; }
+/* The field opening: it widens with a spring, its text box fades in just after; folding back runs the other way. */
+.rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
+.rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
+.rail-toolbar.has-tabs:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
+/* The collapsed rail hides the field, so its tabs stay, open search or not. */
+.rail-compact .rail-switch, .rail-compact .rail-toolbar.is-searching .rail-switch {
+	grid-area: 1 / 1; height: auto; margin: 0 2px; grid-template-columns: 1fr; gap: 2px; opacity: 1; transform: none; pointer-events: auto;
+}
+.rail-compact .rail-switch-tab { height: 30px; }
+.rail-compact .rail-switch-tab .icon { display: block; }
 .rail-compact .rail-switch-label { display: none; }
 .rail-compact .rail-switch-pill { width: auto; right: 3px; height: 30px; bottom: auto; }
 .rail-compact .rail-switch.on-interfaces .rail-switch-pill { transform: translateY(32px); }
+/* The list taking over slides in from its tab's side: Agents from the left, Interfaces from the right. */
+.rail-scroll.is-entering-left { animation: rail-list-from-left var(--motion-slow) var(--ease-spring) both; }
+.rail-scroll.is-entering-right { animation: rail-list-from-right var(--motion-slow) var(--ease-spring) both; }
+@keyframes rail-list-from-left { from { opacity: 0; transform: translateX(-16px); } }
+@keyframes rail-list-from-right { from { opacity: 0; transform: translateX(16px); } }
 
 /* The Interfaces tab: the main interface stands on top like the Co-Founder, the rest are rows. */
 .rail-interfaces .interface-home { margin: calc(var(--lift) + 16px) 9px 18.5px; width: auto; }
@@ -38,8 +58,6 @@
 .rail-row-interface .interface-emblem { width: 36px; height: 36px; }
 .interface-emblem .emblem-beat { stroke-dasharray: 60; animation: emblem-beat 2.4s linear infinite; }
 @keyframes emblem-beat { 0% { stroke-dashoffset: 60; } 60%, 100% { stroke-dashoffset: 0; } }
-.rail-interfaces { animation: rail-tab-in 300ms cubic-bezier(0.2, 0.8, 0.2, 1); }
-@keyframes rail-tab-in { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
 
 /* An interface page. */
 .interface { display: flex; flex-direction: column; min-height: 0; height: 100%; }
@@ -86,6 +104,5 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-empty { margin: 4px 0 2px; color: var(--text-soft); font-size: 12.5px; }
 .interface-missing { display: grid; gap: 8px; padding: 32px; color: var(--text-muted); }
 @media (prefers-reduced-motion: reduce) {
-	.rail-switch-pill { transition: none; }
-	.rail-interfaces, .interface-emblem .emblem-beat, .interface-live-dot, .interface-dots i { animation: none; }
+	.interface-emblem .emblem-beat, .interface-live-dot, .interface-dots i { animation: none; }
 }

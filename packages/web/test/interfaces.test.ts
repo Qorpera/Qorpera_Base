@@ -168,9 +168,9 @@ describe("the rail's Agents | Interfaces switch", () => {
 		return { element, draw, controller };
 	}
 	const tabs = (element: HTMLElement) =>
-		[...element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")].map((tab) => [
+		[...element.querySelectorAll<HTMLButtonElement>("[role=tablist] [role=tab]")].map((tab) => [
 			tab.textContent,
-			tab.getAttribute("aria-pressed"),
+			tab.getAttribute("aria-selected"),
 		]);
 	const home: Route = { name: "company", profileId: profileA.profileId, section: "home" };
 
@@ -189,8 +189,94 @@ describe("the rail's Agents | Interfaces switch", () => {
 		const pulse = element.querySelector<HTMLAnchorElement>(".rail-interfaces a.interface-home");
 		expect(pulse?.textContent).toBe("Pulse");
 		expect(pulse?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/i/pulse`);
-		expect(element.querySelector(".rail-add")?.hasAttribute("hidden")).toBe(true);
+		// The add button keeps its place at the end of the row on both tabs.
+		expect(element.querySelector(".rail-add")?.hasAttribute("hidden")).toBe(false);
 		expect(sessionStorage.getItem(`qorpera.web.rail-tab:${profileA.profileId}`)).toBe("interfaces");
+	});
+
+	it("is a real tab list: one tab in the Tab order, its list labelled by it, arrows and Home/End choose", () => {
+		const { element } = rail(home);
+		const [agentsTab, interfacesTab] = element.querySelectorAll<HTMLButtonElement>("[role=tablist] [role=tab]");
+		expect([agentsTab!.tabIndex, interfacesTab!.tabIndex]).toEqual([0, -1]);
+		expect(agentsTab!.getAttribute("aria-controls")).toBe("rail-list-agents");
+		expect(interfacesTab!.hasAttribute("aria-controls")).toBe(false);
+		const panel = element.querySelector("#rail-list-agents");
+		expect(panel?.getAttribute("role")).toBe("tabpanel");
+		expect(panel?.getAttribute("aria-labelledby")).toBe(agentsTab!.id);
+		agentsTab!.focus();
+		agentsTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
+		expect(document.activeElement).toBe(interfacesTab);
+		expect([agentsTab!.tabIndex, interfacesTab!.tabIndex]).toEqual([-1, 0]);
+		expect(element.querySelector("#rail-list-interfaces")?.getAttribute("aria-labelledby")).toBe(interfacesTab!.id);
+		interfacesTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+		expect(tabs(element)[0]).toEqual(["Agents", "true"]);
+		expect(document.activeElement).toBe(agentsTab);
+		agentsTab!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+		expect(tabs(element)[1]).toEqual(["Interfaces", "true"]);
+	});
+
+	it("slides the list that takes over in from its tab's side, and nothing on the first draw", () => {
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const getAnimations = vi.fn(() => []);
+		Object.defineProperty(HTMLElement.prototype, "getAnimations", { configurable: true, value: getAnimations });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { getAnimations?: unknown }).getAnimations;
+		});
+		const { element } = rail(home);
+		expect(element.querySelector(".is-entering-left, .is-entering-right")).toBeNull();
+		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[1]!.click();
+		expect(element.querySelector(".rail-interfaces")?.classList.contains("is-entering-right")).toBe(true);
+		element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")[0]!.click();
+		expect(element.querySelector("#rail-list-agents")?.classList.contains("is-entering-left")).toBe(true);
+	});
+
+	it("folds the search out over the tabs and back on Esc or its close button, clearing it", () => {
+		const { element } = rail(home);
+		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
+		const toggle = element.querySelector<HTMLButtonElement>(".rail-search-toggle")!;
+		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
+		const closeButton = element.querySelector<HTMLButtonElement>(".rail-search-close")!;
+		const switcher = element.querySelector<HTMLElement>("[role=tablist]")!;
+		// Folded: only the button, which names what it searches; the text box is out of the Tab order.
+		expect(toolbar.classList.contains("is-searching")).toBe(false);
+		expect(toggle.getAttribute("aria-label")).toBe("Search agents");
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(input.tabIndex).toBe(-1);
+		expect(closeButton.hidden).toBe(true);
+		toggle.click();
+		expect(toolbar.classList.contains("is-searching")).toBe(true);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(document.activeElement).toBe(input);
+		expect(input.placeholder).toBe("Search agents");
+		expect(closeButton.hidden).toBe(false);
+		expect(switcher.inert).toBe(true);
+		input.value = "zzz";
+		input.dispatchEvent(new Event("input"));
+		expect(element.textContent).toContain("No matching conversations.");
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(toolbar.classList.contains("is-searching")).toBe(false);
+		expect(input.value).toBe("");
+		expect(element.textContent).not.toContain("No matching conversations.");
+		expect(document.activeElement).toBe(toggle);
+		expect(switcher.inert).toBe(false);
+		// The close button does the same.
+		toggle.click();
+		input.value = "ada";
+		input.dispatchEvent(new Event("input"));
+		closeButton.click();
+		expect(toolbar.classList.contains("is-searching")).toBe(false);
+		expect(input.value).toBe("");
+		expect(document.activeElement).toBe(toggle);
+		// Left empty, it folds back when focus moves on; with text it stays open.
+		toggle.click();
+		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+		expect(toolbar.classList.contains("is-searching")).toBe(false);
+		toggle.click();
+		input.value = "ada";
+		input.dispatchEvent(new Event("input"));
+		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+		expect(toolbar.classList.contains("is-searching")).toBe(true);
 	});
 
 	it("lets the route pick the tab, and marks the open interface", () => {
@@ -294,8 +380,10 @@ describe("review round 1 (web)", () => {
 			agentActions: {},
 		});
 		expect(element.querySelector(".rail-search input")?.getAttribute("aria-label")).toBe("Search interfaces");
-		expect(element.querySelector(".rail-switch")?.getAttribute("role")).toBe("group");
-		expect(element.querySelectorAll("[role=tab]")).toHaveLength(0);
+		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search interfaces");
+		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search interfaces");
+		expect(element.querySelector(".rail-switch")?.getAttribute("role")).toBe("tablist");
+		expect(element.querySelectorAll("[role=tab]")).toHaveLength(2);
 		expect(element.querySelector(".interface-home")?.getAttribute("aria-label")).toBe("Pulse");
 	});
 });

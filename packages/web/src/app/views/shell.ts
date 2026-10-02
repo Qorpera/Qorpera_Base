@@ -264,7 +264,7 @@ export function renderTopbar(
  * the list keeps its scroll position, and a row is rebuilt only when what it shows
  * has changed. */
 interface RailParts {
-	/** The Agents | Interfaces switch above the toolbar (contract, 2026-10-02 interfaces amendment, item 8). */
+	/** The Agents | Interfaces tabs at the start of the top row (contract, 2026-10-02 interfaces amendment, item 8). */
 	readonly switcher: HTMLElement;
 	readonly tabAgents: HTMLButtonElement;
 	readonly tabInterfaces: HTMLButtonElement;
@@ -274,10 +274,17 @@ interface RailParts {
 	/** The tab shown, and the route it was last decided for: a new route picks its tab, a click picks between. */
 	tab: RailTab;
 	tabRoute: string;
+	/** The tab the last draw showed: a list that takes over from the other one slides in from its side. */
+	shownTab: RailTab | undefined;
 	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
+	/** The search folds out of its button over the tabs, and folds back on Esc or its close button. */
+	readonly search: HTMLElement;
+	readonly searchToggle: HTMLButtonElement;
+	readonly searchClose: HTMLButtonElement;
+	searchOpen: boolean;
 	readonly input: HTMLInputElement;
 	readonly list: HTMLElement;
 	readonly connection: HTMLElement;
@@ -435,7 +442,14 @@ function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void 
 function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	let parts = railParts.get(company);
 	if (!parts) {
-		const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false" });
+		const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false", id: "rail-search-input" });
+		const searchToggle = h(
+			"button",
+			{ type: "button", class: "rail-search-toggle", "aria-controls": "rail-search-input" },
+			icon("search"),
+		);
+		const searchClose = h("button", { type: "button", class: "rail-search-close" }, icon("close"));
+		const search = h("div", { class: "rail-search" }, searchToggle, input, searchClose);
 		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
@@ -443,30 +457,41 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const tab = (which: RailTab, iconName: string) =>
 			h(
 				"button",
-				{ type: "button", class: "rail-switch-tab", "data-tab": which, "aria-controls": `rail-list-${which}` },
+				{ type: "button", role: "tab", id: `rail-tab-${which}`, class: "rail-switch-tab", "data-tab": which },
 				icon(iconName),
 				h("span", { class: "rail-switch-label" }),
 			);
 		const tabAgents = tab("agents", "friends");
 		const tabInterfaces = tab("interfaces", "interfaces");
-		const created: RailParts = {
-			switcher: h(
-				"div",
-				{ class: "rail-switch", role: "group" },
-				h("span", { class: "rail-switch-pill", "aria-hidden": "true" }),
-				tabAgents,
-				tabInterfaces,
-			),
+		const switcher = h(
+			"div",
+			{ class: "rail-switch", role: "tablist" },
+			h("span", { class: "rail-switch-pill", "aria-hidden": "true" }),
 			tabAgents,
 			tabInterfaces,
-			interfaces: h("div", { class: "rail-scroll rail-interfaces", id: "rail-list-interfaces" }),
+		);
+		const created: RailParts = {
+			switcher,
+			tabAgents,
+			tabInterfaces,
+			interfaces: h("div", {
+				class: "rail-scroll rail-interfaces",
+				id: "rail-list-interfaces",
+				role: "tabpanel",
+				"aria-labelledby": "rail-tab-interfaces",
+			}),
 			interfacesEmpty: h("p", { class: "rail-empty" }),
 			tab: storedTab(company.profile.profileId),
 			tabRoute: "",
+			shownTab: undefined,
 			interfaceRows: new Map(),
-			toolbar: h("div", { class: "rail-toolbar" }, close, h("label", { class: "rail-search" }, input), add),
+			toolbar: h("div", { class: "rail-toolbar" }, close, switcher, search, add),
 			close,
 			add,
+			search,
+			searchToggle,
+			searchClose,
+			searchOpen: false,
 			input,
 			list,
 			connection,
@@ -493,23 +518,82 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		};
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
 		// A tab shows its list at once; it leaves the page where it is.
+		const choose = (next: RailTab) => {
+			if (created.tab === next) return;
+			created.tab = next;
+			try {
+				sessionStorage.setItem(`${RAIL_TAB_KEY}:${company.profile.profileId}`, next);
+			} catch {
+				/* The choice lasts this view. */
+			}
+			created.redraw();
+		};
 		for (const button of [tabAgents, tabInterfaces]) {
-			button.addEventListener(
-				"click",
-				() => {
-					const next = button.dataset.tab === "interfaces" ? "interfaces" : "agents";
-					if (created.tab === next) return;
-					created.tab = next;
-					try {
-						sessionStorage.setItem(`${RAIL_TAB_KEY}:${company.profile.profileId}`, next);
-					} catch {
-						/* The choice lasts this view. */
-					}
-					created.redraw();
-				},
-				{ signal: company.signal },
-			);
+			button.addEventListener("click", () => choose(button.dataset.tab === "interfaces" ? "interfaces" : "agents"), {
+				signal: company.signal,
+			});
 		}
+		// The arrow keys move between the two tabs and choose the one they reach; Home and End pick the first and last.
+		switcher.addEventListener(
+			"keydown",
+			(event) => {
+				if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+				const other: RailTab = created.tab === "agents" ? "interfaces" : "agents";
+				const next: RailTab | undefined =
+					event.key === "Home"
+						? "agents"
+						: event.key === "End"
+							? "interfaces"
+							: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+								? other
+								: undefined;
+				if (!next) return;
+				event.preventDefault();
+				choose(next);
+				(next === "interfaces" ? tabInterfaces : tabAgents).focus();
+			},
+			{ signal: company.signal },
+		);
+		// The search button opens the field over the tabs. Esc or the close button folds it back, clears it and
+		// hands focus back to the button; so does leaving it empty.
+		const openSearch = () => {
+			if (!created.searchOpen) {
+				created.searchOpen = true;
+				created.redraw();
+			}
+			input.focus();
+		};
+		const closeSearch = (refocus: boolean) => {
+			if (!created.searchOpen) return;
+			created.searchOpen = false;
+			if (input.value) {
+				input.value = "";
+				created.list.scrollTop = 0;
+			}
+			created.redraw();
+			if (refocus) searchToggle.focus();
+		};
+		searchToggle.addEventListener("click", openSearch, { signal: company.signal });
+		searchClose.addEventListener("click", () => closeSearch(true), { signal: company.signal });
+		input.addEventListener(
+			"keydown",
+			(event) => {
+				if (event.key !== "Escape" || event.isComposing || !created.searchOpen) return;
+				event.preventDefault();
+				event.stopPropagation();
+				closeSearch(true);
+			},
+			{ signal: company.signal },
+		);
+		search.addEventListener(
+			"focusout",
+			(event) => {
+				const next = event.relatedTarget;
+				if ((next instanceof Node && search.contains(next)) || input.value.trim()) return;
+				closeSearch(false);
+			},
+			{ signal: company.signal },
+		);
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
@@ -553,7 +637,6 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	const locale = presentationLocale();
 	if (parts.locale !== locale) {
 		parts.locale = locale;
-		parts.input.placeholder = t("Search");
 		parts.tabAgents.querySelector(".rail-switch-label")!.textContent = t("Agents");
 		parts.tabInterfaces.querySelector(".rail-switch-label")!.textContent = t("Interfaces");
 		parts.tabAgents.title = t("Agents");
@@ -565,7 +648,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
 		parts.hiddenGroup.label.textContent = t("Hidden");
-		parts.input.setAttribute("aria-label", t("Search agents"));
+		parts.searchClose.setAttribute("aria-label", t("Close search"));
+		parts.searchClose.title = t("Close search");
 		parts.close.setAttribute("aria-label", t("Close company navigation"));
 		parts.add.setAttribute("aria-label", t("New conversation or agent"));
 		parts.add.title = t("New conversation or agent");
@@ -757,26 +841,51 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		else if (section === "chat" || section === "staff" || section === "home") parts.tab = "agents";
 	}
 	const interfacesShown = companyInterfaces(company);
-	if (!interfacesShown.length) parts.tab = "agents";
+	const tabbed = interfacesShown.length > 0;
+	if (!tabbed) parts.tab = "agents";
 	const onInterfaces = parts.tab === "interfaces";
-	// Two pressed-or-not buttons: the switch is a choice between two lists, not tabs over the page.
-	parts.tabAgents.setAttribute("aria-pressed", String(!onInterfaces));
-	parts.tabInterfaces.setAttribute("aria-pressed", String(onInterfaces));
-	parts.input.setAttribute("aria-label", onInterfaces ? t("Search interfaces") : t("Search agents"));
+	// Real tabs over the two lists. Only the chosen tab is in the Tab order, and it names the list it shows.
+	for (const [button, chosen, panel] of [
+		[parts.tabAgents, !onInterfaces, parts.list.id],
+		[parts.tabInterfaces, onInterfaces, parts.interfaces.id],
+	] as const) {
+		button.setAttribute("aria-selected", String(chosen));
+		button.tabIndex = chosen ? 0 : -1;
+		if (chosen) button.setAttribute("aria-controls", panel);
+		else button.removeAttribute("aria-controls");
+	}
+	if (tabbed) {
+		parts.list.setAttribute("role", "tabpanel");
+		parts.list.setAttribute("aria-labelledby", parts.tabAgents.id);
+	} else {
+		parts.list.removeAttribute("role");
+		parts.list.removeAttribute("aria-labelledby");
+	}
+	parts.switcher.hidden = !tabbed;
 	parts.switcher.classList.toggle("on-interfaces", onInterfaces);
-	parts.add.hidden = onInterfaces;
-	reconcile(
-		container,
-		[
-			interfacesShown.length ? parts.switcher : null,
-			parts.toolbar,
-			onInterfaces ? parts.interfaces : parts.list,
-			parts.foot,
-		].filter((element): element is HTMLElement => element !== null),
-	);
+	// Without the tabs the field has the row to itself and stays open.
+	const searchShown = !tabbed || parts.searchOpen;
+	parts.toolbar.classList.toggle("has-tabs", tabbed);
+	parts.toolbar.classList.toggle("is-searching", tabbed && parts.searchOpen);
+	const searchLabel = onInterfaces ? t("Search interfaces") : t("Search agents");
+	parts.input.placeholder = searchLabel;
+	parts.input.setAttribute("aria-label", searchLabel);
+	parts.input.tabIndex = searchShown ? 0 : -1;
+	parts.searchToggle.setAttribute("aria-label", searchLabel);
+	parts.searchToggle.title = searchLabel;
+	parts.searchToggle.setAttribute("aria-expanded", String(searchShown));
+	parts.searchClose.hidden = !(tabbed && parts.searchOpen);
+	const shownList = onInterfaces ? parts.interfaces : parts.list;
+	const turned = parts.shownTab !== undefined && parts.shownTab !== parts.tab;
+	parts.shownTab = parts.tab;
+	reconcile(container, [parts.toolbar, shownList, parts.foot]);
+	// The list taking over slides in from its tab's side (styles/interfaces.css).
+	if (turned) playOnce(shownList, onInterfaces ? "is-entering-right" : "is-entering-left");
 	parts.selection.measure(parts.list);
 	const places = measureRows(parts.list);
 	parts.collapsed = isCollapsed(container);
+	// The open field covers the tabs, so they take no clicks or focus; the collapsed rail shows the tabs, not the field.
+	parts.switcher.inert = tabbed && parts.searchOpen && !parts.collapsed;
 	const railQuery = parts.collapsed ? "" : parts.input.value.trim().toLowerCase();
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;
@@ -1108,7 +1217,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		if (replacement) replacement.focus({ preventScroll: true });
 		else {
 			const now = focusables();
-			(now[Math.min(index, now.length - 1)] ?? parts.input).focus();
+			(
+				now[Math.min(index, now.length - 1)] ?? (parts.input.tabIndex < 0 ? parts.searchToggle : parts.input)
+			).focus();
 		}
 	}
 
