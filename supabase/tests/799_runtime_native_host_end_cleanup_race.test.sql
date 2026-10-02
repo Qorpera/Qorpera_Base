@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-2a (20260929999600): a job's ending takes no screen lock, and deletes its presence device only at commit, if the
+-- G2-2a (20260928419960): a job's ending takes no screen lock, and deletes its presence device only at commit, if the
 -- row is free (skip locked); the supervisor releases an ended job's screen lease reading the job's status without a
 -- lock. These run on separate connections against the presence heartbeat (register, which waits for the job row the
 -- ending holds), a device row held by another, the supervisor's reap, the privacy fence and a fence-first lifecycle
