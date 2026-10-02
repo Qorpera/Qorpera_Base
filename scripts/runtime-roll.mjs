@@ -444,6 +444,10 @@ from public.qorpera_runtime_bundles b where singleton and b.bundle_key = 'qorper
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, ${literal(to.sha)}) as roll_declare_a,
 	public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, ${literal(to.sha)}) as roll_declare_b
 where not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null);`,
+		// The select above returns no row when declarations exist: end with one summary row for the receipt.
+		`select jsonb_build_object('activeVersion', (select b.version from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton),
+	'declaredNext', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(to.sha)}),
+	'declaredOld', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(from.sha)})) as roll_reversed;`,
 	]);
 	files["92-clear-declarations.sql"] = packet([
 		SERVICE,
@@ -456,7 +460,7 @@ where not exists (select 1 from public.qorpera_runner_orchestrators where status
 	where o.status <> 'revoked' and o.runtime_bundle_sha256 = ${literal(to.sha)};`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, null) as roll_clear_a;`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, null) as roll_clear_b;`,
-		`select jsonb_build_object('declaredNext', (select coalesce(jsonb_agg(jsonb_build_object('orchestrator', id, 'adapter', provider_adapter, 'lastHeartbeatAt', last_heartbeat_at) order by id), '[]'::jsonb) from roll_next),
+		`select jsonb_build_object('declaredNext', (select coalesce(jsonb_agg(jsonb_build_object('orchestrator', id, 'adapter', provider_adapter, 'lastHeartbeatAt', last_heartbeat_at) order by id), '[]'::jsonb) from pg_temp.roll_next),
 	'stillDeclared', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null)) as roll_clearing;`,
 	]);
 	files["93-resume.sql"] = packet([

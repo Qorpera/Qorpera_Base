@@ -132,8 +132,13 @@ test("the emergency packets: per-company savepoints, folder-v2 companies, declar
 	assert.ok(!packets["91-reverse.sql"].includes(", null)"), "91 clears no declaration");
 	assert.match(packets["91-reverse.sql"], /qorpera_declare_runtime_node_bundle\('[^']+'::uuid, '[0-9a-f]{64}'\) as roll_declare_b\nwhere not exists \(select 1 from public\.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null\);/);
 	assert.ok(packets["92-clear-declarations.sql"].includes(`qorpera_declare_runtime_node_bundle('${nodeA}'::uuid, null)`));
-	const clear = packets["92-clear-declarations.sql"];
-	assert.ok(clear.indexOf("create temporary table roll_next") < clear.indexOf(", null)"), "92 takes the list before it clears");
+	// 92: the copy, then both clears, then the report from the copy.
+	assert.match(
+		packets["92-clear-declarations.sql"],
+		new RegExp(
+			`create temporary table roll_next[\\s\\S]*qorpera_declare_runtime_node_bundle\\('${nodeA}'::uuid, null\\)[\\s\\S]*qorpera_declare_runtime_node_bundle\\('${nodeB}'::uuid, null\\)[\\s\\S]*from pg_temp\\.roll_next\\)`,
+		),
+	);
 	assert.ok(packets["90-pause-now.sql"].includes("set local lock_timeout = '2s';"));
 	assert.ok(packets["93-resume.sql"].includes("'runsOn'"));
 });
@@ -156,12 +161,14 @@ test("the row the operator reads is each packet's last statement (the runner kee
 	const packets = rollPackets(options());
 	const rows = {
 		"00-check.sql": "roll_check",
+		[`10-migration-${migration.name}`]: "roll_migration",
 		"31-drain-a.sql": "roll_drain",
 		"40-switch.sql": "roll_switched",
 		"50-check-n.sql": "roll_check_n",
 		"61-drain-b.sql": "roll_drain",
 		"80-finish.sql": "roll_finished",
 		"90-pause-now.sql": "roll_paused",
+		"91-reverse.sql": "roll_reversed",
 		"92-clear-declarations.sql": "roll_clearing",
 		"93-resume.sql": "roll_resumed",
 	};
