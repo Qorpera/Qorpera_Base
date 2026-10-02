@@ -5,6 +5,7 @@ import {
 	CloudConnectorTokenRevoker,
 	logConnectorTokenRevocationPass,
 } from "./cloud-connector-token-revocation.ts";
+import { CloudEventVerifications, logEventVerificationPass } from "./cloud-event-verification.ts";
 import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import { CloudModelLoginVault, type ModelLoginRenewer } from "./cloud-model-login-vault.ts";
@@ -26,7 +27,7 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
  * there. The background work of the single-company broker runs here for every company: finished sign-ins
  * are collected (often for a company whose member is signing in, now and then for all), each company's
  * upkeep pass runs in turn, and so does each company's connector token revocation queue (company delete
- * D6), once a minute.
+ * D6), once a minute, and each company's deliveries to signed hooks (W1b), every five seconds.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -60,6 +61,7 @@ interface Served {
 	readonly scope: CloudSecretBrokerCompanyScope;
 	readonly upkeep: CloudModelLoginUpkeep;
 	readonly revocations: CloudConnectorTokenRevocations;
+	readonly verifications: CloudEventVerifications;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -79,7 +81,10 @@ function servedEntry(value: unknown): { companyId: string; authorityId: string; 
 }
 
 export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompanies {
-	readonly #principal: Pick<PostgresCloudSecretBrokerPrincipal, "companies" | "register" | "authority">;
+	readonly #principal: Pick<
+		PostgresCloudSecretBrokerPrincipal,
+		"companies" | "register" | "authority" | "eventVerificationsDue"
+	>;
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
 	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
@@ -90,6 +95,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #sweepEveryMs: number;
 	readonly #upkeepEveryMs: number;
 	readonly #revokeEveryMs: number;
+	readonly #verifyEveryMs: number;
 	readonly #now: () => number;
 	readonly #served = new Map<string, Served>();
 	readonly #signingIn = new Map<string, number>();
@@ -103,7 +109,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#closed = false;
 
 	constructor(options: {
-		principal: Pick<PostgresCloudSecretBrokerPrincipal, "companies" | "register" | "authority">;
+		principal: Pick<
+			PostgresCloudSecretBrokerPrincipal,
+			"companies" | "register" | "authority" | "eventVerificationsDue"
+		>;
 		keyring: CloudSecretKeyring;
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
@@ -118,6 +127,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		sweepEveryMs?: number;
 		upkeepEveryMs?: number;
 		revokeEveryMs?: number;
+		verifyEveryMs?: number;
 		now?: () => number;
 	}) {
 		this.#principal = options.principal;
@@ -131,6 +141,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		this.#sweepEveryMs = options.sweepEveryMs ?? 30_000;
 		this.#upkeepEveryMs = options.upkeepEveryMs ?? 5 * 60_000;
 		this.#revokeEveryMs = options.revokeEveryMs ?? 60_000;
+		this.#verifyEveryMs = options.verifyEveryMs ?? 5000;
 		this.#now = options.now ?? Date.now;
 	}
 
@@ -254,6 +265,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			// Its timer never runs: the shared upkeep loop runs each company's pass in turn.
 			upkeep: new CloudModelLoginUpkeep({ vault: modelLogins }),
 			revocations: new CloudConnectorTokenRevocations({ authority, keyring: this.#keyring, revoker: this.#revoker }),
+			verifications: new CloudEventVerifications({ authority, keyring: this.#keyring }),
 		};
 	}
 
@@ -288,6 +300,28 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		}
 	}
 
+	/** The deliveries to signed hooks of each company that has some due, in turn: one call asks which. */
+	async verifyEvents(): Promise<void> {
+		if (this.#closed) return;
+		const answer = record(
+			await this.#principal.eventVerificationsDue(
+				AbortSignal.any([this.#closing.signal, AbortSignal.timeout(DEADLINE_MS)]),
+			),
+			"Shared vault event verifications",
+		);
+		if (
+			answer.schema !== "qorpera.broker-principal-event-verifications/v1" ||
+			!Array.isArray(answer.companyIds) ||
+			answer.companyIds.length > 1000
+		)
+			throw new Error("Shared vault event verifications are invalid");
+		for (const companyId of new Set(answer.companyIds.map(company))) {
+			if (this.#closed) return;
+			const served = this.#served.get(companyId);
+			if (served) await logEventVerificationPass(served.verifications, this.#closing.signal);
+		}
+	}
+
 	start(): void {
 		if (this.#started || this.#closed) return;
 		this.#started = true;
@@ -299,6 +333,11 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			() => this.revokeTokens(),
 			this.#revokeEveryMs,
 			15_000 + Math.floor(Math.random() * this.#revokeEveryMs),
+		);
+		this.#loop(
+			() => this.verifyEvents(),
+			this.#verifyEveryMs,
+			2000 + Math.floor(Math.random() * this.#verifyEveryMs),
 		);
 	}
 
