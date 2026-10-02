@@ -40,6 +40,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_describe_native_tool_authority", "standard"],
 	["qorpera_fence_native_context", "standard"],
 	["qorpera_find_agent_mail", "standard"],
+	["qorpera_find_company_accounts", "standard"],
 	["qorpera_folder_agent_routines", "standard"],
 	["qorpera_folder_agent_todos", "standard"],
 	["qorpera_folder_commit", "standard"],

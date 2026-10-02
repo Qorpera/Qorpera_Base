@@ -141,7 +141,9 @@ export type CloudCompanyPathRpc =
 	| "qorpera_read_agent_event"
 	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender; finding received mail.
 	| "qorpera_send_agent_mail"
-	| "qorpera_find_agent_mail";
+	| "qorpera_find_agent_mail"
+	// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
+	| "qorpera_find_company_accounts";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

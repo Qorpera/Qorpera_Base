@@ -128,6 +128,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Company mail (M2b), and finding received mail.
 			"qorpera_send_agent_mail",
 			"qorpera_find_agent_mail",
+			// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
+			"qorpera_find_company_accounts",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
