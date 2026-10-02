@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-2a (20260929999600): when a job leaves 'leased' (it ends, or goes back to the queue), its presence device is deleted
+-- G2-2a (20260928419960): when a job leaves 'leased' (it ends, or goes back to the queue), its presence device is deleted
 -- as that transaction commits (a deferred constraint trigger), and the office supervisor's next poll releases its
 -- screen leases at once, as it releases an abandoned lease. Only the ended job's own binding is touched. The office setup is 405's: a real office and screen lease for
 -- test 300's run; only guest readiness is synthetic.
