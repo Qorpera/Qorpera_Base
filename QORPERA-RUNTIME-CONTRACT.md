@@ -454,11 +454,19 @@ agents/
     <group-name>/group.md    one folder per group chat
 connections/
   <connection>.md            one file per connected account
+human-tasks/
+  <task>.md                  work an agent hands to a member or a contact
+  <task>/                    what the person sends back: proof/ and note.md
+contacts/
+  <contact>.md               one file per outside person or firm
 skills/
   <skill>/SKILL.md           company skills
 rules/
   <rule>.md                  company review rules
 ```
+
+`human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
+the 2026-10-02 amendment "work for people", item 5).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
@@ -562,7 +570,8 @@ works for when that member asks (2026-09-25 amendment, item 1).
   unassisted, and its hire waits for a member.
 - Seeded folders and files cannot be deleted or moved: `vision/`,
   `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `skills/` and `rules/`. The Co-Founder's folder and its
+  `connections/`, `human-tasks/`, `contacts/`, `skills/` and `rules/`
+  (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The Co-Founder's folder and its
   `agent.md` cannot be deleted; the folder is only renamed within `agents/`
   when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
@@ -4037,7 +4046,8 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 
 ### 2026-10-02 amendment: work for people
 
-Proposed 2 October 2026 (F2, step H1); pending founder approval. It writes
+Proposed 2 October 2026 (F2, step H1); pending founder approval, except item
+5's seeded folders, which Jonas approved on 2 October 2026. It writes
 into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
 on Qorpera", section 5) and widens 16.1's last step. The folder names
 `human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
@@ -4078,9 +4088,9 @@ and can still be renamed. Formats:
 
    - "Structured files" gains task and contact files: a fixed format, with
      their index once the folder core keeps it (H2);
-   - the platform seeds both folders when a company is created, once that
-     index exists; whether they join the seeded folders that cannot be
-     deleted or moved is decided then.
+   - the platform seeds both folders when a company is created, and they join
+     the seeded folders that cannot be deleted or moved (Jonas, 2 October
+     2026; written into 5.6's tree and its list of seeded folders).
 6. **16.2 is unchanged here.** Turning the office sign-in handoff into a human
    task (A1, company accounts) is for A1's own amendment.
 
