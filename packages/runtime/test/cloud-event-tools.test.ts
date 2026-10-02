@@ -278,4 +278,137 @@ describe("agent event tools", () => {
 			f.run.close();
 		}
 	});
+	const mail = {
+		deliveryId: DELIVERY,
+		mailbox: "agents@northwind.qorpera.mail",
+		deliveredTo: ["agents+stripe@northwind.qorpera.mail"],
+		from: "Stripe <notifications@stripe.com>",
+		subject: "Confirm your email",
+		receivedAt: "2026-10-02T10:00:01+00:00",
+	};
+	const search = (answers: unknown[][]) => (method: string, _args: Record<string, unknown>, runId: string) => {
+		if (method !== "qorpera_find_agent_mail") throw new Error(method);
+		const mails = answers.shift() ?? [];
+		return { schema: "qorpera.agent-mail-search/v1", runId, since: "2026-10-02T09:00:00+00:00", mails, more: false };
+	};
+
+	it("finds mail through the run binding, with addresses lowercased and no wait passed on", async () => {
+		const f = await fixture(search([[mail]]));
+		try {
+			const found = await f.boundary.invoke("f1", "qorpera", "find_mail", {
+				to: " Agents+Stripe@Northwind.Qorpera.Mail ",
+				from: "Stripe",
+				subject: "Confirm",
+				since: "2026-10-02T09:00:00+02:00",
+				before: "2026-10-02T12:00:00Z",
+				waitSeconds: 60,
+			});
+			// A match answers at once, whatever time is left to wait.
+			expect(found.success, JSON.stringify(found)).toBe(true);
+			expect(f.call.mock.calls.map((call) => call.slice(0, 2))).toEqual([
+				[
+					"qorpera_find_agent_mail",
+					{
+						p_binding: f.binding,
+						p_request: {
+							to: "agents+stripe@northwind.qorpera.mail",
+							from: "Stripe",
+							subject: "Confirm",
+							since: "2026-10-02T09:00:00+02:00",
+							before: "2026-10-02T12:00:00Z",
+						},
+					},
+				],
+			]);
+			expect(found.contentItems[0].text).toContain("Confirm your email");
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("waits for a matching email, and answers with none when the time is up", async () => {
+		const arriving = await fixture(search([[], [mail]]));
+		try {
+			const started = Date.now();
+			const found = await arriving.boundary.invoke("w1", "qorpera", "find_mail", {
+				mailbox: "agents@x.example",
+				waitSeconds: 1,
+			});
+			expect(found.success, JSON.stringify(found)).toBe(true);
+			expect(found.contentItems[0].text).toContain(DELIVERY);
+			expect(arriving.call).toHaveBeenCalledTimes(2);
+			expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+		} finally {
+			arriving.run.close();
+		}
+		const quiet = await fixture(search([]));
+		try {
+			const none = await quiet.boundary.invoke("w2", "qorpera", "find_mail", { waitSeconds: 1 });
+			expect(none.success, JSON.stringify(none)).toBe(true);
+			expect(none.contentItems[0].text).toContain('\\"mails\\":[]');
+			expect(quiet.call).toHaveBeenCalledTimes(2);
+		} finally {
+			quiet.run.close();
+		}
+		const now = await fixture(search([]));
+		try {
+			expect((await now.boundary.invoke("w3", "qorpera", "find_mail", {})).success).toBe(true);
+			expect(now.call).toHaveBeenCalledOnce();
+		} finally {
+			now.run.close();
+		}
+	});
+
+	it("stops waiting as soon as the run ends", async () => {
+		const f = await fixture(search([]));
+		const waiting = f.boundary.invoke("w4", "qorpera", "find_mail", { waitSeconds: 120 });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const closed = Date.now();
+		f.run.close();
+		const ended = await waiting;
+		expect(Date.now() - closed).toBeLessThan(1000);
+		expect(ended.success).toBe(false);
+		expect(f.call).toHaveBeenCalledOnce();
+	});
+
+	it("refuses a malformed search without calling the cloud, and an answer for another run", async () => {
+		const f = await fixture(search([]));
+		try {
+			for (const [callId, args] of [
+				["s1", { folder: "inbox" }],
+				["s2", { mailbox: "ab" }],
+				["s3", { from: "" }],
+				["s4", { subject: "s".repeat(201) }],
+				["s5", { since: "2026-10-02T09:00:00" }],
+				["s6", { since: "yesterday" }],
+				["s7", { waitSeconds: 121 }],
+				["s8", { waitSeconds: 1.5 }],
+				["s9", { from: "a\nb" }],
+				["s10", { to: 42 }],
+				["s15", { waitSeconds: null }],
+				["s16", { before: "yesterday" }],
+			] as const) {
+				const refused = await f.boundary.invoke(callId, "qorpera", "find_mail", args);
+				expect(refused.success, callId).toBe(false);
+			}
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+		for (const [callId, answer] of [
+			["s11", { runId: "73100000-0000-4000-8000-0000000000ff" }],
+			["s12", { schema: "qorpera.agent-mail/v1" }],
+			["s13", { mails: Array.from({ length: 11 }, () => mail) }],
+			["s14", { more: "no" }],
+		] as const) {
+			const other = await fixture((_method, _args, runId) =>
+				Object.assign({ schema: "qorpera.agent-mail-search/v1", runId, mails: [], more: false }, answer),
+			);
+			try {
+				expect((await other.boundary.invoke(callId, "qorpera", "find_mail", {})).success, callId).toBe(false);
+			} finally {
+				other.run.close();
+			}
+		}
+	});
 });
