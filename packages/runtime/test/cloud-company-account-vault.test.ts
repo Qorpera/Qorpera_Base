@@ -134,10 +134,17 @@ describe("company account vault", () => {
 		expect(f.sent[0]?.every((byte) => byte === 0)).toBe(true);
 	});
 
-	it("answers the account a repeat of the same call opened first, with its own envelope never stored", async () => {
+	it("answers the account a repeat of the same call opened first, and draws a new id for every attempt", async () => {
 		const first = "79800000-0000-4000-8000-000000000051";
 		const f = vaultFixture({ openCompanyAccount: vi.fn(async () => descriptor(first)) });
 		expect(await f.vault.handle(openRequest(), AbortSignal.timeout(5000))).toEqual(descriptor(first));
+		// With its own ids, two attempts never offer the database the same one.
+		const g = vaultFixture();
+		const vault = new CompanyAccountVault({ authority: g.authority, keys: g.keyring });
+		await vault.handle(openRequest(), AbortSignal.timeout(5000));
+		await vault.handle(openRequest(), AbortSignal.timeout(5000));
+		expect(g.openings).toHaveLength(2);
+		expect(g.openings[0]?.secretId).not.toBe(g.openings[1]?.secretId);
 	});
 
 	it("passes the database's refusals on in their own words, and nothing else", async () => {
@@ -234,6 +241,9 @@ describe("company account requests", () => {
 	});
 
 	it("reads an open and a state change, and refuses anything else", () => {
+		expect(parseCompanyAccountRequest(wire({ site: `${"a".repeat(63)}.example` }))).toMatchObject({
+			site: `${"a".repeat(63)}.example`,
+		});
 		expect(parseCompanyAccountRequest(wire({ password: { length: 20 } }))).toMatchObject({
 			action: "open",
 			site: "vercel.com",
@@ -253,6 +263,8 @@ describe("company account requests", () => {
 			wire({ action: "use" }),
 			wire({ site: "Vercel.com" }),
 			wire({ site: "https://vercel.com" }),
+			// A DNS label has at most 63 characters.
+			wire({ site: `${"a".repeat(64)}.example` }),
 			wire({ signInHosts: ["vercel.com"] }),
 			wire({ signInHosts: ["a.com", "a.com"] }),
 			wire({ login: " agents@nordlys.example" }),

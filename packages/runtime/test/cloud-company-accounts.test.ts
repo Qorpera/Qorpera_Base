@@ -61,6 +61,12 @@ describe("company account authenticator codes", () => {
 		expect(
 			parseCompanyAccountOtpauth(`otpauth://totp/x?secret=${seeds.SHA256}&algorithm=sha256&digits=8&period=60`),
 		).toEqual({ seed: seeds.SHA256, digits: 8, period: 60, algorithm: "SHA256" });
+		// A repeated issuer or image is not read, so it does not matter.
+		expect(
+			parseCompanyAccountOtpauth(
+				`otpauth://totp/x?secret=${seeds.SHA1}&issuer=Vercel&issuer=Vercel&image=a&image=b`,
+			),
+		).toEqual({ seed: seeds.SHA1, digits: 6, period: 30, algorithm: "SHA1" });
 		expect(parseCompanyAccountOtpauth(`otpauth://totp/x?Secret=${seeds.SHA256}&Algorithm=SHA256&Digits=8`)).toEqual({
 			seed: seeds.SHA256,
 			digits: 8,

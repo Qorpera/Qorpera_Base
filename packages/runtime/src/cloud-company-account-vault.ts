@@ -26,7 +26,8 @@ export const COMPANY_ACCOUNT_REQUEST_SCHEMA = "qorpera.company-account-request/v
 const DESCRIPTOR_SCHEMA = "qorpera.company-account/v1";
 const REFUSAL_SCHEMA = "qorpera.company-account-refusal/v1";
 const CONTEXT_SCHEMA = "qorpera.company-account-context/v1";
-const HOST = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
+/** Lowercase DNS labels of 1-63 characters (SQL qorpera_company_account_host_valid). */
+const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 /** The database's own refusals an agent can act on; their messages hold no value. The agent reads the
  * message, never a meaning keyed by the code. 55000 is not one: from these calls it only means the

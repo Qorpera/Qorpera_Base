@@ -1090,6 +1090,8 @@ export class PostgresCloudSecretBrokerAuthority
 				signal,
 			);
 		} finally {
+			// A query still queued for a connection after the deadline is sent with zeros; the database's
+			// digest check refuses it (42501) before anything is written.
 			envelope.fill(0);
 		}
 	}

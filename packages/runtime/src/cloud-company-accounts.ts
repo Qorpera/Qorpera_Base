@@ -220,11 +220,12 @@ export function parseCompanyAccountOtpauth(uri: string): CompanyAccountTotp {
 	}
 	if (url.protocol !== "otpauth:" || url.hostname.toLowerCase() !== "totp")
 		throw new Error("Company account authenticator link is not a time-based code");
-	// Parameter names in any case, each at most once: a second seed or an ignored "Algorithm" would make
-	// codes the website never accepts.
+	// The four parameters that shape the codes, in any case and each at most once: a second seed or an
+	// ignored "Algorithm" would make codes the website never accepts. Others (issuer, image) are not read.
 	const params = new Map<string, string>();
 	for (const [name, value] of url.searchParams) {
 		const key = name.toLowerCase();
+		if (!["secret", "algorithm", "digits", "period"].includes(key)) continue;
 		if (params.has(key)) throw new Error("Company account authenticator link is malformed");
 		params.set(key, value);
 	}
