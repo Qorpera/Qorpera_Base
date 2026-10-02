@@ -10,14 +10,15 @@ where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uu
 
 -- The outcome of a call as the publishable key's role, on the entry point's RPC path: 'ok:<result>', 'refused' (the
 -- entry point's own refusal) or '<sqlstate>'.
-create function pg_temp.g2_call(p_job uuid, p_token text, p_name text, p_args jsonb) returns text language plpgsql as $$
+create function pg_temp.g2_call(p_job uuid, p_token text, p_name text, p_args jsonb,
+	p_entry text default 'qorpera_native_host_call') returns text language plpgsql as $$
 declare v_result jsonb;
 begin
 	perform set_config('request.jwt.claims', '{"role":"anon"}', true);
-	perform set_config('request.path', '/rpc/qorpera_native_host_call', true);
+	perform set_config('request.path', '/rpc/' || p_entry, true);
 	execute 'set local role anon';
 	begin
-		v_result := public.qorpera_native_host_call(p_job, p_token, p_name, p_args);
+		execute format('select public.%I($1, $2, $3, $4)', p_entry) into v_result using p_job, p_token, p_name, p_args;
 	exception when others then
 		execute 'reset role';
 		return case when sqlstate = '42501' and sqlerrm = 'native host call is refused' then 'refused' else sqlstate end;
@@ -42,30 +43,57 @@ begin
 			and not (p_expected = 'ok' and p_actual like 'ok:%')) then
 		raise exception '%: expected %, got %', p_label, p_expected, p_actual; end if;
 end $$;
--- A call with this job's token.
+-- A call with this job's token, through the 8 s entry point or the 25 s one.
 create function pg_temp.g2_own(p_name text, p_args jsonb) returns text language sql as $$
 	select pg_temp.g2_call(pg_temp.g2_job(), current_setting('qorpera_test.g2_token'), p_name, p_args)
 $$;
+create function pg_temp.g2_own_long(p_name text, p_args jsonb) returns text language sql as $$
+	select pg_temp.g2_call(pg_temp.g2_job(), current_setting('qorpera_test.g2_token'), p_name, p_args,
+		'qorpera_native_host_call_long')
+$$;
+-- A statement_timeout setting in milliseconds (a bare number is milliseconds).
+create function pg_temp.g2_ms(p_value text) returns numeric language sql as $$
+	select case when p_value ~ '^[0-9]+$' then p_value::numeric else extract(epoch from p_value::interval) * 1000 end
+$$;
+create function pg_temp.g2_statement_timeout(p_function oid) returns text language sql as $$
+	select substr(setting, length('statement_timeout=') + 1) from pg_proc as p, unnest(p.proconfig) as setting
+	where p.oid = p_function and setting like 'statement_timeout=%'
+$$;
 
--- 1. Who may call what: the entry point is the publishable key's alone, and the call list is closed to every API
---    role. Every listed function exists once in public, is SECURITY DEFINER, has the dispatcher's shape (named plain
---    inputs, one scalar or void result) and stays out of the publishable key's reach; three also serve members (they
---    check the member themselves), and no other is callable by a signed-in member.
+-- 1. Who may call what: the two entry points are the publishable key's alone, their shared body nobody's, and the
+--    call list is closed to every API role. Every listed function exists once in public, is SECURITY DEFINER, has
+--    the dispatcher's shape (named plain inputs, one scalar or void result) and stays out of the publishable key's
+--    reach; three also serve members (they check the member themselves), and no other is callable by a signed-in
+--    member. Each listed call keeps the statement budget it has today (its own statement_timeout, or
+--    authenticator's 8 s), through the entry point of that budget.
 do $$
 declare v_bad text;
 begin
-	if not has_function_privilege('anon', 'public.qorpera_native_host_call(uuid,text,text,jsonb)', 'execute')
-		or has_function_privilege('authenticated', 'public.qorpera_native_host_call(uuid,text,text,jsonb)', 'execute')
-		or has_function_privilege('service_role', 'public.qorpera_native_host_call(uuid,text,text,jsonb)', 'execute')
-		or has_function_privilege('qorpera_secret_broker', 'public.qorpera_native_host_call(uuid,text,text,jsonb)', 'execute') then
-		raise exception 'the entry point has the wrong callers'; end if;
+	select string_agg(entry.signature || ':' || r.rolname, ', ') into v_bad
+	from (values ('public.qorpera_native_host_call(uuid,text,text,jsonb)', true),
+		('public.qorpera_native_host_call_long(uuid,text,text,jsonb)', true),
+		('public.qorpera_native_host_dispatch(uuid,text,text,jsonb,text)', false)) as entry(signature, anon),
+		(values ('anon'), ('authenticated'), ('service_role'), ('qorpera_secret_broker')) as r(rolname)
+	where has_function_privilege(r.rolname, entry.signature, 'execute') is distinct from (entry.anon and r.rolname = 'anon');
+	if v_bad is not null then raise exception 'the entry points have the wrong callers: %', v_bad; end if;
+	if pg_temp.g2_statement_timeout('public.qorpera_native_host_call(uuid,text,text,jsonb)'::regprocedure) is distinct from '8s'
+		or pg_temp.g2_statement_timeout('public.qorpera_native_host_call_long(uuid,text,text,jsonb)'::regprocedure)
+			is distinct from '25s' then
+		raise exception 'an entry point has the wrong statement budget'; end if;
+	select string_agg(calls.name || ' ' || calls.budget || ' ' || coalesce(pg_temp.g2_statement_timeout(p.oid), '-'), ', ')
+	into v_bad
+	from public.qorpera_native_host_calls as calls
+	join pg_proc as p on p.pronamespace = 'public'::regnamespace and p.proname = calls.name
+	where coalesce(pg_temp.g2_ms(pg_temp.g2_statement_timeout(p.oid)), 8000)
+		<> case calls.budget when 'long' then 25000 else 8000 end;
+	if v_bad is not null then raise exception 'listed calls with another statement budget than today''s: %', v_bad; end if;
 	select string_agg(r.rolname || ':' || pr.privilege, ', ') into v_bad
 	from (values ('anon'), ('authenticated'), ('service_role'), ('qorpera_secret_broker')) as r(rolname),
 		(values ('select'), ('insert'), ('update'), ('delete'), ('truncate')) as pr(privilege)
 	where has_table_privilege(r.rolname, 'public.qorpera_native_host_calls', pr.privilege);
 	if v_bad is not null then raise exception 'the call list is open to an API role: %', v_bad; end if;
 	select string_agg(calls.name, ', ') into v_bad from public.qorpera_native_host_calls as calls
-	where calls.name = 'qorpera_native_host_call'
+	where calls.name in ('qorpera_native_host_call', 'qorpera_native_host_call_long', 'qorpera_native_host_dispatch')
 		or (select count(*) from pg_proc as p where p.pronamespace = 'public'::regnamespace and p.proname = calls.name) <> 1
 		or exists (select 1 from pg_proc as p where p.pronamespace = 'public'::regnamespace and p.proname = calls.name
 			and (not p.prosecdef or p.prokind <> 'f' or p.proretset or p.proargmodes is not null
@@ -116,6 +144,8 @@ begin
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_claim_coding_session', jsonb_build_object('p_owner', 'guest')),
 		'refused', 'an unlisted call');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_host_call', '{}'), 'refused', 'the entry point itself');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_host_call_long', '{}'), 'refused', 'the long entry point');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_host_dispatch', '{}'), 'refused', 'the entry points'' body');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_runtime_wake_policy', jsonb_build_object('p_run_id', pg_temp.g2_run())),
 		'refused', 'a call the native host never makes');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_record_runtime_observation_batch', v_batch || '{"p_extra":1}'),
@@ -137,6 +167,10 @@ begin
 	update public.qorpera_runner_jobs set job_type = 'g2_other_turn' where id = pg_temp.g2_job();
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_machines_available', '{}'), 'refused', 'another job type');
 	update public.qorpera_runner_jobs set job_type = 'agent_turn' where id = pg_temp.g2_job();
+	-- A job that asks for another capability.
+	update public.qorpera_runner_jobs set required_capability = 'git_worktree' where id = pg_temp.g2_job();
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_machines_available', '{}'), 'refused', 'another capability');
+	update public.qorpera_runner_jobs set required_capability = 'agent_turn' where id = pg_temp.g2_job();
 end $$;
 
 -- 4. Each scope, in and out of the run's reach. 'not refused' is the called function's own answer, whatever it is.
@@ -158,11 +192,19 @@ begin
 		'p_job_id', v_binding ->> 'jobId', 'p_runner_id', v_binding ->> 'runnerId', 'p_assignment_id', v_binding ->> 'assignmentId',
 		'p_credential_capsule_id', v_binding ->> 'credentialCapsuleId', 'p_compute_identity_id', v_binding ->> 'computeIdentityId',
 		'p_provider', v_binding ->> 'provider', 'p_native_harness', v_binding ->> 'nativeHarness');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_validate_native_provider_execution_lease', v_lease), 'not refused', 'a lease call');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_validate_native_provider_execution_lease',
+	perform pg_temp.g2_expect(pg_temp.g2_own_long('qorpera_validate_native_provider_execution_lease', v_lease), 'not refused',
+		'a lease call');
+	perform pg_temp.g2_expect(pg_temp.g2_own_long('qorpera_validate_native_provider_execution_lease',
 		v_lease || jsonb_build_object('p_job_id', v_other)), 'refused', 'a lease call for another job');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_validate_native_provider_execution_lease', v_lease - 'p_run_id'),
+	perform pg_temp.g2_expect(pg_temp.g2_own_long('qorpera_validate_native_provider_execution_lease', v_lease - 'p_run_id'),
 		'refused', 'a lease call without its run');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_send_native_agent_message', v_lease || '{"p_idempotency_key":"g2",
+		"p_text":"hi","p_phase":"final"}'), 'not refused', 'a lease call of the 8 s budget');
+	-- Each call through its own budget's entry point only.
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_validate_native_provider_execution_lease', v_lease), 'refused',
+		'the lease validator through the 8 s entry point');
+	perform pg_temp.g2_expect(pg_temp.g2_own_long('qorpera_company_machines_available', '{}'), 'refused',
+		'an 8 s call through the 25 s entry point');
 	-- run: the in-scope call is section 2's.
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_record_runtime_observation_batch',
 		jsonb_build_object('p_run_id', v_other, 'p_observations', '[]'::jsonb)), 'refused', 'another run');
@@ -194,6 +236,9 @@ begin
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('runId', v_other),
 			'p_path', 'notes.md')), 'refused', 'a folder actor of another run');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
+		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('jobId', v_other),
+			'p_path', 'notes.md')), 'refused', 'a folder actor of another job');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_path', 'notes.md')), 'refused', 'a folder call without its actor');
 	-- environment
@@ -282,7 +327,7 @@ end $f$;
 create function public.qorpera_g2t_rows(p_run_id uuid) returns setof integer language sql security definer
 	set search_path = '' as $f$ select 1 $f$;
 create function public.qorpera_g2t_row(p_run_id uuid) returns public.qorpera_native_host_calls language sql
-	security definer set search_path = '' as $f$ select 'qorpera_x', 'none' $f$;
+	security definer set search_path = '' as $f$ select 'qorpera_x', 'none', 'standard' $f$;
 create function public.qorpera_g2t_out(p_run_id uuid, out p_value integer) language sql security definer
 	set search_path = '' as $f$ select 1 $f$;
 create function public.qorpera_g2t_many(p_run_id uuid) returns integer language sql security definer
@@ -299,10 +344,17 @@ begin
 	perform pg_sleep(1.2);
 	return jsonb_build_object('statement_timeout', current_setting('statement_timeout'), 'lock_timeout', current_setting('lock_timeout'));
 end $f$;
-insert into public.qorpera_native_host_calls(name, scope)
-select 'qorpera_g2t_' || kind, 'run' from unnest(array['echo', 'text', 'flag', 'nothing', 'void', 'raise', 'rows', 'row',
-	'out', 'many', 'proc', 'slow']) as kind
-union all select 'qorpera_g2t_bare', 'none';
+create function public.qorpera_g2t_slow_long(p_run_id uuid) returns jsonb language plpgsql security definer
+	set search_path = '' as $f$
+begin
+	perform pg_sleep(1.2);
+	return jsonb_build_object('statement_timeout', current_setting('statement_timeout'), 'lock_timeout', current_setting('lock_timeout'));
+end $f$;
+insert into public.qorpera_native_host_calls(name, scope, budget)
+select 'qorpera_g2t_' || kind, 'run', 'standard' from unnest(array['echo', 'text', 'flag', 'nothing', 'void', 'raise', 'rows',
+	'row', 'out', 'many', 'proc', 'slow']) as kind
+union all select 'qorpera_g2t_bare', 'none', 'standard'
+union all select 'qorpera_g2t_slow_long', 'run', 'long';
 
 -- What PostgREST answers for a scalar call (it runs on the function's RPC path), and what it answers for the same
 -- call through the entry point.
@@ -399,18 +451,22 @@ begin
 	end loop;
 end $$;
 
--- 7. Budgets: PostgREST (12 and later; production runs 14.5) applies a called function's statement_timeout and
---    lock_timeout to its request, so a call through the entry point gets the service caller's 8 s (authenticator's),
---    not the publishable key's 3 s. Here the caller's own budget is 1 s, the entry point's settings are applied as
---    PostgREST applies them, and a call of 1.2 s completes and sees 8 s for both. Without the settings the statement
---    would be cancelled after 1 s (57014), which no handler here catches.
+-- 7. Budgets: PostgREST (12 and later; production runs 14.5) applies a called function's statement_timeout to its
+--    request (db-hoisted-tx-settings), so a call through an entry point gets that entry point's budget, not the
+--    publishable key's 3 s: 8 s (authenticator's), or 25 s for the lease validator. lock_timeout is the entry
+--    point's own setting for the length of the call. Here the caller's own budgets are 1 s, the entry point's
+--    statement_timeout is applied as PostgREST applies it, and a call of 1.2 s completes and sees its entry point's
+--    budgets. Without the setting the statement would be cancelled after 1 s (57014), which no handler here catches.
 set local statement_timeout = '1s';
 set local lock_timeout = '1s';
-select set_config(split_part(setting, '=', 1), substr(setting, strpos(setting, '=') + 1), true)
-from pg_proc as p, unnest(p.proconfig) as setting
-where p.oid = 'public.qorpera_native_host_call(uuid,text,text,jsonb)'::regprocedure and setting ~ '^(statement|lock)_timeout=';
+select set_config('statement_timeout', pg_temp.g2_statement_timeout('public.qorpera_native_host_call(uuid,text,text,jsonb)'::regprocedure), true);
 select pg_temp.g2_expect(pg_temp.g2_own('qorpera_g2t_slow', jsonb_build_object('p_run_id', pg_temp.g2_run())),
-	'ok:{"lock_timeout": "8s", "statement_timeout": "8s"}', 'a call past the caller''s own budget');
+	'ok:{"lock_timeout": "8s", "statement_timeout": "8s"}', 'an 8 s call past the caller''s own budget');
+set local statement_timeout = '1s';
+select set_config('statement_timeout',
+	pg_temp.g2_statement_timeout('public.qorpera_native_host_call_long(uuid,text,text,jsonb)'::regprocedure), true);
+select pg_temp.g2_expect(pg_temp.g2_own_long('qorpera_g2t_slow_long', jsonb_build_object('p_run_id', pg_temp.g2_run())),
+	'ok:{"lock_timeout": "8s", "statement_timeout": "25s"}', 'a 25 s call past the caller''s own budget');
 set local statement_timeout = 0;
 set local lock_timeout = 0;
 

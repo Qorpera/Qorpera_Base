@@ -3,11 +3,12 @@
 --
 -- Today the native host beside the model, in every runner guest and exec-host slot, calls ~90 functions with the
 -- service-role key. Most are scoped only by ids it sends (p_binding and similar), and SQL trusts the caller's role.
--- So a guest that is broken out of can act for any company. This adds one entry point the native host can call
--- with the publishable key instead:
---   qorpera_native_host_call(p_job_id, p_job_lease_token, p_name, p_args)
+-- So a guest that is broken out of can act for any company. This adds the entry point the native host can call
+-- with the publishable key instead, in two statement budgets (see 4):
+--   qorpera_native_host_call(p_job_id, p_job_lease_token, p_name, p_args)       8 s
+--   qorpera_native_host_call_long(p_job_id, p_job_lease_token, p_name, p_args)  25 s, the lease validator only
 -- 1. It checks the runner job's lease token first, by the job's primary key and with no lock: the job is an
---    agent turn's, leased, its lease is current, and the token's sha256 is the job's lease_token_sha256 (the runner
+--    agent turn's (its type and capability), leased, its lease is current, and the token's sha256 is the job's lease_token_sha256 (the runner
 --    unit in the same guest holds the token; its hash is set at claim and cleared at the end). Every refusal is
 --    one 42501 "native host call is refused".
 -- 2. It allows only the calls listed in qorpera_native_host_calls (changed by migrations only; no API role reads
@@ -22,11 +23,14 @@
 --    declared argument names: identifiers through %I, types from the catalog (format_type), every value through
 --    USING, read from the JSON as PostgREST reads an RPC's arguments. It runs as the platform's own service caller
 --    on the function's own RPC path for that call (request.jwt.claims, request.jwt.claim.role and request.path, set
---    with set_config and restored; the fence readers and object RPCs choose their locks by request.path), with the
---    service role's 8 s statement and lock budgets as function settings (PostgREST applies a function's
---    statement_timeout to its request), so every listed function runs as today, and its errors reach the caller
---    unchanged (no handler). The result comes back as jsonb, as PostgREST returns a scalar; a void call returns
---    null where PostgREST answered 204, which a supabase-js caller reads as the same null.
+--    with set_config and restored; the shared company readers choose their lock strength by request.path), so
+--    every listed function runs as today, and its errors reach the caller unchanged (no handler). The result comes
+--    back as jsonb, as PostgREST returns a scalar; a void call returns null where PostgREST answered 204, which a
+--    supabase-js caller reads as the same null.
+-- 4. Each call keeps the statement budget it has today: PostgREST applies the called function's statement_timeout to
+--    the request, which is now the entry point's. The list names each call's entry point (budget): the lease
+--    validator's own 25 s through qorpera_native_host_call_long, everything else authenticator's 8 s. Both share
+--    one body, qorpera_native_host_dispatch, which no role can call.
 -- The listed functions stay unreachable with the publishable key. The office VM's calls, the login guest's
 -- capability-bound calls and the native host's calls between jobs are later G2 steps.
 --
@@ -37,7 +41,9 @@ set local lock_timeout = '3s';
 
 create table public.qorpera_native_host_calls (
 	name text primary key check (name ~ '^qorpera_[a-z0-9_]{1,120}$'),
-	scope text not null check (scope in ('binding','lease','run','identity','profile','folder','environment','proposal','none'))
+	scope text not null check (scope in ('binding','lease','run','identity','profile','folder','environment','proposal','none')),
+	-- The entry point whose statement budget the call gets: 'standard' (8 s, authenticator's) or 'long' (25 s).
+	budget text not null default 'standard' check (budget in ('standard', 'long'))
 );
 revoke all on public.qorpera_native_host_calls from public, anon, authenticated, service_role;
 alter table public.qorpera_native_host_calls enable row level security;
@@ -126,12 +132,17 @@ insert into public.qorpera_native_host_calls(name, scope) values
 	('qorpera_validate_native_provider_execution_lease', 'lease'),
 	('qorpera_verify_company_path_file', 'profile'),
 	('qorpera_verify_company_path_tree', 'profile');
+-- The lease validator sets statement_timeout 25s for itself (20260913000100, for the host's authority monitor), and
+-- PostgREST applies a called function's statement_timeout to its request: it keeps that budget through the long
+-- entry point.
+update public.qorpera_native_host_calls set budget = 'long' where name = 'qorpera_validate_native_provider_execution_lease';
 
-create function public.qorpera_native_host_call(p_job_id uuid, p_job_lease_token text, p_name text, p_args jsonb)
-returns jsonb language plpgsql volatile security definer set search_path = ''
-	set statement_timeout = '8s' set lock_timeout = '8s' as $$
+-- The shared body of both entry points; p_budget is the entry point's, never the caller's.
+create function public.qorpera_native_host_dispatch(p_job_id uuid, p_job_lease_token text, p_name text, p_args jsonb,
+	p_budget text)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
-	v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype; v_scope text;
+	v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype; v_scope text; v_budget text;
 	v_function pg_catalog.pg_proc%rowtype; v_inputs text; v_columns text; v_sql text; v_result jsonb;
 	v_claims text; v_claim_role text; v_path text;
 begin
@@ -140,7 +151,8 @@ begin
 		or p_name is null or p_name !~ '^qorpera_[a-z0-9_]{1,120}$' or jsonb_typeof(p_args) is distinct from 'object' then
 		raise exception 'native host call is refused' using errcode = '42501'; end if;
 	select job.* into v_job from public.qorpera_runner_jobs as job where job.id = p_job_id;
-	if not found or v_job.status <> 'leased' or v_job.job_type <> 'agent_turn' or v_job.run_id is null
+	if not found or v_job.status <> 'leased' or v_job.job_type <> 'agent_turn' or v_job.required_capability <> 'agent_turn'
+		or v_job.run_id is null
 		or v_job.lease_token_sha256 is null
 		or v_job.lease_expires_at is null or v_job.lease_expires_at <= clock_timestamp()
 		or v_job.lease_token_sha256 <> encode(extensions.digest(convert_to(p_job_lease_token, 'utf8'), 'sha256'), 'hex') then
@@ -150,8 +162,8 @@ begin
 
 	-- A listed call in this run's scope. An argument that names a job, run, environment, company, compute identity,
 	-- binding or folder actor must be this run's, whatever the call's scope.
-	select calls.scope into v_scope from public.qorpera_native_host_calls as calls where calls.name = p_name;
-	if not found
+	select calls.scope, calls.budget into v_scope, v_budget from public.qorpera_native_host_calls as calls where calls.name = p_name;
+	if not found or v_budget is distinct from p_budget
 		or (p_args ? 'p_job_id' and p_args ->> 'p_job_id' is distinct from v_job.id::text)
 		or (p_args ? 'p_run_id' and p_args ->> 'p_run_id' is distinct from v_run.id::text)
 		or (p_args ? 'p_environment_id' and p_args ->> 'p_environment_id' is distinct from v_run.environment_id::text)
@@ -203,10 +215,9 @@ begin
 	v_sql := case when v_function.prorettype = 'void'::regtype then 'select ' || v_sql else format('select to_jsonb(%s)', v_sql) end
 		|| case when v_inputs is null then '' else format(' from jsonb_to_record($1) as r(%s)', v_columns) end;
 
-	-- As the platform's own service caller, on the called function's own RPC path (qorpera_company_fence_shared and
-	-- qorpera_object_rpc_lock_budget choose lock strength and budget by request.path), for this call only. No
-	-- handler: the called function's errors reach the caller unchanged, and the transaction (or the caller's
-	-- savepoint) undoes these settings with it.
+	-- As the platform's own service caller, on the called function's own RPC path (qorpera_company_fence_shared
+	-- chooses the shared company lock by request.path), for this call only. No handler: the called function's errors
+	-- reach the caller unchanged, and the transaction (or the caller's savepoint) undoes these settings with it.
 	v_claims := current_setting('request.jwt.claims', true);
 	v_claim_role := current_setting('request.jwt.claim.role', true);
 	v_path := current_setting('request.path', true);
@@ -224,6 +235,30 @@ begin
 	return v_result;
 end
 $$;
+revoke all on function public.qorpera_native_host_dispatch(uuid, text, text, jsonb, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- The entry points. PostgREST applies a called function's statement_timeout to its request (db-hoisted-tx-settings),
+-- so each carries the budget its calls had when the native host called them directly: authenticator's 8 s, or the
+-- lease validator's own 25 s. Without it a call would get the publishable key's 3 s. lock_timeout is authenticator's
+-- 8 s, for the length of the call.
+create function public.qorpera_native_host_call(p_job_id uuid, p_job_lease_token text, p_name text, p_args jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = ''
+	set statement_timeout = '8s' set lock_timeout = '8s' as $$
+begin
+	return public.qorpera_native_host_dispatch(p_job_id, p_job_lease_token, p_name, p_args, 'standard');
+end
+$$;
+create function public.qorpera_native_host_call_long(p_job_id uuid, p_job_lease_token text, p_name text, p_args jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = ''
+	set statement_timeout = '25s' set lock_timeout = '8s' as $$
+begin
+	return public.qorpera_native_host_dispatch(p_job_id, p_job_lease_token, p_name, p_args, 'long');
+end
+$$;
 revoke all on function public.qorpera_native_host_call(uuid, text, text, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
+revoke all on function public.qorpera_native_host_call_long(uuid, text, text, jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_native_host_call(uuid, text, text, jsonb) to anon;
+grant execute on function public.qorpera_native_host_call_long(uuid, text, text, jsonb) to anon;
