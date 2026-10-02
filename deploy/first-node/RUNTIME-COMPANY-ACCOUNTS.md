@@ -118,6 +118,28 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   any more, so closing is a "deleting things outside" step the company's review rules check (A1-4); after it only the
   website's own account recovery gets back in. Accounts closed before this migration are revoked by it.
 
+## A1-4c: the computer stops at a page that asks for a person (office guest code, with an office image)
+
+Jonas, 2 October: on a block, CAPTCHA or "unusual activity" page, stop at once, mark the account `needs_person`,
+never retry. The office enforces the stop and the never; the agent marks the account (A1-4b's words). Nothing tries
+to pass such a check.
+
+- `cloud-company-computer-site-stops.ts` reads a tab within 2 s: its title, the top 4,000 characters of its text
+  (counted only when the whole text is at most 3,000, as such pages are short) and its frames' addresses. A frame
+  of a CAPTCHA or human check service (reCAPTCHA, hCaptcha, Cloudflare's challenges, Arkose, DataDome, HUMAN,
+  AWS WAF) or plain words (a CAPTCHA, "verify you are human", "unusual activity", "you have been blocked", "access
+  denied", …) name the reason: `captcha`, `human_check`, `unusual_activity` or `blocked`. A page that does not
+  answer counts as ordinary.
+- Before every page action (navigate, click, fill, press, vault_fill) the office reads the page first: one that shows
+  such a check records its site. A page action on a recorded site (the site, a name under it or a parent of it,
+  with or without `www.`) is refused before it starts, `SITE_STOPPED`; a navigation is checked by its destination,
+  so going to another site stays open. After the action, a page that now shows such a check records its sites (the
+  one acted on, the one shown, a navigation's destination) and the action fails with `SITE_STOP_<REASON>`. A
+  snapshot still shows the page and adds `stop: SITE_STOP_<REASON>`.
+- The record is the office service's, for all the computer's screens, while it runs; a restart clears it, and the
+  account's `needs_person` stays in the database. Read actions (snapshot, list_tabs, select_tab, screenshots) stay
+  allowed, so the agent can describe the page and a member can take over.
+
 ## Notes for later steps
 
 - Folder-v2 (A1-7): these calls lock the receipt before vault rows, the reverse of the folder core's ranks. On

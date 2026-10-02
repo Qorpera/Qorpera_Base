@@ -9,6 +9,10 @@ import {
 	CompanyComputerGuestAutomation,
 	companyComputerSnapshotCut,
 } from "@qorpera/runtime/cloud-company-computer-guest";
+import {
+	COMPANY_COMPUTER_SITE_SAMPLE,
+	CompanyComputerSiteStops,
+} from "@qorpera/runtime/cloud-company-computer-site-stops";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +63,8 @@ function office(
 		url?: string;
 		key?: CompanyComputerFillKey | null;
 		filled?: CompanyComputerFilledValues;
+		/** The sites the computer stopped on, shared with another run's automation. */
+		siteStops?: CompanyComputerSiteStops;
 		/** A page script moves the focus somewhere with no value (an editable area) before the typing. */
 		lose?: boolean;
 		/** Meanwhile the page opens a second tab. */
@@ -81,6 +87,8 @@ function office(
 		link: "https://vercel.com/",
 		/** The whole aria snapshot, instead of the one built from the fields above. */
 		aria: undefined as string | undefined,
+		/** Frames inside the page, by address (a CAPTCHA service's, A1-4c). */
+		frames: [] as string[],
 	};
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
@@ -171,10 +179,17 @@ function office(
 		// The screen check's own function runs against the fake document; the private-box reader finds none.
 		evaluate: vi.fn(
 			async (fn: (arg: unknown) => unknown, arg?: unknown): Promise<unknown> =>
-				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE ? runScreenCheck(fn, arg) : [],
+				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE
+					? runScreenCheck(fn, arg)
+					: arg === COMPANY_COMPUTER_SITE_SAMPLE
+						? { title: shown.title, text: shown.text, length: shown.text.length }
+						: [],
 		),
+		goto: vi.fn(async (url: string) => {
+			shown.url = url;
+		}),
 		screenshot: vi.fn(async () => pngHeader()),
-		frames: () => [page],
+		frames: () => [page, ...shown.frames.map((url) => ({ url: () => url, evaluate: async () => "" }))],
 		isDetached: () => false,
 		locator: vi.fn(() => ({
 			ariaSnapshot: async () =>
@@ -240,6 +255,7 @@ function office(
 		screenshots: automationScreenshots,
 		...(key ? { fillKey: key } : {}),
 		...(options.filled ? { filled: options.filled } : {}),
+		...(options.siteStops ? { siteStops: options.siteStops } : {}),
 	});
 	return {
 		automation,
@@ -602,6 +618,57 @@ describe("vault_fill on the Company Computer", () => {
 		const error = (await perform(stuck, action(), sealed(stuck.key!)).catch((caught: unknown) => caught)) as Error;
 		expect(error.message).toBe("ACCOUNT_FILL_LOST");
 		expect((error.cause as Error).cause).toBe(failure);
+	});
+
+	it("stops at a page that asks for a person, and never acts on that site again while the computer runs", async () => {
+		const stops = new CompanyComputerSiteStops();
+		const f = office({ siteStops: stops });
+		// The site answers a navigation with a human check: the agent is stopped, and nothing tries to pass it.
+		f.page.goto.mockImplementationOnce(async (url: string) => {
+			f.shown.url = url;
+			f.shown.title = "Just a moment...";
+		});
+		await expect(
+			perform(f, { kind: "browser", action: "navigate", url: "https://vercel.com/signup" }),
+		).rejects.toThrow("SITE_STOP_HUMAN_CHECK");
+		// Back on an ordinary page of the same site, or another run on this computer: still refused, before acting.
+		f.shown.title = "Sign up";
+		for (const run of [f, office({ siteStops: stops })]) {
+			run.shown.url = "https://vercel.com/login";
+			await expect(
+				perform(run, { kind: "browser", action: "navigate", url: "https://www.vercel.com/" }),
+			).rejects.toThrow("SITE_STOPPED");
+			await expect(
+				perform(run, { kind: "browser", action: "click", role: "button", name: "Continue" }),
+			).rejects.toThrow("SITE_STOPPED");
+			await expect(perform(run, action(), sealed(run.key!))).rejects.toThrow("SITE_STOPPED");
+			expect(run.typed).toEqual([]);
+		}
+		expect(f.page.goto).toHaveBeenCalledOnce();
+		// Another site stays open.
+		await expect(
+			perform(f, { kind: "browser", action: "navigate", url: "https://netlify.com/" }),
+		).resolves.toMatchObject({ kind: "json" });
+	});
+
+	it("types nothing into a page that already shows a CAPTCHA, and a snapshot of one says to stop", async () => {
+		const f = office();
+		f.shown.frames = ["https://www.google.com/recaptcha/api2/anchor?k=x"];
+		await expect(perform(f, action(), sealed(f.key!))).rejects.toThrow("SITE_STOPPED");
+		expect(f.typed).toEqual([]);
+		const g = office();
+		g.shown.text = "We have detected unusual activity from your account. Please try again later.";
+		const result = (await perform(g, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { stop?: string };
+		};
+		expect(result.value.stop).toBe("SITE_STOP_UNUSUAL_ACTIVITY");
+		await expect(perform(g, { kind: "browser", action: "press", key: "Enter" })).rejects.toThrow("SITE_STOPPED");
+		// An ordinary page carries no stop.
+		const h = office();
+		const plain = (await perform(h, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { stop?: string };
+		};
+		expect(plain.value.stop).toBeUndefined();
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {

@@ -30,6 +30,11 @@ import {
 } from "./cloud-company-computer-private-fields.ts";
 import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
+import {
+	COMPANY_COMPUTER_SITE_STOP_CODES,
+	CompanyComputerSiteStops,
+	readCompanyComputerSiteStop,
+} from "./cloud-company-computer-site-stops.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
@@ -335,6 +340,7 @@ export class CompanyComputerGuestAutomation {
 	readonly #fillKey: CompanyComputerFillKey | undefined;
 	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
 	readonly #filled: CompanyComputerFilledValues;
+	readonly #siteStops: CompanyComputerSiteStops;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -351,6 +357,8 @@ export class CompanyComputerGuestAutomation {
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
 		fillKey?: CompanyComputerFillKey;
 		filled?: CompanyComputerFilledValues;
+		/** The sites this computer stopped on (A1-4c), shared by its screens. */
+		siteStops?: CompanyComputerSiteStops;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -366,6 +374,7 @@ export class CompanyComputerGuestAutomation {
 		this.#fileImports = options.fileImports;
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
+		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
 	}
 
 	/**
@@ -621,6 +630,17 @@ export class CompanyComputerGuestAutomation {
 				await this.#assertFilledNotShown(page);
 				return this.#publish(png, lease, effect, "browser", operation);
 			}
+			// A site this computer stopped on is never acted on again (A1-4c): a person continues there. A page that
+			// shows such a check now stops it before anything is clicked or typed; going to another site stays open.
+			const actedOn = page.url();
+			if (["navigate", "click", "fill", "press", "vault_fill"].includes(action.action)) {
+				const showing = await readCompanyComputerSiteStop(page);
+				if (showing) this.#siteStops.add(actedOn, showing);
+				if (
+					action.action === "navigate" ? this.#siteStops.stoppedAt(action.url) : this.#siteStops.stoppedAt(actedOn)
+				)
+					throw new CompanyComputerActionNotStartedError("SITE_STOPPED");
+			}
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
 			else if (action.action === "click" || action.action === "fill") {
@@ -705,11 +725,26 @@ export class CompanyComputerGuestAutomation {
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
+			// A page that now shows a CAPTCHA, a human check, an unusual activity warning or a block stops the agent
+			// at once, and the site is never acted on again while this computer runs; nothing tries to pass it.
+			const stopAt = async () => {
+				const stop = await readCompanyComputerSiteStop(page);
+				if (stop)
+					for (const address of [actedOn, page.url(), ...(action.action === "navigate" ? [action.url] : [])])
+						this.#siteStops.add(address, stop);
+				return stop;
+			};
+			if (action.action !== "snapshot") {
+				const stop = await stopAt();
+				if (stop) throw new CompanyComputerActionFailedError(new Error(COMPANY_COMPUTER_SITE_STOP_CODES[stop]));
+			}
 			if (action.action === "snapshot") {
 				// The aria snapshot copies every box's value; read the private ones on both sides of it.
 				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				// A snapshot of such a page still shows it, and says the agent stops here.
+				const stop = await stopAt();
 				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
 				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
 				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
@@ -747,6 +782,8 @@ export class CompanyComputerGuestAutomation {
 						title: this.#filled.hideText(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
 						truncated: full.length > aria.length || snapshot.length > 16_384,
+						// The page asks for a person: the agent stops here (A1-4c).
+						...(stop ? { stop: COMPANY_COMPUTER_SITE_STOP_CODES[stop] } : {}),
 					},
 				};
 			}
