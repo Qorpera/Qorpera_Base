@@ -73,8 +73,7 @@ select set_config('qorpera_test.stripe_mail', (select item ->> 'deliveryId'
 select set_config('qorpera_test.ab_mail', (select item ->> 'deliveryId'
 	from jsonb_array_elements(current_setting('qorpera_test.tagged')::jsonb -> 'results') as item
 	where item ->> 'recipient' = 'a.b+x@mail.example.test'), true);
--- (Its thread and Message-ID are I5a's, 20260929999995.)
-select pg_temp.wake_assert((select headers - array['thread', 'message-id'] = jsonb_build_object(
+select pg_temp.wake_assert((select headers = jsonb_build_object(
 		'delivered-to', 'support+billing@mail.example.test, support+stripe@mail.example.test',
 		'from', 'customer@example.org', 'subject', 'Confirm your Stripe account')
 		from pg_temp.delivery(current_setting('qorpera_test.stripe_mail')::uuid))
@@ -84,7 +83,7 @@ select pg_temp.wake_assert((select headers - array['thread', 'message-id'] = jso
 -- Untagged mail records its address too; a message without a sender or a subject records neither.
 select set_config('qorpera_test.plain_mail', (public.qorpera_receive_mail(pg_temp.mail_id(401),
 	array['support@mail.example.test'], '{"schema":"qorpera.mail/v1","subject":null}') #>> '{results,0,deliveryId}'), true);
-select pg_temp.wake_assert((select headers - array['thread', 'message-id'] = '{"delivered-to": "support@mail.example.test"}'::jsonb
+select pg_temp.wake_assert((select headers = '{"delivered-to": "support@mail.example.test"}'::jsonb
 		from pg_temp.delivery(current_setting('qorpera_test.plain_mail')::uuid)),
 	'A mail without a sender or subject records only where it was delivered');
 

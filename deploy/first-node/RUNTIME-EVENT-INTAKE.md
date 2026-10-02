@@ -530,9 +530,10 @@ October, for accounts the company owns).
 - **Deploy.** The migration patches `qorpera_receive_mail`, `qorpera_send_agent_mail` and
   `qorpera_record_runtime_observation` by exact text, and adds `qorpera_find_agent_mail` to G2-1's native host
   allowlist. It rolls with a bundle carrying this runtime: an older runtime has no `find_mail`. Received mail now
-  records its headers and counts their bytes, tagged or not; nothing else changes for untagged mail. Acceptance: an agent
-  signs a test company up on a site with `agents+<site>@`, waits with `find_mail` for the confirmation, reads it
-  with `read_event`, and the account is opened.
+  records its headers and counts their bytes, tagged or not; nothing else changes for untagged mail. Acceptance: the
+  company's account row is opened first (A1-4 opens it before the address is typed into any form, email-first and
+  magic-link sign-ups included, so the first code is already account mail); an agent then signs a test company up
+  on a site with `agents+<site>@`, waits with `find_mail` for the confirmation and reads it with `read_event`.
 
 **Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
 `Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop
@@ -583,10 +584,15 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
 - **Threads.** A thread's id is base64url (no padding) of sha-256 over `<mailbox id>:<key>`: 43 characters, safe in a
   URL and a path, never the raw header, and the same after the text is cleared.
   - A received message's key is its thread's root Message-ID: the first id it references, else the one it answers,
-    else its own. The mail door now records `message-id` and `thread` on each delivery's headers.
+    else its own (Message-IDs as RFC 5322 writes them: printable ASCII in angle brackets, no quotes or backslashes).
+  - What a received message needs for 30 days lives in `qorpera_mail_received`, apart from the delivery's headers
+    and body, which the deliveries' purge clears after 7: its thread, Message-ID, sender, subject, recipients,
+    `delivered-to`, the sender's authentication, `automated`, its attachments' descriptions and its account mark. The
+    delivery's headers are unchanged.
   - An agent's reply joins the received email's thread. An email an agent starts begins one (`mail:<id>`).
-    `mail-outbox` reads back the provider's Message-ID of what it sent (Resend's sent-email API, best effort, asked
-    again after five minutes for a day), so an answer to that email joins its thread.
+    `mail-outbox` reads back the provider's Message-ID of what it sent (Resend's sent-email API, best effort; those
+    never asked first, the newest first, each asked again after five minutes for a day), so an answer to that email
+    arriving at the same mailbox joins its thread.
   - Mail without ids, and mail received before the migration, is a thread of its own (`delivery:<id>`).
   - `qorpera_mail_threads` indexes them: the newest message's subject, the outside party (the newest received
     message's sender, else the first recipient of an email an agent started), the last message and its direction,
@@ -598,8 +604,8 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     (`routines`, with their agents in `handledBy`) and `last7Days`.
   - `qorpera_member_mail_threads(environment, {address?, state?, before?, limit ≤ 50})`: threads newest first with
     `thread, address, fromName, fromAddress, subject, lastAt, state, handledBy, direction, unread, messages`.
-    `state` is `waiting` (an open send_mail review card answers it), `handled` (the company replied after the newest
-    received message, or nothing was received) or `new`. `handledBy` is the last replier, else the agent whose
+    `state` is `waiting` (an open send_mail review card answers it), `handled` (a reply that has not failed or been
+    cancelled followed the newest received message, or nothing was received) or `new`. `handledBy` is the last replier, else the agent whose
     routine woke on the newest received message. `nextBefore` is `{lastAt, thread}`. An address filter takes a
     mailbox's address, a +tag included; a state filter looks at the newest 2000 threads a page.
   - `qorpera_member_mail_thread(environment, thread)`: the newest 50 messages, oldest first. Received ones have the
@@ -612,7 +618,8 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     thread unread again.
 - **Account mail.** Mail to an address a company account signs in with (A1's `qorpera_company_account_mail`, called
   with the mailbox's own company and environment once it exists) shows `account` (who used it and when), never its
-  subject, text, recipients or attachments.
+  subject, text, recipients or attachments. It is decided when the mail arrives (its subject is not kept, and its
+  thread stays marked) and asked again when it is read. A company being deleted has no members to read its mail.
 
 **Next (M2c-2).** Threads and sent mail as files in the folder (`mail/<address>/`, sent mail beside the received;
 Jonas, 2 October, Interfaces decision 3), once the folder's platform writer lands. A connected Gmail read once a
@@ -656,9 +663,9 @@ fetch nobody serves is given up after a day. The new `mail-outbox` reads the old
 
 ## Deploy (I5a)
 
-The migration adds two tables and member calls, backfills the threads of the last 30 days, and patches
-`qorpera_receive_mail`, `qorpera_send_agent_mail` and `qorpera_claim_company_mail` by exact text (after M2c-1's
-patches). No runtime change. Deploy `mail-outbox` before or with the migration: it reads back Message-IDs through
+The migration adds three tables, member calls and indexes (one on `qorpera_action_reviews` for open send_mail cards),
+backfills the last 30 days' mail through the same rules as live mail, and patches `qorpera_receive_mail`,
+`qorpera_send_agent_mail` and `qorpera_claim_company_mail` by exact text (after M2c-1's patches). No runtime change. Deploy `mail-outbox` before or with the migration: it reads back Message-IDs through
 `qorpera_company_mail_message_ids_due`, and an older one simply leaves them unknown. Acceptance: a member opens the
 Mailbox and sees a received email, the agent's reply in its thread, a waiting send, and an account email without its
 code.
