@@ -28,6 +28,9 @@ describe("Company File bounded control transport", () => {
 		[403, { code: "42501", message: "PRIVATE_DENIAL", details: {}, hint: null }, false],
 		[403, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null, extra: true }, false],
 		[403, { code: "OTHER", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
+		// A request on the publishable key: PostgREST answers 42501 with 401 (G2-2, qorpera_native_host_call).
+		[401, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null }, true],
+		[401, { code: "OTHER", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
 		[500, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
 	] as const)("brands only a complete transaction denial (%i, %j)", async (status, body, denied) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
@@ -317,7 +320,25 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_seal_upload",
 		"qorpera_folder_renew_upload",
 		"qorpera_folder_agent_todos",
+		"qorpera_folder_record_review",
+		"qorpera_folder_agent_routines",
+		"qorpera_prepare_routine_login",
 	] as const;
+
+	it("reads one routine whole, up to a megabyte, where other folder reads stop at 256 KiB", async () => {
+		const answer = { schema: "fixture", routines: ["x".repeat(300 * 1024)] };
+		const transport = vi.fn<typeof fetch>(async () => Response.json(answer));
+		await expect(
+			fixture(transport).call("qorpera_folder_agent_routines", {}, new AbortController().signal),
+		).resolves.toEqual(answer);
+		await expect(
+			fixture(transport).call("qorpera_folder_agent_todos", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+		const over = vi.fn<typeof fetch>(async () => Response.json({ routines: ["x".repeat(1024 * 1024)] }));
+		await expect(
+			fixture(over).call("qorpera_folder_agent_routines", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+	});
 
 	it.each(FOLDER)("permits %s over the fixed RPC route", async (method) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json({ schema: "fixture" }));

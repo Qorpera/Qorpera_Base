@@ -30,6 +30,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
 | `rules/<name>.md` | rule | yes |
+| `human-tasks/<name>.md` | human-task | yes (H1, inert until H2) |
+| `contacts/<name>.md` | contact | yes (H1, inert until H2) |
 
 A path's kind is decided on the folder's key (`companyPathKey`, the same NFKC-casefold as
 `qorpera_company_path_key`, 20260828005000), because two spellings with one key are one entry:
@@ -38,8 +40,8 @@ refuses a unit on a structured key that carries no parse. JavaScript and Postgre
 few characters differently (`İ`); such a path then fails closed in the database, and the
 comparison test below includes these spellings. Every other file is ordinary: one
 pattern match and nothing else. Files nested deeper (a note in `routines/notes/`, a worker's
-output next to its brief) are ordinary. Core §5's list gains `vision/vision.md` and the two
-worker files.
+output next to its brief) are ordinary. Core §5's list gains `vision/vision.md`, the two
+worker files, and (H1) `human-tasks/<name>.md` and `contacts/<name>.md`.
 
 The parser is `@qorpera/cloud-client/company-state-files` (`companyStatePath`,
 `parseCompanyStateFile`, the canonical `write*File` writers and `setCompanyStateSettings`).
@@ -53,7 +55,8 @@ Folder and file names follow contract 5.6 as written (not only as keys): lowerca
 digits and single hyphens, at most 64 characters, and a lowercase `.md` extension. The whole
 path of a structured file is written exactly as its key, so `agents/anna/Agent.md` or a
 compatibility spelling is refused with the spelling to use. The rule covers agent and group
-folders, routine, todo, rule and connection files, and todo and worker folders.
+folders, routine, todo, rule, connection, human-task and contact files, todo and worker folders,
+the top folders `human-tasks` and `contacts`, and a human task's folder and its `proof/` folder.
 
 These path checks are `companyStatePathProblems(path, folder)`. They need no text, so the
 database runs the same list, and the comparison test covers both. `decide` runs them on the
@@ -61,8 +64,10 @@ path an entry is actually stored under, its parent folder's stored spelling incl
 - for every file a unit writes;
 - for every structured file a move or rename carries, at its new path;
 - for every folder a unit creates or renames at a structured place: `agents/<h>`,
-  `agents/groups/<g>`, `agents/<h>/routines`, `agents/<h>/todos`, `agents/<h>/todos/<t>` and
-  `agents/<h>/todos/<t>/<w>`.
+  `agents/groups/<g>`, `agents/<h>/routines`, `agents/<h>/todos`, `agents/<h>/todos/<t>`,
+  `agents/<h>/todos/<t>/<w>`, `human-tasks`, `contacts`, `human-tasks/<t>` and
+  `human-tasks/<t>/proof`. The two top folders carry no name of their own; they are places only so
+  that a wrong spelling such as `Contacts/` cannot be made and block every later save.
 
 So a rename can never leave a file that no later save could pass. Renaming
 `routines/daily.md` to `Daily report.md`, or case-only to `Daily.md`, is refused. So is
@@ -517,6 +522,178 @@ Only the platform writes these two files:
 This holds for every worker species (contract 13). The worker's folder also holds the files a
 write-access worker makes (today `work/todos/<agent>/<todo>/<worker>/`).
 
+### `human-tasks/<name>.md`
+
+Work an agent hands to a person: a member, or a contact outside the company (Q1 §5, "Work for
+people"). One file per task; the task's folder beside it holds what the person sends back. It is
+the last step of the escalation order (16.1, as the 2026-10-02 amendment widens it).
+
+```
+---
+id: 5d0c2f7e-8b1a-4c55-9a43-0f6e2b7d91c4
+title: Fit the second disk in node 2
+status: open
+member: 0b7d2e41-6c3a-4f18-9e25-8a1d4c6f2b90   # Jonas
+from: 7f3a9c21-44d0-4e6b-8a55-2c1f0b9e3d77     # Operations
+todo: 3c9e1a52-7d4b-4f60-8e21-5b0a9c7d2e14     # node-2-storage
+due: 2026-10-09T16:00:00Z
+minutes: 40
+proof: [photo, note]
+---
+## Why
+Node 2's storage is 91% full and fills up on 21 October at this rate.
+## Steps
+- [ ] Order a 4 TB NVMe, same model as slot 1
+- [x] Agree a 30-minute window with the coordinator
+- [ ] Fit it in slot 2 and power on
+- [ ] Photograph the label, serial number readable
+## Done looks like
+The photo, and a note with the time node 2 was back up.
+```
+
+| Key | Required | Values |
+| --- | --- | --- |
+| `id` | yes | lowercase UUID; never changes |
+| `title` | yes | one line, 1–200 bytes |
+| `status` | yes | `open`, `done`, `accepted`, `returned`, `declined`, `cancelled` |
+| `member` | exactly one of `member` and `contact` | the member it is for: a lowercase user id |
+| `contact` | exactly one of `member` and `contact` | the contact it is for: a contact file's `id` |
+| `from` | yes | the asking agent's id |
+| `todo` | no | the `id` of the asking agent's todo that waits on it (a note may name it) |
+| `due` | yes | UTC instant |
+| `minutes` | no | the expected time, whole minutes 1–480 (shown as "About 40 minutes") |
+| `proof` | no | what counts as done: one or more of `photo`, `file`, `signature`, `note`, no repeats |
+| `files` | no | 1–20 company-folder paths of files the person needs (a draft to check); rules below |
+| `reason` | with `returned` and `declined`; allowed with `cancelled`; refused otherwise | one line, 1–500 bytes: why it went back, why the person can't, or why it was cancelled |
+| `secret` | no; with `member` only | one line, 1–100 bytes: the label of the one secret the person enters ("Code from the SMS") |
+| `secret_state` | with `secret`, and only then | `asked` or `saved` |
+| `connection` | no | the `id` of the `connections/` file the step is for (A1) |
+| `step` | no | the kind of step a website demands of a person (A1): `sign_in`, `captcha`, `phone_code`, `id_check`, `payment`, `create_account`, `other` |
+| body | yes | 1 byte to 32 KiB trimmed; the headings `## Why`, `## Steps`, `## Done looks like` are the convention, not required |
+
+A list key is either left out or holds at least one item (`proof: []` is refused: leave it out).
+
+- **Steps.** The steps are the lines of the first section whose heading line is exactly
+  `## Steps` (after the closing `#`s and the spaces around the text are dropped, as `sections.md`
+  reads headings). The section ends at the next line that starts with `# ` or `## `. A step is a
+  line in that section that starts, at column 0, with `- [ ] ` (open) or `- [x] ` / `- [X] `
+  (done); its text is the rest of the line, trimmed of U+0020 spaces. A carriage return before
+  a line end is dropped first. Other lines in the section are text. Fenced code gets no special
+  reading. The file is refused if a step's text is empty, longer than 500 bytes, or not one line
+  (a C0 or C1 control character, a tab included, or U+2028/U+2029, as §1's one-line fields), or
+  if there are more than 50 steps. The parse lists them as
+  `steps: [{line, text, done}]` (`line`, the file's line number, lets H2 compare two versions line
+  by line). A body without such a section has no steps. The whole body stays the task's
+  `instructions`. In H2 a person's own change may flip a box and nothing else: no text changed,
+  no line added or removed.
+- **`files`.** Each entry is a literal path the company folder can hold, by the core's path rule
+  (`parseCloudCompanyPath`, SQL's `qorpera_company_path_valid`: relative, NFC, at most 4096 bytes,
+  no empty, `.` or `..` part, no trailing `/`, no `\`, `%` or `:`, no part ending in `.` or a
+  space, no reserved device name), and one line; a pattern character such as `*` is part of a
+  name, never a pattern. A plain entry that YAML reads as something other than text (`42`,
+  `true`) is written in double quotes, as in `asks`. Repeats are compared by key
+  (`companyPathKey`), since two spellings are one entry; the database compares by its own key.
+  The two keys fold some characters differently (74 in the BMP today, among them `ß`, `İ` and
+  U+A7F1; §1), so either side may refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `agents/`,
+  `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
+  people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
+  - a listed file opens only if the agent that sent the link may read it at that moment, by its
+    standing read authority (not the ended run's), and on a member's own task page only if that
+    member may read it;
+  - a contact's link keeps the list its review approved, and an open shows only the paths on both
+    that list and the current one: a removal works at once, an addition needs a new reviewed
+    send. A path that no longer exists, or became a folder, is not shown;
+  - the reviewed send also pins each listed file's version: an open shows that version, and only
+    while the sender may still read the path. A newer version needs a new reviewed send, like an
+    addition, so a contact never sees content nobody reviewed;
+  - the address and the expiry are pinned the same way: a later change of the contact's `email`
+    or the task's `due` never redirects or extends a link already sent;
+  - a link goes out only through a reviewed send, never from a file save.
+- **Secrets.** `secret` holds only a label. The value goes to the vault, bound to the task's
+  `id` (as W1b binds a hook's signing secret to its hook), so a task file can never point at
+  another secret, and the file has no secret name. Only the platform sets `secret_state: saved`;
+  H1's database already refuses `saved` from anyone else unless the file the save replaces had
+  `saved` with the same `id` and the same label.
+- **No contact details.** A member is reached through their account and a contact at the address
+  in their contact file. A link's token (kept only as a hash), an email's delivery and a
+  secret's value are runtime state or vault records, never the file: every member and agent reads
+  the folder.
+- **The task's folder:** `human-tasks/<name>/proof/` holds the person's files (H2 names them as
+  they arrive) and `human-tasks/<name>/note.md` the person's own note. Both are ordinary files.
+  The folder's name is the task file's name.
+- **What H1 does not decide (H2):**
+  - who may set which status: the agent `open`, `accepted`, `returned` and `cancelled`; the
+    person `done` and `declined`. A person's own change is a tick, or `done` or `declined` with
+    its proof, note and `reason`, saved in one change set by the platform as the person's change,
+    and not reviewed;
+  - that `member`, `contact` and `connection` exist in this company, and `todo` is an open todo of
+    the `from` agent, so a task never wakes another agent's todo; that `from` is the saving
+    agent's own id and never changes; that `id` is unique among the tasks and never changes; a
+    `member` change hands the task on;
+  - that a contact's task shares company files outside the company. The link's send is the
+    reviewed outside action, like `send_mail`, and nothing is sent by a file save; whether
+    creating or changing a contact's task (or its `files`) is also reviewed needs a review class
+    folder commits do not have today, and H2 decides it. A task for a contact with no `email` is
+    refused when it is created (H2, H5);
+  - the task's folder follows its file: the platform's writer carries the folder in the same change
+    set when a member or an agent moves or deletes a task file (so a task with proof can still be
+    renamed or removed), and a new task file is refused while a folder of its name exists; only
+    the platform writes under `human-tasks/<name>/`, as the person's change; a contact's proof and
+    note are outside content (11.1);
+  - the overdue wake and the wake on `done` and `declined`; the index; seeding `human-tasks/` and
+    `contacts/` in new companies (and whether they join the seeded folders that cannot be
+    deleted or moved);
+  - a file saved before H2 is trusted for its shape only: H2's first index of it checks every id
+    and every value only the platform may set.
+
+  A1's takeover tasks need H2, not only these keys. Until H2 a human-task file is a checked
+  format and nothing more.
+
+### `contacts/<name>.md`
+
+Everyone outside the company it deals with, one file per person or firm: contractors, suppliers,
+customers and leads. Agents keep the file current. A contact never has an account; it reaches a
+task only through a task link (H5) sent to the address in this file.
+
+```
+---
+id: 9a1f6c3e-2b7d-4e58-a0c4-7d3e1f9b6a25
+name: Maria Jensen
+organization: Jensen Revision ApS
+email: maria@jensen-revision.example
+asks: [bookkeeping review, VAT filing]
+---
+Our accountant since 2025. Files VAT every quarter.
+## History
+- 2026-10-08 Filed Q3 VAT (human-tasks/file-vat-q3/proof/receipt.pdf)
+```
+
+| Key | Required | Values |
+| --- | --- | --- |
+| `id` | yes | lowercase UUID; tasks name the contact by it; never changes |
+| `name` | yes | one line, 1–200 bytes |
+| `organization` | no | one line, 1–200 bytes |
+| `email` | no | 3–254 bytes of printable ASCII (`!` to `~`, so no space), exactly one `@` with text on both sides, and a domain that neither starts nor ends with `.` |
+| `phone` | no | `+` and 6–20 digits, with single U+0020 spaces allowed between digits |
+| `asks` | no | what the contact may be asked to do: 1–50 one-line items of 1–100 bytes without spaces at either end, no exact repeats |
+| body | no | up to 32 KiB trimmed: notes, then `## History` lines agents add after each task |
+
+- **Personal data.** A contact who asks to be forgotten needs an erasure of any deleted path:
+  core §8 today erases only a deleted agent's folder, and is not built yet (C2). That widening is
+  F1's, and lands before H5 sends any link. It covers the contact file, the folders of that
+  contact's tasks, and path names in commit units, as core §8 does for agents. It cannot find
+  free text elsewhere (task titles and bodies, `reason`, `## History` lines, agents' memory),
+  which a member removes by hand. The writing skill tells agents to name a contact by id only.
+- **What H1 does not decide (H2):** that `asks` covers a task's work is the agent's judgement (the
+  seeded skill `skills/human-task/SKILL.md`), not a database rule; that `id` is unique among the
+  contacts; the index; a task link (H5).
+
+The parses, with absent values `null` and absent lists `[]`:
+- human-task: `{kind, id, title, status, member, contact, from, todo, due, minutes, proof, files,
+  reason, secret, secretState, connection, step, instructions, steps}`;
+- contact: `{kind, id, name, organization, email, phone, asks, notes}`, with `notes` the trimmed
+  body (`""` when there is none).
+
 ## 3. Refused files
 
 A unit whose structured file cannot be read, or breaks a rule, is `refused`. The live file
@@ -594,6 +771,7 @@ of the body, for readers that should not reach the storage server.
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
+| human-task, contact | none until H2: the stored parse only | — | — |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
   todos along (core §5).
@@ -618,7 +796,7 @@ of the body, for readers that should not reach the storage server.
   - So `targets` returns the company row at rank 0 (`keyshare`; C1b-3a moved it from the head of rank 2) with every
     roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
     paths. Test 701 races a rename and an instructions edit against posting.
-  - Since C1c-3c (migration 20260929690000, which patches `targets` in place): for an agent with no thread room yet
+  - Since C1c-3c (migration 20260928399690, which patches `targets` in place): for an agent with no thread room yet
     (a new agent, or one saved archived and now activated), `targets` also returns every member row at rank 1
     (`keyshare`). The room it creates copies the roster without a lock, so a member's removal or demotion (the member
     row `FOR UPDATE`) must run before or after that copy. A later rewrite of `targets` must keep this branch (test 665
@@ -747,7 +925,7 @@ C1d (bytes):
 - first, `manage_todo` (a todo file, `writeTodoFile`), `organize_sidebar` (`agents/sections.md`, read and
   rewrite) and `decide_routine` (the run's own routine file: a new `at` or a conclusion,
   `setCompanyStateSettings`);
-- after C2's review recorder, `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
+- after C2's review recorder (RUNTIME-COMPANY-FOLDER-C2.md, R1), `hire_agent` (one `new_folder` unit with `agent.md` and the first todo),
   `create_group_chat` (`group.md`) and `manage_routine` (a routine file, after `qorpera_prepare_routine_login`).
 
 **How a thin writer saves** (W0, #583; W1):
@@ -840,6 +1018,246 @@ C1d (bytes):
   that shows the routine as read releases that read. Known limit: a rename of the agent's own folder mid-run is not
   followed (the run context names the folder once); the decision is then answered settled while the kernel may still
   owe it.
+
+**Built (W4a): `hire_agent`** (`packages/runtime/src/cloud-folder-hiring.ts`), on C2's review recorder
+(RUNTIME-COMPANY-FOLDER-C2.md, R1).
+- One `new_folder` unit `agents/<handle>`: `agent.md` (`writeAgentFile`: kind `agent`, status `active`, the figure,
+  `jobDescription` as the instructions), the folders `memory`, `skills`, `routines` and `todos` (as the Co-Founder's
+  seeded folder), and `todos/first-assignment.md`: the first assignment as an open todo, asked for by the run's
+  requester, titled with the assignment's first line (one line, at most 200 bytes).
+- The handle is the name as a folder name, numbered past the names taken under `agents/` and the reserved ones
+  (`freeCompanyStateName`), from a listing taken before the receipt. The agent's and the todo's ids come from the run
+  and the operation key (the legacy hire's id format, in a namespace of their own). A rebuilt call may pick another
+  handle; what makes it harmless is the receipt, whose target is the agent's id, so a completed call replays.
+- Checked with the arguments, before the automatic review (`INVALID_ARGUMENTS: …`), so no card is raised for a hire
+  that cannot be saved: the files the shared parser refuses (its problems), a first assignment over 4000 bytes (a
+  todo's body; the schema counts characters), and an operation key reused in this run with other arguments.
+- Refused before the receipt (`REFUSED: …`): a call without the automatic review's approval (`actionReviewId`).
+- **Contract 14.1, the restricted hire** (migration 20260928399940): an agent that cannot delegate the new agent's
+  default access (a current, nonexpiring read and write grant on every live shared root, the legacy hire's predicate,
+  `qorpera_folder_agent_delegates_default`) hires only on an owner's or admin's answer. The review's layering asks the
+  owners and admins on a card for its `hire_agent` call, whatever the reviewer found (a deny stays a deny; a denied
+  hire retried asks them too), as an access check no rule lifts, with no Always allow. The card says why it asks and
+  keeps the reviewer's own reason unless the reviewer simply allowed it; a not-asked-for finding stays the built-in
+  check. The recorder checks again before the save and records such a hire only from an answered owners-and-admins
+  card: a member's answer on a card of their own, given while the agent could still delegate, does not carry over (an
+  owner's or admin's does). Where no owners-and-admins card can be raised (a group chat, a worker, a member's private
+  conversation) the hire is refused, as any ask there. The recheck runs in the recorder's transaction; a
+  restriction between it and the commit (milliseconds) is like a restriction just after the hire.
+- Under the receipt: stage, record the review of exactly these units (`recordReview` with the tool and the call's
+  argument digest), commit them with the review. Saved: the agent exists and is indexed with its thread; the commit
+  names the review. A conflict (the folder was taken meanwhile) or a refusal says to call again with a new key.
+- **The new agent does not start by itself** (open with F1): no first run is queued for a `folder-v2` hire yet. The
+  result tells the model to wake it with `send_coworker_message` to the agent's id, asking it to start on its first
+  todo, and to tell the member (and, if that send fails, that the agent has not started). A hire that waits for a
+  member's review says not to hire again.
+- A `folder-v2` run on a node without folder bytes keeps the legacy tool, which refuses `folder-v2`, as for W1–W3.
+- Known: the Co-Founder's hire overlay still says agent descriptions live under `organization/agents`; its
+  `folder-v2` wording comes with F2-1b's context work.
+- SQL test 774: a run's hire round trip on the recorder (denied without its review or with a review of other units;
+  saved and indexed with it; a taken folder is a conflict; the agent rules still refuse a Co-Founder or a taken id;
+  the predicate case by case (a revoked, read-only, finite, other-version or other-agent grant, an archived agent, a
+  second environment's root and its revocation); the restricted hire asks the owners and admins with no Always allow,
+  also on a retry, its own allow and an earlier member's answer are refused by the recorder, and an owner's answer
+  saves it with that owner as approver). 652's pin of the layering's snapshot-v1 text strips the `folder-v2` lines.
+
+**Built (W4b): `create_group_chat`** (`packages/runtime/src/cloud-folder-group-chats.ts`), as W4a.
+- One `new_folder` unit `agents/groups/<handle>` with `group.md` (`writeGroupFile`): the name, no subtitle (the app
+  shows "Group chat"), the purpose as the body, `agents` the run's own agent and the coworkers named, `people` the
+  run's requester unless `includeRequestingMember` is false (an agent's change may add only that member; SQL refuses
+  any other). `agents/groups` is seeded and can be neither deleted nor moved, so it is always there.
+- The handle is the name as a folder name, numbered past the chats under `agents/groups/` (no reserved names
+  there); the chat's id comes from
+  the run and the operation key (`qorpera.folder-group/v1`) and is the receipt's target. The commit opens the room
+  (`chat-<id>`) and its conversation with those members.
+- Checked with the arguments, before the review: the file the parser refuses, and a reused operation key. Refused
+  before the receipt: a call without the review's approval. Under the receipt: stage, record the review
+  (`create_group_chat`), commit. Saved: tell the member the chat's name; a conflict, a refusal or a waiting chat
+  says what to do. Contract 14.1's restricted rule is a hire's only.
+- SQL test 777: a run's chat round trip on the recorder (denied without its review; saved with the room, its agents
+  and the requester as members; another member refused; an archived coworker refused; a lone agent refused by the
+  file's own rule).
+
+**Plan (W4c): `manage_routine` and `decide_routine`'s rewrite** (design, round 3 approved with nits; W4c-1 and W4c-2
+built, below). Both write
+the run agent's own routine files, `agents/<handle>/routines/<routineKey>.md`, as W4a and W4b do: the file is checked
+with the arguments, before the automatic review; every other refusal comes before the receipt; under the receipt the
+change set is staged, its review recorded (`manage_routine`, `decide_routine`) and committed with it. No
+restricted-creator rule applies (contract 14.1 is a hire's only); the old listener checks come back when event and
+file-change routines move to files.
+
+*The index and its read (W4c-1, SQL).* The platform records some pauses in the index only, until C2's follow-up queue
+writes them into the file: an authorization-failure suspension, a member's Stop, a wait for a model account. The file
+then still says `active`. So:
+- **A save that changes nothing is a resume.** A save by anyone but the platform whose file says `active`, with the
+  same parse as the file the routine follows (which also says `active`), while the routine row is `paused` for one of
+  the platform's reasons (`member`: a member's Stop; `authorization_failed`; `needs_model_account`), ends that pause.
+  Every pause that comes from a file leaves a file saying `paused`, so a paused row behind an active file can only be
+  the platform's. The test goes into `qorpera_company_state_routine_restarts`, so the save pays like a resume and the
+  rules' check refuses a member without a paying login (who would otherwise turn a Stop into a wait for a login). The
+  index writer then takes the saver's word (`active`, failures reset) even without a new version: a wait for a login
+  pinned to the login that now pays ends too. An unpaid resume (a run whose requester has no paying login) keeps the
+  platform's pause and its reason. An edit still leaves a Stop or a suspension in place, as today (an edit that makes a
+  new version with a paying login already ends a wait for a login). A member's save of the unchanged routine in the
+  app, even one that changes only notes or layout, resumes it the same way, and a member without a paying login is
+  refused it. Built as a pure helper `qorpera_company_state_routine_resumes(row, previous parse, parse, actor kind)`
+  that `qorpera_company_state_routine_restarts` (now with the actor's kind) also answers true for, and `or (resumes and
+  paid)` in the index writer's word on the status. C2's queue,
+  when it writes the platform's pauses into files, must not write a pause the row no longer holds.
+- **A read of the run agent's routines**, `qorpera_folder_agent_routines(environment, actor, request)`, as W1's todo
+  read: a plain read of the index for the run agent's file routines, each only if the run may read its file, with the
+  key, title, instructions, trigger, `ends`, `runs`, quiet hours, effort, reply, the status in the file and the
+  status in the index with the platform's pause reason, the next run and the runs used, paged with a cursor as W1's.
+  Routines from before the company's folder (they still hold their names) are not listed. `routineKey` reads one. Any
+  run of the agent may read, a member's private conversation included (`manage_routine` is offered there), each file
+  by the run's own read authority; a worker may not, as in W1. It joins the client's RPC lists and the pinned test.
+
+*`manage_routine` (W4c-1, runtime).*
+- `routineKey` is the file's name: lowercase letters, digits and single hyphens, at most 64 characters (refused with
+  the rule otherwise; the legacy key allowed dots, underscores and 96 characters).
+- `list` shows the read's routines, as many as fit the result (W1's rule), with the cursor for the next page;
+  `routineKey` shows one in full.
+- `upsert` writes the whole file with `writeRoutineFile`, as today's upsert replaces the whole routine (the list shows
+  every field to restate): `every` → `when: every` (`minutes`, `starts`); `weekly` → `when: weekly` (`days`, by
+  default Monday to Friday, `time`, `timezone`, `starts`); `dynamic` → `when: once` (`at`: `firstRunAt`, else a still
+  future `at` of the file, else now; `timezone` required); `expiresAt` → `ends` (in the future, as today);
+  `maxOccurrences` → `runs` (not for `dynamic`); `quietHours` → `quiet` and its time zone (`every` has none, so the
+  quiet hours carry their own); `report` → `reply` (absent: `optional`); `effort` (absent: the file's, else medium).
+  `status: active`: a save revives a paused, concluded or expired routine (an expired one ends again while its end
+  has passed, so an `ends` in the past is refused). A new file gets an id from the run and the operation key; an
+  existing one keeps its id. A missing `routines` folder is made in the same change set. `file_change` (core C4) and
+  `event` (F2-6b below) are refused with the arguments. An upsert that would save the unchanged file over the
+  platform's pause (the same parse) answers before the receipt "nothing to change; to switch it back on, use resume",
+  so the review sees a resume as one and a repeat of a saved edit is not refused.
+- `pause`: `status: paused` (a pause in the file). A file that already says `paused` answers "nothing to change" (no
+  review is recorded, no commit), as W2 does, so a repeat of a saved call is not refused; a concluded one is refused ("concluded; save it
+  again to restart it").
+- `resume`: a file that says `paused` becomes `active`; a file that says `active` while the index shows the platform's
+  pause is saved unchanged (the resume rule above). A routine active in both answers "nothing to change"; concluded
+  ("save it again to restart it") and ended ("it ended; save it again with a later end") are refused, as today. The
+  approval card for a resume says that it switches the routine back on, also after a member's Stop or a suspension.
+- `conclude`: `status: concluded` with the `conclusion` (one line, at most 2000 bytes); already concluded answers
+  "nothing to change". Concluding the run's own dynamic routine settles its owed decision for the host, as today.
+- `remove` deletes the file (a `delete` unit with the version read): the routine retires and its name is free again
+  (today's remove kept the key taken). Reviewed as a deletion; the call's approval covers it.
+- The run's own routine: `pause` and `remove` in its own run, dynamic or fixed ("conclude it instead": a fixed
+  routine's pause would stop the run itself; SQL refuses it for a dynamic one); and while a dynamic routine's decision
+  is owed, every action but `list` and `conclude` ("use decide_routine"), as today and contract 16.3. A dynamic
+  routine's key is known with the arguments, so those are refused there, before the review, as today; a fixed
+  routine is known by the wake's routine id, so its run's refusal comes before the receipt, by the file's id. Every
+  other refusal that needs the file or the index comes before the receipt.
+- Login, last before the receipt: `upsert` and `resume` (the saves that start or extend work) call
+  `qorpera_prepare_routine_login` (new to the client's RPC lists; a deadlock is asked again, as STATE-FILES §5
+  says). Its refusals (the wake's acknowledgement, a paused company, a final reply already sent) come back as
+  `REFUSED` in the runtime's own words; any other error stays an error. When it finds no paying login (`login:
+  null`), `resume` answers before the receipt that the routine keeps waiting until the member connects a model
+  account, and does not save (a resume would change nothing). Unlike today's tool, the consent it records stays if the save is then refused;
+  it is the requester's standing consent, and the same call records it again.
+- After the commit, the result reads the routine back from the index, best effort (a failed read never turns a saved
+  change into an error; the result then says to list it): the outcome, the reason and problems, and the routine as it
+  now runs (status, the platform's pause reason, the next run). A routine waiting for a model account says so, and
+  the model tells the member (folder-v2 queues no member notice until C2).
+- A folder-v2 description replaces "No member approval is needed". The approval card keeps reading today's compiled
+  arguments.
+
+*`decide_routine`'s rewrite (W4c-2).*
+- A decision whose `title` or `intent` differs from the file is no longer refused: with the review's approval it
+  writes the new title and instructions with the decision (`writeRoutineFile` from the file's parse, which keeps
+  every other key), stages, records the review (`decide_routine`) and commits. The gate never raises a card for
+  `decide_routine`, so only a reviewer's allow reaches it; an ask is refused there and the run decides without the
+  rewrite, as today.
+- Settled before the receipt when the routine's end has passed (nothing is owed: a rewrite would revive it), as today.
+- Without an approval the rewrite is refused before the receipt, as today.
+- `denied` with `review_required` stays "settled" only for a decision without a rewrite (F2-6's class: nothing owed any
+  more). After a recorded review it is reported as not saved, with the instruction to decide again without the
+  rewrite. The folder-v2 description stops saying the title and instructions cannot change.
+
+*Follow-up (F2-6b, F2's):* `when: event` in the parser and SQL's parse shape, the folder-v2 wake gate's event refusal
+lifted and the folder wake read's event batch (EVENT-INTAKE: "whichever of W2 and F2-6 lands second"; neither did).
+Event routines need hooks on folder-v2 and runs from folder wakes (C1c-3, C4) before they work end to end.
+
+*Tests.* SQL: the resume rule (an unchanged save ends a failure suspension, a Stop, and a login wait only with a paying
+login; an edit does not end a Stop or a suspension; the platform's save does not; a member without a paying login is refused; a member's own
+file pause is untouched), the read (authority per file, one key, pre-folder rows left out), a run's routine save,
+pause, resume, conclude and removal on the recorder, and a dynamic rewrite (a routine-run fixture with a native
+binding, from 708's `routine_run` and 647's `native`). Runtime: each action and refusal on the writer fixture (which
+learns routine files as delegation, the routine read and the login preparation), the folder description and wiring,
+the own-routine refusals, and `decide_routine`'s rewrite.
+
+**Built (W4c-1): `manage_routine`** (`packages/runtime/src/cloud-folder-routines.ts`; migration 20260928399960), as
+planned, with these choices made while building:
+- SQL: `qorpera_company_state_routine_resumes` and the four-argument `qorpera_company_state_routine_restarts`, patched
+  into the rules and the index writer by exact anchors. `qorpera_folder_agent_routines` returns
+  `qorpera_agent_routine_view` without `intent` (the file's `instructions` say it once), plus `path`, `folderVersion`,
+  `file` (the parse) and `cursor`. A page cuts each routine's instructions to 200 characters and marks it
+  `instructionsTruncated`, as W1 cuts a todo's detail, so a page fits one 8 KiB tool result; `routineKey` reads one
+  whole. The runtime reads it with a 1 MiB response bound. It and the login preparation (`qorpera_prepare_routine_login`,
+  20260928269440) join the client's RPC lists; the login preparation is a run effect called with the binding, as the
+  recorder is. A row from before the folder has no folder environment, so the environment match leaves it out (and its
+  missing path fails the per-file check too).
+- The resume rule keys on the commit's actor kind. A future index rebuild (§4) must save as the platform, or it would
+  end every platform pause behind an unchanged file.
+- `list` takes a `routineKey` or a `cursor` (not both) in a folder-v2 run and shows, for each routine, how it runs now
+  (status, the platform's pause reason, the next run, the runs used) and what its file says. Index reads are not
+  released (W1's ruling). One routine whose instructions do not fit one 8 KiB tool result is cut, at a character, to
+  fit and marked `instructionsTruncated`; any cut result says to read the routine's file (`company_read`) before
+  restating its instructions in an upsert, which writes the whole routine.
+- In a folder-v2 run the tool's schema offers the file name rule for `routineKey` and only the clock triggers, and an
+  operation key reused with other arguments is refused with the arguments, before the review (as W4a and W4b).
+- `upsert` maps the compiled trigger: `every` (no time zone; quiet hours carry `quiet_timezone`), `weekly` (days
+  `mon`..`sun`, `time`, `timezone`, `starts`), `dynamic` (`once`: `firstRunAt`, else the file's `at` while it is
+  ahead, else now). The receipt binds the request as parsed; defaults filled in are not part of it. An upsert whose
+  parse equals the file's answers "nothing to change" (pointing at resume over the platform's pause, or at a later
+  end over an ended routine).
+- `pause`, `resume`, `conclude` edit the file's settings (`setCompanyStateSettings`); a resume over the platform's
+  pause saves the same bytes. `remove` is a `delete` unit at the version read; a repeat after the file is gone answers
+  "nothing to change". The routine that woke the run (any routine wake, by its id) cannot be paused or removed.
+- A conclusion is checked with the arguments too: the summary on one line, over a placeholder routine file.
+- Before the receipt, after the file read, the index read and the answers that change nothing, in this order: the
+  review's approval (without it nothing more happens), the routines folder
+  read, then the login: `upsert` and `resume` pin it last. Any resume with no paying login answers before the
+  receipt (a file pause would only turn into a wait for one). The wake's refusals (`55000`: the acknowledgement owed,
+  a final reply sent, a paused company) are refusals in the runtime's words; others stay errors.
+- After a save, once the receipt is complete, the result reads the routine back from the index, best effort (outside
+  the stored result, so a slow read never turns a saved change into an error), and says what a paused result still
+  needs (a model account, a working account, a member's Stop). A removal shows no version.
+- The approval card for a resume adds that it switches the routine back on, also after a member's Stop or a failing
+  account.
+- Tests: SQL 780 (the resume rule and the read: a file narrowed to another agent left out of the page, its count, its
+  key and its cursor; a removed routine and one from before the folder left out; workers and views refused; another
+  agent's routines left out; one key; a cursor; the cut) and 781 (a run's new routine, pause, resume, an unchanged
+  save over the platform's pause, conclusion and removal on the recorder; a new routine and a removal not saved
+  without the review; a dynamic routine's run cannot pause it, even with the review, since SQL leaves a fixed
+  routine's own pause to the runtime). 781 takes the C5-early fixtures' possession step when they have it. Runtime: the writer on the
+  writer fixture (routine files as delegation except the run's own dynamic routine's decision, a routine index with
+  SQL's resume rule, the login and its payment), the client's two calls, the control's bound, the tool's folder path
+  and the runtime's wiring.
+
+**Built (W4c-2): `decide_routine`'s rewrite** (`packages/runtime/src/cloud-folder-routine-decision.ts`), as planned:
+- A `next` whose title or instructions differ from the file writes the whole routine from the file's parse
+  (`writeRoutineFile`, every other key kept) with the new `at`, effort and reply, then stages it, records the review
+  (`decide_routine`) and commits it under the receipt. A plain decision is saved as before (`setCompanyStateSettings`,
+  no review recorded); a title or instructions equal to the file's change nothing.
+- With the arguments, before the review: a new title or instructions are checked as a routine file over a placeholder
+  dynamic routine (a title is one line, without tabs or other controls). Before the receipt: the rewritten file is
+  parsed again; a rewrite without the review's approval is refused (decide again without intent or title); a
+  conclusion with a new title or instructions is refused (the tool's schema never sends one); a routine past its end
+  is settled, since nothing is owed and a rewrite would revive it.
+- What keeps a rewrite from reviving a routine no longer owed: a paused routine's run cannot decide at all (it lost
+  its wake authority, so the call fails, as in W3), and for a routine that expired while active the runtime's past-end
+  settle is the only guard (a reviewed rewrite would be saved and make it active again). The window between that check
+  and the commit is harmless: the scheduler never queues a run at or after the end, and the sweep expires it again.
+- After a recorded review the core never answers `review_required` for that change set; the branch that reports such a
+  rewrite as not saved (the decision stays owed) is defensive. A plain decision answered so is still settled (F2-6's
+  class).
+- The folder-v2 description keeps the intent and title text and says a new intent or title goes through the
+  automatic review. The gate's answer to an ask is unchanged (decide again without them).
+- Tests: SQL 781 §7 (a dynamic routine's run cannot pause it even with the review; its rewrite is not saved without
+  the review and the decision stays owed; with `decide_routine`'s approval recorded it is the decision, a new version
+  with the new title and instructions). Runtime: the rewrite on the writer fixture with its recording, the instructions
+  alone, a renamed file, a plain decision with none, the recorder's refusal (the decision stays owed), the core's
+  refusal of a rewrite, the checks with the arguments and before the receipt, the routine past its end, the
+  descriptions.
 
 Until the mount's writes are accepted (F3), these tools become thin writers of these files:
 `hire_agent`, `create_group_chat`, `organize_sidebar`, `manage_todo`, `manage_routine` and
@@ -948,6 +1366,61 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with
 core step C4.
+
+**Plan (H1): human tasks and contacts, the formats** (Q1 §5; design reviewed by Q1 and in an
+independent review). Inert: no index, no database rule but one (only the platform marks a secret
+saved), no seeding. Two PRs, released in this order:
+- **H1a, the parser** (no SQL): the two kinds in `companyStatePath`; their keys, limits and
+  cross-key rules (§2); the steps grammar; the canonical writers `writeHumanTaskFile` and
+  `writeContactFile`; the path checks for the file names and for the folder places `human-tasks`,
+  `contacts`, `human-tasks/<t>` and `human-tasks/<t>/proof` (`companyStatePathProblems`,
+  `structuredFolderNames`). Released first, to every writer that sends structured entries (the
+  runtime bundle active, the object gateway and the folder service deployed), since SQL refuses
+  a structured key that carries no parse (`qorpera_company_state_checked`), and a writer sends a
+  parse only for the kinds its parser knows.
+- **H1b, the database** (one migration, 20260929999000, after H1a is live). It replaces:
+  - `qorpera_structured_path_kind`: `human-tasks/<name>.md` and `contacts/<name>.md`;
+  - `qorpera_structured_folder_names`: the four folder places;
+  - `qorpera_company_state_path_problems`: the file name at position 2 for both kinds;
+  - `qorpera_company_state_parse_problems`: the two shapes, their limits and cross-key rules,
+    as for the kinds already indexed, so H2's index can trust what is stored;
+  - `qorpera_company_state_checked`: its list of shape-checked kinds;
+  - `qorpera_company_state_carried`: its roots gain `human-tasks` and `contacts`, so a folder
+    move or copy into or out of them is `kind_change` or `structured_copy` (without it, moving an
+    ordinary `drafts/` into `contacts` would land files with no parse, and moving `human-tasks/`
+    away would quietly make every task ordinary);
+  - `qorpera_folder_structured_decide`: one rule, `secret_state: saved` only from the platform,
+    unless the file the save replaces had `saved` with the same `id` and `secret`.
+
+  The review class stays plain, and no index, lock target or verify row is added.
+- **Before H1:** a file saved at these paths while they were ordinary (only an operator's test
+  companies can have one) can then only be deleted: an edit must parse, and a move out is a kind
+  change. H2 says how it treats a structured key whose current version has no parse.
+- **Contract:** the proposed amendment of 2 October (work for people) writes Jonas's decisions 4
+  and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's own text changes when it is
+  approved. The seeding code is H2's.
+- **Tests:** the parser's cases and round trips; the comparison lists, both kept by hand
+  (`supabase/tests/700_folder_state_vision_agents.test.sql` §7 and the kinds test in
+  `packages/cloud-client/test/company-state-files.test.ts`), with the new spellings; and SQL test
+  785: the shapes and limits, `human-tasks/my_task.md` and a `human-tasks/T/proof` folder refused,
+  a folder move of `drafts/` into `contacts`, of `human-tasks/` out and a folder copy of
+  `contacts/` refused, the secret rule, and no index.
+
+**Built (H1a): the parser** (`packages/cloud-client/src/company-state-files.ts`), as planned, with these choices made
+while building:
+- A contact's `asks` entry may not start or end with a space (a quoted entry could keep one), since the database's
+  shape check holds one-line values trimmed.
+- `asks` and `files` are the first free-text lists, so a plain item YAML reads as something other than text
+  (`true`, `42`, `null`) is refused with `quote`, as the settings' text fields are; the writers quote such items.
+- `files` entries are held to the core's path rule, so a task never names a path that rule refuses (the commit's own
+  key limit of 2,600 bytes is not checked here).
+- No `computer` key (A1, 2 October): a takeover step is always done on the asking agent's own computer, which the
+  platform finds from `from` when the person opens the task, also when a company runs several machines. The file
+  names nothing that can go stale; `step` and `connection` say what to do and for which account.
+
+**Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
+screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
+human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
 
 ## 9. The seeded tree
 

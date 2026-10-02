@@ -313,16 +313,21 @@ platform commit with a review id is refused (22023).
 - C1b-1 has the table and the enforcement. Tests insert records directly.
   Until C2, a run's delete or move is denied, because no recorder exists yet,
   and no real run exists before C3 anyway.
-- C2's recorder applies the kernel's layering, as `qorpera_record_action_review`
-  does today (20260926130000:339; 20260926210000:78-100):
+- C2's recorder applies the kernel's layering, that of `qorpera_record_action_review`
+  (20260926130000:339; 20260926210000:78-100). R1 reuses that function's verdict
+  on a tool call; R2 shares the same layering for change sets no tool call
+  carried:
   - Ask first wins;
   - only a company Allow rule lifts a built-in check;
   - an ask becomes a deny where no card can be raised (2026-09-25 amendment,
     item 5; RUNTIME-COMPANY-FOLDER.md:244-246);
   - a deny stands for its run and conversation (item 6).
 
-  Contract item 4: "the kernel enforces this ordering". Cards, member answers
-  and parked proposals come with it.
+  Contract item 4: "the kernel enforces this ordering". Cards on change sets,
+  member answers on folder reviews and parked proposals come with R2.
+- The recorder's design is RUNTIME-COMPANY-FOLDER-C2.md: R1 records an
+  approval the automatic review already gave a tool call; R2 reviews change
+  sets no tool call carried.
 
 ### 7. The folder pause
 
