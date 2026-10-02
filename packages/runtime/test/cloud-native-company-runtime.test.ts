@@ -904,6 +904,7 @@ it.each([
 				"list_hooks",
 				"read_event",
 				"send_mail",
+				"find_mail",
 				"read_context",
 				"read_skill",
 				"recall_memory",
