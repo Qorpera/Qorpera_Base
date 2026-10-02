@@ -226,19 +226,19 @@ export class CompanyComputerFilledValues {
 	}
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+const utf8 = new TextDecoder("utf-8");
 
 /**
  * `text` with each run of %XX escapes decoded: as UTF-8 when the run is UTF-8, else each byte as a character (as
- * `escape` writes one). Lenient: it never throws.
+ * `escape` writes one). Lenient and linear: it never throws, whatever the page holds.
  */
 function percentDecoded(text: string): string {
 	return text.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
 		const bytes = Uint8Array.from(run.slice(1).split("%"), (hex) => Number.parseInt(hex, 16));
-		try {
-			return utf8.decode(bytes);
-		} catch {
-			return String.fromCharCode(...bytes);
-		}
+		const decoded = utf8.decode(bytes);
+		if (!decoded.includes("\uFFFD")) return decoded;
+		let latin1 = "";
+		for (const byte of bytes) latin1 += String.fromCharCode(byte);
+		return latin1;
 	});
 }

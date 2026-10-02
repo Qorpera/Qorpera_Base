@@ -310,6 +310,14 @@ function tabPreview(value: string, maxBytes: number): string {
 }
 
 /** Low-level established automation, called only inside the authorized guest ScreenActionGate. */
+/** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
+ * value holds whitespace itself; 0 when there is none. */
+export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
+	for (let at = Math.min(limit, text.length - 1); at >= 0; at--)
+		if (text[at] === "\n" || (!linesOnly && /\s/u.test(text[at]!))) return at;
+	return 0;
+}
+
 export class CompanyComputerGuestAutomation {
 	readonly #binding: CompanyComputerScreenBinding;
 	readonly #layout: CompanyComputerGuestLayout;
@@ -702,14 +710,26 @@ export class CompanyComputerGuestAutomation {
 				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
-				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. The cut is
-				// at a line's end: no value spans lines, so no part of one slips past checks that look for whole values.
-				const aria = full.length <= 20_480 ? full : full.slice(0, Math.max(0, full.lastIndexOf("\n", 20_480)));
+				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
+				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
+				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
+				const hidden = [...before, ...after, ...this.#filled.current()];
+				const aria =
+					full.length <= 20_480 || hidden.length === 0
+						? full.slice(0, 20_480)
+						: full.slice(
+								0,
+								companyComputerSnapshotCut(
+									full,
+									20_480,
+									hidden.some((value) => /\s/u.test(value)),
+								),
+							);
 				const snapshot = await this.#pageCall(async () => {
 					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
 						filled: this.#filled.current(),
 					}).replace(
-						/(\/url: )("(?:[^"\\]|\\.)*"|\S+)/g,
+						/(\/url: )(.*)/g,
 						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
 					);
 					// A secret the vault typed that survives in another spelling refuses the snapshot.

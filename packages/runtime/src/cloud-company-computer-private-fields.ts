@@ -255,7 +255,12 @@ const skeleton = (value: string) => value.replace(/[^\p{L}\p{N}\s\0]/gu, "").rep
 
 /** A value as a page address carries it: percent-encoded, or form-encoded. */
 export function companyComputerUrlForms(value: string): string[] {
-	return [encodeURIComponent(value), new URLSearchParams([["v", value]]).toString().slice(2)];
+	// Percent-encoded, form-encoded, and percent-encoded with a space as + (as some scripts write a query).
+	return [
+		encodeURIComponent(value),
+		new URLSearchParams([["v", value]]).toString().slice(2),
+		encodeURIComponent(value).replace(/%20/g, "+"),
+	];
 }
 
 /** `part` split at each `form`; an all-digit form only where it is a number of its own (a code, not part of one). */

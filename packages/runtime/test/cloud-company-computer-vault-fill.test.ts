@@ -7,6 +7,7 @@ import {
 import {
 	type CompanyComputerBrowserSession,
 	CompanyComputerGuestAutomation,
+	companyComputerSnapshotCut,
 } from "@qorpera/runtime/cloud-company-computer-guest";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
@@ -430,6 +431,52 @@ describe("vault_fill on the Company Computer", () => {
 		await expect(perform(f, { kind: "browser", action: "snapshot" })).rejects.toThrow("PRIVATE_FIELD_VISIBLE");
 	});
 
+	it("cuts a long one-line page by characters when nothing is hidden, and between words when something is", async () => {
+		// Playwright gives a plain-text or JSON page as one line, here without a space.
+		const plain = office();
+		plain.shown.aria = `- text: {"data":"${"x".repeat(35_000)}"}`;
+		const whole = (await perform(plain, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string; truncated: boolean };
+		};
+		expect(whole.value.snapshot).toHaveLength(16_384);
+		expect(whole.value.truncated).toBe(true);
+		// After a fill, the line is cut at a space: the value across the cut is left out whole.
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		let line = `- text: ${`pw ${password} `.repeat(300)}`;
+		while (line.length < 20_400) line += "lorem ipsum ";
+		line += "x".repeat(20_470 - line.length - 1);
+		line += ` ${password} and more ${"lorem ".repeat(200)}`;
+		expect(line.indexOf(password, 20_000)).toBe(20_470);
+		f.shown.aria = line;
+		const cut = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string; truncated: boolean };
+		};
+		expect(cut.value.snapshot.length).toBeGreaterThan(10_000);
+		expect(cut.value.snapshot.length).toBeLessThan(16_384);
+		expect(cut.value.snapshot).not.toContain("Pw-12345");
+		expect(cut.value.truncated).toBe(true);
+	});
+
+	it("finds the cut after the last whitespace, or the last line's end when a value holds whitespace", () => {
+		expect(companyComputerSnapshotCut("one two\nthree four", 15, false)).toBe(13);
+		expect(companyComputerSnapshotCut("one two\nthree four", 15, true)).toBe(7);
+		expect(companyComputerSnapshotCut("one two\nthree four", 13, false)).toBe(13);
+		expect(companyComputerSnapshotCut("abcdef", 3, false)).toBe(0);
+	});
+
+	it("hides a link address the snapshot leaves unquoted, spaces and all", async () => {
+		const f = office();
+		await perform(f, action(), sealed(f.key!));
+		const lower = encodeURIComponent(password).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
+		f.shown.link = `/next?q=a b&pw=${lower}`;
+		const result = (await perform(f, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { snapshot: string };
+		};
+		expect(result.value.snapshot).toContain("- /url: [hidden]");
+		expect(result.value.snapshot).not.toContain("1234567890");
+	});
+
 	it("hides a link address the snapshot quotes, spaces and all", async () => {
 		const f = office();
 		await perform(f, action(), sealed(f.key!));
@@ -494,7 +541,7 @@ describe("vault_fill on the Company Computer", () => {
 		expect(f.screenshots.publish).not.toHaveBeenCalled();
 	});
 
-	it("cuts a long snapshot at a line's end, so no part of a value slips past the checks", async () => {
+	it("cuts a long snapshot between words, so no part of a value slips past the checks", async () => {
 		const f = office();
 		await perform(f, action(), sealed(f.key!));
 		// The value as text many times (each hidden, so the text shrinks), filler, the value across the 20 KB cut,
@@ -512,7 +559,8 @@ describe("vault_fill on the Company Computer", () => {
 			value: { snapshot: string; truncated: boolean };
 		};
 		expect(result.value.snapshot).not.toContain("Pw-12345");
-		expect(result.value.snapshot).not.toContain("Your password");
+		// Cut at the space before it: the words before the value stay.
+		expect(result.value.snapshot.endsWith("Your password:")).toBe(true);
 		expect(result.value.snapshot.length).toBeLessThan(16_384);
 		expect(result.value.truncated).toBe(true);
 	});
@@ -547,6 +595,13 @@ describe("vault_fill on the Company Computer", () => {
 			only.page.close.mock.invocationCallOrder[0]!,
 		);
 		expect(only.context.pages().map((tab) => tab.url())).toEqual(["about:blank"]);
+		// A tab that will not close stays the agent's, and the failure travels with the reason.
+		const stuck = office({ lose: true });
+		const failure = new Error("Target closed: protocol error");
+		stuck.page.close.mockRejectedValueOnce(failure);
+		const error = (await perform(stuck, action(), sealed(stuck.key!)).catch((caught: unknown) => caught)) as Error;
+		expect(error.message).toBe("ACCOUNT_FILL_LOST");
+		expect((error.cause as Error).cause).toBe(failure);
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {

@@ -279,6 +279,21 @@ describe("filled values on one screen", () => {
 			expect(filled.showsDecoded(`https://x.example/?pw=${text}`), text).toBe(true);
 	});
 
+	it("reads a page full of escapes that are not UTF-8 without failing, in time", () => {
+		const filled = new CompanyComputerFilledValues();
+		filled.add("Pw-1234567890@abcd#EF+GH", "password");
+		const started = performance.now();
+		expect(filled.showsDecoded(`${"%FF".repeat(130_000)} ${"%FFa ".repeat(50_000)}`)).toBe(false);
+		expect(performance.now() - started).toBeLessThan(5_000);
+	});
+
+	it("sees a password with spaces as a script writes it in a query, a space as +", () => {
+		const filled = new CompanyComputerFilledValues();
+		filled.add("Pw 1234567890!abcd", "password");
+		expect(filled.shows("https://x.example/?q=Pw+1234567890!abcd")).toBe(true);
+		expect(filled.hide("https://x.example/?q=Pw+1234567890!abcd")).toBe("https://x.example/?q=[hidden]");
+	});
+
 	it("drops spent codes before it drops a password", () => {
 		let now = 0;
 		const filled = new CompanyComputerFilledValues(() => now);
