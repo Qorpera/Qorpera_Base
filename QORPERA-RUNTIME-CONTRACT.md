@@ -4292,7 +4292,7 @@ They amend these texts. Where older text conflicts with this amendment, this
 amendment governs.
 - The 2026-09-25 amendment, item 2: the computer shell as an outside effect.
 - The 2026-09-27 amendment "every machine works in the company folder", items
-  2, 5 and 7.
+  1, 2, 5 and 7.
 - The 2026-09-27 amendment "the company folder layout": item 2 and its
   "Tools" paragraph.
 - The 2026-09-28 amendment "how machines reach the company folder", item 2.
@@ -4306,13 +4306,15 @@ amendment governs.
    host with the model's harness and the runtime's tools only.
    - No command box, shell or toolbox runs beside it.
    - The run box keeps the meaning that "computer hours" and 7.4 give it:
-     where one run executes. It has no shell and no folder mount.
+     where one run executes. It has no shell and no folder mount. This
+     replaces 27 September item 1's "agent run machines" that mount the
+     folder: the machines that mount it are those of item 3.
    - An execution host grows only to hold more conversations at once.
 2. **The folder through the server.** In a turn, an agent lists, reads and
    searches the company folder with server-side tools (`company_list`,
    `company_read`, `company_search`).
    - These tools act with the run's own folder view. A folder shared with only
-     some agents is there exactly for those agents.
+     some agents is there for those agents' runs (4.3).
    - Each answer is an authorized read in the run's read set (27 September,
      item 3). It is bound to the exact text the model is shown, as 9.1 fences
      output, before the model sees it.
@@ -4355,9 +4357,14 @@ amendment governs.
      deletes and moves pass the review as 27 September item 6 says.
    - On such a machine, a command that needs the network is an outside effect
      and passes the company's review rules (2026-09-25 amendment, item 2).
-   - This replaces compute item 2's review of every computer shell command,
-     and compute item 4's review of every command on a machine with the
-     folder.
+   - This replaces:
+     - 27 September item 7 (no internet in the agent's shell, and the later
+       decision it left open);
+     - the 2026-09-25 amendment item 2's "the computer shell" as an outside
+       effect, which now holds only for a command that needs the network;
+     - compute item 2's review of every computer shell command, and its "the
+       run box does not change";
+     - compute item 4's review of every command on a machine with the folder.
    - Open, to be settled before the folder is mounted on agents' own
      machines: how the rule holds there, where commands run as root (compute
      item 4) and a namespace alone does not hold them.
@@ -4370,9 +4377,9 @@ amendment governs.
    design).
    - A command's reads go to its run's read set (27 September, item 3).
    - Its saves are attributed to its run (28 September, item 2).
-7. **Words.** In the folder texts this amends, a "run box" that works on the
-   folder means the agent's own machine (item 4 above). Elsewhere, "run box"
-   keeps its meaning (item 1).
+7. **Words.** In the folder texts this amends, a "run box" or "run machine"
+   that works on the folder means the agent's own machine (item 4 above).
+   Elsewhere, "run box" and "run machine" keep their meaning (item 1).
 
 ## 20. Enforcement matrix
 

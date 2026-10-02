@@ -41,13 +41,15 @@ refer to.
 ## Decided on 2 October 2026 (light threads)
 
 The contract's "2026-10-02 amendment: light threads" governs wherever this
-design still has a shell or a folder mount in a chat turn. In this document
-that is:
-- the run box rows and bullets of
+design differs from it. In this document that includes:
+- the Goal and the shape diagram, where a run box has a shell;
+- the run box and test machine rows and bullets of
   [Which view each machine gets](#which-view-each-machine-gets-founder-decision-2);
 - the end of
   [How a machine reaches the folder](#how-a-machine-reaches-the-folder-founder-decision-1);
-- the 28 September build order's run box steps;
+- the 28 September build order: step 1's execution-host mount, the run box
+  steps, and step 3's retirement of the five `company_*` tools (a chat turn
+  keeps them until its write tools are decided);
 - section 1's execution-host mount;
 - section 4, and section 5's run box line and its shell-review bullet;
 - section 8's run box lines, and section 10's run box checks;
