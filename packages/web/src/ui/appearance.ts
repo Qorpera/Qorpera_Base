@@ -2,6 +2,8 @@
  * apart from preferences.ts, which carries the Danish dictionary, because
  * the head script (theme.ts) runs this before the first paint and must stay
  * small. Browser presentation only; no account or company state. */
+import { reducedMotion } from "./motion.ts";
+
 export type ThemePreference = "system" | "light" | "dark";
 export type ComposerColorPreference = "blue" | "green" | "grey";
 export type UiSizePreference = "big" | "small";
@@ -30,7 +32,7 @@ export function setComposerColorPreference(value: string): boolean {
 	} catch {
 		return false;
 	}
-	applyComposerColor();
+	reveal(document.documentElement.dataset.composerColor !== value, applyComposerColor);
 	return true;
 }
 
@@ -69,7 +71,7 @@ export function setUiSizePreference(value: string): boolean {
 	} catch {
 		return false;
 	}
-	applyUiSize();
+	reveal(document.documentElement.dataset.uiSize !== value, applyUiSize);
 	return true;
 }
 
@@ -85,8 +87,10 @@ export function presentationTheme(): "light" | "dark" {
 export function applyTheme(): void {
 	const theme = presentationTheme();
 	if (document.documentElement.dataset.theme === theme) return;
-	document.documentElement.dataset.theme = theme;
-	window.dispatchEvent(new Event("qorpera-theme-change"));
+	allAtOnce(() => {
+		document.documentElement.dataset.theme = theme;
+		window.dispatchEvent(new Event("qorpera-theme-change"));
+	});
 }
 
 export function setThemePreference(value: string): boolean {
@@ -96,8 +100,40 @@ export function setThemePreference(value: string): boolean {
 	} catch {
 		return false;
 	}
-	applyTheme();
+	reveal(document.documentElement.dataset.theme !== presentationTheme(), applyTheme);
 	return true;
+}
+
+/** A look changes all at once: no hover or press fade runs into it (styles/motion.css). */
+function allAtOnce(change: () => void): void {
+	const root = document.documentElement;
+	root.dataset.themeChanging = "";
+	change();
+	const settled = () => delete root.dataset.themeChanging;
+	if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(settled));
+	else settled();
+}
+
+/** Where the member last pressed: a look they choose washes out from there. */
+let lastPress: { x: number; y: number } | undefined;
+
+/** A theme, highlight colour or size chosen in the app spreads over the page from the
+ * choice, as a circle (styles/motion.css), where the browser can show the page's two looks
+ * at once. */
+function reveal(changes: boolean, apply: () => void): void {
+	const transition = (document as Document & { startViewTransition?: (update: () => void) => unknown })
+		.startViewTransition;
+	if (!transition || reducedMotion() || !changes) {
+		allAtOnce(apply);
+		return;
+	}
+	const { innerWidth: width, innerHeight: height } = window;
+	const { x, y } = lastPress ?? { x: width / 2, y: height / 2 };
+	const root = document.documentElement.style;
+	root.setProperty("--theme-x", `${x}px`);
+	root.setProperty("--theme-y", `${y}px`);
+	root.setProperty("--theme-r", `${Math.hypot(Math.max(x, width - x), Math.max(y, height - y))}px`);
+	transition.call(document, () => allAtOnce(apply));
 }
 
 /** Follow the device's appearance and choices made in other tabs. */
@@ -111,9 +147,14 @@ export function watchTheme(): () => void {
 	applyTheme();
 	applyComposerColor();
 	applyUiSize();
+	const press = (event: PointerEvent) => {
+		lastPress = { x: event.clientX, y: event.clientY };
+	};
+	window.addEventListener("pointerdown", press, { capture: true, passive: true });
 	system.addEventListener("change", applyTheme);
 	window.addEventListener("storage", onStorage);
 	return () => {
+		window.removeEventListener("pointerdown", press, { capture: true });
 		system.removeEventListener("change", applyTheme);
 		window.removeEventListener("storage", onStorage);
 	};
