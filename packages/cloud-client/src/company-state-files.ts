@@ -1476,7 +1476,12 @@ function contact(split: Split, fields: Fields, problems: Problems): ContactFile 
 			item.text !== item.text.trim() ||
 			encoder.encode(item.text).byteLength > 100
 		)
-			problems.add("value", item.line, "asks", "each of asks is one line of 1–100 bytes, without spaces at its ends");
+			problems.add(
+				"value",
+				item.line,
+				"asks",
+				"each of asks is one line of 1–100 bytes, without spaces at its ends",
+			);
 		else if (asks.includes(item.text))
 			problems.add("value", item.line, "asks", `${shown(item.text)} is listed twice`);
 		else asks.push(item.text);
