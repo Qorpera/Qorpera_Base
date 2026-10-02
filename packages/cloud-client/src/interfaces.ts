@@ -8,7 +8,7 @@
  * Browser-safe, and the same bytes always give the same result, problems included. */
 
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-files.ts";
+import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
 import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 
 export const INTERFACE_FORMAT = "qorpera.interface/v0";
@@ -326,6 +326,18 @@ const NOT_TEXT = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 const BIDI = /[\u202a-\u202e\u2066-\u2069]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const encoder = new TextEncoder();
+
+/** Decodes a file's bytes the way the save path must: strict UTF-8 that keeps a leading byte order mark, so the
+ * text's sha256 matches the saved bytes (the commit compares them). A default TextDecoder drops the mark, which
+ * would make a `rows.csv` exported from a spreadsheet fail that comparison. The parsers drop the mark themselves
+ * where the format allows one (rows and order.md) and refuse it in TOML. Null when the bytes aren't UTF-8. */
+export function decodeInterfaceFile(bytes: Uint8Array): string | null {
+	try {
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return null;
+	}
+}
 
 /** Which interface file a path is, decided on the folder's key like the state files. */
 export function interfaceStatePath(path: string): InterfaceStatePath | null {
