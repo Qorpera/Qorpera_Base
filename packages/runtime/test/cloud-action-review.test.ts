@@ -53,6 +53,9 @@ describe("which calls are reviewed", () => {
 		["computer_screenshot", {}, "read"],
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
+		// The run box (F3 step 2b): no network, the company folder read-only.
+		["exec_command", { cmd: "rg -l plan" }, "read"],
+		["write_stdin", { session_id: 1, chars: "" }, "read"],
 		// An email from a company mailbox leaves the company (M2b).
 		[
 			"send_mail",

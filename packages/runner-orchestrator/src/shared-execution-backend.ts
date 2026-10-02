@@ -86,6 +86,8 @@ const BOX_OPEN_RETRY_MS = 250;
 const BOX_OPEN_WINDOW_MS = 60_000;
 /** The run's view of the company folder, on the slot's tmpfs, read by the slot's folder unit (root). */
 const BOX_VIEW_FILE = "box-view.json";
+/** Where the box's socket units put their sockets (`qorpera-shared-box@.socket`, `qorpera-shared-box-reads@.socket`). */
+const BOX_SOCKET_DIRECTORY = "/run/qorpera-shared-box";
 /** The folder core's refusal of a view for a company with no folder-v2 folder (20260928259230 view_open, 42501): such a
  * run gets no box. A test checks the live SQL still raises exactly this. */
 export const RUN_BOX_NO_FOLDER_MESSAGE = "Company folder is unavailable";
@@ -1571,6 +1573,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				: []),
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
+			// The run box's tools (F3 step 2b) go to a folder-v2 run while boxes are on.
+			...(this.#config.runBox?.open
+				? [
+						`QORPERA_RUN_BOX_SOCKET=${BOX_SOCKET_DIRECTORY}/${current.slot}.sock`,
+						`QORPERA_RUN_BOX_READS=${BOX_SOCKET_DIRECTORY}/${current.slot}.reads`,
+					]
+				: []),
 			...(vaultLogin ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
 			"",
 		].join("\n");

@@ -191,6 +191,10 @@ export function cloudActionEffect(
 		case "machine_list":
 		case "list_hooks":
 		case "read_event":
+		// The run box (F3 step 2b): a command in a box with no network and the company folder read-only changes nothing
+		// outside the box, which ends with the run.
+		case "exec_command":
+		case "write_stdin":
 			return "read";
 		case "company_write":
 		case "company_mkdir":

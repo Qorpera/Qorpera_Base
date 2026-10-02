@@ -68,6 +68,7 @@ import {
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
+import { CloudRunBox, type CloudRunBoxPaths, cloudRunBoxTools } from "./cloud-run-box-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationBatchReceipt,
@@ -127,6 +128,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #runBox: CloudRunBoxPaths | undefined;
 	readonly #folderBytes:
 		| ((binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes)
 		| undefined;
@@ -158,6 +160,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** A folder-v2 run's file bytes (core C1d: the object gateway's folder route). Without it a folder-v2 run
 		 * keeps the legacy state tools, which refuse. */
 		folderBytes?: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
+		/** The slot's run box (F3 step 2b, the shared execution host only): a folder-v2 run gets exec_command and
+		 * write_stdin over it. */
+		runBox?: CloudRunBoxPaths;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -175,6 +180,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#folderBytes = options.folderBytes;
+		this.#runBox = options.runBox ? Object.freeze({ ...options.runBox }) : undefined;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -691,6 +697,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											operations,
 											gateway: this.#machines(binding),
 											worker: work.isWorker,
+										})
+									: []),
+								// The run box (F3 step 2b): commands over the company folder, read-only, for a folder-v2 run on a host
+								// that gives runs a box. A worker gets them too: they change nothing.
+								...(folder && this.#runBox
+									? cloudRunBoxTools({
+											box: new CloudRunBox(this.#runBox),
+											folder: folder.client,
+											runId: identity.runId,
 										})
 									: []),
 								// The notebook is the agent's own: a worker of the same agent recalls it,

@@ -57,6 +57,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"read_event",
 	// Company mail (M2b): an email from a mailbox.
 	"send_mail",
+	// The run box (F3 step 2b): commands over the company folder, read-only.
+	"exec_command",
+	"write_stdin",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

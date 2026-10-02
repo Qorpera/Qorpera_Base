@@ -45,6 +45,7 @@ import {
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+import type { CloudRunBoxPaths } from "./cloud-run-box-tools.ts";
 import { HttpCloudSecretBrokerClient, issueModelLogin } from "./cloud-secret-broker-http.ts";
 import {
 	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
@@ -206,6 +207,20 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
 }
 
+/** The slot's run box (F3 step 2b), which the shared execution service names when it gives runs a box: both of its
+ * sockets or neither. */
+export function nativeRunBoxConfiguration(environment: NodeJS.ProcessEnv): CloudRunBoxPaths | undefined {
+	const socket = environment.QORPERA_RUN_BOX_SOCKET;
+	const reads = environment.QORPERA_RUN_BOX_READS;
+	if (socket === undefined && reads === undefined) return undefined;
+	const path = /^\/run\/qorpera-shared-box\/[0-9]{1,2}\.(sock|reads)$/;
+	if (!socket?.endsWith(".sock") || !reads?.endsWith(".reads") || !path.test(socket) || !path.test(reads))
+		throw new Error("The run box needs both of its sockets under /run/qorpera-shared-box");
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("The run box requires the cloud-native runtime");
+	return { socket, reads };
+}
+
 /** Whether this identity's login is kept by the vault (Stateless Compute step 1). */
 async function fetchIdentityLoginInVault(
 	baseUrl: string,
@@ -236,6 +251,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
 	const codingConfiguration = nativeCodingConfiguration(environment);
+	const runBox = nativeRunBoxConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	const serviceKey = await credentialOrEnvironment(
 		environment,
@@ -441,6 +457,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						}),
 					}
 				: {}),
+			...(runBox ? { runBox } : {}),
 			// A folder-v2 run's file bytes: the object gateway's folder route, on the same native credential.
 			folderBytes: (binding, identity) =>
 				new HttpCloudCompanyFolderBytes({
