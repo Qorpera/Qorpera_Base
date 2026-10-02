@@ -7,6 +7,7 @@
  * never silently changes a page. Nothing here runs code from a file; the blocks and verbs are fixed lists.
  * Browser-safe, and the same bytes always give the same result, problems included. */
 
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-files.ts";
 import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 
@@ -62,34 +63,38 @@ export const INTERFACE_WIDTHS = Object.freeze(["full", "half", "third", "two-thi
 
 /** The sources a block may read, with the columns each one has (RUNTIME-INTERFACES.md §4). `table:<name>` and
  * `file:<path>` are not listed: a table's columns live in its own file, and a file is text. */
-export const INTERFACE_SOURCE_COLUMNS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-	vision: ["text"],
-	agents: ["id", "name", "role", "figure", "colour", "status", "section"],
-	groups: ["id", "name", "agents", "people"],
-	todos: ["id", "agent", "title", "status", "requested_by", "updated"],
-	routines: ["id", "agent", "title", "when", "next", "status"],
-	connections: ["id", "service", "account", "status"],
-	contacts: ["id", "name", "organization"],
-	human_tasks: ["id", "title", "status", "person", "from", "due"],
-	interfaces: ["id", "name", "about", "emblem", "status"],
-	mail: [
-		"thread",
-		"address",
-		"from_name",
-		"from_address",
-		"subject",
-		"last_at",
-		"state",
-		"handled_by",
-		"direction",
-		"unread",
-	],
-	mail_addresses: ["address", "handled_by", "routine", "last_7_days"],
-	members: ["id", "name", "picture", "role", "here"],
-	working: ["agent", "what", "since"],
-	activity: ["at", "kind", "agent", "member", "line"],
-	waiting: ["id", "kind", "title", "from", "due"],
-});
+export const INTERFACE_SOURCE_COLUMNS: Readonly<Record<string, readonly string[]>> = Object.freeze(
+	Object.fromEntries(
+		Object.entries({
+			vision: ["text"],
+			agents: ["id", "name", "role", "figure", "colour", "status", "section"],
+			groups: ["id", "name", "agents", "people"],
+			todos: ["id", "agent", "title", "status", "requested_by", "updated"],
+			routines: ["id", "agent", "title", "when", "next", "status"],
+			connections: ["id", "service", "account", "status"],
+			contacts: ["id", "name", "organization"],
+			human_tasks: ["id", "title", "status", "person", "from", "due"],
+			interfaces: ["id", "name", "about", "emblem", "status"],
+			mail: [
+				"thread",
+				"address",
+				"from_name",
+				"from_address",
+				"subject",
+				"last_at",
+				"state",
+				"handled_by",
+				"direction",
+				"unread",
+			],
+			mail_addresses: ["address", "handled_by", "routine", "last_7_days"],
+			members: ["id", "name", "picture", "role", "here"],
+			working: ["agent", "what", "since"],
+			activity: ["at", "kind", "agent", "member", "line"],
+			waiting: ["id", "kind", "title", "from", "due"],
+		}).map(([source, columns]) => [source, Object.freeze(columns)]),
+	),
+);
 
 export const TABLE_COLUMN_TYPES = Object.freeze([
 	"text",
@@ -306,7 +311,7 @@ export interface InterfaceStatePath {
 	readonly name: string | null;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID = UUID_PATTERN;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COLUMN = /^[a-z][a-z0-9_]*$/;
@@ -315,6 +320,10 @@ const TEMPLATE_PUBLISHER = /^[a-z0-9]+(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*$
 const SEMVER = /^(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})$/;
 const CURRENCY = /^[A-Z]{3}$/;
 const NOT_ONE_LINE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+/** Controls a multi-line text never holds: everything but tab and line feed. */
+const NOT_TEXT = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+/** Direction controls, which can make a text read differently from what it says. */
+const BIDI = /[\u202a-\u202e\u2066-\u2069]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const encoder = new TextEncoder();
 
@@ -343,9 +352,22 @@ export function isInterfaceName(value: string): boolean {
 
 /** Problems with the path itself: a file under `interfaces/` or `tables/` that the format doesn't place. */
 export function interfacePathProblems(path: string): InterfaceProblem[] {
-	const key = companyPathKey(path);
+	const written = path.replace(/^\/+|\/+$/g, "");
+	const key = companyPathKey(written);
 	const parts = key.split("/");
 	if (parts[0] !== "interfaces" && parts[0] !== "tables") return [];
+	// Names are written as the format names them, like the state files: `interfaces/Pulse/` is refused, not read.
+	if (written !== key && written.replace(/README\.md$/, "readme.md") !== key) {
+		return [
+			problem(
+				null,
+				null,
+				"bad_value",
+				"Folders and files here are named in lowercase plain letters, digits and hyphens.",
+			),
+		];
+	}
+	if (parts.length === 1) return [];
 	if (interfaceStatePath(path)) return [];
 	if (parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
 		return [];
@@ -401,9 +423,17 @@ class Reader {
 		return null;
 	}
 
+	/** Problems past the cap, counted for the closing "and K more problems". */
+	dropped = 0;
+
 	add(path: string | null, code: InterfaceProblemCode, message: string): void {
-		if (this.problems.length >= INTERFACE_MAX_PROBLEMS) return;
-		this.problems.push(problem(path ? this.lineOf(path) : null, path ? displayKey(path) : null, code, message));
+		if (this.problems.length >= INTERFACE_MAX_PROBLEMS) {
+			this.dropped++;
+			return;
+		}
+		this.problems.push(
+			problem(path ? this.lineOf(path) : null, path ? shown(displayKey(path)) : null, code, message),
+		);
 	}
 
 	/** Refuses every key not in `allowed`. */
@@ -411,7 +441,7 @@ class Reader {
 		for (const key of Object.keys(bag)) {
 			if (!allowed.includes(key)) {
 				const at = path ? `${path}.${key}` : key;
-				this.add(at, "unknown_key", `"${key}" is not a key here. Allowed: ${allowed.join(", ")}.`);
+				this.add(at, "unknown_key", `"${clip(key)}" is not a key here. Allowed: ${allowed.join(", ")}.`);
 			}
 		}
 	}
@@ -484,6 +514,10 @@ class Reader {
 		}
 		if (!opts.multiline && NOT_ONE_LINE.test(value)) {
 			this.add(at, "bad_value", `${displayKey(at)} must be one line.`);
+			return null;
+		}
+		if ((opts.multiline && NOT_TEXT.test(value)) || BIDI.test(value)) {
+			this.add(at, "bad_value", `${displayKey(at)} holds a control or direction character.`);
 			return null;
 		}
 		return value;
@@ -574,7 +608,22 @@ function isBag(value: unknown): value is Bag {
 }
 
 function clip(value: string): string {
-	return value.length > 60 ? `${value.slice(0, 57)}…` : value;
+	return [...value].length > 60 ? `${[...value].slice(0, 57).join("")}…` : value;
+}
+
+/** Input quoted in a problem's key, at most 100 characters. */
+function shown(text: string): string {
+	return [...text].length > 100 ? `${[...text].slice(0, 100).join("")}…` : text;
+}
+
+/** The list a refusal carries: at most 50 problems, then "and K more problems", like the state files. */
+function withMore(problems: readonly InterfaceProblem[], dropped = 0): InterfaceProblem[] {
+	const first = problems.slice(0, INTERFACE_MAX_PROBLEMS);
+	const more = problems.length - first.length + dropped;
+	const next = problems[INTERFACE_MAX_PROBLEMS] ?? problems[problems.length - 1];
+	if (more > 0 && next)
+		first.push(problem(null, null, next.code, `and ${more} more ${more === 1 ? "problem" : "problems"}`));
+	return first;
 }
 
 /** Reads the TOML, or returns why it can't. Size and encoding are checked before parsing. */
@@ -596,7 +645,7 @@ function readToml(text: string, maxBytes: number): { bag: Bag; reader: Reader } 
 
 function done<T>(reader: Reader, file: T): InterfaceParseResult<T> {
 	if (reader.problems.length > 0)
-		return { ok: false, file: null, problems: reader.problems.slice(0, INTERFACE_MAX_PROBLEMS) };
+		return { ok: false, file: null, problems: withMore(reader.problems, reader.dropped) };
 	return { ok: true, file, problems: [] };
 }
 
@@ -624,6 +673,18 @@ function isFolderFilePath(path: string): boolean {
 }
 
 const QUERY_KEYS = ["where", "since", "order", "limit", "latest_by"] as const;
+/** Keys a table block takes for itself, so a column of that name can't also be a lookup. */
+const RESERVED_BLOCK_KEYS: ReadonlySet<string> = new Set([
+	"kind",
+	"id",
+	"title",
+	"from",
+	"width",
+	"buttons",
+	"columns",
+	"opens",
+	...QUERY_KEYS,
+]);
 
 function readWhere(reader: Reader, value: unknown, at: string): InterfaceQuery["where"] {
 	if (value === undefined) return null;
@@ -768,7 +829,13 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 			const from = reader.text(head.badge, "from", "interface.badge", { required: true, max: 600 });
 			if (from !== null && !isInterfaceSource(from))
 				reader.add("interface.badge.from", "unknown_source", `"${clip(from)}" is not a source.`);
-			badge = from === null ? null : { from, query: readQuery(reader, head.badge, "interface.badge") };
+			const query = readQuery(reader, head.badge, "interface.badge");
+			const known = from === null ? null : interfaceSourceColumns(from);
+			for (const column of [...Object.keys(query.where ?? {}), query.order?.column, query.latestBy]) {
+				if (known && column && !known.includes(column))
+					reader.add("interface.badge", "unknown_column", `${from} has no column "${column}".`);
+			}
+			badge = from === null ? null : { from, query };
 		}
 	}
 
@@ -778,8 +845,8 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 		reader.keys(tpl, "template", ["from", "version"]);
 		const from = reader.text(tpl, "from", "template", { required: true, max: 81 });
 		const version = reader.text(tpl, "version", "template", { required: true, max: 20 });
-		if (from !== null && !TEMPLATE_PUBLISHER.test(from))
-			reader.add("template.from", "bad_value", 'template.from is "<publisher>/<name>".');
+		if (from !== null && (!TEMPLATE_PUBLISHER.test(from) || from.split("/").some((part) => part.length > 40)))
+			reader.add("template.from", "bad_value", 'template.from is "<publisher>/<name>", each at most 40 characters.');
 		if (version !== null && !SEMVER.test(version))
 			reader.add("template.version", "bad_value", 'template.version is like "1.0.0".');
 		if (from !== null && version !== null) template = { from, version };
@@ -1017,13 +1084,17 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 	// A table block's lookup columns are keys named after entries of its columns list.
 	const lookupKeys =
 		kind === "table" && Array.isArray(bag.columns)
-			? bag.columns.filter((c): c is string => typeof c === "string" && COLUMN.test(c))
+			? bag.columns.filter(
+					(c): c is string => typeof c === "string" && COLUMN.test(c) && !RESERVED_BLOCK_KEYS.has(c),
+				)
 			: [];
 	reader.keys(bag, path, [...COMMON_BLOCK_KEYS, ...BLOCK_KEYS[kind], ...lookupKeys]);
 	const id = reader.text(bag, "id", path, { max: 40 });
 	if (id !== null && !ID.test(id))
 		reader.add(`${path}.id`, "bad_value", "A block's id uses lowercase letters, digits and hyphens.");
 	const title = reader.text(bag, "title", path, { max: 60 });
+	if (title !== null && interfaceTemplateColumns(title) === null)
+		reader.add(`${path}.title`, "bad_value", "A {column} in the title is not closed or not a column name.");
 	const width = reader.choice(bag, "width", path, INTERFACE_WIDTHS, "full") ?? "full";
 	const query = readQuery(reader, bag, path);
 	const buttons = reader.list(bag, "buttons", path, { max: 12, what: "a button id", item: (b) => ID.test(b) });
@@ -1095,6 +1166,7 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 	if (kind === "table") {
 		columns = reader.list(bag, "columns", path, { max: 24, what: "a column name", item: (c) => COLUMN.test(c) });
 		for (const name of columns) {
+			if (RESERVED_BLOCK_KEYS.has(name)) continue;
 			const spec = bag[name];
 			if (spec === undefined) continue;
 			if (!isBag(spec)) {
@@ -1153,6 +1225,8 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 				return value;
 			};
 			const cardTitle = cardText("title");
+			if (card && card.title === undefined)
+				reader.add(`${at}.card.title`, "missing_key", 'A board card needs a title, like title = "{column}".');
 			const figures =
 				card?.figures === undefined
 					? null
@@ -1309,8 +1383,7 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 				item: (c) =>
 					c.length > 0 && c.length <= 60 && !NOT_ONE_LINE.test(c) && !c.includes(",") && !c.includes('"'),
 			});
-			if (choices.length === 0 && cb.choices === undefined)
-				reader.add(`${path}.choices`, "missing_key", "A choice column needs choices.");
+			if (choices.length === 0) reader.add(`${path}.choices`, "missing_key", "A choice column needs 1–50 choices.");
 		} else if (cb.choices !== undefined)
 			reader.add(`${path}.choices`, "unknown_key", "choices is for choice columns.");
 		let currency: string | null = null;
@@ -1351,8 +1424,7 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 
 	const byName = new Map(columns.map((c) => [c.name, c]));
 	const key = reader.list(head, "key", "table", { max: 3, what: "a column name", item: (k) => COLUMN.test(k) });
-	if (head.key === undefined)
-		reader.add("table.key", "missing_key", "table.key names 1–3 columns that make a row unique.");
+	if (key.length === 0) reader.add("table.key", "missing_key", "table.key names 1–3 columns that make a row unique.");
 	for (const k of key) {
 		const c = byName.get(k);
 		if (!c) reader.add("table.key", "unknown_column", `table.key names "${k}", which is not a column.`);
@@ -1373,12 +1445,15 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 			if (wb.agents === "all" || wb.agents === "none") write.agents = wb.agents;
 			else if (typeof wb.agents === "string")
 				reader.add("write.agents", "bad_value", 'write.agents is "all", "none" or a list of agent ids.');
-			else
+			else {
 				write.agents = reader.list(wb, "agents", "write", {
 					max: 100,
 					what: "a lowercase uuid",
 					item: (item) => UUID.test(item),
 				});
+				if (Array.isArray(wb.agents) && wb.agents.length === 0)
+					reader.add("write.agents", "bad_value", 'write.agents lists at least one id; use "none" for no agent.');
+			}
 		}
 		write.members = reader.choice(wb, "members", "write", ["all", "owners", "none"] as const, "all") ?? "all";
 	}
@@ -1403,15 +1478,17 @@ export function parseInterfaceOrderFile(text: string): InterfaceParseResult<Inte
 	if (encoder.encode(text).length > INTERFACE_ORDER_MAX_BYTES) {
 		return { ok: false, file: null, problems: [problem(null, null, "too_large", "order.md is larger than 16 KiB.")] };
 	}
+	if (LONE_SURROGATE.test(text)) {
+		return { ok: false, file: null, problems: [problem(null, null, "encoding", "order.md must be UTF-8 text.")] };
+	}
 	const problems: InterfaceProblem[] = [];
 	const ids: string[] = [];
 	const seen = new Set<string>();
 	text.split("\n").forEach((raw, i) => {
 		const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
 		if (line.trim() === "") return;
-		const match = /^- ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?: [^\u0000-\u001f]*)?$/.exec(
-			line.length <= 400 ? line : "",
-		);
+		const match = /^- ([^ ]+)(?: [^\u0000-\u001f]*)?$/.exec(line.length <= 400 ? line : "");
+		if (match?.[1] && !UUID.test(match[1])) match[1] = "";
 		if (!match?.[1]) {
 			if (problems.length < INTERFACE_MAX_PROBLEMS)
 				problems.push(problem(i + 1, null, "bad_value", 'Each line is "- <id>", optionally followed by a name.'));
@@ -1434,10 +1511,14 @@ export function writeInterfaceOrderFile(ids: readonly string[], names?: Readonly
 		.map((id) => {
 			const name = names?.get(id);
 			const clean = name
-				? name
-						.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
-						.trim()
+				? Array.from(
+						name
+							.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ")
+							.replace(new RegExp(LONE_SURROGATE.source, "g"), "")
+							.trim(),
+					)
 						.slice(0, 120)
+						.join("")
 				: "";
 			return clean ? `- ${id} ${clean}` : `- ${id}`;
 		})
@@ -1507,7 +1588,9 @@ export function splitCsv(text: string): {
 			i++;
 			continue;
 		}
-		if (ch === "\r" && text[i + 1] === "\n") {
+		if (ch === "\r") {
+			if (text[i + 1] !== "\n")
+				return { records, error: { line, message: "A line ends with a lone carriage return." } };
 			i++;
 			continue;
 		}
@@ -1567,8 +1650,9 @@ function typedValue(column: TableColumn, raw: string): { value: TableValue } | {
 				? { value: Number(raw) }
 				: { problem: `${column.name} is not a number` };
 		case "time":
+			// One canonical form, seconds always, so two spellings of one time are one key.
 			return raw.length <= 25 && TIME_TEXT.test(raw) && interfaceInstant(raw) !== null
-				? { value: raw }
+				? { value: raw.length === 17 ? `${raw.slice(0, 16)}:00Z` : raw }
 				: { problem: `${column.name} is not a time like 2026-10-02T09:44Z` };
 		case "date":
 			return raw.length === 10 && interfaceInstant(raw) !== null
@@ -1687,25 +1771,31 @@ export type InterfaceActor =
 	| { readonly kind: "member"; readonly memberId: string }
 	| { readonly kind: "agent"; readonly agentId: string; readonly supervisorId: string | null };
 
-/** An open offer of one row's cell to a member; the platform keeps it with the request card. `row` is the row's key
- * as `tableRowKey` writes it. */
+/** An open offer of one row's cell, kept by the platform with its request card. `row` is the row's key as
+ * `tableRowKey` writes it; `from` is the member it was made by or for, `was` the cell's value when it was made. */
 export interface InterfaceOffer {
 	readonly row: string;
 	readonly column: string;
 	readonly to: string;
+	readonly from: string;
+	readonly was: string | null;
 }
+
+/** The columns of `tables/areas/` that agents never change: who owns an area, who supervises it, its agents. */
+export const AREA_MEMBER_ONLY_COLUMNS = Object.freeze(["owner", "supervisor", "agents"] as const);
 
 /** The key a row is matched on across versions of its file. */
 export function tableRowKey(table: TableFile, row: TableRow): string {
-	return JSON.stringify(table.key.map((k) => row[k] ?? null));
+	return JSON.stringify(table.key.map((k) => (Object.hasOwn(row, k) ? row[k] : null) ?? null));
 }
 
 /** The claim rule (RUNTIME-INTERFACES.md §5, contract amendment item 6) for a save that changes a rows file:
  * - take: a member puts their own id in an empty cell;
  * - release: a member clears a cell that names them;
- * - accept: the member an open offer names puts their own id in that cell (the platform's write on their yes);
- * - an agent acts for its supervisor, taking for them and releasing what they hold, and never touches the columns
- *   in `memberOnly` (an area's owner, supervisor and agents), needs_yes or not.
+ * - accept: the member an open offer names puts their own id in that cell, while the cell still holds what it held
+ *   when the offer was made, and the offer came from that holder (or the cell was empty);
+ * - an agent acts for its supervisor, taking for them and releasing what they hold, and never touches the
+ *   member-only columns (by default those of `tables/areas/`), needs_yes or not.
  * A removed row counts as clearing its cells. Anything else that changes a needs_yes column is a problem; an offer
  * itself is a request card, never a save. */
 export function tableClaimProblems(
@@ -1713,17 +1803,22 @@ export function tableClaimProblems(
 	before: readonly TableRow[],
 	after: readonly TableRow[],
 	actor: InterfaceActor,
-	options: { readonly offers?: readonly InterfaceOffer[]; readonly memberOnly?: readonly string[] } = {},
+	options: {
+		readonly offers?: readonly InterfaceOffer[];
+		/** The table's folder name; `areas` brings its member-only columns. */
+		readonly folder?: string;
+		readonly memberOnly?: readonly string[];
+	} = {},
 ): InterfaceProblem[] {
-	const memberOnly = options.memberOnly ?? [];
+	const memberOnly = options.memberOnly ?? (options.folder === "areas" ? AREA_MEMBER_ONLY_COLUMNS : []);
 	const claimed = table.columns.filter((c) => c.needsYes || (actor.kind === "agent" && memberOnly.includes(c.name)));
 	if (claimed.length === 0) return [];
 	const self = actor.kind === "member" ? actor.memberId : actor.supervisorId;
 	const offers = options.offers ?? [];
 	const problems: InterfaceProblem[] = [];
-	const note = (column: string, message: string) => {
-		if (problems.length < INTERFACE_MAX_PROBLEMS) problems.push(problem(null, column, "claim", message));
-	};
+	const note = (column: string, message: string) => problems.push(problem(null, column, "claim", message));
+	const cell = (row: TableRow | undefined, column: string): TableValue =>
+		row && Object.hasOwn(row, column) ? (row[column] ?? null) : null;
 	const check = (key: string, column: string, was: TableValue, now: TableValue) => {
 		if (JSON.stringify(was) === JSON.stringify(now)) return;
 		if (actor.kind === "agent" && memberOnly.includes(column)) {
@@ -1735,11 +1830,18 @@ export function tableClaimProblems(
 			return;
 		}
 		const take = was === null && now === self;
-		const release = now === null && was === self;
+		const release = now === null && was !== null && was === self;
 		const accept =
 			now === self &&
 			actor.kind === "member" &&
-			offers.some((o) => o.row === key && o.column === column && o.to === self);
+			offers.some(
+				(offer) =>
+					offer.row === key &&
+					offer.column === column &&
+					offer.to === self &&
+					offer.was === was &&
+					(offer.was === null || offer.from === offer.was),
+			);
 		if (!take && !release && !accept) {
 			note(
 				column,
@@ -1747,17 +1849,44 @@ export function tableClaimProblems(
 			);
 		}
 	};
-	const after_ = new Map(after.map((row) => [tableRowKey(table, row), row]));
-	const before_ = new Map(before.map((row) => [tableRowKey(table, row), row]));
-	for (const [key, row] of after_) {
-		const previous = before_.get(key);
-		for (const column of claimed) {
-			check(key, column.name, previous?.[column.name] ?? null, row[column.name] ?? null);
-		}
+	const afterRows = new Map(after.map((row) => [tableRowKey(table, row), row]));
+	const beforeRows = new Map(before.map((row) => [tableRowKey(table, row), row]));
+	for (const [key, row] of afterRows) {
+		const previous = beforeRows.get(key);
+		for (const column of claimed) check(key, column.name, cell(previous, column.name), cell(row, column.name));
 	}
-	for (const [key, row] of before_) {
-		if (after_.has(key)) continue;
-		for (const column of claimed) check(key, column.name, row[column.name] ?? null, null);
+	for (const [key, row] of beforeRows) {
+		if (afterRows.has(key)) continue;
+		for (const column of claimed) check(key, column.name, cell(row, column.name), null);
+	}
+	return withMore(problems);
+}
+
+/** The claim rule's other half: a definition change may not drop the protection from a cell someone holds. A
+ * needs_yes column can lose `needs_yes`, be renamed or be removed only while no row holds anyone in it, so editing
+ * `table.toml` never becomes a way to move a held cell. */
+export function tableDefinitionProblems(
+	before: TableFile,
+	after: TableFile,
+	rows: readonly TableRow[],
+): InterfaceProblem[] {
+	const problems: InterfaceProblem[] = [];
+	for (const column of before.columns.filter((c) => c.needsYes)) {
+		const kept = after.columns.find((c) => c.name === column.name);
+		if (kept?.needsYes) continue;
+		const held = rows.some(
+			(row) => Object.hasOwn(row, column.name) && row[column.name] !== null && row[column.name] !== undefined,
+		);
+		if (held) {
+			problems.push(
+				problem(
+					null,
+					column.name,
+					"claim",
+					`${column.name} holds people's claims; it can stop needing a yes only once nobody holds anything in it.`,
+				),
+			);
+		}
 	}
 	return problems;
 }

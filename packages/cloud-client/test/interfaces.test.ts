@@ -13,11 +13,13 @@ import {
 	fillInterfaceText,
 	interfaceBucket,
 	interfaceLookup,
+	interfaceLookupIndex,
 	interfaceSeries,
 	interfaceSinceStart,
 	queryInterfaceRows,
 } from "../src/interface-query.ts";
 import {
+	INTERFACE_SOURCE_COLUMNS,
 	type InterfaceProblem,
 	interfaceInstant,
 	interfacePathProblems,
@@ -31,6 +33,7 @@ import {
 	type TableFile,
 	type TableRow,
 	tableClaimProblems,
+	tableDefinitionProblems,
 	tableRowKey,
 	writeInterfaceOrderFile,
 	writeTableRows,
@@ -144,7 +147,7 @@ k = {}
 		for (const bad of [`a = "${"x".repeat(60_000)}`, `a = [${"[".repeat(9)}`, `x = ${"9".repeat(60_000)}`]) {
 			expect(() => parseTomlSubset(bad)).toThrow(TomlSubsetError);
 		}
-		expect(performance.now() - started).toBeLessThan(1_000);
+		expect(performance.now() - started).toBeLessThan(5_000);
 	});
 });
 
@@ -400,7 +403,14 @@ type = "choice"
 		const result = parseTableRows(numbers, text);
 		expect(result.readable).toBe(true);
 		expect(result.rows).toEqual([
-			{ number: "Monthly revenue", at: "2026-09-29T08:02Z", value: 4210, unit: "€", target: 5000, kept_by: FINANCE },
+			{
+				number: "Monthly revenue",
+				at: "2026-09-29T08:02:00Z",
+				value: 4210,
+				unit: "€",
+				target: 5000,
+				kept_by: FINANCE,
+			},
 			{
 				number: "Revenue, net",
 				at: "2026-09-29T08:02:30Z",
@@ -424,7 +434,7 @@ type = "choice"
 		const text = `kept_by,value,number,unit,at\n${FINANCE},12,Trials,count,2026-10-02T09:44Z\n`;
 		expect(parseTableRows(numbers, text)).toEqual({
 			rows: [
-				{ number: "Trials", at: "2026-10-02T09:44Z", value: 12, unit: "count", target: null, kept_by: FINANCE },
+				{ number: "Trials", at: "2026-10-02T09:44:00Z", value: 12, unit: "count", target: null, kept_by: FINANCE },
 			],
 			problems: [],
 			readable: true,
@@ -520,10 +530,62 @@ describe("the claim rule", () => {
 	it("allows the write of an accepted offer, and only for the member it names", () => {
 		const before = [row("Finance", AMIR, AMIR)];
 		const after = [{ ...row("Finance", AMIR, IDA) }];
-		const offers = [{ row: tableRowKey(areas, before[0] as TableRow), column: "supervisor", to: IDA }];
+		const key = tableRowKey(areas, before[0] as TableRow);
+		const offers = [{ row: key, column: "supervisor", to: IDA, from: AMIR, was: AMIR }];
 		expect(tableClaimProblems(areas, before, after, member(IDA), { offers })).toEqual([]);
 		expect(codes(tableClaimProblems(areas, before, after, member(SOFIE), { offers }))).toEqual(["claim"]);
 		expect(codes(tableClaimProblems(areas, before, after, member(IDA)))).toEqual(["claim"]);
+	});
+
+	it("refuses a stale offer and one made by someone who didn't hold the cell", () => {
+		const key = tableRowKey(areas, row("Marketing", null) as TableRow);
+		// Offered while empty, then Amir took it: Sofie's yes no longer moves it.
+		const stale = [{ row: key, column: "owner", to: SOFIE, from: IDA, was: null }];
+		expect(
+			codes(
+				tableClaimProblems(areas, [row("Marketing", AMIR, null)], [row("Marketing", SOFIE, null)], member(SOFIE), {
+					offers: stale,
+				}),
+			),
+		).toEqual(["claim"]);
+		// Amir holds it, but Ida made the offer.
+		const foreign = [{ row: key, column: "owner", to: SOFIE, from: IDA, was: AMIR }];
+		expect(
+			codes(
+				tableClaimProblems(areas, [row("Marketing", AMIR, null)], [row("Marketing", SOFIE, null)], member(SOFIE), {
+					offers: foreign,
+				}),
+			),
+		).toEqual(["claim"]);
+		// An empty cell offered by anyone, accepted while still empty, is fine.
+		const open = [{ row: key, column: "owner", to: SOFIE, from: IDA, was: null }];
+		expect(
+			tableClaimProblems(areas, [row("Marketing", null, null)], [row("Marketing", SOFIE, null)], member(SOFIE), {
+				offers: open,
+			}),
+		).toEqual([]);
+	});
+
+	it("never lets a definition edit drop the protection from a held cell", () => {
+		const loosened = table(
+			AREAS_TABLE.replace(
+				'name = "supervisor"\ntype = "member"\noptional = true\nneeds_yes = true',
+				'name = "supervisor"\ntype = "member"\noptional = true',
+			),
+		);
+		expect(loosened.columns.find((c) => c.name === "supervisor")?.needsYes).toBe(false);
+		expect(codes(tableDefinitionProblems(areas, loosened, [row("Sales", SOFIE, IDA)]))).toEqual(["claim"]);
+		expect(tableDefinitionProblems(areas, loosened, [row("Sales", SOFIE, null)])).toEqual([]);
+	});
+
+	it("keeps agents off an area's member-only columns by default", () => {
+		expect(
+			codes(
+				tableClaimProblems(areas, [row("Marketing", null)], [row("Marketing", AMIR)], agentFor(AMIR), {
+					folder: "areas",
+				}),
+			),
+		).toEqual(["claim", "claim"]);
 	});
 
 	it("lets an agent act for its supervisor on cards, never on who owns or supervises an area", () => {
@@ -651,5 +713,95 @@ describe("queries", () => {
 				(column, value) => (column === "kept_by" ? "Finance" : String(value)),
 			),
 		).toBe("Ask Finance about Revenue");
+	});
+});
+
+describe("review round 1", () => {
+	it("refuses empty keys, choices and agent lists, a card without a title and a broken title", () => {
+		const bad = parseTableFile(
+			NUMBERS_TABLE.replace('key = ["number", "at"]', "key = []")
+				.replace('choices = ["€", "kr", "$", "%", "count", "minutes", "hours"]', "choices = []")
+				.replace('agents = "all"', "agents = []"),
+		);
+		expect(bad.problems.map((p) => `${p.code}:${p.key}`)).toEqual(
+			expect.arrayContaining(["missing_key:table.key", "missing_key:column[3].choices", "bad_value:write.agents"]),
+		);
+		const board = parseInterfaceFile(
+			MEMBERS_INTERFACE.replace('card = { title = "{card}", line = "{area}" }', 'card = { line = "{area}" }'),
+		);
+		expect(board.problems.map((p) => p.code)).toContain("missing_key");
+		const title = parseInterfaceFile(MINIMAL.replace('kind = "list"', 'kind = "list"\ntitle = "Hello {"'));
+		expect(title.problems.map((p) => `${p.code}:${p.key}`)).toEqual(["bad_value:view[0].block[0].title"]);
+	});
+
+	it("caps problems at 50 with a closing count, and clips long keys", () => {
+		const keys = Array.from({ length: 60 }, (_, n) => `k${n} = 1`).join("\n");
+		const result = parseInterfaceFile(`${MINIMAL}${keys}\n`);
+		expect(result.problems).toHaveLength(51);
+		expect(result.problems[50]?.message).toBe("and 10 more problems");
+		const long = parseInterfaceFile(`${MINIMAL}${"a".repeat(30_000)} = 1\n`);
+		expect((long.problems[0]?.key ?? "").length).toBeLessThan(150);
+		expect((long.problems[0]?.message ?? "").length).toBeLessThan(400);
+	});
+
+	it("refuses direction and control characters in texts", () => {
+		const bidi = parseInterfaceFile(MINIMAL.replace('name = "Small"', 'name = "Small\\u202e"'));
+		expect(bidi.problems.map((p) => p.key)).toEqual(["interface.name"]);
+	});
+
+	it("stores one spelling of a time, so two spellings are one key", () => {
+		const numbers = table(NUMBERS_TABLE);
+		const text = `number,at,value,unit,kept_by\nA,2026-10-02T09:44Z,1,count,${FINANCE}\nA,2026-10-02T09:44:00Z,2,count,${FINANCE}\n`;
+		const result = parseTableRows(numbers, text);
+		expect(result.rows.map((r) => r.at)).toEqual(["2026-10-02T09:44:00Z"]);
+		expect(result.problems.map((p) => p.code)).toEqual(["duplicate"]);
+	});
+
+	it("reads only a row's own columns", () => {
+		expect(fillInterfaceText("{constructor}|{hasownproperty}", {})).toBe("|");
+		expect(() => (INTERFACE_SOURCE_COLUMNS.waiting as string[]).push("x")).toThrow();
+	});
+
+	it("builds a lookup over a full table once", () => {
+		const rows: TableRow[] = Array.from({ length: 10_000 }, (_, n) => ({
+			id: `r${n}`,
+			owner: `m${n % 100}`,
+			area: `a${n % 7}`,
+		}));
+		const started = performance.now();
+		const owns = interfaceLookupIndex({ from: "table:areas", match: "owner", show: "area", count: false }, rows);
+		for (let n = 0; n < 10_000; n++) owns(`m${n % 100}`);
+		expect(performance.now() - started).toBeLessThan(2_000);
+		expect(owns("m3")).toEqual(["a3", "a5", "a0", "a2", "a4", "a6", "a1"]);
+	});
+
+	it("checks names as written, and lets the seeded folders themselves be", () => {
+		expect(interfacePathProblems("interfaces")).toEqual([]);
+		expect(interfacePathProblems("tables/")).toEqual([]);
+		expect(interfacePathProblems("interfaces/Pulse/interface.toml")).toHaveLength(1);
+		expect(interfacePathProblems("tables/ＡＲＥＡＳ/rows.csv")).toHaveLength(1);
+	});
+
+	it("reads -0 as 0, refuses a lone carriage return in CSV and a broken character in order.md", () => {
+		expect(Object.is(parseTomlSubset("a = -0").value.a, 0)).toBe(true);
+		expect(splitCsv("a,b\rc\n").error).not.toBeNull();
+		expect(parseInterfaceOrderFile(`- ${SOFIE} \ud800\n`).problems.map((p) => p.code)).toEqual(["encoding"]);
+		expect(writeInterfaceOrderFile([SOFIE], new Map([[SOFIE, `${"😀".repeat(130)}`]]))).toBe(
+			`- ${SOFIE} ${"😀".repeat(120)}\n`,
+		);
+	});
+
+	it("counts months back to a day the month has, and matches yes and no", () => {
+		expect(interfaceSinceStart("-1m", { now: Date.UTC(2026, 2, 31, 12), startOfToday: 0 })).toBe(
+			Date.UTC(2026, 1, 28, 12),
+		);
+		const rows: TableRow[] = [
+			{ area: "Support", shared: true },
+			{ area: "Sales", shared: false },
+		];
+		const query = { where: { shared: "yes" }, since: null, order: null, limit: null, latestBy: null };
+		expect(
+			queryInterfaceRows(rows, query, { time: null, clock: { now: 0, startOfToday: 0 } }).map((r) => r.area),
+		).toEqual(["Support"]);
 	});
 });

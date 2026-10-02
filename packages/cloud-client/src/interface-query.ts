@@ -1,6 +1,7 @@
 /** Reading rows for an interface block (RUNTIME-INTERFACES.md §3.1): the small query language of `where`, `since`,
  * `order`, `limit` and `latest_by`, the time buckets of a chart, lookups between tables, and filling `{column}`
- * texts. Pure functions over rows the caller has already read with the viewer's own authority. Browser-safe. */
+ * texts. Pure functions over rows the caller has already read with the viewer's own authority. A row's own columns
+ * are the only ones read, so a column named like an object's built-ins (`constructor`) is just missing. Browser-safe. */
 
 import {
 	type InterfaceLookup,
@@ -18,7 +19,13 @@ export interface InterfaceClock {
 
 const DAY = 86_400_000;
 
-/** When `since` starts: "today", or "-<n>d", "-<n>w", "-<n>m" back from now (months by the calendar, in UTC). */
+/** A row's own cell, or undefined. */
+export function interfaceCell(row: TableRow, column: string): TableValue | undefined {
+	return Object.hasOwn(row, column) ? row[column] : undefined;
+}
+
+/** When `since` starts: "today", or "-<n>d", "-<n>w", "-<n>m" back from now. Months go by the calendar in UTC, and a
+ * day the earlier month doesn't have becomes its last day (31 March less a month is 28 or 29 February). */
 export function interfaceSinceStart(since: string, clock: InterfaceClock): number | null {
 	if (since === "today") return clock.startOfToday;
 	const m = /^-([1-9][0-9]{0,2})([dwm])$/.exec(since);
@@ -27,12 +34,27 @@ export function interfaceSinceStart(since: string, clock: InterfaceClock): numbe
 	if (m[2] === "d") return clock.now - n * DAY;
 	if (m[2] === "w") return clock.now - n * 7 * DAY;
 	const date = new Date(clock.now);
-	date.setUTCMonth(date.getUTCMonth() - n);
-	return date.getTime();
+	const months = date.getUTCFullYear() * 12 + date.getUTCMonth() - n;
+	const year = Math.floor(months / 12);
+	const month = months - year * 12;
+	const last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+	return Date.UTC(
+		year,
+		month,
+		Math.min(date.getUTCDate(), last),
+		date.getUTCHours(),
+		date.getUTCMinutes(),
+		date.getUTCSeconds(),
+		date.getUTCMilliseconds(),
+	);
 }
 
+/** Whether a cell matches a `where` value: equal, one of a list, a member of an agents list, and "yes"/"no" for a
+ * yes-no column. */
 function matches(value: TableValue | undefined, wanted: unknown): boolean {
-	const wants = Array.isArray(wanted) ? wanted : [wanted];
+	const wants = (Array.isArray(wanted) ? wanted : [wanted]).map((item) =>
+		typeof value === "boolean" && (item === "yes" || item === "no") ? item === "yes" : item,
+	);
 	if (Array.isArray(value)) return value.some((item) => wants.includes(item));
 	return wants.includes(value ?? null);
 }
@@ -54,7 +76,7 @@ export function compareInterfaceValues(a: TableValue | undefined, b: TableValue 
 
 function instantOf(row: TableRow, column: string | null): number | null {
 	if (!column) return null;
-	const value = row[column];
+	const value = interfaceCell(row, column);
 	return typeof value === "string" ? interfaceInstant(value) : null;
 }
 
@@ -65,9 +87,8 @@ export function queryInterfaceRows(
 	query: InterfaceQuery,
 	options: { readonly time: string | null; readonly clock: InterfaceClock },
 ): TableRow[] {
-	let out = rows.filter((row) =>
-		Object.entries(query.where ?? {}).every(([column, wanted]) => matches(row[column], wanted)),
-	);
+	const where = Object.entries(query.where ?? {});
+	let out = rows.filter((row) => where.every(([column, wanted]) => matches(interfaceCell(row, column), wanted)));
 	if (query.since) {
 		const start = interfaceSinceStart(query.since, options.clock);
 		out = start === null ? [] : out.filter((row) => (instantOf(row, options.time) ?? -Infinity) >= start);
@@ -76,7 +97,7 @@ export function queryInterfaceRows(
 		const column = query.latestBy;
 		const latest = new Map<string, { row: TableRow; at: number; index: number }>();
 		out.forEach((row, index) => {
-			const key = JSON.stringify(row[column] ?? null);
+			const key = JSON.stringify(interfaceCell(row, column) ?? null);
 			const at = instantOf(row, options.time) ?? -Infinity;
 			const seen = latest.get(key);
 			if (!seen || at > seen.at || (at === seen.at && index > seen.index)) latest.set(key, { row, at, index });
@@ -86,12 +107,12 @@ export function queryInterfaceRows(
 	if (query.order) {
 		const { column, descending } = query.order;
 		out = out
-			.map((row, index) => ({ row, index }))
+			.map((row, index) => ({ row, index, value: interfaceCell(row, column) }))
 			.sort((a, b) => {
-				const c = compareInterfaceValues(a.row[column], b.row[column]);
-				const missingA = a.row[column] === null || a.row[column] === undefined;
-				const missingB = b.row[column] === null || b.row[column] === undefined;
+				const missingA = a.value === null || a.value === undefined;
+				const missingB = b.value === null || b.value === undefined;
 				if (missingA !== missingB) return missingA ? 1 : -1;
+				const c = compareInterfaceValues(a.value, b.value);
 				return (descending ? -c : c) || a.index - b.index;
 			})
 			.map((entry) => entry.row);
@@ -106,7 +127,7 @@ export function fillInterfaceText(
 	show: (column: string, value: TableValue) => string = (_column, value) => plainText(value),
 ): string {
 	return text.replace(/\{([a-z][a-z0-9_]{0,39})\}/g, (_whole, column: string) => {
-		const value = row[column];
+		const value = interfaceCell(row, column);
 		return value === undefined ? "" : show(column, value);
 	});
 }
@@ -151,11 +172,11 @@ export function interfaceSeries(
 	const points = new Map<string, { x: string; by: string | null; value: number; at: number }>();
 	const plain: { x: string; by: string | null; value: number; at: number }[] = [];
 	for (const row of rows) {
-		const raw = row[chart.x];
+		const raw = interfaceCell(row, chart.x);
 		const at = typeof raw === "string" ? interfaceInstant(raw) : null;
 		if (at === null) continue;
-		const by = chart.by ? plainText(row[chart.by]) : null;
-		const y = chart.y ? row[chart.y] : null;
+		const by = chart.by ? plainText(interfaceCell(row, chart.by)) : null;
+		const y = chart.y ? interfaceCell(row, chart.y) : null;
 		if (!chart.every || !chart.total) {
 			if (typeof y === "number") plain.push({ x: String(raw), by, value: y, at });
 			continue;
@@ -172,17 +193,41 @@ export function interfaceSeries(
 		.map(({ x, by, value }) => ({ x, by, value: Math.round(value * 1e8) / 1e8 }));
 }
 
-/** A lookup column's value for one row: the `show` values of the rows of the other table whose `match` column holds
- * `id` (a list for an agents column), or how many there are. */
-export function interfaceLookup(id: string, lookup: InterfaceLookup, rows: readonly TableRow[]): TableValue {
-	const hits = rows.filter((row) => matches(row[lookup.match], id));
-	if (lookup.count) return hits.length;
-	const shown: string[] = [];
-	for (const row of hits) {
-		const value = lookup.show ? row[lookup.show] : null;
-		for (const item of Array.isArray(value) ? value : [value]) {
-			if (item !== null && item !== undefined && !shown.includes(String(item))) shown.push(String(item));
+/** A lookup column, built once over the other table: for an id, the `show` values of the rows whose `match` column
+ * holds it (a list for an agents column), or how many there are. Linear in the other table's size. */
+export function interfaceLookupIndex(lookup: InterfaceLookup, rows: readonly TableRow[]): (id: string) => TableValue {
+	const hits = new Map<string, TableRow[]>();
+	for (const row of rows) {
+		const value = interfaceCell(row, lookup.match);
+		for (const id of Array.isArray(value) ? value : [value]) {
+			if (typeof id !== "string") continue;
+			const list = hits.get(id);
+			if (list) list.push(row);
+			else hits.set(id, [row]);
 		}
 	}
-	return shown;
+	const answers = new Map<string, TableValue>();
+	return (id) => {
+		const known = answers.get(id);
+		if (known !== undefined) return known;
+		const answer = shownFor(hits.get(id) ?? []);
+		answers.set(id, answer);
+		return answer;
+	};
+	function shownFor(found: readonly TableRow[]): TableValue {
+		if (lookup.count) return found.length;
+		const shown = new Set<string>();
+		for (const row of found) {
+			const value = lookup.show ? interfaceCell(row, lookup.show) : null;
+			for (const item of Array.isArray(value) ? value : [value]) {
+				if (item !== null && item !== undefined) shown.add(String(item));
+			}
+		}
+		return [...shown];
+	}
+}
+
+/** One lookup for one id; build `interfaceLookupIndex` once when drawing many rows. */
+export function interfaceLookup(id: string, lookup: InterfaceLookup, rows: readonly TableRow[]): TableValue {
+	return interfaceLookupIndex(lookup, rows)(id);
 }

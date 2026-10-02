@@ -260,7 +260,7 @@ class Reader {
 		if (/^[+-]?(?:0|[1-9][0-9]*)$/.test(token)) {
 			const value = Number(token);
 			if (!Number.isSafeInteger(value)) this.fail(`${token} is too large.`);
-			return value;
+			return value === 0 ? 0 : value;
 		}
 		if (/^[+-]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(token)) {
 			const value = Number(token);
