@@ -142,8 +142,8 @@ account (A1-4b's words). Nothing tries to pass such a check.
   on a recorded site (the site, a name under it or a parent of it, `www.` and a trailing dot aside) is refused before
   it starts. A navigation is checked by its destination, so going to another site stays open.
 - After the action, a page that now shows such a check, or lands on a recorded site (a link or a redirect), records
-  the site it shows and a navigation's destination; the page acted on only when it is that same site, never the
-  site a navigation or a link left (a search page or a mail page would otherwise be locked).
+  the site it shows, nothing else: never the site a navigation or a link left (a search page or a mail page), nor an
+  address the agent asked for that redirected elsewhere (a link tracker such as `www.google.com/url`).
 - The answers are the call's results, not errors (an error reaches the agent only as an unconfirmed outcome, and
   leaves its receipt executing): a refusal is `{completed: false, refused: {code: "SITE_STOPPED", message}}`, an
   action that landed on such a page is `{completed: true, stop: "SITE_STOP_<REASON>", message}`, and a snapshot
@@ -156,7 +156,7 @@ account (A1-4b's words). Nothing tries to pass such a check.
 - Known limits: a visible Cloudflare Turnstile box on an ordinary contact or sign-up form counts as a stop (a person
   continues there); a page still building itself by script right after a navigation is read early, so its title
   alone decides, and a short page that mentions "suspicious activity" or "automated traffic" (a login notice, a
-  cookie page) counts.
+  cookie page) counts, as does a short page that uses CAPTCHA words (a short reCAPTCHA admin page).
 - The record is the office service's, for all the computer's screens, while it runs; a restart clears it, and the
   account's `needs_person` stays in the database (it does not stop a vault fill by itself: a person's step may
   clear it). Read actions (snapshot, list_tabs, select_tab, screenshots) stay allowed, so the agent can describe the

@@ -877,6 +877,45 @@ describe("vault_fill on the Company Computer", () => {
 		).toMatchObject({ completed: true });
 	});
 
+	it("records only the check's site after a link or a redirect, never the page left or the address asked for", async () => {
+		const stops = new CompanyComputerSiteStops();
+		// A link on a search page that opens a check page on another site.
+		const f = office({ siteStops: stops, url: "https://duckduckgo.com/?q=vercel" });
+		f.page.getByRole.mockImplementation(
+			() =>
+				({
+					count: async () => 1,
+					click: async () => {
+						f.shown.url = "https://vercel.com/signup";
+						f.shown.title = "Just a moment...";
+					},
+				}) as never,
+		);
+		expect(
+			(
+				(await perform(f, { kind: "browser", action: "click", role: "link", name: "Vercel" })) as unknown as {
+					value: object;
+				}
+			).value,
+		).toMatchObject({ completed: true, stop: "SITE_STOP_HUMAN_CHECK" });
+		expect(stops.stoppedAt("https://vercel.com/")).toBe("human_check");
+		expect(stops.stoppedAt("https://duckduckgo.com/")).toBeUndefined();
+		// A link tracker that redirects to a check page on another site: the tracker's site stays open.
+		const g = office({ siteStops: stops, url: "https://mail.google.com/mail/u/0/" });
+		g.page.goto.mockImplementationOnce(async () => {
+			g.shown.url = "https://netlify.com/login";
+			g.shown.title = "Just a moment...";
+		});
+		await perform(g, {
+			kind: "browser",
+			action: "navigate",
+			url: "https://www.google.com/url?q=https://netlify.com/login",
+		});
+		expect(stops.stoppedAt("https://netlify.com/")).toBe("human_check");
+		expect(stops.stoppedAt("https://www.google.com/")).toBeUndefined();
+		expect(stops.stoppedAt("https://mail.google.com/")).toBeUndefined();
+	});
+
 	it("counts a check frame whose visibility does not answer, and lets a hidden tab be", async () => {
 		const f = office();
 		f.shown.frames = [{ url: "https://challenges.cloudflare.com/cdn-cgi/x", visible: "never" }];
