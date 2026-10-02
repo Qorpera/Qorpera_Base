@@ -17,6 +17,9 @@ EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe3
 # The folder program's recorded build (deploy/folder-service/folder-program-linux-x64.json) and its mount unit.
 EXPECTED_FOLDER_PROGRAM_SHA256="214e6ea47db0b7f6cf946bd90207a7352dd35cd05c247cb07d121d93a4e33b43"
 EXPECTED_FOLDER_MOUNT_UNIT_SHA256="778e1d8475a757cc013bb81e48404e0738fdb2de6e882ed6052bbd8efba1719e"
+# The folder search relay (F3): a socket per slot to the node's folder service, started by the service when it is on.
+EXPECTED_FOLDER_RELAY_SOCKET_SHA256="0ca111b290e8b6dd6783c45fe420d96bd2f84e92d1e1a5645fafd8366ace0738"
+EXPECTED_FOLDER_RELAY_UNIT_SHA256="4088aa5d7f103b6100b93c487a1087ffd2a3d3061990c87291bb7ea1170c7daf"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -78,6 +81,8 @@ verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.mjs" "${EXPECTED_ORCH
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.service" "${EXPECTED_ORCHESTRATOR_UNIT_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-folder-mount@.service" "${EXPECTED_FOLDER_MOUNT_UNIT_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder-relay@.socket" "${EXPECTED_FOLDER_RELAY_SOCKET_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder-relay@.service" "${EXPECTED_FOLDER_RELAY_UNIT_SHA256}"
 
 # A long-lived host must stay the pinned image: no unattended package upgrades,
 # no needrestart restarting the sandboxes under a run.
@@ -125,6 +130,8 @@ install -o root -g root -m 0600 "${STAGING_ROOT}/shared-execution.env.example" /
 install -d -o root -g root -m 0755 /opt/qorpera-folder
 install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-folder" /opt/qorpera-folder/qorpera-folder
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-mount@.service" /etc/systemd/system/qorpera-folder-mount@.service
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-relay@.socket" /etc/systemd/system/qorpera-folder-relay@.socket
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-relay@.service" /etc/systemd/system/qorpera-folder-relay@.service
 install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder
 /opt/qorpera-folder/qorpera-folder version
 if [[ ! -c /dev/fuse ]] || ! grep -qw fuse /proc/filesystems; then
@@ -136,7 +143,8 @@ fi
 /usr/bin/node --check "${ORCHESTRATOR_ROOT}/qorpera-runner-orchestrator.mjs"
 /usr/bin/systemd-analyze verify /etc/systemd/system/qorpera-shared-execution.service \
 	/etc/systemd/system/qorpera-shared-run-host@.service /etc/systemd/system/qorpera-shared-runner@.service \
-	/etc/systemd/system/qorpera-runner-orchestrator.service
+	/etc/systemd/system/qorpera-runner-orchestrator.service /etc/systemd/system/qorpera-folder-relay@.socket \
+	/etc/systemd/system/qorpera-folder-relay@.service
 systemctl daemon-reload
 # Nothing starts here. The operator writes /etc/qorpera/shared-execution.env,
 # the credentials directory and /etc/qorpera/runner-orchestrator.env, attaches

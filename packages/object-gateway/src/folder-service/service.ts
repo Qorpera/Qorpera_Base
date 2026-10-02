@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { CoreRefusal, type FeedCursor, type FolderActor, type FolderCore } from "./core.ts";
 import type { Grant, MountGrants } from "./mounts.ts";
-import { type NasObjects, ObjectIntegrityError } from "./objects.ts";
+import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import {
 	type BridgeInfo,
 	ErrorCode,
@@ -10,8 +10,10 @@ import {
 	MAX_PAYLOAD,
 	ProtocolError,
 	type ReadRequest,
+	type SearchRequest,
 	type WireEntry,
 } from "./protocol.ts";
+import { type SearchAnswer, searchView } from "./search.ts";
 import { type TreeEntry, ViewTree } from "./view-tree.ts";
 
 /** What a machine's feed connection is sent. */
@@ -105,6 +107,8 @@ export interface ViewHandle {
 	readonly asOfSeq: number;
 	list(path: string, after: string | undefined): Promise<{ entries: readonly WireEntry[]; next: string | null }>;
 	read(request: ReadRequest): Promise<Buffer>;
+	/** One page of a search over the view (F3 `company_search`). */
+	search(request: SearchRequest): Promise<SearchAnswer>;
 	subscribe(sink: FeedSink): void;
 	release(): void;
 }
@@ -243,6 +247,7 @@ export class FolderService {
 			asOfSeq: view.seq,
 			list: async (path, after) => this.#list(view, path, after),
 			read: async (request) => this.#read(view, request),
+			search: async (request) => this.#search(view, request),
 			subscribe: (sink) => {
 				if (released || view.closed) return sink.closed(ErrorCode.viewClosed, view.closed ?? "Released");
 				mine = sink;
@@ -496,6 +501,31 @@ export class FolderService {
 			if (error instanceof ObjectIntegrityError)
 				this.#log(`folder-service: ${view.key}: ${request.path} version ${entry.version}: ${error.message}`);
 			throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be read now");
+		}
+	}
+
+	/** A search over the view's tree as it is now: the files' bytes as reads give them. A path that is not in the view
+	 * is NOT_FOUND; a share that cannot be read now fails the whole page (UNAVAILABLE), so no answer leaves a file out
+	 * without saying so. */
+	async #search(view: View, request: SearchRequest): Promise<SearchAnswer> {
+		const tree = this.#tree(view);
+		if (!tree.get(request.path)) throw new ProtocolError(ErrorCode.notFound, "No such path");
+		try {
+			return await searchView(
+				{
+					tree,
+					read: async (entry, offset, length) =>
+						this.#objects.read(await this.#profile(view, entry), entry, offset, length),
+					now: this.#now,
+				},
+				request,
+			);
+		} catch (error) {
+			if (error instanceof ProtocolError) throw error;
+			if (error instanceof CoreRefusal) throw new ProtocolError(ErrorCode.denied, "The core refused the read");
+			if (!(error instanceof ObjectUnavailableError))
+				this.#log(`folder-service: ${view.key}: search failed: ${(error as Error).message}`);
+			throw new ProtocolError(ErrorCode.unavailable, "The folder could not be searched now; try again");
 		}
 	}
 

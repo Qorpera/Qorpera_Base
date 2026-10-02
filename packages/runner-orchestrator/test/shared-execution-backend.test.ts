@@ -16,6 +16,7 @@ import {
 	type SharedExecutionUnitControl,
 	sharedExecutionAcquisitionId,
 } from "../src/shared-execution-backend.ts";
+import { folderSearch } from "../src/shared-execution-cli.ts";
 import type { SharedExecutionIdentityState } from "../src/shared-execution-identity.ts";
 
 const roots: string[] = [];
@@ -153,6 +154,7 @@ async function fixture(
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
+		folderSearch?: boolean;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -244,6 +246,7 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
+		...(options.folderSearch ? { folderSearch: true } : {}),
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -384,6 +387,28 @@ describe("shared execution provider backend", () => {
 		const environment = await readFile(join(slotRun, "native-provider.env"), "utf-8");
 		expect(environment).toContain(`QORPERA_CODING_COMMAND_URL=${gateway.origin}\n`);
 		expect(environment).not.toContain(gateway.token);
+	});
+
+	it("gives the native host the node's folder search when it is on: the slot's relay socket, started first", async () => {
+		const f = await fixture({ folderSearch: true });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		expect(f.units.log).toEqual([
+			"start qorpera-folder-relay@0.socket",
+			"start qorpera-shared-run-host@0.service",
+			"start qorpera-shared-runner@0.service",
+		]);
+		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
+		expect(environment).toContain("QORPERA_FOLDER_SEARCH_SOCKET=/run/qorpera-folder-relay/0.sock\n");
+		// Off unless on; anything else is refused at start.
+		expect(folderSearch({})).toBe(false);
+		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "off" })).toBe(false);
+		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" })).toBe(true);
+		expect(() => folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "yes" })).toThrow("on or off");
+		const off = await fixture();
+		await off.backend.acquire(runId, work(), new AbortController().signal);
+		expect(await readFile(join(off.runRoot, "slots", "0", "native-provider.env"), "utf-8")).not.toContain(
+			"QORPERA_FOLDER_SEARCH_SOCKET",
+		);
 	});
 
 	it("starts a sandbox pair on a free slot, delivers the assignment, and retires the slot when the runner exits", async () => {

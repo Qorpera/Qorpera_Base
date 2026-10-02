@@ -52,6 +52,8 @@ test("packages and pins the shared execution service", async () => {
 				"qorpera-shared-runner@.service",
 				"qorpera-folder",
 				"qorpera-folder-mount@.service",
+				"qorpera-folder-relay@.service",
+				"qorpera-folder-relay@.socket",
 				"shared-execution.env.example",
 			].sort((a, b) => a.localeCompare(b, "en")),
 		);
@@ -98,6 +100,8 @@ test("packages and pins the shared execution service", async () => {
 			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(contents.get("shared-execution.env.example"))}"`,
 			`EXPECTED_ORCHESTRATOR_UNIT_SHA256="${sha256(contents.get("qorpera-runner-orchestrator.service"))}"`,
 			`EXPECTED_FOLDER_MOUNT_UNIT_SHA256="${sha256(contents.get("qorpera-folder-mount@.service"))}"`,
+			`EXPECTED_FOLDER_RELAY_SOCKET_SHA256="${sha256(contents.get("qorpera-folder-relay@.socket"))}"`,
+			`EXPECTED_FOLDER_RELAY_UNIT_SHA256="${sha256(contents.get("qorpera-folder-relay@.service"))}"`,
 		];
 		if (process.platform === "linux" && process.arch === "x64") {
 			expectedPins.push(
@@ -115,6 +119,18 @@ test("packages and pins the shared execution service", async () => {
 		assert.ok(installer.includes("Nothing starts here"));
 		assert.ok(installer.includes('verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"'));
 		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-mount/.test(installer), "no mount starts at install");
+		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-relay/.test(installer), "no relay starts at install");
+		// The folder search relay (F3): one socket per slot, the slot's native host account only, and a relay that can
+		// reach nothing but the node's folder service.
+		const relaySocket = contents.get("qorpera-folder-relay@.socket").toString("utf-8");
+		const relay = contents.get("qorpera-folder-relay@.service").toString("utf-8");
+		assert.match(relaySocket, /^ListenStream=\/run\/qorpera-folder-relay\/%i\.sock$/m);
+		assert.match(relaySocket, /^SocketUser=qorpera-shared-host-%i$/m);
+		assert.match(relaySocket, /^SocketMode=0600$/m);
+		assert.match(relay, /^ExecStart=\/opt\/qorpera-folder\/qorpera-folder relay --listen systemd --connect vsock:2:5250$/m);
+		assert.match(relay, /^DynamicUser=yes$/m);
+		assert.match(relay, /^RestrictAddressFamilies=AF_UNIX AF_VSOCK$/m);
+		assert.match(relay, /^CapabilityBoundingSet=$/m);
 		// The slot units' InaccessiblePaths has no "-": without these folders every slot would fail to start.
 		const folders = installer.indexOf("install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder");
 		assert.ok(folders > 0 && folders < installer.indexOf("systemctl daemon-reload"));

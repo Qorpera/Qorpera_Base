@@ -248,17 +248,43 @@ program in the pinned Rust image and passes it to the shared-execution packager 
 - `scripts/test-folder-service-core-shapes.mjs` also opens a run box view for a leased run on the views test's company
   (639) and checks its listing, feed replay, renewal, close, and that a closed view is refused.
 
-## Step 2b (not built yet)
+## Server-side search (replaces step 2b's run box)
 
-The box itself: a third account per slot and a root-started `qorpera-shared-box@N` (no network, no credentials, the
-slot's host and runner folders, the credential and identity folders and `/run/qorpera-shared-execution` hidden), the
-run's view opened by the root shared-execution service when it hands the job over (it knows the run, holds the
-service key, starts units) and mounted with `allow_other` into the box only, then `exec_command`/`write_stdin` as
-Qorpera tools run by the native host, reads released with the run actor (P8). It waits on real folder-v2 runs (C3,
-C4, C1c-3d–3m) and step 1 being live. Two choices go to the coordinator first: where the box's tools come from (the
-runner image has no rg, fd, Python libraries or LibreOffice: rebuild it or ship a toolbox image), and the execution
-host's size (two slots at 4 vCPU / 8 GiB leave nothing for a 2 GiB box each).
+The founder's "Light threads" decision (2 October 2026): a chat turn has no shell. In a turn an agent lists, reads
+and searches the company folder through server-side tools that act with the run's own view; commands run on machines
+(the company machine, a coding machine, an agent machine; steps 4 to 6). Search runs here, on the node's folder
+service, so the execution host stays small:
 
-## Not in step 2a
+- **The run's view.** The native host opens it itself with the run actor (`qorpera_folder_run_view_open`, through
+  G2's entry point, migration 20260929999970) and presents it like any core view, from the execution host, one of
+  this node's `runBoxHosts`. It keeps the connection for the run, so the view's tree is listed once and kept current
+  from the feed; the run's end closes the view.
+- **Receipts.** For an agent's view the node's entries carry the core's read receipt `{resourceId, resourceRevision,
+  grantId, grantRevision}`: from the core's listing, or, for a path the feed brought, the path's earlier receipt or
+  the nearest folder's above it that has one. A new receipt (after an access change) counts as a change. A stale or
+  missing receipt costs the core a per-path check at release, never a wrong record. Members and operator mounts get
+  none.
+- **`S` / `s` frames.** `{query, path, glob, namesOnly, caseSensitive, after}` answers `{hits: [{path, line,
+  text}], searched, binary, reads: [{path, kind, version, authority?}], next}`. The search is literal text in the
+  lines of text files (a NUL in a file's first 8 KiB makes it binary: passed over and counted), or with `namesOnly`
+  in the names of files and folders; `glob` keeps to matching paths (`*` and `?` in a name, `**` across folders; a
+  glob without '/' is matched against the name). It walks the view in the order a machine lists it and answers one
+  page: when its hits fill about 6 KiB, when it has drawn on 4,000 paths, or after about 2 s of work, with `next` (a
+  path, and inside a file the byte and line to go on from, in the version it was searched at). A page is never the
+  search's end: there is no cap. A path not in the view is `NOT_FOUND`; a share that cannot be read now fails the
+  page (`UNAVAILABLE`); a file whose bytes fail their hash check is passed over and not read.
+- **What a page read.** `reads` names every folder whose names it looked through and every file whose bytes it read
+  (binary ones too), each with its receipt. The run releases them with the run actor under the hash of the text it
+  shows (`qorpera_folder_record_release`, P8), before the model sees it.
+- **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection:
+  `qorpera-folder-relay@N.socket` (`/run/qorpera-folder-relay/N.sock`, the slot's native host account only, 0600)
+  runs `qorpera-folder relay`, which copies bytes both ways to the node's bridge (vsock 2:5250) and reads none of
+  them. The relay runs as a dynamic user with no capabilities and only `AF_UNIX` and `AF_VSOCK`. The shared execution
+  service starts the slot's relay socket before its native host and names it in the host's environment
+  (`QORPERA_FOLDER_SEARCH_SOCKET`) only while `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`.
+- The `company_search` tool itself is the runtime's (its own PR).
 
-Writes; the box and `allow_other`; company, coding and test machines. Each is a later step.
+## Not here
+
+Writes; the `company_search` tool; company, coding and test machines (where commands run, each with its own mount).
+Each is a later step.

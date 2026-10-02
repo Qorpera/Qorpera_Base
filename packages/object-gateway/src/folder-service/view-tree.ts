@@ -1,4 +1,4 @@
-import type { CoreEntry, FeedChange } from "./core.ts";
+import type { CoreEntry, CoreReceipt, FeedChange } from "./core.ts";
 import type { WireEntry } from "./protocol.ts";
 
 /** One path a view may see, as the folder service keeps it. A folder the actor may not list itself, but which holds
@@ -15,6 +15,10 @@ export interface TreeEntry {
 	readonly executable: boolean;
 	readonly mtimeMs: number;
 	readonly implicit: boolean;
+	/** The core's read receipt (an agent's view only): from its listing, or, for a path the feed brought, the path's
+	 * earlier one or the nearest folder's above it that has one, which the core checks again if it no longer holds. A
+	 * new top-level path has none until the next listing: its reads go with an empty receipt, which the core checks. */
+	readonly authority?: CoreReceipt;
 }
 
 export type ChildrenResult =
@@ -42,12 +46,13 @@ function nameOf(path: string): string {
 }
 
 /** Names in byte order of their UTF-8, the order the machine sees and pages by. */
-function byteOrder(a: string, b: string): number {
+export function byteOrder(a: string, b: string): number {
 	return Buffer.compare(Buffer.from(a), Buffer.from(b));
 }
 
-function entryOf(e: CoreEntry, previous: TreeEntry | undefined): TreeEntry {
+function entryOf(e: CoreEntry, previous: TreeEntry | undefined, folder: TreeEntry | undefined): TreeEntry {
 	const time = e.updatedAt === undefined ? Number.NaN : Date.parse(e.updatedAt);
+	const authority = e.authority ?? previous?.authority ?? folder?.authority;
 	return {
 		path: e.path,
 		kind: e.kind,
@@ -59,7 +64,20 @@ function entryOf(e: CoreEntry, previous: TreeEntry | undefined): TreeEntry {
 		executable: e.kind === "file" && e.executable === true,
 		mtimeMs: Number.isFinite(time) ? time : (previous?.mtimeMs ?? 0),
 		implicit: false,
+		...(authority === undefined ? {} : { authority }),
 	};
+}
+
+function sameReceipt(a: CoreReceipt | undefined, b: CoreReceipt | undefined): boolean {
+	return (
+		a === b ||
+		(a !== undefined &&
+			b !== undefined &&
+			a.resourceId === b.resourceId &&
+			a.resourceRevision === b.resourceRevision &&
+			a.grantId === b.grantId &&
+			a.grantRevision === b.grantRevision)
+	);
 }
 
 function same(a: TreeEntry, b: TreeEntry): boolean {
@@ -69,7 +87,9 @@ function same(a: TreeEntry, b: TreeEntry): boolean {
 		a.bytes === b.bytes &&
 		a.executable === b.executable &&
 		a.mtimeMs === b.mtimeMs &&
-		a.manifestSha256 === b.manifestSha256
+		a.manifestSha256 === b.manifestSha256 &&
+		// A new receipt reaches the machines too (an access change lists the view again), so their logs stay current.
+		sameReceipt(a.authority, b.authority)
 	);
 }
 
@@ -81,6 +101,7 @@ export function wireEntry(e: TreeEntry): WireEntry {
 		mtimeMs: e.mtimeMs,
 		executable: e.executable,
 		version: e.version,
+		...(e.authority === undefined ? {} : { authority: e.authority }),
 	};
 }
 
@@ -107,12 +128,7 @@ export class ViewTree {
 		const folder = this.get(path);
 		if (!folder) return "not_found";
 		if (folder.kind !== "folder") return "not_a_folder";
-		let names = this.#sorted.get(path);
-		if (!names) {
-			// A name over 255 bytes cannot be shown on Linux, and could not be paged after (`after` is a name).
-			names = [...(this.#children.get(path) ?? [])].filter((n) => Buffer.byteLength(n) <= 255).sort(byteOrder);
-			this.#sorted.set(path, names);
-		}
+		const names = this.#names(path);
 		let start = 0;
 		if (after !== undefined) {
 			// First name ordered after `after` (binary search; `after` itself may be gone by now).
@@ -133,6 +149,27 @@ export class ViewTree {
 		};
 	}
 
+	/** `path` and everything under it, depth first in the order a machine lists them (each folder's names in byte
+	 * order). The tree may change meanwhile: a path gone by the time it is reached is passed over. */
+	*walk(path: string): Generator<TreeEntry> {
+		const entry = this.get(path);
+		if (!entry) return;
+		yield entry;
+		if (entry.kind !== "folder") return;
+		for (const name of this.#names(path)) yield* this.walk(path === "" ? name : `${path}/${name}`);
+	}
+
+	/** A folder's names in byte order (cached until the folder changes). */
+	#names(path: string): readonly string[] {
+		let names = this.#sorted.get(path);
+		if (!names) {
+			// A name over 255 bytes cannot be shown on Linux, and could not be paged after (`after` is a name).
+			names = [...(this.#children.get(path) ?? [])].filter((n) => Buffer.byteLength(n) <= 255).sort(byteOrder);
+			this.#sorted.set(path, names);
+		}
+		return names;
+	}
+
 	/** Adds or replaces one entry (and any folders above it that are not known yet). */
 	put(e: CoreEntry): string[] {
 		const changed: string[] = [];
@@ -151,7 +188,7 @@ export class ViewTree {
 		}
 		const previous = this.#entries.get(e.path);
 		if (previous?.kind === "folder" && e.kind === "file") changed.push(...this.#removeBelow(e.path));
-		const next = entryOf(e, previous);
+		const next = entryOf(e, previous, this.#withReceipt(parentOf(e.path)));
 		if (!previous || !same(previous, next) || previous.implicit) changed.push(e.path);
 		this.#link(next);
 		return changed;
@@ -193,6 +230,15 @@ export class ViewTree {
 		}
 		for (const path of after.#entries.keys()) if (!before.#entries.has(path)) changed.push(path);
 		return changed;
+	}
+
+	/** The nearest folder at or above `path` that has a receipt (a folder made only to hold a path has none). */
+	#withReceipt(path: string): TreeEntry | undefined {
+		for (let p = path; p !== ""; p = parentOf(p)) {
+			const entry = this.#entries.get(p);
+			if (entry?.authority) return entry;
+		}
+		return undefined;
 	}
 
 	#link(entry: TreeEntry): void {

@@ -42,6 +42,7 @@ What does **not** change:
 | `/opt/qorpera-folder/qorpera-folder`, `/etc/systemd/system/qorpera-folder-mount@.service` | root | the folder program and its mount unit (F3; pinned, started by nothing in this package) |
 | `/etc/qorpera-folder/mounts/<id>.json` | root 0600 in 0700 | a mount's view file (its company folder, view id and pass) |
 | `/srv/qorpera-folder/<id>` | root 0755 in a root 0700 `/srv/qorpera-folder` | a mount (read-only, served to its mounting account only); hidden, with `/etc/qorpera-folder`, from both slot units |
+| `/etc/systemd/system/qorpera-folder-relay@.{socket,service}`, `/run/qorpera-folder-relay/<n>.sock` | the slot's native host account, 0600 | the node's folder search: the slot's relay to the node's folder service (F3, "Light threads"; started by the service before the host only while `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`) |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
 (assignment inbox), both loopback. The runner configuration is written into

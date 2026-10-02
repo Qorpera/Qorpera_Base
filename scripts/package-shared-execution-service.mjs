@@ -63,6 +63,8 @@ const copies = [
 	"deploy/shared-execution/install-shared-execution-guest.sh",
 	"deploy/first-node/qorpera-runner-orchestrator.service",
 	"deploy/folder-service/qorpera-folder-mount@.service",
+	"deploy/shared-execution/qorpera-folder-relay@.socket",
+	"deploy/shared-execution/qorpera-folder-relay@.service",
 ];
 for (const source of copies) {
 	await copyFile(resolve(repositoryRoot, source), resolve(outputRoot, source.split("/").at(-1)));

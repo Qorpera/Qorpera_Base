@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	type CoreEntry,
+	type CoreReceipt,
 	CoreRefusal,
 	type FeedEvent,
 	type FolderActor,
@@ -95,6 +96,8 @@ export class FakeCore implements FolderCore {
 	now: () => number = Date.now;
 	/** When set, listings wait for it (a slow first listing). */
 	listGate: Promise<void> | undefined;
+	/** The read receipt an agent's listing gives each path (a run box view acts as an agent); the feed gives none. */
+	receipts: ((path: string) => CoreReceipt | undefined) | undefined;
 
 	openView(viewId: string, pass: string, environmentId = ENV): void {
 		this.views.set(viewId, { pass, state: "open", renewals: 0, environmentId });
@@ -145,7 +148,11 @@ export class FakeCore implements FolderCore {
 		this.#check(actor, environmentId);
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
-		const all = this.#visible(actor);
+		const receipts = actor.kind === "view" ? this.receipts : undefined;
+		const all = this.#visible(actor).map((e) => {
+			const authority = receipts?.(e.path);
+			return authority ? { ...e, authority } : e;
+		});
 		const start = after === null ? 0 : all.findIndex((e) => e.path === after) + 1;
 		const page = all.slice(start, start + 2);
 		return { asOfSeq: this.seq, entries: page, next: start + 2 < all.length ? page[page.length - 1]!.path : null };

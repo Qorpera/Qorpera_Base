@@ -24,6 +24,14 @@ function required(name: string, environment: NodeJS.ProcessEnv = process.env): s
 	return value;
 }
 
+/** QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" gives each slot's native host the node's folder search. */
+export function folderSearch(environment: NodeJS.ProcessEnv = process.env): boolean {
+	const value = environment.QORPERA_SHARED_EXECUTION_FOLDER_SEARCH;
+	if (value === undefined || value === "off") return false;
+	if (value === "on") return true;
+	throw new Error("QORPERA_SHARED_EXECUTION_FOLDER_SEARCH must be on or off");
+}
+
 function integer(name: string, fallback: number, minimum: number, maximum: number): number {
 	const encoded = process.env[name];
 	const value = encoded === undefined ? fallback : Number(encoded);
@@ -101,6 +109,8 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		...(process.env.QORPERA_SHARED_EXECUTION_WARM_IDLE_MS
 			? { warmIdleMs: integer("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS", 300_000, 1, 5 * 60_000) }
 			: {}),
+		// The node's folder search (F3): off unless on.
+		...(folderSearch() ? { folderSearch: true } : {}),
 	};
 	return { config, providerToken, host, port: integer("QORPERA_RUNNER_PROVIDER_PORT", 18_450, 1, 65_535) };
 }

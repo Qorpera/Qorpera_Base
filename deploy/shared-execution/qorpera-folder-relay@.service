@@ -1,0 +1,39 @@
+[Unit]
+Description=Qorpera folder relay for slot %i: its native host to the node's folder service, byte for byte
+Requires=qorpera-folder-relay@%i.socket
+After=qorpera-folder-relay@%i.socket
+
+[Service]
+Type=exec
+# The relay reads nothing it carries: the node's bridge names this host by its vsock CID, and the folder service
+# checks the run's view and pass.
+ExecStart=/opt/qorpera-folder/qorpera-folder relay --listen systemd --connect vsock:2:5250
+DynamicUser=yes
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_VSOCK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+InaccessiblePaths=/var/lib/qorpera/identities /var/lib/qorpera-shared-execution /run/qorpera-shared-execution /etc/qorpera /srv/qorpera-folder /etc/qorpera-folder -/var/lib/qorpera-bootstrap

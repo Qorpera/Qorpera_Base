@@ -124,7 +124,16 @@ export interface SharedExecutionProviderConfig {
 	 * host keeps the run's opened capsule for as long. Absent: every run retires its slot.
 	 */
 	warmIdleMs?: number;
+	/**
+	 * The node's folder search (F3 `company_search`; founder decision "Light threads", 2 October 2026): each slot's
+	 * native host gets its relay socket to the node's folder service, started before the host. Absent: off.
+	 */
+	folderSearch?: boolean;
 }
+
+/** The execution host's relay to its node's folder service, one socket per slot (deploy/shared-execution). */
+export const FOLDER_RELAY_DIRECTORY = "/run/qorpera-folder-relay";
+const folderRelayUnit = (slot: number): string => `qorpera-folder-relay@${slot}.socket`;
 
 /** A slot whose native host outlived its run, waiting for the same conversation's next run. */
 interface SharedExecutionWarmSlot {
@@ -788,6 +797,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// its start and its retry starts a fresh sandbox.
 			if (current.reusedHost && !(await this.#units.active(this.#unit("host", current.slot), timeout)))
 				throw new Error("The warm slot's native host is no longer running");
+			// The relay is a socket the native host may connect to whenever it searches: up before the host.
+			if (this.#config.folderSearch && !(await this.#units.active(folderRelayUnit(current.slot), timeout)))
+				await this.#units.start(folderRelayUnit(current.slot), timeout);
 			// A replay after a restart may find either unit not yet started. The runner
 			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
 			// health: it boots and activates while the host loads. The assignment is
@@ -1241,6 +1253,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				: []),
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
+			...(this.#config.folderSearch
+				? [`QORPERA_FOLDER_SEARCH_SOCKET=${FOLDER_RELAY_DIRECTORY}/${current.slot}.sock`]
+				: []),
 			...(vaultLogin ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
 			"",
 		].join("\n");
