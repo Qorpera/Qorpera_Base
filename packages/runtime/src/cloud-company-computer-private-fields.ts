@@ -47,6 +47,8 @@ const OWN_WORDS = ["otp", "mfa", "2fa"];
 export const COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR = [
 	'input[type="password" i]',
 	`${TEXT_INPUT}:is(${[
+		// A box the vault filled with a secret (cloud-company-computer-account-fill.ts), whatever it is named.
+		"[data-qorpera-private]",
 		'[autocomplete~="current-password" i]',
 		'[autocomplete~="new-password" i]',
 		'[autocomplete~="one-time-code" i]',

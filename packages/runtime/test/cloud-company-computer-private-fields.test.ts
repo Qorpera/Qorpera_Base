@@ -328,6 +328,7 @@ describe("company computer private values", () => {
 			/^input:not\(\[type="checkbox" i\]\):not\(\[type="radio" i\]\):not\(\[type="submit" i\]\):not\(\[type="button" i\]\):not\(\[type="reset" i\]\):not\(\[type="image" i\]\):not\(\[type="file" i\]\):not\(\[type="hidden" i\]\):not\(\[type="range" i\]\):not\(\[type="color" i\]\):is\(/,
 		);
 		for (const part of [
+			"[data-qorpera-private]",
 			'[autocomplete~="current-password" i]',
 			'[autocomplete~="one-time-code" i]',
 			'[autocomplete*="cc-" i]',
