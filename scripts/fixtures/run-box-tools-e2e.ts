@@ -44,4 +44,5 @@ const started = await run(exec, { cmd: "sleep 2; echo late", yield_time_ms: 300 
 const session = Number(/session ID (\d+)/.exec(started.text)?.[1]);
 const finished = await run(write, { session_id: session, yield_time_ms: 10_000 });
 const long = await run(exec, { cmd: "seq 1 100000" });
-process.stdout.write(`${JSON.stringify({ read, started, finished, long, releases })}\n`);
+// The box connection stays open for the run's next call; this check is done.
+process.stdout.write(`${JSON.stringify({ read, started, finished, long, releases })}\n`, () => process.exit(0));
