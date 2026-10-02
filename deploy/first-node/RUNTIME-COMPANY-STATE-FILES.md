@@ -1633,6 +1633,29 @@ order is free.
   task, and only when the result parses. The web (H3) and the link service (H5) use it, so the person's
   change is the same bytes everywhere.
 
+**Built (H2b): the database** (migration 20260929999980, SQL test 803; test 785 updated), as planned, with these
+choices made while building:
+- The two tables carry `folder_key` beside `folder_path`, indexed with the environment (not unique), so the rules find
+  a task by its file's key without folding every row.
+- One function checks the paths of every unit first (`qorpera_company_state_task_paths`): what leaves (a delete's or
+  move's source) and what lands (a write, mkdir, new folder and its contents, a move's or copy's target). A misnamed
+  folder is left to the name check, which says what is wrong with it. Nothing moves or copies onto `human-tasks`
+  itself: it is made with a mkdir.
+- `qorpera_company_state_human_task_rules` reads the task's last file through its index row (a restore compares with
+  it); `qorpera_company_state_task_references` checks a reference only when the save sets or changes it, and `todo`
+  whenever `todo` or `from` changes; `qorpera_company_state_contact_rules` keeps one file per contact and its email
+  while a task that is not final names it.
+- The rank-5 targets come from `qorpera_company_state_task_targets`; `qorpera_folder_structured_lock` locks the two
+  tables by `environment_id:id`, after the routines. A row last written by a commit whose `seq` is past this commit's
+  `as_of_seq` (`qorpera_company_state_changed_since`) answers `version_changed`, which the commit reports as a
+  conflict.
+- `started_by_user_id` is the creating commit's requester when it is a member: the member themselves, or the member a
+  run works for. The platform never creates a task, so it is never null for a task made after H2.
+- 785 now hires its asking agent, uses a due date in 2099, makes a task's folder as its person after the task, and
+  expects H2's answers where they come first (the seeded root, a task with a folder keeping its name).
+- 48 mutants of the migration (each path, person, company, reference, contact, lock, index and seeding rule): 47
+  caught by 803 or 785, and one equivalent (it rewrote the final-task check into the same rule).
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
