@@ -148,7 +148,7 @@ test("emptying one node needs the other to claim: 30 checks node B, 60 checks no
 	}
 	assert.ok(!gateOf("40-switch.sql").includes(`runs_enabled from public.qorpera_runtime_nodes where id = '${nodeB}'`), "40 does not refuse on node B");
 	assert.ok(packets["40-switch.sql"].includes("'nodeBServes'"));
-	assert.match(packets["60-runs-off-b.sql"], /claim\.status in \('claimed', 'assigned'\)[\s\S]*still queued: let node B take it first \(jobs %\)/);
+	assert.match(packets["60-runs-off-b.sql"], /claim\.status in \('claimed', 'assigned'\)[\s\S]*still queued: let node B take it first \(% jobs: %\)/);
 });
 
 test("--empty full switches a node off fully and returns it with both switches", () => {

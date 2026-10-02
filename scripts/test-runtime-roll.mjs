@@ -86,7 +86,7 @@ const finish = (run) =>
 		where run_id = '${run}' and status in ('claimed','assigned','accepted');
 	update public.qorpera_runner_jobs set status = 'cancelled', cancelled_at = clock_timestamp(), cancelled_by_user_id = created_by_user_id,
 		lease_token_sha256 = null, lease_expires_at = null
-		where run_id = '${run}' and status in ('queued','leased','running');`);
+		where run_id = '${run}' and status in ('queued','leased');`);
 const paused = () => Number(sql("select count(*) from public.qorpera_company_execution_pauses;"));
 const active = () => sql("select b.version || ' ' || b.sha256 from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;").split(" ");
 
@@ -173,6 +173,7 @@ async function rehearse(empty, path = "roll") {
 		stale(orchestratorB);
 		assert.match(fails(p("30-runs-off-a.sql")), /node B is not running/);
 		heartbeat();
+		observeBoth(); // 30 needs node B observed within the last minute
 		commit("30-runs-off-a.sql");
 		assert.equal(claim(orchestratorA), null, "node A claims nothing while its runs are off");
 		assert.equal(claim(orchestratorB).work.run_id, runN, "node B takes the N run");
@@ -216,6 +217,10 @@ async function rehearse(empty, path = "roll") {
 			// 60: node B may not leave N while N work is queued; once it takes it, it empties and returns as N+1.
 			assert.match(fails(p("60-runs-off-b.sql")), /still queued/);
 			assert.equal(claim(orchestratorB).work.run_id, runN2, "node B takes the queued N run");
+			// A job node B holds is running, though still queued until its runner accepts it: 60 lets B go.
+			heartbeat();
+			observeBoth();
+			dryRun(p("60-runs-off-b.sql"));
 			assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
 			finish(runN);
 			finish(runN2);
@@ -223,6 +228,7 @@ async function rehearse(empty, path = "roll") {
 			stale(orchestratorA);
 			assert.match(fails(p("60-runs-off-b.sql")), /node A is not running/);
 			heartbeat();
+			observeBoth(); // 60 needs node A observed within the last minute
 			commit("60-runs-off-b.sql");
 			assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status[ready], true);
 			heartbeat();

@@ -349,7 +349,7 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | (node release, fast host) | 5, by hand or the coordinator's node tooling |
 | `40-switch` | 6, as one transaction (6.0 gates, activation, history record, declaration, 6.3 gate, return). Its result says whether B still serves (`nodeBServes`); it does not refuse on B, since that would keep A off too |
 | `50-check-n` | 7 |
-| `60-runs-off-b`, `61-drain-b` | 8, emptying. `60` needs A serving runs, ready, with live orchestrators, and refuses while N work is queued that no orchestrator holds yet (it names up to 20 jobs) |
+| `60-runs-off-b`, `61-drain-b` | 8, emptying. `60` needs A serving runs, ready, with live orchestrators, and refuses while N work is queued that no orchestrator holds yet (it counts them and names up to 20) |
 | `70-return-b` | 8, declaration, gate and return after node B's update |
 | `80-finish` | 9. It reports the N work left (`oldBundleWorkLeft`); `60-runs-off-b` already refuses while N work is queued |
 
@@ -382,8 +382,8 @@ back twice: right after the switch, and after the finish. No company is paused d
      take N runs and refuse them.
   4. Renew packaged offices' packages for N again; offices renewed for N+1 cannot start or reset
      under N.
-  5. Resume (`93-resume`). Its `runsOn` shows any node still emptied: return it with the switches it
-     was emptied with (`qorpera_set_runtime_node_runs(…, true, …)`, and
+  5. Resume (`93-resume`). Its `runsOn` shows any node still emptied: once it runs N, return it with
+     the switches it was emptied with (`qorpera_set_runtime_node_runs(…, true, …)`, and
      `qorpera_set_runtime_node_serving(…, true, …)` if it was switched off fully).
 
   Runs and pending inputs already bound to N+1 fail with their reason.
