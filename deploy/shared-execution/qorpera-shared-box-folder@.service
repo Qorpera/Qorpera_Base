@@ -11,8 +11,8 @@ ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /srv/qorpera-folder
 ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /srv/qorpera-folder/box-%i
 # allow_other: the box runs as the slot's box account. Every file is root's and read-only to it.
 ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-shared-execution/slots/%i/box-view.json --mountpoint /srv/qorpera-folder/box-%i --allow-other yes
-# Started means mounted: the box binds the mount as it starts.
-ExecStartPost=/bin/sh -c 'until /usr/bin/mountpoint -q /srv/qorpera-folder/box-%i; do sleep 0.05; done'
+# Started means mounted: the box binds the mount as it starts. A program that ended (a refused view) fails the start at once.
+ExecStartPost=/bin/sh -c 'until /usr/bin/mountpoint -q /srv/qorpera-folder/box-%i; do kill -0 "$$MAINPID" 2>/dev/null || exit 1; sleep 0.05; done'
 TimeoutStartSec=30s
 # A program killed hard leaves its mount behind; take it away.
 ExecStopPost=-/usr/bin/umount -l /srv/qorpera-folder/box-%i
@@ -22,8 +22,13 @@ KillMode=mixed
 TimeoutStopSec=20s
 LimitCORE=0
 # The mount must appear in PID 1's mount namespace, so no option here makes a namespace of its own (ProtectSystem,
-# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups).
+# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups). It serves the run's
+# box, so what does not need one is narrowed: system calls, namespaces and the clock.
 NoNewPrivileges=yes
+RestrictNamespaces=yes
+ProtectClock=yes
+SystemCallFilter=@system-service @mount
+SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=CAP_SYS_ADMIN
 DevicePolicy=closed
 DeviceAllow=/dev/fuse rw

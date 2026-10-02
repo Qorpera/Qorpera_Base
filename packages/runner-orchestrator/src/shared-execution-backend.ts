@@ -86,6 +86,9 @@ const BOX_OPEN_RETRY_MS = 250;
 const BOX_OPEN_WINDOW_MS = 60_000;
 /** The run's view of the company folder, on the slot's tmpfs, read by the slot's folder unit (root). */
 const BOX_VIEW_FILE = "box-view.json";
+/** The folder core's refusal of a view for a company with no folder-v2 folder (20260928259230 view_open, 42501): such a
+ * run gets no box. A test checks the live SQL still raises exactly this. */
+export const RUN_BOX_NO_FOLDER_MESSAGE = "Company folder is unavailable";
 const VIEW_SCHEMA = "qorpera.folder-view/v1";
 
 export type SharedExecutionPhysicalState =
@@ -135,9 +138,12 @@ export interface SharedExecutionProviderConfig {
 	 * F3 run boxes (deploy/first-node/RUNTIME-FOLDER-SERVICE.md, "Step 2b"): a run on a folder-v2 company gets a box
 	 * of its own on its slot, with the company folder read-only at /company, no network and no credentials. The
 	 * service opens the run's view once the runner holds its job, mounts it for the box and starts the box; the box
-	 * stops when the run does, also when its native host parks. Absent: no run gets a box.
+	 * stops when the run does, also when its native host parks. The unit names are always known, so a box stops with
+	 * its run even after boxes were switched off; `open` decides whether new runs get one.
 	 */
 	runBox?: {
+		/** Give new folder-v2 runs a box (`QORPERA_SHARED_EXECUTION_RUN_BOX=on`). */
+		open: boolean;
 		/** `<unitPrefix>N.service` (the box) and `<unitPrefix>N.socket` (only the slot's native host may open it). */
 		unitPrefix: string;
 		/** `<folderUnitPrefix>N.service`: the run's view of the company folder, mounted for the box. */
@@ -157,6 +163,8 @@ interface SharedExecutionRunBox {
 	viewId?: string;
 	/** Delivery time: opening gives up BOX_OPEN_WINDOW_MS after it. */
 	since: string;
+	/** Why opening failed: the last refusal's SQLSTATE or HTTP status (never the pass). */
+	reason?: string;
 }
 
 /** A slot whose native host outlived its run, waiting for the same conversation's next run. */
@@ -571,9 +579,10 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (this.#config.runBox) {
 			// A box still opening (this process restarted meanwhile) is asked for again. A box no run holds stops and
 			// its view closes, before any slot wipe below removes the view's file.
-			for (const journal of live)
-				if (journal.physicalState === "assigned" && journal.box?.state === "opening")
-					this.#openBoxSoon(journal.acquisitionId);
+			if (this.#config.runBox.open)
+				for (const journal of live)
+					if (journal.physicalState === "assigned" && journal.box?.state === "opening")
+						this.#openBoxSoon(journal.acquisitionId);
 			try {
 				await this.#stopOrphanBoxes(signal);
 			} catch (error) {
@@ -804,7 +813,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					...journal,
 					physicalState: "assigned",
 					assignmentId: delivery.assignment.assignmentId,
-					...(this.#config.runBox && !journal.box
+					...(this.#config.runBox?.open && !journal.box
 						? {
 								box: {
 									state: "opening" as const,
@@ -817,7 +826,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				});
 		});
 		// The run's box opens beside the run: the delivery does not wait for it.
-		if (this.#config.runBox) this.#openBoxSoon(acquisitionId);
+		if (this.#config.runBox?.open) this.#openBoxSoon(acquisitionId);
 	}
 
 	async stop(
@@ -847,6 +856,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					// between claiming a warm slot and journaling the run).
 					if (!reserved.reusedHost && (await this.#units.active(this.#unit("host", reserved.slot), timeout)))
 						await this.#units.kill(this.#unit("host", reserved.slot), timeout);
+					// Nor a box: a new run's box always starts empty.
+					await this.#stopBox(reserved.slot, timeout);
 					const hostIdentity = await this.#writeMaterial(reserved, work, timeout);
 					const next = {
 						...reserved,
@@ -1031,60 +1042,66 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				signal?.throwIfAborted();
 				stillActive = await this.#units.activeSet(slotUnits, signal);
 			}
-			await this.#exclusive(async () => {
-				const current = (await this.#readJournal(acquisitionId)) ?? marked;
-				if (terminal(current.physicalState)) return;
-				if (stillActive.size > 0) {
-					// Never give the slot up while a process still runs in it: the
-					// journal stays `stopping`, which keeps the slot out of service
-					// (quarantined) until the units are really gone.
-					await this.#writeJournal({ ...current, retireAttempts: (current.retireAttempts ?? 0) + 1 });
-					throw new Error("Sandbox units are still running; the slot stays quarantined");
-				}
-				await this.#closeBoxView(current.slot, signal);
-				if (park) await this.#wipeRunner(current.slot);
-				else await this.#wipeSlot(current.slot);
-				try {
-					await this.#releaseMachine(current, signal);
-				} catch (error) {
-					const attempts = (current.retireAttempts ?? 0) + 1;
-					if (attempts < MAX_RETIRE_ATTEMPTS) {
-						await this.#writeJournal({ ...current, retireAttempts: attempts });
-						throw error;
+			let closing: { viewId: string; pass: string } | undefined;
+			try {
+				await this.#exclusive(async () => {
+					const current = (await this.#readJournal(acquisitionId)) ?? marked;
+					if (terminal(current.physicalState)) return;
+					if (stillActive.size > 0) {
+						// Never give the slot up while a process still runs in it: the
+						// journal stays `stopping`, which keeps the slot out of service
+						// (quarantined) until the units are really gone.
+						await this.#writeJournal({ ...current, retireAttempts: (current.retireAttempts ?? 0) + 1 });
+						throw new Error("Sandbox units are still running; the slot stays quarantined");
 					}
-					// The slot is clean and returns to service; the company allocation
-					// is still owed and reconcile keeps retrying it from the archive.
-					await this.#archive({
-						...current,
-						physicalState: "lost",
-						retireAttempts: attempts,
-						stopReason: `${current.stopReason ?? reason}: ${error instanceof Error ? error.message : String(error)}`,
-					});
-					return;
-				}
-				if (
-					park &&
-					current.warmKey &&
-					current.warmSessionId &&
-					current.warmStaffAgentId &&
-					current.hostIdentity &&
-					this.#config.warmIdleMs !== undefined
-				) {
-					await this.#writeWarm({
-						schema: WARM_SCHEMA,
-						slot: current.slot,
-						key: current.warmKey,
-						computeIdentityId: current.computeIdentityId,
-						sessionId: current.warmSessionId,
-						staffAgentId: current.warmStaffAgentId,
-						epoch: current.hostIdentity.epoch,
-						masterKeySha256: current.hostIdentity.masterKeySha256,
-						nativeBridgeSha256: current.credentials.nativeBridgeSha256,
-						warmUntil: new Date(this.#now() + this.#config.warmIdleMs).toISOString(),
-					});
-				}
-				await this.#archive({ ...current, physicalState: "stopped", capacityReleased: true });
-			});
+					// The view's file goes under the lock; the view is closed after it (best effort, a network call).
+					closing = await this.#takeBoxView(current.slot);
+					if (park) await this.#wipeRunner(current.slot);
+					else await this.#wipeSlot(current.slot);
+					try {
+						await this.#releaseMachine(current, signal);
+					} catch (error) {
+						const attempts = (current.retireAttempts ?? 0) + 1;
+						if (attempts < MAX_RETIRE_ATTEMPTS) {
+							await this.#writeJournal({ ...current, retireAttempts: attempts });
+							throw error;
+						}
+						// The slot is clean and returns to service; the company allocation
+						// is still owed and reconcile keeps retrying it from the archive.
+						await this.#archive({
+							...current,
+							physicalState: "lost",
+							retireAttempts: attempts,
+							stopReason: `${current.stopReason ?? reason}: ${error instanceof Error ? error.message : String(error)}`,
+						});
+						return;
+					}
+					if (
+						park &&
+						current.warmKey &&
+						current.warmSessionId &&
+						current.warmStaffAgentId &&
+						current.hostIdentity &&
+						this.#config.warmIdleMs !== undefined
+					) {
+						await this.#writeWarm({
+							schema: WARM_SCHEMA,
+							slot: current.slot,
+							key: current.warmKey,
+							computeIdentityId: current.computeIdentityId,
+							sessionId: current.warmSessionId,
+							staffAgentId: current.warmStaffAgentId,
+							epoch: current.hostIdentity.epoch,
+							masterKeySha256: current.hostIdentity.masterKeySha256,
+							nativeBridgeSha256: current.credentials.nativeBridgeSha256,
+							warmUntil: new Date(this.#now() + this.#config.warmIdleMs).toISOString(),
+						});
+					}
+					await this.#archive({ ...current, physicalState: "stopped", capacityReleased: true });
+				});
+			} finally {
+				if (closing) await this.#closeView(closing.viewId, closing.pass).catch(() => undefined);
+			}
 		} finally {
 			this.#retiring.delete(acquisitionId);
 		}
@@ -1161,6 +1178,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return units.filter((unit) => active.has(unit));
 	}
 
+	/** Stops whatever of a slot's box runs (a box left from before: a crash, or boxes switched off meanwhile). */
+	async #stopBox(slot: number, signal?: AbortSignal): Promise<void> {
+		const units = this.#boxUnits(slot);
+		if (units.length === 0) return;
+		let active = await this.#units.activeSet(units, signal);
+		if (active.size === 0) return;
+		for (const unit of units) if (active.has(unit)) await this.#units.stop(unit, signal).catch(() => undefined);
+		active = await this.#units.activeSet(units, signal);
+		for (const unit of active) await this.#units.kill(unit, signal);
+		if ((await this.#units.activeSet(units, signal)).size > 0) throw new Error("A stale run box did not stop");
+	}
+
 	#openBoxSoon(acquisitionId: string): void {
 		if (this.#boxOpening.has(acquisitionId)) return;
 		this.#boxOpening.add(acquisitionId);
@@ -1181,28 +1210,55 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			const box = journal?.box;
 			if (!journal || !box || box.state !== "opening" || journal.physicalState !== "assigned") return;
 			if (!journal.assignmentId) return;
-			let opened: { viewId: string; pass: string } | "none" | "retry";
+			let opened: { viewId: string; pass: string } | "none" | { retry: string };
 			try {
 				opened = await this.#openView(journal, box);
 			} catch {
-				opened = "retry";
+				opened = { retry: "network" };
 			}
-			if (opened === "retry" && this.#now() - Date.parse(box.since) < BOX_OPEN_WINDOW_MS) {
+			if (
+				typeof opened === "object" &&
+				"retry" in opened &&
+				this.#now() - Date.parse(box.since) < BOX_OPEN_WINDOW_MS
+			) {
 				await delay(BOX_OPEN_RETRY_MS);
 				continue;
 			}
-			if (opened === "retry" || opened === "none") {
+			if (opened === "none" || "retry" in opened) {
+				const outcome = opened;
 				await this.#exclusive(async () => {
 					const latest = await this.#readJournal(acquisitionId);
 					if (latest?.box?.state === "opening")
-						await this.#writeJournal({
-							...latest,
-							box: { ...latest.box, state: opened === "none" ? "none" : "failed" },
-						});
+						await this.#writeJournal(
+							{
+								...latest,
+								box:
+									outcome === "none"
+										? { ...latest.box, state: "none" }
+										: { ...latest.box, state: "failed", reason: outcome.retry },
+							},
+							false,
+						);
 				});
 				return;
 			}
 			const view = opened;
+			// A box still running on the slot (from before a crash, or from before boxes were switched off) never serves
+			// this run: it stops first, or this run gets none.
+			try {
+				await this.#stopBox(journal.slot);
+			} catch {
+				await this.#closeView(view.viewId, view.pass).catch(() => undefined);
+				await this.#exclusive(async () => {
+					const latest = await this.#readJournal(acquisitionId);
+					if (latest?.box?.state === "opening")
+						await this.#writeJournal(
+							{ ...latest, box: { ...latest.box, state: "failed", reason: "stale_box" } },
+							false,
+						);
+				});
+				return;
+			}
 			const started = await this.#exclusive(async () => {
 				const latest = await this.#readJournal(acquisitionId);
 				if (!latest || latest.physicalState !== "assigned" || latest.box?.state !== "opening") return false;
@@ -1212,7 +1268,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					path,
 					`${JSON.stringify({ environmentId: latest.box.environmentId, viewId: view.viewId, pass: view.pass })}\n`,
 				);
-				await this.#writeJournal({ ...latest, box: { ...latest.box, state: "open", viewId: view.viewId } });
+				await this.#writeJournal({ ...latest, box: { ...latest.box, state: "open", viewId: view.viewId } }, false);
 				// Queued under the lock: a retire marks the journal only after this, so its stop follows this start.
 				await this.#units.start(this.#boxUnits(latest.slot)[0] as string);
 				return true;
@@ -1223,11 +1279,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	}
 
 	/** `none`: the company has no folder-v2 folder, or this kind of run gets no view; `retry`: anything else, such as
-	 * a runner that has not taken its job lease yet. */
+	 * a runner that has not taken its job lease yet, with the refusal's SQLSTATE or HTTP status. */
 	async #openView(
 		journal: SharedExecutionJournal,
 		box: SharedExecutionRunBox,
-	): Promise<{ viewId: string; pass: string } | "none" | "retry"> {
+	): Promise<{ viewId: string; pass: string } | "none" | { retry: string }> {
 		const response = await this.#fetch(new URL("/rest/v1/rpc/qorpera_folder_view_open", this.#config.supabaseUrl), {
 			method: "POST",
 			redirect: "error",
@@ -1251,8 +1307,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			const failure = answer && typeof answer === "object" ? (answer as Record<string, unknown>) : {};
 			// The SQL's own refusals for a company without a folder-v2 folder and for runs that get no view yet
 			// (20260928259230 view_open, 20260928249000 run_resolve).
-			if (failure.message === "Company folder is unavailable" || failure.code === "0A000") return "none";
-			return "retry";
+			if (failure.message === RUN_BOX_NO_FOLDER_MESSAGE || failure.code === "0A000") return "none";
+			return {
+				retry:
+					typeof failure.code === "string" && /^[0-9A-Z]{5}$/.test(failure.code)
+						? failure.code
+						: `http_${response.status}`,
+			};
 		}
 		const view = record(answer, "Folder view");
 		if (
@@ -1277,26 +1338,26 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		void response.body?.cancel().catch(() => undefined);
 	}
 
-	/** Once the box is down: close the run's view (best effort: the run's end and the lease close it anyway) and
-	 * remove its file. */
-	async #closeBoxView(slot: number, signal?: AbortSignal): Promise<void> {
+	/** Once the box is down: remove the run's view file, and say which view to close (best effort, after the lock:
+	 * the run's end and the lease close it anyway). */
+	async #takeBoxView(slot: number): Promise<{ viewId: string; pass: string } | undefined> {
 		const path = this.#boxViewPath(slot);
 		let encoded: string;
 		try {
 			encoded = await readFile(path, "utf-8");
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 			throw error;
 		}
-		signal?.throwIfAborted();
+		await rm(path, { force: true });
 		try {
 			const view = record(JSON.parse(encoded), "Run box view file");
 			if (typeof view.viewId === "string" && typeof view.pass === "string")
-				await this.#closeView(view.viewId, view.pass);
+				return { viewId: view.viewId, pass: view.pass };
 		} catch {
 			/* The view ends with the run regardless. */
 		}
-		await rm(path, { force: true });
+		return undefined;
 	}
 
 	/** A box running on a slot no live run holds (this process crashed mid-retire, or a warm slot parked without
@@ -1312,11 +1373,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			);
 			if (held) continue;
 			for (const unit of units) await this.#units.stop(unit, signal).catch(() => undefined);
-			await this.#exclusive(async () => {
+			const closing = await this.#exclusive(async () => {
 				if ((await this.#journals()).some((journal) => !terminal(journal.physicalState) && journal.slot === slot))
-					return;
-				if ((await this.#units.activeSet(units, signal)).size === 0) await this.#closeBoxView(slot, signal);
+					return undefined;
+				if ((await this.#units.activeSet(units, signal)).size > 0) return undefined;
+				return this.#takeBoxView(slot);
 			});
+			if (closing) await this.#closeView(closing.viewId, closing.pass).catch(() => undefined);
 		}
 	}
 
@@ -1590,6 +1653,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	/** Stops a warm slot's host and wipes the slot. Callers hold the lock or own the slot. */
 	async #evict(slot: number, signal?: AbortSignal): Promise<void> {
+		await this.#stopBox(slot, signal);
 		const host = this.#unit("host", slot);
 		if (await this.#units.active(host, signal)) await this.#units.kill(host, signal);
 		if (await this.#units.active(host, signal)) throw new Error("A warm slot's native host did not stop");
@@ -1749,8 +1813,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return journal;
 	}
 
-	async #writeJournal(journal: SharedExecutionJournal): Promise<void> {
-		const next = { ...journal, updatedAt: new Date(this.#now()).toISOString() };
+	/** `touch` false keeps `updatedAt`, which the ended-runner check counts from (a box's state is not the runner's). */
+	async #writeJournal(journal: SharedExecutionJournal, touch = true): Promise<void> {
+		const next = touch ? { ...journal, updatedAt: new Date(this.#now()).toISOString() } : journal;
 		const path = this.#journalPath(journal.acquisitionId);
 		await mkdir(join(this.#config.stateRoot, "journals"), { recursive: true, mode: 0o700 });
 		const temporary = `${path}.${process.pid}.tmp`;

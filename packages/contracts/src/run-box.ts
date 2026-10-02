@@ -11,7 +11,8 @@
 import { isUuid, parseClosedRecord, parseInteger, WireValueError } from "./wire-values.ts";
 
 export const RUN_BOX_PROTOCOL = 1;
-/** One line, either way. A request is at most a command or input of 64 KiB; a reply at most 64 KiB of output. */
+/** One line, either way. A request is at most a command or input of 64 KiB; a reply at most 64 KiB of output, whose
+ * JSON is at most twice that (output text has no control character but tab, newline and carriage return). */
 export const RUN_BOX_LINE_LIMIT = 262_144;
 /** A command line, and the input written in one call (UTF-16 code units). */
 export const RUN_BOX_MAX_TEXT_LENGTH = 65_536;
@@ -40,7 +41,9 @@ export type RunBoxRequest =
 	/** Write to a running command's terminal (nothing, to only read), then wait for output. */
 	| { t: "write"; id: string; session: number; chars: string; yieldMs: number; maxOutputBytes: number };
 
-/** Output since the previous answer for the same command: all of it, or its head and its tail. */
+/** Output since the previous answer for the same command: all of it, or its head and its tail. Bytes that are not
+ * UTF-8, and control characters other than tab, newline and carriage return, show as `?`, so the text has exactly as
+ * many bytes as the output it shows. */
 export interface RunBoxOutput {
 	head: string;
 	tail: string;
@@ -60,7 +63,7 @@ export const RUN_BOX_ERROR_CODES = [
 export type RunBoxErrorCode = (typeof RUN_BOX_ERROR_CODES)[number];
 
 export type RunBoxReply =
-	/** Sent once per connection: the commands still running from earlier connections. */
+	/** Sent once per connection: the commands still running, which a `write` can read on. */
 	| { t: "ready"; protocol: typeof RUN_BOX_PROTOCOL; sessions: number[] }
 	/**
 	 * `session` names a command that is still running; it is null once the command has ended and all of its output was
@@ -79,6 +82,8 @@ export type RunBoxReply =
 	| { t: "error"; id: string; code: RunBoxErrorCode; message: string };
 
 const SIGNAL_PATTERN = /^SIG[A-Z0-9]{1,12}$/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: output text must hold none of these.
+const OUTPUT_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const LOG_PATH_PATTERN = /^\/[A-Za-z0-9._/-]{1,255}$/;
 
 function line(text: string, label: string): Record<string, unknown> {
@@ -174,7 +179,8 @@ export function parseRunBoxReply(encoded: string, maxOutputBytes = RUN_BOX_MAX_O
 	if (value.t === "ready") {
 		const input = parseClosedRecord(value, "Run box ready", ["t", "protocol", "sessions"]);
 		if (input.protocol !== RUN_BOX_PROTOCOL) throw new WireValueError("Run box protocol");
-		if (!Array.isArray(input.sessions) || input.sessions.length > 4096) throw new WireValueError("Run box sessions");
+		if (!Array.isArray(input.sessions) || input.sessions.length > 100_000)
+			throw new WireValueError("Run box sessions");
 		return {
 			t: "ready",
 			protocol: RUN_BOX_PROTOCOL,
@@ -203,6 +209,8 @@ export function parseRunBoxReply(encoded: string, maxOutputBytes = RUN_BOX_MAX_O
 		const output = parseClosedRecord(input.output, "Run box output", ["head", "tail", "skippedBytes", "totalBytes"]);
 		const head = text(output.head, "Run box output head", RUN_BOX_MAX_OUTPUT_BYTES);
 		const tail = text(output.tail, "Run box output tail", RUN_BOX_MAX_OUTPUT_BYTES);
+		if (OUTPUT_CONTROL.test(head) || OUTPUT_CONTROL.test(tail))
+			throw new WireValueError("Run box output", "holds a control character");
 		if (utf8Bytes(head) + utf8Bytes(tail) > maxOutputBytes)
 			throw new WireValueError("Run box output", "is larger than asked");
 		const totalBytes = parseInteger(output.totalBytes, "Run box output size", 0, Number.MAX_SAFE_INTEGER);

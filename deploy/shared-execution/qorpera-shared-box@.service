@@ -23,9 +23,12 @@ KillMode=control-group
 TimeoutStopSec=5s
 UMask=0077
 LimitCORE=0
-# A box is 2 GiB of memory (founder decision on sizing, 2026-10-02); its commands have no time or count limit.
+# Physical sizes, not limits on work: 2 GiB of memory (founder decision on sizing, 2026-10-02) and enough processes for
+# any tool, but not for a fork bomb to take the host's. CPU is shared by weight with the slot's other units. Commands
+# have no time or count limit.
 MemoryMax=2G
 MemorySwapMax=0
+TasksMax=4096
 
 # What the box sees: the image's programs and settings read-only, the company folder read-only at /company, and its
 # own /tmp. Nothing of the host's state, run material, credentials, other slots or other mounts.
@@ -48,7 +51,8 @@ ProtectClock=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
-ProtectControlGroups=yes
+# Not even other slots' unit names and usage.
+ProtectControlGroups=private
 KeyringMode=private
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -59,4 +63,6 @@ RestrictRealtime=yes
 LockPersonality=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# The kernel's per-user keyring outlives a run, and the box account serves every run on the slot: no box uses it.
+SystemCallFilter=~@keyring
 SystemCallErrorNumber=EPERM

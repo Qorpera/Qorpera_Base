@@ -517,27 +517,37 @@ gets a box of its own on its slot (`deploy/first-node/RUNTIME-FOLDER-SERVICE.md`
    for the run's view (`qorpera_folder_view_open` with the run actor, which the
    database refuses until the runner has taken its job lease) every 250 ms for
    at most a minute. A company without a folder-v2 folder, or a kind of run that
-   gets no view yet, journals `none`; a minute of refusals journals `failed`.
-   Neither fails the run: its box tools say the box is missing.
+   gets no view yet, journals `none`; a minute of refusals journals `failed`
+   with the last refusal's SQLSTATE or HTTP status. Neither fails the run: its
+   box tools say the box is missing. Box state never moves the journal's
+   `updatedAt`, which the ended-runner check counts from.
 2. With the view: under the service lock, the view file goes on the slot's tmpfs
    (root 0600), the journal records `open` with the view id (never the pass),
-   and `qorpera-shared-box@<n>.service` is started. It pulls in its socket and
+   and `qorpera-shared-box@<n>.service` is started. A box still running on the
+   slot (from before a crash, or from before boxes were switched off) is
+   stopped first: when a sandbox starts there, and again before the start; a
+   new run's box always starts empty. It pulls in its socket and
    `qorpera-shared-box-folder@<n>.service`, which mounts the view with
    `allow_other` (through the node's folder bridge, like any mount) and is
    started only once the folder is mounted.
 3. Retire stops the box first, also when the native host parks: the box, its
    socket and its folder unit, so every command ends with the run. With the box
-   down, the service closes the view (best effort: the run's end and the lease
-   close it anyway) and removes its file. A box no live run holds is stopped on
-   the next pass, before any slot wipe.
+   down, the service removes the view's file and, after its lock, closes the
+   view (best effort: the run's end and the lease close it anyway). The box's
+   unit names are always known, so this holds while boxes are switched off too.
+   A box no live run holds is stopped on the next pass, and evicting a warm
+   slot stops one too, before the slot is wiped.
 
 The box (`qorpera-shared-box@.service`) runs the box host as the slot's third
 account, `qorpera-shared-box-<n>`, with the company folder read-only at
 `/company`, home and `/tmp` in a 1 GiB memory file system of its own,
-`PrivateNetwork=yes` (not even the host's loopback ports), no capability, its
-own `/dev/shm`, and nothing of `/var`, `/run`, `/srv`, `/opt` (but its own
-program), `/etc/qorpera*`, `/home` or `/root`. `MemoryMax=2G`; no time, task
-or output limit of its own. Its tools come with the runner image
+`PrivateNetwork=yes` (not even the host's loopback ports), no capability, no
+kernel keyring (it would outlive the run), its own `/dev/shm` and control
+group, and nothing of `/var`, `/run`, `/srv`, `/opt` (but its own program),
+`/etc/qorpera*`, `/home` or `/root`. Physical sizes only: `MemoryMax=2G` and
+`TasksMax=4096`, CPU by weight; no time, count or output limit on its
+commands. Output shows non-UTF-8 bytes and control characters as `?`, so its
+counts are exact; a command's whole output stays in the box's home. Its tools come with the runner image
 (`deploy/lxd-runner-guest/install-image-contract.sh`: ripgrep, fd, jq, Python
 with pandas, openpyxl, python-docx and pypdf, sqlite3, pandoc, poppler,
 ImageMagick, LibreOffice without a display, zip). The protocol between the

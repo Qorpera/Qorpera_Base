@@ -145,14 +145,14 @@ describe("run box host", () => {
 		const { socketPath } = await box();
 		const client = new Client(socketPath);
 		await client.ready();
-		const first = ended(await client.exec("echo start; sleep 1; echo done", { yieldMs: 200 }));
+		const first = ended(await client.exec("echo start; sleep 4; echo done", { yieldMs: 2_000 }));
 		expect(first.session).toBe(1);
 		expect(first.exitCode).toBeNull();
 		expect(first.output.head).toBe("start\n");
 		// A second connection (a native host restart) sees the running command.
 		const other = new Client(socketPath);
 		expect(await other.ready()).toEqual([1]);
-		const second = ended(await other.write(1, "", 5_000));
+		const second = ended(await other.write(1, "", 10_000));
 		expect(second).toMatchObject({ session: null, exitCode: 0, signal: null });
 		expect(second.output.head).toBe("done\n");
 		expect(ended(await client.exec("true")).exitCode).toBe(0);
@@ -185,6 +185,41 @@ describe("run box host", () => {
 		expect(reply.output.head).toMatch(/^é+$/);
 		expect(reply.output.tail).toMatch(/^é+$/);
 		expect(Buffer.byteLength(reply.output.head) + Buffer.byteLength(reply.output.tail)).toBeLessThanOrEqual(1001);
+	});
+
+	it("shows binary output as one ? per byte, in one pass, with exact counts", async () => {
+		const { socketPath } = await box();
+		const client = new Client(socketPath);
+		await client.ready();
+		const started = Date.now();
+		const zeros = ended(await client.exec("head -c 65536 /dev/zero", { maxOutputBytes: 65_536 }));
+		expect(zeros.output).toEqual({ head: "?".repeat(65_536), tail: "", skippedBytes: 0, totalBytes: 65_536 });
+		const random = ended(await client.exec("head -c 300000 /dev/urandom", { maxOutputBytes: 65_536 }));
+		expect(
+			Buffer.byteLength(random.output.head) + Buffer.byteLength(random.output.tail) + random.output.skippedBytes,
+		).toBe(300_000);
+		expect(random.output.head + random.output.tail).not.toMatch(
+			/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\ufffd]/,
+		);
+		expect(random.logPath).not.toBeNull();
+		// A small answer of control bytes, a newline and an escape sequence.
+		const control = ended(await client.exec("printf 'a\\001\\033[0mb\\tc\\r\\nd\\0e'"));
+		expect(control.output.head).toBe("a??[0mb\tc\r\nd?e");
+		expect(Date.now() - started).toBeLessThan(15_000);
+	});
+
+	it("keeps a character a running command wrote half of for its next answer", async () => {
+		const { socketPath } = await box();
+		const client = new Client(socketPath);
+		await client.ready();
+		// é is c3 a9: the first byte now, the second after the first answer.
+		const first = ended(await client.exec("printf 'x\\303'; sleep 1; printf '\\251y'", { yieldMs: 400 }));
+		expect(first.output).toMatchObject({ head: "x", totalBytes: 1 });
+		const second = ended(await client.write(first.session as number, "", 5_000));
+		expect(second.output).toMatchObject({ head: "éy", totalBytes: 3 });
+		// A command that ends on half a character shows it.
+		const cut = ended(await client.exec("printf 'z\\303'"));
+		expect(cut.output).toMatchObject({ head: "z?", totalBytes: 2, skippedBytes: 0 });
 	});
 
 	it("ends a command when it exits, even while a background child holds its output", async () => {
