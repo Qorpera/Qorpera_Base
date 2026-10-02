@@ -592,9 +592,9 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   space, no reserved device name), and one line; a pattern character such as `*` is part of a
   name, never a pattern. A plain entry that YAML reads as something other than text (`42`,
   `true`) is written in double quotes, as in `asks`. Repeats are compared by key
-  (`companyPathKey`), since two spellings are one entry; the database compares by its own key, so
-  the case-mapping difference of §1 (`İ`) can make it refuse two entries the parser keeps apart,
-  never the other way round. On a contact's task an entry whose key is under `agents/`,
+  (`companyPathKey`), since two spellings are one entry; the database compares by its own key.
+  The two keys fold three characters differently (`ß`, `İ`, U+A7F1; §1), so either side may
+  refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `agents/`,
   `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
   people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
   - a listed file opens only if the agent that sent the link may read it at that moment, by its
@@ -1413,7 +1413,8 @@ while building:
   shape check holds one-line values trimmed.
 - `asks` and `files` are the first free-text lists, so a plain item YAML reads as something other than text
   (`true`, `42`, `null`) is refused with `quote`, as the settings' text fields are; the writers quote such items.
-- `files` entries are held to the core's path rule, so a task never names a file the folder cannot hold.
+- `files` entries are held to the core's path rule, so a task never names a path that rule refuses (the commit's own
+  key limit of 2,600 bytes is not checked here).
 - No `computer` key (A1, 2 October): a takeover step is always done on the asking agent's own computer, which the
   platform finds from `from` when the person opens the task, also when a company runs several machines. The file
   names nothing that can go stale; `step` and `connection` say what to do and for which account.
