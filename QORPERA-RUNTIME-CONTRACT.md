@@ -466,7 +466,7 @@ rules/
 ```
 
 `human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
-the 2026-10-02 amendment, item 5).
+the 2026-10-02 amendment "work for people", item 5).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item

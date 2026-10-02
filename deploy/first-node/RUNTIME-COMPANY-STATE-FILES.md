@@ -537,7 +537,7 @@ write-access worker makes (today `work/todos/<agent>/<todo>/<worker>/`).
 
 Work an agent hands to a person: a member, or a contact outside the company (Q1 §5, "Work for
 people"). One file per task; the task's folder beside it holds what the person sends back. It is
-the last step of the escalation order (16.1, as the 2026-10-02 amendment widens it).
+the last step of the escalation order (16.1, as the 2026-10-02 amendment "work for people" widens it).
 
 ```
 ---
