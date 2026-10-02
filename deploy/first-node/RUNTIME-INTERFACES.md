@@ -38,17 +38,19 @@ interfaces/                       seeded; can't be deleted or moved
     interface.toml                the page
     README.md                     optional: what it is for
 tables/                           seeded; can't be deleted or moved
-  <table>.toml                    a table: its columns, key and writers
-  <table>.csv                     its rows
+  <table>/                        one folder per table, created, moved and deleted as one unit
+    table.toml                    the table: its columns, key and writers
+    rows.csv                      its rows
 ```
 
-- **Names.** Folder and file names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most
-  64 characters, `-2`, `-3` when taken. A table's name is the stem of its `.toml`; its rows file has the same stem.
+- **Names.** Folder names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most 64
+  characters, `-2`, `-3` when taken. A table's name is its folder's name.
 - **Seeded at founding** (§8): `interfaces/`, `tables/`, Pulse (the main interface), Mailbox and Members, with the
   tables `numbers`, `areas` and `cards`.
 - **Cannot be deleted or moved:**
   - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
-  - `tables/`, and `tables/areas.toml` with `tables/areas.csv`, which the platform reads supervision from (§5.1).
+  - `tables/`, and the `tables/areas/` folder, which the platform reads supervision from (§5.1);
+  - `table.toml` and `rows.csv` on their own: deleting a table's folder deletes the table.
 
 ### Structured files
 
@@ -56,16 +58,21 @@ tables/                           seeded; can't be deleted or moved
 | --- | --- | --- | --- |
 | `interfaces/order.md` | interface-order | yes | 16 KiB |
 | `interfaces/<name>/interface.toml` | interface | yes | 64 KiB |
-| `tables/<name>.toml` | table | yes | 16 KiB |
-| `tables/<name>.csv` | table-rows | yes, against its definition | 64 KiB (the core's limit for checked files) |
+| `tables/<name>/table.toml` | table | yes | 16 KiB |
+| `tables/<name>/rows.csv` | table-rows | yes, against its definition | 64 KiB (the core's limit for checked files) |
 
 A file's kind comes from its path alone, as for the state files. These are the folder's first structured kinds that
 are not markdown. A save that is refused is refused for that file with its problems (§6). `README.md` is a plain
 file.
 
-**Proposed: every rows file is checked, within 64 KiB.** The design page allowed plain rows files up to 2 MiB. The
-review of this document found a problem: a file's kind can't depend on another file, so whether a CSV is checked
-can't follow a `needs_yes` column in its definition. Every rows file is therefore checked, and a table that
+**Proposed: every rows file is checked, within 64 KiB.** The design page allowed plain rows files up to 2 MiB, and
+showed a table as two files side by side. The review of this document found two problems:
+- a file's kind can't depend on another file, so whether a CSV is checked can't follow a `needs_yes` column in its
+  definition;
+- the folder core commits a change one unit at a time, so a definition and its rows must live in one folder to be
+  created, moved or deleted together.
+
+Every rows file is therefore checked, each table is a folder, and a table that
 outgrows 64 KiB waits for the table store (decision 1). 64 KiB is the folder core's current bound for a checked
 file, not a product limit (contract 5.5). As a guide, the seeded numbers table holds a year of weekly readings for
 about ten numbers; finer history waits for the store.
@@ -246,7 +253,8 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 
 ## 5. Tables
 
-A table's definition is `tables/<name>.toml`. Its rows are company state.
+A table is the folder `tables/<name>/`. Its definition is `table.toml` and its rows are `rows.csv`. Its rows are
+company state.
 
 ```toml
 format = "qorpera.table/v0"         # required, exactly this
@@ -290,17 +298,19 @@ members = "all"                     # all | owners | none
 
 ### Rows
 
-- `tables/<name>.csv` is RFC 4180 CSV in UTF-8. Its first line is the column names in the definition's order.
+- `rows.csv` is RFC 4180 CSV in UTF-8. Its first line names its columns, in any order. It may leave out optional
+  columns, which then read as empty, and it names no column the definition lacks.
 - An empty field is allowed only in an `optional` column.
 - Two rows with the same key are refused.
 - Every save of a rows file is checked against the table's definition, within 64 KiB. The checks are: the header,
   each value's type, the key, `[write]` (who may write rows) and the claim rule below.
-- **A rows file and its definition go together:**
-  - a rows file without a definition is refused;
-  - deleting or moving a definition while its rows file stays is refused;
-  - a rows file moves or is renamed only together with its definition.
-- A change set that changes a definition is checked as a whole: the rows must fit the definition as the change set
-  leaves it.
+- **A table's two files stay together.** Creating, moving or deleting a table is one unit: its folder. Deleting
+  `table.toml` or `rows.csv` on its own is refused, as is a `rows.csv` outside a table folder.
+- **A definition change lands only if the rows it finds still fit.** The folder core commits a change set one unit
+  at a time, so two files never change as one. Changes therefore go in steps, each its own save, and `save_interface`
+  makes them in order:
+  - to add a required column, add it as optional, fill the rows, then make it required;
+  - to remove a column, make it optional, drop it from the rows, then remove it.
 - The database holds the rows only as the folder's index of the file, like every structured file (contract 5.6).
 
 ### The claim rule ("nobody assigns anybody")
@@ -323,22 +333,25 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 
 ### 5.1 Supervision
 
-`tables/areas.csv` is the table the platform reads supervision from. It is seeded and can't be deleted or moved, and
-its `owner`, `supervisor` and `agents` columns are fixed. An area's supervisor is the member its agents answer to.
+`tables/areas/` is the table the platform reads supervision from. It is seeded and can't be deleted or moved, and its
+`owner`, `supervisor` and `agents` columns are fixed. An area's supervisor is the member its agents answer to.
 Jonas, 2 October 2026 (decision 4); contract amendment item 10.
 
-- **Where they stand.** For the agents' work alone, the supervisor stands where the requester stands today:
+- **Work alone** is the agents' work that no member started: routines an agent set up for itself, event and
+  file-change wakes, and the wakes those runs start. Work a member started stays theirs (section 17).
+- **What follows for work alone:**
   - the agents' questions, and the review cards that go to the requester today, go to the supervisor;
   - the supervisor's personal rules apply;
-  - the supervisor's own login pays.
+  - the supervisor's own login pays, where section 17 lets it.
 
-  "Work alone" means routine occurrences, event and file-change wakes, and the wakes those runs start. Cards that go to
-  owners and admins (company rules and built-in checks; contract 4.2, 2026-09-25 amendment) still go to them.
+  The recorded requester stays whoever caused the work (contract 4.2); the supervisor is recorded as the payer and
+  as the one who gets the cards. Cards that go to owners and admins (company rules and built-in checks; 2026-09-25
+  amendment, item 5) still go to them.
 - **Which login may pay.** Section 17 still decides it. This only changes its "An agent's standing execution
   authority names a company account only" for supervised agents.
-  - A ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it.
-    For a supervised agent, that means only routines the supervisor saved themselves, and only after they turned on
-    away work. It never pays for a listener, an event or file-change wake (2026-10-01 amendment).
+  - A ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it
+    (2026-10-01 amendment). So it never pays for work alone. On a plan login, supervision brings the cards and the
+    personal rules, and payment follows today's rule.
   - A Claude login never pays for agent work.
   - Work stops at a usage limit.
   - Where the supervisor's login may not pay, today's rule applies.
@@ -347,12 +360,12 @@ Jonas, 2 October 2026 (decision 4); contract amendment item 10.
   - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
     `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to the
     taker on the same screen.
-  - They can withdraw it at any time. It also ends when they release the area or leave the company, and the owners
-    are told.
+  - They can withdraw it at any time. It also ends when they release the area, when the area's row is deleted or its
+    key changes, or when they leave the company; the owners are told.
   - A cell that names a member with no live consent record decides nothing, and the board shows the area as waiting
     for that member.
-- **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member adding an agent to its
-  `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents never change
+- **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
+  supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents never change
   `agents`.
 - **One area per agent.** An agent sits in at most one area's `agents`; the save check refuses a second, because it
   decides who pays.
@@ -378,6 +391,7 @@ files (STATE-FILES §3).
 | Code | When |
 | --- | --- |
 | `toml` | not the TOML this format reads (§3) |
+| `encoding` | not UTF-8 text, or a byte order mark |
 | `format` | `format` missing or not this format |
 | `unknown_key` | a key this table doesn't take |
 | `missing_key` | a required key is missing |
@@ -393,12 +407,13 @@ files (STATE-FILES §3).
 files or state:
 - no main interface, or two;
 - `edit = "owners"` for anyone else;
-- the rows against their definition: the header, each row (`row`), two rows with one key (`duplicate`), and the
-  definition as the change set leaves it;
-- a rows file without its definition, or a definition removed or moved without its rows;
+- the rows against their definition: the header, each row (`row`, also for CSV that doesn't split into fields), two
+  rows with one key (`duplicate`);
+- a definition the rows it finds no longer fit;
+- a table's `table.toml` or `rows.csv` deleted on its own, or a `rows.csv` outside a table folder;
 - `[write]`;
 - the claim rule (§5), with `claim`;
-- `tables/areas.csv`'s fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
+- `tables/areas/`: its fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
   one area per agent.
 
 The parser's `parseTableRows` gives the same row results to a writer that has the definition, so a tool can refuse
@@ -430,7 +445,7 @@ agent that keeps the page is told.
   tables and a README. Pulse, Mailbox and Members are its first three.
 - **Adding one** copies its files into `interfaces/` and `tables/` in one change set. The copy is marked with
   `[template] from` and `version`, and from then on it is the company's to change. The platform never relies on
-  `[template]`: supervision is read from `tables/areas.csv` by its path.
+  `[template]`: supervision is read from `tables/areas/` by its path.
 - **Seeding.** At founding the platform copies the three first ones and lists them in `interfaces/order.md`. Mailbox
   needs `mail`; Members needs `team`.
 - **Updates.** When the library has a newer version, the platform offers it and never applies it by itself. Lines the
@@ -461,9 +476,9 @@ wherever it is listed. Interfaces not listed follow by name.
 4. **Supervising an agent** means its work alone runs on the supervisor's AI account (§5.1), within section 17's
    rules on which login may pay. This changes "the member who started the work pays" for supervised agents.
 
-   Found in review: a ChatGPT plan login never pays for a listener (2026-10-01 amendment). So on a plan login,
-   supervision pays only for scheduled work the supervisor turned on away work for. Event and file-change wakes keep
-   today's rule.
+   Found in review: a ChatGPT plan pays only for work its own member starts (2026-10-01 amendment), so a plan never
+   pays for an agent's work alone. On a plan login, supervision brings the agents' questions, cards and personal
+   rules, and payment follows today's rule. The payment half applies only to logins whose terms allow it.
 
 ## 10. Build order
 
@@ -483,7 +498,7 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I7 | the web client reads definitions and tables from the folder, live | Interfaces | C4, I6 |
 | I8 | `interface_read`, `table_read`, `table_write`, `save_interface`; the review recorder takes `save_interface` | Interfaces, with F2 | C3, C2's recorder, I6 |
 | I9 | Members | Interfaces | I6, I7, C4 member writes |
-| I9b | supervision: consent records, supervisors as requester and payer (§5.1) | S2 | I9 |
+| I9b | supervision: consent records; for work alone, the supervisor as payer and card recipient (§5.1) | S2 | I9 |
 | I10 | pages made by agents: the review card with a live preview, Undo | Interfaces | I6, I8 |
 | I11 | the Mailbox reads mail from the folder | Q1, with Interfaces | M2c |
 

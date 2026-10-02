@@ -1969,8 +1969,8 @@ and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
 
-Amended 2026-10-02: for a supervised agent's work alone, the supervisor stands where the requester stands, and
-their own login pays within the rules below; see the
+Amended 2026-10-02: for a supervised agent's work that no member started, the supervisor gets the cards and their
+own login pays where the rules below let it; see the
 [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 10.
 
 2026-09-28 amendment: the member who started the work pays. A member's own
@@ -4127,14 +4127,16 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
      button carries it.
    - Mail the platform marks as sign-up or sign-in mail for a company account shows who used it, never its text.
 4. **Tables are company state.**
-   - `tables/<table>.toml` defines a table: its columns, its key and who writes it.
-   - Its rows live in `tables/<table>.csv`, a structured file checked at every save against the definition, within
-     the folder core's current bound for a checked file (founder decision, 2 October 2026: rows in a file first).
-     That bound is the core's, not a product limit (5.5).
-   - A rows file needs its definition. A rows file without one is refused. Deleting or moving a definition while its
-     rows file stays is refused. A rows file moves or is renamed only together with its definition.
-   - A change set that changes a definition is checked as a whole: the rows must fit the definition as the change
-     set leaves it.
+   - A table is a folder, `tables/<table>/`, so creating, moving or deleting a table is one unit:
+     - `table.toml` defines it: its columns, its key and who writes it;
+     - `rows.csv` holds its rows: a structured file checked at every save against the definition (founder decision,
+       2 October 2026: rows in a file first), within the folder core's current bound for a checked file, which is
+       the core's and not a product limit (5.5).
+   - Deleting `table.toml` or `rows.csv` on its own is refused; deleting the folder deletes the table.
+   - The rows name their columns in their first line, in any order, and may leave out optional ones.
+   - A definition change lands only if the rows it finds still fit. To add a required column, add it as optional,
+     fill the rows, then make it required. To remove one, make it optional, drop it from the rows, then remove it.
+     Each step is its own save, so the folder core's unit-by-unit commit never splits a change.
    - The database holds rows only as the folder's index of those files (5.6).
    - A table that outgrows a file waits for the company's table store. The store has its own amendment, which says
      where it runs. Its rows belong to the company like the folder: they never go to the database, the folder gets a
@@ -4193,21 +4195,23 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
    An offer waits durably for that member. Dismissal or no answer is never a yes (16.2).
 10. **Supervision (founder decision, 2 October 2026; amends section 17).**
     - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
-      `tables/areas.csv`, the seeded table the platform reads supervision from.
-    - **What follows from it.** For the agents' work alone (routine occurrences, event and file-change wakes, and the
-      wakes those runs start), the supervisor stands where the requester stands:
+      `tables/areas/rows.csv`, the seeded table the platform reads supervision from.
+    - **Work alone** is the agents' work that no member started: routines an agent set up for itself, event and
+      file-change wakes, and the wakes those runs start. Work a member started stays theirs (section 17).
+    - **What follows from it.** For the agents' work alone:
       - their questions, and the review cards that go to the requester today, go to the supervisor;
       - the supervisor's personal rules apply;
-      - the supervisor's own login pays.
+      - the supervisor's own login pays, where section 17 lets it.
 
-      Cards that go to owners and admins (company rules, built-in checks; 4.2 and the 2026-09-25 amendment) still go
-      to them.
+      The recorded requester stays whoever caused the work (4.2). The supervisor is recorded as the payer and as the
+      one who gets the cards. Cards that go to owners and admins (company rules and built-in checks; 2026-09-25
+      amendment, item 5) still go to them.
     - **What it changes in section 17.** For supervised agents it changes section 17's "An agent's standing execution
       authority names a company account only; it never pays with a member's login." Every other rule of section 17
       still decides which login may pay:
-      - a ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it.
-        So for a supervised agent it pays only for routines the supervisor saved themselves, and only after they
-        turned on away work; never for a listener (2026-10-01 amendment);
+      - a ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it
+        (2026-10-01 amendment), so it never pays for work alone. On a plan login, supervision brings the cards and
+        the personal rules; the payment follows today's rule;
       - a Claude login never pays for agent work;
       - work stops at a usage limit.
 
@@ -4218,12 +4222,12 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
       - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
         `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to
         the taker on the same screen.
-      - It can be withdrawn at any time. It ends when they release the area or leave the company, and the owners are
-        told.
+      - It can be withdrawn at any time. It ends when they release the area, when the area's row is deleted or its
+        key changes, or when they leave the company; the owners are told.
       - A cell that names a member without a live consent record decides nothing.
-    - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member adding an agent
-      to its `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents
-      never change `agents` (item 6).
+    - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
+      supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the
+      supervisor says yes. Agents never change `agents` (item 6).
     - **One area per agent.** An agent sits in at most one area's `agents`, and the save check refuses a second.
     - **What areas are not.** Areas grant nothing and are not the retired responsibility objects (2026-09-20
       amendment, item 1).
@@ -4248,8 +4252,9 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
           interface.toml         one page
           README.md              what it is for (optional)
       tables/
-        <table>.toml             a table's columns, key and writers
-        <table>.csv              its rows
+        <table>/
+          table.toml             a table's columns, key and writers
+          rows.csv               its rows
       ```
 
     - "It holds all company state" gains one exception: rows in the table store (item 4).
@@ -4260,7 +4265,7 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
     - "Structured files" gains interface files, `interfaces/order.md`, table definitions and table rows.
     - The seeded folders that can't be deleted or moved gain:
       - `interfaces/`, `interfaces/order.md`, and the main interface's folder and file;
-      - `tables/`, and `tables/areas.toml` with its rows file.
+      - `tables/`, and the `tables/areas/` folder with its two files.
     - The automatic review's list gains item 7's changes.
     - Coding sessions see `interfaces/` and table definitions read-only, beside `agents/` and `rules/`.
     - Until F2 writes these into 5.6's text with the save-hook step (I6), the note at the top of 5.6 points here.
