@@ -120,8 +120,13 @@ the kernel does not find a name it is still making, so without more it would kee
 version's inode, for the hour (found on node 2's kernel 7.0: 1 or 2 of the stress test's 300 races each run). So the
 program remembers each name it answered with a cacheable entry, and the tree's change count it read it at, for 16
 s. A change that names one answered before it drops that name again at 1, 2, 4 … ms after the change, 15 times. A
-drop of a name the kernel no longer holds does nothing. fuser 0.18 cannot send the kernel's own fix for this
-(`FUSE_NOTIFY_INC_EPOCH`, kernel 6.16), which would also drop every other name at each change.
+drop of a name the kernel no longer holds does nothing; one it holds again costs one more lookup (from memory), and a
+folder's drop unhashes it, so a process working inside it reads `getcwd` as gone until it looks the folder up again:
+harmless for step 1's read-only mounts, to be revisited (an expire-only drop) before commands run inside the folder
+on machines. At most 65,536 answers are remembered: past that, those older than the window go first, then the older
+half. A resync (a feed lost and back, or more than 5,000 changed paths) chases every name answered in the last 16 s,
+which costs the chase thread up to a few seconds of CPU at that bound. fuser 0.18 cannot send the kernel's own fix
+for this (`FUSE_NOTIFY_INC_EPOCH`, kernel 6.16), which would also drop every other name at each change.
 
 ## Staying current
 

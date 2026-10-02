@@ -30,8 +30,45 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 /// a lookup's answer counts as possibly not yet in the kernel for as long.
 const CHASE_STEPS: u32 = 15;
 const CHASE_WINDOW: Duration = Duration::from_millis(1 << (CHASE_STEPS - 1));
-/// Answers remembered at most (the oldest go first past it; a burst of lookups never grows memory without end).
+/// Answers remembered at most: past it, those older than the window go, and then the older half (a burst of lookups
+/// never grows memory without end, and the newest, the ones that may still be in flight, stay).
 const ANSWERED_MAX: usize = 1 << 16;
+
+/// Names a lookup answered with a cacheable entry: the tree's change count it read them at, and when.
+#[derive(Default)]
+struct Answered {
+	map: HashMap<(u64, String), (u64, Instant)>,
+}
+
+impl Answered {
+	fn note(&mut self, dir: u64, name: &str, changes: u64, now: Instant) {
+		if self.map.len() >= ANSWERED_MAX {
+			self.map.retain(|_, (_, at)| now.duration_since(*at) < CHASE_WINDOW);
+		}
+		if self.map.len() >= ANSWERED_MAX {
+			let mut times: Vec<Instant> = self.map.values().map(|(_, at)| *at).collect();
+			times.sort_unstable();
+			let cut = times[times.len() / 2];
+			self.map.retain(|_, (_, at)| *at > cut);
+		}
+		self.map.insert((dir, name.to_string()), (changes, now));
+	}
+
+	/// The names in `inval` that a lookup answered from before the tree reached `changes`, lately enough that the
+	/// answer may not have landed in the kernel yet.
+	fn raced(&self, inval: &[Inval], changes: u64, now: Instant) -> Vec<(u64, String)> {
+		inval
+			.iter()
+			.filter_map(|i| match i {
+				Inval::Entry(parent, name) => Some((*parent, name.clone())),
+				Inval::Inode(_) => None,
+			})
+			.filter(|key| {
+				self.map.get(key).is_some_and(|(read, at)| *read < changes && now.duration_since(*at) < CHASE_WINDOW)
+			})
+			.collect()
+	}
+}
 
 pub struct Options {
 	pub mountpoint: PathBuf,
@@ -68,8 +105,7 @@ struct Shared {
 	handles: Mutex<HashMap<u64, Handle>>,
 	next_fh: AtomicU64,
 	ttl: Duration,
-	/// Names a lookup answered with a cacheable entry: the tree's `changes()` it read them at, and when.
-	answered: Mutex<HashMap<(u64, String), (u64, Instant)>>,
+	answered: Mutex<Answered>,
 }
 
 impl Shared {
@@ -153,31 +189,18 @@ impl Shared {
 		}
 	}
 
-	/// A lookup is about to answer `name` in `dir` from what the tree held at `changes`.
+	/// A lookup is about to answer `name` in `dir` from what the tree held at `changes` (called under the tree lock).
 	fn answer(&self, dir: u64, name: &str, changes: u64) {
-		let mut answered = self.answered.lock().unwrap();
-		if answered.len() >= ANSWERED_MAX {
-			answered.retain(|_, (_, at)| at.elapsed() < CHASE_WINDOW);
-			if answered.len() >= ANSWERED_MAX {
-				answered.clear();
-			}
-		}
-		answered.insert((dir, name.to_string()), (changes, Instant::now()));
+		self.answered.lock().unwrap().note(dir, name, changes, Instant::now());
 	}
 
-	/// The names in `inval` that a lookup answered from before the tree reached `changes`, lately enough that the
-	/// answer may not have landed in the kernel yet.
+	/// The names a change's drops race (called under the tree lock, after the change, so no answer is noted between).
+	/// A change that drops no name (the feed's heartbeat) looks at nothing.
 	fn raced(&self, inval: &[Inval], changes: u64) -> Vec<(u64, String)> {
-		let mut answered = self.answered.lock().unwrap();
-		answered.retain(|_, (_, at)| at.elapsed() < CHASE_WINDOW);
-		inval
-			.iter()
-			.filter_map(|i| match i {
-				Inval::Entry(parent, name) => Some((*parent, name.clone())),
-				Inval::Inode(_) => None,
-			})
-			.filter(|key| answered.get(key).is_some_and(|(read, _)| *read < changes))
-			.collect()
+		if !inval.iter().any(|i| matches!(i, Inval::Entry(..))) {
+			return Vec::new();
+		}
+		self.answered.lock().unwrap().raced(inval, changes, Instant::now())
 	}
 
 	fn handle(&self, h: Handle) -> FileHandle {
@@ -390,8 +413,7 @@ fn follow(
 	chased: mpsc::Sender<Vec<(u64, String)>>,
 ) {
 	// Drops what a change names in the kernel, and has every name a lookup answered from before it dropped again.
-	let apply = |inval: Vec<Inval>, changes: u64| {
-		let raced = s.raced(&inval, changes);
+	let apply = |inval: Vec<Inval>, raced: Vec<(u64, String)>| {
 		tell_kernel(&notifier, inval);
 		if !raced.is_empty() {
 			let _ = chased.send(raced);
@@ -411,7 +433,7 @@ fn follow(
 					break;
 				}
 			};
-			let (inval, changes) = {
+			let (inval, raced) = {
 				let mut tree = s.tree.lock().unwrap();
 				let inval = if change.resync {
 					tree.resync()
@@ -421,23 +443,26 @@ fn follow(
 					let paths: Vec<&str> = change.paths.iter().map(String::as_str).filter(|p| valid_path(p)).collect();
 					tree.invalidate(paths)
 				};
-				(inval, tree.changes())
+				let raced = s.raced(&inval, tree.changes());
+				(inval, raced)
 			};
 			if debug() {
 				eprintln!("qorpera-folder: change {} resync {} paths {:?}: {inval:?}", change.seq, change.resync, change.paths);
 			}
-			apply(inval, changes);
+			apply(inval, raced);
 			if feed.ack(change.seq).is_err() {
 				break;
 			}
 		}
 		feed.close();
 		s.feed_up.store(false, Ordering::SeqCst);
-		let (inval, changes) = {
+		let (inval, raced) = {
 			let mut tree = s.tree.lock().unwrap();
-			(tree.resync(), tree.changes())
+			let inval = tree.resync();
+			let raced = s.raced(&inval, tree.changes());
+			(inval, raced)
 		};
-		apply(inval, changes);
+		apply(inval, raced);
 		feed = loop {
 			std::thread::sleep(wait);
 			match s.link.open_feed() {
@@ -445,12 +470,14 @@ fn follow(
 					wait = Duration::from_secs(1);
 					eprintln!("qorpera-folder: feed back at change {}", ok.as_of_seq);
 					// Anything fetched before this moment may be older than the feed's start.
-					let (inval, changes) = {
+					let (inval, raced) = {
 						let mut tree = s.tree.lock().unwrap();
-						(tree.resync(), tree.changes())
+						let inval = tree.resync();
+						let raced = s.raced(&inval, tree.changes());
+						(inval, raced)
 					};
 					s.feed_up.store(true, Ordering::SeqCst);
-					apply(inval, changes);
+					apply(inval, raced);
 					break f;
 				}
 				Err(f) if f.view_closed() => {
@@ -545,7 +572,7 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		handles: Mutex::new(HashMap::new()),
 		next_fh: AtomicU64::new(1),
 		ttl: options.ttl,
-		answered: Mutex::new(HashMap::new()),
+		answered: Mutex::new(Answered::default()),
 	});
 	let mut config = Config::default();
 	config.mount_options = vec![
@@ -603,4 +630,42 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		}
 	}
 	Ok(why)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_change_races_only_the_names_answered_before_it_and_lately() {
+		let mut answered = Answered::default();
+		let t0 = Instant::now();
+		answered.note(1, "a.md", 4, t0);
+		answered.note(1, "b.md", 5, t0);
+		answered.note(2, "a.md", 3, t0);
+		let inval = vec![
+			Inval::Inode(7),
+			Inval::Entry(1, "a.md".into()),
+			Inval::Entry(1, "b.md".into()),
+			Inval::Entry(1, "c.md".into()),
+		];
+		// The change brought the tree to 5: a.md was read at 4 (before it), b.md at 5 (after), c.md never.
+		assert_eq!(answered.raced(&inval, 5, t0), vec![(1, "a.md".to_string())]);
+		// Past the window the answer has long landed, and the change's own drop finds it.
+		assert!(answered.raced(&inval, 5, t0 + CHASE_WINDOW).is_empty());
+	}
+
+	#[test]
+	fn a_full_record_keeps_its_newest_half() {
+		let mut answered = Answered::default();
+		let t0 = Instant::now();
+		for i in 0..ANSWERED_MAX {
+			answered.note(1, &format!("{i}"), 1, t0 + Duration::from_micros(i as u64));
+		}
+		let newest = format!("{}", ANSWERED_MAX - 1);
+		answered.note(1, "next", 1, t0 + Duration::from_secs(1));
+		assert!(answered.map.len() <= ANSWERED_MAX / 2 + 1);
+		assert!(answered.map.contains_key(&(1, newest)) && answered.map.contains_key(&(1, "next".into())));
+		assert!(!answered.map.contains_key(&(1, "0".into())));
+	}
 }
