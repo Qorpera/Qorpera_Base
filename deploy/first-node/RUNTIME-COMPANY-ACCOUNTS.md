@@ -45,7 +45,7 @@ passes as unknown.
 | `qorpera_describe_company_account_open(authority, capability, binding, receipt, input, downstream)` | `open` | What the broker needs before it seals version 1: the run's company and environment and the company's key id, after the same checks as the opening (no write). |
 | `qorpera_use_company_account(…, account)` | `use` | Returns the current version's envelope with its associated data (company, environment, account id, version, key id), and the site, sign-in hosts, login and two-step, to the broker, for a fill, a code or a password change. Refuses a closed or revoked account (22023). Records `last_used_at`/agent and an `account_used` event. |
 | `qorpera_add_company_account_version(…, account, base_version, two_step, key_id, envelope, envelope_sha256)` | `version` | Compare-and-swap over `base_version` (55000 "read it again" when it moved; never 40001). A repeat finds its own version by digest. May set `two_step`. `account_version_added` event. |
-| `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
+| `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. Closing revokes the vault row, which wipes every envelope (20260929999750); a repeat close answers the closed account. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
 
 The account row and its secret are locked `FOR UPDATE` (secret first) only by the version, state and use calls,
 after the receipt, and only when the secret is this company's `website` secret: any other id (another company's
@@ -80,6 +80,44 @@ wait (up to 25 s), as for every native tool call. Through the vault the database
   deletes the secret's envelope versions and closes its account (`removed_by_user_id` from the revoker), so
   nothing is left half open and the login is free for a new account.
 
+## A1-3a: filling in the database (migration `20260929999750`, SQL test 807)
+
+The office never talks to the vault. The office service makes an X25519 key pair in memory when it starts and
+reports the public half with its readiness; the native host already carries every computer action to the office,
+so for a fill it asks the vault (its existing runtime route), the vault seals the value to that key, and the host
+carries only the sealed box beside the action. Plaintext exists only in the vault and inside that office service.
+
+- `qorpera_runtime_office_activations.fill_public_key`: the boot's key, 32 bytes in one base64url spelling
+  (`qorpera_company_computer_fill_key_valid`: 43 characters whose last carries 4 bits; never a low-order point:
+  libsodium's seven, with the unused top bit ignored). Null for a boot from an older image: it gets no fill.
+- `qorpera_report_runtime_office_ready(startup, activation, native port, viewer port, fill key default null)`
+  (service role, as before; replaces the four-argument function, whose callers still resolve to it): the key is
+  checked before any lock (22023) and kept on that activation only, once, while it is not active; the same key
+  again (the office repeats its report until it is active) is accepted, another key, or one after activation, is
+  refused (42501). A service successor is a new activation and reports its own key.
+- `qorpera_valid_office_browser_action`: `vault_fill {role: textbox|spinbutton, name, account, field:
+  login|password|code}`. The value never appears in the action, its receipt or a transcript.
+- `qorpera_fill_company_account(authority, capability, binding, receipt, envelope, downstream)` (broker only):
+  the checks of the account calls in the same order and null-safe (switch, folder kind, authority by plain read,
+  job by plain read, the run, the company), the call's operation envelope read before any lock (a `vault_fill` of
+  `computer_browser`, 22023 otherwise), then the receipt `FOR UPDATE`: executing, `cloud_tool`, input digest =
+  SHA-256 of that envelope, the downstream digest, logical key `computer_browser:<the envelope's key>` (42501).
+  Then, by plain read: the computer the envelope names is the run's company's, at its current generation, and the
+  run's own unexpired screen lease is on it (42501 'company computer lease is unavailable'); its current active,
+  not superseded activation has a key (0A000 otherwise: the agent is told the computer cannot type account values
+  right now, because it is still starting or needs a restart on a newer version). Then the account as `use` reads it (this company's open website account,
+  locked; 22023 'no such open account'), its current version, last use and an `account_used` event. Answers
+  `qorpera.company-account-fill-context/v1`: the account's facts, the envelope with its associated data, and what
+  the box is bound to (receipt, field, computer, generation, the key).
+- Neither function is on the native host's call list (`qorpera_native_host_calls`, test 807), so once G2-2's switch
+  takes the service-role key off the native host it cannot reach the key's registration or the fill. The office's
+  ready report still uses its service-role registry key until G2's office step moves it; the key moves with it.
+- Closing an account (`qorpera_set_company_account_state(…, 'closed')`) revokes its vault row at once, and the revoke
+  trigger wipes its envelopes in the same statement: nothing keeps a closed account's password or authenticator, and
+  its connection file is removed at close (A1-7). A repeat close answers the closed account. There is no 30-day wipe
+  any more, so closing is a "deleting things outside" step the company's review rules check (A1-4); after it only the
+  website's own account recovery gets back in. Accounts closed before this migration are revoked by it.
+
 ## Notes for later steps
 
 - Folder-v2 (A1-7): these calls lock the receipt before vault rows, the reverse of the folder core's ranks. On
@@ -92,7 +130,8 @@ wait (up to 25 s), as for every native tool call. Through the vault the database
 
 - A1-2 broker: the `/v1/company-accounts/*` routes, password generation, authenticator codes, QR and recovery-code
   capture, sealing a value for one computer.
-- A1-3 Company Computer: the fill (CDP `Input.insertText`), the website and box checks, masks for filled boxes
-  and authenticator QR codes, the shell's X access (with #411), and #644's two test nits.
+- A1-3b Company Computer and vault: the office's key and ready report, the vault's fill route and sealed box, the
+  `vault_fill` action from the agent's tool to the office, the page and box checks, CDP `Input.insertText`, masks
+  for filled boxes and authenticator QR codes, and #644's two test nits (the shell's X access went with #411).
 - A1-4 agent tools and words; A1-5 mail (Q1's `find_mail` and `local+tag` addresses); A1-6 Settings; A1-7 the
-  account files. A clean-up job wipes a closed account's envelopes 30 days after it closed.
+  account files.
