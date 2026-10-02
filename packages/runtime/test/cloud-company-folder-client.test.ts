@@ -955,6 +955,268 @@ describe("commits", () => {
 	});
 });
 
+describe("reviewed change sets (C2 R1)", () => {
+	const recorded = (units: number, reviewId = randomUUID()) => ({
+		schema: "qorpera.folder-review/v1",
+		reviewId,
+		approvedBy: null,
+		units,
+	});
+	const approval = (actionReviewId: string = randomUUID()) => ({
+		actionReviewId,
+		tool: "hire_agent",
+		argumentSha256: sha("call"),
+	});
+	const units = [
+		{ op: "write", path: "agents/nora/routines/daily.md", content: { text: "Daily.\n" } },
+		{ op: "delete", path: "old.md", expectedVersion: randomUUID() },
+	] as const;
+
+	it("stages once, records the review of exactly the units the commit sends, then commits them", async () => {
+		const actionReviewId = randomUUID();
+		const reviewId = randomUUID();
+		const { client, calls, bytes, binding } = fixture((method, args) =>
+			method === "qorpera_folder_record_review"
+				? recorded(2, reviewId)
+				: {
+						schema: "qorpera.folder-commit/v1",
+						commitId: randomUUID(),
+						seq: 4,
+						replay: false,
+						units: (args.p_units as Record<string, unknown>[]).map((unit, index) => ({
+							unit: index + 1,
+							op: unit.op,
+							path: unit.path,
+							outcome: "saved",
+							version: randomUUID(),
+						})),
+					},
+		);
+		const staged = await client.stage(units, signal());
+		expect(staged.unitCount).toBe(2);
+		expect(bytes.put).toHaveBeenCalledTimes(1);
+		await expect(client.recordReview(approval(actionReviewId), staged, signal())).resolves.toBe(reviewId);
+		const result = await client.commitStaged("tool-call-r1", staged, { reviewId }, signal());
+		expect(result.units.map((unit) => unit.outcome)).toEqual(["saved", "saved"]);
+		expect(bytes.put).toHaveBeenCalledTimes(1);
+		expect(calls.map((call) => call.method)).toEqual(["qorpera_folder_record_review", "qorpera_folder_commit"]);
+		// A run effect: the binding and the request, nothing of the actor; the units are the commit's own.
+		expect(Object.keys(calls[0]!.args).sort()).toEqual(["p_binding", "p_request"]);
+		expect(calls[0]!.args.p_binding).toEqual(binding);
+		expect(calls[0]!.args.p_request).toEqual({
+			actionReviewId,
+			tool: "hire_agent",
+			argumentSha256: sha("call"),
+			units: calls[1]!.args.p_units,
+		});
+		expect(calls[1]!.args.p_review_id).toBe(reviewId);
+	});
+
+	it("asks again after a lost answer or a deadlock with the same request, and nothing else", async () => {
+		let tries = 0;
+		const reviewId = randomUUID();
+		const { client, calls } = fixture(() => {
+			if (++tries === 1) throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+			if (tries === 2) throw sqlError("40P01", "deadlock detected");
+			// A card's allow names the member who gave it.
+			return { ...recorded(2, reviewId), approvedBy: randomUUID() };
+		});
+		const staged = await client.stage(units, signal());
+		await expect(client.recordReview(approval(), staged, signal())).resolves.toBe(reviewId);
+		expect(calls).toHaveLength(3);
+		expect(calls[1]!.args).toEqual(calls[0]!.args);
+		expect(calls[2]!.args).toEqual(calls[0]!.args);
+		for (const thrown of [sqlError("23505", "already used"), sqlError("22023", "Folder review request is invalid")]) {
+			const refused = fixture(() => {
+				throw thrown;
+			});
+			await expect(
+				refused.client.recordReview(approval(), await refused.client.stage(units, signal()), signal()),
+			).rejects.toBe(thrown);
+			expect(refused.calls).toHaveLength(1);
+		}
+		const unavailable = fixture(() => {
+			throw sqlError("42501", "This change has no approval in this run");
+		});
+		await expect(
+			unavailable.client.recordReview(approval(), await unavailable.client.stage(units, signal()), signal()),
+		).rejects.toMatchObject({ failure: "unavailable" });
+	});
+
+	it("refuses an answer that is not this change set's record", async () => {
+		for (const answer of [
+			recorded(1),
+			{ ...recorded(2), approvedBy: "jonas" },
+			{ ...recorded(2), schema: "qorpera.folder-review/v2" },
+			{ ...recorded(2), reviewId: "review-1" },
+			{ ...recorded(2), extra: true },
+		]) {
+			const { client } = fixture(() => answer);
+			await expect(client.recordReview(approval(), await client.stage(units, signal()), signal())).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+	});
+
+	it("records and commits only a change set this client staged, and checks the approval's id first", async () => {
+		const { client, calls } = fixture(() => null);
+		const other = fixture(() => null).client;
+		const foreign = await other.stage(units, signal());
+		await expect(client.recordReview(approval(), foreign, signal())).rejects.toThrow("was not staged by this client");
+		await expect(client.recordReview(approval(), { unitCount: 2 }, signal())).rejects.toThrow(
+			"was not staged by this client",
+		);
+		await expect(client.commitStaged("tool-call-r2", foreign, {}, signal())).rejects.toThrow(
+			"was not staged by this client",
+		);
+		for (const bad of [
+			approval("review-1"),
+			{ ...approval(), tool: "Hire agent" },
+			{ ...approval(), argumentSha256: "not-a-digest" },
+		])
+			await expect(client.recordReview(bad, await client.stage(units, signal()), signal())).rejects.toThrow(
+				"Invalid action review",
+			);
+		await expect(client.stage([], signal())).rejects.toThrow("Invalid Company folder change set");
+		expect(calls).toEqual([]);
+	});
+});
+
+describe("routines (thin writers W4c)", () => {
+	const routine = (routineKey: string, extra: Record<string, unknown> = {}) => {
+		const id = randomUUID();
+		return {
+			routineKey,
+			routineId: id,
+			version: 2,
+			status: "active",
+			pauseReason: null,
+			title: `Routine ${routineKey}`,
+			trigger: { id: "file", kind: "schedule", intervalMinutes: 60, replyPolicy: "optional" },
+			effort: "medium",
+			expiresAt: null,
+			maxOccurrences: null,
+			quietHours: null,
+			occurrences: 3,
+			nextRunAt: "2026-10-02T09:00:00+00:00",
+			conclusion: null,
+			concludedAt: null,
+			path: `agents/nora/routines/${routineKey}.md`,
+			folderVersion: randomUUID(),
+			cursor: id,
+			file: { kind: "routine", id, title: `Routine ${routineKey}`, status: "active", instructions: "Look." },
+			...extra,
+		};
+	};
+	const page = (routines: unknown[], moreRoutines = 0, nextCursor: unknown = null) => ({
+		schema: "qorpera.folder-agent-routines/v1",
+		routines,
+		moreRoutines,
+		nextCursor,
+	});
+
+	it("pages the run's own routines from the routine index, closed", async () => {
+		const routines = [
+			routine("b", { instructionsTruncated: true }),
+			routine("a", { status: "paused", pauseReason: "member" }),
+		];
+		const answers: unknown[] = [];
+		const { client, calls } = fixture(() => answers.shift());
+		answers.push(page(routines, 3, routines[1]?.cursor));
+		const read = await client.agentRoutines({ cursor: routines[0]!.cursor }, signal());
+		expect(read).toEqual({
+			routines: routines.map((item) => ({
+				routineKey: item.routineKey,
+				routineId: item.routineId,
+				status: item.status,
+				pauseReason: item.pauseReason,
+				nextRunAt: item.nextRunAt,
+				occurrences: 3,
+				path: item.path,
+				folderVersion: item.folderVersion,
+				file: item.file,
+				...(item.routineKey === "b" ? { instructionsTruncated: true } : {}),
+				cursor: item.cursor,
+			})),
+			moreRoutines: 3,
+			nextCursor: routines[1]?.cursor,
+		});
+		expect(calls).toMatchObject([
+			{ method: "qorpera_folder_agent_routines", args: { p_request: { cursor: routines[0]!.cursor } } },
+		]);
+		// One routine by its key.
+		answers.push(page([routine("a")]));
+		await expect(client.agentRoutines({ routineKey: "a" }, signal())).resolves.toMatchObject({
+			routines: [{ routineKey: "a" }],
+		});
+		for (const [request, answer] of [
+			// The cursor continues from the page's last routine, and only when more follow.
+			[{}, page(routines, 3, routines[0]?.cursor)],
+			[{}, page(routines, 0, routines[1]?.cursor)],
+			[{}, page(routines, 3, null)],
+			[{}, page(Array.from({ length: 33 }, (_, i) => routine(`r${i}`)))],
+			[{}, page([routine("a", { status: "waiting" })])],
+			[{}, page([routine("a", { instructionsTruncated: false })])],
+			[{}, page([routine("a", { owner: "x" })])],
+			[{}, page([routine("a", { cursor: randomUUID() })])],
+			[{}, page([routine("a", { file: [] })])],
+			[{}, page([routine("a", { occurrences: -1 })])],
+			// A key reads that routine alone.
+			[{ routineKey: "a" }, page([routine("a"), routine("b")])],
+			[{ routineKey: "a" }, page([routine("b")])],
+			[{}, { ...page([]), schema: "qorpera.folder-agent-todos/v1" }],
+		] as const) {
+			answers.push(answer);
+			await expect(client.agentRoutines(request, signal())).rejects.toThrow("Company folder response is invalid");
+		}
+	});
+
+	it("pins the routine login as a run effect, asks again after a deadlock, and names the wake's refusals", async () => {
+		let tries = 0;
+		const bindingId = randomUUID();
+		const { client, calls, binding } = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return { schema: "qorpera.routine-login/v1", runId: binding.runId, login: { bindingId, version: 4 } };
+		});
+		await expect(client.prepareRoutineLogin(signal())).resolves.toEqual({ login: { bindingId, version: 4 } });
+		// The run's binding as the run effect takes it: no folder actor.
+		expect(calls).toEqual([
+			{ method: "qorpera_prepare_routine_login", args: { p_binding: binding } },
+			{ method: "qorpera_prepare_routine_login", args: { p_binding: binding } },
+		]);
+		const none = fixture(() => ({ schema: "qorpera.routine-login/v1", runId: none.binding.runId, login: null }));
+		await expect(none.client.prepareRoutineLogin(signal())).resolves.toEqual({ login: null });
+		for (const [message, refused] of [
+			["Wake requires an acknowledgement before work", "acknowledgement"],
+			["Wake public output is already final", "final"],
+			["Company execution is paused", "paused"],
+		] as const) {
+			const wake = fixture(() => {
+				throw sqlError("55000", message);
+			});
+			await expect(wake.client.prepareRoutineLogin(signal())).resolves.toEqual({ refused });
+			expect(wake.calls).toHaveLength(1);
+		}
+		const cancelled = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(cancelled.client.prepareRoutineLogin(signal())).rejects.toMatchObject({ failure: "stopped" });
+		const unavailable = fixture(() => {
+			throw sqlError("42501", "Routine authority is unavailable");
+		});
+		await expect(unavailable.client.prepareRoutineLogin(signal())).rejects.toMatchObject({ failure: "unavailable" });
+		for (const answer of [
+			{ schema: "qorpera.routine-login/v1", runId: randomUUID(), login: null },
+			{ schema: "qorpera.routine-login/v1", runId: binding.runId, login: { bindingId: "x", version: 1 } },
+			{ schema: "qorpera.routine-login/v1", runId: binding.runId, login: { bindingId, version: 1, extra: 1 } },
+			{ schema: "qorpera.folder-review/v1", runId: binding.runId, login: null },
+		]) {
+			const wrong = fixture(() => answer);
+			await expect(wrong.client.prepareRoutineLogin(signal())).rejects.toThrow("Company folder response is invalid");
+		}
+	});
+});
+
 describe("releases", () => {
 	it("records the reads a tool result shows, with their receipts", async () => {
 		const file = stagedFile("x");

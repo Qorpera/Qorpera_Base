@@ -25,6 +25,7 @@ import {
 	PersistentCompanyComputerBrowser,
 } from "@qorpera/runtime/cloud-company-computer-guest";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
+import { COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR } from "@qorpera/runtime/cloud-company-computer-private-fields";
 import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
@@ -360,6 +361,11 @@ function fakePage() {
 		getByRole: vi.fn(() => locator),
 		keyboard: { press: vi.fn(async () => undefined) },
 		screenshot: vi.fn(async () => captureBytes()),
+		// The values of the page's private boxes (password, code, card).
+		evaluate: vi.fn(async (): Promise<string[]> => []),
+		// One frame: the page's own document.
+		frames: vi.fn((): unknown[] => [page]),
+		isDetached: vi.fn(() => false),
 	};
 	return { locator, page };
 }
@@ -375,7 +381,11 @@ function tabList(content: CompanyComputerToolContent): BrowserTabList {
 	return content.value as unknown as BrowserTabList;
 }
 
-function automationFixture(withBrowser = true, withCommands = true) {
+function automationFixture(
+	withBrowser = true,
+	withCommands = true,
+	screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>,
+) {
 	const layout: CompanyComputerGuestLayout = {
 		workbenchRoot: "/srv/workbench",
 		desktopHome: "/srv/desktop",
@@ -430,6 +440,7 @@ function automationFixture(withBrowser = true, withCommands = true) {
 		fileExports,
 		...(withBrowser ? { browser } : {}),
 		...(withCommands ? { commands } : {}),
+		...(screenBrowser ? { screenBrowser } : {}),
 	});
 	const effects = {
 		assertAuthorized: vi.fn(async () => undefined),
@@ -487,6 +498,43 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(f.locator.fill).not.toHaveBeenCalled();
 		expect(f.context.close).not.toHaveBeenCalled();
 		expect(f.effects.finish).toHaveBeenCalledTimes(3);
+	});
+
+	it("hides from a snapshot what a member typed into a password box, read before and after the snapshot", async () => {
+		const f = automationFixture();
+		f.locator.ariaSnapshot.mockResolvedValueOnce(
+			['- textbox "Email": jonas@example.com', '- textbox "Password": hunter2-typed', '- button "Sign in"'].join(
+				"\n",
+			),
+		);
+		// The member starts typing while the snapshot is taken.
+		f.page.evaluate.mockResolvedValueOnce([]).mockResolvedValueOnce(["hunter2-typed"]);
+		const result = await f.perform({ kind: "browser", action: "snapshot" });
+		expect(result).toMatchObject({
+			kind: "json",
+			value: {
+				snapshot: ['- textbox "Email": [hidden]', '- textbox "Password": [hidden]', '- button "Sign in"'].join(
+					"\n",
+				),
+			},
+		});
+		expect(JSON.stringify(result)).not.toContain("hunter2");
+		expect(f.page.evaluate).toHaveBeenCalledTimes(2);
+
+		// The member sends the form while the snapshot is taken: only the first read saw the value.
+		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
+		f.page.evaluate.mockResolvedValueOnce(["hunter2-typed"]).mockResolvedValueOnce([]);
+		await expect(f.perform({ kind: "browser", action: "snapshot" })).resolves.toMatchObject({
+			value: { snapshot: '- textbox "Password": [hidden]' },
+		});
+
+		// A page whose private value cannot be read gives no snapshot at all.
+		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
+		f.page.evaluate.mockRejectedValueOnce(new Error("Execution context was destroyed"));
+		await expect(f.perform({ kind: "browser", action: "snapshot" })).rejects.toThrow(
+			"Execution context was destroyed",
+		);
+		expect(f.locator.ariaSnapshot).toHaveBeenCalledTimes(2);
 	});
 
 	it("fails an action as its own when an authority check between its steps gets no answer, and stops nothing", async () => {
@@ -1141,6 +1189,9 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(fixture.page.screenshot).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "png", mask: [fixture.locator] }),
 		);
+		expect(fixture.page.locator).toHaveBeenCalledWith(COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR);
+		// Every frame is masked: card boxes often sit in iframes.
+		expect(fixture.page.frames).toHaveBeenCalledOnce();
 		fixture.screenshots.publish = vi.fn(async (bytes: Uint8Array) => ({
 			assetId: computerId(50),
 			sha256: "0".repeat(64),
@@ -1158,6 +1209,52 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			expect.objectContaining({ display: ":1", maxBytes: 8 * 1024 * 1024 }),
 		);
 	});
+	it("takes no whole-screen picture while a shown tab holds a private value, also one typed during the capture", async () => {
+		const fixture = automationFixture();
+		const desktop = () =>
+			fixture.automation.perform({ kind: "screenshot", surface: "desktop" }, computerLease(), computerEffect(), {
+				...computerOperation(),
+				tool: "computer_screenshot",
+				arguments: { kind: "screenshot", surface: "desktop" },
+			});
+		fixture.page.evaluate.mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
+		fixture.page.evaluate.mockResolvedValueOnce([]).mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(fixture.commands.capturePng).toHaveBeenCalledOnce();
+		expect(fixture.screenshots.publish).not.toHaveBeenCalled();
+		// Only shown tabs count; the page itself answers whether it is shown.
+		expect(fixture.page.evaluate).toHaveBeenLastCalledWith(
+			expect.any(Function),
+			expect.objectContaining({ shownOnly: true }),
+		);
+		// Every frame is read: a card box in an iframe is on the screen too.
+		expect(fixture.page.frames).toHaveBeenCalled();
+		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
+		expect(fixture.screenshots.publish).toHaveBeenCalledOnce();
+	});
+
+	it("looks at the window on the screen even when this run never drove its browser", async () => {
+		const { page } = fakePage();
+		const onScreen = new FakeBrowserContext();
+		onScreen.pages.mockReturnValue([page as unknown as Page]);
+		const fixture = automationFixture(false, true, async () => onScreen as unknown as BrowserContext);
+		const desktop = () =>
+			fixture.automation.perform({ kind: "screenshot", surface: "desktop" }, computerLease(), computerEffect(), {
+				...computerOperation(),
+				tool: "computer_screenshot",
+				arguments: { kind: "screenshot", surface: "desktop" },
+			});
+		page.evaluate.mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		// A tab that cannot answer refuses with its own reason: a member closes it, or the agent looks through the browser.
+		page.evaluate.mockRejectedValueOnce(new Error("Target crashed"));
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_TAB_UNREADABLE");
+		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
+		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
+	});
+
 	it("preserves actual page dimensions while desktop images retain fixed pixel coordinates", async () => {
 		const fixture = automationFixture();
 		fixture.page.screenshot.mockResolvedValue(captureBytes(1918, 1048));

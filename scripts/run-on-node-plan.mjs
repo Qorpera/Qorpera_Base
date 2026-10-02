@@ -231,6 +231,8 @@ export const STEPS = [
 			// The folder service's parsers and tree, checked against the folder core's own answers.
 			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree)\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
+			// The rolling update rehearsal runs this generator's packets.
+			/^scripts\/runtime-roll\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
 		// Those two import the runtime's TypeScript, which imports built packages.

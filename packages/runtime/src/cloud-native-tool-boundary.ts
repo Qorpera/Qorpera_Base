@@ -78,6 +78,9 @@ export interface CloudToolContext {
 	readonly argumentSha256: string;
 	readonly signal: AbortSignal;
 	readonly identity?: CloudNativeToolIdentity;
+	/** The automatic review's approval of this call, when it was reviewed and may run (C2 R1): a folder writer records
+	 * it as the review of the change set the call commits. */
+	readonly actionReviewId?: string;
 	/** Private host metadata channel; never serialized as tool input or result. */
 	readonly observation?: CloudRuntimeObservationSpan;
 }
@@ -599,6 +602,7 @@ export class CloudNativeToolBoundary {
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+		let actionReviewId: string | undefined;
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
 			// member approves it. A review that cannot run never counts as an approval.
@@ -615,6 +619,7 @@ export class CloudNativeToolBoundary {
 				});
 			}
 			if (!gate.run) return this.#result(callId, tool, digest, "denied", { kind: "text", value: gate.text });
+			actionReviewId = gate.reviewId;
 			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
 			try {
 				this.#signal.throwIfAborted();
@@ -634,6 +639,7 @@ export class CloudNativeToolBoundary {
 						argumentSha256: digest,
 						signal: this.#signal,
 						...(this.#identity ? { identity: this.#identity } : {}),
+						...(actionReviewId ? { actionReviewId } : {}),
 						...(observation ? { observation } : {}),
 					}),
 				this.#signal,

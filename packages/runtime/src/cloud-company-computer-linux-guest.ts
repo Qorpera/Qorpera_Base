@@ -713,6 +713,15 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						layout: this.#options.layout,
 						boundary,
 						browser,
+						screenBrowser: async (checked) => {
+							const owned = this.#screens.get(binding.screenOrdinal)?.browser;
+							const current = await cloudToolRequest(
+								() => owned?.opening?.catch(() => undefined) ?? Promise.resolve(undefined),
+								checked,
+								30000,
+							);
+							return current && !current.isEnded?.() ? current.context : undefined;
+						},
 						commands: commands!,
 						screenshots: this.#options.screenshots(input.run),
 						fileExports: this.#options.fileExports?.(input.run),

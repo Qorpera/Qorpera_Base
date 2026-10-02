@@ -31,6 +31,7 @@ import { createHttpCloudMachineCommandGateway } from "./cloud-machine-command-ht
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
+import { NativeHostDispatch, nativeHostDispatchMode } from "./cloud-native-host-dispatch.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeModelLoginClient,
@@ -300,10 +301,17 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		)
 			throw new Error("Native identity volume does not match current cloud recovery authority");
 	}
+	// G2-2: a call the host makes inside a job goes through qorpera_native_host_call with that job's lease token
+	// when the switch is on; everything else stays on the service key until G2-3 and G2-4.
+	const dispatch = new NativeHostDispatch({
+		supabaseUrl: baseUrl,
+		serviceKey,
+		mode: nativeHostDispatchMode(environment.QORPERA_NATIVE_HOST_DISPATCH),
+	});
 	const controlPlane = new SupabaseNativeProviderControlPlane(
 		baseUrl,
 		serviceKey,
-		fetch,
+		dispatch.fetch,
 		{ computeIdentityId, epoch: state.epoch },
 		{ connectionConcurrency: optionalConcurrency(environment.QORPERA_NATIVE_CONNECTION_CONCURRENCY) },
 	);
@@ -354,9 +362,13 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken, computerToken].includes(codingToken))
 		)
 			throw new Error("Coding command transport requires a distinct private systemd credential");
-		const pathControl = new HttpCloudCompanyPathControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey });
+		const pathControl = new HttpCloudCompanyPathControl({
+			supabaseUrl: baseUrl,
+			serviceRoleKey: serviceKey,
+			fetch: dispatch.fetch,
+		});
 		const codingControl = codingConfiguration
-			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey })
+			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey, fetch: dispatch.fetch })
 			: undefined;
 		const coding =
 			codingConfiguration && codingToken && codingControl
@@ -424,6 +436,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							registry: new HttpCloudCompanyComputerRegistry({
 								supabaseUrl: baseUrl,
 								serviceRoleKey: serviceKey,
+								fetch: dispatch.fetch,
 							}),
 						}),
 					}
@@ -515,6 +528,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		environment.QORPERA_NATIVE_PROVIDER_HOST ?? "127.0.0.1",
 		optionalPort(environment.QORPERA_NATIVE_PROVIDER_PORT),
 		environment.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,
+		dispatch,
 	);
 	const shutdown = new AbortController();
 	const stop = (): void => shutdown.abort();

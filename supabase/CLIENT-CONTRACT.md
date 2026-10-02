@@ -68,6 +68,11 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   may step down. A cloud without several founders omits
   them; a client then falls back to "the owner deletes, others leave".
 
+Native host entry points (G2-1, migration 20260928409985): the publishable key's role (`anon`) may also call
+`qorpera_native_host_call` and `qorpera_native_host_call_long`. They are for the platform's native host inside a
+runner guest and work only with that runner job's current lease token. Clients never call them; without the token
+they answer 42501 "native host call is refused".
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 175 functions, grouped for navigation. Signatures: see the migration that defines each.
@@ -611,8 +616,8 @@ wake), so no agent runs and nothing is charged before it.
   p_per_minute default null)` → `qorpera.event-hook/v1`: `id`, `companyId`,
   `environmentId`, `name` (`^[a-z][a-z0-9-]{0,63}$`, unique among the
   live hooks of the company environment), `purpose` (one line), `proof`
-  (`address` in W1a; `stripe`, `github` and `hmac-sha256` refuse with 0A000
-  until W1b), `status` (`active`), `address` (43 characters), `path`
+  (`address`, or from W1b `stripe`, `github` and `hmac-sha256`; signed hooks
+  below), `status` (`active`), `address` (43 characters), `path`
   (`/functions/v1/event-intake/<address>`: the sender posts to the Supabase
   URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
@@ -632,6 +637,24 @@ wake), so no agent runs and nothing is charged before it.
   `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
+- Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
+  descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
+  also Svix's headers) hook carries `signingSecret` (`connectorId`
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). An owner
+  or admin saves the sender's signing secret with
+  `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
+  'event_hook', secretName, purpose)` and then
+  `POST <serviceOrigin>/v1/captures/<ticketId>?company=<profileId>` with
+  `{"schema": "qorpera.cloud-secret-capture-request/v1", "captureCapability":
+  <the ticket's captureCapability>, "fields": {"signing_secret": "<secret>"}}`
+  (exactly these keys); passing the existing secret id to the begin call
+  replaces it. An `hmac-sha256` secret is a Standard Webhooks one
+  (`whsec_<base64>`). Until `ready` is true the hook answers senders
+  `not_ready`. A signed delivery is listed `received` until the vault checks
+  it (seconds), then `verified` with `deliveryKey` (an id the signature
+  covers: Stripe's event id, `webhook-id`, or for GitHub `sig:<signature>`)
+  and `eventType`, `duplicate`, or `refused` with a fixed `reason` ("The
+  Stripe signature does not match"). Removing the hook revokes its secret.
 
 ### Company mailboxes (20260928299650_runtime_company_mailboxes)
 

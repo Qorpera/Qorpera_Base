@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
+import type { CloudFolderGroupChat, CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
+import type { CloudFolderHire, CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudNativeTool,
@@ -70,6 +72,20 @@ export const CLOUD_HIRE_TOOL_DESCRIPTION =
 	"The new agent starts with default read/write access to ordinary shared Company File paths, subject to protected-path approval and narrower access rules. Automatic approval requires your current authority to cover that nonexpiring default in every company environment; otherwise a member must approve the proposal. This tool cannot assign additional grants. figure picks its avatar. " +
 	"Keep operationKey stable for one intended hire and reuse it only with identical arguments; an unconfirmed result needs the same key and arguments again, never a new key.";
 
+/** A folder-v2 company's group chat (thin writers W4b): its folder under agents/groups, with group.md. */
+export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER =
+	"Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. The chat is saved as its own folder, agents/groups/<name>/group.md, which lists its agents and people and holds its purpose. " +
+	"coworkerIds are the ids of coworkers listed in your context; you are always a member, and the member who asked is included unless you set includeRequestingMember to false. Give it a short name people will recognise and a one-sentence purpose. " +
+	"When the result's outcome is saved the chat exists: tell the member its name. Keep operationKey stable for one intended chat and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again. A conflict or a refusal needs a new key.";
+
+/** A folder-v2 company's hire (thin writers W4a): the agent's folder, with the first assignment as a todo. */
+export const CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER =
+	"Hire a new coworker for this company. The hire is saved as the agent's own folder: agents/<name>/agent.md holds its job description, the instructions it works by, and its first assignment becomes an open todo in its todos folder. When the result's outcome is saved, the agent exists but has not started: send it a coworker message to begin, and tell the member who you hired and why. If your own access to the company's files is limited, the hire waits for an owner or admin to approve it on a card. " +
+	"Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's agent.md under agents/ says what it does. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment (at most 4000 bytes) as the first concrete piece of work it should start on. figure picks its avatar. " +
+	"Keep operationKey stable for one intended hire and reuse it only with identical arguments: an unconfirmed result needs the same key and arguments again, never a new key. A conflict or a refusal needs a new key.";
+/** The todo a folder-v2 hire's first assignment becomes holds at most this much (§2 "todo"). */
+const FOLDER_ASSIGNMENT_BYTES = 4000;
+
 export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION =
 	"Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. No member approval is needed. " +
 	"coworkerIds are the ids of coworkers listed in your context; you are always a member, and the member who asked is included unless you set includeRequestingMember to false. Give it a short name people will recognise and a one-sentence purpose. " +
@@ -84,7 +100,11 @@ export function cloudHiringTools(
 	gateway: Pick<CloudCompanyPathGateway, "mutate" | "applyOwnOrganizationDocument">,
 	identity: CloudNativeToolIdentity,
 	now: () => Date = () => new Date(),
+	options: { folderHiring?: CloudFolderHiring; folderGroupChats?: CloudFolderGroupChats } = {},
 ): readonly CloudNativeTool[] {
+	const folderHiring = options.folderHiring;
+	const folderGroupChats = options.folderGroupChats;
+	const assignmentBytes = folderHiring ? FOLDER_ASSIGNMENT_BYTES : 8192;
 	const expected = Object.freeze({ ...identity });
 	// One request per operation key in this run. The document is built once, so a retry carries
 	// identical bytes, and every receipt field is read from it, never from a later request.
@@ -102,8 +122,8 @@ export function cloudHiringTools(
 		if (previous && previous.request !== request)
 			throw new CloudToolArgumentRefusal(
 				kind === "hire"
-					? "operationKey is already used in this run for a different hire, which may already exist: check organization/agents before hiring again, and repeat this operationKey only with identical arguments"
-					: "operationKey is already used in this run for a different group chat, which may already exist: check organization/rooms before opening another, and repeat this operationKey only with identical arguments",
+					? `operationKey is already used in this run for a different hire, which may already exist: check ${folderHiring ? "agents/" : "organization/agents"} before hiring again, and repeat this operationKey only with identical arguments`
+					: `operationKey is already used in this run for a different group chat, which may already exist: check ${folderGroupChats ? "agents/groups/" : "organization/rooms"} before opening another, and repeat this operationKey only with identical arguments`,
 			);
 	};
 	const assertContext = (context: CloudToolContext) => {
@@ -148,7 +168,7 @@ export function cloudHiringTools(
 	const tool: CloudNativeTool = {
 		name: "hire_agent" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_HIRE_TOOL_DESCRIPTION,
+		description: folderHiring ? CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER : CLOUD_HIRE_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -158,7 +178,7 @@ export function cloudHiringTools(
 				name: { type: "string", minLength: 1, maxLength: 160 },
 				role: { type: "string", minLength: 1, maxLength: 320 },
 				jobDescription: { type: "string", minLength: 1, maxLength: 16384 },
-				firstAssignment: { type: "string", minLength: 1, maxLength: 8192 },
+				firstAssignment: { type: "string", minLength: 1, maxLength: assignmentBytes },
 				figure: { type: "string", enum: [...FIGURES] },
 			},
 		},
@@ -173,6 +193,15 @@ export function cloudHiringTools(
 			const a = value as Record<string, unknown>;
 			if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
 				throw new Error("Invalid hire key");
+			// The schema counts characters; the todo the assignment becomes holds bytes.
+			if (
+				folderHiring &&
+				typeof a.firstAssignment === "string" &&
+				Buffer.byteLength(a.firstAssignment.trim()) > FOLDER_ASSIGNMENT_BYTES
+			)
+				throw new CloudToolArgumentRefusal(
+					`firstAssignment holds at most ${FOLDER_ASSIGNMENT_BYTES} bytes in this company: shorten it`,
+				);
 			if (a.figure !== undefined && !FIGURES.includes(a.figure as (typeof FIGURES)[number]))
 				throw new Error("Invalid hire figure");
 			const hire = {
@@ -180,10 +209,12 @@ export function cloudHiringTools(
 				name: text(a.name, 160, true),
 				role: text(a.role, 320, true),
 				jobDescription: text(a.jobDescription, 16384, false),
-				firstAssignment: text(a.firstAssignment, 8192, false),
+				firstAssignment: text(a.firstAssignment, assignmentBytes, false),
 				figure: (a.figure as string | undefined) ?? "planet",
 			};
 			refuseRebinding(hires, hire.operationKey, hireRequest(hire), "hire");
+			// A folder-v2 hire's files are checked now, before the automatic review.
+			folderHiring?.check(hire as unknown as CloudFolderHire);
 			return hire;
 		},
 		async execute(value, context) {
@@ -191,6 +222,12 @@ export function cloudHiringTools(
 			const hire = value as Record<string, string>;
 			const request = hireRequest(hire);
 			refuseRebinding(hires, hire.operationKey, request, "hire");
+			// A folder-v2 company: the agent's folder, saved under this call's receipt with its review. The key is bound
+			// to this request first, so reusing it with other arguments is refused, not retried.
+			if (folderHiring) {
+				if (!hires.has(hire.operationKey)) hires.set(hire.operationKey, { request, document: "", apply: "none" });
+				return folderHiring.hire(hire as unknown as CloudFolderHire, context);
+			}
 			let bound = hires.get(hire.operationKey);
 			if (!bound) {
 				const agentId = agentIdFor(expected.runId, hire.operationKey);
@@ -250,7 +287,7 @@ export function cloudHiringTools(
 	const roomTool: CloudNativeTool = {
 		name: "create_group_chat" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: CLOUD_GROUP_CHAT_TOOL_DESCRIPTION,
+		description: folderGroupChats ? CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER : CLOUD_GROUP_CHAT_TOOL_DESCRIPTION,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -298,6 +335,8 @@ export function cloudHiringTools(
 				includeRequestingMember: a.includeRequestingMember !== false,
 			};
 			refuseRebinding(chats, chat.operationKey, chatRequest(chat), "chat");
+			// A folder-v2 chat's file is checked now, before the automatic review.
+			folderGroupChats?.check(chat);
 			return chat;
 		},
 		async execute(value, context) {
@@ -311,6 +350,12 @@ export function cloudHiringTools(
 			};
 			const request = chatRequest(chat);
 			refuseRebinding(chats, chat.operationKey, request, "chat");
+			// A folder-v2 company: the chat's folder, saved under this call's receipt with its review. The key is bound to
+			// this request first, so reusing it with other arguments is refused, not retried.
+			if (folderGroupChats) {
+				if (!chats.has(chat.operationKey)) chats.set(chat.operationKey, { request, document: "", apply: "none" });
+				return folderGroupChats.create(chat satisfies CloudFolderGroupChat, context);
+			}
 			let bound = chats.get(chat.operationKey);
 			if (!bound) {
 				const roomId = agentIdFor(expected.runId, `room:${chat.operationKey}`);
