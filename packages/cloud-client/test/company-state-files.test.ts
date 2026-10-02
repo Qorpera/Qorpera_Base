@@ -836,7 +836,7 @@ describe("human tasks and contacts (H1)", () => {
 		for (const bad of [
 			"[a:b.pdf]",
 			"[50%.pdf]",
-			'["a\\b.pdf"]',
+			'["a\\\\b.pdf"]',
 			'["Notes /x.pdf"]',
 			"[con.txt]",
 			"[x.]",
