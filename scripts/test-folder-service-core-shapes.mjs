@@ -151,9 +151,14 @@ async function main() {
 		const boxList = parseListPage(boxed.get("box-list"));
 		const boxPaths = boxList.entries.map((e) => e.path);
 		assert.ok(boxPaths.includes("shared/a.txt") && boxPaths.includes("secret/s.txt"), boxPaths.join(","));
+		// The view acts as the run's agent: the core lists every entry with its read receipt (2b-2), a member none.
+		for (const entry of boxList.entries) assert.match(entry.authority?.resourceId ?? "", /^[0-9a-f-]{36}$/, entry.path);
+		assert.ok(memberList.entries.every((e) => e.authority === undefined));
 		const boxFeed = parseFeedPage(boxed.get("box-feed"));
 		const emptyBox = { asOfSeq: 0, entries: [], next: null };
-		assert.deepEqual(ViewTree.diff(caughtUp(emptyBox, [boxFeed]), caughtUp(boxList, [])), [], "the view's feed replays to its listing");
+		// The feed carries no receipts: its replay builds the listing's content.
+		const unreceipted = { ...boxList, entries: boxList.entries.map(({ authority: _receipt, ...entry }) => entry) };
+		assert.deepEqual(ViewTree.diff(caughtUp(emptyBox, [boxFeed]), caughtUp(unreceipted, [])), [], "the view's feed replays to its listing");
 		assert.equal(parseViewRenewal(boxed.get("box-renew")).state, "open");
 		assert.deepEqual(boxed.get("box-close"), { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" });
 		assert.equal(parseViewRenewal(boxed.get("box-renew-closed")).state, "closed");
