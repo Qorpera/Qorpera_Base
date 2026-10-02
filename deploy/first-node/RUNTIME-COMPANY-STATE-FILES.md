@@ -1441,6 +1441,108 @@ building:
   the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 81 mutants of the migration (every rule,
   limit, place and root, both review rounds' included) are each caught by 785.
 
+**Plan (H2): human tasks on the folder core** (Q1 §5's H2: "the index, who may set which status,
+`human-tasks/` and `contacts/` seeded in every new company, and the wake of the asking agent on done,
+declined and overdue"; §2's "What H1 does not decide"). Stacked on H1b. Still no web screen (H3), email
+(H4) or contact link (H5).
+
+What the core gives H2, and what it does not (inventory of 2 October):
+- A unit is atomic; a change set is not. Each unit is decided and applied on its own, so two units
+  cannot be made to land together.
+- Actors are `member {userId}`, `platform {}` (no other field), and a run or view, which the hooks see as
+  `staff_agent {staffAgentId, runId, requesterUserId, ...}`. No actor speaks "for" a member.
+- No member can write a folder-v2 file yet: the web and the object gateway write snapshot-v1 only, until
+  C4. The only folder writer in production is the runtime's run client.
+- Folder-v2 wakes are queued (`qorpera_wake_occurrences`, after `qorpera_folder_admit_wakes`) and not yet
+  delivered: C4 adds their drain. No file save wakes anyone today.
+
+**1. The person, and the person's change.**
+- A member's task: the person is the member named in `member`, and the person's change is a commit
+  by that member's own actor. Q1's "saved by the platform as the person's change" becomes "saved through
+  the platform's writer (H3) under the person's own member actor": the change is the person's, by
+  attribution and by authority, and needs no new actor kind.
+- A contact's task: the person has no account. The task link service (H5) commits as the platform, and
+  the platform may make the person's change on a contact's task.
+- A person's change may only:
+  - tick or untick boxes: the body changes only in its `- [ ]`/`- [x]`/`- [X]` marks, and `steps`
+    keeps its lines and texts;
+  - set `status: done`, from `open` or `returned`, once the proof the task asks for exists: at least
+    one file under `human-tasks/<t>/proof/` when `proof` names `photo`, `file` or `signature`, and
+    `human-tasks/<t>/note.md` when it names `note`;
+  - set `status: declined`, from `open` or `returned`, with its `reason`.
+  Every other key stays as it was. A person's change is plain (not reviewed).
+- Under `human-tasks/<t>/` only the task's person and the platform write, and only while the task is
+  `open` or `returned`. No agent writes, moves or deletes there.
+
+**2. The company's side** (agents, and members other than the person):
+- A new task is `open`. `accepted` and `returned` come only from `done`; `returned` needs `reason`,
+  and the task is the person's again. `cancelled` comes from `open`, `returned` or `done`.
+- `accepted`, `declined` and `cancelled` are final: no later save changes the settings; the file may
+  be deleted.
+- `done` and `declined` are the person's only.
+- Changing `member` (or `contact`) hands an open or returned task to someone else.
+- The platform counts as the company's side as well, but on a member's task it never sets `done` or
+  `declined`: those are the member's own.
+
+**3. Ids and references**, checked on every save (on the first save after H2 too: a file saved before
+is trusted for its shape only, so its base counts only when the index points at its path, as for todos):
+- `id` is unique among the company's tasks and never changes; the same holds for contacts.
+- `from` is an active agent of the company and never changes. An agent's run creating a task writes
+  its own id.
+- `member` is a current member of the company. `contact` is a contact file of this environment; a
+  task for a contact needs the contact's `email` when it is created or handed to that contact.
+- `connection` is a connection file of this environment.
+- `todo` is an open or blocked todo of the `from` agent, so a task never wakes another agent's todo.
+- A contact named by a task that is not final stays: its file is not deleted or moved out of
+  `contacts/`.
+
+**4. The task's folder and its file.** Since two units cannot land together, H2 keeps the pair simple
+instead of carrying the folder along:
+- a new task file is refused while a folder of its name exists, so a task never inherits old proof;
+- a task file whose folder exists is not moved (a task with proof keeps its name);
+- removing such a task takes two saves, the folder first (a member or the platform), then the file.
+This drops §2's "a task with proof can still be renamed": renaming one would need units that land
+together, which the core does not have.
+
+**5. The index.** Two tables, each the connection index's shape: no foreign key to the company, so they
+need no lock target; rows keyed by the file's `id`; written in apply; a move repoints, a delete
+retires, a restore revives; `verify` checks each written row against its file.
+- `qorpera_folder_human_task_index`: id, environment, company, path, version, commit, retired_at,
+  status, member, contact, from, todo, due, and `overdue_woken_due` (the `due` its overdue wake was
+  for).
+- `qorpera_folder_contact_index`: id, environment, company, path, version, commit, retired_at, and
+  whether the file has an `email`.
+They hold nothing that is not in the files, so a rebuild (§4) can make them again.
+
+**6. Wakes.** Queued now, delivered by C4's drain:
+- `done` and `declined`: the save queues one wake of the `from` agent (wake kind `agent`, a new source
+  kind `human-task`, with the task's id), in `verify`, after every unit's apply and last before the
+  clock, as `qorpera_folder_admit_wakes` asks.
+- Overdue: `qorpera_folder_human_task_overdue_wakes()` queues one wake for each task still `open` or
+  `returned` whose `due` has passed, once per `due` value (a new `due` re-arms it). C4's tick calls it.
+
+**7. Seeding.** `human-tasks/` and `contacts/` join `companyStateSeedTree` and the seeded folders that
+are never deleted or moved (`COMPANY_STATE_SEEDED_PATHS`, `qorpera_company_state_seeded`), with the
+seeded skill `skills/human-task/SKILL.md` (how to write a good task, Q1 §5). An existing folder-v2
+company makes the two folders with an ordinary `mkdir`.
+
+**8. Review class.** Plain for both kinds: creating or changing a task is inside the company (Q1 §5).
+The outside action is H5's reviewed link send.
+
+**Two PRs, stacked on H1b:**
+- **H2a, TS:** the seed tree, the seeded paths, the skill text, and a helper the writers share for the
+  person's change (tick a box, done, declined).
+- **H2b, SQL:** the two index tables, the rules (§1–§4), apply and verify, the wake source kind, the
+  overdue function and the seeded list, in one migration; one SQL test.
+
+**Questions before building:**
+- F1: the wake in `verify` (last before the clock), and the widened `source_kind` check (a
+  constraint change on `qorpera_wake_occurrences` at the cut); C4 wires the overdue function into its
+  drain.
+- Q1: the person's change under the person's own member actor (§1), and dropping the rename of a task
+  with proof (§4).
+- A1: a takeover task is done by its member through H3, like any other; nothing in H2 is A1's.
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
