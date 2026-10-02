@@ -87,7 +87,8 @@
 .interface-item { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-radius: 9px; color: var(--text); text-decoration: none; }
 .interface-item-copy { flex: 1; }
 a.interface-item:hover { background: var(--hover); text-decoration: none; }
-.interface-list li + li .interface-item { border-top: 1px solid var(--border); border-radius: 0; }
+.interface-list li + li { border-top: 1px solid var(--border); }
+.interface-list li + li .interface-item { border-radius: 0; }
 .interface-item-figure .figure { width: 30px; height: 30px; }
 .interface-item-copy { display: flex; flex-direction: column; min-width: 0; }
 .interface-item-copy strong { font-size: 13px; font-weight: 600; }
@@ -99,10 +100,79 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-dots i:nth-child(3) { animation-delay: 0.3s; }
 @keyframes interface-dot { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 .interface-cards .interface-list { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-.interface-cards .interface-list li + li .interface-item { border-top: 0; border-radius: 12px; }
+.interface-cards .interface-list li + li { border-top: 0; }
+.interface-cards .interface-list li + li .interface-item { border-radius: 12px; }
 .interface-cards .interface-item { padding: 10px 12px; border-radius: 12px; background: var(--warning-soft); }
 .interface-empty { margin: 4px 0 2px; color: var(--text-soft); font-size: 12.5px; }
 .interface-missing { display: grid; gap: 8px; padding: 32px; color: var(--text-muted); }
+/* A page's views, as tabs under its head. */
+.interface-views {
+	flex: none; display: flex; gap: 2px; padding: 4px 14px 0; overflow-x: auto;
+	border-bottom: 1px solid var(--border); background: var(--header-surface);
+}
+.interface-view {
+	position: relative; padding: 8px 10px 10px; border: 0; background: transparent; color: var(--text-muted);
+	font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer;
+	transition: color var(--motion-base) ease;
+}
+.interface-view[aria-selected="true"] { color: var(--text); }
+.interface-view[aria-selected="true"]::after {
+	content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px;
+	background: var(--composer-accent);
+}
+.interface-view:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: -2px; border-radius: 8px; }
+
+/* A row with buttons, a row that opens, and the buttons themselves. */
+.interface-item-row { display: flex; align-items: center; gap: 8px; }
+.interface-item-row > .interface-item { flex: 1; min-width: 0; }
+button.interface-item { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+button.interface-item:hover, .interface-item.is-open { background: var(--hover); }
+.interface-cards .interface-item-row { border-radius: 12px; background: var(--warning-soft); padding-right: 10px; }
+.interface-cards .interface-item-row > .interface-item { background: transparent; }
+.interface-actions { display: inline-flex; flex: none; flex-wrap: wrap; gap: 6px; }
+.interface-button {
+	display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: 8px;
+	background: var(--pane-strong); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600;
+	text-decoration: none; cursor: pointer;
+}
+.interface-button:disabled { opacity: 0.6; cursor: default; }
+.interface-button:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.interface-button:hover { text-decoration: none; background: var(--hover); }
+
+/* A table: sortable headings, a filter above, a row that opens. */
+.interface-filter {
+	width: min(260px, 100%); height: 30px; margin: 2px 0 8px; padding: 0 10px; border: 1px solid var(--border);
+	border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px;
+}
+.interface-table-scroll { overflow-x: auto; }
+.interface-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.interface-table th { padding: 0; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; text-align: left; }
+.interface-sort {
+	width: 100%; padding: 6px 8px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
+	cursor: pointer;
+}
+.interface-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.interface-table tr.is-open td { background: var(--hover); }
+.interface-row-open {
+	padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 600;
+	text-align: left; cursor: pointer;
+}
+.interface-row-open:hover { text-decoration: underline; }
+
+/* A detail: one record's fields and text. On a phone it is the next screen, with a way back. */
+.interface-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 4px 0 10px; font-size: 13px; }
+.interface-fields dt { color: var(--text-muted); }
+.interface-fields dd { margin: 0; overflow-wrap: anywhere; }
+.interface-detail-text { margin-bottom: 10px; font-size: 13.5px; }
+.interface-back {
+	display: none; margin: 0 0 8px; padding: 0; border: 0; background: transparent; color: var(--composer-accent);
+	font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+@media (max-width: 760px) {
+	.interface-page.has-open > .interface-block:not(.interface-detail.is-open) { display: none; }
+	.interface-page:not(.has-open) > .interface-detail { display: none; }
+	.interface-back { display: inline-flex; }
+}
 @media (prefers-reduced-motion: reduce) {
 	.interface-emblem .emblem-beat, .interface-live-dot, .interface-dots i { animation: none; }
 }
