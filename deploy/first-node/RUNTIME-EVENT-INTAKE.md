@@ -557,19 +557,23 @@ and receive files by mail, and a received attachment is fetched when an agent sa
     receipt. A second save of the same attachment reuses its bytes. If the fetch is still running when the wait
     ends, the agent calls again with the same arguments.
   - A failure that may pass (a timeout, a rate limit, a server error) is tried again after 1, 2, 4 ... minutes, up to
-    six attempts or a day. An attachment the provider no longer has, one over 40 MiB, or an allowance used up fails at
-    once. The agent learns why.
+    six attempts or a day. An attachment the provider no longer has, one over 40 MiB, one whose size differs from what
+    the provider announced, or an allowance used up fails at once. The agent learns why, in fixed words (an
+    exception's own text can carry the signed download address). A failed fetch is tried afresh when an agent asks
+    again ten minutes later, while the email's text is kept.
   - Limits: 40 MiB an attachment, while the email's text is kept (7 days). Nothing is stored that no agent saved.
   - Reading: `company_read` reads text files. A PDF, an image or an office file opens on a computer
     (`computer_transfer`).
 - **Sent.** `send_mail` takes `attachments`: up to 10 company file paths the agent may read, at most 28 MiB in all
   (40 MB once encoded, the provider's limit). The database checks each through the Company File authority every file
   tool uses (`qorpera_company_path_actor`, `qorpera_company_path_remember_read`), records each as it is when queued
-  (path, version, manifest, digest, size) and lists them on the receipt and the review card. `mail-outbox` reads each
+  (path, version, manifest, digest, size) and lists them on the receipt and the review card. A file name over 255
+  characters is refused. `mail-outbox` reads each
   file's manifest and chunks from the company's objects in Storage, where the object gateway copies every object,
   checks them against their digests, and sends them as the email's attachments. A file not in Storage yet is tried
-  again later. A claim takes due emails in order while their attachments come to 64 MiB, so one call of the sender
-  stays within its time.
+  again later. A claim takes due emails in order while their attachments come to 28 MiB, one email's worth, and the
+  sender turns each file into base64 as it reads it, so one call stays within an Edge Function's memory (256 MB) and
+  time. `mail-attachments` claims one fetch a call, for the same reason.
 - **folder-v2.** Refused both ways (`0A000`) until the folder-v2 core adds mail attachments as a GC root (C1d). No
   production company uses folder-v2 today.
 
@@ -579,15 +583,20 @@ minute can become deliveries the same way.
 
 ## Deploy (M2c-1)
 
-The migration adds a table and five functions, and patches `qorpera_send_agent_mail`, `qorpera_agent_mail_receipt`,
+The migration adds a table and six functions, and patches `qorpera_send_agent_mail`, `qorpera_agent_mail_receipt`,
 `qorpera_claim_company_mail` and `qorpera_record_runtime_observation` by exact text. It rolls with a bundle carrying
-this runtime: an older runtime has no `save_attachment` and sends no `attachments`. Then:
+this runtime: an older runtime has no `save_attachment` and sends no `attachments`.
+
+The functions go first. The old `mail-outbox` ignores a claimed email's files and would send it without them, and a
+fetch nobody serves is given up after a day. The new `mail-outbox` reads the old claim's shape too, and
+`mail-attachments` only answers 503 until the migration exists. In order:
 
 1. `pg_net` must be installed (`create extension if not exists pg_net`; production had none on 2 October). The outbox's
    timer (M2b) needs it too.
-2. Deploy the functions: `supabase functions deploy mail-attachments` (`verify_jwt = false`, reads `RESEND_API_KEY`)
-   and `supabase functions deploy mail-outbox` (it now sends attachments).
-3. Schedule the fetch worker each minute, as the outbox (same Vault entries: `qorpera_project_url` and
+2. Deploy the functions: `supabase functions deploy mail-outbox` (it now sends attachments) and
+   `supabase functions deploy mail-attachments` (`verify_jwt = false`, reads `RESEND_API_KEY`).
+3. Apply the migration with its bundle.
+4. Schedule the fetch worker each minute, as the outbox (same Vault entries: `qorpera_project_url` and
    `qorpera_mail_outbox_key`; the database's immediate call uses them too):
 
    ```sql
@@ -602,10 +611,11 @@ this runtime: an older runtime has no `save_attachment` and sends no `attachment
    $$);
    ```
 
-4. Watch by count: `select status, count(*) from public.qorpera_mail_attachment_fetches group by 1 order by 1`.
-5. Acceptance: an email with a PDF and a CSV arrives at a test mailbox; the routine saves both with `save_attachment`;
+5. Watch by count: `select status, count(*) from public.qorpera_mail_attachment_fetches group by 1 order by 1`.
+6. Acceptance: an email with a PDF and a CSV arrives at a test mailbox; the routine saves both with `save_attachment`;
    the CSV reads with `company_read`; the PDF opens on a computer. The agent answers with `send_mail` attaching a
-   company file, and the reply arrives with the file intact (same digest).
+   company file, and the reply arrives with the file intact (same digest). Then a 28 MiB attachment both ways: received
+   and saved, then sent, with the functions' logs showing no resource error.
 
 ## Deploy (M2a)
 

@@ -276,10 +276,20 @@ export class StorageObjectReader implements ObjectReader {
 		} catch (error) {
 			throw new MailSendError(error instanceof Error ? error.message : "Storage request failed", true);
 		}
-		// Storage answers a missing object with 404, or 400 and its own 404 code.
-		if (response.status === 404 || response.status === 400) {
+		// Storage answers a missing object with 404, or 400 and its own 404 code; any other 400 is a refusal.
+		if (response.status === 404) {
 			void response.body?.cancel().catch(() => undefined);
 			return null;
+		}
+		if (response.status === 400) {
+			let code: unknown;
+			try {
+				code = ((await response.json()) as { statusCode?: unknown }).statusCode;
+			} catch {
+				// Not JSON.
+			}
+			if (code === "404") return null;
+			throw new MailSendError("Storage refused the attachment's read (400)", true);
 		}
 		if (!response.ok) {
 			void response.body?.cancel().catch(() => undefined);
@@ -289,9 +299,9 @@ export class StorageObjectReader implements ObjectReader {
 	}
 }
 
-/** What the provider is asked to send: no empty cc, no empty headers, the files' bytes in base64. */
-export function providerEmail(job: MailJob, files: readonly Uint8Array[] = []): ProviderEmail {
-	if (files.length !== job.attachments.length) throw new Error("The email's attachments are not all read");
+/** What the provider is asked to send: no empty cc, no empty headers, each file's bytes in base64. */
+export function providerEmail(job: MailJob, contents: readonly string[] = []): ProviderEmail {
+	if (contents.length !== job.attachments.length) throw new Error("The email's attachments are not all read");
 	return {
 		from: job.from,
 		to: job.to,
@@ -299,13 +309,8 @@ export function providerEmail(job: MailJob, files: readonly Uint8Array[] = []): 
 		subject: job.subject,
 		text: job.text,
 		...(Object.keys(job.headers).length ? { headers: job.headers } : {}),
-		...(files.length
-			? {
-					attachments: job.attachments.map((file, index) => ({
-						filename: file.filename,
-						content: Buffer.from(files[index]!).toString("base64"),
-					})),
-				}
+		...(contents.length
+			? { attachments: job.attachments.map((file, index) => ({ filename: file.filename, content: contents[index]! })) }
 			: {}),
 	};
 }
@@ -401,12 +406,14 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		if (index > 0 && pace > 0) await sleep(pace);
 		let providerMessageId: string;
 		try {
-			const files: Uint8Array[] = [];
+			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.
+			const contents: string[] = [];
 			for (const file of job.attachments) {
 				if (!objects || !job.companyId) throw new MailSendError("Attachments cannot be read here", true);
-				files.push(await attachmentBytes(job.companyId, file, objects));
+				const bytes = await attachmentBytes(job.companyId, file, objects);
+				contents.push(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"));
 			}
-			providerMessageId = await outbox.sender.send(providerEmail(job, files), `company-mail/${job.mailId}`);
+			providerMessageId = await outbox.sender.send(providerEmail(job, contents), `company-mail/${job.mailId}`);
 		} catch (error) {
 			const failure =
 				error instanceof MailSendError ? error : new MailSendError("The email could not be sent", true);

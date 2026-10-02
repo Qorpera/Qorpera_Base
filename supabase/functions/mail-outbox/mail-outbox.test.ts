@@ -355,6 +355,7 @@ describe("mail outbox attachments", () => {
 			new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
 			new Response(JSON.stringify({ statusCode: "404", error: "not_found" }), { status: 400 }),
 			new Response("{}", { status: 404 }),
+			new Response(JSON.stringify({ statusCode: "403", error: "Unauthorized" }), { status: 400 }),
 			new Response("{}", { status: 503 }),
 		];
 		const storage = new StorageObjectReader("https://project.example.test/", "sb_secret_0123456789abcdefghij", (async (
@@ -367,6 +368,10 @@ describe("mail outbox attachments", () => {
 		assert.deepEqual(await storage.get(COMPANY, "c".repeat(64)), new Uint8Array([1, 2, 3]));
 		assert.equal(await storage.get(COMPANY, "c".repeat(64)), null);
 		assert.equal(await storage.get(COMPANY, "c".repeat(64)), null);
+		await assert.rejects(
+			storage.get(COMPANY, "c".repeat(64)),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /refused/.test(error.message),
+		);
 		await assert.rejects(storage.get(COMPANY, "c".repeat(64)), (error: unknown) => error instanceof MailSendError && error.retryable);
 		assert.equal(
 			requests[0][0],

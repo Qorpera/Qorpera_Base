@@ -210,7 +210,8 @@ describe("mail attachments", () => {
 		const flaky: AttachmentProvider = {
 			locate: base.locate,
 			async download(location, signal) {
-				if (location.url.endsWith("att-4")) throw new TypeError("connection reset");
+				// As Deno words it, with the signed address in the text.
+				if (location.url.endsWith("att-4")) throw new TypeError(`error sending request for url (${location.url})`);
 				if (location.url.endsWith("att-5")) return new Response("busy", { status: 503 });
 				return base.download(location, signal);
 			},
@@ -222,13 +223,17 @@ describe("mail attachments", () => {
 			provider: flaky,
 		});
 		assert.deepEqual(await response.json(), { claimed: 5, stored: 0, retrying: 2, failed: 3 });
+		assert.ok(
+			calls.fail.every(([, message]) => !message.includes("inbound.example.test")),
+			"no signed address is recorded",
+		);
 		assert.deepEqual(
-			calls.fail.map(([id, message, retryable]) => [id.slice(-1), /30 days|40 MiB|reset|503/.exec(message)?.[0], retryable]),
+			calls.fail.map(([id, message, retryable]) => [id.slice(-1), /30 days|40 MiB|provider failed|503/.exec(message)?.[0], retryable]),
 			[
 				["1", "30 days", false],
 				["2", "40 MiB", false],
 				["3", "40 MiB", false],
-				["4", "reset", true],
+				["4", "provider failed", true],
 				["5", "503", true],
 			],
 		);
@@ -241,7 +246,7 @@ describe("mail attachments", () => {
 				provider(new Map([["att-1", content(100)]]), () => 99),
 				memorySink().sink,
 			),
-			(error: unknown) => error instanceof AttachmentFetchError && error.retryable && /differs/.test(error.message),
+			(error: unknown) => error instanceof AttachmentFetchError && !error.retryable && /differs/.test(error.message),
 		);
 	});
 

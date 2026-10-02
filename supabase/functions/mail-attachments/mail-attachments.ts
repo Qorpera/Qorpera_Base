@@ -1,8 +1,8 @@
 /* Mail attachments (build step M2c-1; design deploy/first-node/RUNTIME-EVENT-INTAKE.md, "Attachments (M2c-1)").
  *
  * POST /mail-attachments, called by the database (pg_net) when an agent first asks to save a received attachment, and
- * each minute by pg_cron, with a Supabase secret key, which the function checks itself. It claims a few fetches
- * (qorpera_claim_mail_attachment_fetches, under a five-minute lease) and, for each, asks the mail provider (Resend)
+ * each minute by pg_cron, with a Supabase secret key, which the function checks itself. It claims one fetch at a time
+ * (qorpera_claim_mail_attachment_fetches, under a five-minute lease, which one attachment's work fits) and asks the mail provider (Resend)
  * with the platform's key where the attachment is, streams it from there and stores it as the company's objects: 4 MiB
  * chunks, each named by its sha256 in the Storage bucket qorpera-profile-objects, which the catalog records and the
  * company's storage allowance counts. It completes the fetch with the file's digest, size and chunks. A failure the
@@ -12,7 +12,7 @@
 
 import { createHash } from "node:crypto";
 
-export const BATCH = 3;
+export const BATCH = 1;
 export const MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024;
 export const CHUNK_BYTES = 4 * 1024 * 1024;
 export const OBJECT_BUCKET = "qorpera-profile-objects";
@@ -121,6 +121,13 @@ export function parseFetchClaim(value: unknown): AttachmentFetchJob[] {
 	});
 }
 
+/** What went wrong with a request, in fixed words: an exception's own text can carry the signed download address,
+ * which must reach neither the database nor the agent. */
+function failed(what: string, error: unknown): AttachmentFetchError {
+	const timeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+	return new AttachmentFetchError(`${what} ${timeout ? "timed out" : "failed"}`, true);
+}
+
 /** A provider or Storage refusal: worth another try only for a timeout, a rate limit or a server error. */
 function retryableStatus(status: number): boolean {
 	return status === 408 || status === 429 || status >= 500;
@@ -145,7 +152,7 @@ export async function storeAttachment(
 	try {
 		response = await provider.download(location, signal);
 	} catch (error) {
-		throw new AttachmentFetchError(error instanceof Error ? error.message : "The download failed", true);
+		throw failed("The download from the mail provider", error);
 	}
 	if (!response.ok) {
 		void response.body?.cancel().catch(() => undefined);
@@ -171,7 +178,7 @@ export async function storeAttachment(
 			try {
 				next = await reader.read();
 			} catch (error) {
-				throw new AttachmentFetchError(error instanceof Error ? error.message : "The download failed", true);
+				throw failed("The download from the mail provider", error);
 			}
 			if (next.done) break;
 			total += next.value.byteLength;
@@ -195,7 +202,7 @@ export async function storeAttachment(
 		void reader.cancel().catch(() => undefined);
 	}
 	if (location.size !== null && location.size !== total)
-		throw new AttachmentFetchError("The attachment's size differs from what the mail provider announced", true);
+		throw new AttachmentFetchError("The attachment's size differs from what the mail provider announced", false);
 	return { fileSha256: file.digest("hex"), bytes: total, chunks };
 }
 
@@ -216,7 +223,7 @@ export class ResendAttachments implements AttachmentProvider {
 				{ headers: { authorization: `Bearer ${this.#apiKey}` }, signal: AbortSignal.timeout(LOCATE_TIMEOUT_MS) },
 			);
 		} catch (error) {
-			throw new AttachmentFetchError(error instanceof Error ? error.message : "Resend request failed", true);
+			throw failed("The request to the mail provider", error);
 		}
 		if (response.status === 404) {
 			void response.body?.cancel().catch(() => undefined);
@@ -292,7 +299,7 @@ export class StorageObjectSink implements ObjectSink {
 				signal: AbortSignal.timeout(60_000),
 			});
 		} catch (error) {
-			throw new AttachmentFetchError(error instanceof Error ? error.message : "Storage request failed", true);
+			throw failed("The request to Storage", error);
 		}
 		if (response.ok) {
 			void response.body?.cancel().catch(() => undefined);

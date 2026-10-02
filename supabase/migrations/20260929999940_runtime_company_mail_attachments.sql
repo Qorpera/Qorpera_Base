@@ -9,14 +9,15 @@
 -- the Storage bucket qorpera-profile-objects (the catalog records them, and the company's storage allowance counts
 -- them), and completes the fetch with the chunks. The runtime then writes them as a company file through the path
 -- gateway, as any write: the agent's authority, its version check and its receipt. A fetch is per received email
--- and attachment, so a second save of the same attachment reuses its bytes. An attachment is saved while its
--- email's text is kept (7 days), and at most 40 MiB. Nothing is stored that no agent saved.
+-- and attachment, so a second save of the same attachment reuses its bytes; one that failed is fetched afresh when
+-- asked again ten minutes later. An attachment is saved while its email's text is kept (7 days), and at most 40 MiB.
+-- Nothing is stored that no agent saved.
 --
 -- Sent: send_mail takes up to 10 company files the agent may read (their paths), at most 28 MiB in all, which is
 -- 40 MB once encoded, the provider's limit. The email records each file as it is when queued (its manifest, digest
 -- and size), and the read joins the run's read paths as any read. mail-outbox reads the bytes from the company's
--- objects in Storage, where every object is copied, and sends them as attachments; a claim takes at most 64 MiB of
--- attachments, so one call of the sender stays within its time.
+-- objects in Storage, where every object is copied, and sends them as attachments; a claim takes at most 28 MiB of
+-- attachments, one email's worth, so one call of the sender stays within its memory and time.
 --
 -- folder-v2 companies are refused both ways until their folder adds mail attachments as a GC root (C1d); no
 -- production company uses folder-v2 today.
@@ -147,15 +148,26 @@ begin
 	v_attachment := (p_request ->> 'attachment')::integer;
 	select * into v_delivery from public.qorpera_event_deliveries where id = (p_request ->> 'deliveryId')::uuid;
 	select * into v_hook from public.qorpera_event_hooks where id = v_delivery.hook_id;
-	if v_delivery.id is null or v_delivery.status <> 'verified' or v_delivery.event_type <> 'mail.received'
+	if v_delivery.id is null or v_delivery.status <> 'verified' or v_delivery.event_type is distinct from 'mail.received'
 		or v_hook.proof is distinct from 'mail' or v_hook.profile_id is distinct from v_run.profile_id
 		or v_hook.environment_id is distinct from v_run.environment_id then
 		raise exception 'The email is not one the company received' using errcode = '42501'; end if;
 	if public.qorpera_company_is_folder_v2(v_run.profile_id) then
 		raise exception 'Saving attachments into this company''s folder is not built yet' using errcode = '0A000'; end if;
 	select * into v_fetch from public.qorpera_mail_attachment_fetches
-	where delivery_id = v_delivery.id and attachment = v_attachment;
-	if not found then
+	where delivery_id = v_delivery.id and attachment = v_attachment for update;
+	-- A failed fetch is tried afresh when asked again ten minutes later, while the email's text is kept: the provider
+	-- keeps the bytes 30 days, and an outage or a full allowance may have passed.
+	if v_fetch.status = 'failed' and v_fetch.settled_at < clock_timestamp() - interval '10 minutes'
+		and v_delivery.body is not null then
+		update public.qorpera_mail_attachment_fetches
+		set status = 'pending', attempt_count = 0, next_attempt_at = clock_timestamp(), created_at = clock_timestamp(),
+			settled_at = null, lease_id = null, lease_expires_at = null
+		where id = v_fetch.id
+		returning * into v_fetch;
+		perform public.qorpera_mail_attachments_kick();
+	end if;
+	if v_fetch.id is null then
 		if v_delivery.body is null then
 			raise exception 'The email''s text and attachments were cleared 7 days after it arrived' using errcode = '0A000';
 		end if;
@@ -362,6 +374,9 @@ select pg_temp.mail_attachment_patch('public.qorpera_send_agent_mail(jsonb,text,
 				and path_key_sha256 = extensions.digest(public.qorpera_company_path_key(v_path), 'sha256');
 			if v_entry.entry ->> 'kind' is distinct from 'file' then
 				raise exception 'Attachment % is not a file in the company folder', v_path using errcode = '22023'; end if;
+			if char_length(regexp_replace(v_entry.path, '^.*/', '')) > 255 then
+				raise exception 'Attachment % has a file name over 255 characters; copy it to a shorter name first', v_path
+					using errcode = '22023'; end if;
 			v_attachments := v_attachments || jsonb_build_array(jsonb_build_object('path', v_entry.path,
 				'filename', regexp_replace(v_entry.path, '^.*/', ''), 'version', v_entry.version,
 				'manifestSha256', v_entry.entry #>> '{file,manifestSha256}',
@@ -391,7 +406,8 @@ select pg_temp.mail_attachment_patch('public.qorpera_agent_mail_receipt(public.q
 				'bytes', (item.value ->> 'bytes')::bigint) order by item.n)
 				from jsonb_array_elements(p_mail.attachments) with ordinality as item(value, n))) end$new$);
 
--- A claim takes the due emails in order while their attachments come to 64 MiB, and always the first.
+-- A claim takes the due emails in order while their attachments come to 28 MiB, one email's worth, and always the
+-- first: the sender holds an email's files in memory while it sends them.
 select pg_temp.mail_attachment_patch('public.qorpera_claim_company_mail(integer,uuid)'::regprocedure,
 	$old$		select mail.id
 		from public.qorpera_company_mail_outbox as mail$old$,
@@ -408,7 +424,7 @@ select pg_temp.mail_attachment_patch('public.qorpera_claim_company_mail(integer,
 				sum(candidates.attachment_bytes)
 					over (order by candidates.next_attempt_at, candidates.created_at, candidates.id) as running
 			from candidates) as ordered
-		where ordered.place = 1 or ordered.running <= 67108864
+		where ordered.place = 1 or ordered.running <= 29360128
 	), claimed as ($new$);
 select pg_temp.mail_attachment_patch('public.qorpera_claim_company_mail(integer,uuid)'::regprocedure,
 	$old$		from candidates

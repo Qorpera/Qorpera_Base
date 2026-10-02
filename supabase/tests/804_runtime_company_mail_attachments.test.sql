@@ -244,6 +244,16 @@ where delivery_id = current_setting('qorpera_test.late')::uuid;
 select pg_temp.wake_assert(public.qorpera_claim_mail_attachment_fetches(10, '80400000-0000-4000-8000-000000000008')
 	= '[]'::jsonb and (pg_temp.fetch_row(current_setting('qorpera_test.late')::uuid, 1)).last_error = 'Not fetched within a day',
 	'A day-old fetch is given up');
+-- A failed fetch is tried afresh when asked again ten minutes after it failed; sooner, the failure stands.
+select pg_temp.wake_assert(pg_temp.ask(jsonb_build_object('deliveryId', current_setting('qorpera_test.gone'),
+	'attachment', 1)) ->> 'state' = 'failed', 'Asked again at once, the failure stands');
+update public.qorpera_mail_attachment_fetches set settled_at = clock_timestamp() - interval '11 minutes'
+where delivery_id in (current_setting('qorpera_test.gone')::uuid, current_setting('qorpera_test.late')::uuid);
+select pg_temp.wake_assert(asked ->> 'state' = 'fetching' and row.status = 'pending' and row.attempt_count = 0
+		and row.settled_at is null and row.created_at > clock_timestamp() - interval '1 minute',
+	'Asked again later, a failed fetch starts afresh: ' || asked::text)
+from (select pg_temp.ask(jsonb_build_object('deliveryId', current_setting('qorpera_test.gone'), 'attachment', 1))
+	as asked) as answer, pg_temp.fetch_row(current_setting('qorpera_test.gone')::uuid, 1) as row;
 
 -- An email whose text was cleared has no attachments to fetch; one already fetched stays.
 update public.qorpera_event_deliveries set body = null
@@ -252,12 +262,14 @@ select pg_temp.ask_error(jsonb_build_object('deliveryId', current_setting('qorpe
 	'0A000', 'The email''s text and attachments were cleared 7 days after it arrived');
 select pg_temp.wake_assert(pg_temp.ask(jsonb_build_object('deliveryId', current_setting('qorpera_test.files'),
 	'attachment', 1)) ->> 'state' = 'stored', 'An attachment fetched before stays');
+select pg_temp.wake_assert(pg_temp.ask(jsonb_build_object('deliveryId', current_setting('qorpera_test.late'),
+	'attachment', 1)) ->> 'state' = 'failed', 'A failed fetch of a cleared email is not tried again');
 
 -- Sending: company files the agent may read, each once, at most 10 and 28 MiB; recorded as they are when queued.
 create function pg_temp.file(p_path text, p_text text) returns jsonb language plpgsql as $$
 declare v_entry jsonb := pg_temp.path_stage_file(p_path, p_text); v_result jsonb;
 begin
-	v_result := pg_temp.path_commit(pg_temp.path_plan('file-' || p_path, p_path, v_entry));
+	v_result := pg_temp.path_commit(pg_temp.path_plan('file-' || md5(p_path), p_path, v_entry));
 	return v_entry || jsonb_build_object('version', (select version from public.qorpera_company_path_entries
 		where environment_id = '30000000-0000-4000-8000-000000000020' and path = p_path));
 end
@@ -327,6 +339,24 @@ select pg_temp.send_error('files-big', pg_temp.request(p_extra => '{"attachments
 	'54000');
 select pg_temp.wake_assert(pg_temp.send('files-fit', pg_temp.request(p_extra => '{"attachments":["totals.csv","big.bin"]}'))
 	->> 'status' = 'queued', 'Exactly 28 MiB fits');
+-- A file the agent may not read: a member's private file.
+select pg_temp.file('private.md', 'Only for the founder');
+select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select public.qorpera_set_company_path_resource('30000000-0000-4000-8000-000000000020', 'private.md', 'exact',
+	'member_private', 'normal');
+reset role;
+select pg_temp.path_claims('service_role');
+select pg_temp.send_error('files-private', pg_temp.request(p_extra => '{"attachments":["private.md"]}'), '42501');
+-- A file at the same path in another company's environment is not this company's.
+insert into public.qorpera_company_path_entries(environment_id, path, entry)
+values ('30000000-0000-4000-8000-0000000007a1', 'theirs-only.md',
+	(current_setting('qorpera_test.report')::jsonb - 'version') || '{"path":"theirs-only.md"}');
+select pg_temp.send_error('files-theirs', pg_temp.request(p_extra => '{"attachments":["theirs-only.md"]}'), '22023');
+-- A file name a mail header cannot carry.
+select pg_temp.file(repeat('n', 260) || '.md', 'long name');
+select pg_temp.send_error('files-long-name', pg_temp.request(p_extra => jsonb_build_object('attachments',
+	jsonb_build_array(repeat('n', 260) || '.md'))), '22023');
 
 -- The worker's claim hands the files over with the company; a claim takes at most 64 MiB of them, and always one.
 update public.qorpera_company_mail_outbox set status = 'cancelled', settled_at = clock_timestamp()
@@ -347,13 +377,23 @@ where job ->> 'mailId' = current_setting('qorpera_test.with_files')::jsonb ->> '
 select pg_temp.wake_assert(not job ? 'attachments' and not job ? 'companyId', 'An email without files has none')
 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as item(job)
 where job ->> 'mailId' = (select id::text from public.qorpera_company_mail_outbox where call_id = 'files-2');
-select pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.claim')::jsonb) = 3, 'All three fit one claim');
--- Three emails of 28 MiB each: a claim takes two (56 MiB); the third waits for the next.
+-- A claim carries at most 28 MiB of attachments: the 28 MiB email waits for the next one.
+select pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.claim')::jsonb) = 2
+		and public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000012') -> 0 ->> 'mailId'
+			= (select id::text from public.qorpera_company_mail_outbox where call_id = 'files-fit'),
+	'An email of 28 MiB has a claim of its own');
+-- Emails of 10, 10 and 28 MiB: a claim takes the first two (20 MiB), and the third waits.
 update public.qorpera_company_mail_outbox set status = 'pending', lease_id = null, lease_expires_at = null,
-	attempt_count = 0, attachment_bytes = 29360128, next_attempt_at = clock_timestamp() - interval '1 minute'
+	attempt_count = 0, next_attempt_at = clock_timestamp() - interval '1 minute',
+	attachment_bytes = case when call_id = 'files-fit' then 29360128 else 10485760 end
 where call_id in ('files-1', 'files-2', 'files-fit');
-select pg_temp.wake_assert(jsonb_array_length(public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000012')) = 2
-	and jsonb_array_length(public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000013')) = 1,
-	'A claim carries at most 64 MiB of attachments');
+select pg_temp.wake_assert(jsonb_array_length(public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000013')) = 2
+	and jsonb_array_length(public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000014')) = 1,
+	'A claim carries at most 28 MiB of attachments');
+
+-- Once the run has given its final answer, it saves no attachment.
+select pg_temp.wake_public_send(current_setting('qorpera_test.routine_binding')::jsonb, 'final', 'attachments-final');
+select pg_temp.ask_error(jsonb_build_object('deliveryId', current_setting('qorpera_test.gone'), 'attachment', 1),
+	'55000', 'Wake public output is already final');
 
 rollback;
