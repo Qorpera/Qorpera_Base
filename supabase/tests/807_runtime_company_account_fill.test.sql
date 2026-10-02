@@ -58,21 +58,21 @@ begin
 	perform set_config('session_replication_role', 'replica', true);
 	insert into public.qorpera_runtime_offices(id, profile_id, environment_id, logical_computer_id, client_computer_id,
 		image_sha256, bootstrap_sha256, state, generation, max_screens, created_by_user_id)
-	values ('80500000-0000-4000-8000-000000000001', '29000000-0000-4000-8000-000000000010',
-		'29000000-0000-4000-8000-000000000020', '80500000-0000-4000-8000-000000000002',
-		'80500000-0000-4000-8000-000000000003', repeat('a', 64), repeat('b', 64), 'active', 1, 2,
+	values ('80700000-0000-4000-8000-000000000001', '29000000-0000-4000-8000-000000000010',
+		'29000000-0000-4000-8000-000000000020', '80700000-0000-4000-8000-000000000002',
+		'80700000-0000-4000-8000-000000000003', repeat('a', 64), repeat('b', 64), 'active', 1, 2,
 		'29000000-0000-4000-8000-000000000001');
 	insert into public.qorpera_runtime_office_screens(office_id, id, ordinal, staff_agent_id, generation, epoch, power,
 		lease_id, run_id, lease_expires_at, grant_version, native_binding)
-	values ('80500000-0000-4000-8000-000000000001', '80500000-0000-4000-8000-000000000010', 1, v_staff, 1, 1, 'open',
-		'80500000-0000-4000-8000-000000000011', (v_binding ->> 'runId')::uuid, clock_timestamp() + interval '1 hour', 1,
+	values ('80700000-0000-4000-8000-000000000001', '80700000-0000-4000-8000-000000000010', 1, v_staff, 1, 1, 'open',
+		'80700000-0000-4000-8000-000000000011', (v_binding ->> 'runId')::uuid, clock_timestamp() + interval '1 hour', 1,
 		v_binding);
 	insert into public.qorpera_runtime_office_activations(intent_id, activation_id, office_id, computer_generation,
 		allocation_id, provider_id, provider_policy_sha256, provider_binding_sha256, instance_sha256, image_sha256,
 		bootstrap_sha256, attestation, mappings, state, service_invocation_id, ready_at, activated_at, fill_public_key)
-	values ('80500000-0000-4000-8000-000000000020', '80500000-0000-4000-8000-000000000021',
-		'80500000-0000-4000-8000-000000000001', 1, '80500000-0000-4000-8000-000000000022',
-		'80500000-0000-4000-8000-000000000023', repeat('1', 64), repeat('2', 64), repeat('3', 64), repeat('a', 64),
+	values ('80700000-0000-4000-8000-000000000020', '80700000-0000-4000-8000-000000000021',
+		'80700000-0000-4000-8000-000000000001', 1, '80700000-0000-4000-8000-000000000022',
+		'80700000-0000-4000-8000-000000000023', repeat('1', 64), repeat('2', 64), repeat('3', 64), repeat('a', 64),
 		repeat('b', 64), '{}', '[]', 'active', repeat('a', 32), clock_timestamp(), clock_timestamp(),
 		current_setting('qorpera_test.fill_key'));
 	perform set_config('session_replication_role', 'origin', true);
@@ -93,9 +93,9 @@ returns text language sql as $$
 			'target', jsonb_build_object('realm', 'company_computer', 'resources', '{}'::jsonb,
 				'binding', jsonb_build_object('companyId', '29000000-0000-4000-8000-000000000010',
 					'environmentId', '29000000-0000-4000-8000-000000000020',
-					'companyComputerId', '80500000-0000-4000-8000-000000000001',
-					'logicalComputerId', '80500000-0000-4000-8000-000000000002',
-					'computerGeneration', p_generation, 'screenId', '80500000-0000-4000-8000-000000000010',
+					'companyComputerId', '80700000-0000-4000-8000-000000000001',
+					'logicalComputerId', '80700000-0000-4000-8000-000000000002',
+					'computerGeneration', p_generation, 'screenId', '80700000-0000-4000-8000-000000000010',
 					'screenOrdinal', 1, 'screenGeneration', 1,
 					'staffAgentId', '29000000-0000-4000-8000-000000000030'))))::text
 $$;
@@ -105,7 +105,7 @@ returns void language plpgsql security definer as $$
 begin
 	perform pg_temp.path_claims('service_role');
 	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.path_binding')::jsonb,
-		('80500000-0000-4000-8000-0000000001' || p_n)::uuid, 'computer_browser:' || p_key,
+		('80700000-0000-4000-8000-0000000001' || p_n)::uuid, 'computer_browser:' || p_key,
 		encode(extensions.digest(convert_to(p_envelope, 'UTF8'), 'sha256'), 'hex'), repeat('b', 64), false);
 end
 $$;
@@ -114,7 +114,7 @@ returns void language plpgsql security definer as $$
 begin
 	perform pg_temp.path_claims('service_role');
 	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.path_binding')::jsonb,
-		('80500000-0000-4000-8000-0000000001' || p_n)::uuid,
+		('80700000-0000-4000-8000-0000000001' || p_n)::uuid,
 		encode(extensions.digest(convert_to(p_envelope, 'UTF8'), 'sha256'), 'hex'), '{}'::jsonb);
 end
 $$;
@@ -125,7 +125,7 @@ returns text language plpgsql as $$
 begin
 	return pg_temp.ca_try(format('select public.qorpera_fill_company_account(%L,%L,'
 		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,%L)', p_authority, p_capability,
-		'80500000-0000-4000-8000-0000000001' || p_n, p_envelope, p_downstream));
+		'80700000-0000-4000-8000-0000000001' || p_n, p_envelope, p_downstream));
 end
 $$;
 grant execute on function pg_temp.fill_envelope(text,text,text,integer,text), pg_temp.fill_receipt(text,text,text),
@@ -195,7 +195,7 @@ select set_config('qorpera_test.fill_expired', pg_temp.fill_case('10',
 select set_config('qorpera_test.fill_released', pg_temp.fill_case('11',
 	'update public.qorpera_runtime_office_screens set lease_id = null, run_id = null, lease_expires_at = null,
 		grant_version = null, native_binding = null',
-	format('update public.qorpera_runtime_office_screens set lease_id = ''80500000-0000-4000-8000-000000000011'',
+	format('update public.qorpera_runtime_office_screens set lease_id = ''80700000-0000-4000-8000-000000000011'',
 		run_id = %L, lease_expires_at = clock_timestamp() + interval ''1 hour'', grant_version = 1, native_binding = %L',
 		current_setting('qorpera_test.path_binding')::jsonb ->> 'runId', current_setting('qorpera_test.path_binding'))), true);
 select set_config('qorpera_test.fill_next_generation', pg_temp.fill_case('12',
@@ -214,11 +214,11 @@ select set_config('qorpera_test.fill_other_company_computer', pg_temp.fill_case(
 	'update public.qorpera_runtime_offices set profile_id = ''79400000-0000-4000-8000-000000000010''',
 	'update public.qorpera_runtime_offices set profile_id = ''29000000-0000-4000-8000-000000000010'''), true);
 select set_config('qorpera_test.fill_other_run', pg_temp.fill_case('17',
-	'update public.qorpera_runtime_office_screens set run_id = ''80500000-0000-4000-8000-000000000099''',
+	'update public.qorpera_runtime_office_screens set run_id = ''80700000-0000-4000-8000-000000000099''',
 	format('update public.qorpera_runtime_office_screens set run_id = %L',
 		current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')), true);
 select set_config('qorpera_test.fill_other_environment', pg_temp.fill_case('18',
-	'update public.qorpera_runtime_offices set environment_id = ''80500000-0000-4000-8000-000000000098''',
+	'update public.qorpera_runtime_offices set environment_id = ''80700000-0000-4000-8000-000000000098''',
 	'update public.qorpera_runtime_offices set environment_id = ''29000000-0000-4000-8000-000000000020'''), true);
 -- The checks the fill makes itself, before any lock: a malformed call, the switch, a folder company, another
 -- company's broker, another downstream digest.
@@ -263,18 +263,18 @@ select pg_temp.ca_done('51');
 select pg_temp.fill_set($$
 	insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind,
 		connector_id, secret_name, purpose, status, current_version, created_by_user_id, revoked_at)
-	values ('80500000-0000-4000-8000-000000000070', '79400000-0000-4000-8000-000000000010',
-		'80500000-0000-4000-8000-000000000071', '79400000-0000-4000-8000-000000000041', 'company', 'website',
+	values ('80700000-0000-4000-8000-000000000070', '79400000-0000-4000-8000-000000000010',
+		'80700000-0000-4000-8000-000000000071', '79400000-0000-4000-8000-000000000041', 'company', 'website',
 		'other-site', 'Theirs', 'revoked', 1, '79400000-0000-4000-8000-000000000001', clock_timestamp());
 	insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, status,
 		opened_by_user_id, closed_at)
-	values ('80500000-0000-4000-8000-000000000070', '79400000-0000-4000-8000-000000000010',
-		'80500000-0000-4000-8000-000000000071', 'other.example', 'theirs@other.example', 'closed',
+	values ('80700000-0000-4000-8000-000000000070', '79400000-0000-4000-8000-000000000010',
+		'80700000-0000-4000-8000-000000000071', 'other.example', 'theirs@other.example', 'closed',
 		'79400000-0000-4000-8000-000000000001', clock_timestamp())
 $$);
-select pg_temp.ca_receipt('53', 'company_account:state:80500000-0000-4000-8000-000000000070:r53');
+select pg_temp.ca_receipt('53', 'company_account:state:80700000-0000-4000-8000-000000000070:r53');
 select set_config('qorpera_test.close_theirs', pg_temp.ca_call('qorpera_set_company_account_state', '53',
-	'''80500000-0000-4000-8000-000000000070'',''closed'''), true);
+	'''80700000-0000-4000-8000-000000000070'',''closed'''), true);
 select pg_temp.ca_done('53');
 select set_config('qorpera_test.fill_env52', pg_temp.fill_envelope('fill-52'), true);
 select pg_temp.fill_receipt('52', current_setting('qorpera_test.fill_env52'), 'fill-52');
@@ -285,7 +285,7 @@ reset session authorization;
 select set_config('qorpera_test.fill_not_broker', pg_temp.ca_try(format(
 	'select public.qorpera_fill_company_account(''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),'
 	'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,repeat(''b'',64))',
-	'80500000-0000-4000-8000-000000000101', current_setting('qorpera_test.fill_env1'))), true);
+	'80700000-0000-4000-8000-000000000101', current_setting('qorpera_test.fill_env1'))), true);
 
 do $$
 declare
@@ -307,8 +307,8 @@ begin
 		'status', 'pending', 'version', 1, 'companyId', '29000000-0000-4000-8000-000000000010',
 		'environmentId', '29000000-0000-4000-8000-000000000020', 'keyId', 'company-kek-1',
 		'envelopeSha256', encode(extensions.digest('\x0102'::bytea, 'sha256'), 'hex'),
-		'receiptId', '80500000-0000-4000-8000-000000000101', 'field', 'password',
-		'companyComputerId', '80500000-0000-4000-8000-000000000001', 'computerGeneration', 1,
+		'receiptId', '80700000-0000-4000-8000-000000000101', 'field', 'password',
+		'companyComputerId', '80700000-0000-4000-8000-000000000001', 'computerGeneration', 1,
 		'fillPublicKey', current_setting('qorpera_test.fill_key'))
 		or v_ok ->> 'encryptedEnvelopeBase64' is distinct from encode('\x0102'::bytea, 'base64') then
 		raise exception 'Wrong fill context: %', v_ok;
@@ -318,7 +318,7 @@ begin
 		raise exception 'A repeated fill read differently: %', current_setting('qorpera_test.fill_repeat');
 	end if;
 	select count(*) into v_audit from public.qorpera_cloud_secret_audit_events
-	where event_type = 'account_used' and receipt_id = '80500000-0000-4000-8000-000000000101';
+	where event_type = 'account_used' and receipt_id = '80700000-0000-4000-8000-000000000101';
 	if v_audit <> 2 or not exists (select 1 from public.qorpera_company_accounts
 		where secret_id = current_setting('qorpera_test.ca_account')::uuid and last_used_at is not null
 			and last_used_by_staff_agent_id = '29000000-0000-4000-8000-000000000030') then
