@@ -103,6 +103,15 @@ export const HUMAN_TASK_STATUSES = Object.freeze([
 	"declined",
 	"cancelled",
 ] as const);
+/** A website account's statuses (A1): opening and not yet verified, connected, waiting for a
+ * step only a person can do, or broken. */
+export const WEBSITE_STATUSES = Object.freeze(["pending", "connected", "needs_person", "broken"] as const);
+/** How a website account's second step reaches the company. */
+export const WEBSITE_TWO_STEP = Object.freeze(["none", "authenticator", "email", "sms"] as const);
+/** A website's host as the vault keeps it (SQL `qorpera_company_account_host_valid`): lowercase
+ * labels of 1–63 letters, digits and inner hyphens, at least two, at most 253 characters. */
+const WEBSITE_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
 /** What counts as a human task's proof. */
 export const HUMAN_TASK_PROOF = Object.freeze(["photo", "file", "signature", "note"] as const);
 /** The kind of step a website demands of a person (A1, company accounts). */
@@ -179,10 +188,17 @@ export interface ConnectionFile {
 	readonly id: string;
 	readonly service: string;
 	readonly account: string;
-	readonly status: "connected" | "broken";
+	/** `pending` and `needs_person` only for a website account (A1). */
+	readonly status: "connected" | "broken" | "pending" | "needs_person";
 	readonly actions: readonly string[];
 	readonly connectedBy: string;
 	readonly connectedAt: string;
+	/** A website account (`service: website`, A1) only: the site's host, shown and never used to
+	 * fill a secret; the account's two-step method; and the todo it was opened for, if an agent
+	 * opened it. Other connections have none of the three keys, so their parse keeps its shape. */
+	readonly site?: string;
+	readonly twoStep?: (typeof WEBSITE_TWO_STEP)[number];
+	readonly openedFor?: string | null;
 	/** The body, trimmed: what the account is for, written by the company. */
 	readonly purpose: string;
 }
@@ -1095,7 +1111,8 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 	if (service && !/^[a-z][a-z0-9_-]{0,63}$/.test(service))
 		problems.add("value", fields.line("service"), "service", "service is a connector id like gmail");
 	const account = fields.text("account", true, 254);
-	const status = fields.choice("status", true, ["connected", "broken"] as const);
+	const website = service === "website";
+	const status = fields.choice("status", true, website ? WEBSITE_STATUSES : (["connected", "broken"] as const));
 	const actions: string[] = [];
 	const seen = new Set<string>();
 	for (const item of fields.list("actions", true, true) ?? []) {
@@ -1109,6 +1126,13 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 	}
 	const connectedBy = fields.id("connected_by", true);
 	const connectedAt = fields.instant("connected_at", true);
+	// A website account's own keys; on any other service they stay unread, so closing the settings
+	// reports each one once, as an unknown setting.
+	const site = website ? fields.text("site", true, 253) : null;
+	if (site !== null && !WEBSITE_HOST.test(site))
+		problems.add("value", fields.line("site"), "site", "site is a lowercase host like accounts.example.com");
+	const twoStep = website ? fields.choice("two_step", true, WEBSITE_TWO_STEP) : null;
+	const openedFor = website ? fields.id("opened_for", false) : null;
 	const purpose = body(split, problems, "what the account is for", false, 32768);
 	fields.close("a connection");
 	if (
@@ -1122,6 +1146,23 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 		purpose === null
 	)
 		return null;
+	if (website) {
+		if (!site || !twoStep) return null;
+		return {
+			kind: "connection",
+			id,
+			service,
+			account,
+			status,
+			actions,
+			connectedBy,
+			connectedAt,
+			site,
+			twoStep,
+			openedFor,
+			purpose,
+		};
+	}
 	return { kind: "connection", id, service, account, status, actions, connectedBy, connectedAt, purpose };
 }
 
@@ -1801,6 +1842,9 @@ export function writeConnectionFile(file: Omit<ConnectionFile, "kind">): string 
 			["actions", listValue(file.actions)],
 			["connected_by", file.connectedBy],
 			["connected_at", file.connectedAt],
+			["site", file.site === undefined ? null : companyStateValue(file.site)],
+			["two_step", file.twoStep ?? null],
+			["opened_for", file.openedFor ?? null],
 		],
 		file.purpose,
 	);

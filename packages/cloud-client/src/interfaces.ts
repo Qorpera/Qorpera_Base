@@ -353,7 +353,11 @@ export function isInterfaceName(value: string): boolean {
 /** Problems with the path itself: a file under `interfaces/` or `tables/` that the format doesn't place. */
 export function interfacePathProblems(path: string): InterfaceProblem[] {
 	if (encoder.encode(path).length > 4096) {
-		return [problem(null, null, "too_large", "The path is longer than the folder allows (4,096 bytes).")];
+		// Too long to be anywhere in the folder; only this format's own paths are refused here.
+		const head = path.replace(/^\/+/, "").slice(0, 11).toLowerCase();
+		return head.startsWith("interfaces/") || head.startsWith("tables/") || head === "interfaces" || head === "tables"
+			? [problem(null, null, "too_large", "The path is longer than the folder allows (4,096 bytes).")]
+			: [];
 	}
 	let start = 0;
 	let end = path.length;
@@ -714,7 +718,7 @@ function readWhere(reader: Reader, value: unknown, at: string): InterfaceQuery["
 		}
 		if (isScalar(item)) out[column] = item;
 		else if (Array.isArray(item) && item.length > 0 && item.length <= 50 && item.every(isScalar)) out[column] = item;
-		else reader.add(at, "bad_value", `${displayKey(at)}.${column} must be a value or a list of values.`);
+		else reader.add(at, "bad_value", `${displayKey(at)}.${clip(column)} must be a value or a list of values.`);
 	}
 	return out;
 }
@@ -1080,7 +1084,7 @@ function blockColumns(block: InterfaceBlock): string[] {
 	addText(block.title);
 	addText(block.line);
 	addText(block.sub);
-	for (const column of block.columns) if (!block.lookups[column]) out.add(column);
+	for (const column of block.columns) if (!Object.hasOwn(block.lookups, column)) out.add(column);
 	for (const column of block.fields) out.add(column);
 	return [...out];
 }
@@ -1176,7 +1180,8 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 		else chart = readChart(reader, bag.chart, `${path}.chart`, false);
 	}
 
-	const lookups: Record<string, InterfaceLookup> = {};
+	// Own keys only: a column named like an object built-in is never taken for a lookup.
+	const lookups: Record<string, InterfaceLookup> = Object.create(null);
 	let columns: string[] = [];
 	if (kind === "table") {
 		columns = reader.list(bag, "columns", path, { max: 24, what: "a column name", item: (c) => COLUMN.test(c) });
@@ -1188,7 +1193,7 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 				reader.add(
 					`${path}.${name}`,
 					"bad_value",
-					`${name} is a lookup: { from = "table:<t>", match = "<column>", show = "<column>" }.`,
+					`${clip(name)} is a lookup: { from = "table:<t>", match = "<column>", show = "<column>" }.`,
 				);
 				continue;
 			}
@@ -1209,7 +1214,7 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 				reader.add(
 					`${path}.${name}`,
 					"bad_value",
-					`${name} needs from = "table:<t>", match, and either show or count = true.`,
+					`${clip(name)} needs from = "table:<t>", match, and either show or count = true.`,
 				);
 				continue;
 			}
@@ -1829,7 +1834,8 @@ export function tableClaimProblems(
 		readonly memberOnly?: readonly string[];
 	},
 ): InterfaceProblem[] {
-	const memberOnly = options.memberOnly ?? (options.folder === "areas" ? AREA_MEMBER_ONLY_COLUMNS : []);
+	const memberOnly =
+		options.memberOnly ?? (companyPathKey(options.folder) === "areas" ? AREA_MEMBER_ONLY_COLUMNS : []);
 	const claimed = table.columns.filter((c) => c.needsYes || (actor.kind === "agent" && memberOnly.includes(c.name)));
 	if (claimed.length === 0) return [];
 	const self = actor.kind === "member" ? actor.memberId : actor.supervisorId;

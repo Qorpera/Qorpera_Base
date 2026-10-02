@@ -894,3 +894,37 @@ constructor = { from = "table:areas", match = "owner", count = true }
 		expect(Object.isFrozen(owns(SOFIE))).toBe(true);
 	});
 });
+
+describe("review round 3", () => {
+	it("never takes an object built-in for a lookup, and clips long names", () => {
+		const text = `${MINIMAL}
+[[view.block]]
+kind = "table"
+from = "agents"
+columns = ["name", "constructor"]
+`;
+		const result = parseInterfaceFile(text);
+		expect(result.problems.map((p) => p.code)).toEqual(["unknown_column"]);
+		const long = `c${"x".repeat(20_000)}`;
+		const where = parseInterfaceFile(
+			MINIMAL.replace('kind = "list"', `kind = "list"\nwhere = { ${long} = { a = 1 } }`),
+		);
+		expect(where.problems.every((p) => p.message.length < 400)).toBe(true);
+	});
+
+	it("matches the areas folder however it is spelled", () => {
+		const areas = table(AREAS_TABLE);
+		const row = (owner: string | null): TableRow => ({
+			area: "Sales",
+			about: null,
+			owner,
+			shared: false,
+			supervisor: owner,
+			agents: null,
+		});
+		const agent = { kind: "agent" as const, agentId: FINANCE, supervisorId: SOFIE };
+		expect(
+			tableClaimProblems(areas, [row(null)], [row(SOFIE)], agent, { folder: "Areas" }).map((p) => p.code),
+		).toEqual(["claim", "claim"]);
+	});
+});
