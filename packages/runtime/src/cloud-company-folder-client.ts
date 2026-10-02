@@ -181,6 +181,12 @@ export type CloudCompanyFolderRoutineLogin =
 	| { readonly login: { readonly bindingId: string; readonly version: number } | null }
 	| { readonly refused: "acknowledgement" | "final" | "paused" };
 
+/** The run's own view of the folder, for the node's folder service (its pass opens the view there). */
+export interface CloudCompanyFolderRunView {
+	readonly viewId: string;
+	readonly pass: string;
+}
+
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
 	readonly asOfSeq: number;
@@ -712,6 +718,28 @@ export class CloudCompanyFolderClient {
 			return { asOfSeq: counter(input.asOfSeq), entry: null };
 		}
 		return { asOfSeq: counter(input.asOfSeq), entry: entry(input.entry) };
+	}
+
+	/** Opens the run's own view of the folder (`qorpera_folder_run_view_open`, 20260929999970), for the node's folder
+	 * search: the folder service serves and renews it by its pass, and the run's end closes it. Opening again in the
+	 * same job closes the earlier one. */
+	async openRunView(signal: AbortSignal): Promise<CloudCompanyFolderRunView> {
+		const input = record(await this.#once("qorpera_folder_run_view_open", {}, signal), [
+			"schema",
+			"viewId",
+			"pass",
+			"leaseUntil",
+		]);
+		if (
+			input.schema !== "qorpera.folder-view/v1" ||
+			typeof input.viewId !== "string" ||
+			!UUID.test(input.viewId) ||
+			typeof input.pass !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(input.pass) ||
+			typeof input.leaseUntil !== "string"
+		)
+			invalid();
+		return { viewId: input.viewId, pass: input.pass };
 	}
 
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers

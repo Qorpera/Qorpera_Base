@@ -73,6 +73,8 @@ function fixture(options: {
 	stealFocus?: boolean | "shadow";
 	/** The page moves the focus on once the box holds the whole value (a code box that advances). */
 	advance?: boolean;
+	/** A page script takes the focus into something with no value to empty (an editable area, a closed shadow root). */
+	stealInto?: "editable";
 	/** The website keeps only this many characters (it reshapes input). */
 	keeps?: number;
 }) {
@@ -80,11 +82,16 @@ function fixture(options: {
 	const target = fakeBox(options.box);
 	const other = fakeBox({ type: "text" });
 	const host = { ...fakeBox({ tagName: "SIGN-IN" }), shadowRoot: { activeElement: other } };
+	const editable = { tagName: "DIV", setAttribute: () => undefined };
 	const document = { activeElement: null as FakeBox | null };
 	const calls: string[] = [];
 	const mainFrame = {};
 	const send = vi.fn(async (method: string, params: { text: string }) => {
 		calls.push(method);
+		if (options.stealInto === "editable") {
+			document.activeElement = editable as unknown as FakeBox;
+			return;
+		}
 		if (options.stealFocus === "shadow") document.activeElement = host;
 		else if (options.stealFocus) document.activeElement = other;
 		const into = options.stealFocus === "shadow" ? other : document.activeElement;
@@ -207,6 +214,11 @@ describe("company account fill", () => {
 		expect(f.other.attributes.size).toBe(0);
 	});
 
+	it("tells the caller the value is lost when it went where nothing can empty it", async () => {
+		const f = fixture({ stealInto: "editable" });
+		await expect(fillCompanyAccountBox(f.page, f.box, password)).rejects.toThrow("ACCOUNT_FILL_LOST");
+	});
+
 	it("says so when the box does not hold what was typed", async () => {
 		const f = fixture({ keeps: 1 });
 		await expect(fillCompanyAccountBox(f.page, f.box, password)).rejects.toThrow("ACCOUNT_FILL_UNCONFIRMED");
@@ -225,6 +237,61 @@ describe("filled values on one screen", () => {
 		expect(filled.shows("https://x.example/?pw=Pw-1234567890%40abcd%23EF%2BGH")).toBe(true);
 		expect(filled.hide("Order 4012345678, code 123456")).toBe("Order 4012345678, code [hidden]");
 		expect(filled.shows("Order 4012345678")).toBe(false);
+	});
+
+	it("sees a value through up to three layers of encoding, in either letter case, and hides the whole query", () => {
+		const filled = new CompanyComputerFilledValues();
+		const value = "Pw-1234567890@abcd#EF+GH";
+		filled.add(value, "password");
+		filled.add("123456", "code");
+		const once = encodeURIComponent(value);
+		const twice = encodeURIComponent(`https://vercel.com/login?pw=${once}`);
+		for (const text of [
+			`https://x.example/next?return_to=${twice}`,
+			`https://x.example/?pw=${once.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase())}`,
+			`https://x.example/?pw=${encodeURIComponent(twice)}`,
+			// Four encodings deep: three decodes reach the spelling an address uses.
+			`https://x.example/?pw=${encodeURIComponent(encodeURIComponent(twice))}`,
+			"https://x.example/?q=%22123456%22",
+		])
+			expect(filled.showsDecoded(text), text).toBe(true);
+		expect(filled.showsDecoded("https://x.example/?q=4012345678")).toBe(false);
+		// Five deep is past what the check reads (an address would not fit a page's limits anyway).
+		expect(filled.showsDecoded(encodeURIComponent(encodeURIComponent(encodeURIComponent(twice))))).toBe(false);
+		// A value in the host itself: none of the address is kept.
+		expect(filled.hideAddress("https://123456.example.com/next")).toBe("[hidden]");
+		expect(filled.hideAddress(`https://x.example/next?return_to=${twice}#top`)).toBe(
+			"https://x.example/next?[hidden]#[hidden]",
+		);
+		expect(filled.hideAddress(`https://x.example/u/${once}/edit`)).toBe("https://x.example/[hidden]");
+		expect(filled.hideAddress("https://x.example/plain?q=1")).toBe("https://x.example/plain?q=1");
+		expect(filled.hideText(`Moved to ${twice}`)).toBe("[hidden]");
+		expect(filled.hideText("Sign in")).toBe("Sign in");
+	});
+
+	it("reads escapes of a value that is not ASCII as UTF-8 in either letter case, or byte by byte", () => {
+		const filled = new CompanyComputerFilledValues();
+		const value = "Æblegrød-1234567890!x";
+		filled.add(value, "password");
+		const lower = encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase());
+		expect(filled.shows(lower)).toBe(false);
+		for (const text of [lower, encodeURIComponent(lower), escape(value)])
+			expect(filled.showsDecoded(`https://x.example/?pw=${text}`), text).toBe(true);
+	});
+
+	it("reads a page full of escapes that are not UTF-8 without failing, in time", () => {
+		const filled = new CompanyComputerFilledValues();
+		filled.add("Pw-1234567890@abcd#EF+GH", "password");
+		const started = performance.now();
+		expect(filled.showsDecoded(`${"%FF".repeat(130_000)} ${"%FFa ".repeat(50_000)}`)).toBe(false);
+		expect(performance.now() - started).toBeLessThan(5_000);
+	});
+
+	it("sees a password with spaces as a script writes it in a query, a space as +", () => {
+		const filled = new CompanyComputerFilledValues();
+		filled.add("Pw 1234567890!abcd", "password");
+		expect(filled.shows("https://x.example/?q=Pw+1234567890!abcd")).toBe(true);
+		expect(filled.hide("https://x.example/?q=Pw+1234567890!abcd")).toBe("https://x.example/?q=[hidden]");
 	});
 
 	it("drops spent codes before it drops a password", () => {

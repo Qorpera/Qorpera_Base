@@ -309,6 +309,14 @@ function tabPreview(value: string, maxBytes: number): string {
 	return value.slice(0, end);
 }
 
+/** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
+ * value holds whitespace itself; 0 when there is none. */
+export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
+	for (let at = Math.min(limit, text.length - 1); at >= 0; at--)
+		if (text[at] === "\n" || (!linesOnly && /\s/u.test(text[at]!))) return at;
+	return 0;
+}
+
 /** Low-level established automation, called only inside the authorized guest ScreenActionGate. */
 export class CompanyComputerGuestAutomation {
 	readonly #binding: CompanyComputerScreenBinding;
@@ -386,32 +394,31 @@ export class CompanyComputerGuestAutomation {
 							location: { href: string };
 						};
 						const document = global.document;
-						const parts = [
-							document.title,
-							global.location.href,
-							(document.documentElement?.innerText ?? "").slice(0, 2_000_000),
-						];
+						// Everything the page shows, or null past 4 MB of it (more than this check reads): then no picture.
+						const parts = [document.title, global.location.href, document.documentElement?.innerText ?? ""];
+						let size = parts.reduce((total, part) => total + part.length, 0);
 						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
 						const roots: Root[] = [document];
-						let boxes = 0;
-						for (let index = 0; index < roots.length && index < 256; index++) {
+						for (let index = 0; index < roots.length; index++) {
 							for (const node of roots[index]!.querySelectorAll("*")) {
+								let part: string | undefined;
 								if (node.shadowRoot) {
 									roots.push(node.shadowRoot);
-									parts.push((node.shadowRoot as unknown as Node).textContent?.slice(0, 200_000) ?? "");
+									part = (node.shadowRoot as unknown as Node).textContent ?? "";
 								}
 								if (
-									boxes < 512 &&
 									typeof node.value === "string" &&
 									node.matches?.("input, textarea") &&
 									!node.matches(`[${attribute}]`)
-								) {
-									parts.push(node.value.slice(0, 4096));
-									boxes++;
-								}
+								)
+									part = part === undefined ? node.value : `${part}\n${node.value}`;
+								if (part === undefined) continue;
+								size += part.length;
+								if (size > 4_000_000) return null;
+								parts.push(part);
 							}
 						}
-						return parts.join("\n");
+						return size > 4_000_000 ? null : parts.join("\n");
 					}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE),
 					new Promise<never>((_, reject) => {
 						timer = setTimeout(() => reject(new Error("timed out")), 5_000);
@@ -424,7 +431,7 @@ export class CompanyComputerGuestAutomation {
 			}
 			if (typeof shown !== "string")
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE"));
-			if (this.#filled.shows(shown))
+			if (this.#filled.showsDecoded(shown))
 				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
 		}
 	}
@@ -563,8 +570,8 @@ export class CompanyComputerGuestAutomation {
 					if (page.isClosed()) continue;
 					tabs.push({
 						tabId: this.#tabIds.get(page)!,
-						titlePreview: tabPreview(this.#filled.hide(title), 128),
-						urlPreview: tabPreview(this.#filled.hide(page.url()), 256),
+						titlePreview: tabPreview(this.#filled.hideText(title), 128),
+						urlPreview: tabPreview(this.#filled.hideAddress(page.url()), 256),
 					});
 				}
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -675,9 +682,24 @@ export class CompanyComputerGuestAutomation {
 				try {
 					await fillCompanyAccountBox(page, box, opened);
 				} catch (error) {
+					// Typed where nothing can empty it: the tab goes, with the value in it. The agent's next action is told
+					// its tab closed (never moved to another tab), and the window keeps a tab, as at start.
+					let cause: unknown;
+					if (error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST") {
+						const context = this.#browser.context;
+						try {
+							if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
+							await page.close();
+						} catch (closeError) {
+							cause = closeError;
+						}
+					}
 					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
 					throw new CompanyComputerActionFailedError(
-						new Error(error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED"),
+						new Error(
+							error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED",
+							cause === undefined ? undefined : { cause },
+						),
 					);
 				}
 			}
@@ -686,11 +708,34 @@ export class CompanyComputerGuestAutomation {
 			if (action.action === "snapshot") {
 				// The aria snapshot copies every box's value; read the private ones on both sides of it.
 				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
-				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
-				const snapshot = await this.#pageCall(async () =>
-					redactCompanyComputerSnapshot(aria, [...before, ...after], { filled: this.#filled.current() }),
-				);
+				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
+				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
+				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
+				const hidden = [...before, ...after, ...this.#filled.current()];
+				const cut =
+					full.length <= 20_480 || hidden.length === 0
+						? 20_480
+						: companyComputerSnapshotCut(
+								full,
+								20_480,
+								hidden.some((value) => /\s/u.test(value)),
+							);
+				// Too little before a word's end (a minified page): secrets are hidden across the whole snapshot, as before
+				// the cut, and its first 16 KB is returned.
+				const aria = cut < 16_384 ? full : full.slice(0, cut);
+				const snapshot = await this.#pageCall(async () => {
+					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
+						filled: this.#filled.current(),
+					}).replace(
+						/(\/url: )([^\n]*)/g,
+						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
+					);
+					// A secret the vault typed that survives in another spelling refuses the snapshot.
+					if (this.#filled.showsDecoded(redacted)) throw new Error("PRIVATE_FIELD_VISIBLE");
+					return redacted;
+				});
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
@@ -698,10 +743,10 @@ export class CompanyComputerGuestAutomation {
 					kind: "json",
 					value: {
 						tabId: this.#tabIds.get(page)!,
-						url: this.#filled.hide(page.url()),
-						title: this.#filled.hide(title).slice(0, 1024),
+						url: this.#filled.hideAddress(page.url()),
+						title: this.#filled.hideText(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
-						truncated: snapshot.length > 16_384,
+						truncated: full.length > aria.length || snapshot.length > 16_384,
 					},
 				};
 			}

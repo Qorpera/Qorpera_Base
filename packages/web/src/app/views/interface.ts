@@ -2,31 +2,142 @@
  * company's live state. Every value is read with the member's own authority through the store the rest of the
  * app reads; the file only arranges blocks and names sources. Text from a file is set as text, never markup. */
 
-import { fillInterfaceText, plainText, queryInterfaceRows } from "@qorpera/cloud-client/interface-query";
-import type { InterfaceBlock, TableRow } from "@qorpera/cloud-client/interfaces";
+import {
+	compareInterfaceValues,
+	fillInterfaceText,
+	interfaceCell,
+	plainText,
+	queryInterfaceRows,
+} from "@qorpera/cloud-client/interface-query";
+import type { InterfaceBlock, InterfaceFile, TableRow, TableValue } from "@qorpera/cloud-client/interfaces";
+import { describeError } from "../../cloud/client.ts";
+import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { button, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
-import { presentationLocale, t } from "../../ui/preferences.ts";
+import { isPhoneLayout } from "../../ui/layout.ts";
+import { markdown } from "../../ui/markdown.ts";
+import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import {
+	blockButtons,
 	companyInterface,
-	drawableBlock,
+	companyInterfaces,
+	type DrawnButton,
 	type InterfaceRow,
 	interfaceRows,
 	interfaceSourceTime,
+	interfaceViews,
+	OUTSIDE_COLUMNS,
+	rowHasCard,
+	sourceColumns,
+	type ViewBlock,
+	viewBlocks,
 } from "../interfaces.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */
 const shownIn = new WeakMap<HTMLElement, { key: string; element: Element }>();
 
-function show(container: HTMLElement, key: string, build: () => HTMLElement): void {
+/** Draws `build()` unless the same key is on screen. Every control names itself with `data-focus-key`, so the
+ * one that had keyboard focus (and an input's caret) has it again after the redraw; `moveFocus` names another. */
+function show(container: HTMLElement, key: string, build: () => HTMLElement, moveFocus?: string): void {
 	const shown = shownIn.get(container);
 	if (shown?.key === key && container.firstElementChild === shown.element && shown.element.isConnected) return;
+	const active = document.activeElement;
+	const focusKey =
+		moveFocus ?? (active instanceof HTMLElement && container.contains(active) ? active.dataset.focusKey : undefined);
+	const caret =
+		active instanceof HTMLInputElement ? ([active.selectionStart, active.selectionEnd] as const) : undefined;
 	const element = build();
 	replace(container, element);
 	shownIn.set(container, { key, element });
+	if (focusKey === undefined) return;
+	const again = [...element.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
+		(candidate) => candidate.dataset.focusKey === focusKey,
+	);
+	again?.focus({ preventScroll: true });
+	if (again instanceof HTMLInputElement && caret && again === document.activeElement)
+		again.setSelectionRange(caret[0], caret[1]);
+}
+
+/** What the member chose on a page: its view, the row each opened block shows, and each table's sort and filter.
+ * It lasts while the app is open, per member, company and interface. */
+interface PageState {
+	view: string | null;
+	open: Record<string, string>;
+	sort: Record<string, { readonly column: string; readonly descending: boolean }>;
+	filter: Record<string, string>;
+	error: string | null;
+	/** Whether the error has been drawn once: later redraws keep it on the page without announcing it again. */
+	errorShown: boolean;
+	/** How many errors this page has had, so the same words failing again are drawn and announced again. */
+	errors: number;
+	/** The message buttons whose thread is still opening: they stay disabled through redraws. */
+	pending: string[];
+	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
+	focus: string | null;
+}
+const pages = new Map<string, PageState>();
+function pageState(key: string): PageState {
+	let state = pages.get(key);
+	if (!state) {
+		state = {
+			view: null,
+			open: {},
+			sort: {},
+			filter: {},
+			error: null,
+			errorShown: false,
+			errors: 0,
+			pending: [],
+			focus: null,
+		};
+		pages.set(key, state);
+	}
+	return state;
+}
+
+/** Columns that hold an agent's id: drawn as the agent's name. */
+const AGENT_COLUMNS: ReadonlySet<string> = new Set(["agent", "from", "handled_by", "kept_by"]);
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+
+/** An id an element can carry, from any text. */
+function domId(...parts: string[]): string {
+	return `iface-${parts.join("-").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+/** The platform's column names, in the member's language. A table's own columns are the company's words. */
+function columnLabel(source: string, column: string): string {
+	if (sourceColumns(source)?.includes(column)) {
+		const label: Record<string, () => string> = {
+			agent: () => t("Agent"),
+			what: () => t("What"),
+			since: () => t("Since"),
+			kind: () => t("Kind"),
+			title: () => t("Title"),
+			from: () => t("From"),
+			due: () => t("Due"),
+		};
+		const known = label[column];
+		if (known) return known();
+	}
+	const words = column.replace(/_/g, " ");
+	return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** What waits, in the member's language. */
+function kindLabel(kind: string): string {
+	const label: Record<string, () => string> = {
+		review: () => t("Approval"),
+		run: () => t("Unfinished run"),
+		mention: () => t("Mention"),
+		question: () => t("Question"),
+		mail: () => t("Email"),
+		task: () => t("Task"),
+		offer: () => t("Offer"),
+	};
+	return label[kind]?.() ?? kind;
 }
 
 export function renderInterface(container: HTMLElement, company: CompanyController, name: string): void {
@@ -65,23 +176,81 @@ export function renderInterface(container: HTMLElement, company: CompanyControll
 		);
 		return;
 	}
-	const { file } = entry;
+	renderInterfaceFile(container, company, name, entry.file);
+}
+
+/** One block as drawn: the rows it shows, in its query's order, and for a `detail` block the row it has open. */
+interface DrawnBlock {
+	readonly block: InterfaceBlock;
+	readonly source: string;
+	readonly key: string;
+	readonly rows: readonly InterfaceRow[];
+	/** The detail this block opens, when that detail is drawn in this view. */
+	readonly opens: string | null;
+	readonly open?: InterfaceRow;
+}
+
+/** Draws an interface definition. `renderInterface` finds the definition; tests pass one directly. */
+export function renderInterfaceFile(
+	container: HTMLElement,
+	company: CompanyController,
+	name: string,
+	file: InterfaceFile,
+): void {
+	const state = company.store.get();
+	const profileId = company.profile.profileId;
+	const locale = presentationLocale();
+	const page = pageState(`${company.userId}/${profileId}/${name}`);
+	const redraw = () => renderInterfaceFile(container, company, name, file);
+	const views = interfaceViews(file)
+		.map((view) => ({ name: view.name, blocks: viewBlocks(view) }))
+		.filter((view) => view.blocks.length > 0);
+	const viewIndex = Math.max(
+		0,
+		views.findIndex((candidate) => candidate.name === page.view),
+	);
+	const view = views[viewIndex];
+	if (!view) return;
 	const now = Date.now();
 	const today = new Date();
 	today.setHours(0, 0, 0, 0);
 	const clock = { now, startOfToday: today.getTime() };
-	const view = file.views[0];
-	const blocks = (view?.blocks ?? []).filter(drawableBlock).map((block) => {
+	const sourceRows = ({ block, narrow }: ViewBlock) => {
 		const source = block.from[0] ?? "";
-		const rows = interfaceRows(company, source) ?? [];
-		// The query decides which rows show and in what order; each row keeps the link it came with.
+		const time = interfaceSourceTime(source);
+		// A view built from another narrows the rows first; the block's own query then filters, orders and limits them.
+		let rows = interfaceRows(company, source) ?? [];
+		for (const where of narrow) {
+			const kept = new Set(
+				queryInterfaceRows(
+					rows.map((row) => row.row),
+					{ where, since: null, order: null, limit: null, latestBy: null },
+					{ time, clock },
+				),
+			);
+			rows = rows.filter((row) => kept.has(row.row));
+		}
 		const byRow = new Map<TableRow, InterfaceRow>(rows.map((row) => [row.row, row]));
-		const shownRows = queryInterfaceRows(
+		return queryInterfaceRows(
 			rows.map((row) => row.row),
 			block.query,
-			{ time: interfaceSourceTime(source), clock },
+			{ time, clock },
 		).flatMap((row) => byRow.get(row) ?? []);
-		return { block, rows: shownRows };
+	};
+	const details = new Set(
+		view.blocks.flatMap(({ block }) => (block.kind === "detail" && block.id !== null ? [block.id] : [])),
+	);
+	const blocks: DrawnBlock[] = view.blocks.map((shown, index) => {
+		const { block } = shown;
+		const key = block.id ?? `${view.name}#${index}`;
+		const source = block.from[0] ?? "";
+		const rows = sourceRows(shown);
+		// A row opens only into a detail drawn here; otherwise it keeps its own link.
+		const opens = block.opens !== null && details.has(block.opens) ? block.opens : null;
+		if (block.kind !== "detail" || block.id === null) return { block, source, key, rows, opens };
+		const opened = page.open[block.id];
+		const open = opened === undefined ? undefined : rows.find((row) => row.key === opened);
+		return { block, source, key, rows, opens, ...(open ? { open } : {}) };
 	});
 	// A part-width block whose neighbours have no source today stands alone, so it takes the whole row.
 	const widths = blocks.map(({ block }, index) => {
@@ -90,102 +259,656 @@ export function renderInterface(container: HTMLElement, company: CompanyControll
 		return partner(index - 1) || partner(index + 1) ? block.width : "full";
 	});
 	const nameOf = (column: string, value: unknown) => {
-		if (typeof value === "string" && ["agent", "from", "handled_by", "kept_by"].includes(column)) {
+		if (typeof value === "string" && AGENT_COLUMNS.has(column)) {
 			return company.staffById(value)?.displayName ?? plainText(value);
 		}
 		return plainText(value as never);
 	};
-	// The agents a page shows, by how they look, so a rename or a new figure redraws it.
+	// The agents a page names, draws or offers a button for (a button may name one by id), by how they look and
+	// whether they still work here.
+	const buttonAgents = file.buttons.flatMap((button) =>
+		[button.to, button.target?.startsWith("agent:") ? button.target.slice("agent:".length) : null].filter(
+			(id): id is string => id !== null && !id.startsWith("{") && id !== "co-founder",
+		),
+	);
 	const agentLooks = [
-		...new Set(blocks.flatMap(({ block, rows }) => rows.map(({ row }) => (block.figure ? row[block.figure] : null)))),
-	]
-		.filter((id): id is string => typeof id === "string")
-		.map((id) => {
-			const agent = company.staffById(id);
-			return [id, agent?.displayName, agent?.appearance];
-		});
+		...new Set([
+			...buttonAgents,
+			...blocks.flatMap(({ rows }) =>
+				rows.flatMap(({ row }) =>
+					Object.entries(row).flatMap(([column, value]) =>
+						AGENT_COLUMNS.has(column) && typeof value === "string" ? [value] : [],
+					),
+				),
+			),
+		]),
+	].map((id) => {
+		const agent = company.staffById(id);
+		return [id, agent?.displayName, agent?.appearance, agent?.employmentStatus];
+	});
 	const live = state.realtime === "connected";
+	const canWrite = state.team?.capabilities.write === true;
+	const listed = companyInterfaces(company).map((entry) => entry.name);
+	const cofounder = company.cofounderId();
+	const moveFocus = page.focus ?? undefined;
+	page.focus = null;
+	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
 	const key = JSON.stringify([
 		profileId,
+		company.userId,
 		locale,
+		presentationTimeZone(),
+		clock.startOfToday,
 		name,
 		file.name,
 		file.about,
 		live ? "live" : [state.realtime, state.realtimeError ?? ""],
+		views.map((candidate) => candidate.name),
+		view.name,
+		page.open,
+		page.sort,
+		page.filter,
+		page.error,
+		page.errors,
+		page.pending,
+		canWrite,
+		listed,
+		cofounder,
 		widths,
 		agentLooks,
-		blocks.map(({ block, rows }) => [block.title, rows]),
+		blocks.map(({ block, rows, open }) => [block.title, rows, open?.key ?? null]),
 	]);
-	show(container, key, () =>
-		h(
-			"section",
-			{ class: "interface", "data-interface": name },
-			h(
-				"header",
-				{ class: "interface-head" },
-				interfaceEmblem(file.emblem, file.colour, 30),
+	const context: BlockContext = {
+		company,
+		file,
+		profileId,
+		nameOf,
+		figureOf: (agentId) => agentFigure(company.staffById(agentId), nameOf("agent", agentId), { size: 30 }),
+		page,
+		redraw,
+		canWrite,
+		stillShown: () => {
+			const shown = container.firstElementChild;
+			return shown instanceof HTMLElement && shown.dataset.interface === name && shown.dataset.profile === profileId;
+		},
+	};
+	const errorFirst = page.error !== null && !page.errorShown;
+	show(
+		container,
+		key,
+		() => {
+			const error = page.error === null ? null : notice("danger", page.error);
+			// The error is announced once; it stays on the page through later redraws without being read again.
+			if (error && !errorFirst) error.removeAttribute("role");
+			const tabbed = views.length > 1;
+			return h(
+				"section",
+				{ class: "interface", "data-interface": name, "data-profile": profileId },
 				h(
-					"div",
-					{ class: "interface-title" },
-					h("h1", null, file.name),
-					file.about ? h("small", null, file.about) : null,
-				),
-				h(
-					"span",
-					{ class: `interface-live${live ? "" : " is-degraded"}`, role: "status" },
-					h("span", { class: "interface-live-dot", "aria-hidden": "true" }),
-					live ? t("Live") : state.realtime === "connecting" ? t("connecting") : t("live updates degraded"),
-				),
-			),
-			h(
-				"div",
-				{ class: "interface-page" },
-				...blocks.map(({ block, rows }, index) =>
-					listBlock({ ...block, width: widths[index] ?? "full" }, rows, nameOf, (agentId) =>
-						agentFigure(company.staffById(agentId), nameOf("agent", agentId), { size: 30 }),
+					"header",
+					{ class: "interface-head" },
+					interfaceEmblem(file.emblem, file.colour, 30),
+					h(
+						"div",
+						{ class: "interface-title" },
+						h("h1", null, file.name),
+						file.about ? h("small", null, file.about) : null,
+					),
+					h(
+						"span",
+						{ class: `interface-live${live ? "" : " is-degraded"}`, role: "status" },
+						h("span", { class: "interface-live-dot", "aria-hidden": "true" }),
+						live ? t("Live") : state.realtime === "connecting" ? t("connecting") : t("live updates degraded"),
 					),
 				),
-			),
+				tabbed ? viewTabs(views, viewIndex, page, redraw) : null,
+				error,
+				h(
+					"div",
+					{
+						class: `interface-page${hasOpen ? " has-open" : ""}`,
+						id: "interface-view-panel",
+						...(tabbed ? { role: "tabpanel", "aria-labelledby": `interface-view-${viewIndex}` } : {}),
+					},
+					...blocks.map((drawn, index) =>
+						drawBlock({ ...drawn, block: { ...drawn.block, width: widths[index] ?? "full" } }, context),
+					),
+				),
+			);
+		},
+		moveFocus,
+	);
+	if (errorFirst) page.errorShown = true;
+}
+
+/** The page's views as tabs. A view changes the blocks shown and closes what was open; the route stays. */
+function viewTabs(
+	views: readonly { readonly name: string }[],
+	current: number,
+	page: PageState,
+	redraw: () => void,
+): HTMLElement {
+	const choose = (index: number, byKey = false) => {
+		const name = views[index]?.name;
+		if (name === undefined || index === current) return;
+		page.view = name;
+		page.open = {};
+		page.error = null;
+		// A key moves focus with the choice; a click leaves it where the pointer put it.
+		if (byKey) page.focus = `view:${index}`;
+		redraw();
+	};
+	const tabs = views.map((view, index) =>
+		h(
+			"button",
+			{
+				type: "button",
+				role: "tab",
+				id: `interface-view-${index}`,
+				class: "interface-view",
+				"aria-selected": String(index === current),
+				"aria-controls": index === current ? "interface-view-panel" : null,
+				tabindex: index === current ? "0" : "-1",
+				"data-focus-key": `view:${index}`,
+				onclick: () => choose(index),
+			},
+			view.name,
 		),
+	);
+	const list = h("nav", { class: "interface-views", role: "tablist", "aria-label": t("Views") }, ...tabs);
+	list.addEventListener("keydown", (event) => {
+		const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+		const next =
+			event.key === "Home"
+				? 0
+				: event.key === "End"
+					? views.length - 1
+					: step
+						? (current + step + views.length) % views.length
+						: -1;
+		if (next < 0) return;
+		event.preventDefault();
+		choose(next, true);
+	});
+	return list;
+}
+
+interface BlockContext {
+	readonly company: CompanyController;
+	readonly file: InterfaceFile;
+	readonly profileId: string;
+	readonly nameOf: (column: string, value: unknown) => string;
+	readonly figureOf: (agentId: string) => HTMLElement;
+	readonly page: PageState;
+	readonly redraw: () => void;
+	/** Whether the member may write: answering a card and posting a message need it. */
+	readonly canWrite: boolean;
+	/** Whether this page is still the one on screen, for work that finishes after a click. */
+	readonly stillShown: () => boolean;
+}
+
+function drawBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
+	if (drawn.block.kind === "table") return tableBlock(drawn, context);
+	if (drawn.block.kind === "detail") return detailBlock(drawn, context);
+	return listBlock(drawn, context);
+}
+
+function blockFrame(
+	block: InterfaceBlock,
+	key: string,
+	extra: string,
+	title: string | null,
+	...children: (Node | null)[]
+): HTMLElement {
+	return h(
+		"section",
+		{ class: `interface-block interface-width-${block.width}${extra}` },
+		title ? h("h2", { id: domId("title", key) }, title) : null,
+		...children,
 	);
 }
 
-function listBlock(
-	block: InterfaceBlock,
-	rows: readonly InterfaceRow[],
-	nameOf: (column: string, value: unknown) => string,
-	figureOf: (agentId: string) => HTMLElement,
-): HTMLElement {
+/** Opens a row in the detail `target` names, or closes it. On a phone the detail is the next screen, so focus
+ * goes to its Back button; closing it gives focus back to the row it was opened from. */
+function openRow(context: BlockContext, target: string, item: InterfaceRow | null): void {
+	const open = { ...context.page.open };
+	const was = open[target];
+	if (item) {
+		open[target] = item.key;
+		if (isPhoneLayout()) context.page.focus = `back:${target}`;
+	} else {
+		delete open[target];
+		if (was !== undefined) context.page.focus = `open:${target}:${was}`;
+	}
+	context.page.open = open;
+	context.page.error = null;
+	context.redraw();
+}
+
+/** A cell as text: an agent's name, a time in the member's zone, yes or no, what waits. */
+function cellText(source: string, column: string, value: TableValue | undefined, context: BlockContext): string {
+	if (value === null || value === undefined) return "";
+	if (typeof value === "boolean") return value ? t("Yes") : t("No");
+	if (typeof value === "string" && INSTANT.test(value)) return fmtTime(value) || value;
+	if (source === "waiting" && column === "kind" && typeof value === "string") return kindLabel(value);
+	return context.nameOf(column, value);
+}
+
+function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
+	const { block, rows, key, opens } = drawn;
 	const cards = block.layout === "cards";
-	const items = rows.map(({ row, href, live }) => {
+	const buttons = blockButtons(context.file, block);
+	const opened = opens === null ? undefined : context.page.open[opens];
+	const items = rows.map((item) => {
+		const { row, href, live } = item;
 		const agentId = block.figure ? row[block.figure] : undefined;
-		const line = fillInterfaceText(block.line ?? "{title}", row, nameOf);
-		const sub = block.sub ? fillInterfaceText(block.sub, row, nameOf) : "";
-		const status = block.status ? nameOf(block.status, row[block.status]) : "";
+		const line = fillInterfaceText(block.line ?? "{title}", row, context.nameOf);
+		const sub = block.sub ? fillInterfaceText(block.sub, row, context.nameOf) : "";
+		const status = block.status ? cellText(drawn.source, block.status, row[block.status], context) : "";
 		const byAgent = typeof agentId === "string" && block.figure === "agent";
+		const lineId = domId("line", key, item.key);
 		const body = [
-			typeof agentId === "string" ? h("span", { class: "interface-item-figure" }, figureOf(agentId)) : null,
+			typeof agentId === "string" ? h("span", { class: "interface-item-figure" }, context.figureOf(agentId)) : null,
 			h(
 				"span",
 				{ class: "interface-item-copy" },
-				h("strong", null, byAgent ? nameOf("agent", agentId) : line),
+				h("strong", { id: lineId }, byAgent ? context.nameOf("agent", agentId) : line),
 				byAgent ? h("small", null, line) : sub ? h("small", null, sub) : null,
 			),
 			status ? h("span", { class: "interface-item-status" }, status) : null,
 			live ? h("span", { class: "interface-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")) : null,
 		];
-		return h(
-			"li",
-			null,
-			href ? h("a", { class: "interface-item", href }, ...body) : h("div", { class: "interface-item" }, ...body),
-		);
+		const isOpen = opened !== undefined && item.key === opened;
+		const main =
+			opens !== null
+				? h(
+						"button",
+						{
+							type: "button",
+							class: `interface-item${isOpen ? " is-open" : ""}`,
+							"aria-current": isOpen ? "true" : null,
+							"data-focus-key": `open:${opens}:${item.key}`,
+							onclick: () => openRow(context, opens, item),
+						},
+						...body,
+					)
+				: href
+					? h("a", { class: "interface-item", href, "data-focus-key": `item:${key}:${item.key}` }, ...body)
+					: h("div", { class: "interface-item" }, ...body);
+		const actions = rowButtons(buttons, item, drawn, context, lineId);
+		return h("li", null, actions ? h("div", { class: "interface-item-row" }, main, actions) : main);
 	});
-	return h(
-		"section",
-		{ class: `interface-block interface-width-${block.width}${cards ? " interface-cards" : ""}` },
-		block.title ? h("h2", null, block.title) : null,
+	return blockFrame(
+		block,
+		key,
+		cards ? " interface-cards" : "",
+		block.title,
 		items.length
 			? h("ul", { class: "interface-list" }, ...items)
 			: h("p", { class: "interface-empty" }, t("Nothing here right now.")),
 	);
+}
+
+function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
+	const { block, key, source, opens } = drawn;
+	const buttons = blockButtons(context.file, block);
+	const columns = (
+		block.columns.length ? block.columns : Object.keys(drawn.rows[0]?.row ?? {}).filter((column) => column !== "id")
+	).filter((column) => !Object.hasOwn(block.lookups, column));
+	const sort = context.page.sort[key];
+	const filter = context.page.filter[key] ?? "";
+	const needle = filter.trim().toLocaleLowerCase();
+	const text = (row: TableRow, column: string) => cellText(source, column, interfaceCell(row, column), context);
+	const shown = drawn.rows.filter(
+		({ row }) => !needle || columns.some((column) => text(row, column).toLocaleLowerCase().includes(needle)),
+	);
+	if (sort) {
+		// An agent's column sorts by the name shown, what waits by its label, yes/no by its word; numbers and times
+		// by their value. Empty cells come last, as values sort.
+		const byText =
+			AGENT_COLUMNS.has(sort.column) ||
+			(source === "waiting" && sort.column === "kind") ||
+			drawn.rows.some(({ row }) => typeof row[sort.column] === "boolean");
+		const locale = presentationLocale();
+		const byWords = (a: string, b: string) => (a === b ? 0 : !a ? 1 : !b ? -1 : a.localeCompare(b, locale));
+		shown.sort((a, b) => {
+			const order = byText
+				? byWords(text(a.row, sort.column), text(b.row, sort.column))
+				: compareInterfaceValues(interfaceCell(a.row, sort.column), interfaceCell(b.row, sort.column));
+			return sort.descending ? -order : order;
+		});
+	}
+	const opened = opens === null ? undefined : context.page.open[opens];
+	const header = h(
+		"tr",
+		null,
+		...columns.map((column) => {
+			const sorted = sort?.column === column ? (sort.descending ? "descending" : "ascending") : "none";
+			return h(
+				"th",
+				{ scope: "col", "aria-sort": sorted },
+				h(
+					"button",
+					{
+						type: "button",
+						class: "interface-sort",
+						"data-focus-key": `sort:${key}:${column}`,
+						onclick: () => {
+							context.page.sort = {
+								...context.page.sort,
+								[key]: { column, descending: sort?.column === column ? !sort.descending : false },
+							};
+							context.redraw();
+						},
+					},
+					columnLabel(source, column),
+					sorted === "none" ? null : h("span", { "aria-hidden": "true" }, sorted === "ascending" ? " ↑" : " ↓"),
+				),
+			);
+		}),
+		buttons.length ? h("th", { scope: "col" }, h("span", { class: "visually-hidden" }, t("Actions"))) : null,
+	);
+	const body = shown.map((item) => {
+		const isOpen = opened !== undefined && item.key === opened;
+		const lineId = domId("line", key, item.key);
+		const cells = columns.map((column, index) => {
+			const value = text(item.row, column);
+			if (index === 0 && opens !== null)
+				return h(
+					"td",
+					{ id: lineId },
+					h(
+						"button",
+						{
+							type: "button",
+							class: "interface-row-open",
+							"aria-current": isOpen ? "true" : null,
+							"data-focus-key": `open:${opens}:${item.key}`,
+							onclick: () => openRow(context, opens, item),
+						},
+						value || t("Open"),
+					),
+				);
+			return h("td", index === 0 ? { id: lineId } : null, value);
+		});
+		const actions = rowButtons(buttons, item, drawn, context, lineId);
+		return h("tr", { class: isOpen ? "is-open" : null }, ...cells, actions ? h("td", null, actions) : null);
+	});
+	const filterField = h("input", {
+		type: "search",
+		class: "interface-filter",
+		value: filter,
+		placeholder: t("Filter"),
+		"aria-label": block.title ? t("Filter {title}", { title: block.title }) : t("Filter"),
+		"data-focus-key": `filter:${key}`,
+	});
+	const applyFilter = () => {
+		context.page.filter = { ...context.page.filter, [key]: filterField.value };
+		context.redraw();
+	};
+	// A letter being composed (a dead key, an input method) is not cut off by a redraw; it filters once composed.
+	filterField.addEventListener("input", (event) => {
+		if (!(event as InputEvent).isComposing) applyFilter();
+	});
+	filterField.addEventListener("compositionend", applyFilter);
+	return blockFrame(
+		block,
+		key,
+		" interface-table-block",
+		block.title,
+		drawn.rows.length ? filterField : null,
+		shown.length
+			? h(
+					"div",
+					{ class: "interface-table-scroll" },
+					h(
+						"table",
+						{
+							class: "interface-table",
+							...(block.title
+								? { "aria-labelledby": domId("title", key) }
+								: { "aria-label": context.file.name }),
+						},
+						h("thead", null, header),
+						h("tbody", null, ...body),
+					),
+				)
+			: h("p", { class: "interface-empty" }, drawn.rows.length ? t("No rows match.") : t("Nothing here right now.")),
+	);
+}
+
+function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
+	const { block, open, key, source } = drawn;
+	const target = block.id ?? "";
+	if (!open)
+		return blockFrame(
+			block,
+			key,
+			" interface-detail is-empty",
+			block.title === null ? null : fillInterfaceText(block.title, {}, context.nameOf),
+			h("p", { class: "interface-empty" }, t("Choose one to see it here.")),
+		);
+	const fields = block.fields.length
+		? block.fields
+		: Object.keys(open.row).filter((column) => column !== "text" && column !== "id");
+	const text = interfaceCell(open.row, "text");
+	const lineId = domId("line", key, open.key);
+	const actions = rowButtons(blockButtons(context.file, block), open, drawn, context, lineId);
+	return blockFrame(
+		block,
+		key,
+		" interface-detail is-open",
+		block.title === null ? null : fillInterfaceText(block.title, open.row, context.nameOf),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "interface-back",
+				"data-focus-key": `back:${target}`,
+				onclick: () => openRow(context, target, null),
+			},
+			t("Back"),
+		),
+		h(
+			"dl",
+			{ class: "interface-fields", id: lineId },
+			...fields.flatMap((column) => [
+				h("dt", null, columnLabel(source, column)),
+				h("dd", null, cellText(source, column, interfaceCell(open.row, column), context)),
+			]),
+		),
+		typeof text === "string" && text ? h("div", { class: "interface-detail-text" }, markdown(text)) : null,
+		actions,
+	);
+}
+
+/** The agent a value names, if it still works here. */
+function activeAgent(context: BlockContext, id: TableValue | undefined): HostedStaffAgent | undefined {
+	const agent = typeof id === "string" ? context.company.staffById(id) : undefined;
+	return agent?.employmentStatus === "active" ? agent : undefined;
+}
+
+/** The agent a `message` button's `to` names for this row: an id, `{column}` or the Co-Founder. */
+function messageTarget(context: BlockContext, to: string, row: TableRow): HostedStaffAgent | undefined {
+	if (to === "co-founder") return activeAgent(context, context.company.cofounderId());
+	const named = to.match(/^\{([a-z][a-z0-9_]*)\}$/);
+	return activeAgent(context, named ? interfaceCell(row, named[1] ?? "") : to);
+}
+
+/** A row's buttons, or null when it has none to show here. A button is drawn only where the member can use it:
+ * answer where a card waits for them, message to an agent that still works here, and both only for a member who
+ * may write. `lineId` names the row, so each button says which row it belongs to. */
+function rowButtons(
+	buttons: readonly DrawnButton[],
+	item: InterfaceRow,
+	drawn: DrawnBlock,
+	context: BlockContext,
+	lineId: string,
+): HTMLElement | null {
+	const label = (text: string) => fillInterfaceText(text, item.row, context.nameOf);
+	const focus = (index: number) => `action:${drawn.key}:${item.key}:${index}`;
+	const describe = { "aria-describedby": lineId };
+	const drawnButtons = buttons.flatMap((drawnButton, index): HTMLElement[] => {
+		if (drawnButton.verb === "answer") {
+			// The platform's own card waits in its thread; the button takes the member there.
+			if (!item.href || !context.canWrite || !rowHasCard(drawn.source, item.row)) return [];
+			return [
+				h(
+					"a",
+					{ class: "interface-button", href: item.href, "data-focus-key": focus(index), ...describe },
+					label(drawnButton.label),
+				),
+			];
+		}
+		if (drawnButton.verb === "open") {
+			const href = openTarget(drawnButton.target, item.row, context);
+			if (href)
+				return [
+					h(
+						"a",
+						{ class: "interface-button", href, "data-focus-key": focus(index), ...describe },
+						label(drawnButton.label),
+					),
+				];
+			const opens = drawn.opens;
+			if (drawnButton.target === "row" && opens !== null)
+				return [
+					h(
+						"button",
+						{
+							type: "button",
+							class: "interface-button",
+							"data-focus-key": focus(index),
+							...describe,
+							onclick: () => openRow(context, opens, item),
+						},
+						label(drawnButton.label),
+					),
+				];
+			return [];
+		}
+		const agent = messageTarget(context, drawnButton.to, item.row);
+		if (!agent || !context.canWrite) return [];
+		const pendingKey = focus(index);
+		const pending = () => context.page.pending.includes(pendingKey);
+		const action = h(
+			"button",
+			{
+				type: "button",
+				class: "interface-button",
+				"data-focus-key": pendingKey,
+				disabled: pending(),
+				...describe,
+			},
+			label(drawnButton.label),
+		);
+		action.addEventListener("click", () => {
+			// One click puts the text in the composer once, however often the page redraws while the thread opens.
+			if (pending()) return;
+			action.disabled = true;
+			context.page.pending = [...context.page.pending, pendingKey];
+			context.page.error = null;
+			const done = () => {
+				context.page.pending = context.page.pending.filter((key) => key !== pendingKey);
+			};
+			void messageAgent(context, agent, drawnButton, item.row, drawn.source).then(done, (error: unknown) => {
+				done();
+				action.disabled = false;
+				context.page.error = describeError(error);
+				context.page.errorShown = false;
+				context.page.errors += 1;
+				// The member may have gone on to another page; this page draws the error only where it still shows.
+				if (context.stillShown()) context.redraw();
+			});
+		});
+		return [action];
+	});
+	return drawnButtons.length ? h("span", { class: "interface-actions" }, ...drawnButtons) : null;
+}
+
+/** Where an `open` button leads: an agent's thread (`agent:{column}` or `agent:<id>`), or another interface this
+ * member can open. */
+function openTarget(target: string, row: TableRow, context: BlockContext): string | null {
+	if (target.startsWith("agent:")) {
+		const named = target.slice("agent:".length);
+		const column = named.match(/^\{([a-z][a-z0-9_]*)\}$/);
+		const agent = activeAgent(context, column ? interfaceCell(row, column[1] ?? "") : named);
+		if (!agent) return null;
+		return agent.id === context.company.cofounderId()
+			? `#/c/${context.profileId}`
+			: `#/c/${context.profileId}/staff/${agent.id}`;
+	}
+	if (target.startsWith("interface:")) {
+		const name = target.slice("interface:".length);
+		return companyInterfaces(context.company).some((entry) => entry.name === name)
+			? `#/c/${context.profileId}/i/${name}`
+			: null;
+	}
+	return null;
+}
+
+/** The longest an outside value runs inside its marks. */
+const OUTSIDE_VALUE_MAX = 200;
+
+/** The text a `message` button puts in the composer. A value from a column that carries outside content goes
+ * in «guillemets», on the same line, and a quoted last line says those marks quote outside content: the agent and
+ * the reviewer read it as quoted, never as the member's own words. A quoted value can't close or open the marks,
+ * start a line of its own (a fake quote line, an instruction set apart), or hide text with control or direction
+ * characters. */
+export function messageText(
+	text: string,
+	row: TableRow,
+	outside: readonly string[],
+	nameOf: (column: string, value: unknown) => string,
+): string {
+	let quoted = false;
+	const filled = fillInterfaceText(text, row, (column, value) => {
+		const shown = nameOf(column, value);
+		if (!outside.includes(column)) return shown;
+		quoted = true;
+		const flat = shown
+			.replace(/«/g, "‹")
+			.replace(/»/g, "›")
+			.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+		// Cut by characters, never inside one (an emoji is two UTF-16 units).
+		const characters = [...flat];
+		return `«${
+			characters.length > OUTSIDE_VALUE_MAX
+				? `${characters
+						.slice(0, OUTSIDE_VALUE_MAX - 1)
+						.join("")
+						.trimEnd()}…`
+				: flat
+		}»`;
+	});
+	return quoted ? `${filled}\n\n> ${t("Text in «» is quoted from outside content, not written by me.")}` : filled;
+}
+
+/** A `message` button: opens the agent's thread with the prefilled text in its composer. Nothing is sent until the
+ * member sends it. If the member has moved on by the time the thread is ready, the text still waits in its
+ * composer, but the page stays where they are. */
+async function messageAgent(
+	context: BlockContext,
+	agent: HostedStaffAgent,
+	drawnButton: Extract<DrawnButton, { verb: "message" }>,
+	row: TableRow,
+	source: string,
+): Promise<void> {
+	const { company, profileId } = context;
+	const from = location.hash;
+	const cofounderId = company.cofounderId();
+	let sessionId: string | undefined;
+	if (agent.id === cofounderId) {
+		const opened = await company.openCofounderConversation();
+		if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
+		sessionId = opened.sessionId;
+	} else sessionId = await company.openStaffConversation(agent);
+	const text = messageText(drawnButton.text, row, OUTSIDE_COLUMNS[source] ?? [], context.nameOf);
+	const conversation = company.conversation(sessionId);
+	const draft = conversation.get().draft?.trim();
+	conversation.set({ draft: draft ? `${draft}\n\n${text}` : text });
+	if (location.hash === from)
+		location.hash = agent.id === cofounderId ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
 }

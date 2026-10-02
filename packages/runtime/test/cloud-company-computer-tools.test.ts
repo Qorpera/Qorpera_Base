@@ -108,13 +108,33 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			expect(tool.description).toContain("an assigned screen is not a private browser");
 			expect(tool.description).toContain("Never sign personal accounts into the Company Computer");
 			expect(tool.description).toContain("supported, authorized connector granted to the company");
-			expect(tool.description).toContain("use a supported typed handoff");
-			expect(tool.description).toContain("never request passwords or enter credential values through these tools");
-			expect(tool.description).toContain("If the required connector or handoff is unavailable, report the blocker");
+			// A company account's values are typed only by the vault (A1-4); a block page ends the attempt.
+			expect(tool.description).toContain("use browser vault_fill {role, name, account, field}");
+			expect(tool.description).toContain("never type or ask for a password yourself");
+			expect(tool.description).toContain("ends the attempt at once: never retry it");
+			expect(tool.description).toContain("If the required connector or account is unavailable, report the blocker");
 			expect(tool.description).toContain(
 				"Model-provider subscription credentials never belong on the Company Computer",
 			);
 		}
+		// The browser offers vault_fill: an account id and which of its values, never a value.
+		const browser = harness.session.tools.find((tool) => tool.name === "computer_browser")!;
+		const actions = (
+			browser.inputSchema.properties as { action: { oneOf: Array<{ properties: Record<string, unknown> }> } }
+		).action.oneOf;
+		expect(actions.find((schema) => (schema.properties.action as { const: string }).const === "vault_fill")).toEqual({
+			type: "object",
+			additionalProperties: false,
+			required: ["kind", "action", "role", "name", "account", "field"],
+			properties: {
+				kind: { const: "browser" },
+				action: { const: "vault_fill" },
+				role: { enum: ["textbox", "spinbutton"] },
+				name: { type: "string", maxLength: 512 },
+				account: { type: "string", pattern: expect.any(String) },
+				field: { enum: ["login", "password", "code"] },
+			},
+		});
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
