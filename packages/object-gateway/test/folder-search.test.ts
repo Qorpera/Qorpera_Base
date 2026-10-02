@@ -145,15 +145,48 @@ describe("folder search", () => {
 		expect(page.reads.map((r) => r.path)).toEqual(["bin.dat", "good.md"]);
 	});
 
-	it("searches names with namesOnly, folders too, and reads only the folders it looked through", async () => {
-		const { source, asked } = stage({ "plans/a.md": "x", "docs/plan-b.md": "x", "docs/other.md": "x" });
+	it("searches names with namesOnly, folders too, and reads each name it shows and each folder it looked through", async () => {
+		const { source, asked, tree } = stage({
+			"plans/a.md": "x",
+			"docs/plan-b.md": "x",
+			"docs/other.md": "x",
+			"plan-top.md": "x",
+		});
+		// A folder the agent may not list, shown only because it holds a readable path, is never a name hit.
+		tree.put({
+			path: "hidden-plans/plan.md",
+			kind: "file",
+			version: v(90),
+			manifestSha256: "f".repeat(64),
+			bytes: 1,
+		});
 		const page = await searchView(source, request("PLAN", { namesOnly: true }));
-		expect(seen(page)).toEqual([
-			{ path: "docs/plan-b.md", line: 0, text: "docs/plan-b.md" },
-			{ path: "plans", line: 0, text: "plans" },
+		expect(page.hits.map((h) => [h.path, h.kind, h.line, h.text])).toEqual([
+			["docs/plan-b.md", "file", 0, ""],
+			["hidden-plans/plan.md", "file", 0, ""],
+			["plan-top.md", "file", 0, ""],
+			["plans", "folder", 0, ""],
 		]);
-		expect(page.reads.map((r) => `${r.kind} ${r.path}`)).toEqual(["folder docs", "folder plans"]);
+		expect(page.reads.map((r) => `${r.kind} ${r.path}`)).toEqual([
+			"folder docs",
+			"file docs/plan-b.md",
+			"file hidden-plans/plan.md",
+			"file plan-top.md",
+			"folder plans",
+		]);
 		expect(asked).toEqual([]);
+	});
+
+	it("ends a page by the encoded size of its reads, so it always fits one frame", async () => {
+		const files: Record<string, string> = {};
+		const long = "d".repeat(250);
+		for (let i = 0; i < 1_000; i++)
+			files[`${long}/${long}/${long}/${String(i).padStart(4, "0")}${"x".repeat(200)}.md`] = "x";
+		const { source } = stage(files);
+		const page = await searchView(source, request("zzz"));
+		expect(page.next).not.toBeNull();
+		expect(page.reads.length).toBeLessThan(1_000);
+		expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(2 * 1024 * 1024 - 1024);
 	});
 
 	it("pages by hits, across the pieces of a file, with no line shown twice or left out", async () => {

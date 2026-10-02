@@ -865,7 +865,7 @@ describe("run box views", () => {
 		const found = await io.json();
 		expect(found.kind).toBe(Kind.found);
 		expect(found.body).toEqual({
-			hits: [{ path: "docs/plan.md", line: 1, text: "the plan", version: v(1), offset: 0 }],
+			hits: [{ path: "docs/plan.md", kind: "file", line: 1, text: "the plan", version: v(1), offset: 0 }],
 			searched: 1,
 			binary: 0,
 			reads: [
@@ -880,7 +880,10 @@ describe("run box views", () => {
 		io.send(Kind.search, { ...search, query: "" });
 		expect((await io.json()).body.code).toBe("BAD_REQUEST");
 		io.send(Kind.search, { ...search, namesOnly: true, query: "plan." });
-		expect((await io.json()).body).toMatchObject({ hits: [{ path: "docs/plan.md", line: 0 }], next: null });
+		const names = (await io.json()).body;
+		expect(names).toMatchObject({ hits: [{ path: "docs/plan.md", kind: "file", line: 0, text: "" }], next: null });
+		// The name shown is a read of its entry.
+		expect((names.reads as { path: string }[]).map((r) => r.path)).toEqual(["docs", "docs/plan.md"]);
 	});
 
 	it("takes no core view at all from a node with no run box hosts", () => {

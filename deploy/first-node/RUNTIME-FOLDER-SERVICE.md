@@ -278,18 +278,21 @@ service, so the execution host stays small:
   the nearest folder's above it that has one. A new receipt (after an access change) counts as a change. A stale or
   missing receipt costs the core a per-path check at release, never a wrong record. Members and operator mounts get
   none.
-- **`S` / `s` frames.** `{query, path, glob, namesOnly, caseSensitive, after}` answers `{hits: [{path, line,
-  text}], searched, binary, reads: [{path, kind, version, authority?}], next}`. The search is literal text in the
-  lines of text files (a NUL in a file's first 8 KiB makes it binary: passed over and counted), or with `namesOnly`
-  in the names of files and folders; `glob` keeps to matching paths (`*` and `?` in a name, `**` across folders; a
-  glob without '/' is matched against the name). It walks the view in the order a machine lists it and answers one
-  page: when its hits fill about 6 KiB, when it has drawn on 4,000 paths, or after about 2 s of work, with `next` (a
-  path, and inside a file the byte and line to go on from, in the version it was searched at). A page is never the
-  search's end: there is no cap. A path not in the view is `NOT_FOUND`; a share that cannot be read now fails the
-  page (`UNAVAILABLE`); a file whose bytes fail their hash check is passed over and not read.
-- **What a page read.** `reads` names every folder whose names it looked through and every file whose bytes it read
-  (binary ones too), each with its receipt. The run releases them with the run actor under the hash of the text it
-  shows (`qorpera_folder_record_release`, P8), before the model sees it.
+- **`S` / `s` frames.** `{query, path, glob, namesOnly, caseSensitive, after}` answers `{hits: [{path, kind, line,
+  text, version, offset}], searched, binary, reads: [{path, kind, version, authority?}], next}`. A hit names its
+  version and the byte its line starts at (0 for a name), so a run that shows a page in part goes on from the first
+  hit it left out. The search is literal text in the lines of text files (a NUL in a file's first 8 KiB makes it
+  binary: passed over and counted), or with `namesOnly` in the names of files and folders; `glob` keeps to matching
+  paths (`*` and `?` in a name, `**` across folders; a glob without '/' is matched against the name). It walks the
+  view in the order a machine lists it and answers one page: when its hits fill about 6 KiB, when it has drawn on
+  4,000 paths or 1 MiB of them (so a page always fits one frame, however long its paths), or after about 2 s of
+  work, with `next` (a path, and inside a file the byte and line to go on from, in the version it was searched at).
+  A page is never the search's end: there is no cap. A path not in the view is `NOT_FOUND`; a share that cannot be
+  read now fails the page (`UNAVAILABLE`); a file whose bytes fail their hash check is passed over and not read.
+- **What a page read.** `reads` names every folder whose names it looked through, every file whose bytes it read
+  (binary ones too), and every entry whose name is a hit, each with its receipt. A folder shown only because it
+  holds readable paths (no version of its own) is never a name hit. The run releases them with the run actor under
+  the hash of the text it shows (`qorpera_folder_record_release`, P8), before the model sees it.
 - **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection:
   `qorpera-folder-relay@N.socket` (`/run/qorpera-folder-relay/N.sock`, the slot's native host account only, 0600)
   runs `qorpera-folder relay`, which copies bytes both ways to the node's bridge (vsock 2:5250) and reads none of

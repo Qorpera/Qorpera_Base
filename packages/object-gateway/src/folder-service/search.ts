@@ -13,8 +13,9 @@ import { byteOrder, type TreeEntry, type ViewTree } from "./view-tree.ts";
  * One call is one page of the search: it answers when its hits fill the answer, when it has drawn on as many paths as
  * one answer carries, or after about two seconds of work, with where to go on. There is no end the search stops at.
  *
- * Every path an answer drew on is in its `reads`, with its receipt: each folder whose names were looked through and
- * each file whose bytes were read (binary ones too: that they are binary was read from them). The run releases them
+ * Every path an answer drew on is in its `reads`, with its receipt: each folder whose names were looked through, each
+ * file whose bytes were read (binary ones too: that they are binary was read from them), and each entry whose name is
+ * a hit. A folder shown only because it holds readable paths (no version of its own) is never a name hit. The run releases them
  * with the run actor under the hash of the text it shows, before the model sees it.
  */
 
@@ -24,8 +25,10 @@ export const SEARCH_SLICE_MS = 2_000;
 const HITS_BYTES = 6 * 1024;
 /** A hit's text: the line around its first match. */
 const HIT_CHARS = 200;
-/** Paths one answer draws on at most (each read is about 200 bytes of the answer's frame). */
+/** Paths one answer draws on at most, by count and by their encoded size: the answer always fits one frame (2 MiB),
+ * however long the paths. */
 const READS_PER_ANSWER = 4_000;
+const READS_BYTES = 1024 * 1024;
 /** A file with a NUL byte in its first this many bytes is binary: it is not searched. */
 const BINARY_PROBE = 8 * 1024;
 /** Bytes read from a file at a time, and the most a line may run before it is cut there. */
@@ -36,8 +39,10 @@ const AHEAD = 8;
 
 export interface SearchHit {
 	readonly path: string;
+	readonly kind: "file" | "folder";
 	/** The line's number, from 1; 0 for a name. */
 	readonly line: number;
+	/** The line around its match; empty for a name (the path is the hit). */
 	readonly text: string;
 	/** The version searched, and the byte its line starts at (0 for a name): where to go on from this hit, should the
 	 * run show only the hits before it. */
@@ -112,6 +117,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 	const hits: SearchHit[] = [];
 	const reads: SearchRead[] = [];
 	let hitBytes = 0;
+	let readBytes = 0;
 	let searched = 0;
 	let binary = 0;
 	const glob = request.glob === null ? undefined : globPattern(request.glob);
@@ -126,16 +132,18 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 	};
 	const read = (entry: TreeEntry): void => {
 		if (entry.version === "") return; // the root, or a folder shown only because it holds readable paths
-		reads.push({
+		const drawn: SearchRead = {
 			path: entry.path,
 			kind: entry.kind,
 			version: entry.version,
 			...(entry.authority === undefined ? {} : { authority: entry.authority }),
-		});
+		};
+		reads.push(drawn);
+		readBytes += Buffer.byteLength(JSON.stringify(drawn));
 	};
 	/** Adds a hit, or says the answer is full. */
 	const hit = (entry: TreeEntry, line: number, text: string, offset = 0): boolean => {
-		const shown = { path: entry.path, line, text, version: entry.version, offset };
+		const shown = { path: entry.path, kind: entry.kind, line, text, version: entry.version, offset };
 		const bytes = Buffer.byteLength(JSON.stringify(shown));
 		if (hits.length > 0 && hitBytes + bytes > HITS_BYTES) return false;
 		hits.push(shown);
@@ -175,20 +183,29 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 	};
 
 	for (let entry = pull(); entry; entry = pull()) {
-		if (reads.length >= READS_PER_ANSWER || (source.now() >= deadline && (reads.length > 0 || hits.length > 0)))
+		if (
+			reads.length >= READS_PER_ANSWER ||
+			readBytes >= READS_BYTES ||
+			(source.now() >= deadline && (reads.length > 0 || hits.length > 0))
+		)
 			return answer(at(entry));
 		if (entry.kind === "folder") {
 			// Its names are looked through (to walk it, and for name hits beneath it).
 			read(entry);
-			if (request.namesOnly && entry.path !== request.path && matchesGlob(entry)) {
+			// A folder with a version of its own is a name hit (its read is the one above).
+			if (request.namesOnly && entry.path !== request.path && entry.version !== "" && matchesGlob(entry)) {
 				const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-				if (fold(name).includes(query) && !hit(entry, 0, entry.path)) return answer(at(entry));
+				if (fold(name).includes(query) && !hit(entry, 0, "")) return answer(at(entry));
 			}
 			continue;
 		}
 		if (request.namesOnly) {
 			const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-			if (matchesGlob(entry) && fold(name).includes(query) && !hit(entry, 0, entry.path)) return answer(at(entry));
+			if (matchesGlob(entry) && fold(name).includes(query)) {
+				if (!hit(entry, 0, "")) return answer(at(entry));
+				// The name is shown: the entry is read.
+				read(entry);
+			}
 			continue;
 		}
 		if (!text(entry)) continue;
