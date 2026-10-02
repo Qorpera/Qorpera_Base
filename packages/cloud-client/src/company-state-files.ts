@@ -109,8 +109,8 @@ export const WEBSITE_STATUSES = Object.freeze(["pending", "connected", "needs_pe
 /** How a website account's second step reaches the company. */
 export const WEBSITE_TWO_STEP = Object.freeze(["none", "authenticator", "email", "sms"] as const);
 /** A website's host as the vault keeps it (SQL `qorpera_company_account_host_valid`): lowercase
- * labels of letters, digits and inner hyphens, at least two, at most 253 characters. */
-const WEBSITE_HOST = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/;
+ * labels of 1–63 letters, digits and inner hyphens, at least two, at most 253 characters. */
+const WEBSITE_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
 /** What counts as a human task's proof. */
 export const HUMAN_TASK_PROOF = Object.freeze(["photo", "file", "signature", "note"] as const);
@@ -1126,15 +1126,13 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 	}
 	const connectedBy = fields.id("connected_by", true);
 	const connectedAt = fields.instant("connected_at", true);
-	const site = fields.text("site", website, 253);
-	if (site !== null && website && !WEBSITE_HOST.test(site))
+	// A website account's own keys; on any other service they stay unread, so closing the settings
+	// reports each one once, as an unknown setting.
+	const site = website ? fields.text("site", true, 253) : null;
+	if (site !== null && !WEBSITE_HOST.test(site))
 		problems.add("value", fields.line("site"), "site", "site is a lowercase host like accounts.example.com");
-	const twoStep = fields.choice("two_step", website, WEBSITE_TWO_STEP);
-	const openedFor = fields.id("opened_for", false);
-	if (!website)
-		for (const key of ["site", "two_step", "opened_for"])
-			if (fields.values.has(key))
-				problems.add("value", fields.line(key), key, `${key} is for a website account (service: website)`);
+	const twoStep = website ? fields.choice("two_step", true, WEBSITE_TWO_STEP) : null;
+	const openedFor = website ? fields.id("opened_for", false) : null;
 	const purpose = body(split, problems, "what the account is for", false, 32768);
 	fields.close("a connection");
 	if (
@@ -1844,7 +1842,7 @@ export function writeConnectionFile(file: Omit<ConnectionFile, "kind">): string 
 			["actions", listValue(file.actions)],
 			["connected_by", file.connectedBy],
 			["connected_at", file.connectedAt],
-			["site", file.site ?? null],
+			["site", file.site === undefined ? null : companyStateValue(file.site)],
 			["two_step", file.twoStep ?? null],
 			["opened_for", file.openedFor ?? null],
 		],
