@@ -8,6 +8,7 @@ import {
 	type KeyObject,
 	randomBytes,
 } from "node:crypto";
+import { isUuid } from "@qorpera/contracts";
 
 /* A company account's value on its way into one Company Computer (A1-3,
  * deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md). The office service makes an X25519 key pair in memory
@@ -23,7 +24,6 @@ import {
 const BOX_SCHEMA = "qorpera.company-account-fill-box/v1";
 const PAYLOAD_SCHEMA = "qorpera.company-account-fill/v1";
 const INFO = Buffer.from("qorpera.company-account-fill/v1", "utf8");
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 /** The X25519 SubjectPublicKeyInfo prefix (RFC 8410), for a raw 32-byte key. */
 const SPKI_X25519 = Buffer.from("302a300506032b656e032100", "hex");
@@ -68,10 +68,10 @@ function decoded(value: unknown, length: number | readonly [number, number], lab
 
 function identity(value: CompanyAccountFillIdentity): CompanyAccountFillIdentity {
 	if (
-		!UUID.test(value.companyId) ||
-		!UUID.test(value.companyComputerId) ||
-		!UUID.test(value.receiptId) ||
-		!UUID.test(value.accountId) ||
+		!isUuid(value.companyId) ||
+		!isUuid(value.companyComputerId) ||
+		!isUuid(value.receiptId) ||
+		!isUuid(value.accountId) ||
 		!Number.isSafeInteger(value.computerGeneration) ||
 		value.computerGeneration < 1 ||
 		!FIELDS.includes(value.field)

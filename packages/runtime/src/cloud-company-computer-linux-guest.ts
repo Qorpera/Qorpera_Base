@@ -136,6 +136,8 @@ interface PrivateSurface {
 export interface CompanyComputerLinuxGuestOptions {
 	scope: CompanyComputerScope;
 	computerGeneration: number;
+	/** This service's boot key for company account fills (A1-3); without it a vault_fill is refused. */
+	fillKey?: import("./cloud-company-account-fill-box.ts").CompanyComputerFillKey;
 	layout: CompanyComputerGuestLayout;
 	limits: CompanyComputerCommandLimits;
 	workbenchMount: RecoveryDirectoryMount;
@@ -726,6 +728,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						screenshots: this.#options.screenshots(input.run),
 						fileExports: this.#options.fileExports?.(input.run),
 						fileImports: this.#options.fileImports?.(input.run),
+						fillKey: this.#options.fillKey,
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},

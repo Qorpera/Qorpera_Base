@@ -13,6 +13,8 @@ import {
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { BrowserContext, Page } from "playwright-core";
+import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
+import { CompanyAccountFillRefusedError, fillCompanyAccountBox } from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
@@ -316,6 +318,10 @@ export class CompanyComputerGuestAutomation {
 		| import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher
 		| undefined;
 	readonly #tabIds = new Map<Page, string>();
+	/** This office service's boot key: it alone opens what the vault sealed for a vault_fill (A1-3). */
+	readonly #fillKey: CompanyComputerFillKey | undefined;
+	/** Secrets the vault typed here, hidden wherever a snapshot shows them, as private boxes' values are. */
+	readonly #filled = new Set<string>();
 	#tabLease?: string;
 	#page?: Page;
 
@@ -330,6 +336,7 @@ export class CompanyComputerGuestAutomation {
 		screenshots: CompanyComputerScreenshotPublisher;
 		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
+		fillKey?: CompanyComputerFillKey;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -343,6 +350,7 @@ export class CompanyComputerGuestAutomation {
 		this.#screenshots = options.screenshots;
 		this.#fileExports = options.fileExports;
 		this.#fileImports = options.fileImports;
+		this.#fillKey = options.fillKey;
 	}
 
 	/**
@@ -559,6 +567,39 @@ export class CompanyComputerGuestAutomation {
 			} else if (action.action === "press") {
 				const key = action.key;
 				await this.#pageCall(() => page.keyboard.press(key));
+			} else if (action.action === "vault_fill") {
+				// Only this boot's key opens the box, and only for this call, account and field: the value then
+				// goes into the one box named, on the account's own website, and nowhere else.
+				const sealed = effect.fill;
+				const key = this.#fillKey;
+				if (!key || !sealed) throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNAVAILABLE");
+				let opened: ReturnType<CompanyComputerFillKey["open"]>;
+				try {
+					opened = key.open(sealed, {
+						companyId: this.#binding.companyId,
+						companyComputerId: this.#binding.companyComputerId,
+						computerGeneration: this.#binding.computerGeneration,
+						receiptId: effect.receiptId,
+						accountId: action.account,
+						field: action.field,
+					});
+				} catch {
+					throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNOPENED");
+				}
+				const box = page.getByRole(action.role, { name: action.name, exact: true });
+				if ((await this.#pageCall(() => box.count())) !== 1)
+					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
+				signal.throwIfAborted();
+				if (opened.field !== "login") this.#filled.add(opened.value);
+				try {
+					await fillCompanyAccountBox(page, box, opened);
+				} catch (error) {
+					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
+					throw new CompanyComputerActionFailedError(
+						new Error(error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED"),
+					);
+				}
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
@@ -568,7 +609,7 @@ export class CompanyComputerGuestAutomation {
 				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const snapshot = await this.#pageCall(async () =>
-					redactCompanyComputerSnapshot(aria, [...before, ...after]),
+					redactCompanyComputerSnapshot(aria, [...before, ...after, ...this.#filled]),
 				);
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));

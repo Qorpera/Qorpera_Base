@@ -12,6 +12,7 @@ import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-com
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import {
 	COMPANY_COMPUTER_NATIVE_SCHEMA,
+	type CompanyComputerAccountFills,
 	createHttpCompanyComputerSessionFactory,
 	HttpCompanyComputerNativeEndpoint,
 	parseCompanyComputerNativeDescriptor,
@@ -28,6 +29,7 @@ import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority
 import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
+	cloudNativeToolOperationEnvelope,
 } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -81,7 +83,14 @@ afterAll(async () => {
 	await rm(directory, { recursive: true, force: true });
 });
 
-async function fixture(options: { unavailable?: boolean; admitWork?: () => void } = {}) {
+async function fixture(
+	options: {
+		unavailable?: boolean;
+		admitWork?: () => void;
+		capabilities?: ("shell" | "browser")[];
+		accountFills?: CompanyComputerAccountFills;
+	} = {},
+) {
 	const source = nativeToolAuthorityFixture();
 	const scope = {
 		...computerScope(),
@@ -100,8 +109,16 @@ async function fixture(options: { unavailable?: boolean; admitWork?: () => void 
 	const descriptor = {
 		state: "available" as const,
 		scope,
-		capabilities: ["shell" as const],
-		resources: { officeGrantId: randomUUID(), officeGrantVersion: 1, officePrivacyVersion: 0 },
+		capabilities: options.capabilities ?? ["shell" as const],
+		resources: {
+			officeGrantId: randomUUID(),
+			officeGrantVersion: 1,
+			officePrivacyVersion: 0,
+			// A browser computer also names its browser grant.
+			...(options.capabilities?.includes("browser")
+				? { browserGrantId: randomUUID(), browserGrantVersion: 1, browserProfileId: randomUUID() }
+				: {}),
+		},
 	};
 	const operation: CompanyComputerOperation = {
 		...computerOperation(),
@@ -213,7 +230,14 @@ async function fixture(options: { unavailable?: boolean; admitWork?: () => void 
 		else await listener.close();
 	});
 	const url = `https://127.0.0.1:${listener.port}/office/${scope.companyComputerId}/native`;
-	const endpoint = new HttpCompanyComputerNativeEndpoint({ run, descriptor, url, token, registry });
+	const endpoint = new HttpCompanyComputerNativeEndpoint({
+		run,
+		descriptor,
+		url,
+		token,
+		registry,
+		...(options.accountFills ? { accountFills: options.accountFills } : {}),
+	});
 	const context = {
 		identity: run.identity,
 		receiptId: randomUUID(),
@@ -379,6 +403,102 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		await f.endpoint.close();
 		expect(f.perform).toHaveBeenCalledOnce();
 	});
+	it("asks the vault for a vault_fill and carries only its sealed box to the office, beside the action", async () => {
+		const box = {
+			schema: "qorpera.company-account-fill-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const fills = {
+			companyAccountFill: vi.fn<CompanyComputerAccountFills["companyAccountFill"]>(async () => ({
+				schema: "qorpera.company-account-fill-answer/v1",
+				box,
+			})),
+		};
+		const f = await fixture({ capabilities: ["browser"], accountFills: fills });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_fill",
+				role: "textbox",
+				name: "Password",
+				account: randomUUID(),
+				field: "password",
+			},
+		};
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({ kind: "text", value: "test" });
+		// The vault reads exactly this call: the envelope whose digest the receipt holds.
+		expect(fills.companyAccountFill).toHaveBeenCalledOnce();
+		const [request] = fills.companyAccountFill.mock.calls[0]!;
+		expect(request).toEqual({
+			binding: f.source.binding,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			envelope: cloudNativeToolOperationEnvelope(f.run.identity, operation),
+		});
+		// The office gets the box beside the action; its own effect check sees the action alone.
+		expect(f.perform.mock.calls[0]![2].fill).toEqual(box);
+		const begin = f.sql.mock.calls
+			.map(([, init]) => JSON.parse(String(init?.body)))
+			.find((body) => body.p_action === "begin");
+		expect(JSON.stringify(begin)).not.toContain("ciphertext");
+		// Nothing else carries a box, and a vault_fill never goes without one.
+		const shell = await f.post({ ...f.body(), fill: box });
+		expect(shell.ok).toBe(false);
+		const bare = await f.post({
+			...f.body(),
+			operation,
+			receipt: { receiptId: randomUUID(), idempotencyKey: "b".repeat(64) },
+		});
+		expect(bare.ok).toBe(false);
+		expect(f.perform).toHaveBeenCalledOnce();
+	});
+
+	it("answers the vault's refusal without reaching the office, and refuses a fill without a vault", async () => {
+		const fills = {
+			companyAccountFill: vi.fn<CompanyComputerAccountFills["companyAccountFill"]>(async () => ({
+				schema: "qorpera.company-account-refusal/v1",
+				code: "0A000",
+				message: "This computer cannot type account values until it restarts on a newer image",
+			})),
+		};
+		const f = await fixture({ capabilities: ["browser"], accountFills: fills });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_fill",
+				role: "textbox",
+				name: "Password",
+				account: randomUUID(),
+				field: "password",
+			},
+		};
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_fill",
+				completed: false,
+				refused: {
+					code: "0A000",
+					message: "This computer cannot type account values until it restarts on a newer image",
+				},
+			},
+		});
+		expect(f.perform).not.toHaveBeenCalled();
+		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
+		const g = await fixture({ capabilities: ["browser"] });
+		await expect(
+			g.endpoint.perform({ ...operation, target: g.operation.target }, g.lease, g.context),
+		).rejects.toThrow("COMPANY_ACCOUNT_FILL_UNAVAILABLE");
+		expect(g.perform).not.toHaveBeenCalled();
+	});
+
 	it("re-derives the native principal, consumes the original receipt and physically closes before releasing occupancy", async () => {
 		const f = await fixture();
 		await f.endpoint.authorize(f.operation, f.run.identity, f.lease, f.run.signal);
