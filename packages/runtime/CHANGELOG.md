@@ -1,5 +1,6 @@
 # Changelog
 
+- Added the run's own folder view for the native host (F3, the server-side `company_search`; founder decision "Light threads", 2 October 2026; migration `20260929999970`, SQL tests 802 and 812): `qorpera_folder_run_view_open(p_environment_id, p_actor)` opens the `run_box` view with the run actor and is listed for G2's entry point with scope folder (86 listed calls). A second open in the same job closes the earlier view as superseded, and two first opens at once leave the later one's view; the order is the run completion's (job, the job's run views, the view open's run entry), and a refused actor is turned away before any lock. The release that goes with a search page is `qorpera_folder_record_release` with the run actor, already listed.
 - The folder core checks a website account's connection file (F2's A1-7b, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2 and §8; migration `20260929999950`, SQL test 801): with `service: website` the parse carries `site` (the vault's host rule), `twoStep` and `openedFor`, and the status may also be `pending` or `needs_person`; every other connection keeps its exact shape and `connected` or `broken`. Inert until A1's vault writer writes such files. Release after A1-7a's parser is live on every writer.
 ## [Unreleased]
 
