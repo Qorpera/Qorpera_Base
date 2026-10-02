@@ -1,13 +1,12 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-2a (20260929999600): the end of a job deletes its presence device and expires its screen leases in the trigger
--- that ends its connection lease, locking only the rows that are free (skip locked), so it never waits for a device
--- or screen. These run against the rows' usual concurrent writers on separate connections: the presence heartbeat
--- (register, which waits for the job row the ending holds), the office supervisor's reap, a member's take-over, and
--- an ending of two jobs against the privacy fence and the reap, which lock several screens of one office in their own
--- order. None deadlocks (no 40P01). Office setup as in 405: a real office and screen lease for test 300's run (job
--- A); job B and its run are copies of job A's and its run's rows, with a second screen of the same office leased to job
--- B (rows only:
--- replica mode skips the foreign keys this test does not build); only guest readiness is synthetic.
+-- G2-2a (20260929999600): a job's ending takes no screen lock, and deletes its presence device only at commit, if the
+-- row is free (skip locked); the supervisor releases an ended job's screen lease reading the job's status without a
+-- lock. These run on separate connections against the presence heartbeat (register, which waits for the job row the
+-- ending holds), a device row held by another, the supervisor's reap, the privacy fence and a fence-first lifecycle
+-- (company row, office row, screens), with an ending of two jobs and an ending that goes on to take the company row.
+-- None deadlocks (no 40P01). Office setup as in 405: a real office and screen lease for test 300's run (job A); job B
+-- and its run are copies of job A's and its run's rows, with a second screen of the same office leased to job B (rows
+-- only: replica mode skips the foreign keys this test does not build); only guest readiness is synthetic.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.office',public.qorpera_register_runtime_office(
@@ -172,14 +171,6 @@ create function pg_temp.r799_supervisor_sql() returns text language sql as $$
 		public.qorpera_runtime_office_supervisor_status(%L, %s)$q$,
 		current_setting('qorpera_test.office_scope'), current_setting('qorpera_test.binding')::jsonb ->> 'computerGeneration')
 $$;
-create function pg_temp.r799_takeover_sql() returns text language sql as $$
-	select format($q$select set_config('request.jwt.claims', '{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}', true),
-		public.qorpera_request_runtime_office_drain(%L, %L, %s, %s, %s, true)$q$,
-		current_setting('qorpera_test.office_scope'), current_setting('qorpera_test.binding')::jsonb ->> 'screenId',
-		current_setting('qorpera_test.binding')::jsonb ->> 'computerGeneration',
-		current_setting('qorpera_test.binding')::jsonb ->> 'screenGeneration',
-		(select epoch from public.qorpera_runtime_office_screens where id = (current_setting('qorpera_test.binding')::jsonb ->> 'screenId')::uuid))
-$$;
 -- A statement on a connection, run to its end; its error if it had one.
 create function pg_temp.r799_run(p_connection text, p_sql text) returns text language plpgsql as $$
 begin
@@ -223,10 +214,6 @@ create function pg_temp.r799_device_sql() returns text language sql as $$
 	select format('select count(*) from public.qorpera_native_presence_devices where run_id = %L',
 		current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')
 $$;
-create function pg_temp.r799_expired_sql() returns text language sql as $$
-	select format($q$select count(*) from public.qorpera_runtime_office_screens where id = %L and lease_id is not null
-		and lease_expires_at <= clock_timestamp() - interval '30 seconds'$q$, current_setting('qorpera_test.binding')::jsonb ->> 'screenId')
-$$;
 create function pg_temp.r799_expect(p_ok boolean, p_label text) returns void language plpgsql as $$
 declare v_name text;
 begin
@@ -245,31 +232,52 @@ begin
 		raise exception 'End-of-job cleanup race: %', p_label; end if;
 end $$;
 
--- The two screens of the office, as the connection sees them: how many are leased and not yet past the grace.
-create function pg_temp.r799_live_sql() returns text language sql as $$
-	select format($q$select count(*) from public.qorpera_runtime_office_screens where office_id = %L and lease_id is not null
-		and lease_expires_at > clock_timestamp() - interval '30 seconds'$q$,
-		current_setting('qorpera_test.binding')::jsonb ->> 'companyComputerId')
-$$;
--- Job B ends as the server's paths end a job: the trigger fires on its status.
-create function pg_temp.r799_end_b_sql() returns text language sql as $$
-	select format($q$update public.qorpera_runner_jobs set status = 'failed', lease_token_sha256 = null, lease_expires_at = null,
-		finished_at = clock_timestamp(), last_error = 'G2-2a race: the runner was revoked' where id = %L returning to_jsonb(id)$q$,
-		current_setting('qorpera_test.job_b'))
-$$;
 create function pg_temp.r799_fence_sql() returns text language sql as $$
 	select format($q$select set_config('request.jwt.claims', '{"role":"service_role"}', true),
 		public.qorpera_fence_runtime_office_screens(office)::text from public.qorpera_runtime_offices as office where office.id = %L$q$,
 		current_setting('qorpera_test.binding')::jsonb ->> 'companyComputerId')
 $$;
-create function pg_temp.r799_screens_past_grace(p_past boolean) returns void language plpgsql as $$
-begin
-	perform dblink_exec('r799_holder', format($q$update public.qorpera_runtime_office_screens
-		set lease_expires_at = clock_timestamp() + case when %L then interval '-31 seconds' else interval '1 hour' end
-		where office_id = %L and lease_id is not null$q$, p_past, current_setting('qorpera_test.binding')::jsonb ->> 'companyComputerId'));
-end $$;
 
--- 1. The presence heartbeat holds the job row (and its device); the ending waits for the job row, then deletes the device.
+-- The ending's commit-time cleanup, run now (as at commit) inside the ending's still open transaction.
+-- What a sent statement with one answer column (a block, a command, a count) ended with: 'ok' or its SQLSTATE.
+create function pg_temp.r799_command_outcome(p_connection text) returns text language plpgsql as $$
+declare v_outcome text;
+begin
+	begin
+		perform * from dblink_get_result(p_connection) as r(status text);
+		v_outcome := 'ok';
+	exception when others then
+		v_outcome := sqlstate;
+	end;
+	perform * from dblink_get_result(p_connection, false) as r(status text);
+	return v_outcome;
+end $$;
+create function pg_temp.r799_flush_sql() returns text language sql as $$
+	select 'set constraints qorpera_native_presence_end immediate'
+$$;
+-- Several steps in one statement (a block), so the connection answers once.
+create function pg_temp.r799_steps(p_steps text[]) returns text language sql as $$
+	select format('do $steps$ begin %s; end $steps$', array_to_string(p_steps, '; '))
+$$;
+create function pg_temp.r799_end_a_step() returns text language sql as $$
+	select format($q$perform public.qorpera_terminalize_runner_attempt(%L, 'failed', 'G2-2a race: the runner was revoked', false)$q$,
+		current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')
+$$;
+create function pg_temp.r799_end_b_step() returns text language sql as $$
+	select format($q$update public.qorpera_runner_jobs set status = 'failed', lease_token_sha256 = null, lease_expires_at = null,
+		finished_at = clock_timestamp(), last_error = 'G2-2a race: the runner was revoked' where id = %L$q$,
+		current_setting('qorpera_test.job_b'))
+$$;
+create function pg_temp.r799_profile() returns uuid language sql as $$
+	select profile_id from public.qorpera_execution_runs where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid
+$$;
+create function pg_temp.r799_leased_sql() returns text language sql as $$
+	select format('select count(*) from public.qorpera_runtime_office_screens where id = %L and lease_id is not null',
+		current_setting('qorpera_test.binding')::jsonb ->> 'screenId')
+$$;
+
+-- 1. The presence heartbeat holds the job row (and its device); the ending waits for the job row, and its commit
+--    deletes the device.
 do $$
 declare v_error text; v_end text;
 begin
@@ -283,140 +291,101 @@ begin
 	perform dblink_exec('r799_holder', 'commit');
 	v_end := pg_temp.r799_end_outcome();
 	perform pg_temp.r799_expect(v_end = 'ok', 'the ending after a heartbeat answered ' || v_end);
+	perform dblink_exec('r799_ender', pg_temp.r799_flush_sql());
 	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_device_sql()) = 0, 'the device outlived the ending');
 	perform dblink_exec('r799_ender', 'rollback');
 end $$;
 
--- 2. The supervisor reaps the screen (office row, then the screen) and holds it; the ending does not wait for it and
---    leaves that screen to the reap.
+-- 2. Another transaction holds the device row (as a forget or a member's removal does): the ending's commit-time
+--    cleanup does not wait for it and leaves that row to it.
 do $$
-declare v_error text; v_end text;
+declare v_flush text;
 begin
 	perform dblink_exec('r799_holder', 'begin');
-	perform dblink_exec('r799_holder', format($q$update public.qorpera_runtime_office_screens
-		set lease_expires_at = clock_timestamp() - interval '31 seconds' where id = %L$q$,
-		current_setting('qorpera_test.binding')::jsonb ->> 'screenId'));
-	v_error := pg_temp.r799_run('r799_holder', pg_temp.r799_supervisor_sql());
-	perform pg_temp.r799_expect(v_error is null, 'the reap failed: ' || coalesce(v_error, ''));
-	perform dblink_exec('r799_ender', 'begin');
-	perform pg_temp.r799_send('r799_ender', pg_temp.r799_end_sql());
-	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('ender', current_setting('qorpera_test.r799_holder_pid')::integer),
-		'the ending waited for the reap');
-	v_end := pg_temp.r799_end_outcome();
-	perform pg_temp.r799_expect(v_end = 'ok', 'the ending beside a reap answered ' || v_end);
-	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_device_sql()) = 0, 'the device outlived the ending');
-	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_expired_sql()) = 0, 'the ending took the reap''s screen');
-	perform dblink_exec('r799_ender', 'rollback');
-	perform dblink_exec('r799_holder', 'rollback');
-end $$;
-
--- 3. A member takes the screen over (office row, then the screen) and holds it; the ending does not wait for it.
-do $$
-declare v_error text; v_end text;
-begin
-	perform dblink_exec('r799_holder', 'begin');
-	v_error := pg_temp.r799_run('r799_holder', pg_temp.r799_takeover_sql());
-	perform pg_temp.r799_expect(v_error is null, 'the take-over failed: ' || coalesce(v_error, ''));
-	perform dblink_exec('r799_ender', 'begin');
-	perform pg_temp.r799_send('r799_ender', pg_temp.r799_end_sql());
-	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('ender', current_setting('qorpera_test.r799_holder_pid')::integer),
-		'the ending waited for the take-over');
-	v_end := pg_temp.r799_end_outcome();
-	perform pg_temp.r799_expect(v_end = 'ok', 'the ending beside a take-over answered ' || v_end);
-	perform dblink_exec('r799_ender', 'rollback');
-	perform dblink_exec('r799_holder', 'rollback');
-end $$;
-
--- 4. The ending holds the job, device and screen rows; a member's take-over (office row, then the screen) waits for
---    it, and runs once it rolls back.
-do $$
-declare v_takeover text;
-begin
+	perform * from dblink('r799_holder', format('select 1 from public.qorpera_native_presence_devices where run_id = %L for update',
+		current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')) as r(n integer);
 	perform dblink_exec('r799_ender', 'begin');
 	perform * from dblink('r799_ender', pg_temp.r799_end_sql()) as r(a jsonb);
-	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_expired_sql()) = 1, 'the ending did not expire the lease');
-	perform dblink_exec('r799_holder', 'begin');
-	perform pg_temp.r799_send('r799_holder', pg_temp.r799_takeover_sql());
-	perform pg_temp.r799_expect(pg_temp.r799_waited_for('holder', current_setting('qorpera_test.r799_ender_pid')::integer),
-		'the take-over did not wait for the ending');
+	perform pg_temp.r799_send('r799_ender', pg_temp.r799_flush_sql());
+	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('ender', current_setting('qorpera_test.r799_holder_pid')::integer),
+		'the ending''s cleanup waited for a held device');
+	v_flush := pg_temp.r799_command_outcome('r799_ender');
+	perform pg_temp.r799_expect(v_flush = 'ok', 'the cleanup beside a held device answered ' || v_flush);
+	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_device_sql()) = 1, 'the cleanup took a held device');
 	perform dblink_exec('r799_ender', 'rollback');
-	v_takeover := pg_temp.r799_outcome('r799_holder');
-	perform pg_temp.r799_expect(v_takeover = 'ok', 'the take-over after an ending answered ' || v_takeover);
 	perform dblink_exec('r799_holder', 'rollback');
 end $$;
 
--- 5. The screen's lease already ran out past the grace: the ending leaves it to the supervisor, whose reap runs while
---    the ending is open without waiting for it.
+-- 3. The supervisor beside an ending not yet committed: neither waits for the other, and the job still reads leased,
+--    so its screen stays leased.
 do $$
 declare v_reap text;
 begin
-	perform pg_temp.r799_screens_past_grace(true);
 	perform dblink_exec('r799_ender', 'begin');
 	perform * from dblink('r799_ender', pg_temp.r799_end_sql()) as r(a jsonb);
 	perform dblink_exec('r799_holder', 'begin');
 	perform pg_temp.r799_send('r799_holder', pg_temp.r799_supervisor_sql());
 	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('holder', current_setting('qorpera_test.r799_ender_pid')::integer),
-		'the reap waited for the ending');
+		'the supervisor waited for the ending');
 	v_reap := pg_temp.r799_outcome('r799_holder');
-	perform pg_temp.r799_expect(v_reap = 'ok', 'the reap beside an ending answered ' || v_reap);
+	perform pg_temp.r799_expect(v_reap = 'ok', 'the supervisor beside an ending answered ' || v_reap);
+	perform pg_temp.r799_expect(pg_temp.r799_count('r799_holder', pg_temp.r799_leased_sql()) = 1,
+		'the supervisor released the screen of a job not yet ended');
 	perform dblink_exec('r799_holder', 'rollback');
 	perform dblink_exec('r799_ender', 'rollback');
-	perform pg_temp.r799_screens_past_grace(false);
 end $$;
 
--- 6. One transaction ends job B (its screen, the office's second), then job A, while the privacy fence (office row,
---    then every screen in table order) holds the first screen and waits for the second. The ending skips the first,
---    so nothing waits in a circle; the fence runs once the ending rolls back.
+-- 4. The privacy fence holds the office row and every screen of the office; one transaction ends job B, then job A,
+--    and runs its commit-time cleanup without waiting for it.
 do $$
-declare v_fence text; v_end text;
+declare v_error text; v_end text;
 begin
-	perform dblink_exec('r799_ender', 'begin');
-	perform * from dblink('r799_ender', pg_temp.r799_end_b_sql()) as r(a jsonb);
-	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_live_sql()) = 1, 'the ending did not expire job B''s lease');
 	perform dblink_exec('r799_holder', 'begin');
-	perform pg_temp.r799_send('r799_holder', pg_temp.r799_fence_sql());
-	perform pg_temp.r799_expect(pg_temp.r799_waited_for('holder', current_setting('qorpera_test.r799_ender_pid')::integer),
-		'the fence did not wait for job B''s screen');
-	perform pg_temp.r799_send('r799_ender', pg_temp.r799_end_sql());
+	v_error := pg_temp.r799_run('r799_holder', pg_temp.r799_fence_sql());
+	perform pg_temp.r799_expect(v_error is null, 'the fence failed: ' || coalesce(v_error, ''));
+	perform dblink_exec('r799_ender', 'begin');
+	perform pg_temp.r799_send('r799_ender', pg_temp.r799_steps(array[pg_temp.r799_end_b_step(), pg_temp.r799_end_a_step(),
+		pg_temp.r799_flush_sql()]));
 	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('ender', current_setting('qorpera_test.r799_holder_pid')::integer),
-		'the ending of job A waited for the fence');
-	v_end := pg_temp.r799_end_outcome();
-	perform pg_temp.r799_expect(v_end = 'ok', 'the ending of job A beside the fence answered ' || v_end);
-	perform pg_temp.r799_expect(pg_temp.r799_count('r799_ender', pg_temp.r799_live_sql()) = 1, 'the ending took the fenced screen');
+		'the ending of two jobs waited for the fence');
+	v_end := pg_temp.r799_command_outcome('r799_ender');
+	perform pg_temp.r799_expect(v_end = 'ok', 'the ending of two jobs beside the fence answered ' || v_end);
 	perform dblink_exec('r799_ender', 'rollback');
-	v_fence := pg_temp.r799_outcome('r799_holder');
-	perform pg_temp.r799_expect(v_fence = 'ok', 'the fence after the ending answered ' || v_fence);
 	perform dblink_exec('r799_holder', 'rollback');
 end $$;
 
--- 7. Both leases past the grace: one transaction ends job B, then job A, while the supervisor reaps both screens;
---    neither waits for the other.
+-- 5. A fence-first lifecycle holds the company row; an ending that goes on to take the company row (as a runner
+--    audit row does) waits for it, while the lifecycle takes the office row and every screen without waiting for
+--    the ending, and the ending finishes once the lifecycle ends.
 do $$
-declare v_reap text; v_end text;
+declare v_end text; v_locks text;
 begin
-	perform pg_temp.r799_screens_past_grace(true);
-	perform dblink_exec('r799_ender', 'begin');
-	perform * from dblink('r799_ender', pg_temp.r799_end_b_sql()) as r(a jsonb);
 	perform dblink_exec('r799_holder', 'begin');
-	perform pg_temp.r799_send('r799_holder', pg_temp.r799_supervisor_sql());
+	perform * from dblink('r799_holder', format('select 1 from public.qorpera_profiles where id = %L for update',
+		pg_temp.r799_profile())) as r(n integer);
+	perform dblink_exec('r799_ender', 'begin');
+	perform pg_temp.r799_send('r799_ender', pg_temp.r799_steps(array[pg_temp.r799_end_a_step(),
+		format('perform 1 from public.qorpera_profiles where id = %L for key share', pg_temp.r799_profile())]));
+	perform pg_temp.r799_expect(pg_temp.r799_waited_for('ender', current_setting('qorpera_test.r799_holder_pid')::integer),
+		'the ending did not wait for the company row');
+	perform pg_temp.r799_send('r799_holder', format($q$select count(*)::text from (select 1 from public.qorpera_runtime_offices
+		where id = %1$L for update) as office, (select 1 from public.qorpera_runtime_office_screens where office_id = %1$L
+		order by ordinal for update) as screens$q$, current_setting('qorpera_test.binding')::jsonb ->> 'companyComputerId'));
 	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('holder', current_setting('qorpera_test.r799_ender_pid')::integer),
-		'the reap waited for the ending of job B');
-	v_reap := pg_temp.r799_outcome('r799_holder');
-	perform pg_temp.r799_expect(v_reap = 'ok', 'the reap beside the ending answered ' || v_reap);
-	perform pg_temp.r799_send('r799_ender', pg_temp.r799_end_sql());
-	perform pg_temp.r799_expect(not pg_temp.r799_waited_for('ender', current_setting('qorpera_test.r799_holder_pid')::integer),
-		'the ending of job A waited for the reap');
-	v_end := pg_temp.r799_end_outcome();
-	perform pg_temp.r799_expect(v_end = 'ok', 'the ending of job A beside the reap answered ' || v_end);
-	perform dblink_exec('r799_ender', 'rollback');
+		'the lifecycle waited for the ending');
+	v_locks := pg_temp.r799_command_outcome('r799_holder');
+	perform pg_temp.r799_expect(v_locks = 'ok', 'the lifecycle''s locks answered ' || v_locks);
 	perform dblink_exec('r799_holder', 'rollback');
-	perform pg_temp.r799_screens_past_grace(false);
+	v_end := pg_temp.r799_command_outcome('r799_ender');
+	perform pg_temp.r799_expect(v_end = 'ok', 'the ending after the lifecycle answered ' || v_end);
+	perform dblink_exec('r799_ender', pg_temp.r799_flush_sql());
+	perform dblink_exec('r799_ender', 'rollback');
 end $$;
 
--- 8. The ending holds the job row and commits; the heartbeat waiting for it is then refused (the run ended), and the
---    device is gone.
+-- 6. The ending holds the job row and commits: the heartbeat waiting for it is then refused (the run ended), the
+--    device is gone, and the supervisor's next poll releases the ended job's live screen lease at once.
 do $$
-declare v_heartbeat text;
+declare v_heartbeat text; v_reap text;
 begin
 	perform dblink_exec('r799_ender', 'begin');
 	perform * from dblink('r799_ender', pg_temp.r799_end_sql()) as r(a jsonb);
@@ -429,6 +398,13 @@ begin
 	perform pg_temp.r799_expect(v_heartbeat = '42501', 'the heartbeat after an ending answered ' || v_heartbeat);
 	perform dblink_exec('r799_holder', 'rollback');
 	perform pg_temp.r799_expect(pg_temp.r799_count('r799_holder', pg_temp.r799_device_sql()) = 0, 'the device outlived the ending');
+	perform pg_temp.r799_expect(pg_temp.r799_count('r799_holder', pg_temp.r799_leased_sql()) = 1, 'the screen is leased before the poll');
+	perform dblink_exec('r799_holder', 'begin');
+	v_reap := pg_temp.r799_run('r799_holder', pg_temp.r799_supervisor_sql());
+	perform pg_temp.r799_expect(v_reap is null, 'the supervisor after the ending failed: ' || coalesce(v_reap, ''));
+	perform pg_temp.r799_expect(pg_temp.r799_count('r799_holder', pg_temp.r799_leased_sql()) = 0,
+		'the supervisor left the ended job''s screen leased');
+	perform dblink_exec('r799_holder', 'rollback');
 end $$;
 
 select pg_temp.r799_cleanup();
