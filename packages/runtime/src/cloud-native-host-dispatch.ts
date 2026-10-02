@@ -96,6 +96,30 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_verify_company_path_tree", "standard"],
 ]);
 
+/** The database calls the host makes between jobs (logins and account refresh), which keep the service key until an
+ * identity credential replaces it (G2-3). With the switch on, every other database call is a listed call inside a job
+ * or is refused: nothing new reaches the service key unnoticed. Storage and Realtime are not database calls (G2-4). */
+export const NATIVE_HOST_KEY_CALLS: ReadonlySet<string> = new Set([
+	"qorpera_complete_native_account_refresh",
+	"qorpera_complete_native_provider_login",
+	"qorpera_describe_native_account_refresh_route",
+	"qorpera_describe_native_provider_login",
+	"qorpera_list_native_provider_account_refreshes",
+	"qorpera_record_native_provider_account_metadata",
+]);
+
+/** Why the host refused an execution's credential: a fixed code for the runner's failure (no token or key, or a
+ * previous job still holding the host). */
+export class NativeHostCredentialError extends Error {
+	readonly code: "NATIVE_HOST_CREDENTIAL" | "NATIVE_HOST_BUSY";
+
+	constructor(code: "NATIVE_HOST_CREDENTIAL" | "NATIVE_HOST_BUSY", message: string) {
+		super(message);
+		this.name = "NativeHostCredentialError";
+		this.code = code;
+	}
+}
+
 /** What a job brings for its calls: the runner job's lease token and the project's publishable key. */
 export interface NativeHostJobCredential {
 	readonly leaseToken: string;
@@ -154,10 +178,14 @@ export class NativeHostDispatch {
 	begin(jobId: string, credential: NativeHostJobCredential | undefined): () => void {
 		if (this.mode === "off") return () => {};
 		if (!UUID_PATTERN.test(jobId) || !credential || !LEASE_TOKEN.test(credential.leaseToken))
-			throw new Error("Native host calls need the job's lease token");
+			throw new NativeHostCredentialError("NATIVE_HOST_CREDENTIAL", "Native host calls need the job's lease token");
 		if (!isNativeHostPublishableKey(credential.publishableKey) || credential.publishableKey === this.#serviceKey)
-			throw new Error("Native host calls need the project's publishable key");
-		if (this.#job) throw new Error("Native host calls already serve another job");
+			throw new NativeHostCredentialError(
+				"NATIVE_HOST_CREDENTIAL",
+				"Native host calls need the project's publishable key",
+			);
+		if (this.#job)
+			throw new NativeHostCredentialError("NATIVE_HOST_BUSY", "Native host calls already serve another job");
 		const held = { jobId, leaseToken: credential.leaseToken, publishableKey: credential.publishableKey };
 		this.#job = held;
 		return () => {
@@ -165,16 +193,16 @@ export class NativeHostDispatch {
 		};
 	}
 
-	close(): void {
-		this.#job = undefined;
-	}
-
 	async #dispatch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
 		const url = new URL(input instanceof Request ? input.url : input);
-		const name = this.mode === "on" && url.origin === this.#origin ? RPC_PATH.exec(url.pathname)?.[1] : undefined;
+		// Off, another origin, or not a database call (Storage): sent as before.
+		if (this.mode === "off" || url.origin !== this.#origin || !url.pathname.startsWith("/rest/"))
+			return this.#fetch(input, init);
+		const name = RPC_PATH.exec(url.pathname)?.[1];
+		if (name !== undefined && NATIVE_HOST_KEY_CALLS.has(name)) return this.#fetch(input, init);
 		const budget = name === undefined ? undefined : NATIVE_HOST_CALLS.get(name);
-		if (name === undefined || budget === undefined) return this.#fetch(input, init);
-		// A listed call goes through the entry point or not at all: it never falls back to the service key.
+		// Any other database call is a listed call through the entry point, or refused: never the service key.
+		if (name === undefined || budget === undefined) throw new Error("Not a native host call");
 		const job = this.#job;
 		if (!job) throw new Error("Native host call outside a job");
 		if (input instanceof Request || init?.method !== "POST" || typeof init.body !== "string" || url.search)

@@ -21,6 +21,7 @@ import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import {
 	isNativeHostPublishableKey,
+	NativeHostCredentialError,
 	type NativeHostDispatch,
 	type NativeHostJobCredential,
 } from "./cloud-native-host-dispatch.ts";
@@ -154,6 +155,7 @@ export function nativeProviderFailureCode(error: unknown): string {
 	const coded = (code: string) => (fits(code) ? code : "UNCLASSIFIED");
 	// Only the coding runtime's own codes pass; other upper-case text is not vetted. The host
 	// wraps every harness failure (safeHarnessExecutionFailure), so the code is usually a cause.
+	if (error instanceof NativeHostCredentialError) return error.code;
 	let current = error;
 	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
 		const own = codingErrorCode(current);
@@ -317,7 +319,7 @@ function parseNativeHostCredential(value: unknown): NativeHostJobCredential | un
 		Object.keys(nativeHost).some((key) => key !== "publishable_key") ||
 		!isNativeHostPublishableKey(nativeHost.publishable_key)
 	)
-		throw new Error("Native host credential is invalid");
+		throw new NativeHostCredentialError("NATIVE_HOST_CREDENTIAL", "Native host credential is invalid");
 	return { leaseToken: job.lease_token, publishableKey: nativeHost.publishable_key };
 }
 
@@ -837,10 +839,10 @@ export class HttpNativeProviderHostService {
 	}
 
 	async close(): Promise<void> {
+		// Each execution drops its job's credential as it unwinds, after its own cleanup (G2-2).
 		for (const { controller } of this.#executions.values())
 			controller.abort(new Error("Native provider host stopped"));
 		this.#executions.clear();
-		this.#dispatch?.close();
 		const server = this.#server;
 		this.#server = undefined;
 		if (!server) return;
