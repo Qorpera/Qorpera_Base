@@ -121,24 +121,41 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
 ## A1-4c: the computer stops at a page that asks for a person (office guest code, with an office image)
 
 Jonas, 2 October: on a block, CAPTCHA or "unusual activity" page, stop at once, mark the account `needs_person`,
-never retry. The office enforces the stop and the never; the agent marks the account (A1-4b's words). Nothing tries
-to pass such a check.
+never retry. The office enforces the stop and the never for the browser and the desktop; the agent marks the
+account (A1-4b's words). Nothing tries to pass such a check.
 
-- `cloud-company-computer-site-stops.ts` reads a tab within 2 s: its title, the top 4,000 characters of its text
-  (counted only when the whole text is at most 3,000, as such pages are short) and its frames' addresses. A frame
-  of a CAPTCHA or human check service (reCAPTCHA, hCaptcha, Cloudflare's challenges, Arkose, DataDome, HUMAN,
-  AWS WAF) or plain words (a CAPTCHA, "verify you are human", "unusual activity", "you have been blocked", "access
-  denied", …) name the reason: `captcha`, `human_check`, `unusual_activity` or `blocked`. A page that does not
-  answer counts as ordinary.
-- Before every page action (navigate, click, fill, press, vault_fill) the office reads the page first: one that shows
-  such a check records its site. A page action on a recorded site (the site, a name under it or a parent of it,
-  with or without `www.`) is refused before it starts, `SITE_STOPPED`; a navigation is checked by its destination,
-  so going to another site stays open. After the action, a page that now shows such a check records its sites (the
-  one acted on, the one shown, a navigation's destination) and the action fails with `SITE_STOP_<REASON>`. A
-  snapshot still shows the page and adds `stop: SITE_STOP_<REASON>`.
+- `cloud-company-computer-site-stops.ts` reads a tab. First the frames inside it (a list the browser keeps, so a
+  page that does not answer still shows them): a shown frame of a CAPTCHA or human check service (reCAPTCHA,
+  hCaptcha, Cloudflare's challenges, Arkose and GitHub's octocaptcha, DataDome, HUMAN, AWS WAF). Never the page
+  itself (a service's own website), never reCAPTCHA's invisible badge (`size=invisible`), never a hidden frame; a
+  frame whose visibility cannot be read within 1 s counts. Then, within 2 s, its title and the top 4,000 characters
+  of its text: an interstitial's whole title counts on any page ("Just a moment...", "Attention Required! |
+  Cloudflare", "Access Denied", "Pardon Our Interruption", "Access to this page has been denied", "Robot Check");
+  words ("not a robot", "verify you are human", "checking your browser", "unusual activity", "you have been
+  blocked", "request is blocked", …) count only when the whole text is at most 3,000 characters, so an ordinary page
+  that mentions them (a question about "access denied" errors, an article about CAPTCHAs) is not taken for one.
+  Curly apostrophes and the ellipsis character read as plain ones. English only; frames catch widget checks in any
+  language.
+- Before every page action (navigate, click, fill, press, vault_fill) the office reads the page first. A page that
+  shows such a check now gets nothing clicked or typed, whatever its address; its site is recorded. A page action
+  on a recorded site (the site, a name under it or a parent of it, `www.` and a trailing dot aside) is refused before
+  it starts. A navigation is checked by its destination, so going to another site stays open.
+- After the action, a page that now shows such a check, or lands on a recorded site (a link or a redirect), records
+  its sites (the one acted on, the one shown, a navigation's destination).
+- The answers are the call's results, not errors (an error reaches the agent only as an unconfirmed outcome, and
+  leaves its receipt executing): a refusal is `{completed: false, refused: {code: "SITE_STOPPED", message}}`, an
+  action that landed on such a page is `{completed: true, stop: "SITE_STOP_<REASON>", message}`, and a snapshot
+  still shows the page with `stop` and `message`. The message tells the agent to stop, never retry, mark the account
+  `needs_person` and tell a member. The receipt completes, so the agent's next call (company_account state) runs.
+- Desktop click, scroll, press and type are refused the same way while a shown tab of the screen's browser is on a
+  recorded site or shows such a check (a tab whose visibility cannot be read counts as shown); moving the pointer
+  and screenshots stay allowed. Members are not affected: their input never goes through the agent's actions. A
+  shell can still send input to the display; the agent's words (A1-4b) cover it.
 - The record is the office service's, for all the computer's screens, while it runs; a restart clears it, and the
-  account's `needs_person` stays in the database. Read actions (snapshot, list_tabs, select_tab, screenshots) stay
-  allowed, so the agent can describe the page and a member can take over.
+  account's `needs_person` stays in the database (it does not stop a vault fill by itself: a person's step may
+  clear it). Read actions (snapshot, list_tabs, select_tab, screenshots) stay allowed, so the agent can describe the
+  page and a member can take over.
+
 ## A1-5a: which mail is an account's own (migration `20260929999960`, SQL test 809)
 
 Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries

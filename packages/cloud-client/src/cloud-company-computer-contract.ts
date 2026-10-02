@@ -175,10 +175,7 @@ export class CompanyComputerActionNotStartedError extends Error {
 			// A vault_fill that cannot be opened here (company accounts A1-3): nothing was typed.
 			| "ACCOUNT_FILL_UNAVAILABLE"
 			| "ACCOUNT_FILL_UNOPENED"
-			| "ACCOUNT_FILL_EXPIRED"
-			// The computer stopped on this site at a CAPTCHA, human check, unusual activity warning or block (A1-4c):
-			// it never acts there again while it runs; a person continues.
-			| "SITE_STOPPED",
+			| "ACCOUNT_FILL_EXPIRED",
 	) {
 		super(message);
 		this.name = "CompanyComputerActionNotStartedError";
