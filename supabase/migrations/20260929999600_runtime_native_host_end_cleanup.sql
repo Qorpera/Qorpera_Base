@@ -6,21 +6,23 @@
 -- database through qorpera_native_host_call (G2-2), its lease token stops working the moment the job ends, and those
 -- late calls are refused. So the end of the job does this cleanup itself, in the trigger that already ends the run's
 -- connection lease, for the job's own binding only:
--- - its presence device is deleted. Subjects ignore it once the run ends and it expires after 30 s, but nothing else
---   deleted the row;
+-- - its presence device is deleted. Subjects ignore it once the run ends and it would expire after 30 s;
 -- - its screen leases are expired past the office supervisor's 30 s grace, so the supervisor's next status poll
 --   (about every second) releases them exactly as it releases a lease its run never released: unresolved agent work
 --   is drained first, then the lease is cleared under a new epoch. Nothing outside SQL happens here.
 --
--- Locks, in the one order (company fence -> ... -> the job row -> these rows): the trigger runs in the transaction that
--- ends the job, right after that job row's update, so its rows come last.
--- - Presence: the job's one device row (unique run_id). Its writers take the job row first (register, through
---   qorpera_native_tool_locked_run) or lock that one row alone (forget), so they wait for the ending or find it gone.
--- - Screens: the job's screen rows, by office and ordinal, without the office row. Office paths take the office row,
---   then screen rows, then resources (release, the supervisor's reap, a member's take-over, lifecycle). None of them
---   waits for a job row or the company fence while it holds a screen, and nothing that ends a job locks an office
---   row, so a wait here ends when that office path commits. A wait past the caller's lock_timeout ends with 55P03.
--- SQL tests 798 (behaviour) and 799 (against the presence heartbeat, the supervisor's reap and a member's take-over).
+-- Locks: the ending never waits for a device or screen row. It runs in the transaction that ends the job, right
+-- after that job row's update (company fence -> ... -> the job row), and that transaction may end several jobs (a
+-- company stop, a revoked runner, the orchestrator's reconcile pass). Office paths lock several screens of one
+-- office in their own order (the supervisor's reap, the privacy fence, lifecycle), so taking this job's screens in
+-- job order could close a cycle with them. Instead it locks only the rows free right now (skip locked):
+-- - presence: the job's one device row (unique run_id), FOR UPDATE, for the delete. Its other writers lock that row
+--   alone (forget) or only after the job (register), so a skipped row is one forget is deleting anyway;
+-- - screens: the job's screens whose lease is not yet past the grace, FOR NO KEY UPDATE, for the expiry. A skipped
+--   screen is held by an office path that clears it (the reap, a take-over, the privacy fence, lifecycle, the host's
+--   own release) or reads it for a moment; then its lease ends on its own expiry plus the grace, as without this.
+-- SQL tests 798 (behaviour) and 799 (against the presence heartbeat, the supervisor's reap and a member's take-over,
+-- and an ending of two jobs against the reap and the privacy fence).
 
 set local lock_timeout = '3s';
 
@@ -31,16 +33,21 @@ begin
 	set status = case when new.status = 'completed' then 'released' else 'revoked' end,
 		released_at = statement_timestamp()
 	where job_id = new.id and run_id = new.run_id and status = 'active';
-	-- 20260929999600: the job's presence device and screen leases end with it.
+	-- 20260929999600: the job's presence device and screen leases end with it, never waiting for those rows.
 	if new.run_id is not null then
-		delete from public.qorpera_native_presence_devices
-		where run_id = new.run_id and binding ->> 'jobId' = new.id::text;
-		perform 1 from public.qorpera_runtime_office_screens
-		where run_id = new.run_id and native_binding ->> 'jobId' = new.id::text and lease_id is not null
-		order by office_id, ordinal for update;
-		update public.qorpera_runtime_office_screens set lease_expires_at = clock_timestamp() - interval '30 seconds'
-		where run_id = new.run_id and native_binding ->> 'jobId' = new.id::text and lease_id is not null
-			and lease_expires_at > clock_timestamp() - interval '30 seconds';
+		delete from public.qorpera_native_presence_devices as device
+		where device.client_id in (select candidate.client_id from public.qorpera_native_presence_devices as candidate
+			where candidate.run_id = new.run_id and candidate.binding ->> 'jobId' = new.id::text
+			for update skip locked);
+		with locked as (
+			select candidate.id from public.qorpera_runtime_office_screens as candidate
+			where candidate.run_id = new.run_id and candidate.native_binding ->> 'jobId' = new.id::text
+				and candidate.lease_id is not null and candidate.lease_expires_at > clock_timestamp() - interval '30 seconds'
+			order by candidate.office_id, candidate.ordinal
+			for no key update skip locked)
+		update public.qorpera_runtime_office_screens as screen
+		set lease_expires_at = clock_timestamp() - interval '30 seconds'
+		from locked where screen.id = locked.id;
 	end if;
 	return new;
 end
