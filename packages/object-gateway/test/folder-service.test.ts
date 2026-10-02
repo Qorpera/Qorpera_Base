@@ -691,13 +691,15 @@ describe("run box views", () => {
 	const BOX_PASS = "boxpass_0123456789-abcdefghijklmnopqrstuvwx";
 	const EXEC: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
 
-	async function box(clock?: { now: number }): Promise<{ core: FakeCore; service: FolderService; path: string }> {
+	async function box(clock?: {
+		now: number;
+	}): Promise<{ core: FakeCore; service: FolderService; path: string; root: string }> {
 		const root = await tempdir();
 		const core = new FakeCore();
 		if (clock) core.now = () => clock.now;
 		core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
 		core.openView(VIEW, BOX_PASS);
-		return { core, ...(await serve(core, root, clock ? () => clock.now : undefined)) };
+		return { core, root, ...(await serve(core, root, clock ? () => clock.now : undefined)) };
 	}
 
 	it("opens a core view for the execution host only, with its own pass, and renews its lease while connected", async () => {
@@ -890,6 +892,38 @@ describe("run box views", () => {
 		expect((await operator.hello("io")).kind).toBe(Kind.helloOk);
 		operator.send(Kind.search, search);
 		expect((await operator.json()).body.code).toBe("BAD_REQUEST");
+	});
+
+	it("answers a search on a view the core ended VIEW_CLOSED, so the run opens another", async () => {
+		const { core, service, path } = await box();
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		core.views.get(VIEW)!.state = "closed";
+		await service.renewLeases();
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body.code).toBe("VIEW_CLOSED");
+	});
+
+	it("counts a file whose bytes are gone from the share as unreadable, and fails the page when the company's objects are not there at all", async () => {
+		const { path, root } = await box();
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		const search = { query: "plan", path: "", glob: null, namesOnly: false, caseSensitive: false, after: null };
+		// One chunk of docs/plan.md is missing: the file is passed over and counted, and the page goes on.
+		await rm(join(root, PROFILE, hashOf("plan")));
+		io.send(Kind.search, search);
+		expect((await io.json()).body).toMatchObject({ hits: [], searched: 0, unreadable: 1, next: null });
+		// No profile folder at all (a share that is not mounted shows an empty mountpoint): nothing can be read now.
+		await rm(join(root, PROFILE), { recursive: true });
+		io.send(Kind.search, search);
+		expect((await io.json()).body.code).toBe("UNAVAILABLE");
 	});
 
 	it("takes no core view at all from a node with no run box hosts", () => {

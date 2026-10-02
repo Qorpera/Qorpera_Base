@@ -7,14 +7,16 @@ use crate::transport::{self, Stream};
 use std::io;
 use std::os::unix::net::UnixListener;
 
-/// Serves every connection to `listener`, each over its own connection to `upstream`. An accept that fails (no
-/// descriptors left, a caller gone before it was taken) is logged and the relay goes on, so the slot's other
-/// connections stay up.
+/// Serves every connection to `listener`, each over its own connection to `upstream`. An accept that fails for the
+/// moment (no descriptors left, a caller gone before it was taken) is logged and the relay goes on, so the slot's other
+/// connections stay up. A listening socket that can never accept again ends the relay with the error, and systemd
+/// starts it again (`Restart=on-failure`).
 pub fn run(listener: UnixListener, upstream: &str) -> io::Result<()> {
 	for local in listener.incoming() {
 		let local = match local {
 			Ok(s) => s,
 			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+			Err(e) if listener_broken(&e) => return Err(e),
 			Err(e) => {
 				eprintln!("qorpera-folder relay: accept: {e}");
 				std::thread::sleep(std::time::Duration::from_millis(100));
@@ -32,6 +34,11 @@ pub fn run(listener: UnixListener, upstream: &str) -> io::Result<()> {
 		}
 	}
 	Ok(())
+}
+
+/// The listening socket itself is unusable: asking again only fails again.
+fn listener_broken(e: &io::Error) -> bool {
+	matches!(e.raw_os_error(), Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EOPNOTSUPP | libc::EFAULT))
 }
 
 /// Copies both ways until either side ends, then ends both.
@@ -95,6 +102,22 @@ mod tests {
 	use super::*;
 	use std::io::{Read, Write};
 	use std::os::unix::net::UnixStream;
+
+	#[test]
+	fn ends_when_its_listening_socket_can_never_accept_and_goes_on_past_a_passing_failure() {
+		use std::os::fd::{FromRawFd, IntoRawFd};
+		// A descriptor that is no socket: every accept fails the same way, so the relay ends (systemd starts it again).
+		let file = std::fs::File::open("/dev/null").unwrap();
+		let listener = unsafe { UnixListener::from_raw_fd(file.into_raw_fd()) };
+		let ended = run(listener, "unix:/nonexistent").unwrap_err();
+		assert_eq!(ended.raw_os_error(), Some(libc::ENOTSOCK));
+		for passing in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM, libc::ECONNABORTED, libc::EPROTO] {
+			assert!(!listener_broken(&io::Error::from_raw_os_error(passing)), "{passing}");
+		}
+		for broken in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK, libc::EOPNOTSUPP] {
+			assert!(listener_broken(&io::Error::from_raw_os_error(broken)), "{broken}");
+		}
+	}
 
 	#[test]
 	fn carries_bytes_both_ways_and_ends_with_either_side() {

@@ -287,18 +287,23 @@ service, so the execution host stays small:
     longer than 1 MiB is searched as it comes, a stretch at a time, keeping the query's length of each stretch's end,
     so a match across two stretches is found; it keeps one line number and gives one hit.
   - **Globs.** `glob` keeps to matching paths: `*` and `?` within a name, a whole `**` part for any number of folders
-    (a `**` inside a name is a `*`); a glob without '/' is matched against the name. Matching walks the name and the
+    (a `**` inside a name is a `*`; a trailing `**` also matches the folder itself, so `docs/**` keeps `docs`); a glob
+    without '/' is matched against the name. Matching walks the name and the
     pattern with one place to go back to: at most their lengths multiplied, never exponential, whatever the glob.
   - **One page per call.** It walks the view in the order a machine lists it, straight from the cursor (never past
     what came before it), and answers when its hits fill about 6 KiB, when it has drawn on 4,000 paths or 1 MiB of them
     (so a page always fits one frame, however long its paths), or after about 2 s of work. It ends only once it has
-    moved the search on (at least one entry, and inside a file only between lines), so no page repeats the last. Every
-    10 ms it gives the node's event loop a turn and checks the view is still served (a page never runs past a closed
-    view or a lapsed lease). `next` is a path, and inside a file the byte and line to go on from, in the version it was
+    moved the search on (at least one entry, and inside a file only between lines), so no page repeats the last; a
+    page that reaches a very long line finishes that line first, so it can run past 2 s by the time the line takes.
+    About every 10 ms it gives the node's event loop a turn and checks the view is still served, so a page stops at the
+    first turn after its view closes or its lease lapses (cutting the text around a hit in a stretch of a very long line
+    can hold the loop longer, about 200 ms for 4 MiB). `next` is a path, and inside a file the byte and line to go on from, in the version it was
     searched at; a client never shows it (the run seals it). A page is never the search's end: there is no cap.
-  - **Errors.** A path not in the view is `NOT_FOUND`. A storage server that cannot be read now fails the page
-    (`UNAVAILABLE`). A file whose bytes are missing from it, or fail their hash check, is passed over, counted in
-    `unreadable`, logged and not read. A `path` that names a file may give an empty page; that only confirms what the
+  - **Errors.** A path not in the view is `NOT_FOUND`; a run view the core ended is `VIEW_CLOSED` (the run opens
+    another); an operator mount's view is `BAD_REQUEST`. A storage server that cannot be read now fails the page
+    (`UNAVAILABLE`), and so does a share with no folder for the company's objects (an unmounted share shows an empty
+    mountpoint), so a page never looks empty because the share is gone. A file whose bytes are missing from a share
+    that is there, or fail their hash check, is passed over, counted in `unreadable`, logged and not read. A `path` that names a file may give an empty page; that only confirms what the
     model named.
 - **What a page read.** `reads` names every folder whose names it walked, every file whose bytes it read (binary
   ones too), and every entry whose name is a hit, each with its receipt. A folder shown only because it holds readable
@@ -310,7 +315,8 @@ service, so the execution host stays small:
 - **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection.
   - `qorpera-folder-relay@N.socket` (`/run/qorpera-folder-relay/N.sock`, the slot's native host account only, 0600)
     runs `qorpera-folder relay`. It copies bytes both ways to the node's bridge (vsock 2:5250), reads none of them, and
-    goes on past a failed accept.
+    goes on past an accept that fails for the moment. A listening socket that can never accept again (EBADF, EINVAL,
+    ENOTSOCK, EOPNOTSUPP) ends it with a failure, and systemd starts it again.
   - The relay runs as a dynamic user with no capabilities, private devices and IPC, and only `AF_UNIX` and `AF_VSOCK`.
   - While `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`, the shared execution service asks for the slot's relay socket
     before its native host and names it in the host's environment (`QORPERA_FOLDER_SEARCH_SOCKET`). The host connects

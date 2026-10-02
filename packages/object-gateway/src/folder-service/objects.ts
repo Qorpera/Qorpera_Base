@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { TreeEntry } from "./view-tree.ts";
@@ -221,7 +221,13 @@ export class NasObjects {
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ELOOP") throw new ObjectIntegrityError("Object is a link");
-			if (code === "ENOENT") throw new ObjectMissingError("Object is not on the storage server");
+			if (code === "ENOENT") {
+				// Missing only when the company's objects are there: with no profile folder at all (a share that is not
+				// mounted shows an empty mountpoint) nothing can be read now, and the page fails rather than look empty.
+				if (!(await this.#profileThere(profileId)))
+					throw new ObjectUnavailableError("The company's objects are not on the storage server now");
+				throw new ObjectMissingError("Object is not on the storage server");
+			}
 			throw new ObjectUnavailableError(`Object could not be opened (${code ?? "unknown"})`);
 		}
 		try {
@@ -242,6 +248,14 @@ export class NasObjects {
 			return bytes;
 		} finally {
 			await handle.close();
+		}
+	}
+
+	async #profileThere(profileId: string): Promise<boolean> {
+		try {
+			return (await stat(resolve(this.#root, profileId))).isDirectory();
+		} catch {
+			return false;
 		}
 	}
 

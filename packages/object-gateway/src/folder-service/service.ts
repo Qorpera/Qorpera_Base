@@ -94,6 +94,11 @@ class View {
 		this.confirmed = grant.lease === undefined;
 	}
 
+	/** A core view (a run's own, opened by the core), closed or not; an operator mount's view is not. */
+	get core(): boolean {
+		return this.#operator === undefined;
+	}
+
 	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does. */
 	get actor(): FolderActor {
 		if (this.#operator) return this.#operator;
@@ -509,8 +514,9 @@ export class FolderService {
 	 * is NOT_FOUND; a share that cannot be read now fails the whole page (UNAVAILABLE), so no answer leaves a file out
 	 * without saying so. */
 	async #search(view: View, request: SearchRequest): Promise<SearchAnswer> {
-		// A run's own view only (a core view): an operator mount's machine never searches through this service.
-		if (!view.lease) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
+		// A run's own view only (a core view): an operator mount's machine never searches through this service. A core
+		// view the core closed answers VIEW_CLOSED (from the tree), so its run opens another.
+		if (!view.core) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
 		const tree = this.#tree(view);
 		if (!tree.get(request.path)) throw new ProtocolError(ErrorCode.notFound, "No such path");
 		try {
