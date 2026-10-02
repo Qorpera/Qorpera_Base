@@ -1470,7 +1470,8 @@ What the core gives H2, and what it does not (inventory of 2 October):
   from another platform writer, so this is H5's rule.
 - On a member's task file the platform may only set `secret_state: saved` (H1b's mark, for the vault
   writer); on a contact's task file it may also make the person's change. It never creates a task: an
-  agent's run writes it (A1's takeover tasks too). Its folder rights are §4's.
+  agent's run or a member writes it (A1's takeover tasks are written by the agent's run). Its folder
+  rights are §4's.
 - The person's change may only (Q1):
   - tick or untick boxes: the body is the same with every box mark (`- [ ]`, `- [x]`, `- [X]`) read
     as one, and `steps` keeps its order and texts (compared by position and text; the line numbers move
@@ -1500,7 +1501,7 @@ What the core gives H2, and what it does not (inventory of 2 October):
 - Changing `member` or `contact` hands an open or returned task to someone else; `due` may move to a
   later time. `from` may change only while the asking agent is no longer active, only to an active
   agent, and only by a member or the Co-Founder (Q1: "escalate to the Co-Founder"); `todo` is then
-  cleared or names an open todo of the new `from`.
+  cleared or names an open or blocked todo of the new `from`.
 
 **3. Ids and references**, checked when a save sets or changes them, as todos check `requested_by`;
 never on the person's change, so nothing the person does not control can refuse their work:
@@ -1514,7 +1515,8 @@ never on the person's change, so nothing the person does not control can refuse 
   `contacts/`, and its `email` is not removed. To erase such a contact, cancel its tasks first.
 - A file saved before H2 (or a version with no parse) is trusted for its shape only: its base counts
   only when the index points at its path, as for todos. Until it is saved again, such a task has no
-  status for §4: it counts as no task.
+  status for §4: it counts as no task, and a member or the platform may delete its file as it may an
+  orphan folder.
 - A restore (a task file written again after its delete) compares with the task's last file, as todos
   do, so a restored final task stays final and is never read as a new task.
 
@@ -1558,7 +1560,9 @@ runtime state and live elsewhere (H2c).
   changes serialize, and two removals of one task never deadlock;
 - a task save that sets or changes `contact`: the contact's row, FOR SHARE.
 `targets` finds a row with an unlocked read and names it `required: false` (a new or pre-H2 task has
-none); `decide` refuses the unit as a conflict when the row at `<t>.md` is not the one `targets` named.
+none). `decide` gets no target list and cannot lock, so it refuses the unit as a conflict when the row at
+`<t>.md` was last written by a commit whose `seq` is later than this commit's `as_of_seq`: sequence order
+is commit order, so any change since `targets` read the row is caught, with no core change.
 Read without a lock, and accepted: a todo closed, an agent archived, a member made a viewer or a
 connection removed at the same moment as a save that names them. Each leaves a task naming something no
 longer current, which the wakes (H2c) report or §2's hand-off repairs.
@@ -1617,6 +1621,18 @@ order is free.
   blocks a takeover task's `done` (§3); the platform never creates a task, so a takeover task is written
   by the agent's own run (§1).
 
+**Built (H2a): the TS side** (`packages/cloud-client/src/company-state-files.ts`), as planned:
+- `companyStateSeedTree` seeds `human-tasks/`, `contacts/` and `skills/human-task/SKILL.md`, in contract
+  5.6's order; `COMPANY_STATE_SEEDED_PATHS` names the two folders (H2b gives SQL the same list).
+- `COMPANY_STATE_HUMAN_TASK_SKILL`: Q1's "how agents write a good task", with the file's keys and how to
+  follow a task up. It describes the wakes of H2c as they will be.
+- `humanTaskFolder`, `humanTaskProofPath` (`proof/<kind>-<n>.<ext>`, lowercase extension) and
+  `humanTaskNotePath`.
+- `humanTaskPersonChange(path, text, change)`: a tick flips one step's box on its own line and nothing
+  else; `done` sets the status and removes `reason`; `declined` sets both; only on an open or returned
+  task, and only when the result parses. The web (H3) and the link service (H5) use it, so the person's
+  change is the same bytes everywhere.
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
@@ -1635,7 +1651,9 @@ platform:
   its empty `memory/`, `skills/`, `routines/` and `todos/`;
 - with `firstTodo`, the Co-Founder's first todo at `COMPANY_STATE_FIRST_TODO_PATH` ("Start with the
   founders", requested by the founder who started the table);
-- `agents/groups/`, `connections/`, `skills/` and `rules/`.
+- `agents/groups/`, `connections/`, `human-tasks/`, `contacts/`, `skills/` with the seeded skill
+  `skills/human-task/SKILL.md` (`COMPANY_STATE_HUMAN_TASK_SKILL`, an ordinary file a company may edit),
+  and `rules/`.
 
 It throws a `RangeError` when a file would not parse (a founders' vision past the size limit), so
 C2 never sends a creation commit the database refuses.

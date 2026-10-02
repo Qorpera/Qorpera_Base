@@ -2003,6 +2003,8 @@ export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
 	"agents/sections.md",
 	"agents/groups",
 	"connections",
+	"human-tasks",
+	"contacts",
 	"skills",
 	"rules",
 ] as const);
@@ -2131,7 +2133,109 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 			: []),
 		{ path: "agents/groups", kind: "folder" },
 		{ path: "connections", kind: "folder" },
+		{ path: "human-tasks", kind: "folder" },
+		{ path: "contacts", kind: "folder" },
 		{ path: "skills", kind: "folder" },
+		{ path: "skills/human-task", kind: "folder" },
+		{ path: COMPANY_STATE_HUMAN_TASK_SKILL_PATH, kind: "file", text: COMPANY_STATE_HUMAN_TASK_SKILL },
 		{ path: "rules", kind: "folder" },
 	];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Human tasks: the seeded skill, the proof's names, and the person's change (H2).
+
+/** The seeded company skill on writing human tasks (Q1 §5). A company may edit or remove it. */
+export const COMPANY_STATE_HUMAN_TASK_SKILL_PATH = "skills/human-task/SKILL.md";
+export const COMPANY_STATE_HUMAN_TASK_SKILL = `---
+name: human-task
+description: Hand work only a person can do to a member or a contact as a human task in human-tasks/, and follow it until it is accepted.
+---
+# Human tasks
+
+Use a human task only for work no agent can do: signing, paying, posting or opening letters, meeting people, fitting hardware, or a step a website demands of a person. Try the company folder, your connections, the web and your own computer first.
+
+## Write a good task
+- One physical outcome per task.
+- Steps a stranger could follow: where to go, what to bring, and what counts as proof. Put them under \`## Steps\`, one \`- [ ]\` line each.
+- A due date with slack before the real deadline.
+- \`proof:\` lists what counts as done: photo, file, signature, note.
+- When the person must type a code or a password, put only a label in \`secret:\` ("Code from the SMS"). Never put a code, a password or any other secret in the task.
+- For a contact, check that their \`asks\` covers the work, and list in \`files:\` only what they may see.
+
+## The file
+\`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
+
+## Follow it
+- You are woken when the person marks it done or says they can't, and when it is overdue.
+- Done: check the proof in \`human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
+- Declined: find another route or another person.
+- Overdue: remind, move the due date, hand it to someone else, or tell the Co-Founder.
+- No longer needed: set \`cancelled\`, with a \`reason\` when the person had already finished.
+`;
+
+/** The proof kinds that arrive as files under the task's `proof/` folder; `note` is `note.md`. */
+export const HUMAN_TASK_PROOF_FILE_KINDS = Object.freeze(["photo", "file", "signature"] as const);
+
+/** A task's own folder, beside its file: `human-tasks/<t>.md` → `human-tasks/<t>`. */
+export function humanTaskFolder(taskPath: string): string {
+	const where = companyStatePath(taskPath);
+	if (where?.kind !== "human-task") throw new RangeError(`Not a human task's path: ${shown(taskPath)}`);
+	return taskPath.slice(0, -3);
+}
+
+/** Where the writers keep a piece of proof: `human-tasks/<t>/proof/<kind>-<n>.<ext>`, so the database
+ * can tell each listed kind is there (H2 §1). `n` counts from 1; `extension` is lowercase. */
+export function humanTaskProofPath(
+	taskPath: string,
+	kind: (typeof HUMAN_TASK_PROOF_FILE_KINDS)[number],
+	n: number,
+	extension: string,
+): string {
+	if (!HUMAN_TASK_PROOF_FILE_KINDS.includes(kind)) throw new RangeError(`Not a proof file kind: ${shown(kind)}`);
+	if (!Number.isSafeInteger(n) || n < 1) throw new RangeError("A proof file's number counts from 1");
+	if (!/^[a-z0-9]{1,10}$/.test(extension)) throw new RangeError(`Not a file extension: ${shown(extension)}`);
+	return `${humanTaskFolder(taskPath)}/proof/${kind}-${n}.${extension}`;
+}
+
+/** The person's note: `human-tasks/<t>/note.md`. */
+export function humanTaskNotePath(taskPath: string): string {
+	return `${humanTaskFolder(taskPath)}/note.md`;
+}
+
+/** What the person may change on their own task (H2 §1): one box, or the task done or declined. */
+export type HumanTaskPersonChange =
+	| { readonly kind: "tick"; readonly step: number; readonly done: boolean }
+	| { readonly kind: "done" }
+	| { readonly kind: "declined"; readonly reason: string };
+
+/** The person's change to a task's text, as every writer makes it (the web, H3; the link service, H5):
+ * a tick flips one step's box and nothing else; done and declined set the status (removing or giving
+ * `reason`) and keep every other byte. The database accepts nothing more from the person. Throws when
+ * the task is not the person's to change now, or the result would not parse. */
+export function humanTaskPersonChange(taskPath: string, text: string, change: HumanTaskPersonChange): string {
+	const parsed = parseCompanyStateFile(taskPath, text);
+	if (!parsed || !parsed.ok || parsed.file.kind !== "human-task")
+		throw new RangeError(`Not a human task that parses: ${shown(taskPath)}`);
+	const task = parsed.file;
+	if (task.status !== "open" && task.status !== "returned")
+		throw new RangeError(`A task that is ${task.status} is not the person's to change`);
+	let next: string;
+	if (change.kind === "tick") {
+		const step = task.steps[change.step];
+		if (!step) throw new RangeError(`The task has no step ${change.step}`);
+		const lines = text.split("\n");
+		const line = lines[step.line - 1] ?? "";
+		const box = /^- \[[ xX]\] /.exec(line);
+		if (!box) throw new RangeError(`Line ${step.line} is not a step`);
+		lines[step.line - 1] = `- [${change.done ? "x" : " "}] ${line.slice(box[0].length)}`;
+		next = lines.join("\n");
+	} else if (change.kind === "done") next = setCompanyStateSettings(text, { status: "done", reason: null });
+	else next = setCompanyStateSettings(text, { status: "declined", reason: change.reason });
+	const result = parseCompanyStateFile(taskPath, next);
+	if (!result || !result.ok)
+		throw new RangeError(
+			`The changed task would be refused: ${result && !result.ok ? (result.problems[0]?.message ?? "") : ""}`,
+		);
+	return next;
 }
