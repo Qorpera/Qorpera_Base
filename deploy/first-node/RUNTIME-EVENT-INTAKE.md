@@ -664,7 +664,7 @@ fetch nobody serves is given up after a day. The new `mail-outbox` reads the old
 ## Deploy (I5a)
 
 The migration adds three tables, member calls and indexes (one on `qorpera_action_reviews` for open send_mail cards),
-backfills the last 30 days' mail through the same rules as live mail, and patches `qorpera_receive_mail`,
+backfills the last 30 days' mail through the same rules as live mail (about 4 s for 6,000 mails; it holds the mail door's, review cards' and outbox's locks until it commits, so deploy it at a quiet time), and patches `qorpera_receive_mail`,
 `qorpera_send_agent_mail` and `qorpera_claim_company_mail` by exact text (after M2c-1's patches). No runtime change. Deploy `mail-outbox` before or with the migration: it reads back Message-IDs through
 `qorpera_company_mail_message_ids_due`, and an older one simply leaves them unknown. Acceptance: a member opens the
 Mailbox and sees a received email, the agent's reply in its thread, a waiting send, and an account email without its

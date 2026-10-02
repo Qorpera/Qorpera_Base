@@ -172,12 +172,22 @@ update public.qorpera_company_mail_outbox set status = case call_id when 'due-3'
 where call_id like 'due-%';
 update public.qorpera_company_mail_outbox set message_id_checked_at = clock_timestamp() - interval '6 minutes'
 where call_id = 'due-1';
+select pg_temp.wake_assert(public.qorpera_company_mail_message_ids_due(1) = jsonb_build_array(
+		jsonb_build_object('mailId', (select id from public.qorpera_company_mail_outbox where call_id = 'due-2'),
+			'providerMessageId', 'resend-due-2')),
+	'The email never asked comes first, though another was sent earlier');
+select pg_temp.wake_assert(public.qorpera_company_mail_message_ids_due(10) = jsonb_build_array(
+		jsonb_build_object('mailId', (select id from public.qorpera_company_mail_outbox where call_id = 'due-1'),
+			'providerMessageId', 'resend-due-1')),
+	'Due: sent, between a day and ten seconds ago, once each five minutes');
+update public.qorpera_company_mail_outbox set message_id_checked_at = null
+where call_id in ('due-1', 'due-2');
 select pg_temp.wake_assert(public.qorpera_company_mail_message_ids_due(10) = jsonb_build_array(
 		jsonb_build_object('mailId', (select id from public.qorpera_company_mail_outbox where call_id = 'due-2'),
 			'providerMessageId', 'resend-due-2'),
 		jsonb_build_object('mailId', (select id from public.qorpera_company_mail_outbox where call_id = 'due-1'),
 			'providerMessageId', 'resend-due-1')),
-	'Due: sent, between a day and ten seconds ago, never asked first');
+	'Among those never asked, the newest first, in that order');
 -- The recipient's answer joins the agent's thread.
 select set_config('qorpera_test.bob', pg_temp.received(72, 'support@mail.example.test',
 	'{"from":"Bob <bob@acme.test>","messageId":"<b1@acme.test>","references":"<q1@ses.example>","inReplyTo":"<q1@ses.example>","subject":"Re: Your quote"}')::text,
@@ -401,6 +411,24 @@ from public.qorpera_company_environments where id = '30000000-0000-4000-8000-000
 select pg_temp.wake_assert(public.qorpera_member_mail_waiting('80800000-0000-4000-8000-000000000021') = '[]'::jsonb
 		and public.qorpera_member_mail_threads('80800000-0000-4000-8000-000000000021', '{}') = '{"threads":[]}'::jsonb,
 	'Another environment of the company sees none of this one''s mail');
+select pg_temp.wake_error(format($q$select public.qorpera_member_mail_thread('80800000-0000-4000-8000-000000000021', %L)$q$,
+	current_setting('qorpera_test.quote_thread')), '22023');
+select pg_temp.wake_error(format($q$select public.qorpera_mark_mail_thread_read('80800000-0000-4000-8000-000000000021', %L)$q$,
+	current_setting('qorpera_test.quote_thread')), '22023');
+-- A card that answers another company's email has no thread here.
+select pg_temp.path_claims('service_role');
+select pg_temp.card('call-card-6', jsonb_build_object('from', 'support@mail.example.test',
+	'to', jsonb_build_array('bob@acme.test'), 'subject', 'Wrong', 'text', 'No.',
+	'inReplyTo', current_setting('qorpera_test.theirs')));
+select pg_temp.member();
+select pg_temp.wake_assert((select not item ? 'thread' from jsonb_array_elements(
+		public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020')) as entry(item)
+		where item ->> 'subject' = 'Wrong'),
+	'A card answering another company''s email has no thread');
+select pg_temp.path_claims('service_role');
+update public.qorpera_action_reviews set answer = 'deny', answered_at = clock_timestamp(),
+	answered_by_user_id = '30000000-0000-4000-8000-000000000001' where call_id = 'call-card-6';
+select pg_temp.member();
 -- Another company's card is not this company's, whatever it names.
 select pg_temp.path_claims('service_role');
 insert into public.qorpera_action_reviews (profile_id, run_id, call_id, staff_agent_id, tool_name, effect, argument_sha256,
@@ -450,6 +478,28 @@ select pg_temp.wake_assert(not detail #> '{messages,0}' ? 'subject' and not deta
 from (select pg_temp.thread(pg_temp.thread_of(current_setting('qorpera_test.code')::uuid)) as detail) as answer;
 select pg_temp.wake_assert(pg_temp.listed(current_setting('qorpera_test.thread')) ? 'subject',
 	'Other mail keeps its subject');
+-- Account mail received before the lookup existed stays hidden when a follow-up without a subject joins its thread:
+-- the thread's mark looks at every address its messages reached.
+select pg_temp.path_claims('service_role');
+select pg_temp.received(81, 'support@mail.example.test',
+	'{"messageId":"<code-follow@acme.example>","references":"<code@acme.example>"}');
+select pg_temp.member();
+select pg_temp.wake_assert(item ? 'account' and not item ? 'subject' and (item ->> 'messages')::integer = 2,
+	'A follow-up does not bring back an account mail''s subject: ' || item::text)
+from pg_temp.listed(pg_temp.thread_of(current_setting('qorpera_test.code')::uuid)) as item;
+-- A lookup that fails never costs the mail: it is stored as account mail would be.
+alter function public.qorpera_company_account_mail(uuid, uuid, text[]) rename to qorpera_company_account_mail_kept;
+create function public.qorpera_company_account_mail(p_profile_id uuid, p_environment_id uuid, p_addresses text[])
+returns jsonb language plpgsql stable set search_path = '' as $$ begin raise exception 'lookup down'; end $$;
+select pg_temp.path_claims('service_role');
+select set_config('qorpera_test.down', pg_temp.received(82, 'support@mail.example.test',
+	'{"messageId":"<down@x.example>","subject":"Maybe a code"}')::text, true);
+select pg_temp.wake_assert(received.subject is null and received.account = '{"unknown":true}'::jsonb,
+	'With the lookup down, the mail is stored without its subject')
+from public.qorpera_mail_received as received where received.delivery_id = current_setting('qorpera_test.down')::uuid;
+drop function public.qorpera_company_account_mail(uuid, uuid, text[]);
+alter function public.qorpera_company_account_mail_kept(uuid, uuid, text[]) rename to qorpera_company_account_mail;
+select pg_temp.member();
 -- Account mail that joins a thread marks it.
 select pg_temp.path_claims('service_role');
 select set_config('qorpera_test.plain', pg_temp.received(79, 'support@mail.example.test',
@@ -460,6 +510,14 @@ select pg_temp.member();
 select pg_temp.wake_assert(item ? 'account' and not item ? 'subject' and (item ->> 'messages')::integer = 2,
 	'Account mail that joins a thread marks it: ' || item::text)
 from pg_temp.listed(pg_temp.thread_of(current_setting('qorpera_test.plain')::uuid)) as item;
+-- The mark stays when plain mail follows it.
+select pg_temp.path_claims('service_role');
+select pg_temp.received(83, 'support@mail.example.test', jsonb_build_object('messageId', '<x3@acme.example>',
+	'references', '<x1@acme.example>', 'subject', 'Plain follow-up',
+	'to', jsonb_build_array(repeat('a', 330) || '@x.example', 'ok@x.example')));
+select pg_temp.wake_assert((select recipients_to = '["ok@x.example"]'::jsonb from public.qorpera_mail_received
+	where message_id = '<x3@acme.example>'), 'Recipients longer than an address are not kept');
+select pg_temp.member();
 
 -- Account mail recorded as such when it arrives stays hidden, even when the lookup is gone.
 select pg_temp.path_claims('service_role');
@@ -511,17 +569,30 @@ select pg_temp.path_claims('service_role');
 select public.qorpera_mail_threads_backfill();
 select set_config('qorpera_test.old', pg_temp.received(78, 'support@mail.example.test',
 	'{"messageId":"<old@x.example>","subject":"Old"}')::text, true);
-delete from public.qorpera_mail_threads where id = pg_temp.thread_of(current_setting('qorpera_test.old')::uuid);
-delete from public.qorpera_mail_received where delivery_id = current_setting('qorpera_test.old')::uuid;
+select set_config('qorpera_test.old_reply', pg_temp.received(84, 'support@mail.example.test',
+	'{"messageId":"<old2@x.example>","references":"<old@x.example>","subject":"Re: Old"}')::text, true);
+select set_config('qorpera_test.ancient', pg_temp.received(85, 'support@mail.example.test',
+	'{"messageId":"<ancient@x.example>","subject":"Ancient"}')::text, true);
+delete from public.qorpera_mail_threads where id in (pg_temp.thread_of(current_setting('qorpera_test.old')::uuid),
+	pg_temp.thread_of(current_setting('qorpera_test.ancient')::uuid));
+delete from public.qorpera_mail_received where delivery_id in (current_setting('qorpera_test.old')::uuid,
+	current_setting('qorpera_test.old_reply')::uuid, current_setting('qorpera_test.ancient')::uuid);
+update public.qorpera_event_deliveries set received_at = clock_timestamp() - interval '31 days'
+where id = current_setting('qorpera_test.ancient')::uuid;
 update public.qorpera_event_deliveries set headers = headers || jsonb_build_object('from', repeat('n', 400) || ' <old@x.example>')
 where id = current_setting('qorpera_test.old')::uuid;
 select set_config('qorpera_test.backfilled', public.qorpera_mail_threads_backfill()::text, true);
-select pg_temp.wake_assert(current_setting('qorpera_test.backfilled') = '1'
+select pg_temp.wake_assert(current_setting('qorpera_test.backfilled') = '2'
 		and pg_temp.thread_of(current_setting('qorpera_test.old')::uuid)
 			= public.qorpera_mail_thread_id(pg_temp.support(), '<old@x.example>')
-		and (select char_length(outside_name) = 320 and message_count = 1 and subject = 'Old'
-			from public.qorpera_mail_threads where id = pg_temp.thread_of(current_setting('qorpera_test.old')::uuid)),
-	'The backfill threads what is not recorded yet');
+		and pg_temp.thread_of(current_setting('qorpera_test.old_reply')::uuid)
+			= pg_temp.thread_of(current_setting('qorpera_test.old')::uuid)
+		and pg_temp.thread_of(current_setting('qorpera_test.ancient')::uuid) is null
+		and (select message_count = 2 and subject = 'Re: Old' and last_received_delivery_id = current_setting('qorpera_test.old_reply')::uuid
+			from public.qorpera_mail_threads where id = pg_temp.thread_of(current_setting('qorpera_test.old')::uuid))
+		and (select char_length(from_name) = 320 from public.qorpera_mail_received
+			where delivery_id = current_setting('qorpera_test.old')::uuid),
+	'The backfill threads what the last 30 days received, in the order it came, names cut to their limits');
 select pg_temp.wake_assert(public.qorpera_mail_threads_backfill() = 0, 'The backfill records each once');
 
 -- Mail switched off: every answer is empty.

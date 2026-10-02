@@ -116,6 +116,8 @@ create table public.qorpera_mail_threads (
 );
 create index qorpera_mail_threads_environment on public.qorpera_mail_threads (environment_id, last_at desc, id desc);
 create index qorpera_mail_threads_kept on public.qorpera_mail_threads (last_at);
+create index qorpera_mail_threads_profile on public.qorpera_mail_threads (profile_id);
+create index qorpera_mail_threads_mailbox on public.qorpera_mail_threads (mailbox_id);
 alter table public.qorpera_mail_threads enable row level security;
 revoke all on table public.qorpera_mail_threads from public, anon, authenticated, service_role;
 
@@ -143,6 +145,9 @@ create table public.qorpera_mail_received (
 	account jsonb check (account is null or jsonb_typeof(account) = 'object')
 );
 create index qorpera_mail_received_thread on public.qorpera_mail_received (thread_id, received_at desc, delivery_id desc);
+create index qorpera_mail_received_profile on public.qorpera_mail_received (profile_id);
+create index qorpera_mail_received_environment on public.qorpera_mail_received (environment_id);
+create index qorpera_mail_received_mailbox on public.qorpera_mail_received (mailbox_id);
 alter table public.qorpera_mail_received enable row level security;
 revoke all on table public.qorpera_mail_received from public, anon, authenticated, service_role;
 
@@ -152,6 +157,7 @@ create table public.qorpera_mail_thread_reads (
 	read_at timestamptz not null,
 	primary key (thread_id, user_id)
 );
+create index qorpera_mail_thread_reads_user on public.qorpera_mail_thread_reads (user_id);
 alter table public.qorpera_mail_thread_reads enable row level security;
 revoke all on table public.qorpera_mail_thread_reads from public, anon, authenticated, service_role;
 
@@ -175,6 +181,23 @@ begin
 end
 $$;
 revoke all on function public.qorpera_mail_account(uuid, uuid, text[]) from public, anon, authenticated, service_role;
+
+-- A thread's account mark on reading: its own, else A1's lookup over every address its received messages reached.
+create function public.qorpera_mail_thread_account(p_thread public.qorpera_mail_threads)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select coalesce(p_thread.account, public.qorpera_mail_account(p_thread.profile_id, p_thread.environment_id,
+		array(select distinct address.value from public.qorpera_mail_received as received
+			cross join lateral unnest(received.delivered_to) as address(value)
+			where received.thread_id = p_thread.id and received.profile_id = p_thread.profile_id
+			limit 200)))
+$$;
+revoke all on function public.qorpera_mail_thread_account(public.qorpera_mail_threads) from public, anon, authenticated,
+	service_role;
 
 -- A message joins its thread: the thread's newest message, subject and outside party move on with it.
 create function public.qorpera_mail_thread_note(p_thread text, p_profile_id uuid, p_environment_id uuid,
@@ -244,7 +267,12 @@ begin
 			where mail.mailbox_id = p_mailbox.id and mail.message_id = v_root limit 1),
 		public.qorpera_mail_thread_id(p_mailbox.id, coalesce(v_root, 'delivery:' || p_delivery_id)));
 	select * into v_party from public.qorpera_mail_party(p_from);
-	v_account := public.qorpera_mail_account(p_mailbox.profile_id, p_mailbox.environment_id, v_delivered_to);
+	begin
+		v_account := public.qorpera_mail_account(p_mailbox.profile_id, p_mailbox.environment_id, v_delivered_to);
+	exception when others then
+		-- The mail is stored whatever the lookup does; unknown, it is kept as account mail would be.
+		v_account := jsonb_build_object('unknown', true);
+	end;
 	insert into public.qorpera_mail_received (delivery_id, thread_id, profile_id, environment_id, mailbox_id, received_at,
 		message_id, from_name, from_address, subject, delivered_to, recipients_to, recipients_cc, authentication,
 		automated, attachments, account)
@@ -254,10 +282,10 @@ begin
 		case when v_account is null then left(p_subject, 998) end,
 		v_delivered_to[1:200],
 		case when jsonb_typeof(p_message -> 'to') = 'array'
-			then (select jsonb_agg(item.value) from jsonb_array_elements(p_message -> 'to') with ordinality as item(value, n)
+			then (select jsonb_agg(item.value order by item.n) from jsonb_array_elements(p_message -> 'to') with ordinality as item(value, n)
 				where item.n <= 50 and jsonb_typeof(item.value) = 'string' and char_length(item.value #>> '{}') <= 320) end,
 		case when jsonb_typeof(p_message -> 'cc') = 'array'
-			then (select jsonb_agg(item.value) from jsonb_array_elements(p_message -> 'cc') with ordinality as item(value, n)
+			then (select jsonb_agg(item.value order by item.n) from jsonb_array_elements(p_message -> 'cc') with ordinality as item(value, n)
 				where item.n <= 50 and jsonb_typeof(item.value) = 'string' and char_length(item.value #>> '{}') <= 320) end,
 		case when jsonb_typeof(p_message -> 'authentication') = 'object' then jsonb_strip_nulls(jsonb_build_object(
 			'spf', left(p_message #>> '{authentication,spf}', 32), 'dkim', left(p_message #>> '{authentication,dkim}', 32),
@@ -436,7 +464,7 @@ begin
 	if p_limit is null or p_limit not between 1 and 10 then
 		raise exception 'Company mail message id request is invalid' using errcode = '22023'; end if;
 	with due as (
-		select mail.id from public.qorpera_company_mail_outbox as mail
+		select mail.id, mail.message_id_checked_at, mail.settled_at from public.qorpera_company_mail_outbox as mail
 		where mail.status = 'sent' and mail.message_id is null and mail.provider_message_id is not null
 			and mail.settled_at between v_now - interval '1 day' and v_now - interval '10 seconds'
 			and (mail.message_id_checked_at is null or mail.message_id_checked_at < v_now - interval '5 minutes')
@@ -448,8 +476,9 @@ begin
 		from due where mail.id = due.id
 		returning mail.id, mail.provider_message_id
 	)
-	select coalesce(jsonb_agg(jsonb_build_object('mailId', checked.id, 'providerMessageId', checked.provider_message_id)),
-		'[]'::jsonb) into v_result from checked;
+	select coalesce(jsonb_agg(jsonb_build_object('mailId', checked.id, 'providerMessageId', checked.provider_message_id)
+		order by due.message_id_checked_at nulls first, due.settled_at desc), '[]'::jsonb) into v_result
+	from checked join due on due.id = checked.id;
 	return v_result;
 end
 $$;
@@ -676,9 +705,8 @@ begin
 		select page.*, row_number() over (order by page.last_at desc, page.id desc) as place
 		from page where not p_request ? 'state' or page.state = p_request ->> 'state'
 	), shown as (
-		select kept.*, coalesce(kept.account, public.qorpera_mail_account(kept.profile_id, kept.environment_id,
-			(select received.delivered_to from public.qorpera_mail_received as received
-				where received.delivery_id = kept.last_received_delivery_id))) as account_mark
+		select kept.*, (select public.qorpera_mail_thread_account(thread) from public.qorpera_mail_threads as thread
+			where thread.id = kept.id) as account_mark
 		from kept where kept.place <= v_limit
 	)
 	select coalesce(jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
