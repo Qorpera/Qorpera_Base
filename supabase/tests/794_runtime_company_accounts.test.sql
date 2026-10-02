@@ -92,15 +92,15 @@ create function pg_temp.ca_open(p_receipt text,p_login text,p_todo text,
 	p_authority text default '79400000-0000-4000-8000-000000000040',p_capability text default repeat('c',64),
 	p_site text default 'vercel.com',p_input text default repeat('a',64),p_key text default 'company-kek-1',
 	p_sha text default null,p_environment text default '29000000-0000-4000-8000-000000000020',
-	p_secret text default null,p_company text default '29000000-0000-4000-8000-000000000010')
+	p_secret text default null,p_company text default '29000000-0000-4000-8000-000000000010',p_hosts text default '{}')
 returns text language plpgsql as $$
 begin
 	return pg_temp.ca_try(format('select public.qorpera_open_company_account(%L,%L,'
 		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,repeat(''b'',64),%L,%L,%L,%L,'
-		'''{}''::text[],%L,''Hosting for the website'',%L,%L,%L::bytea,%L)',
+		'%L::text[],%L,''Hosting for the website'',%L,%L,%L::bytea,%L)',
 		p_authority,p_capability,'79400000-0000-4000-8000-0000000001' || p_receipt,p_input,
-		coalesce(p_secret,'79400000-0000-4000-8000-0000000002' || p_receipt),p_company,p_environment,p_site,p_login,p_todo,
-		p_key,'\x0102',coalesce(p_sha,pg_temp.ca_sha('\x0102'))));
+		coalesce(p_secret,'79400000-0000-4000-8000-0000000002' || p_receipt),p_company,p_environment,p_site,p_hosts,p_login,
+		p_todo,p_key,'\x0102',coalesce(p_sha,pg_temp.ca_sha('\x0102'))));
 end
 $$;
 create function pg_temp.ca_call(p_function text,p_receipt text,p_rest text)
@@ -118,7 +118,7 @@ returns text language sql as $$
 		current_setting('qorpera_test.ca_account'),p_base,p_two_step,p_envelope,pg_temp.ca_sha(p_envelope))
 $$;
 grant execute on function pg_temp.ca_receipt(text,text), pg_temp.ca_done(text), pg_temp.ca_sha(text), pg_temp.ca_try(text),
-	pg_temp.ca_open(text,text,text,text,text,text,text,text,text,text,text,text), pg_temp.ca_call(text,text,text),
+	pg_temp.ca_open(text,text,text,text,text,text,text,text,text,text,text,text,text), pg_temp.ca_call(text,text,text),
 	pg_temp.ca_version_args(text,text,text) to qorpera_secret_broker;
 
 -- 1. Switched off, and only the broker may call.
@@ -145,6 +145,11 @@ select set_config('qorpera_test.ca_other_todo',pg_temp.ca_open('01','agents@nord
 	'79400000-0000-4000-8000-000000000062'),true);
 select set_config('qorpera_test.ca_bad_site',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_site => 'Vercel.com'),true);
+-- A DNS label has at most 63 characters; sign-in hosts are a flat list.
+select set_config('qorpera_test.ca_long_label',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_site => repeat('a',64) || '.example'),true);
+select set_config('qorpera_test.ca_nested_hosts',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_hosts => '{{"a.example","b.example"}}'),true);
 select set_config('qorpera_test.ca_bad_input',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_input => repeat('f',64)),true);
 select set_config('qorpera_test.ca_bad_digest',pg_temp.ca_open('01','agents@nordlys.example',
@@ -250,6 +255,15 @@ begin
 			current_setting('qorpera_test.ca_no_todo'),current_setting('qorpera_test.ca_done_todo'),
 			current_setting('qorpera_test.ca_other_todo');
 	end if;
+	if current_setting('qorpera_test.ca_long_label') is distinct from
+			'22023:The account''s website, sign-in hosts, login or reason is malformed'
+		or current_setting('qorpera_test.ca_nested_hosts') is distinct from
+			'22023:The account''s website, sign-in hosts, login or reason is malformed'
+		or not public.qorpera_company_account_host_valid(repeat('a',63) || '.example')
+		or public.qorpera_company_account_host_valid(repeat('a',64) || '.example') then
+		raise exception 'A label over 63 characters or nested hosts were not refused as malformed: % %',
+			current_setting('qorpera_test.ca_long_label'),current_setting('qorpera_test.ca_nested_hosts');
+	end if;
 	if current_setting('qorpera_test.ca_bad_site') not like '22023:%' then
 		raise exception 'A malformed website was accepted: %',current_setting('qorpera_test.ca_bad_site');
 	end if;
@@ -339,6 +353,8 @@ set local session authorization qorpera_secret_broker;
 select pg_temp.ca_receipt('05','company_account:use:' || current_setting('qorpera_test.ca_account') || ':r5');
 select set_config('qorpera_test.ca_use_other_key',pg_temp.ca_call('qorpera_use_company_account','05',
 	quote_literal(current_setting('qorpera_test.ca_account2'))),true);
+-- A missing account id is a broker fault, never "no such account".
+select set_config('qorpera_test.ca_use_null_account',pg_temp.ca_call('qorpera_use_company_account','05','null'),true);
 select set_config('qorpera_test.ca_use',pg_temp.ca_call('qorpera_use_company_account','05',
 	quote_literal(current_setting('qorpera_test.ca_account'))),true);
 select pg_temp.ca_done('05');
@@ -387,6 +403,9 @@ begin
 		or v_use ->> 'accountId' is distinct from v_account::text
 		or v_use ->> 'receiptId' is distinct from '79400000-0000-4000-8000-000000000105' then
 		raise exception 'Wrong use answer: %',v_use;
+	end if;
+	if current_setting('qorpera_test.ca_use_null_account') is distinct from '42501:company account effect receipt is unavailable' then
+		raise exception 'A missing account id was not a broker fault: %',current_setting('qorpera_test.ca_use_null_account');
 	end if;
 	if current_setting('qorpera_test.ca_use_other_key') is distinct from '42501:company account effect receipt is unavailable' then
 		raise exception 'A receipt for one account used another: %',current_setting('qorpera_test.ca_use_other_key');

@@ -30,7 +30,7 @@ comment on table public.qorpera_company_account_settings is
 create function public.qorpera_company_account_host_valid(p_host text)
 returns boolean language sql immutable set search_path = '' as $$
 	select p_host is not null and char_length(p_host) <= 253
-		and p_host ~ '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$'
+		and p_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
 $$;
 revoke all on function public.qorpera_company_account_host_valid(text) from public, anon, authenticated, service_role,
 	qorpera_secret_broker;
@@ -154,6 +154,7 @@ begin
 		or p_input_sha256 is null or v_receipt.input_sha256 is distinct from p_input_sha256
 		or coalesce(p_downstream_idempotency_sha256 !~ '^[0-9a-f]{64}$', true)
 		or v_receipt.downstream_idempotency_sha256 is distinct from p_downstream_idempotency_sha256
+		or (p_action is distinct from 'open' and p_account_id is null)
 		or coalesce(v_receipt.logical_operation_key !~ ('^company_account:' || p_action || ':'
 			|| coalesce(p_account_id::text || ':', '') || '[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'), true) then
 		raise exception 'company account effect receipt is unavailable' using errcode = '42501';
@@ -236,7 +237,7 @@ begin
 		raise exception 'company account id is taken' using errcode = '42501';
 	end if;
 	if not public.qorpera_company_account_host_valid(p_site)
-		or p_sign_in_hosts is null or cardinality(p_sign_in_hosts) > 4
+		or p_sign_in_hosts is null or coalesce(array_ndims(p_sign_in_hosts), 1) <> 1 or cardinality(p_sign_in_hosts) > 4
 		or exists (select 1 from unnest(p_sign_in_hosts) as host
 			where not public.qorpera_company_account_host_valid(host) or host = p_site)
 		or (select count(distinct host) from unnest(p_sign_in_hosts) as host) <> cardinality(p_sign_in_hosts)
