@@ -94,6 +94,13 @@ describe("run box replies", () => {
 			'{"t":"ready","protocol":2,"sessions":[]}',
 		])
 			expect(() => parseRunBoxReply(bad)).toThrow();
+		expect(() =>
+			parseRunBoxReply(result({ output: { head: "a\u0001", tail: "", skippedBytes: 0, totalBytes: 2 } })),
+		).toThrow(/control character/);
+		// The longest answer allowed, of the character JSON escapes most, fits one line.
+		const newlines = result({ output: { head: "\n".repeat(65_536), tail: "", skippedBytes: 0, totalBytes: 65_536 } });
+		expect(newlines.length).toBeLessThan(RUN_BOX_LINE_LIMIT);
+		expect(parseRunBoxReply(newlines).t).toBe("result");
 		const big = result({ output: { head: "é".repeat(200), tail: "x", skippedBytes: 0, totalBytes: 401 } });
 		expect(() => parseRunBoxReply(big, 400)).toThrow(/larger than asked/);
 		expect(parseRunBoxReply(big, 401).t).toBe("result");

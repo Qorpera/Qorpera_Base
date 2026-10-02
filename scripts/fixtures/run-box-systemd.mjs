@@ -255,6 +255,39 @@ try {
 	assert.equal(spawnSync("/usr/bin/test", ["-e", "/dev/shm/box-probe"]).status, 1, "the box's /dev/shm is its own");
 	check("home and /tmp are the box's own memory, and so is its /dev/shm");
 
+	reply = await client.sh("test -e /sys/fs/cgroup/system.slice && echo HOST_CGROUPS; cat /proc/self/cgroup");
+	assert.doesNotMatch(reply.out, /HOST_CGROUPS/);
+	assert.match(reply.out, /^0::\/\n?$/m);
+	check("the box sees its own control group only");
+
+	// The box's tools, when the image has them (run-box-toolbox-image.Dockerfile), inside the real unit: its system call
+	// filter, read-only /var and /run, no network.
+	const toolbox = (await client.sh("command -v soffice >/dev/null && echo yes || echo no")).out.trim() === "yes";
+	if (toolbox) {
+		reply = await client.sh(
+			[
+				"set -e; cd /tmp;",
+				"python3 -c 'import pandas, openpyxl, docx, pypdf; print(\"python\", pandas.DataFrame({\"a\":[1,2]}).a.sum())';",
+				"python3 -c 'import openpyxl; w=openpyxl.Workbook(); w.active[\"A1\"]=7; w.save(\"t.xlsx\")';",
+				"soffice --headless --convert-to pdf --outdir /tmp /company/readme.md >/dev/null 2>&1; test -s readme.pdf && echo soffice;",
+				"pdftotext readme.pdf - | grep -q 'hello from the company folder' && echo pdftotext;",
+				"printf '# Title\\n' | pandoc -f markdown -t html | grep -q '<h1' && echo pandoc;",
+				"convert -size 4x4 xc:white t.png && file t.png | grep -q PNG && echo convert;",
+				"rg -l plan /company | grep -q docs/plan.md && echo rg;",
+				"fd -t f plan /company | grep -q plan.md && echo fd;",
+				"echo '{\"a\":1}' | jq .a; sqlite3 :memory: 'select 41+1'",
+			].join(" "),
+		);
+		assert.equal(reply.code, 0, reply.out);
+		assert.deepEqual(reply.out.trim().split("\n"), ["python 3", "soffice", "pdftotext", "pandoc", "convert", "rg", "fd", "1", "42"]);
+		// add_key(2) on x86-64 is 248: the keyring is closed to the box.
+		reply = await client.sh(
+			"python3 -c 'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); r=libc.syscall(248,b\"user\",b\"k\",b\"v\",1,-4); print(r, os.strerror(ctypes.get_errno()))'",
+		);
+		assert.match(reply.out, /^-1 Operation not permitted/);
+		check("the box's tools work in the real unit (python with pandas, LibreOffice, pdftotext, pandoc, ImageMagick, rg, fd, jq, sqlite3), and its keyring is closed");
+	}
+
 	const started = await client.exec("read -r name; echo hello $name; tty -s && echo has-tty", { tty: true, yieldMs: 500 });
 	assert.equal(started.exitCode, null);
 	reply = await client.request({ t: "write", session: started.session, chars: "box\n", yieldMs: 5_000 });
@@ -310,7 +343,9 @@ try {
 	check("the next run's box starts empty");
 
 	await writeFile(viewFile, `${JSON.stringify({ environmentId: ENV, viewId: randomUUID(), pass })}\n`, { mode: 0o600 });
+	const refusedAt = Date.now();
 	assert.notEqual(run("/usr/bin/systemctl", ["start", "qorpera-shared-box@0.service"]).status, 0);
+	assert(Date.now() - refusedAt < 15_000, `a refused view fails the start promptly (${Date.now() - refusedAt} ms)`);
 	assert.notEqual(state("qorpera-shared-box@0.service"), "active");
 	assert.equal(await mounted("/srv/qorpera-folder/box-0"), false);
 	ctl("stop", "qorpera-shared-box@0.socket", "qorpera-shared-box-reads@0.socket");
@@ -325,6 +360,7 @@ try {
 			actualSystemd: true,
 			actualFuse: true,
 			folderService: "repository code, core in memory",
+			toolbox,
 			realNode: false,
 		})}`,
 	);

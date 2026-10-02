@@ -10,6 +10,7 @@ import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orch
 import { ProviderAdmissionRefused } from "../src/provider-shared.ts";
 import {
 	parseUnitStates,
+	RUN_BOX_NO_FOLDER_MESSAGE,
 	SharedExecutionAdmissionRefused,
 	SharedExecutionProviderBackend,
 	type SharedExecutionProviderConfig,
@@ -125,6 +126,8 @@ class FakeUnits implements SharedExecutionUnitControl {
 
 interface Fixture {
 	backend: SharedExecutionProviderBackend;
+	/** A new service process on the same host state (the old one's background work is simply abandoned). */
+	restart: () => void;
 	units: FakeUnits;
 	rpc: Array<{ name: string; body: Record<string, unknown> }>;
 	deliveries: Array<{ port: number; authorization: string | null; body: Record<string, unknown> }>;
@@ -211,6 +214,7 @@ async function fixture(
 	};
 	const state: Fixture = {
 		backend: undefined as unknown as SharedExecutionProviderBackend,
+		restart: () => undefined,
 		units: new FakeUnits(),
 		rpc: [],
 		deliveries: [],
@@ -254,15 +258,13 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
-		...(options.runBox
-			? {
-					runBox: {
-						unitPrefix: "qorpera-shared-box@",
-						folderUnitPrefix: "qorpera-shared-box-folder@",
-						readsUnitPrefix: "qorpera-shared-box-reads@",
-					},
-				}
-			: {}),
+		// The box unit names are always known; only `open` follows the switch.
+		runBox: {
+			open: options.runBox === true,
+			unitPrefix: "qorpera-shared-box@",
+			folderUnitPrefix: "qorpera-shared-box-folder@",
+			readsUnitPrefix: "qorpera-shared-box-reads@",
+		},
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -359,17 +361,22 @@ async function fixture(
 		}
 		return new Response("not found", { status: 404 });
 	};
-	state.backend = new SharedExecutionProviderBackend(config, {
-		fetch: fakeFetch as typeof fetch,
-		units: state.units,
-		identityAuthority: async () => state.identityState,
-		account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
-		...(options.mountInfoPath
-			? { requireIdentityMount: true, mountInfoPath: options.mountInfoPath }
-			: { requireIdentityMount: false }),
-		identityOwnerUid: process.getuid?.() ?? 0,
-		now: () => state.clock.now,
-	});
+	const make = (): SharedExecutionProviderBackend =>
+		new SharedExecutionProviderBackend(config, {
+			fetch: fakeFetch as typeof fetch,
+			units: state.units,
+			identityAuthority: async () => state.identityState,
+			account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
+			...(options.mountInfoPath
+				? { requireIdentityMount: true, mountInfoPath: options.mountInfoPath }
+				: { requireIdentityMount: false }),
+			identityOwnerUid: process.getuid?.() ?? 0,
+			now: () => state.clock.now,
+		});
+	state.backend = make();
+	state.restart = () => {
+		state.backend = make();
+	};
 	return state;
 }
 
@@ -1243,6 +1250,7 @@ describe("run boxes (F3)", () => {
 		await until(() => f.rpc.filter((call) => call.name === "qorpera_folder_view_open").length >= 2, "retries");
 		f.clock.now += 61_000;
 		await until(async () => (await boxState(f)) === "failed", "the box gives up");
+		expect((await journal(f)).box).toMatchObject({ reason: "42501" });
 		expect(f.units.log.some((line) => line.startsWith("start qorpera-shared-box"))).toBe(false);
 
 		// Slot 1 has no run, yet its box runs and its view file is there (a crash mid-retire).
@@ -1259,6 +1267,60 @@ describe("run boxes (F3)", () => {
 		expect(f.units.log).toEqual(box(1).map((unit) => `stop ${unit}`));
 		expect(f.closedViews).toEqual([orphanView]);
 		await expect(stat(join(f.runRoot, "slots", "1", "box-view.json"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("stops a box still running when boxes are off, and never gives a new run a stale box", async () => {
+		// Switched off while a run had a box: the run's end still stops it.
+		const off = await fixture();
+		await deliverRun(off);
+		for (const unit of box(0)) off.units.activeUnits.add(unit);
+		off.units.log.length = 0;
+		off.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await off.backend.reconcile();
+		expect(off.units.log.slice(0, box(0).length)).toEqual(box(0).map((unit) => `stop ${unit}`));
+		expect(box(0).some((unit) => off.units.activeUnits.has(unit))).toBe(false);
+
+		// A box left on the slot (from before a crash) stops before a new run's sandbox starts there.
+		const f = await fixture({ runBox: true });
+		for (const unit of box(0)) f.units.activeUnits.add(unit);
+		await deliverRun(f);
+		expect(f.units.log.slice(0, box(0).length)).toEqual(box(0).map((unit) => `stop ${unit}`));
+		await until(async () => (await boxState(f)) === "open", "the box opens");
+		expect(f.units.log.at(-1)).toBe("start qorpera-shared-box@0.service");
+	});
+
+	it("asks for the view again after a restart while it opened, and keeps the runner's own time", async () => {
+		const f = await fixture({ runBox: true });
+		let release = (): void => undefined;
+		f.viewGate = new Promise<void>((done) => {
+			release = done;
+		});
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		await f.backend.deliver(runner, delivery());
+		const delivered = (await journal(f)).updatedAt;
+		await until(() => f.rpc.some((call) => call.name === "qorpera_folder_view_open"), "the view is asked for");
+		// The service restarts: its first process never hears back.
+		f.viewAnswers.push("run-unavailable");
+		f.restart();
+		f.clock.now += 1_000;
+		await f.backend.reconcile();
+		await until(async () => (await boxState(f)) === "open", "the new process opens the box");
+		expect((await journal(f)).updatedAt).toBe(delivered);
+		release();
+	});
+
+	it("knows a company without a folder-v2 folder by the refusal the live SQL raises", async () => {
+		// The last migration that defines view_open must still raise exactly the text the backend matches.
+		const directory = new URL("../../../supabase/migrations/", import.meta.url);
+		const files = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
+		let definition = "";
+		for (const name of files) {
+			const sql = await readFile(new URL(name, directory), "utf-8");
+			const at = sql.search(/create (or replace )?function public\.qorpera_folder_view_open\(/);
+			if (at >= 0) definition = sql.slice(at, sql.indexOf("$$;", at));
+		}
+		expect(definition).toContain(`raise exception '${RUN_BOX_NO_FOLDER_MESSAGE}' using errcode = '42501'`);
 	});
 
 	it("stops the box when its run's native host parks", async () => {

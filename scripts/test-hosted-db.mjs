@@ -60,6 +60,7 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-production-review.mjs",
 	"scripts/test-runtime-wake-bus.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
+	"scripts/test-runtime-roll.mjs",
 ];
 
 /** Scripts that keep a PostgreSQL of their own (they restart the server or alter the cluster-wide postgres

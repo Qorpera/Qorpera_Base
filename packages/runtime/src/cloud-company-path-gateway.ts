@@ -131,6 +131,11 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_renew_upload"
 	// A folder-v2 run's own todos from the todo index (thin writers W1).
 	| "qorpera_folder_agent_todos"
+	// An approved call's review of the change set it commits (C2 R1).
+	| "qorpera_folder_record_review"
+	// A folder-v2 run's own routines from the routine index, and the login a routine save pins (thin writers W4c).
+	| "qorpera_folder_agent_routines"
+	| "qorpera_prepare_routine_login"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"

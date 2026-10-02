@@ -56,6 +56,7 @@ class Unread {
 	#dropped = false;
 
 	push(chunk: Buffer): void {
+		if (chunk.byteLength === 0) return;
 		this.#total += chunk.byteLength;
 		if (this.#headBytes < KEEP_BYTES) {
 			const take = Math.min(KEEP_BYTES - this.#headBytes, chunk.byteLength);
@@ -79,55 +80,107 @@ class Unread {
 		}
 	}
 
-	/** Everything unread as one answer of at most `budget` bytes of text, and start over. */
-	take(budget: number): RunBoxOutput {
-		const total = this.#total;
+	/**
+	 * Everything unread as one answer of at most `budget` bytes, and start over. Shown text has exactly the bytes of
+	 * the output it shows (`shown`), so the counts are exact. While the command runs, a character its last write left
+	 * unfinished waits for the next answer instead of showing as two broken halves.
+	 */
+	take(budget: number, final: boolean): RunBoxOutput {
 		const head = Buffer.concat(this.#head);
 		const tail = Buffer.concat(this.#tail);
 		const dropped = this.#dropped;
+		const end = tail.byteLength > 0 ? tail : head;
+		const carry = final ? 0 : unfinished(end);
+		const total = this.#total - carry;
+		const kept = end.subarray(end.byteLength - carry);
 		this.#head = [];
 		this.#tail = [];
 		this.#headBytes = 0;
 		this.#tailBytes = 0;
 		this.#total = 0;
 		this.#dropped = false;
-		if (total <= budget && !dropped) {
-			const all = Buffer.concat([head, tail]);
-			const text = fitStart(decode(all), budget);
-			return { head: text, tail: "", skippedBytes: Math.max(0, total - Buffer.byteLength(text)), totalBytes: total };
-		}
+		if (carry > 0) this.push(Buffer.from(kept));
+		const lastHead = tail.byteLength > 0 ? head : head.subarray(0, head.byteLength - carry);
+		const lastTail = tail.subarray(0, tail.byteLength - (tail.byteLength > 0 ? carry : 0));
+		if (total <= budget && !dropped)
+			return { head: shown(Buffer.concat([lastHead, lastTail])), tail: "", skippedBytes: 0, totalBytes: total };
 		const headBudget = Math.floor(budget * HEAD_SHARE);
-		const tailBudget = budget - headBudget;
 		// When nothing was dropped the kept bytes are the whole output, so the tail may reach back into the head.
-		const end = dropped ? tail : Buffer.concat([head, tail]);
-		const headRaw = completeStart(head.subarray(0, Math.min(headBudget, head.byteLength)));
-		const tailRaw = completeEnd(end.subarray(Math.max(0, end.byteLength - tailBudget)));
-		const headText = fitStart(decode(headRaw), headBudget);
-		const tailText = fitEnd(decode(tailRaw), tailBudget);
+		const whole = dropped ? lastTail : Buffer.concat([lastHead, lastTail]);
+		const headRaw = completeStart(lastHead.subarray(0, Math.min(headBudget, lastHead.byteLength)));
+		const tailRaw = completeEnd(whole.subarray(Math.max(0, whole.byteLength - (budget - headBudget))));
 		return {
-			head: headText,
-			tail: tailText,
-			skippedBytes: Math.max(0, total - headRaw.byteLength - tailRaw.byteLength),
+			head: shown(headRaw),
+			tail: shown(tailRaw),
+			skippedBytes: total - headRaw.byteLength - tailRaw.byteLength,
 			totalBytes: total,
 		};
 	}
 }
 
-function decode(bytes: Buffer): string {
-	return new TextDecoder("utf-8", { fatal: false }).decode(bytes).replaceAll("\0", "�");
+/** The length of a UTF-8 sequence that starts with `byte`, or 0 for a byte no sequence starts with. */
+function sequenceLength(byte: number): number {
+	return byte < 0x80
+		? 1
+		: byte >= 0xc2 && byte <= 0xdf
+			? 2
+			: byte >= 0xe0 && byte <= 0xef
+				? 3
+				: byte >= 0xf0 && byte <= 0xf4
+					? 4
+					: 0;
+}
+
+/** How many bytes at the end of `bytes` start a character that has not been written whole yet. */
+function unfinished(bytes: Buffer): number {
+	for (let back = 1; back <= 3 && back <= bytes.byteLength; back++) {
+		const byte = bytes[bytes.byteLength - back] as number;
+		if ((byte & 0xc0) === 0x80) continue;
+		return sequenceLength(byte) > back ? back : 0;
+	}
+	return 0;
+}
+
+/** Whether `bytes[at..]` holds a whole, valid UTF-8 character of `length` bytes (no overlong form, no surrogate). */
+function validAt(bytes: Buffer, at: number, length: number): boolean {
+	if (length === 0 || at + length > bytes.byteLength) return false;
+	const first = bytes[at] as number;
+	for (let i = 1; i < length; i++) if (((bytes[at + i] as number) & 0xc0) !== 0x80) return false;
+	const second = bytes[at + 1] as number;
+	if (first === 0xe0 && second < 0xa0) return false;
+	if (first === 0xed && second > 0x9f) return false;
+	if (first === 0xf0 && second < 0x90) return false;
+	if (first === 0xf4 && second > 0x8f) return false;
+	return true;
+}
+
+/**
+ * Output as text, one pass: valid UTF-8 as it is; every other byte, and control characters other than tab, newline and
+ * carriage return, as `?`. A stand-in of one byte keeps the shown text exactly as long as the output it shows, and its
+ * JSON at most twice as long.
+ */
+function shown(bytes: Buffer): string {
+	let text = "";
+	let run = 0;
+	let at = 0;
+	while (at < bytes.byteLength) {
+		const byte = bytes[at] as number;
+		const length = sequenceLength(byte);
+		const control = byte < 0x20 ? byte !== 0x09 && byte !== 0x0a && byte !== 0x0d : byte === 0x7f;
+		if (!control && validAt(bytes, at, length)) {
+			at += length;
+			continue;
+		}
+		text += `${bytes.toString("utf8", run, at)}?`;
+		at += 1;
+		run = at;
+	}
+	return text + bytes.toString("utf8", run, at);
 }
 
 /** Drop a character cut in two at the end. */
 function completeStart(bytes: Buffer): Buffer {
-	let end = bytes.byteLength;
-	for (let back = 1; back <= 3 && end - back >= 0; back++) {
-		const byte = bytes[end - back] as number;
-		if ((byte & 0xc0) === 0x80) continue;
-		const length = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
-		if (length > back) end -= back;
-		break;
-	}
-	return bytes.subarray(0, end);
+	return bytes.subarray(0, bytes.byteLength - unfinished(bytes));
 }
 
 /** Drop a character cut in two at the start. */
@@ -135,17 +188,6 @@ function completeEnd(bytes: Buffer): Buffer {
 	let start = 0;
 	while (start < 3 && start < bytes.byteLength && ((bytes[start] as number) & 0xc0) === 0x80) start++;
 	return bytes.subarray(start);
-}
-
-/** Replacement characters take three bytes where the raw byte took one: trim again to the budget. */
-function fitStart(text: string, budget: number): string {
-	while (Buffer.byteLength(text) > budget) text = Array.from(text).slice(0, -1).join("");
-	return text;
-}
-
-function fitEnd(text: string, budget: number): string {
-	while (Buffer.byteLength(text) > budget) text = Array.from(text).slice(1).join("");
-	return text;
 }
 
 class Session {
@@ -210,8 +252,9 @@ export class RunBoxHost {
 		this.#options = { shell: "/bin/bash", script: "/usr/bin/script", now: Date.now, ...options };
 	}
 
+	/** The commands still running. */
 	get sessions(): number[] {
-		return [...this.#sessions.keys()];
+		return [...this.#sessions.values()].filter((session) => !session.ended).map((session) => session.id);
 	}
 
 	/** Serve every connection on `server` (the socket unit's, in the box). */
@@ -308,8 +351,8 @@ export class RunBoxHost {
 	}
 
 	#result(id: string, session: Session, budget: number, started: number): RunBoxReply {
-		const output = session.unread.take(budget);
 		const ended = session.ended;
+		const output = session.unread.take(budget, ended !== undefined);
 		if (ended) this.#sessions.delete(session.id);
 		return {
 			t: "result",

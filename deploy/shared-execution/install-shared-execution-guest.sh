@@ -9,7 +9,7 @@
 # is replaced.
 set -euo pipefail
 
-EXPECTED_SERVICE_SHA256="b21bf8a4ba2ba1d0f64c75f9b2967a19e9eb17dad1e70d66ba32ee35b86bb941"
+EXPECTED_SERVICE_SHA256="9298e6680be4315a47ccfc6ac5c3e0149d33b4ee2f5c50df5a40cecbae5b13e6"
 EXPECTED_SERVICE_UNIT_SHA256="f673571b39062b664ec2543b46d7b6728c70c4a00ede09dbc327c6a3b0e4b375"
 EXPECTED_HOST_UNIT_SHA256="69f0bb557d70125ee8cc7991699af00c8328220d30fec37b154ca8acea7fca06"
 EXPECTED_RUNNER_UNIT_SHA256="1e746f965b2d82ac8353f68adcda2dddeeb948aaf9206ad1fb10df63cfb859d4"
@@ -20,11 +20,11 @@ EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe3
 EXPECTED_FOLDER_PROGRAM_SHA256="618ad823b1806539c2c4320a004fff7dded05145358ba531b283ce6c8ac1a00a"
 EXPECTED_FOLDER_MOUNT_UNIT_SHA256="778e1d8475a757cc013bb81e48404e0738fdb2de6e882ed6052bbd8efba1719e"
 # The run box (F3 step 2b).
-EXPECTED_BOX_HOST_SHA256="5e1f316f28e4b110fff2ba41fb074a24aa99e232e1040e7dbd19f7883da562a5"
-EXPECTED_BOX_UNIT_SHA256="37e036cfeeac5969c8832ef98c3da9da546347fafb1d91965765598fea68ed19"
+EXPECTED_BOX_HOST_SHA256="c1e1912c4015dd33a956a391c82038e7b69cd14d24c6aae12ef33ef5866577ea"
+EXPECTED_BOX_UNIT_SHA256="92aeef6294bd39f38ff5b5e7c55779c793fa1a592d9d38a111ce65b90ed92802"
 EXPECTED_BOX_SOCKET_SHA256="3dc1ded7bcc1084df6857d2c6c477377a240c6dfa4a37f0cb5ea9c33ed02158e"
 EXPECTED_BOX_READS_SOCKET_SHA256="794558361d2caa6280c24499815dadae0d79ccf6f025e8e4ff12d9612bb7f465"
-EXPECTED_BOX_FOLDER_UNIT_SHA256="07c16cbde8a7c9b4b2adc8a081541ffd9fcf0328da49ce6a87253251bbf5e0a0"
+EXPECTED_BOX_FOLDER_UNIT_SHA256="ce2549422215f81676e3885fa8885d958a304cdbfeba8fbdcf1307c342fcfac7"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -150,6 +150,10 @@ install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box@.socket" /et
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box-folder@.service" /etc/systemd/system/qorpera-shared-box-folder@.service
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-box-reads@.socket" /etc/systemd/system/qorpera-shared-box-reads@.socket
 install -d -o root -g root -m 0755 /company
+# The boxes' sockets live here; it exists from boot, so the runner unit's InaccessiblePaths always hides it.
+printf 'd /run/qorpera-shared-box 0755 root root -\n' > /etc/tmpfiles.d/qorpera-shared-box.conf
+chmod 0644 /etc/tmpfiles.d/qorpera-shared-box.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/qorpera-shared-box.conf
 if [[ ! -c /dev/fuse ]] || ! grep -qw fuse /proc/filesystems; then
 	# Runs do not need it yet; a folder mount will not start until the image has FUSE.
 	echo "Warning: this host has no FUSE (/dev/fuse or the fuse filesystem is missing); folder mounts cannot start."

@@ -30,13 +30,15 @@ end $$;
 -- claim asks it last, only for a run whose home is elsewhere).
 do $$
 declare v_claim text := pg_get_functiondef('public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'::regprocedure);
-	-- Since 20260928249240 the chooser's body takes a fifth argument (a node to rank last); the four-argument
-	-- form only passes none.
-	v_decide text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid)'::regprocedure);
+	-- Since 20260928249240 the chooser takes a fifth argument (a node to rank last), and since 20260928409960
+	-- its body is the six-argument form (the run's bundle too); the shorter forms only pass none.
+	v_decide text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid,text)'::regprocedure);
+	v_decide_five text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid)'::regprocedure);
 	v_decide_four text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid)'::regprocedure);
 begin
-	if position('public.qorpera_runtime_node_placement_decide(p_allocation_id,p_provider_kind,p_provider_id,p_compute_identity_id,null::uuid)' in v_decide_four) = 0 then
-		raise exception 'The four-argument chooser does not pass through'; end if;
+	if position('public.qorpera_runtime_node_placement_decide(p_allocation_id,p_provider_kind,p_provider_id,p_compute_identity_id,null::uuid)' in v_decide_four) = 0
+		or position('public.qorpera_runtime_node_placement_decide(p_allocation_id,p_provider_kind,p_provider_id,p_compute_identity_id,p_last_node_id,null::text)' in v_decide_five) = 0 then
+		raise exception 'The shorter choosers do not pass through'; end if;
 	if (select count(*) from regexp_matches(v_claim,
 		'and home\.provider_adapter = v_adapter\s+\)\s+or public\.qorpera_compute_identity_login_in_vault\(run\.compute_identity_id\)\)\s+order by job\.created_at', 'g')) <> 1
 		or (select count(*) from regexp_matches(v_claim, 'qorpera_compute_identity_login_in_vault', 'g')) <> 1 then

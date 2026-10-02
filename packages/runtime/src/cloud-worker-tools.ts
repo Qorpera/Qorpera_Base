@@ -24,7 +24,7 @@ const OUTCOMES = ["succeeded", "blocked", "failed"] as const;
 const TODO_STATES = ["open", "blocked", "done", "cancelled"] as const;
 const WORKER_STATES = ["active", "blocked", "succeeded", "failed", "cancelled"] as const;
 /** A listing cursor: the id of the last item shown before (keyset on creation order). */
-const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Room for the result fence's provenance around a page, as read_context reserves. */
 const PAGE_FENCE_RESERVE_BYTES = 3072;
 
@@ -88,7 +88,7 @@ function listing(a: Record<string, unknown>, states: readonly string[]): Record<
 }
 /** Whether a result text reaches the model whole: the fence escapes it once more
  * inside its provenance and cuts anything past MAX_CLOUD_TOOL_RESULT_BYTES. */
-function fitsOneResult(text: string): boolean {
+export function fitsOneResult(text: string): boolean {
 	return (
 		Buffer.byteLength(JSON.stringify(text).replace(/[<>&\u2028\u2029]/g, "\\u0000")) <=
 		MAX_CLOUD_TOOL_RESULT_BYTES - PAGE_FENCE_RESERVE_BYTES
