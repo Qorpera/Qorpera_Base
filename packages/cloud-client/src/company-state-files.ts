@@ -12,6 +12,8 @@
  * closed set of keys. The same bytes always give the same result, problems included. */
 
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
+import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
+import type { InterfaceProblemCode } from "./interfaces.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
@@ -47,7 +49,9 @@ export type CompanyStateProblemCode =
 	| "value"
 	| "quote"
 	| "name"
-	| "body";
+	| "body"
+	/** The interface and table files' own codes (./interfaces.ts), so one dispatch reports both. */
+	| InterfaceProblemCode;
 
 /** The largest structured file, the storage core's bound (RUNTIME-COMPANY-FOLDER-CORE.md §5). */
 export const COMPANY_STATE_FILE_MAX_BYTES = 64 * 1024;
@@ -75,19 +79,7 @@ const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 const encoder = new TextEncoder();
 
-export const AGENT_COLOURS = Object.freeze([
-	"charcoal",
-	"brown",
-	"coral",
-	"orange",
-	"gold",
-	"green",
-	"teal",
-	"blue",
-	"purple",
-	"pink",
-	"gray",
-] as const);
+export { AGENT_COLOURS, type AgentColour, companyPathKey };
 export const AGENT_MODELS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const);
 /** Effort an agent or a routine may ask for; runs accept these three today. */
 export const COMPANY_STATE_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
@@ -126,7 +118,6 @@ export const HUMAN_TASK_CONTACT_REFUSED_ROOTS = Object.freeze([
 	"hooks",
 ] as const);
 
-export type AgentColour = (typeof AGENT_COLOURS)[number];
 export type AgentFigure = (typeof STAFF_CHARACTER_IDS)[number];
 export type AgentModel = (typeof AGENT_MODELS)[number];
 export type CompanyStateEffort = (typeof COMPANY_STATE_EFFORTS)[number];
@@ -342,13 +333,6 @@ export interface CompanyStatePath {
 export type CompanyStateFileResult =
 	| { readonly ok: true; readonly path: CompanyStatePath; readonly file: CompanyStateFile }
 	| { readonly ok: false; readonly path: CompanyStatePath; readonly problems: readonly CompanyStateProblem[] };
-
-/** The folder's key for a path, as the database computes it
- * (`normalize(lower(upper(normalize(p, NFKC))), NFKC)`, 20260828005000). Two spellings with
- * one key are one path. */
-export function companyPathKey(path: string): string {
-	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
-}
 
 /** The kind of structured file a path holds, or null for an ordinary file. Kinds are decided
  * on the path's key, as the folder decides which entry a path is; the names as written are

@@ -8,6 +8,7 @@
 
 ### Added
 
+- Added `company-state-shared` (Interfaces step I2b, agreed with F2): `companyPathKey`, `AGENT_COLOURS` and `AgentColour`. `company-state-files` re-exports them unchanged and `interfaces` imports them from here, so the state-file parser can dispatch to the interface parser without an import cycle. `CompanyStateProblemCode` now also takes the interface codes (`row`, `claim`, …), so one dispatch reports both. `decodeInterfaceFile(bytes)` decodes strict UTF-8 that keeps a leading byte order mark, so a `rows.csv` exported from a spreadsheet still hashes to its saved bytes.
 - Added `interfaces`, `interface-query`, `interface-library` and `toml-subset` (Interfaces step I2, `deploy/first-node/RUNTIME-INTERFACES.md`; inert, nothing calls them yet):
   - `parseInterfaceFile`, `parseTableFile`, `parseInterfaceOrderFile` and `parseTableRows` read `interfaces/<name>/interface.toml`, a table folder `tables/<name>/` (`table.toml` with `rows.csv`), and `interfaces/order.md`, with closed key sets and `{ line, key, code, message }` problems;
   - `tableClaimProblems` is the "nobody assigns anybody" rule for `needs_yes` columns (take, release, an accepted offer, agents acting for their supervisor);
