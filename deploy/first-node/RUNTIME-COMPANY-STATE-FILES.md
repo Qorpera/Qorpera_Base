@@ -1654,11 +1654,21 @@ choices made while building:
   `as_of_seq` (`qorpera_company_state_changed_since`) answers `version_changed`, which the commit reports as a
   conflict.
 - `started_by_user_id` is the creating commit's requester when it is a member: the member themselves, or the member a
-  run works for. The platform never creates a task, so it is never null for a task made after H2.
+  run works for. The platform never creates a task, so it is never null for a task made after H2. Later saves never
+  change it.
+- A final task's folder is removed whole (not file by file); a task file is renamed or removed by the company's side
+  only (never by its person, never by the platform on a member's task).
+- The proof check reads the proof folder's children through the entries' children index.
+- A move that leaves a task's or contact's row without its moved entry stops the commit (XX000), as for the other
+  kinds; a second run of the migration stops before it changes anything.
+- SQL test 805 races two sessions: a proof unit behind the person's done meets a conflict, and a contact's delete
+  behind a new task naming it is refused; without the rank-5 locks both would save.
 - 785 now hires its asking agent, uses a due date in 2099, makes a task's folder as its person after the task, and
-  expects H2's answers where they come first (the seeded root, a task with a folder keeping its name).
-- 48 mutants of the migration (each path, person, company, reference, contact, lock, index and seeding rule): 47
-  caught by 803 or 785, and one equivalent (it rewrote the final-task check into the same rule).
+  expects H2's answers where they come first (the seeded root, a task with a folder keeping its name, the person's
+  rule); its secret cases use new ids, so H1's rule still answers them and names `secret_state`.
+- 74 mutants of the migration, mine and the code review's (each path, person, company, reference, contact, lock,
+  index, verify and seeding rule): 73 caught by 803, 785 or 805, and one equivalent (it rewrote the final-task check
+  into the same rule).
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a

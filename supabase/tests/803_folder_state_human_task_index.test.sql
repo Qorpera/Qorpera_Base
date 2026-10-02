@@ -15,6 +15,12 @@ create function pg_temp.decide(p_actor jsonb, p_unit jsonb) returns jsonb langua
 	select public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', p_actor, extensions.gen_random_uuid(), 1,
 		p_unit, coalesce(p_unit ->> 'from', p_unit ->> 'path'), p_unit ->> 'to')
 $$;
+-- The decision for a change set that read the folder at an early commit: what changed since is a conflict.
+create function pg_temp.decide_at(p_commit text, p_actor jsonb, p_unit jsonb) returns jsonb language sql as $$
+	select public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', p_actor,
+		(select id from public.qorpera_folder_commits where environment_id = '70700000-0000-4000-8000-000000000020' and operation_key = p_commit),
+		1, p_unit, coalesce(p_unit ->> 'from', p_unit ->> 'path'), p_unit ->> 'to')
+$$;
 create function pg_temp.idx(p_id uuid) returns public.qorpera_folder_human_task_index language sql as $$
 	select * from public.qorpera_folder_human_task_index where environment_id = '70700000-0000-4000-8000-000000000020' and id = p_id
 $$;
@@ -153,6 +159,9 @@ begin
 		'the person writes the note');
 	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-p-12', pg_temp.save('human-tasks/fit-disk.md', ticked || '{"status":"done"}')),
 		'saved', 'done with its proof');
+	-- The person's save does not make them the task's starter.
+	if (pg_temp.idx('80300000-0000-4000-8000-0000000000e1')).started_by_user_id is distinct from '70700000-0000-4000-8000-000000000001' then
+		raise exception 'started_by_user_id stays the creating commit''s member after the person''s save'; end if;
 	-- Done: the folder stays as it is while the agent checks it; the person's part is over.
 	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-p-13', pg_temp.put('human-tasks/fit-disk/proof/photo-2.jpg', 'another')),
 		'refused/structured_rule: the task is done:%', 'more proof after done');
@@ -215,6 +224,10 @@ begin
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-c-14', pg_temp.save('human-tasks/owners.md',
 		pg_temp.task('80300000-0000-4000-8000-0000000000e5', '{"member":"70700000-0000-4000-8000-000000000001","status":"cancelled"}'))),
 		'refused/structured_rule: as the task''s person you may tick its steps, or mark it done or declined', 'the owner cancels their own');
+	-- Who started a task never changes with later saves by others.
+	if (pg_temp.idx('80300000-0000-4000-8000-0000000000e1')).started_by_user_id is distinct from '70700000-0000-4000-8000-000000000001'
+		or (pg_temp.idx('80300000-0000-4000-8000-0000000000e2')).started_by_user_id is distinct from '70700000-0000-4000-8000-000000000002' then
+		raise exception 'started_by_user_id stays the creating commit''s member'; end if;
 end $$;
 
 -- 5. Hand-offs and references: checked when set or changed, never on the person's change --------------------------------
@@ -264,7 +277,14 @@ begin
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-f-4', pg_temp.del('human-tasks/hand.md')),
 		'refused/structured_rule: only a final task is removed; cancel it first', 'an open task');
 	perform pg_temp.is(pg_temp.decide(pg_temp.agent('70700000-0000-4000-8000-0000000000a2'), pg_temp.del('human-tasks/fit-disk')) -> 'problems' -> 0 ->> 'message',
-		'a accepted task''s folder is only removed, by a member', 'an agent removes proof');
+		'a accepted task''s folder is only removed whole, by a member or the platform', 'an agent removes proof');
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-f-4b', pg_temp.del('human-tasks/fit-disk/proof/photo-2.jpg')),
+		'refused/structured_rule: a accepted task''s folder is only removed whole, by a member or the platform', 'a single proof file');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-f-4c', pg_temp.del('human-tasks/own.md')),
+		'refused/structured_rule: the task''s person never renames or removes its file', 'the person removes their own task');
+	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-f-4d', jsonb_build_object('op','move','from','human-tasks/hand.md',
+		'to','human-tasks/hand-2.md','expectedVersion',pg_temp.version('human-tasks/hand.md'))),
+		'refused/structured_rule: the platform never renames or removes a member''s task', 'the platform renames a member''s task');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-f-5', pg_temp.del('human-tasks/fit-disk')), 'saved', 'a member removes a final task''s folder');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-f-6', pg_temp.del('human-tasks/fit-disk.md')), 'saved', 'then its file');
 	if (pg_temp.idx('80300000-0000-4000-8000-0000000000e1')).retired_at is null then raise exception 'A removed task retires'; end if;
@@ -292,6 +312,12 @@ declare vat jsonb := pg_temp.contact_task('{"id":"80300000-0000-4000-8000-000000
 		"secret":"Code from the SMS","secretState":"asked","step":"phone_code"}');
 begin
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-1', pg_temp.save('human-tasks/file-vat.md', vat)), 'saved', 'a contact''s task');
+	-- A contact file renames within contacts/, and its row follows.
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-1b', jsonb_build_object('op','move','from','contacts/maria.md',
+		'to','contacts/maria-jensen.md','expectedVersion',pg_temp.version('contacts/maria.md'))), 'saved', 'a contact''s rename');
+	if (select folder_path || ' ' || (folder_path_version = pg_temp.version('contacts/maria-jensen.md'))::text from public.qorpera_folder_contact_index
+		where environment_id = '70700000-0000-4000-8000-000000000020' and id = '78500000-0000-4000-8000-0000000000f1')
+		is distinct from 'contacts/maria-jensen.md true' then raise exception 'A renamed contact''s row follows it'; end if;
 	-- The platform as the contact's person: their proof, then done; never anything else.
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-2', pg_temp.mkdir('human-tasks/file-vat')),
 		'refused/structured_rule: only the task''s person adds to its folder%', 'a member adds to a contact''s folder');
@@ -304,19 +330,19 @@ begin
 	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-k-6', pg_temp.save('human-tasks/file-vat.md', vat || '{"status":"done"}')),
 		'saved', 'the contact marks it done');
 	-- While the task is not final its contact stays, and keeps its email; one id, one file.
-	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-7', pg_temp.del('contacts/maria.md')),
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-7', pg_temp.del('contacts/maria-jensen.md')),
 		'refused/structured_rule: a contact named by a task that is not final stays; cancel its tasks first', 'deleting the contact');
-	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-8', pg_temp.save('contacts/maria.md', pg_temp.contact('{"email":null}'))),
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-8', pg_temp.save('contacts/maria-jensen.md', pg_temp.contact('{"email":null}'))),
 		'refused/structured_rule: a contact named by a task that is not final keeps its email', 'removing its email');
-	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-9', pg_temp.save('contacts/maria.md',
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-9', pg_temp.save('contacts/maria-jensen.md',
 		pg_temp.contact('{"id":"80300000-0000-4000-8000-0000000000f4"}'))), 'refused/structured_rule: id never changes%', 'a new id');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-10', pg_temp.save('contacts/maria-2.md', pg_temp.contact())),
-		'refused/structured_rule: this contact already has the file contacts/maria.md', 'the id at a second file');
+		'refused/structured_rule: this contact already has the file contacts/maria-jensen.md', 'the id at a second file');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-11', pg_temp.save('human-tasks/file-vat.md', vat
 		|| '{"status":"cancelled","reason":"Filed by someone else"}')), 'saved', 'the company cancels the done work, with a reason');
-	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-12', pg_temp.save('contacts/maria.md', pg_temp.contact('{"email":null}'))),
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-12', pg_temp.save('contacts/maria-jensen.md', pg_temp.contact('{"email":null}'))),
 		'saved', 'its email may go now');
-	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-13', pg_temp.del('contacts/maria.md')), 'saved', 'and the contact');
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-13', pg_temp.del('contacts/maria-jensen.md')), 'saved', 'and the contact');
 	-- On a member's task the platform only marks the secret saved.
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-14', pg_temp.save('human-tasks/code.md', sec)), 'saved', 'a takeover task');
 	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-k-15', pg_temp.save('human-tasks/code.md', sec || '{"title":"Other"}')),
@@ -335,7 +361,13 @@ begin
 	for u in select * from (values
 		(pg_temp.mkdir('human-tasks/own/proof'), '[{"rank":5,"tbl":"qorpera_folder_human_task_index","mode":"share"}]', '80300000-0000-4000-8000-0000000000e2'),
 		(pg_temp.del('human-tasks/own.md'), '[{"rank":5,"tbl":"qorpera_folder_human_task_index","mode":"nokeyupdate"}]', '80300000-0000-4000-8000-0000000000e2'),
-		(pg_temp.del('contacts/no-mail.md'), '[{"rank":5,"tbl":"qorpera_folder_contact_index","mode":"nokeyupdate"}]', '80300000-0000-4000-8000-0000000000f3')) v(unit, want, id)
+		(pg_temp.del('contacts/no-mail.md'), '[{"rank":5,"tbl":"qorpera_folder_contact_index","mode":"nokeyupdate"}]', '80300000-0000-4000-8000-0000000000f3'),
+		(jsonb_build_object('op','move','from','human-tasks/hand-over.md','to','human-tasks/hand-3.md','expectedVersion',
+			pg_temp.version('human-tasks/hand-over.md')), '[{"rank":5,"tbl":"qorpera_folder_human_task_index","mode":"nokeyupdate"}]',
+			'80300000-0000-4000-8000-0000000000e6'),
+		(jsonb_build_object('op','move','from','contacts/no-mail.md','to','contacts/no-mail-2.md','expectedVersion',
+			pg_temp.version('contacts/no-mail.md')), '[{"rank":5,"tbl":"qorpera_folder_contact_index","mode":"nokeyupdate"}]',
+			'80300000-0000-4000-8000-0000000000f3')) v(unit, want, id)
 	loop
 		select coalesce(jsonb_agg(to_jsonb(y)), '[]'::jsonb) into t
 		from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(u.unit)) y;
@@ -350,6 +382,35 @@ begin
 		jsonb_build_object('rank', 5, 'tbl', 'qorpera_folder_contact_index', 'key', env || ':80300000-0000-4000-8000-0000000000f3', 'mode', 'share'),
 		jsonb_build_object('rank', 5, 'tbl', 'qorpera_folder_human_task_index', 'key', env || ':80300000-0000-4000-8000-0000000000e9', 'mode', 'nokeyupdate')) then
 		raise exception 'A task save holds its row and its contact''s: %', t; end if;
+	-- A change set that read the folder before a row's last save meets a conflict, wherever the rules read that row: a task
+	-- file's removal, a contact's removal, and what leaves or lands in a task's folder.
+	perform pg_temp.is(pg_temp.decide_at('seed-0001', pg_temp.owner(), pg_temp.del('human-tasks/hand-over.md')) ->> 'reason',
+		'version_changed', 'a task file removed by an old view');
+	perform pg_temp.is(pg_temp.decide_at('seed-0001', pg_temp.owner(), pg_temp.del('contacts/no-mail.md')) ->> 'reason',
+		'version_changed', 'a contact removed by an old view');
+	perform pg_temp.is(pg_temp.decide_at('seed-0001', pg_temp.mem(), pg_temp.del('human-tasks/own')) ->> 'reason',
+		'version_changed', 'a task folder removed by an old view');
+	perform pg_temp.is(pg_temp.decide_at('seed-0001', pg_temp.mem(), pg_temp.mkdir('human-tasks/hand-over')) ->> 'reason',
+		'version_changed', 'a task folder made by an old view');
+	-- Verify stops a commit whose task or contact row does not point at its file's current version.
+	update public.qorpera_folder_human_task_index set folder_path_version = extensions.gen_random_uuid()
+	where environment_id = env and id = '80300000-0000-4000-8000-0000000000e6' returning commit_id into c1;
+	begin
+		perform public.qorpera_folder_structured_verify(env, c1);
+		raise exception 'verify passed a task row off its file' using errcode = 'QTF02';
+	exception when sqlstate 'XX000' then null;
+	end;
+	update public.qorpera_folder_human_task_index set folder_path_version = pg_temp.version('human-tasks/hand-over.md')
+	where environment_id = env and id = '80300000-0000-4000-8000-0000000000e6';
+	update public.qorpera_folder_contact_index set folder_path_version = extensions.gen_random_uuid()
+	where environment_id = env and id = '80300000-0000-4000-8000-0000000000f3' returning commit_id into c1;
+	begin
+		perform public.qorpera_folder_structured_verify(env, c1);
+		raise exception 'verify passed a contact row off its file' using errcode = 'QTF02';
+	exception when sqlstate 'XX000' then null;
+	end;
+	update public.qorpera_folder_contact_index set folder_path_version = pg_temp.version('contacts/no-mail.md')
+	where environment_id = env and id = '80300000-0000-4000-8000-0000000000f3';
 	-- Sequence order is commit order: a row written after a change set read the folder is newer than it.
 	select id into c1 from public.qorpera_folder_commits where environment_id = env and operation_key = 'human-new-1';
 	select id into c2 from public.qorpera_folder_commits where environment_id = env and operation_key = 'human-k-16';
@@ -370,14 +431,33 @@ begin
 	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-old-4', pg_temp.put('human-tasks/old/proof/photo-1.jpg', 'x')),
 		'refused/structured_rule: human-tasks/old/ belongs to the task human-tasks/old.md, which must be saved first', 'nothing lands');
 	perform pg_temp.is(pg_temp.decide(pg_temp.agent('70700000-0000-4000-8000-0000000000a2'), pg_temp.del('human-tasks/old')) -> 'problems' -> 0 ->> 'message',
-		'a folder without its task file is only removed, by a member', 'an agent removes it');
+		'a folder without its task file is only removed, by a member or the platform', 'an agent removes it');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-old-5', jsonb_build_object('op','move','from','human-tasks/old/proof',
 		'to','human-tasks/old/kept','expectedVersion',pg_temp.version('human-tasks/old/proof'),'asOfSeq',pg_temp.seq())),
-		'refused/structured_rule: a folder without its task file is only removed, by a member', 'a member moves it');
+		'refused/structured_rule: a folder without its task file is only removed, by a member or the platform', 'a member moves it');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-old-6', pg_temp.del('human-tasks/old')), 'saved', 'a member removes it');
 	perform pg_temp.is(pg_temp.decide(pg_temp.agent('70700000-0000-4000-8000-0000000000a2'), pg_temp.del('human-tasks/old.md')) -> 'problems' -> 0 ->> 'message',
-		'only a member removes a task saved before its index', 'an agent removes the old task');
+		'only a member or the platform removes a task saved before its index', 'an agent removes the old task');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-old-7', pg_temp.del('human-tasks/old.md')), 'saved', 'a member removes the old task');
+end $$;
+
+-- 10. A folder left without its file (an operator's state): no task lands on its name -----------------------------------
+
+do $$
+declare t jsonb := pg_temp.task('80300000-0000-4000-8000-0000000000ed', '{"from":"70700000-0000-4000-8000-0000000000a2"}');
+begin
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-st-1', pg_temp.save('human-tasks/stale.md', t)), 'saved', 'a task');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-st-2', pg_temp.mkdir('human-tasks/stale')), 'saved', 'its folder');
+	-- As if the file were gone and the folder left (no commit can do this since H2).
+	delete from public.qorpera_folder_human_task_index where id = '80300000-0000-4000-8000-0000000000ed';
+	delete from public.qorpera_folder_entries where environment_id = '70700000-0000-4000-8000-000000000020'
+		and key_text = 'human-tasks/stale.md';
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-st-3', pg_temp.save('human-tasks/stale.md',
+		pg_temp.task('80300000-0000-4000-8000-0000000000ee', '{"from":"70700000-0000-4000-8000-0000000000a2"}'))),
+		'refused/structured_rule: a folder named human-tasks/stale/ is still there; a new task needs a free name', 'a new task on the name');
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-st-4', jsonb_build_object('op','move','from','human-tasks/hand-over.md',
+		'to','human-tasks/stale.md','expectedVersion',pg_temp.version('human-tasks/hand-over.md'))),
+		'refused/structured_rule: a folder named human-tasks/stale/ is still there; a new task needs a free name', 'a task moved onto the name');
 end $$;
 
 rollback;

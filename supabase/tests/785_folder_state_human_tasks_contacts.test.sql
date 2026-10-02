@@ -341,8 +341,11 @@ begin
 	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
 		or coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'only the platform marks a secret saved%' then
 		raise exception 'The refusal names secret_state: %', r; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
-		1, 'refused', 'structured_rule');
+	-- The task's person is refused earlier since H2b, by the person's own rule (803 has it).
+	r := pg_temp.commit(pg_temp.mem(), 'tasks-0009', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved)));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
+	if coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like 'as the task''s person you may only tick%' then
+		raise exception 'The person''s rule answers first: %', r; end if;
 	-- A new task cannot start saved either.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0010', jsonb_build_array(pg_temp.save('human-tasks/enter-code-2.md',
 		pg_temp.task('78500000-0000-4000-8000-0000000000e8', '{"secret":"Code","secretState":"saved"}')))), 1, 'refused', 'structured_rule');
@@ -352,11 +355,14 @@ begin
 	-- Anyone may keep the mark over the same task and label, as when the agent edits the title.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0012', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md',
 		saved || '{"title":"Enter the code from the SMS"}'))), 1, 'saved');
-	-- Not over another label, and not at another path with the same id and label.
+	-- Not over another label, and not as a new task at another path (the same id there is H2's one-file rule).
 	r := pg_temp.commit(pg_temp.owner(), 'tasks-0013', jsonb_build_array(
 		pg_temp.save('human-tasks/enter-code.md', saved || '{"secret":"Code from the email"}'),
-		pg_temp.save('human-tasks/enter-code-3.md', saved)));
+		pg_temp.save('human-tasks/enter-code-3.md', saved || '{"id":"78500000-0000-4000-8000-0000000000ef"}')));
 	perform pg_temp.expect(r, 1, 'refused', 'structured_rule'); perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
+	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state'
+		or r -> 'units' -> 1 -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
+		raise exception 'Both refusals name secret_state: %', r; end if;
 	-- Not over another task's saved file either: the id is part of the mark.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tasks-0014', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md',
 		saved || '{"id":"78500000-0000-4000-8000-0000000000e9"}'))), 1, 'refused', 'structured_rule');
@@ -370,8 +376,9 @@ begin
 		pg_temp.save('human-tasks/enter-code.md', saved), 'human-tasks/enter-code.md', null);
 	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'An agent never marks a secret saved: %', r; end if;
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code-4.md', saved), 'human-tasks/enter-code-4.md', null);
-	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'Not at a new path either: %', r; end if;
+		pg_temp.save('human-tasks/enter-code-4.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f5"}'), 'human-tasks/enter-code-4.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' or r -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
+		raise exception 'Not as a new task either: %', r; end if;
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tasks-0018', jsonb_build_array(pg_temp.save('human-tasks/enter-code.md', saved))),
 		1, 'saved');
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
@@ -379,8 +386,9 @@ begin
 	if r is distinct from '{"ok": true}'::jsonb then raise exception 'An agent keeps the mark over the same task and label: %', r; end if;
 	-- The mark is the file's at its own path: a saved task elsewhere does not lend it to a new path.
 	r := public.qorpera_folder_structured_decide('70700000-0000-4000-8000-000000000020', agent, extensions.gen_random_uuid(), 1,
-		pg_temp.save('human-tasks/enter-code-5.md', saved), 'human-tasks/enter-code-5.md', null);
-	if r ->> 'reason' is distinct from 'structured_rule' then raise exception 'Not at a new path while another is saved: %', r; end if;
+		pg_temp.save('human-tasks/enter-code-5.md', saved || '{"id":"78500000-0000-4000-8000-0000000000f6"}'), 'human-tasks/enter-code-5.md', null);
+	if r ->> 'reason' is distinct from 'structured_rule' or r -> 'problems' -> 0 ->> 'key' is distinct from 'secret_state' then
+		raise exception 'Not at a new path while another is saved: %', r; end if;
 end $$;
 
 -- 7. A save locks only its own row, at rank 5 (H2b); the review class is plain ---------------------------------------

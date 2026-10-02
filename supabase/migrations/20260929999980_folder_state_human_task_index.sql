@@ -17,6 +17,12 @@
 -- 6. human-tasks/ and contacts/ join the seeded folders that are never deleted or moved (Jonas, 2 October 2026).
 -- Every patched body carries the marker 20260929999980 for the deploy guard.
 
+-- A second run stops here, before anything changes.
+do $$ begin
+	if to_regclass('public.qorpera_folder_human_task_index') is not null then
+		raise exception 'H2b (20260929999980) is already applied'; end if;
+end $$;
+
 create table public.qorpera_folder_human_task_index (
 	environment_id uuid not null references public.qorpera_folder_clocks(environment_id) on delete cascade,
 	id uuid not null,
@@ -143,8 +149,12 @@ begin
 				v_row := public.qorpera_company_state_task_at(p_environment_id, v_stem);
 				if v_row.id is not null and public.qorpera_company_state_changed_since(p_commit_id, v_row.commit_id) then
 					return jsonb_build_object('ok', false, 'reason', 'version_changed'); end if;
-				if p_op = 'delete' and v_row.id is null and not v_member_or_platform then
-					v_problem := 'only a member removes a task saved before its index';
+				if v_row.id is not null and public.qorpera_company_state_task_person(p_actor, v_row.member_user_id, v_row.contact_id) then
+					v_problem := 'the task''s person never renames or removes its file';
+				elsif v_row.id is not null and p_actor ->> 'kind' = 'platform' and v_row.member_user_id is not null then
+					v_problem := 'the platform never renames or removes a member''s task';
+				elsif p_op = 'delete' and v_row.id is null and not v_member_or_platform then
+					v_problem := 'only a member or the platform removes a task saved before its index';
 				elsif p_op = 'delete' and v_row.id is not null and not (v_row.status = any (v_final)) then
 					v_problem := 'only a final task is removed; cancel it first';
 				end if;
@@ -166,7 +176,7 @@ begin
 				and e.key_sha256 = extensions.digest('human-tasks/' || v_stem || '.md', 'sha256') and e.kind = 'file') then
 				-- A folder without its task (from before H2, or an operator's): it may only be removed, by a member.
 				if p_op = 'move' or not v_member_or_platform then
-					v_problem := 'a folder without its task file is only removed, by a member';
+					v_problem := 'a folder without its task file is only removed, by a member or the platform';
 				end if;
 			elsif public.qorpera_company_state_changed_since(p_commit_id, v_row.commit_id) then
 				return jsonb_build_object('ok', false, 'reason', 'version_changed');
@@ -176,8 +186,8 @@ begin
 				end if;
 			elsif v_row.status = 'done' then
 				v_problem := 'the task is done: its folder stays as it is while the agent checks the proof';
-			elsif p_op = 'move' or not v_member_or_platform then
-				v_problem := 'a ' || v_row.status || ' task''s folder is only removed, by a member';
+			elsif p_op = 'move' or not v_member_or_platform or p_key <> 'human-tasks/' || v_stem then
+				v_problem := 'a ' || v_row.status || ' task''s folder is only removed whole, by a member or the platform';
 			end if;
 		end if;
 		if v_problem is not null then
@@ -341,10 +351,8 @@ begin
 						and e.key_sha256 = extensions.digest('human-tasks/' || v_stem || '/note.md', 'sha256')
 						and e.kind = 'file' and e.bytes > 0)
 				else not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
-					and e.kind = 'file'
-					and left(e.key_text, char_length('human-tasks/' || v_stem || '/proof/' || (k.value #>> '{}') || '-'))
-						= 'human-tasks/' || v_stem || '/proof/' || (k.value #>> '{}') || '-'
-					and strpos(substr(e.key_text, char_length('human-tasks/' || v_stem || '/proof/') + 1), '/') = 0) end;
+					and e.parent_key_sha256 = extensions.digest('human-tasks/' || v_stem || '/proof', 'sha256')
+					and e.key_text like 'human-tasks/' || v_stem || '/proof/' || (k.value #>> '{}') || '-%' and e.kind = 'file') end;
 			if v_missing is not null then
 				v_problem := 'done needs the proof the task asks for: ' || array_to_string(v_missing, ', ');
 			end if;
@@ -592,6 +600,10 @@ end$new$);
 
 -- Apply: write the rows; a move repoints them; a delete retires them.
 select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
+	$old$	v_moved public.qorpera_cloud_routine_versions%rowtype; v_pay record; v_waits boolean; v_ends_wait boolean;$old$,
+	$new$	v_moved public.qorpera_cloud_routine_versions%rowtype; v_pay record; v_waits boolean; v_ends_wait boolean;
+	v_h2_rows bigint; v_h2_moved bigint;$new$);
+select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$				perform public.qorpera_company_state_index_routine(p_environment_id, v_profile, p_commit_id, v_file.path, v_version,
 					v_entry -> 'parse');$old$,
 	$new$				perform public.qorpera_company_state_index_routine(p_environment_id, v_profile, p_commit_id, v_file.path, v_version,
@@ -605,7 +617,11 @@ select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_app
 					v_entry -> 'parse');$new$);
 select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$		-- Todo files follow their path: a new name is the new key, and a new agent folder the new owner (read after the$old$,
-	$new$		-- Task and contact files follow their path, and keep their id (20260929999980, H2b).
+	$new$		-- Task and contact files follow their path, and keep their id (20260929999980, H2b). Every row at or under the
+		-- source finds its moved entry, or the commit stops, as for the other kinds.
+		select count(*) into v_h2_rows from public.qorpera_folder_human_task_index i
+		where i.environment_id = p_environment_id and i.retired_at is null
+			and (i.folder_key = v_key or i.folder_key like public.qorpera_folder_under(v_key));
 		update public.qorpera_folder_human_task_index i set folder_path = e.path, folder_key = e.key_text, folder_path_version = e.version,
 			commit_id = p_commit_id, updated_at = clock_timestamp()
 		from public.qorpera_folder_entries e
@@ -613,6 +629,11 @@ select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_app
 			and (i.folder_key = v_key or i.folder_key like public.qorpera_folder_under(v_key))
 			and e.environment_id = p_environment_id
 			and e.key_sha256 = extensions.digest(public.qorpera_folder_key(p_eff_to || substr(i.folder_path, char_length(p_eff_path) + 1)), 'sha256');
+		get diagnostics v_h2_moved = row_count;
+		if v_h2_moved <> v_h2_rows then raise exception 'A moved task file has no version in its commit' using errcode = 'XX000'; end if;
+		select count(*) into v_h2_rows from public.qorpera_folder_contact_index i
+		where i.environment_id = p_environment_id and i.retired_at is null
+			and (i.folder_key = v_key or i.folder_key like public.qorpera_folder_under(v_key));
 		update public.qorpera_folder_contact_index i set folder_path = e.path, folder_key = e.key_text, folder_path_version = e.version,
 			commit_id = p_commit_id, updated_at = clock_timestamp()
 		from public.qorpera_folder_entries e
@@ -620,6 +641,8 @@ select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_app
 			and (i.folder_key = v_key or i.folder_key like public.qorpera_folder_under(v_key))
 			and e.environment_id = p_environment_id
 			and e.key_sha256 = extensions.digest(public.qorpera_folder_key(p_eff_to || substr(i.folder_path, char_length(p_eff_path) + 1)), 'sha256');
+		get diagnostics v_h2_moved = row_count;
+		if v_h2_moved <> v_h2_rows then raise exception 'A moved contact file has no version in its commit' using errcode = 'XX000'; end if;
 		-- Todo files follow their path: a new name is the new key, and a new agent folder the new owner (read after the$new$);
 select pg_temp.h2_human_task_index_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$		-- A connection's file removed (after its account was disconnected): its index row retires.$old$,
