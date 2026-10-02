@@ -237,9 +237,9 @@ try {
 	});
 	assert.equal(tools.status, 0, tools.stderr);
 	const e2e = JSON.parse(tools.stdout);
-	assert.match(e2e.read.text, /^Process exited with code 0\nWall time: [\d.]+ s\nOutput:\nthe plan, version one\nrun\.sh\n$/);
+	assert.match(e2e.read.text, /^Process exited with code 0\nWall time: [\d.]+ s\nOutput:\nthe plan, version one\nplan\.md\n$/);
 	assert.equal(e2e.releases.length, 1, "only the answer that read something releases");
-	assert.deepEqual(e2e.releases[0].paths, ["docs/plan.md", "tools"]);
+	assert.deepEqual(e2e.releases[0].paths, ["docs/plan.md", "docs"]);
 	assert.deepEqual(e2e.releases[0].revisions, [1, 1]);
 	assert.equal(e2e.read.companyReadId, e2e.releases[0].id);
 	assert.equal(e2e.releases[0].sha, createHash("sha256").update(e2e.read.text).digest("hex"));

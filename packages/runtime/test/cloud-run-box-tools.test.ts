@@ -30,25 +30,38 @@ class ReadLog {
 	waiting: (Record<string, unknown> & { seq: number })[] = [];
 	takes: number[] = [];
 	acks: number[] = [];
+	/** The highest number a take handed out: an acknowledgement past it is refused. */
+	handed = 0;
 	add(...reads: Record<string, unknown>[]): void {
 		for (const read of reads) this.waiting.push({ ...read, seq: this.next++ });
 	}
 	restart(): void {
 		this.id = "b".repeat(32);
 		this.waiting = [];
+		this.handed = 0;
 	}
-	answer(request: { t: string; after?: number; max?: number; upTo?: number }): Record<string, unknown> {
+	/** Nothing (the connection ends) for an acknowledgement of another log or past what was handed out. */
+	answer(request: {
+		t: string;
+		log?: string;
+		after?: number;
+		max?: number;
+		upTo?: number;
+	}): Record<string, unknown> | undefined {
 		if (request.t === "ack") {
+			if (request.log !== this.id || (request.upTo as number) > this.handed) return undefined;
 			this.acks.push(request.upTo as number);
 			this.waiting = this.waiting.filter((read) => read.seq > (request.upTo as number));
 			return { t: "acked", log: this.id, upTo: request.upTo };
 		}
 		this.takes.push(request.max as number);
 		const after = this.waiting.filter((read) => read.seq > (request.after as number));
+		const taken = after.slice(0, request.max);
+		this.handed = Math.max(this.handed, taken.at(-1)?.seq ?? 0);
 		return {
 			t: "reads",
 			log: this.id,
-			reads: after.slice(0, request.max),
+			reads: taken,
 			more: after.length > (request.max as number),
 		};
 	}
@@ -86,7 +99,9 @@ async function stage(answer: Answer, readLog = new ReadLog()) {
 		'{"t":"ready","protocol":1,"sessions":[]}',
 	);
 	const log = await serve(join(root, "box.reads"), (line, socket) => {
-		socket.write(`${JSON.stringify(readLog.answer(JSON.parse(line)))}\n`);
+		const answer = readLog.answer(JSON.parse(line));
+		if (answer) socket.write(`${JSON.stringify(answer)}\n`);
+		else socket.end();
 	});
 	cleanup.push(async () => {
 		box.close();
@@ -207,7 +222,8 @@ describe("run box tools", () => {
 		const { client, releases } = folder();
 		const { exec } = await tools(box.paths, client);
 		const content = await exec.execute(exec.parseArguments({ cmd: "rg -l plan" }), context());
-		expect(box.log.takes).toEqual(Array.from({ length: 6 }, () => 2_000));
+		// The first take learns the log before the command; it leaves the log as it was.
+		expect(box.log.takes).toEqual([1, ...Array.from({ length: 6 }, () => 2_000)]);
 		expect(releases.map((r) => r.reads.length)).toEqual([10_000, 1]);
 		expect(new Set(releases.map((r) => r.sha)).size).toBe(1);
 		expect(content.companyReadId).toBe(releases[0]?.id);
@@ -248,6 +264,30 @@ describe("run box tools", () => {
 		);
 		await exec.execute(exec.parseArguments({ cmd: "cat docs/new.md" }), context("call-3"));
 		expect(releases.map((r) => r.reads.map((read) => read.path))).toEqual([["docs/plan.md"], ["docs/new.md"]]);
+		expect(box.log.acks).toEqual([1, 2]);
+	});
+
+	it("learns the read log before the first command, so a restart during it withholds that answer too", async () => {
+		const readLog = new ReadLog();
+		let first = true;
+		const box = await stage(() => {
+			if (first) {
+				// The folder restarts while the first command runs: what it read before is gone.
+				first = false;
+				readLog.add(read("docs/gone.md"));
+				readLog.restart();
+				readLog.add(read("docs/after.md"));
+			}
+			return ended();
+		}, readLog);
+		const { client, releases } = folder();
+		const { exec } = await tools(box.paths, client);
+		await expect(exec.execute(exec.parseArguments({ cmd: "cat docs/gone.md" }), context())).rejects.toThrow(
+			/^RUN_BOX_UNAVAILABLE: the run box's folder restarted/,
+		);
+		expect(releases).toEqual([]);
+		await exec.execute(exec.parseArguments({ cmd: "cat docs/after.md" }), context("call-2"));
+		expect(releases[0]?.reads.map((r) => r.path)).toEqual(["docs/after.md"]);
 	});
 
 	it("reads on and writes to a running command", async () => {

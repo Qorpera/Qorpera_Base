@@ -140,7 +140,6 @@ class LineSocket {
 	}
 }
 
-/** The run's box: one connection, opened when first needed and again after the box restarted. */
 /** What the box read for one answer: the reads, the number to acknowledge once they are released, and whether the box's
  * read log restarted since the last answer (its earlier reads are gone, so this answer cannot be accounted for). */
 export interface CloudRunBoxReads {
@@ -149,6 +148,7 @@ export interface CloudRunBoxReads {
 	readonly restarted: boolean;
 }
 
+/** The run's box: one connection, opened when first needed and again after the box restarted. */
 export class CloudRunBox {
 	readonly #paths: CloudRunBoxPaths;
 	readonly #waitMs: number;
@@ -165,6 +165,14 @@ export class CloudRunBox {
 
 	async request(request: RunBoxRequest, signal: AbortSignal): Promise<RunBoxReply> {
 		const connection = await this.#connect(signal);
+		if (this.#log === undefined) {
+			// Learn the read log before the first command, so a folder restart during it shows as a new log.
+			try {
+				await this.#learnLog(signal);
+			} catch {
+				throw new CloudToolRefusal("RUN_BOX_UNAVAILABLE: the run box's read log did not answer; try again");
+			}
+		}
 		connection.send(JSON.stringify(request));
 		const line = await connection.next(request.yieldMs + ANSWER_GRACE_MS, signal);
 		if (line === undefined) {
@@ -221,13 +229,27 @@ export class CloudRunBox {
 		}
 	}
 
+	/** The read log's id, from a take that leaves the log as it was. */
+	async #learnLog(signal: AbortSignal): Promise<void> {
+		const log = await LineSocket.open(this.#paths.reads, signal);
+		if (!log) throw new Error("The run box's read log is unavailable");
+		try {
+			log.send(JSON.stringify({ t: "take", after: 0, max: 1 }));
+			const line = await log.next(READS_PAGE_MS, signal);
+			if (line === undefined) throw new Error("The run box's read log did not answer");
+			this.#log = parseReads(line, 0).log;
+		} finally {
+			log.close();
+		}
+	}
+
 	/** The reads up to `upTo` are released: they leave the box's log. */
 	async ackReads(upTo: number, signal: AbortSignal): Promise<void> {
 		if (upTo <= this.#acked) return;
 		const log = await LineSocket.open(this.#paths.reads, signal);
 		if (!log) throw new Error("The run box's read log is unavailable");
 		try {
-			log.send(JSON.stringify({ t: "ack", upTo }));
+			log.send(JSON.stringify({ t: "ack", log: this.#log, upTo }));
 			const line = await log.next(READS_PAGE_MS, signal);
 			const answer =
 				line === undefined ? undefined : (JSON.parse(line) as { t?: unknown; log?: unknown; upTo?: unknown });

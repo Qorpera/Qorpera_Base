@@ -281,7 +281,8 @@ execution host (`deploy/shared-execution/README.md`, "Run boxes"):
 gives the log to the slot's native host on a second socket, `/run/qorpera-shared-box/N.reads`, which only that account
 can open:
 - `{"t":"take","after":S,"max":N}` answers `{"t":"reads","log":L,"reads":[{seq, path, kind, version, authority?}],
-  "more"}`, the oldest reads numbered after S. Taking removes nothing.
+  "more"}`, the oldest reads numbered after S. Taking removes nothing. A host takes after the last number it
+  acknowledged, so an ack never drops a read no take returned.
 - `{"t":"ack","log":L,"upTo":S}` drops the reads up to S once the host released them, so a release that failed is
   taken again with the next answer. `L` names the program's log: a new one means a restart, and the host withholds
   that answer; an ack for another log, or past what was handed out, drops nothing.
@@ -308,11 +309,14 @@ harness:
   the wait passes; a command still running keeps its session for `write_stdin {session_id, chars?, yield_time_ms?
   (default 250 ms)}`. The answer says how the command stands, then its output: all of it, or its start and end with how
   much was left out and where the whole of it is in the box, fitted so its tail survives the 8 KiB result envelope.
-- Each answer takes the box's read log and releases it with the run actor (`CloudCompanyFolderClient.release`, P8),
-  under the hash of the exact text shown, before the model sees it; it cites the release (`companyReadId`), so the next
-  model request's context view does. More than one release's worth goes in several under the same hash; no reads, no
-  release. A read the run may no longer make withholds the answer (`READ_REVOKED`); a release that cannot be recorded
-  does too. A read without a receipt goes with an empty one, which the core checks again.
+- Each answer takes the box's read log after the last acknowledged number and releases it with the run actor
+  (`CloudCompanyFolderClient.release`, P8), under the hash of the exact text shown, before the model sees it; it cites
+  the release (`companyReadId`), so the next model request's context view does, and only then acknowledges. More than
+  one release's worth goes in several under the same hash; no reads, no release. A read the run may no longer make
+  withholds the answer (`READ_REVOKED`); a release that cannot be recorded does too, and its reads go with the next
+  answer. A read without a receipt goes with the nil-uuid stand-in, which the core checks again.
+- The host learns the log's id before the run's first command, so a folder restart during any command shows as a new
+  log: that answer is withheld (its reads are gone), and the next goes on with the new log.
 - Review class "read" (no network, the folder read-only); observed as `exec_command` and `write_stdin` (migration
   `20260929999970`, TypeScript and SQL). SQL test 802 proves the path on the live functions: the run actor opens the
   box, the view lists with receipts, the run actor releases them, the context view cites the release; a view's own
