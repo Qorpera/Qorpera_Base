@@ -56,6 +56,9 @@ function stage(files: Record<string, string | Buffer>, options: { clock?: () => 
 	return { tree, source, asked };
 }
 
+/** A page's hits as path, line and text. */
+const seen = (page: SearchAnswer) => page.hits.map(({ path, line, text }) => ({ path, line, text }));
+
 const request = (query: string, more: Partial<SearchRequest> = {}): SearchRequest => ({
 	query,
 	path: "",
@@ -87,10 +90,16 @@ describe("folder search", () => {
 			"a.md": "plan at the top",
 		});
 		const page = await searchView(source, request("plan"));
-		expect(page.hits).toEqual([
+		expect(seen(page)).toEqual([
 			{ path: "a.md", line: 1, text: "plan at the top" },
 			{ path: "docs/plan.md", line: 1, text: "The plan" },
 			{ path: "docs/plan.md", line: 3, text: "the PLAN again" },
+		]);
+		// Each hit names its version and where its line starts: "The plan\nsecond line\n" is 21 bytes.
+		expect(page.hits.map((h) => [h.version, h.offset])).toEqual([
+			[v(5), 0],
+			[v(3), 0],
+			[v(3), 21],
 		]);
 		expect(page.next).toBeNull();
 		expect(page.searched).toBe(3);
@@ -105,7 +114,7 @@ describe("folder search", () => {
 		// Case, a folder, one file, and no hit at all.
 		expect((await searchView(source, request("PLAN", { caseSensitive: true }))).hits).toHaveLength(1);
 		expect((await searchView(source, request("plan", { path: "docs/b" }))).hits).toEqual([]);
-		expect((await searchView(source, request("again", { path: "docs/plan.md" }))).hits).toEqual([
+		expect(seen(await searchView(source, request("again", { path: "docs/plan.md" })))).toEqual([
 			{ path: "docs/plan.md", line: 3, text: "the PLAN again" },
 		]);
 	});
@@ -139,7 +148,7 @@ describe("folder search", () => {
 	it("searches names with namesOnly, folders too, and reads only the folders it looked through", async () => {
 		const { source, asked } = stage({ "plans/a.md": "x", "docs/plan-b.md": "x", "docs/other.md": "x" });
 		const page = await searchView(source, request("PLAN", { namesOnly: true }));
-		expect(page.hits).toEqual([
+		expect(seen(page)).toEqual([
 			{ path: "docs/plan-b.md", line: 0, text: "docs/plan-b.md" },
 			{ path: "plans", line: 0, text: "plans" },
 		]);
@@ -178,7 +187,7 @@ describe("folder search", () => {
 			{ ...source, now: () => 0 },
 			request("plan", { after: { path: "a.md", version: v(1), offset: 13, line: 2 } }),
 		);
-		expect(resumed.hits[0]).toEqual({ path: "a.md", line: 1, text: "one plan" });
+		expect(seen(resumed)[0]).toEqual({ path: "a.md", line: 1, text: "one plan" });
 	});
 
 	it("pages by the reads one answer carries", async () => {
@@ -199,6 +208,19 @@ describe("folder search", () => {
 		expect(page.hits[0]!.text).toMatch(/^….{200}…$/u);
 		expect(page.hits[0]!.text).toContain("plan");
 		expect(page.hits[1]!.text).toBe("a plan ");
+	});
+
+	it("goes on from any hit, so a page shown only in part loses nothing", async () => {
+		const { source } = stage({ "a.md": "plan 1\nx\nplan 2\nplan 3\n", "b.md": "plan b\n" });
+		const page = await searchView(source, request("plan"));
+		const third = page.hits[2]!;
+		const rest = await searchView(
+			source,
+			request("plan", {
+				after: { path: third.path, version: third.version, offset: third.offset, line: third.line - 1 },
+			}),
+		);
+		expect(seen(rest)).toEqual(seen(page).slice(2));
 	});
 
 	it("orders paths depth first, name by name", () => {

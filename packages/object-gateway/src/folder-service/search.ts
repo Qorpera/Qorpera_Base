@@ -39,6 +39,10 @@ export interface SearchHit {
 	/** The line's number, from 1; 0 for a name. */
 	readonly line: number;
 	readonly text: string;
+	/** The version searched, and the byte its line starts at (0 for a name): where to go on from this hit, should the
+	 * run show only the hits before it. */
+	readonly version: string;
+	readonly offset: number;
 }
 
 export interface SearchRead {
@@ -130,8 +134,8 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		});
 	};
 	/** Adds a hit, or says the answer is full. */
-	const hit = (path: string, line: number, text: string): boolean => {
-		const shown = { path, line, text };
+	const hit = (entry: TreeEntry, line: number, text: string, offset = 0): boolean => {
+		const shown = { path: entry.path, line, text, version: entry.version, offset };
 		const bytes = Buffer.byteLength(JSON.stringify(shown));
 		if (hits.length > 0 && hitBytes + bytes > HITS_BYTES) return false;
 		hits.push(shown);
@@ -178,14 +182,13 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			read(entry);
 			if (request.namesOnly && entry.path !== request.path && matchesGlob(entry)) {
 				const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-				if (fold(name).includes(query) && !hit(entry.path, 0, entry.path)) return answer(at(entry));
+				if (fold(name).includes(query) && !hit(entry, 0, entry.path)) return answer(at(entry));
 			}
 			continue;
 		}
 		if (request.namesOnly) {
 			const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-			if (matchesGlob(entry) && fold(name).includes(query) && !hit(entry.path, 0, entry.path))
-				return answer(at(entry));
+			if (matchesGlob(entry) && fold(name).includes(query) && !hit(entry, 0, entry.path)) return answer(at(entry));
 			continue;
 		}
 		if (!text(entry)) continue;
@@ -240,7 +243,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 					line++;
 					const textLine = lines.subarray(start, stop).toString("utf8");
 					const found = fold(textLine).indexOf(query);
-					if (found >= 0 && !hit(entry.path, line, around(textLine, found)))
+					if (found >= 0 && !hit(entry, line, around(textLine, found), carryStart + start))
 						return answer(at(entry, carryStart + start, line - 1));
 					start = stop + 1;
 				}

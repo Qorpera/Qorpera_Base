@@ -865,7 +865,7 @@ describe("run box views", () => {
 		const found = await io.json();
 		expect(found.kind).toBe(Kind.found);
 		expect(found.body).toEqual({
-			hits: [{ path: "docs/plan.md", line: 1, text: "the plan" }],
+			hits: [{ path: "docs/plan.md", line: 1, text: "the plan", version: v(1), offset: 0 }],
 			searched: 1,
 			binary: 0,
 			reads: [
