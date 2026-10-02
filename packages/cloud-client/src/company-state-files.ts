@@ -11,6 +11,7 @@
  * `- item` per line below the key), and `#` after a space starts a note. Each kind has a
  * closed set of keys. The same bytes always give the same result, problems included. */
 
+import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
@@ -288,8 +289,6 @@ export interface HumanTaskFile {
 	/** The label of the one secret the person enters; its value goes to the vault. */
 	readonly secret: string | null;
 	readonly secretState: "asked" | "saved" | null;
-	/** The office the person takes over, for a member's task only. */
-	readonly computer: string | null;
 	/** The id of the connections/ file the step is for. */
 	readonly connection: string | null;
 	readonly step: (typeof HUMAN_TASK_STEPS)[number] | null;
@@ -878,7 +877,14 @@ class Fields {
 			return null;
 		}
 		if (!value.items) {
-			this.problems.add("missing", value.line, key, `${key} has no items; write ${key}: [] for an empty list`);
+			this.problems.add(
+				"missing",
+				value.line,
+				key,
+				empty
+					? `${key} has no items; write ${key}: [] for an empty list`
+					: `${key} has no items; give it one or remove the line`,
+			);
 			return null;
 		}
 		const items = [...value.items];
@@ -1302,7 +1308,7 @@ function workerResults(split: Split, fields: Fields, problems: Problems): Worker
  * `## Steps` (as `sections.md` reads headings), up to the next line that starts with `# ` or
  * `## `, that start at column 0 with `- [ ] `, `- [x] ` or `- [X] `. Other lines are text. */
 function humanTaskSteps(split: Split, problems: Problems): HumanTaskStep[] {
-	const lines = split.body.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+	const lines = split.body.split("\n");
 	const start = lines.findIndex((line) => line.startsWith("## ") && headingText(line.slice(2)) === "Steps");
 	if (start < 0) return [];
 	const steps: HumanTaskStep[] = [];
@@ -1330,8 +1336,20 @@ function humanTaskSteps(split: Split, problems: Problems): HumanTaskStep[] {
 	return steps;
 }
 
-/** A task's `files`: literal paths of files in the company folder, at most 20, each written once
- * (compared by key). On a contact's task, never under the roots outside readers may not see. */
+/** Whether the company folder can hold a file at this path (`parseCloudCompanyPath`, as SQL's
+ * `qorpera_company_path_valid`). */
+function holdablePath(path: string): boolean {
+	try {
+		parseCloudCompanyPath(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** A task's `files`: literal paths the company folder can hold (the core's path rule), at most 20,
+ * each written once (compared by key). On a contact's task, never under the roots outside readers
+ * may not see. */
 function humanTaskFiles(fields: Fields, problems: Problems, forContact: boolean): string[] {
 	const files: string[] = [];
 	const seen = new Set<string>();
@@ -1340,12 +1358,9 @@ function humanTaskFiles(fields: Fields, problems: Problems, forContact: boolean)
 	for (const item of items) {
 		const path = item.text;
 		const key = companyPathKey(path);
-		if (
-			NOT_ONE_LINE.test(path) ||
-			encoder.encode(path).byteLength > 4096 ||
-			path.startsWith("/") ||
-			path.split("/").some((part) => !part || part === "." || part === "..")
-		)
+		if (!item.quoted && ambiguousPlain(path))
+			problems.add("quote", item.line, "files", `put ${shown(path)} in double quotes`);
+		else if (NOT_ONE_LINE.test(path) || !holdablePath(path))
 			problems.add(
 				"value",
 				item.line,
@@ -1415,9 +1430,8 @@ function humanTask(split: Split, fields: Fields, problems: Problems): HumanTaskF
 			fields.values.has("secret") ? "secret_state" : "secret",
 			"secret and secret_state go together",
 		);
-	const computer = fields.id("computer", false);
 	if (forContact)
-		for (const key of ["secret", "secret_state", "computer"])
+		for (const key of ["secret", "secret_state"])
 			if (fields.values.has(key))
 				problems.add("value", fields.line(key), key, `${key} is for a member's task; a contact only uploads`);
 	const connection = fields.id("connection", false);
@@ -1442,7 +1456,6 @@ function humanTask(split: Split, fields: Fields, problems: Problems): HumanTaskF
 		reason,
 		secret,
 		secretState,
-		computer,
 		connection,
 		step,
 		instructions,
@@ -1470,7 +1483,9 @@ function contact(split: Split, fields: Fields, problems: Problems): ContactFile 
 		problems.add("value", fields.line("phone"), "phone", 'phone is + and its digits, like "+45 12 34 56 78"');
 	const asks: string[] = [];
 	for (const item of fields.list("asks", false, false) ?? []) {
-		if (
+		if (!item.quoted && ambiguousPlain(item.text))
+			problems.add("quote", item.line, "asks", `put ${shown(item.text)} in double quotes`);
+		else if (
 			NOT_ONE_LINE.test(item.text) ||
 			!item.text ||
 			item.text !== item.text.trim() ||
@@ -1896,7 +1911,6 @@ export function writeHumanTaskFile(
 			["reason", file.reason === null ? null : companyStateValue(file.reason)],
 			["secret", file.secret === null ? null : companyStateValue(file.secret)],
 			["secret_state", file.secretState],
-			["computer", file.computer],
 			["connection", file.connection],
 			["step", file.step],
 		],

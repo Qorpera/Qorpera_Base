@@ -693,7 +693,6 @@ describe("connections, rules, todos and worker files", () => {
 describe("human tasks and contacts (H1)", () => {
 	const OPS = "7f3a9c21-44d0-4e6b-8a55-2c1f0b9e3d77";
 	const TODO = "3c9e1a52-7d4b-4f60-8e21-5b0a9c7d2e14";
-	const OFFICE = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 	const task = (lines: string, text = "## Why\nIt matters.\n## Steps\n- [ ] Do it\n") =>
 		`---\nid: ${ID}\ntitle: Fit the disk\n${lines}\n---\n${text}`;
 	const member = `status: open\nmember: ${JONAS}\nfrom: ${OPS}\ndue: 2026-10-09T16:00:00Z`;
@@ -713,7 +712,6 @@ describe("human tasks and contacts (H1)", () => {
 		reason: null,
 		secret: null,
 		secretState: null,
-		computer: null,
 		connection: null,
 		step: null,
 		instructions:
@@ -739,7 +737,8 @@ describe("human tasks and contacts (H1)", () => {
 				{ line: 17, text: "Agree a window", done: true },
 			],
 		});
-		// Every key a member's takeover task uses, as A1 maps its card.
+		// Every key a member's takeover task uses, as A1 maps its card: the asking agent's own screen is
+		// found from `from` when the person opens the task, so the file names no machine or screen.
 		const takeover = {
 			...base,
 			minutes: null,
@@ -747,7 +746,6 @@ describe("human tasks and contacts (H1)", () => {
 			files: [],
 			secret: "Code from the SMS",
 			secretState: "asked" as const,
-			computer: OFFICE,
 			connection: GROUP,
 			step: "phone_code" as const,
 			todo: null,
@@ -755,7 +753,7 @@ describe("human tasks and contacts (H1)", () => {
 		expect(ok("human-tasks/github-code.md", writeHumanTaskFile(takeover))).toMatchObject({
 			secret: "Code from the SMS",
 			secretState: "asked",
-			computer: OFFICE,
+			connection: GROUP,
 			step: "phone_code",
 			proof: [],
 			files: [],
@@ -767,11 +765,11 @@ describe("human tasks and contacts (H1)", () => {
 		});
 	});
 
-	it("is for exactly one person, and keeps the secret and the computer to a member's task", () => {
+	it("is for exactly one person, and keeps the secret to a member's task", () => {
 		const problems = (lines: string) => keys(refused("human-tasks/t.md", task(lines)));
 		expect(problems(`status: open\nfrom: ${OPS}\ndue: 2026-10-09T16:00:00Z`)).toEqual([["member", "missing"]]);
 		expect(problems(`${member}\ncontact: ${IDA}`)).toEqual([["member", "value"]]);
-		expect(problems(`${contactTask}\ncomputer: ${OFFICE}`)).toEqual([["computer", "value"]]);
+		expect(problems(`${member}\ncomputer: ${ID}`)).toEqual([["computer", "unknown_key"]]);
 		expect(problems(`${contactTask}\nsecret: Code\nsecret_state: asked`)).toEqual([
 			["secret", "value"],
 			["secret_state", "value"],
@@ -812,6 +810,10 @@ describe("human tasks and contacts (H1)", () => {
 		expect(problems(`${member}\nminutes: 481`)).toEqual([["minutes", "value"]]);
 		expect(problems(`${member}\nminutes: 0`)).toEqual([["minutes", "value"]]);
 		expect(problems(`${member}\nproof: []`)).toEqual([["proof", "value"]]);
+		// A list key with no items is left out, not written empty.
+		expect(refused("human-tasks/t.md", task(`${member}\nproof:`))).toMatchObject([
+			{ key: "proof", code: "missing", message: "proof has no items; give it one or remove the line" },
+		]);
 		expect(problems(`${member}\nproof: [photo, video]`)).toEqual([["proof", "value"]]);
 		expect(problems(`${member}\nproof: [photo, photo]`)).toEqual([["proof", "value"]]);
 		expect(problems(`${member}\nstep: puzzle`)).toEqual([["step", "value"]]);
@@ -830,6 +832,24 @@ describe("human tasks and contacts (H1)", () => {
 		});
 		for (const bad of ["[sales/]", "[/sales/a.pdf]", "[sales//a.pdf]", "[sales/../a.pdf]", "[./a.pdf]", "[]"])
 			expect(problems(files(bad))).toEqual([["files", "value"]]);
+		// Only paths the folder can hold (the core's path rule, as parseCloudCompanyPath).
+		for (const bad of [
+			"[a:b.pdf]",
+			"[50%.pdf]",
+			'["a\\b.pdf"]',
+			'["Notes /x.pdf"]',
+			"[con.txt]",
+			"[x.]",
+			'["e\u0301.pdf"]',
+		])
+			expect(problems(files(bad))).toEqual([["files", "value"]]);
+		// A plain entry YAML reads as something other than text is quoted.
+		expect(problems(files("[42, true, null]"))).toEqual([
+			["files", "quote"],
+			["files", "quote"],
+			["files", "quote"],
+		]);
+		expect(ok("human-tasks/t.md", task(files('["42", "true"]')))).toMatchObject({ files: ["42", "true"] });
 		expect(problems(files(`[a${"x".repeat(4096)}]`))).toEqual([["files", "value"]]);
 		// Repeats are compared by key: two spellings are one entry.
 		expect(problems(files("[Sales/A.pdf, sales/a.pdf]"))).toEqual([["files", "value"]]);
@@ -878,6 +898,8 @@ describe("human tasks and contacts (H1)", () => {
 		expect(problems("## Steps\n- [ ]   \n")).toEqual([[10, "body"]]);
 		expect(problems("## Steps\n- [ ] a\tb\n")).toEqual([[10, "body"]]);
 		expect(problems("## Steps\n- [ ] a\u2028b\n")).toEqual([[10, "body"]]);
+		// One carriage return before a line end is dropped, not two.
+		expect(problems("## Steps\n- [ ] A\r\r\n")).toEqual([[10, "body"]]);
 		expect(problems(`## Steps\n- [ ] ${"x".repeat(501)}\n`)).toEqual([[10, "body"]]);
 		expect(ok("human-tasks/t.md", task(member, `## Steps\n- [ ] ${"ø".repeat(250)}\n`))).toBeTruthy();
 		const many = (n: number) => `## Steps\n${Array.from({ length: n }, (_, i) => `- [ ] Step ${i}`).join("\n")}\n`;
@@ -936,6 +958,11 @@ describe("human tasks and contacts (H1)", () => {
 			expect(problems(`phone: ${phone}`)).toEqual([["phone", "value"]]);
 		expect(problems("asks: []")).toEqual([["asks", "value"]]);
 		expect(problems("asks: [VAT filing, VAT filing]")).toEqual([["asks", "value"]]);
+		expect(problems("asks: [true, 42, null, ~, .5, 0x1F]")).toEqual(
+			Array.from({ length: 6 }, () => ["asks", "quote"]),
+		);
+		expect(problems("asks:\n  - false")).toEqual([["asks", "quote"]]);
+		expect(ok("contacts/m.md", contactText('asks: ["true", "42"]'))).toMatchObject({ asks: ["true", "42"] });
 		expect(ok("contacts/m.md", contactText("asks: [VAT filing, vat filing]"))).toMatchObject({
 			asks: ["VAT filing", "vat filing"],
 		});

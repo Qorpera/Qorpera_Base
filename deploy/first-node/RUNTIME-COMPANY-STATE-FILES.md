@@ -567,7 +567,6 @@ The photo, and a note with the time node 2 was back up.
 | `reason` | with `returned` and `declined`; allowed with `cancelled`; refused otherwise | one line, 1–500 bytes: why it went back, why the person can't, or why it was cancelled |
 | `secret` | no; with `member` only | one line, 1–100 bytes: the label of the one secret the person enters ("Code from the SMS") |
 | `secret_state` | with `secret`, and only then | `asked` or `saved` |
-| `computer` | no; with `member` only | the Company Computer the person takes over: a lowercase office id (`qorpera_runtime_offices.id`); the platform opens the asking agent's current screen on it (A1) |
 | `connection` | no | the `id` of the `connections/` file the step is for (A1) |
 | `step` | no | the kind of step a website demands of a person (A1): `sign_in`, `captcha`, `phone_code`, `id_check`, `payment`, `create_account`, `other` |
 | body | yes | 1 byte to 32 KiB trimmed; the headings `## Why`, `## Steps`, `## Done looks like` are the convention, not required |
@@ -587,10 +586,15 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   by line). A body without such a section has no steps. The whole body stays the task's
   `instructions`. In H2 a person's own change may flip a box and nothing else: no text changed,
   no line added or removed.
-- **`files`.** Each entry is a literal company-folder path: relative, no empty, `.` or `..` part,
-  no trailing `/` (a folder spelling), one line, at most 4096 bytes; a pattern character such as
-  `*` is part of a name, never a pattern. Repeats are compared by key (`companyPathKey`), since two
-  spellings are one entry. On a contact's task an entry whose key is under `agents/`,
+- **`files`.** Each entry is a literal path the company folder can hold, by the core's path rule
+  (`parseCloudCompanyPath`, SQL's `qorpera_company_path_valid`: relative, NFC, at most 4096 bytes,
+  no empty, `.` or `..` part, no trailing `/`, no `\`, `%` or `:`, no part ending in `.` or a
+  space, no reserved device name), and one line; a pattern character such as `*` is part of a
+  name, never a pattern. A plain entry that YAML reads as something other than text (`42`,
+  `true`) is written in double quotes, as in `asks`. Repeats are compared by key
+  (`companyPathKey`), since two spellings are one entry; the database compares by its own key, so
+  the case-mapping difference of §1 (`İ`) can make it refuse two entries the parser keeps apart,
+  never the other way round. On a contact's task an entry whose key is under `agents/`,
   `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
   people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
   - a listed file opens only if the agent that sent the link may read it at that moment, by its
@@ -599,6 +603,9 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   - a contact's link keeps the list its review approved, and an open shows only the paths on both
     that list and the current one: a removal works at once, an addition needs a new reviewed
     send. A path that no longer exists, or became a folder, is not shown;
+  - the reviewed send also pins each listed file's version: an open shows that version, and only
+    while the sender may still read the path. A newer version needs a new reviewed send, like an
+    addition, so a contact never sees content nobody reviewed;
   - the address and the expiry are pinned the same way: a later change of the contact's `email`
     or the task's `due` never redirects or extends a link already sent;
   - a link goes out only through a reviewed send, never from a file save.
@@ -619,9 +626,10 @@ A list key is either left out or holds at least one item (`proof: []` is refused
     person `done` and `declined`. A person's own change is a tick, or `done` or `declined` with
     its proof, note and `reason`, saved in one change set by the platform as the person's change,
     and not reviewed;
-  - that `member`, `contact`, `todo` and `connection` exist in this company, and `computer` is
-    this company's office; that `from` is the saving agent's own id and never changes; that `id`
-    is unique among the tasks and never changes; a `member` change hands the task on;
+  - that `member`, `contact` and `connection` exist in this company, and `todo` is an open todo of
+    the `from` agent, so a task never wakes another agent's todo; that `from` is the saving
+    agent's own id and never changes; that `id` is unique among the tasks and never changes; a
+    `member` change hands the task on;
   - that a contact's task shares company files outside the company. The link's send is the
     reviewed outside action, like `send_mail`, and nothing is sent by a file save; whether
     creating or changing a contact's task (or its `files`) is also reviewed needs a review class
@@ -682,7 +690,7 @@ Our accountant since 2025. Files VAT every quarter.
 
 The parses, with absent values `null` and absent lists `[]`:
 - human-task: `{kind, id, title, status, member, contact, from, todo, due, minutes, proof, files,
-  reason, secret, secretState, computer, connection, step, instructions, steps}`;
+  reason, secret, secretState, connection, step, instructions, steps}`;
 - contact: `{kind, id, name, organization, email, phone, asks, notes}`, with `notes` the trimmed
   body (`""` when there is none).
 
@@ -1398,9 +1406,16 @@ saved), no seeding. Two PRs, released in this order:
   a folder move of `drafts/` into `contacts`, of `human-tasks/` out and a folder copy of
   `contacts/` refused, the secret rule, and no index.
 
-**Built (H1a): the parser** (`packages/cloud-client/src/company-state-files.ts`), as planned. One choice made while
-building: a contact's `asks` entry may not start or end with a space (a quoted entry could keep one), since the
-database's shape check holds one-line values trimmed.
+**Built (H1a): the parser** (`packages/cloud-client/src/company-state-files.ts`), as planned, with these choices made
+while building:
+- A contact's `asks` entry may not start or end with a space (a quoted entry could keep one), since the database's
+  shape check holds one-line values trimmed.
+- `asks` and `files` are the first free-text lists, so a plain item YAML reads as something other than text
+  (`true`, `42`, `null`) is refused with `quote`, as the settings' text fields are; the writers quote such items.
+- `files` entries are held to the core's path rule, so a task never names a file the folder cannot hold.
+- No `computer` key (A1, 2 October): a takeover step is always done on the asking agent's own computer, which the
+  platform finds from `from` when the person opens the task, also when a company runs several machines. The file
+  names nothing that can go stale; `step` and `connection` say what to do and for which account.
 
 **Built (H1b): the database** (migration 20260929999000, SQL test 785), as planned, with these choices made while
 building:
@@ -1421,7 +1436,7 @@ building:
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
-human task through `computer`, `connection`, `step` and the secret keys, once H2 is in.
+human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
 
 ## 9. The seeded tree
 
