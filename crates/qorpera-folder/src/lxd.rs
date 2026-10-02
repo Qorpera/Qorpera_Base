@@ -1,7 +1,8 @@
 //! Which machine has a vsock CID, as this node's LXD says, asked by the bridge for every machine connection
 //! before any pass is checked. So any machine on the node can make the bridge ask, and asking must stay cheap:
 //! - A CID confirmed in the last two seconds is answered from memory.
-//! - A CID known from an earlier listing is confirmed with one single-instance request.
+//! - A CID known from an earlier listing is confirmed with one single-instance request, one at a time per CID
+//!   (others wait for it). An instance that is gone (404) or no longer has the CID falls through to a listing.
 //! - Otherwise the node's instances are listed, one listing at a time for the whole bridge (connections arriving
 //!   meanwhile wait for it), and at most one a second: a CID missing from a listing under a second old is answered
 //!   "none" without asking again.
@@ -31,6 +32,7 @@ struct Known {
 #[derive(Default)]
 struct State {
 	known: HashMap<u32, Known>,
+	confirming: std::collections::HashSet<u32>,
 	listing: bool,
 	listed: Option<Instant>,
 }
@@ -55,23 +57,32 @@ impl Machines {
 	/// The running machine with this CID, if any. Anything unexpected from LXD is `Unavailable`, never `None`:
 	/// the service then answers "try again" instead of refusing the machine.
 	pub fn lookup(&self, cid: u32) -> (Lookup, Option<Machine>) {
-		let hint = {
-			let state = self.state.lock().unwrap();
+		let mut state = self.state.lock().unwrap();
+		let hint = loop {
 			match state.known.get(&cid) {
 				Some(k) if k.confirmed.elapsed() < CONFIRMED_FOR => return (Lookup::Found, Some(k.machine.clone())),
-				Some(k) => Some(k.machine.clone()),
-				None => None,
+				Some(_) if state.confirming.contains(&cid) => state = self.done.wait(state).unwrap(),
+				Some(k) => {
+					let machine = k.machine.clone();
+					state.confirming.insert(cid);
+					break Some(machine);
+				}
+				None => break None,
 			}
 		};
+		drop(state);
 		if let Some(machine) = hint {
-			match self.confirm(cid, &machine) {
+			let confirmed = self.confirm(cid, &machine);
+			let mut state = self.state.lock().unwrap();
+			state.confirming.remove(&cid);
+			self.done.notify_all();
+			match confirmed {
 				Ok(true) => {
-					let mut state = self.state.lock().unwrap();
 					state.known.insert(cid, Known { machine: machine.clone(), confirmed: Instant::now() });
 					return (Lookup::Found, Some(machine));
 				}
 				Ok(false) => {
-					self.state.lock().unwrap().known.remove(&cid);
+					state.known.remove(&cid);
 				}
 				Err(_) => return (Lookup::Unavailable, None),
 			}
@@ -79,10 +90,17 @@ impl Machines {
 		self.from_listing(cid)
 	}
 
-	/// One single-instance request: is the machine still running with this CID and physical id?
+	/// One single-instance request: is the machine still running with this CID and physical id? An instance that
+	/// is gone (404) is not.
 	fn confirm(&self, cid: u32, machine: &Machine) -> std::io::Result<bool> {
 		let path = format!("/1.0/instances/{}?project={}", machine.name, machine.project);
-		let body = self.get(&path)?;
+		let (status, body) = self.get(&path)?;
+		if status == 404 {
+			return Ok(false);
+		}
+		if status != 200 {
+			return Err(std::io::Error::other("LXD did not answer 200"));
+		}
 		let answer: serde_json::Value = serde_json::from_slice(&body).map_err(std::io::Error::other)?;
 		let meta = answer.get("metadata").ok_or_else(|| std::io::Error::other("no metadata"))?;
 		Ok(matches(meta, cid).as_ref() == Some(machine))
@@ -104,7 +122,12 @@ impl Machines {
 		}
 		state.listing = true;
 		drop(state);
-		let listed = self.get("/1.0/instances?all-projects=true&recursion=1").and_then(|body| running(&body));
+		let listed = self.get("/1.0/instances?all-projects=true&recursion=1").and_then(|(status, body)| {
+			if status != 200 {
+				return Err(std::io::Error::other("LXD did not answer 200"));
+			}
+			running(&body)
+		});
 		let mut state = self.state.lock().unwrap();
 		state.listing = false;
 		self.done.notify_all();
@@ -122,7 +145,8 @@ impl Machines {
 		}
 	}
 
-	fn get(&self, path: &str) -> std::io::Result<Vec<u8>> {
+	/// The status and body of one request.
+	fn get(&self, path: &str) -> std::io::Result<(u16, Vec<u8>)> {
 		*self.asked.lock().unwrap() += 1;
 		let mut s = UnixStream::connect(&self.socket)?;
 		s.set_read_timeout(Some(TIMEOUT))?;
@@ -136,11 +160,14 @@ impl Machines {
 		}
 		let split =
 			answer.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| std::io::Error::other("no HTTP head"))?;
-		let status = answer[..split].split(|&b| b == b'\n').next().unwrap_or_default();
-		if !(status.starts_with(b"HTTP/1.") && status.get(8..13) == Some(b" 200 ")) {
-			return Err(std::io::Error::other("LXD did not answer 200"));
-		}
-		Ok(answer[split + 4..].to_vec())
+		let line = answer[..split].split(|&b| b == b'\n').next().unwrap_or_default();
+		let status = line
+			.strip_prefix(b"HTTP/1.")
+			.and_then(|rest| rest.get(2..5))
+			.and_then(|code| std::str::from_utf8(code).ok())
+			.and_then(|code| code.parse::<u16>().ok())
+			.ok_or_else(|| std::io::Error::other("no HTTP status"))?;
+		Ok((status, answer[split + 4..].to_vec()))
 	}
 }
 
@@ -286,6 +313,54 @@ mod tests {
 		assert_eq!(requests[1], "/1.0/instances/qorpera-exec-node02?project=qn25b2");
 		assert!(requests[0].starts_with("/1.0/instances?all-projects=true&recursion=1"));
 		assert_eq!(machines.asked(), 2);
+	}
+
+	#[test]
+	fn lookups_after_the_window_share_one_confirmation_and_a_gone_instance_is_listed_again() {
+		let (socket, seen) = fake_lxd(
+			|target| {
+				if target.starts_with("/1.0/instances?") {
+					(200, answer(EXEC))
+				} else {
+					(200, format!(r#"{{"type":"sync","metadata":{EXEC}}}"#))
+				}
+			},
+			Duration::from_millis(100),
+		);
+		let machines = Arc::new(Machines::new(&socket));
+		assert_eq!(machines.lookup(42).0, Lookup::Found);
+		std::thread::sleep(CONFIRMED_FOR + Duration::from_millis(50));
+		let threads: Vec<_> = (0..32)
+			.map(|_| {
+				let machines = machines.clone();
+				std::thread::spawn(move || machines.lookup(42))
+			})
+			.collect();
+		for t in threads {
+			assert_eq!(t.join().unwrap(), (Lookup::Found, Some(exec())));
+		}
+		assert_eq!(seen.lock().unwrap().len(), 2, "one listing, then one confirmation: {:?}", seen.lock().unwrap());
+
+		// The instance is gone (404): not this machine, so the CID is listed again (it now has another one).
+		let (socket, seen) = fake_lxd(
+			|target| {
+				if target.starts_with("/1.0/instances?") {
+					(200, answer(r#"{"name":"next","project":"p","status":"Running","config":{"volatile.vsock_id":"42","volatile.uuid":"n"}}"#))
+				} else {
+					(404, r#"{"type":"error","error":"Instance not found","error_code":404}"#.into())
+				}
+			},
+			Duration::ZERO,
+		);
+		let machines = Machines::new(&socket);
+		machines.state.lock().unwrap().known.insert(
+			42,
+			Known { machine: exec(), confirmed: Instant::now() - CONFIRMED_FOR - Duration::from_millis(1) },
+		);
+		let (lookup, machine) = machines.lookup(42);
+		assert_eq!(lookup, Lookup::Found);
+		assert_eq!(machine.unwrap().name, "next");
+		assert_eq!(seen.lock().unwrap().len(), 2);
 	}
 
 	#[test]

@@ -19,9 +19,11 @@ see it yet; step 2 (the run box) is the first user.
 The bridge exists because Node has no `AF_VSOCK`. It listens on vsock port 5250 and takes the peer's CID from the
 kernel (LXD assigns it; a machine cannot choose it). For each connection, before any pass is checked, it asks LXD on
 its local socket which running machine has that CID now, so asking stays cheap: a CID confirmed in the last two
-seconds is answered from memory, a known one is confirmed with one single-instance request, and otherwise the
-node's instances are listed, one listing at a time for the whole bridge and at most one a second (a machine may get
-another CID when it starts again, so nothing older is trusted). It sends both as the first frame on the service's Unix socket, then passes bytes through untouched.
+seconds is answered from memory, a known one is confirmed with one single-instance request (one at a time per CID),
+and otherwise the node's instances are listed, one listing at a time for the whole bridge and at most one a second.
+A machine may get another CID when it starts again, so nothing older than two seconds is trusted; within those two
+seconds a stopped machine's CID may still be named, and the view's pass is still required. The bridge sends what it
+found as the first frame on the service's Unix socket, then passes bytes through untouched.
 LXD's socket group is root-equivalent; the bridge holds it and reads nothing a machine sends, while the service,
 which parses machine input, holds the database credential and never talks to LXD. Only the bridge's account can open
 the service's socket (systemd socket, 0660, group `qorpera-folder-bridge`).
@@ -60,8 +62,9 @@ longer reachable by name, its attributes frozen) and stays readable by whoever o
 pages of two versions in one file.
 
 Memory per connection is bounded in the service: frames from a machine are at most 4 KiB until the hello is accepted
-and 64 KiB after, one request is handled at a time with the socket paused, the next waits until the machine has read the last answer, and a feed
-connection whose machine leaves 4 MiB unread is ended (the machine reconnects and drops its caches).
+and 64 KiB after, one request is handled at a time with the socket paused, the next waits until the machine has
+read the last answer, and a feed connection whose machine leaves 4 MiB unread is ended (the machine reconnects and
+drops its caches).
 
 ## Who may connect
 
