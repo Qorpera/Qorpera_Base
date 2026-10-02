@@ -174,7 +174,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      vault's nginx, the object gateway) goes outside the roll, in its own quiet minute.
    - Rehearse first: `05-rehearse-migrations` (dry-run only) applies every release migration in
      order in one transaction and rolls back, so every exact-text patch is checked before anything
-     commits, and it reports whether the roll's guards survive them (`guards`). It holds every
+     commits. It refuses if a guard the roll relies on is missing after them: then commit nothing, and
+     the release pauses. It holds every
      migration's locks until its rollback (for v166: `qorpera_runner_jobs`, `qorpera_profiles`, the
      vault tables), so run it in the same quiet minute as the commits, never in a busy hour; a `55P03`
      from it only means "try again later". A release with no migration has no `05`. Each `10-migration-*` packet needs the one before it recorded, so on its own only the

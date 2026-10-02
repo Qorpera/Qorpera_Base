@@ -222,6 +222,7 @@ test("the schema rehearsal applies every release migration in order in one trans
 	// Each migration starts with its packet's settings, and the summary reports the roll's guards.
 	assert.equal(text.match(/set local lock_timeout = '5s';\nset local statement_timeout = '120s';\s*(create table|alter table)/g)?.length, 2);
 	assert.match(text, /'ok', true, 'guards', coalesce\(\(select not exists/);
+	assert.match(text, /A guard the roll relies on is missing after the release migrations[\s\S]*as roll_rehearsal;/);
 });
 
 test("a release's pg_temp helpers and temporary tables are its own migration's, under names no other one creates", () => {
@@ -238,6 +239,11 @@ test("a release's pg_temp helpers and temporary tables are its own migration's, 
 	assert.ok(rollPackets(options({ migrations: [first, table("20260928400200_two.sql", false)] }))["05-rehearse-migrations.sql"]);
 	assert.throws(() => rollPackets(options({ migrations: [table("20260928400100_one.sql", false), table("20260928400200_two.sql", false)] })), /both create pg_temp\.roll_rows/);
 	assert.ok(rollPackets(options({ migrations: [table("20260928400100_one.sql", true), table("20260928400200_two.sql", true)] })));
+	// A borrowed table refuses even without a parenthesis after it.
+	assert.throws(
+		() => rollPackets(options({ migrations: [table("20260928400100_one.sql", false), { name: "20260928400200_two.sql", text: "select count(*) from pg_temp.roll_rows;\n" }] })),
+		/uses pg_temp\.roll_rows, which it does not create/,
+	);
 	// A name in a comment is not a use.
 	assert.ok(rollPackets(options({ migrations: [{ name: "20260928400100_one.sql", text: "-- like pg_temp.elsewhere(x)\nselect 1;\n" }] })));
 });

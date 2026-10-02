@@ -235,7 +235,7 @@ export function rollPackets(options) {
 			helpers.set(name, migration.name);
 		}
 		const created = new Set([...functions, ...tables.map((m) => m[2])]);
-		for (const [, name] of text.matchAll(/pg_temp\.([a-z0-9_]+)\s*\(/g))
+		for (const [, name] of text.matchAll(/pg_temp\.([a-z0-9_]+)/g))
 			if (!created.has(name)) throw new Error(`${migration.name} uses pg_temp.${name}, which it does not create`);
 	}
 	for (const migration of ordered) {
@@ -283,6 +283,7 @@ export function rollPackets(options) {
 				return [`set local lock_timeout = '5s';\nset local statement_timeout = '120s';`, body, historyInsert(migration.name, body)];
 			}),
 			// The guards the roll relies on, after every migration: a release that loses one pauses instead.
+			gate("roll_after", [[MARKERS, "A guard the roll relies on is missing after the release migrations: commit nothing, the release pauses"]]),
 			`select jsonb_build_object('rehearsed', jsonb_build_array(${ordered.map((m) => literal(m.name)).join(", ")}), 'ok', true, 'guards', coalesce((${MARKERS}), false)) as roll_rehearsal;`,
 		]);
 	ordered.forEach((migration, index) => {
