@@ -1,5 +1,5 @@
 -- @fixture 733_runtime_company_mail_sending.test.sql until "-- Switched off, nothing is queued."
--- Company mail for members, step I5a (20260929999995): received and sent mail is threaded (the root Message-ID, a
+-- Company mail for members, step I5a (20260929999998): received and sent mail is threaded (the root Message-ID, a
 -- reply to an email an agent started through the provider's Message-ID read back after sending, else a thread of
 -- its own) and kept for members past the deliveries' 7-day purge; any member of the company reads the mailboxes,
 -- the threads newest first, one thread and the sends waiting for a person, marks threads read, and never sees an
@@ -453,6 +453,14 @@ select pg_temp.wake_assert(pg_temp.listed(current_setting('qorpera_test.quote_th
 	'An answered card waits no more');
 
 -- Account mail (I5b, through A1's lookup once it exists): who used the account and when, never its subject or text.
+-- A1's own lookup (20260929999960) steps aside for this test's.
+do $$
+begin
+	if to_regprocedure('public.qorpera_company_account_mail(uuid,uuid,text[])') is not null then
+		alter function public.qorpera_company_account_mail(uuid, uuid, text[]) rename to qorpera_company_account_mail_a1;
+	end if;
+end
+$$;
 select pg_temp.path_claims('service_role');
 select set_config('qorpera_test.code', pg_temp.received(75, 'support+acme@mail.example.test',
 	'{"messageId":"<code@acme.example>","subject":"Your code is 424242","text":"Code 424242","to":["support+acme@mail.example.test"],"cc":["boss@acme.example"],"attachments":[{"id":"att_code","filename":"code.pdf","size":3}]}')::text, true);
