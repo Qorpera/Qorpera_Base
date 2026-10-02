@@ -496,29 +496,37 @@ Agents learn an email was queued, not that it arrived; bounces and complaints, a
 **Plus addresses and find_mail** (migration `20260929999800_runtime_company_mail_find_and_tags`, agreed with A1 on 2
 October, for accounts the company owns).
 - **Plus addresses.** `local+tag@<mail domain>` reaches the mailbox `local@`, so an agent can open a second account
-  on one site (`agents+stripe@`). The tag is 1–64 lowercase letters, digits, dots, hyphens and underscores; any
-  other tag reaches no mailbox (`unknown`). A message to several tags of one mailbox is stored once. Plus addresses
+  on one site (`agents+stripe@`). The tag is lowercase letters, digits, dots, hyphens and underscores, and the whole
+  local part, tag included, is at most 64 characters (the mail door's limit); any other tag reaches no mailbox
+  (`unknown`). A message to several tags of one mailbox is stored once. Plus addresses
   only receive: `send_mail` sends from a mailbox's own address, and refuses a company's own mailboxes as recipients
   with or without a tag.
-- **What a mail delivery keeps.** Each received mail's delivery now records three of the mail's own headers in
-  `headers`: `delivered-to` (the message's recipients that reach that mailbox, tags included, at most 2048
-  characters), `from` and `subject`, as the mail door wrote them. They are cleared with the body after 7 days.
-  Mail received before the migration keeps none.
+- **What a mail delivery keeps.** Each received mail's delivery now records in `headers`:
+  - `delivered-to`: the message's recipients that reach that mailbox, tags included, whole addresses up to 2048 bytes;
+  - `from` and `subject`: control characters become spaces, at most 998 characters, cut further to 2048 bytes of JSON;
+  - `authentication-results`: the mail door's verdicts, `spf=… dkim=… dmarc=…`.
+
+  So the headers always fit their 8 KiB check. They count toward the company's hourly byte budget with the body
+  (contract item 3), and are cleared with the body after 7 days. Mail received before the migration keeps none.
 - **`find_mail`.** An agent searches its company's received mail (`qorpera_find_agent_mail`, through the run
   binding like `read_event`), with these filters:
   - `mailbox`: its address, which must be one of the company's;
   - `to`: an address the mail was delivered to, tag included;
   - `from` and `subject`: parts of them, in any case;
-  - `since`: an instant with its offset; by default the last 24 hours, never more than 7 days back.
+  - `since`: an instant with its offset; by default the last 24 hours, never more than 7 days back;
+  - `before`: an instant with its offset, to page back.
 
-  It returns at most 10, newest first: `deliveryId`, `mailbox`, `deliveredTo`, `from`, `subject` and
-  `receivedAt`, with `more` when there are others. It returns no mail text and matches nothing inside it; the agent
-  reads a mail with `read_event`. With `waitSeconds` (up to 120) the runtime asks again every 3 seconds until a
-  match arrives. The search looks at the newest 2000 mails in the window and reads only the kept headers. It is a
-  read for the automatic review.
+  It returns up to 10, newest first, as many as fit the tool's 8 KiB answer (about 6000 bytes of mails). Each has
+  `deliveryId`, `mailbox`, up to 5 `deliveredTo`, `from` and `subject` (200 characters each), `authentication` and
+  `receivedAt`. `more` is true when there are other matches, or when the search reached its bound: it looks at the
+  newest 2000 mails in the window, on the company's `(profile_id, received_at)` index, and reads only the kept
+  headers; `before` set to the oldest `receivedAt` shown pages back. It returns no mail text and matches nothing
+  inside it; the agent reads a mail with `read_event`. With `waitSeconds` (up to 120) the runtime asks again every 3
+  seconds until a match arrives. It is a read for the automatic review.
 - **Deploy.** The migration patches `qorpera_receive_mail`, `qorpera_send_agent_mail` and
-  `qorpera_record_runtime_observation` by exact text. It rolls with a bundle carrying this runtime: an older
-  runtime has no `find_mail`, and the patched functions behave the same for untagged mail. Acceptance: an agent
+  `qorpera_record_runtime_observation` by exact text, and adds `qorpera_find_agent_mail` to G2-1's native host
+  allowlist. It rolls with a bundle carrying this runtime: an older runtime has no `find_mail`. Received mail now
+  records its headers and counts their bytes, tagged or not; nothing else changes for untagged mail. Acceptance: an agent
   signs a test company up on a site with `agents+<site>@`, waits with `find_mail` for the confirmation, reads it
   with `read_event`, and the account is opened.
 

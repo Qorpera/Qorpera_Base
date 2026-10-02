@@ -300,6 +300,7 @@ describe("agent event tools", () => {
 				from: "Stripe",
 				subject: "Confirm",
 				since: "2026-10-02T09:00:00+02:00",
+				before: "2026-10-02T12:00:00Z",
 				waitSeconds: 60,
 			});
 			// A match answers at once, whatever time is left to wait.
@@ -314,6 +315,7 @@ describe("agent event tools", () => {
 							from: "Stripe",
 							subject: "Confirm",
 							since: "2026-10-02T09:00:00+02:00",
+							before: "2026-10-02T12:00:00Z",
 						},
 					},
 				],
@@ -383,6 +385,8 @@ describe("agent event tools", () => {
 				["s8", { waitSeconds: 1.5 }],
 				["s9", { from: "a\nb" }],
 				["s10", { to: 42 }],
+				["s15", { waitSeconds: null }],
+				["s16", { before: "yesterday" }],
 			] as const) {
 				const refused = await f.boundary.invoke(callId, "qorpera", "find_mail", args);
 				expect(refused.success, callId).toBe(false);

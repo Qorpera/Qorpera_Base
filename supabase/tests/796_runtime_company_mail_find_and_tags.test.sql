@@ -106,7 +106,7 @@ from unnest(array['[]'::jsonb, '{"folder":"x"}', '{"from":42}', '{"from":""}', '
 	'{"since":"yesterday Z"}', '{"since":"Oct 2 2026T10:00Z"}', '{"since":"soon"}',
 	jsonb_build_object('from', 'a' || chr(10) || 'b')]) as request;
 select pg_temp.find_error('{"since":"2026-13-45T10:00Z"}', '22023',
-	'Mail search is invalid: since is an instant with its offset');
+	'Mail search is invalid: since and before are instants with their offsets');
 -- Only this company's mailboxes, by their address.
 select pg_temp.find_error(jsonb_build_object('mailbox', address), '22023')
 from unnest(array['sales@mail.example.test', 'support@elsewhere.example', 'support+stripe@mail.example.test']) as address;
@@ -164,6 +164,49 @@ select pg_temp.wake_assert((select array_agg(mail.value ->> 'subject' order by m
 	and pg_temp.find('{"to":"support+bulk@mail.example.test","subject":"Bulk 1"}') ->> 'more' = 'false',
 	'Ten at most, newest first');
 
+-- What a delivery keeps fits its 8 KiB: control characters become spaces, long values are cut to their share,
+-- delivered-to keeps whole addresses, and the mail door's authentication verdicts come along. They count toward
+-- the company's hourly bytes.
+select set_config('qorpera_test.usage', (select coalesce(sum(bytes), 0)::text from public.qorpera_event_intake_usage
+	where profile_id = '30000000-0000-4000-8000-000000000010'), true);
+select set_config('qorpera_test.odd_mail', (public.qorpera_receive_mail(pg_temp.mail_id(450),
+	(select array_agg('support+' || lpad(n::text, 50, 'x') || '@mail.example.test') from generate_series(1, 40) as n),
+	json_build_object('schema', 'qorpera.mail/v1', 'subject', 'Your code' || repeat(chr(1), 900) || 'is 123456',
+		'from', repeat(chr(26085), 998), 'authentication', json_build_object('spf', 'pass', 'dkim', 'pass', 'dmarc', 'fail'),
+		'text', 'hi')::text) #>> '{results,0,deliveryId}'), true);
+select pg_temp.wake_assert((select octet_length(headers::text) <= 8192
+		and headers ->> 'subject' = 'Your code is 123456'
+		and octet_length(to_jsonb(headers ->> 'from')::text) <= 2048 and headers ->> 'from' like chr(26085) || '%'
+		and headers ->> 'authentication-results' = 'spf=pass dkim=pass dmarc=fail'
+		and octet_length(headers ->> 'delivered-to') <= 2048
+		and (select bool_and(address ~ '^support\+x*[0-9]+@mail\.example\.test$')
+			from unnest(string_to_array(headers ->> 'delivered-to', ', ')) as address)
+		from pg_temp.delivery(current_setting('qorpera_test.odd_mail')::uuid))
+	and (select sum(bytes) from public.qorpera_event_intake_usage where profile_id = '30000000-0000-4000-8000-000000000010')
+		= current_setting('qorpera_test.usage')::bigint + (select body_bytes + octet_length(headers::text)
+			from pg_temp.delivery(current_setting('qorpera_test.odd_mail')::uuid)),
+	'A delivery keeps headers within its limits, and counts them');
+select pg_temp.wake_assert((pg_temp.find('{"subject":"code is 123456"}') -> 'mails' -> 0 ->> 'authentication')
+		= 'spf=pass dkim=pass dmarc=fail'
+	and char_length(pg_temp.find('{"subject":"code is 123456"}') -> 'mails' -> 0 ->> 'from') = 200
+	and jsonb_array_length(pg_temp.find('{"subject":"code is 123456"}') -> 'mails' -> 0 -> 'deliveredTo') = 5,
+	'An answer carries the authentication verdicts and short sender and recipients');
+-- A subject of control characters only keeps no subject.
+select pg_temp.wake_assert((select not (headers ? 'subject') and headers ? 'delivered-to' from pg_temp.delivery(
+		(public.qorpera_receive_mail(pg_temp.mail_id(451), array['support@mail.example.test'],
+			json_build_object('schema', 'qorpera.mail/v1', 'subject', chr(1) || ' ' || chr(2))::text)
+			#>> '{results,0,deliveryId}')::uuid)),
+	'An empty subject is not kept');
+-- An answer keeps what fits the tool's 8 KiB, and says there is more.
+select pg_temp.mail(pg_temp.mail_id(460 + n), 'support+big@mail.example.test', repeat(chr(26412), 300))
+from generate_series(1, 6) as n;
+update public.qorpera_event_deliveries set headers = headers || jsonb_build_object('from', repeat(chr(26085), 300))
+where headers ->> 'delivered-to' = 'support+big@mail.example.test';
+select pg_temp.wake_assert(jsonb_array_length(pg_temp.find('{"to":"support+big@mail.example.test"}') -> 'mails') between 1 and 5
+	and pg_temp.find('{"to":"support+big@mail.example.test"}') ->> 'more' = 'true'
+	and octet_length((pg_temp.find('{"to":"support+big@mail.example.test"}') -> 'mails')::text) <= 6100,
+	'Large answers are cut to fit: ' || jsonb_array_length(pg_temp.find('{"to":"support+big@mail.example.test"}') -> 'mails'));
+
 -- Only verified mail.
 insert into public.qorpera_event_deliveries (hook_id, profile_id, status, event_type, content_type, headers, body, body_bytes,
 	body_sha256, reason)
@@ -190,5 +233,34 @@ select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_
 	where local_part = 'a_b' and removed_at is null), 'removed');
 select pg_temp.path_claims('service_role');
 select pg_temp.find_error('{"mailbox":"a_b@mail.example.test"}', '22023');
+
+-- A mailbox of the company's other environment is not this run's.
+select set_config('qorpera_test.env_mail', pg_temp.mail(pg_temp.mail_id(470), 'a.b+env@mail.example.test', 'Env probe')
+	->> 'deliveryId', true);
+select pg_temp.wake_assert(current_setting('qorpera_test.env_mail')::uuid = any (pg_temp.found('{"subject":"Env probe"}')),
+	'Found in its own environment');
+update public.qorpera_company_mailboxes set environment_id = '30000000-0000-4000-8000-0000000007a1'
+where local_part = 'a.b' and removed_at is null;
+select pg_temp.wake_assert(pg_temp.found('{"subject":"Env probe"}') = '{}', 'Another environment''s mail is not found');
+select pg_temp.find_error('{"mailbox":"a.b@mail.example.test"}', '22023');
+
+-- The newest 2000 mails bound a search; more then says so, and before pages back past them.
+select set_config('qorpera_test.old_mail', pg_temp.mail(pg_temp.mail_id(480), 'support+old@mail.example.test', 'Old match')
+	->> 'deliveryId', true);
+select set_config('qorpera_test.cut', clock_timestamp()::text, true);
+insert into public.qorpera_event_deliveries (hook_id, profile_id, status, delivery_key, event_type, content_type, headers,
+	body, body_bytes, body_sha256, verified_at, received_at)
+select mailbox.hook_id, mailbox.profile_id, 'verified', 'mail:noise-' || n, 'mail.received', 'application/json',
+	'{"delivered-to":"support+noise@mail.example.test","subject":"Noise"}', '\x7b7d', 2, repeat('0', 64), clock_timestamp(),
+	clock_timestamp() + (n || ' milliseconds')::interval
+from public.qorpera_company_mailboxes as mailbox, generate_series(1, 2000) as n
+where mailbox.local_part = 'support' and mailbox.removed_at is null;
+select pg_temp.wake_assert(pg_temp.found('{"to":"support+old@mail.example.test"}') = '{}'
+	and pg_temp.find('{"to":"support+old@mail.example.test"}') ->> 'more' = 'true'
+	and pg_temp.found(jsonb_build_object('to', 'support+old@mail.example.test',
+		'before', to_char(current_setting('qorpera_test.cut')::timestamptz at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+		= array[current_setting('qorpera_test.old_mail')::uuid],
+	'Behind 2000 newer mails, more says so and before reaches it');
+select pg_temp.find_error('{"before":"soon"}', '22023', 'Mail search is invalid');
 
 rollback;
