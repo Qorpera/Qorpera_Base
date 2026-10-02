@@ -511,20 +511,38 @@ describe("the claim rule", () => {
 	const memberOnly = ["owner", "supervisor"];
 
 	it("lets a member take an empty area and let go of their own", () => {
-		expect(tableClaimProblems(areas, [row("Marketing", null)], [row("Marketing", SOFIE)], member(SOFIE))).toEqual([]);
-		expect(tableClaimProblems(areas, [row("Marketing", SOFIE)], [row("Marketing", null)], member(SOFIE))).toEqual([]);
-		expect(tableClaimProblems(areas, [], [row("New", SOFIE)], member(SOFIE))).toEqual([]);
+		expect(
+			tableClaimProblems(areas, [row("Marketing", null)], [row("Marketing", SOFIE)], member(SOFIE), {
+				folder: "areas",
+			}),
+		).toEqual([]);
+		expect(
+			tableClaimProblems(areas, [row("Marketing", SOFIE)], [row("Marketing", null)], member(SOFIE), {
+				folder: "areas",
+			}),
+		).toEqual([]);
+		expect(tableClaimProblems(areas, [], [row("New", SOFIE)], member(SOFIE), { folder: "areas" })).toEqual([]);
 	});
 
 	it("never lets anyone hand an area to someone else or take someone's", () => {
 		expect(
-			codes(tableClaimProblems(areas, [row("Marketing", null)], [row("Marketing", AMIR)], member(SOFIE))),
+			codes(
+				tableClaimProblems(areas, [row("Marketing", null)], [row("Marketing", AMIR)], member(SOFIE), {
+					folder: "areas",
+				}),
+			),
 		).toEqual(["claim", "claim"]);
-		expect(codes(tableClaimProblems(areas, [row("Finance", AMIR)], [row("Finance", SOFIE)], member(SOFIE)))).toEqual([
+		expect(
+			codes(
+				tableClaimProblems(areas, [row("Finance", AMIR)], [row("Finance", SOFIE)], member(SOFIE), {
+					folder: "areas",
+				}),
+			),
+		).toEqual(["claim", "claim"]);
+		expect(codes(tableClaimProblems(areas, [row("Finance", AMIR)], [], member(SOFIE), { folder: "areas" }))).toEqual([
 			"claim",
 			"claim",
 		]);
-		expect(codes(tableClaimProblems(areas, [row("Finance", AMIR)], [], member(SOFIE)))).toEqual(["claim", "claim"]);
 	});
 
 	it("allows the write of an accepted offer, and only for the member it names", () => {
@@ -532,9 +550,11 @@ describe("the claim rule", () => {
 		const after = [{ ...row("Finance", AMIR, IDA) }];
 		const key = tableRowKey(areas, before[0] as TableRow);
 		const offers = [{ row: key, column: "supervisor", to: IDA, from: AMIR, was: AMIR }];
-		expect(tableClaimProblems(areas, before, after, member(IDA), { offers })).toEqual([]);
-		expect(codes(tableClaimProblems(areas, before, after, member(SOFIE), { offers }))).toEqual(["claim"]);
-		expect(codes(tableClaimProblems(areas, before, after, member(IDA)))).toEqual(["claim"]);
+		expect(tableClaimProblems(areas, before, after, member(IDA), { folder: "areas", offers })).toEqual([]);
+		expect(codes(tableClaimProblems(areas, before, after, member(SOFIE), { folder: "areas", offers }))).toEqual([
+			"claim",
+		]);
+		expect(codes(tableClaimProblems(areas, before, after, member(IDA), { folder: "areas" }))).toEqual(["claim"]);
 	});
 
 	it("refuses a stale offer and one made by someone who didn't hold the cell", () => {
@@ -544,6 +564,7 @@ describe("the claim rule", () => {
 		expect(
 			codes(
 				tableClaimProblems(areas, [row("Marketing", AMIR, null)], [row("Marketing", SOFIE, null)], member(SOFIE), {
+					folder: "areas",
 					offers: stale,
 				}),
 			),
@@ -553,6 +574,7 @@ describe("the claim rule", () => {
 		expect(
 			codes(
 				tableClaimProblems(areas, [row("Marketing", AMIR, null)], [row("Marketing", SOFIE, null)], member(SOFIE), {
+					folder: "areas",
 					offers: foreign,
 				}),
 			),
@@ -561,6 +583,7 @@ describe("the claim rule", () => {
 		const open = [{ row: key, column: "owner", to: SOFIE, from: IDA, was: null }];
 		expect(
 			tableClaimProblems(areas, [row("Marketing", null, null)], [row("Marketing", SOFIE, null)], member(SOFIE), {
+				folder: "areas",
 				offers: open,
 			}),
 		).toEqual([]);
@@ -599,14 +622,21 @@ describe("the claim rule", () => {
 			added_by: null,
 			todo: null,
 		});
-		expect(tableClaimProblems(cards, [card(null)], [card(AMIR)], agentFor(AMIR))).toEqual([]);
-		expect(tableClaimProblems(cards, [card(AMIR)], [card(null)], agentFor(AMIR))).toEqual([]);
-		expect(codes(tableClaimProblems(cards, [card(SOFIE)], [card(null)], agentFor(AMIR)))).toEqual(["claim"]);
-		expect(codes(tableClaimProblems(cards, [card(null)], [card(SOFIE)], agentFor(AMIR)))).toEqual(["claim"]);
-		expect(codes(tableClaimProblems(cards, [card(null)], [card(AMIR)], agentFor(null)))).toEqual(["claim"]);
+		expect(tableClaimProblems(cards, [card(null)], [card(AMIR)], agentFor(AMIR), { folder: "cards" })).toEqual([]);
+		expect(tableClaimProblems(cards, [card(AMIR)], [card(null)], agentFor(AMIR), { folder: "cards" })).toEqual([]);
+		expect(
+			codes(tableClaimProblems(cards, [card(SOFIE)], [card(null)], agentFor(AMIR), { folder: "cards" })),
+		).toEqual(["claim"]);
+		expect(
+			codes(tableClaimProblems(cards, [card(null)], [card(SOFIE)], agentFor(AMIR), { folder: "cards" })),
+		).toEqual(["claim"]);
+		expect(codes(tableClaimProblems(cards, [card(null)], [card(AMIR)], agentFor(null), { folder: "cards" }))).toEqual(
+			["claim"],
+		);
 		expect(
 			codes(
 				tableClaimProblems(areas, [row("Marketing", null)], [row("Marketing", AMIR)], agentFor(AMIR), {
+					folder: "areas",
 					memberOnly,
 				}),
 			),
@@ -619,19 +649,23 @@ describe("the claim rule", () => {
 		expect(
 			codes(
 				tableClaimProblems(areas, [withAgents(null)], [withAgents([FINANCE])], agentFor(SOFIE), {
+					folder: "areas",
 					memberOnly: all,
 				}),
 			),
 		).toEqual(["claim"]);
 		expect(
-			tableClaimProblems(areas, [withAgents(null)], [withAgents([FINANCE])], member(SOFIE), { memberOnly: all }),
+			tableClaimProblems(areas, [withAgents(null)], [withAgents([FINANCE])], member(SOFIE), {
+				folder: "areas",
+				memberOnly: all,
+			}),
 		).toEqual([]);
 	});
 
 	it("leaves rows alone that change nothing it guards", () => {
 		const before = [row("Sales", SOFIE)];
 		const after = [{ ...row("Sales", SOFIE), about: "Trials and teams" }];
-		expect(tableClaimProblems(areas, before, after, member(AMIR))).toEqual([]);
+		expect(tableClaimProblems(areas, before, after, member(AMIR), { folder: "areas" })).toEqual([]);
 	});
 });
 
@@ -803,5 +837,60 @@ describe("review round 1", () => {
 		expect(
 			queryInterfaceRows(rows, query, { time: null, clock: { now: 0, startOfToday: 0 } }).map((r) => r.area),
 		).toEqual(["Support"]);
+	});
+});
+
+describe("review round 2", () => {
+	const areas = table(AREAS_TABLE);
+	it("refuses turning needs_yes on over a filled column", () => {
+		const plain = table(
+			AREAS_TABLE.replace(
+				'name = "supervisor"\ntype = "member"\noptional = true\nneeds_yes = true',
+				'name = "supervisor"\ntype = "member"\noptional = true',
+			),
+		);
+		const filled: TableRow[] = [
+			{ area: "Sales", about: null, owner: SOFIE, shared: false, supervisor: AMIR, agents: null },
+		];
+		expect(tableDefinitionProblems(plain, areas, filled).map((p) => p.code)).toEqual(["claim"]);
+		expect(tableDefinitionProblems(plain, areas, [{ ...filled[0], supervisor: null } as TableRow])).toEqual([]);
+	});
+
+	it("trims slashes in linear time and refuses an over-long path", () => {
+		const started = performance.now();
+		expect(interfacePathProblems(`${"/".repeat(5_000)}interfaces`)).toHaveLength(1);
+		expect(interfacePathProblems(`/interfaces/pulse/interface.toml/`)).toEqual([]);
+		expect(performance.now() - started).toBeLessThan(1_000);
+	});
+
+	it("caps row and order problems with a closing count", () => {
+		const numbers = table(NUMBERS_TABLE);
+		const rows = Array.from({ length: 60 }, (_, n) => `X${n},bad,1,count,${FINANCE}`).join("\n");
+		const result = parseTableRows(numbers, `number,at,value,unit,kept_by\n${rows}\n`);
+		expect(result.problems).toHaveLength(51);
+		expect(result.problems[50]).toMatchObject({ code: "row", message: "and 10 more problems" });
+		expect(parseInterfaceOrderFile(`﻿- ${SOFIE}\n`).ok).toBe(true);
+	});
+
+	it("reads a column named constructor as a lookup, and checks titles and card texts", () => {
+		const text = `${MINIMAL}
+[[view.block]]
+kind = "table"
+from = "members"
+columns = ["name", "constructor"]
+constructor = { from = "table:areas", match = "owner", count = true }
+`;
+		expect(parseInterfaceFile(text).problems).toEqual([]);
+		const title = parseInterfaceFile(MINIMAL.replace('kind = "list"', 'kind = "list"\ntitle = "{nope}"'));
+		expect(title.problems.map((p) => p.code)).toEqual(["unknown_column"]);
+		const card = parseInterfaceFile(MEMBERS_INTERFACE.replace('line = "{about}"', 'line = "{about}\\u202e"'));
+		expect(card.problems.map((p) => p.code)).toContain("bad_value");
+	});
+
+	it("gives every caller its own frozen lookup answer", () => {
+		const owns = interfaceLookupIndex({ from: "table:areas", match: "owner", show: "area", count: false }, [
+			{ owner: SOFIE, area: "Sales" },
+		]);
+		expect(Object.isFrozen(owns(SOFIE))).toBe(true);
 	});
 });

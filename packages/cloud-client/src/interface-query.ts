@@ -210,7 +210,8 @@ export function interfaceLookupIndex(lookup: InterfaceLookup, rows: readonly Tab
 	return (id) => {
 		const known = answers.get(id);
 		if (known !== undefined) return known;
-		const answer = shownFor(hits.get(id) ?? []);
+		// Frozen, so one caller can't change what another is given.
+		const answer = Object.freeze(shownFor(hits.get(id) ?? [])) as TableValue;
 		answers.set(id, answer);
 		return answer;
 	};

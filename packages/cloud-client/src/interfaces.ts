@@ -352,7 +352,14 @@ export function isInterfaceName(value: string): boolean {
 
 /** Problems with the path itself: a file under `interfaces/` or `tables/` that the format doesn't place. */
 export function interfacePathProblems(path: string): InterfaceProblem[] {
-	const written = path.replace(/^\/+|\/+$/g, "");
+	if (encoder.encode(path).length > 4096) {
+		return [problem(null, null, "too_large", "The path is longer than the folder allows (4,096 bytes).")];
+	}
+	let start = 0;
+	let end = path.length;
+	while (start < end && path[start] === "/") start++;
+	while (end > start && path[end - 1] === "/") end--;
+	const written = path.slice(start, end);
 	const key = companyPathKey(written);
 	const parts = key.split("/");
 	if (parts[0] !== "interfaces" && parts[0] !== "tables") return [];
@@ -368,7 +375,7 @@ export function interfacePathProblems(path: string): InterfaceProblem[] {
 		];
 	}
 	if (parts.length === 1) return [];
-	if (interfaceStatePath(path)) return [];
+	if (interfaceStatePath(written)) return [];
 	if (parts.length === 3 && parts[2] === "readme.md" && isInterfaceName(parts[1] ?? "")) {
 		return [];
 	}
@@ -423,12 +430,14 @@ class Reader {
 		return null;
 	}
 
-	/** Problems past the cap, counted for the closing "and K more problems". */
+	/** Problems past the cap, counted for the closing "and K more problems", with the first one's code. */
 	dropped = 0;
+	droppedCode: InterfaceProblemCode | null = null;
 
 	add(path: string | null, code: InterfaceProblemCode, message: string): void {
 		if (this.problems.length >= INTERFACE_MAX_PROBLEMS) {
 			this.dropped++;
+			this.droppedCode ??= code;
 			return;
 		}
 		this.problems.push(
@@ -617,12 +626,17 @@ function shown(text: string): string {
 }
 
 /** The list a refusal carries: at most 50 problems, then "and K more problems", like the state files. */
-function withMore(problems: readonly InterfaceProblem[], dropped = 0): InterfaceProblem[] {
+function withMore(
+	problems: readonly InterfaceProblem[],
+	dropped = 0,
+	droppedCode: InterfaceProblemCode | null = null,
+): InterfaceProblem[] {
 	const first = problems.slice(0, INTERFACE_MAX_PROBLEMS);
 	const more = problems.length - first.length + dropped;
-	const next = problems[INTERFACE_MAX_PROBLEMS] ?? problems[problems.length - 1];
-	if (more > 0 && next)
-		first.push(problem(null, null, next.code, `and ${more} more ${more === 1 ? "problem" : "problems"}`));
+	// The code of the first problem left out, as the state files report it.
+	const code = problems[INTERFACE_MAX_PROBLEMS]?.code ?? droppedCode;
+	if (more > 0 && code)
+		first.push(problem(null, null, code, `and ${more} more ${more === 1 ? "problem" : "problems"}`));
 	return first;
 }
 
@@ -645,7 +659,7 @@ function readToml(text: string, maxBytes: number): { bag: Bag; reader: Reader } 
 
 function done<T>(reader: Reader, file: T): InterfaceParseResult<T> {
 	if (reader.problems.length > 0)
-		return { ok: false, file: null, problems: withMore(reader.problems, reader.dropped) };
+		return { ok: false, file: null, problems: withMore(reader.problems, reader.dropped, reader.droppedCode) };
 	return { ok: true, file, problems: [] };
 }
 
@@ -833,7 +847,7 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 			const known = from === null ? null : interfaceSourceColumns(from);
 			for (const column of [...Object.keys(query.where ?? {}), query.order?.column, query.latestBy]) {
 				if (known && column && !known.includes(column))
-					reader.add("interface.badge", "unknown_column", `${from} has no column "${column}".`);
+					reader.add("interface.badge", "unknown_column", `${clip(from ?? "")} has no column "${clip(column)}".`);
 			}
 			badge = from === null ? null : { from, query };
 		}
@@ -935,7 +949,7 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 						reader.add(
 							path,
 							"unknown_column",
-							`${block.from[0]} has no column "${column}". It has: ${known.join(", ")}.`,
+							`${clip(block.from[0] ?? "")} has no column "${clip(column)}". It has: ${known.join(", ")}.`,
 						);
 				}
 			}
@@ -1063,6 +1077,7 @@ function blockColumns(block: InterfaceBlock): string[] {
 	for (const value of [block.value, block.target, block.figure, block.status, block.chips, block.trend?.over ?? null])
 		add(value);
 	for (const value of [block.chart?.x, block.chart?.y, block.chart?.by, block.chart?.target]) add(value ?? null);
+	addText(block.title);
 	addText(block.line);
 	addText(block.sub);
 	for (const column of block.columns) if (!block.lookups[column]) out.add(column);
@@ -1167,7 +1182,7 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 		columns = reader.list(bag, "columns", path, { max: 24, what: "a column name", item: (c) => COLUMN.test(c) });
 		for (const name of columns) {
 			if (RESERVED_BLOCK_KEYS.has(name)) continue;
-			const spec = bag[name];
+			const spec = Object.hasOwn(bag, name) ? bag[name] : undefined;
 			if (spec === undefined) continue;
 			if (!isBag(spec)) {
 				reader.add(
@@ -1218,7 +1233,13 @@ function readBlock(reader: Reader, bag: Bag, path: string): InterfaceBlock | nul
 			const cardText = (key: string): string | null => {
 				const value = card?.[key];
 				if (value === undefined) return null;
-				if (typeof value !== "string" || value.length > 120 || interfaceTemplateColumns(value) === null) {
+				if (
+					typeof value !== "string" ||
+					value.length > 120 ||
+					NOT_ONE_LINE.test(value) ||
+					BIDI.test(value) ||
+					interfaceTemplateColumns(value) === null
+				) {
 					reader.add(`${at}.card.${key}`, "bad_value", `card.${key} is a short text with {column} names.`);
 					return null;
 				}
@@ -1427,7 +1448,7 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 	if (key.length === 0) reader.add("table.key", "missing_key", "table.key names 1–3 columns that make a row unique.");
 	for (const k of key) {
 		const c = byName.get(k);
-		if (!c) reader.add("table.key", "unknown_column", `table.key names "${k}", which is not a column.`);
+		if (!c) reader.add("table.key", "unknown_column", `table.key names "${clip(k)}", which is not a column.`);
 		else if (c.optional) reader.add("table.key", "bad_value", `The key column "${k}" can't be optional.`);
 	}
 	const holder = reader.text(head, "holder", "table", { max: 40 });
@@ -1481,28 +1502,28 @@ export function parseInterfaceOrderFile(text: string): InterfaceParseResult<Inte
 	if (LONE_SURROGATE.test(text)) {
 		return { ok: false, file: null, problems: [problem(null, null, "encoding", "order.md must be UTF-8 text.")] };
 	}
+	// A leading byte order mark carries nothing, as in the state files.
+	const body = text.startsWith("\ufeff") ? text.slice(1) : text;
 	const problems: InterfaceProblem[] = [];
 	const ids: string[] = [];
 	const seen = new Set<string>();
-	text.split("\n").forEach((raw, i) => {
+	body.split("\n").forEach((raw, i) => {
 		const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
 		if (line.trim() === "") return;
 		const match = /^- ([^ ]+)(?: [^\u0000-\u001f]*)?$/.exec(line.length <= 400 ? line : "");
 		if (match?.[1] && !UUID.test(match[1])) match[1] = "";
 		if (!match?.[1]) {
-			if (problems.length < INTERFACE_MAX_PROBLEMS)
-				problems.push(problem(i + 1, null, "bad_value", 'Each line is "- <id>", optionally followed by a name.'));
+			problems.push(problem(i + 1, null, "bad_value", 'Each line is "- <id>", optionally followed by a name.'));
 			return;
 		}
 		if (seen.has(match[1])) {
-			if (problems.length < INTERFACE_MAX_PROBLEMS)
-				problems.push(problem(i + 1, null, "duplicate", "This interface is listed twice."));
+			problems.push(problem(i + 1, null, "duplicate", "This interface is listed twice."));
 			return;
 		}
 		seen.add(match[1]);
 		ids.push(match[1]);
 	});
-	if (problems.length > 0) return { ok: false, file: null, problems };
+	if (problems.length > 0) return { ok: false, file: null, problems: withMore(problems) };
 	return { ok: true, file: { kind: "interface-order", ids }, problems: [] };
 }
 
@@ -1716,9 +1737,7 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 	const rows: TableRow[] = [];
 	const problems: InterfaceProblem[] = [];
 	const keys = new Set<string>();
-	const note = (p: InterfaceProblem) => {
-		if (problems.length < INTERFACE_MAX_PROBLEMS) problems.push(p);
-	};
+	const note = (p: InterfaceProblem) => problems.push(p);
 	for (const record of records.slice(1)) {
 		if (record.fields.length === 1 && record.fields[0] === "") continue;
 		if (record.fields.length !== named.length) {
@@ -1748,7 +1767,7 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 		keys.add(key);
 		rows.push(row);
 	}
-	return { rows, problems, readable: true };
+	return { rows, problems: withMore(problems), readable: true };
 }
 
 function csvField(value: TableValue): string {
@@ -1804,11 +1823,11 @@ export function tableClaimProblems(
 	after: readonly TableRow[],
 	actor: InterfaceActor,
 	options: {
+		/** The table's folder name, always given: `areas` brings its member-only columns. */
+		readonly folder: string;
 		readonly offers?: readonly InterfaceOffer[];
-		/** The table's folder name; `areas` brings its member-only columns. */
-		readonly folder?: string;
 		readonly memberOnly?: readonly string[];
-	} = {},
+	},
 ): InterfaceProblem[] {
 	const memberOnly = options.memberOnly ?? (options.folder === "areas" ? AREA_MEMBER_ONLY_COLUMNS : []);
 	const claimed = table.columns.filter((c) => c.needsYes || (actor.kind === "agent" && memberOnly.includes(c.name)));
@@ -1871,22 +1890,32 @@ export function tableDefinitionProblems(
 	rows: readonly TableRow[],
 ): InterfaceProblem[] {
 	const problems: InterfaceProblem[] = [];
+	const held = (name: string) =>
+		rows.some((row) => Object.hasOwn(row, name) && row[name] !== null && row[name] !== undefined);
 	for (const column of before.columns.filter((c) => c.needsYes)) {
 		const kept = after.columns.find((c) => c.name === column.name);
-		if (kept?.needsYes) continue;
-		const held = rows.some(
-			(row) => Object.hasOwn(row, column.name) && row[column.name] !== null && row[column.name] !== undefined,
+		if (kept?.needsYes || !held(column.name)) continue;
+		problems.push(
+			problem(
+				null,
+				column.name,
+				"claim",
+				`${column.name} holds people's claims; it can stop needing a yes only once nobody holds anything in it.`,
+			),
 		);
-		if (held) {
-			problems.push(
-				problem(
-					null,
-					column.name,
-					"claim",
-					`${column.name} holds people's claims; it can stop needing a yes only once nobody holds anything in it.`,
-				),
-			);
-		}
+	}
+	// Turning needs_yes on over names already in the column would make them claims nobody agreed to.
+	for (const column of after.columns.filter((c) => c.needsYes)) {
+		const was = before.columns.find((c) => c.name === column.name);
+		if (was?.needsYes || !held(column.name)) continue;
+		problems.push(
+			problem(
+				null,
+				column.name,
+				"claim",
+				`${column.name} can start needing a yes only while it is empty in every row; clear it first.`,
+			),
+		);
 	}
 	return problems;
 }
