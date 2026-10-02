@@ -207,7 +207,8 @@ fn a_refused_view_is_never_mounted() {
 		View { environment_id: "env".into(), view_id: "view".into(), pass: "wrong".into() },
 		2,
 	);
-	let options = Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false };
+	let options =
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, reads: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
