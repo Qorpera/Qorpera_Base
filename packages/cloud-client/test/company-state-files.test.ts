@@ -667,23 +667,33 @@ describe("connections, rules, todos and worker files", () => {
 			"a-.example.com",
 			"a..example.com",
 			"a.example.com.",
-			`${"a".repeat(65)}.com`,
+			`${"a".repeat(64)}.com`,
 			"a_b.example.com",
 			"https://example.com",
 		])
 			expect(problems(`site: "${site}"\ntwo_step: none`)).toEqual([["site", "value"]]);
-		// The vault's rule, exactly: a label of up to 64 characters, a host of up to 253.
-		expect(ok("connections/p.md", block(`site: ${"a".repeat(64)}.com\ntwo_step: none`))).toBeTruthy();
+		// The vault's rule, exactly: labels of 1-63 characters, a host of up to 253.
+		expect(ok("connections/p.md", block(`site: ${"a".repeat(63)}.com\ntwo_step: none`))).toBeTruthy();
+		// A host YAML would read as a number is written in quotes, and reads back as the host.
+		for (const site of ["1.5", "1.5e10", "10.0"])
+			expect(ok("connections/p.md", writeConnectionFile({ ...file, site }))).toMatchObject({ site });
 		const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
 		expect(ok("connections/p.md", block(`site: ${longest}\ntwo_step: none`))).toMatchObject({ site: longest });
 		expect(problems(`site: ${longest}d\ntwo_step: none`)).toEqual([["site", "value"]]);
 		expect(problems("site: example.com\ntwo_step: phone")).toEqual([["two_step", "value"]]);
 		expect(problems("site: example.com\ntwo_step: none\nopened_for: todo-1")).toEqual([["opened_for", "value"]]);
+		// On any other service the three keys are unknown settings, each named once.
 		expect(problems("site: example.com\ntwo_step: none", "gmail")).toEqual([
-			["site", "value"],
-			["two_step", "value"],
+			["site", "unknown_key"],
+			["two_step", "unknown_key"],
 		]);
-		expect(problems(`opened_for: ${IDA}`, "gmail")).toEqual([["opened_for", "value"]]);
+		expect(problems(`opened_for: ${IDA}`, "gmail")).toEqual([["opened_for", "unknown_key"]]);
+		// A website account's states are four.
+		expect(
+			keys(
+				refused("connections/p.md", block("site: example.com\ntwo_step: none").replace("connected\n", "closed\n")),
+			),
+		).toEqual([["status", "value"]]);
 		expect(
 			keys(refused("connections/p.md", block("").replace("connected\n", "pending\n").replace("website", "gmail"))),
 		).toEqual([["status", "value"]]);

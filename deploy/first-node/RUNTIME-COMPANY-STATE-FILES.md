@@ -304,7 +304,7 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `actions` | yes | the catalog's operation ids every agent may use (may be empty) |
 | `connected_by` | yes | member id, or for a website account the agent that opened it |
 | `connected_at` | yes | UTC instant |
-| `site` | with `service: website`, and only then | the website's host as the vault keeps it: lowercase labels of letters, digits and inner hyphens, at least two, up to 253 characters (`qorpera_company_account_host_valid`) |
+| `site` | with `service: website`, and only then | the website's host as the vault keeps it: lowercase labels of 1–63 letters, digits and inner hyphens, at least two, up to 253 characters (`qorpera_company_account_host_valid`); a host YAML would read as a number is written in quotes |
 | `two_step` | with `service: website`, and only then | `none`, `authenticator`, `email` or `sms` |
 | `opened_for` | no; `service: website` only | the id of the todo an agent opened the account for; absent when a member handed the account over |
 | body | no | what the account is for, written by the company |
