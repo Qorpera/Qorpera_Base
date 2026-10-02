@@ -25,29 +25,32 @@ end $$;
 select pg_temp.h1_human_tasks_replace('public.qorpera_structured_path_kind(text)'::regprocedure,
 	$old$when p_key ~ '^rules/[^/]*\.md$' then 'rule'$old$,
 	$new$when p_key ~ '^rules/[^/]*\.md$' then 'rule'
+		-- 20260929999000 (H1): a human task and a contact.
 		when p_key ~ '^human-tasks/[^/]*\.md$' then 'human-task'
 		when p_key ~ '^contacts/[^/]*\.md$' then 'contact'$new$);
 
 -- 2. The folder places.
 select pg_temp.h1_human_tasks_replace('public.qorpera_structured_folder_names(text)'::regprocedure,
 	$old$when p_key = 'agents/groups' then array[]::text[]$old$,
-	$new$when p_key in ('contacts', 'human-tasks') then array[]::text[]
+	$new$-- 20260929999000 (H1): the two roots are places, and a task's folder is named.
+		when p_key in ('contacts', 'human-tasks') then array[]::text[]
 		when p_key ~ '^human-tasks/[^/]+(/proof)?$' then array['2:a human task''s folder']
 		when p_key = 'agents/groups' then array[]::text[]$new$);
 
 -- The file's own name, at position 2 as for rules and connections.
 select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_path_problems(text,boolean)'::regprocedure,
 	$old$elsif v_kind in ('rule','connection') then$old$,
-	$new$elsif v_kind in ('rule','connection','human-task','contact') then$new$);
+	$new$elsif v_kind in ('rule','connection','human-task','contact') then -- 20260929999000 (H1)$new$);
 
 -- 1. The parse of both kinds is checked by its shape.
 select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_checked(jsonb,text,text,jsonb)'::regprocedure,
 	$old$if v_kind in ('vision','agent','group','sections','connection','rule','todo','routine') then$old$,
-	$new$if v_kind in ('vision','agent','group','sections','connection','rule','todo','routine','human-task','contact') then$new$);
+	$new$-- 20260929999000 (H1): a human task's and a contact's parse are checked too.
+	if v_kind in ('vision','agent','group','sections','connection','rule','todo','routine','human-task','contact') then$new$);
 
 select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_parse_problems(text,jsonb)'::regprocedure,
 	$old$if cardinality(v_bad) = 0 and v_named is null then return '[]'::jsonb; end if;$old$,
-	$new$-- H1: a human task and a contact (§2), with the parser's limits and cross-key rules.
+	$new$-- 20260929999000 (H1): a human task and a contact (§2), with the parser's limits and cross-key rules.
 	if p_kind = 'human-task' then
 		if (select array_agg(k order by k) from jsonb_object_keys(p_parse) k) is distinct from
 			array['connection','contact','due','files','from','id','instructions','kind','member','minutes','proof','reason','secret',
@@ -149,7 +152,7 @@ select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_parse_proble
 select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_carried(uuid,text,text,text,public.qorpera_folder_entries)'::regprocedure,
 	$old$-- A folder: nothing below a root outside agents/, vision/, connections/ and rules/ can be structured, on either side.$old$,
 	$new$-- A folder: nothing below a root outside agents/, vision/, connections/, rules/, human-tasks/ and contacts/ can be
-	-- structured, on either side.$new$);
+	-- structured, on either side (20260929999000, H1).$new$);
 select pg_temp.h1_human_tasks_replace('public.qorpera_company_state_carried(uuid,text,text,text,public.qorpera_folder_entries)'::regprocedure,
 	$old$if p_from_key !~ '^(agents|vision|connections|rules)(/|$)' and v_to_key !~ '^(agents|vision|connections|rules)(/|$)' then$old$,
 	$new$if p_from_key !~ '^(agents|vision|connections|rules|human-tasks|contacts)(/|$)'
@@ -163,6 +166,7 @@ select pg_temp.h1_human_tasks_replace('public.qorpera_folder_structured_decide(u
 	return jsonb_build_object('ok', true);
 end$old$,
 	$new$		elsif v_checked ->> 'kind' = 'human-task' then
+			-- 20260929999000 (H1): only the platform marks a secret saved.
 			if v_checked -> 'parse' ->> 'secretState' = 'saved' and p_actor ->> 'kind' is distinct from 'platform'
 				and not exists (select 1 from public.qorpera_folder_entries e
 					join public.qorpera_folder_path_versions v on v.version = e.version

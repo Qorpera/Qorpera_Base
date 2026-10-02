@@ -1422,7 +1422,8 @@ while building:
 **Built (H1b): the database** (migration 20260929999000, SQL test 785), as planned, with these choices made while
 building:
 - The seven functions are patched by exact anchors, each of which must match once or the migration stops, so a
-  definition changed since is caught rather than overwritten.
+  definition changed since is caught rather than overwritten. Each patch carries the marker `20260929999000` in a
+  comment inside the function body, which the deploy guard reads.
 - A parse that breaks a rule is refused as for the indexed kinds: one problem naming the rules it breaks ("the
   platform read this file differently from its rules (files)"). `files` entries are held to the core's path rule
   (`qorpera_company_path_valid`) and to one line. On 371,581 generated paths the rule agrees with
