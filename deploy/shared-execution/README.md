@@ -219,7 +219,12 @@ last week, parked warm hosts included. The fresh-VM path stays on every node as 
    - `runner-orchestrator.env` for a **new** orchestrator id, with a
      `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=` line for the script to fill. Never copy node 2's
      id: registering it here would take over node 2's orchestrator;
-   - the credentials, as for node 2.
+   - the credentials, as for node 2;
+   - every node 1 service URL on node 1's `:10000` front: `QORPERA_CLOUD_SECRET_BROKER_URL` (the example's
+     `:10443` is stale, `RUNTIME-LOGIN-VAULT.md`), `QORPERA_NATIVE_OBJECT_GATEWAY_URL` and the computer
+     URL. The guest guard on `qorpera0` (#684, observe mode first) lets a guest reach node 1 only on
+     its listed ports (443, 8443, 8444, 10000, 18443, 18444, 18543, 18544), DNS and the coding gateway
+     `10.41.0.1:8789`, plus the public internet (the model relay, Supabase).
 
    Node 1's LXD provider must **not** set `QORPERA_LXD_EXECUTION_HOST_INSTANCE`/`_PROJECT`. With
    logins in the vault no identity volume is attached to the host, and an attached one would
