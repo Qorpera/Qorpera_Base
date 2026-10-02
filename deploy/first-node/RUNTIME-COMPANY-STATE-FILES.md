@@ -621,7 +621,9 @@ A list key is either left out or holds at least one item (`proof: []` is refused
 - **The task's folder:** `human-tasks/<name>/proof/` holds the person's files (H2 names them as
   they arrive) and `human-tasks/<name>/note.md` the person's own note. Both are ordinary files.
   The folder's name is the task file's name.
-- **What H1 does not decide (H2):**
+- **What H1 does not decide (H2):** decided in §8 "Plan (H2)". Where the two differ, the plan wins: its
+  §1 and §4 replace the person's change "by the platform", the folder carried along with its file, and
+  "only the platform writes under `human-tasks/<name>/`" below.
   - who may set which status: the agent `open`, `accepted`, `returned` and `cancelled`; the
     person `done` and `declined`. A person's own change is a tick, or `done` or `declined` with
     its proof, note and `reason`, saved in one change set by the platform as the person's change,
@@ -1466,8 +1468,9 @@ What the core gives H2, and what it does not (inventory of 2 October):
 - A contact's task: the person has no account. Only the task link service (H5) makes the person's
   change, as the platform, through the writers' shared helper (H2a). SQL cannot tell the link service
   from another platform writer, so this is H5's rule.
-- On a member's task the platform may only set `secret_state: saved` (H1b's mark, for the vault writer).
-  On a contact's task it may also make the person's change. Nothing else.
+- On a member's task file the platform may only set `secret_state: saved` (H1b's mark, for the vault
+  writer); on a contact's task file it may also make the person's change. It never creates a task: an
+  agent's run writes it (A1's takeover tasks too). Its folder rights are §4's.
 - The person's change may only (Q1):
   - tick or untick boxes: the body is the same with every box mark (`- [ ]`, `- [x]`, `- [X]`) read
     as one, and `steps` keeps its order and texts (compared by position and text; the line numbers move
@@ -1477,10 +1480,11 @@ What the core gives H2, and what it does not (inventory of 2 October):
   Every other key stays as it was. The person's change is plain (not reviewed), and its references are
   not checked again (§3).
 - Proof: the writers name each file `human-tasks/<t>/proof/<kind>-<n>.<ext>` (`photo-1.jpg`,
-  `signature-1.png`, `file-1.pdf`) and the note `human-tasks/<t>/note.md`. `done` needs every kind
-  `proof` lists (Q1): at least one file `proof/<kind>-*` per listed `photo`, `file` or `signature`, and
-  a `note.md` that is not empty when it lists `note`. After `returned` the old proof still counts; the
-  agent judges it.
+  `signature-1.png`, `file-1.pdf`), directly in `proof/`, and the note `human-tasks/<t>/note.md`.
+  `done` needs every kind `proof` lists (Q1): at least one file directly in `proof/` whose key starts
+  with `<kind>-`, per listed `photo`, `file` or `signature`, and a `note.md` of more than 0 bytes when it
+  lists `note` (SQL never reads the bytes). After `returned` the old proof still counts; the agent
+  judges it.
 - Q1's "the platform saves the proof and the status in one step" becomes two units, proof first, then
   the status: the second sees the first.
 
@@ -1494,8 +1498,9 @@ What the core gives H2, and what it does not (inventory of 2 October):
   may be deleted (§4).
 - `done` and `declined` are the person's only.
 - Changing `member` or `contact` hands an open or returned task to someone else; `due` may move to a
-  later time; `from` may change only by a member, and only to an active agent (the asking agent was
-  archived: a member hands the task to another agent).
+  later time. `from` may change only while the asking agent is no longer active, only to an active
+  agent, and only by a member or the Co-Founder (Q1: "escalate to the Co-Founder"); `todo` is then
+  cleared or names an open todo of the new `from`.
 
 **3. Ids and references**, checked when a save sets or changes them, as todos check `requested_by`;
 never on the person's change, so nothing the person does not control can refuse their work:
@@ -1503,18 +1508,24 @@ never on the person's change, so nothing the person does not control can refuse 
 - `from` is an active agent of the company. An agent's run creating a task writes its own id.
 - `member` as in §1. `contact` is a contact file of this environment with an `email`.
 - `connection` is a connection file of this environment.
-- `todo` is an open or blocked todo of the `from` agent, so a task never wakes another agent's todo.
+- `todo` is an open or blocked todo of the `from` agent, checked whenever either key changes, so a task
+  never wakes another agent's todo.
 - A contact named by a task that is not final stays: its file is not deleted or moved out of
   `contacts/`, and its `email` is not removed. To erase such a contact, cancel its tasks first.
 - A file saved before H2 (or a version with no parse) is trusted for its shape only: its base counts
-  only when the index points at its path, as for todos.
+  only when the index points at its path, as for todos. Until it is saved again, such a task has no
+  status for §4: it counts as no task.
+- A restore (a task file written again after its delete) compares with the task's last file, as todos
+  do, so a restored final task stays final and is never read as a new task.
 
 **4. The task's folder and its file.** File and folder are siblings, so they need two units, and two
 units cannot land together. The rules keep a folder from ever outliving its task:
-- Nothing lands under `human-tasks/<t>/` (a write, mkdir, new folder, or a move's or copy's target,
-  each carried descendant included) while `human-tasks/<t>.md` is absent. The platform is held to it too.
+- Nothing lands at `human-tasks/<t>` or under it (a write, mkdir, new folder with its contents, or a
+  move's or copy's target, each carried descendant included) while `human-tasks/<t>.md` is absent. The
+  platform is held to it too.
 - A new task file, or a task file moved to a new name, is refused while a folder of that name exists.
-- A task file whose folder exists is not moved: a task with proof keeps its name (Q1 agreed).
+- A task file whose folder exists is neither moved nor deleted: a task with proof keeps its name (Q1
+  agreed), and its folder goes first.
 - Directly under `human-tasks/` there are only task files (`*.md`) and task folders; another plain file
   there would block a task's folder.
 - Under `human-tasks/<t>/`, by the task's status:
@@ -1534,18 +1545,23 @@ apply; a move repoints, a delete retires, a restore revives; `verify` checks eac
   commit's requester; a member's own id for their own commit), who pays for the wakes (H2c).
 - `qorpera_folder_contact_index`: path, version, commit, retired_at, and whether the file has an
   `email`.
-Both hold only what the files say, so a rebuild (§4) makes them again. The wake markers are runtime
-state and live elsewhere (H2c).
+Both hold what the files say, so a rebuild (§4) makes them again, except `started_by_user_id`, which comes
+from the creating commit, as a routine's `origin` does: a rebuild keeps it. The path index is not unique,
+as the connection index's, so `apply`'s update never needs more than its rank-5 lock. The wake markers are
+runtime state and live elsewhere (H2c).
 
 **6. Locks** (per row, rank 5, in the company's own rows; no company-wide lock).
 `qorpera_folder_structured_lock` learns the two tables, after its current ones:
-- a task save: the task's index row, FOR NO KEY UPDATE;
-- any unit under `human-tasks/<t>/`: that task's row, FOR SHARE, so proof and status changes serialize;
-- a task save that sets or changes `contact`: the contact's row, FOR SHARE; a contact save or delete:
-  its own row, FOR NO KEY UPDATE;
-- the todo and the agent are read without a lock: a todo closed at the same moment leaves a task whose
-  todo is no longer open, which the wakes (H2c) report; an agent archived at the same moment is §2's
-  hand-off case.
+- every unit whose `apply` writes a task's or a contact's index row (a save, move, delete or restore of
+  the file): that row, FOR NO KEY UPDATE;
+- any unit at or under `human-tasks/<t>`: that task's row, FOR SHARE, so proof, folder and status
+  changes serialize, and two removals of one task never deadlock;
+- a task save that sets or changes `contact`: the contact's row, FOR SHARE.
+`targets` finds a row with an unlocked read and names it `required: false` (a new or pre-H2 task has
+none); `decide` refuses the unit as a conflict when the row at `<t>.md` is not the one `targets` named.
+Read without a lock, and accepted: a todo closed, an agent archived, a member made a viewer or a
+connection removed at the same moment as a save that names them. Each leaves a task naming something no
+longer current, which the wakes (H2c) report or §2's hand-off repairs.
 
 **7. Seeding.** `human-tasks/` and `contacts/` join `companyStateSeedTree` and the seeded folders that
 are never deleted or moved (`COMPANY_STATE_SEEDED_PATHS`, `qorpera_company_state_seeded`), with the seeded
@@ -1559,15 +1575,28 @@ the reviewed send, and a newer version needs a new reviewed send. A contact's pr
 content (11.1), which H5 marks.
 
 **9. Wakes (H2c, with C4's listener).** The commit never inserts a wake, so the person's save can never be
-refused or rolled back by a wake. C4's folder listener (core §6) reads landed commits and queues:
-- one wake of `from` for each status change, reassignment or deletion of a task that is not final made
-  by anyone but `from` (done and declined above all; Q1: "when the status changes");
-- one overdue wake when `due` passes while `open` or `returned`, once per (task, `due`); a return or a
-  new `due` re-arms it.
-The payer is `started_by_user_id` (S2: the member who started the work pays). When `from` is not
-active, the wake goes to the Co-Founder (Q1: "escalate to the Co-Founder"). The markers (which commit or
-due was woken) live in a runtime table of H2c. One company per transaction, in the core's lock order,
-skipping what cannot be woken instead of failing.
+refused or rolled back by a wake. The coordinator agreed (2 October): H2c is F2's, a stacked draft
+against C4's listener interface, which the H2 PR body proposes:
+- C4's folder listener (core §6) reads landed commits and queues one wake of `from` for each status
+  change or reassignment made by anyone but `from` (done and declined above all; Q1: "when the status
+  changes"), and one wake of the new `from` on a hand-off;
+- a timed scan, one company per transaction, over a partial index of open and returned tasks by `due`,
+  queues one overdue wake per (task, `due`); a return or a new `due` re-arms it. Time passing is not a
+  commit, so the listener alone never sees it;
+- the pin trigger and `qorpera_folder_wake_authorized` accept an `agent` wake with source kind
+  `human-task` and no parent run;
+- the payer is `started_by_user_id` (S2: the member who started the work pays); when that member has
+  left, the requester is the task's person on a member's task, or an owner, and the payer follows
+  `qorpera_starter_sponsor`. When `from` is not active, the Co-Founder is woken, and may hand the task
+  to another agent (§2);
+- the markers (which commit or `due` was woken) live in a runtime table of H2c; a wake that cannot be
+  made is skipped and tried again on the next scan, never failing the scan.
+
+**What H2b without H2c means.** Q1's H2 row is met except the wakes, which wait for C4. Until then no
+member can write a task (no member writer before C4, no link service before H5), so no `done` or
+`declined` can happen, and nobody misses its wake. Tasks agents create can pass their `due` with no
+overdue wake. H3 must not go live before H2c, or a `done` would wake nobody. Q1's step table shows H2c
+waiting for C4.
 
 **Three PRs, stacked on H1b:**
 - **H2a, TS:** the seed tree and seeded paths (with the TS comparison list), the skill text, the proof
@@ -1575,16 +1604,19 @@ skipping what cannot be woken instead of failing.
 - **H2b, SQL:** the two index tables, apply and verify, the rules of §1–§4, the lock targets of §6
   (with `qorpera_folder_structured_lock`), and the seeded list, in one migration; one SQL test; 785 §7
   and 700 §7 updated.
-- **H2c, wakes:** after C4's listener exists; its shape is F1's.
+- **H2c, wakes:** after C4's listener exists, against its interface (§9).
+H2a and H2b do not depend on each other (`companyStateSeedTree` is used only by tests today), so their
+order is free.
 
 **Questions before building:**
-- F1: H2c as a C4 listener rule (§9), including the pin trigger and `qorpera_folder_wake_authorized` for
-  an `agent` wake with no parent run, and its payer.
-- Jonas: protecting `human-tasks/` and `contacts/` as seeded folders (§7, a contract 5.6 change).
+- F1 (the coordinator decides while F1 is idle): H2c's interface (§9), proposed in the H2 PR body.
+- Jonas (asked by the coordinator): protecting `human-tasks/` and `contacts/` as seeded folders (§7, a
+  contract 5.6 change).
 - Q1: the person never acting as the company on their own task (§1); `due` in the future when set (§2);
-  deleting only final tasks (§2, §4).
+  deleting only final tasks (§2, §4); H2c waiting for C4 in the step table.
 - A1: references are no longer re-checked on the person's change, so a disconnected account never
-  blocks a takeover task's `done` (§3).
+  blocks a takeover task's `done` (§3); the platform never creates a task, so a takeover task is written
+  by the agent's own run (§1).
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
