@@ -38,6 +38,24 @@ refer to.
 > writing side (C1–C3) and the reset. This holds in section 19, the
 > checkpoint, section 20 and launch acceptance.
 
+## Decided on 2 October 2026 (light threads)
+
+The contract's "2026-10-02 amendment: light threads" governs where this design still has a run box. That covers
+the end of [How a machine reaches the folder](#how-a-machine-reaches-the-folder-founder-decision-1),
+[Which view each machine gets](#which-view-each-machine-gets-founder-decision-2), section 4 and the run box steps of
+section 9. In short:
+- **A chat turn has no shell or run box.** In a turn, agents list, read and search the folder server-side with the
+  run's own view. Search runs on the node's folder service: the run opens its view through G2, and the execution host
+  carries the native host's connection to the node through a relay (F3, #687, #690, #656).
+- **Commands run on machines.** These are the company machine, coding machines and agents' own machines; each shows
+  the folder through its folder program.
+- **Folders shared with only some agents.** The agent's own machine mounts with the view of the run working in it.
+  The company machine stays company-wide.
+- **Folder work runs offline.** Folder-work commands run without network, so they need no review. A command that
+  needs the network passes the company's review rules. Coding sessions keep their open network.
+- **Reads on a company machine go to the run.** A computer's shell has a mount of its own, with a read log, so each
+  command's reads go to its run's read set.
+
 ## Decided on 28 September 2026
 
 Words: a *computer* is one agent's screen with its terminal and browser; a
