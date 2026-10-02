@@ -1,7 +1,7 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-2a (20260929999600): when a job ends, its presence device is deleted as the ending commits (a deferred constraint
--- trigger), and the office supervisor's next poll releases its screen leases at once, as it releases an abandoned
--- lease. Only the ended job's own binding is touched. The office setup is 405's: a real office and screen lease for
+-- G2-2a (20260929999600): when a job leaves 'leased' (it ends, or goes back to the queue), its presence device is deleted
+-- as that transaction commits (a deferred constraint trigger), and the office supervisor's next poll releases its
+-- screen leases at once, as it releases an abandoned lease. Only the ended job's own binding is touched. The office setup is 405's: a real office and screen lease for
 -- test 300's run; only guest readiness is synthetic.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
@@ -73,7 +73,16 @@ set constraints qorpera_native_presence_end immediate;
 select pg_temp.wake_assert(pg_temp.devices()=1,'another job''s device stays');
 rollback to savepoint other_job;
 
--- 4. The job ends (a revoked runner): its device stays until the ending commits, then it is gone.
+-- 4. A job that goes back to the queue for another attempt leaves 'leased' too: its device goes at commit, so the
+--    next attempt can register its own.
+savepoint requeued;
+update public.qorpera_runner_jobs set status='queued', lease_token_sha256=null, lease_expires_at=null
+where id=(current_setting('qorpera_test.wake_binding')::jsonb->>'jobId')::uuid;
+set constraints qorpera_native_presence_end immediate;
+select pg_temp.wake_assert(pg_temp.devices()=0,'a requeued job''s presence device is deleted');
+rollback to savepoint requeued;
+
+-- 5. The job ends (a revoked runner): its device stays until the ending commits, then it is gone.
 select pg_temp.end_job();
 select pg_temp.wake_assert(pg_temp.devices()=1,'the device waits for the ending''s commit');
 set constraints qorpera_native_presence_end immediate;
@@ -81,7 +90,7 @@ select pg_temp.wake_assert(pg_temp.devices()=0,'the ended job''s presence device
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_native_provider_connection_leases
 	where job_id=(current_setting('qorpera_test.wake_binding')::jsonb->>'jobId')::uuid and status='active'),'the connection lease ends as before');
 
--- 5. The ending itself leaves the screen as it was; the supervisor's next poll releases the live lease of the ended
+-- 6. The ending itself leaves the screen as it was; the supervisor's next poll releases the live lease of the ended
 --    job at once, as an abandoned lease: cleared under a new epoch, free again.
 select pg_temp.wake_assert((select lease_id is not null and lease_expires_at>clock_timestamp() from pg_temp.screen()),
 	'the ending takes no screen');
@@ -91,7 +100,7 @@ select pg_temp.wake_assert((select lease_id is null and run_id is null and lease
 	'the supervisor releases the ended job''s screen under a new epoch');
 select pg_temp.wake_assert(current_setting('qorpera_test.reaped')::jsonb->'drains'='[]'::jsonb,'no unresolved work, no drain');
 
--- 6. A live lease that names no job (or a malformed one) is not released early.
+-- 7. A live lease that names no job (or a malformed one) is not released early.
 savepoint no_job;
 set local session_replication_role = replica;
 update public.qorpera_runtime_office_screens set lease_id=extensions.gen_random_uuid(),run_id=extensions.gen_random_uuid(),
@@ -102,7 +111,7 @@ select pg_temp.supervisor();
 select pg_temp.wake_assert((select lease_id is not null from pg_temp.screen()),'a lease without a job id is left to its expiry');
 rollback to savepoint no_job;
 
--- 7. Both bodies carry the marker (the release's deploy guards read it).
+-- 8. Both bodies carry the marker (the release's deploy guards read it).
 select pg_temp.wake_assert(count(*)=2,'both functions are this version')
 from pg_proc where oid in ('public.qorpera_native_presence_end()'::regprocedure,
 	'public.qorpera_runtime_office_supervisor_status(jsonb,bigint)'::regprocedure) and prosrc like '%20260929999600%';
