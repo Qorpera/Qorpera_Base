@@ -300,7 +300,9 @@ describe("agent event tools", () => {
 				from: "Stripe",
 				subject: "Confirm",
 				since: "2026-10-02T09:00:00+02:00",
+				waitSeconds: 60,
 			});
+			// A match answers at once, whatever time is left to wait.
 			expect(found.success, JSON.stringify(found)).toBe(true);
 			expect(f.call.mock.calls.map((call) => call.slice(0, 2))).toEqual([
 				[
@@ -355,12 +357,14 @@ describe("agent event tools", () => {
 		}
 	});
 
-	it("stops waiting when the run ends", async () => {
+	it("stops waiting as soon as the run ends", async () => {
 		const f = await fixture(search([]));
 		const waiting = f.boundary.invoke("w4", "qorpera", "find_mail", { waitSeconds: 120 });
 		await new Promise((resolve) => setTimeout(resolve, 50));
+		const closed = Date.now();
 		f.run.close();
 		const ended = await waiting;
+		expect(Date.now() - closed).toBeLessThan(1000);
 		expect(ended.success).toBe(false);
 		expect(f.call).toHaveBeenCalledOnce();
 	});
@@ -387,16 +391,20 @@ describe("agent event tools", () => {
 		} finally {
 			f.run.close();
 		}
-		const other = await fixture(() => ({
-			schema: "qorpera.agent-mail-search/v1",
-			runId: "73100000-0000-4000-8000-0000000000ff",
-			mails: [],
-			more: false,
-		}));
-		try {
-			expect((await other.boundary.invoke("s11", "qorpera", "find_mail", {})).success).toBe(false);
-		} finally {
-			other.run.close();
+		for (const [callId, answer] of [
+			["s11", { runId: "73100000-0000-4000-8000-0000000000ff" }],
+			["s12", { schema: "qorpera.agent-mail/v1" }],
+			["s13", { mails: Array.from({ length: 11 }, () => mail) }],
+			["s14", { more: "no" }],
+		] as const) {
+			const other = await fixture((_method, _args, runId) =>
+				Object.assign({ schema: "qorpera.agent-mail-search/v1", runId, mails: [], more: false }, answer),
+			);
+			try {
+				expect((await other.boundary.invoke(callId, "qorpera", "find_mail", {})).success, callId).toBe(false);
+			} finally {
+				other.run.close();
+			}
 		}
 	});
 });
