@@ -11,7 +11,11 @@ import {
 	type CloudCompanyFolderRelease,
 } from "../src/cloud-company-folder-client.ts";
 import { CloudFolderSearch, cloudFolderSearchTool, folderSearchText } from "../src/cloud-folder-search-tool.ts";
-import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
+import {
+	CloudToolArgumentRefusal,
+	type CloudToolContext,
+	CloudToolRefusal,
+} from "../src/cloud-native-tool-boundary.ts";
 import { fitsOneResult } from "../src/cloud-worker-tools.ts";
 
 const RUN = "81100000-0000-4000-8000-000000000001";
@@ -116,14 +120,21 @@ function context(callId = "call-1"): CloudToolContext {
 	};
 }
 
-const hit = (path: string, line: number, text: string, offset = 0) => ({ path, line, text, version: VERSION, offset });
+const hit = (path: string, line: number, text: string, offset = 0, kind: "file" | "folder" = "file") => ({
+	path,
+	kind,
+	line,
+	text,
+	version: VERSION,
+	offset,
+});
 const read = (path: string, authority: unknown = RECEIPT) => ({ path, kind: "file", version: VERSION, authority });
 
 describe("company_search", () => {
 	it("searches the run's own view on the node, releases what the page drew on, cites it, and keeps the connection", async () => {
 		const n = await node(() =>
 			found({
-				hits: [hit("docs/plan.md", 3, "the plan"), hit("plans", 0, "plans")],
+				hits: [hit("docs/plan.md", 3, "the plan"), hit("plans", 0, "", 0, "folder")],
 				searched: 2,
 				binary: 1,
 				reads: [read("docs/plan.md"), { path: "docs", kind: "folder", version: VERSION }],
@@ -142,7 +153,7 @@ describe("company_search", () => {
 		});
 		const content = await search.execute(args, context());
 		expect(content.value).toBe(
-			"docs/plan.md:3: the plan\nplans\n\n2 files searched, 1 binary passed over. Nothing more.",
+			"docs/plan.md:3: the plan\nplans/\n\n2 files searched, 1 binary passed over. Nothing more.",
 		);
 		expect(n.hellos).toEqual([{ protocol: 1, environmentId: ENV, viewId: VIEW, pass: PASS, role: "io" }]);
 		expect(n.searches[0]).toEqual({
@@ -189,7 +200,7 @@ describe("company_search", () => {
 		expect(quiet.releases).toEqual([]);
 	});
 
-	it("gives a cursor to go on with, and passes it back as the node gave it", async () => {
+	it("gives an opaque cursor to go on with, and passes back where the node said, never a path the model sent", async () => {
 		const next = { path: "docs/big.md", version: VERSION, offset: 4096, line: 80 };
 		const n = await node((search) =>
 			search.after === null ? found({ hits: [hit("a.md", 1, "x")], next }) : found({}),
@@ -197,28 +208,55 @@ describe("company_search", () => {
 		const search = tool(n.path, folder().client);
 		const first = (await search.execute(search.parseArguments({ query: "x" }), context())).value as string;
 		const cursor = /call again with cursor (\S+)$/.exec(first)?.[1] ?? "";
-		expect(cursor).not.toBe("");
+		expect(cursor).toMatch(/^[A-Za-z0-9_-]{16}$/);
+		expect(first).not.toContain("big.md");
 		await search.execute(search.parseArguments({ query: "x", cursor }), context("call-2"));
 		expect(n.searches[1]!.after).toEqual(next);
-		expect(() => search.parseArguments({ query: "x", cursor: "not-a-cursor" })).toThrow("cursor");
+		expect(() => search.parseArguments({ query: "x", cursor: "not-a-cursor" })).toThrow(CloudToolArgumentRefusal);
+		// A token this run never gave (another run's, or made up) reaches nothing.
+		await expect(
+			search.execute(search.parseArguments({ query: "x", cursor: "A".repeat(16) }), context("call-3")),
+		).rejects.toThrow(/^CURSOR_UNKNOWN/);
+		expect(n.searches).toHaveLength(2);
 	});
 
 	it("fits a page to one tool result, and goes on from the first hit it left out", () => {
 		const hits = Array.from({ length: 40 }, (_, i) =>
 			hit("page.html", i + 1, `<td>&amp;${"<>".repeat(80)}</td>`, i * 300),
 		);
-		const text = folderSearchText({ hits, searched: 1, binary: 0, reads: [], next: null });
+		const sealed: unknown[] = [];
+		const seal = (cursor: unknown): string => {
+			sealed.push(cursor);
+			return `token${sealed.length}`;
+		};
+		const text = folderSearchText({ hits, searched: 1, binary: 0, reads: [], next: null }, seal);
 		expect(fitsOneResult(text)).toBe(true);
 		const shown = text.split("\n").filter((line) => line.startsWith("page.html:")).length;
 		expect(shown).toBeGreaterThan(0);
 		expect(shown).toBeLessThan(40);
-		const cursor = /cursor (\S+)$/.exec(text)![1]!;
-		expect(JSON.parse(Buffer.from(cursor, "base64url").toString())).toEqual({
+		const token = /cursor (\S+)$/.exec(text)![1]!;
+		expect(sealed[Number(token.slice(5)) - 1]).toEqual({
 			path: "page.html",
 			version: VERSION,
 			offset: shown * 300,
 			line: shown,
 		});
+		// A page cut short counts nothing: the next page searches those files again.
+		expect(text).toContain("Part of a page");
+		// One hit too long for a result is still shown, cut, and the search goes on after it.
+		const long = folderSearchText(
+			{
+				hits: [hit(`${"<".repeat(900)}.md`, 1, "&".repeat(1000)), hit("next.md", 1, "x")],
+				searched: 2,
+				binary: 0,
+				reads: [],
+				next: null,
+			},
+			seal,
+		);
+		expect(fitsOneResult(long)).toBe(true);
+		expect(long.startsWith("<<<<")).toBe(true);
+		expect(sealed.at(-1)).toMatchObject({ path: "next.md" });
 	});
 
 	it("opens the view again once when the node closed it, and says when the folder cannot be searched", async () => {
@@ -272,7 +310,25 @@ describe("company_search", () => {
 		expect(n.hellos).toHaveLength(1);
 	});
 
-	it("checks its arguments closely", () => {
+	it("sends nothing for a call already cancelled, and nothing once the run's search is closed", async () => {
+		const n = await node(() => found({}));
+		const f = folder();
+		const search = new CloudFolderSearch({ socketPath: n.path, folder: f.client, environmentId: ENV });
+		const t = cloudFolderSearchTool({ search, folder: f.client, runId: RUN });
+		await t.execute(t.parseArguments({ query: "x" }), context());
+		const cancelled = new AbortController();
+		cancelled.abort();
+		await expect(
+			t.execute(t.parseArguments({ query: "y" }), { ...context("call-2"), signal: cancelled.signal }),
+		).rejects.toBeInstanceOf(CloudToolRefusal);
+		search.close();
+		await expect(t.execute(t.parseArguments({ query: "z" }), context("call-3"))).rejects.toThrow(
+			/^COMPANY_FOLDER_UNAVAILABLE/,
+		);
+		expect(n.searches.map((s) => s.query)).toEqual(["x"]);
+	});
+
+	it("checks its arguments closely, and says why", () => {
 		const search = tool("/x", folder().client);
 		for (const bad of [
 			{},
@@ -281,10 +337,12 @@ describe("company_search", () => {
 			{ query: "x".repeat(257) },
 			{ query: "x", extra: 1 },
 			{ query: "x", path: "../up" },
+			{ query: "x", path: "docs/" },
+			{ query: "x", path: "/" },
 			{ query: "x", names_only: "yes" },
 			{ query: "x", glob: "" },
 		])
-			expect(() => search.parseArguments(bad as JsonValue)).toThrow();
+			expect(() => search.parseArguments(bad as JsonValue)).toThrow(CloudToolArgumentRefusal);
 		expect(search.parseArguments({ query: "x", path: "docs", names_only: true, case_sensitive: true })).toMatchObject(
 			{
 				path: "docs",

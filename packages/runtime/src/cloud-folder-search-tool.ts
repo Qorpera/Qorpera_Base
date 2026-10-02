@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { isUuid, type JsonValue } from "@qorpera/contracts";
@@ -9,7 +9,12 @@ import {
 	type CloudCompanyFolderRelease,
 	type CloudCompanyFolderRunView,
 } from "./cloud-company-folder-client.ts";
-import { type CloudNativeTool, type CloudToolContent, CloudToolRefusal } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudNativeTool,
+	CloudToolArgumentRefusal,
+	type CloudToolContent,
+	CloudToolRefusal,
+} from "./cloud-native-tool-boundary.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /**
@@ -29,9 +34,13 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
 const PROTOCOL = 1;
 const KIND = { hello: 0x48, helloOk: 0x68, search: 0x53, found: 0x73, error: 0x65 } as const;
 const MAX_PAYLOAD = 2 * 1024 * 1024;
-/** How long the node may take to answer a hello (it lists the view the first time) and a page (about 2 s of work). */
-const HELLO_MS = 120_000;
+/** How long the node may take to answer a hello (it lists the whole view the first time, which a large folder takes a
+ * while for, and throws away if the caller leaves) and a page (about 2 s of work). The call's own signal ends either
+ * sooner. */
+const HELLO_MS = 600_000;
 const PAGE_MS = 60_000;
+/** Codes the node answers one request with, leaving the connection usable. */
+const REQUEST_ERRORS = ["NOT_FOUND", "BAD_REQUEST", "UNAVAILABLE", "DENIED"];
 /** What the core records in one release; more reads go in several, all with the answer's hash. */
 const MAX_RELEASED = 10_000;
 /** A read whose receipt the node did not have: the core checks such a path again at release. */
@@ -53,6 +62,7 @@ interface SearchCursor {
 
 interface SearchHit {
 	readonly path: string;
+	readonly kind: "file" | "folder";
 	readonly line: number;
 	readonly text: string;
 	readonly version: string;
@@ -168,7 +178,7 @@ class FolderLink {
 	next(ms: number, signal: AbortSignal): Promise<Frame | undefined> {
 		const frame = this.#frames.shift();
 		if (frame) return Promise.resolve(frame);
-		if (this.#closed) return Promise.resolve(undefined);
+		if (this.#closed || signal.aborted) return Promise.resolve(undefined);
 		return new Promise((resolve) => {
 			const timer = setTimeout(() => finish(undefined), ms);
 			const abort = (): void => finish(undefined);
@@ -204,8 +214,12 @@ export class CloudFolderSearch {
 	readonly #environmentId: string;
 	#view: CloudCompanyFolderRunView | undefined;
 	#link: FolderLink | undefined;
+	#closed = false;
 	/** Pages go one at a time: the node answers a connection's requests in turn, and one view serves the run. */
 	#turn: Promise<unknown> = Promise.resolve();
+	/** Where each page said to go on, kept here: the model holds only an opaque token, so it never reads (or forges) a
+	 * path the page did not show. Kept for the run. */
+	readonly #cursors = new Map<string, SearchCursor>();
 
 	constructor(options: { socketPath: string; folder: CloudCompanyFolderClient; environmentId: string }) {
 		this.#socketPath = options.socketPath;
@@ -230,8 +244,8 @@ export class CloudFolderSearch {
 				const answer = await link.next(PAGE_MS, signal);
 				if (answer?.kind === KIND.found) return parsePage(answer.body);
 				const error = answerError(answer);
-				// A request error leaves the connection usable; anything else ends it.
-				if (!answer || !["NOT_FOUND", "BAD_REQUEST", "UNAVAILABLE", "DENIED"].includes(error.code)) link.close();
+				// Only the node's own answer to this request leaves the connection usable; anything else ends it.
+				if (answer?.kind !== KIND.error || !REQUEST_ERRORS.includes(error.code)) link.close();
 				throw error;
 			} catch (error) {
 				if (error instanceof FolderLinkError && error.code === "VIEW_CLOSED" && attempt === 0) {
@@ -246,6 +260,7 @@ export class CloudFolderSearch {
 	}
 
 	async #connect(signal: AbortSignal): Promise<FolderLink> {
+		if (this.#closed) throw new FolderLinkError("UNAVAILABLE", "The run's search is closed");
 		if (this.#link && !this.#link.closed) return this.#link;
 		this.#view ??= await this.#folder.openRunView(signal);
 		this.#link = await FolderLink.open(
@@ -256,7 +271,20 @@ export class CloudFolderSearch {
 		return this.#link;
 	}
 
+	/** A token for where a page said to go on. */
+	seal(cursor: SearchCursor): string {
+		const token = randomBytes(12).toString("base64url");
+		this.#cursors.set(token, cursor);
+		return token;
+	}
+
+	/** Where a token said to go on, if this run gave it. */
+	open(token: string): SearchCursor | undefined {
+		return this.#cursors.get(token);
+	}
+
 	close(): void {
+		this.#closed = true;
 		this.#link?.close();
 	}
 }
@@ -273,10 +301,12 @@ function parsePage(body: Record<string, unknown>): SearchPage {
 	const hits = (body.hits as unknown[]).map((item): SearchHit => {
 		const h = item as Record<string, unknown>;
 		if (!h || typeof h !== "object") bad();
+		if (h.kind !== "file" && h.kind !== "folder") bad();
 		return {
 			path: text(h.path, 4096),
+			kind: h.kind as "file" | "folder",
 			line: count(h.line),
-			text: text(h.text, 1024),
+			text: text(h.text, 4096),
 			version: text(h.version, 64),
 			offset: count(h.offset),
 		};
@@ -329,23 +359,6 @@ function cursorOf(value: unknown): SearchCursor | undefined {
 	return { path: c.path, version: c.version, offset: c.offset as number, line: c.line as number };
 }
 
-/** A cursor as the model passes it back: opaque text. */
-function encodeCursor(cursor: SearchCursor): string {
-	return Buffer.from(JSON.stringify(cursor)).toString("base64url");
-}
-
-function decodeCursor(text: string): SearchCursor {
-	let value: unknown;
-	try {
-		value = JSON.parse(Buffer.from(text, "base64url").toString("utf8"));
-	} catch {
-		throw new Error("cursor must be one this tool gave");
-	}
-	const cursor = cursorOf(value);
-	if (!cursor) throw new Error("cursor must be one this tool gave");
-	return cursor;
-}
-
 /** Where to go on to show a hit that did not fit: from its line (or, for a name, the entry itself). */
 function resumeAt(hit: SearchHit): SearchCursor {
 	return hit.line === 0
@@ -353,34 +366,67 @@ function resumeAt(hit: SearchHit): SearchCursor {
 		: { path: hit.path, version: hit.version, offset: hit.offset, line: hit.line - 1 };
 }
 
-/** The text the model is shown of one page, fitted to one tool result: hits that do not fit go to the next page. */
-export function folderSearchText(page: SearchPage): string {
-	const render = (shown: number): string => {
-		const lines = page.hits.slice(0, shown).map((h) => (h.line === 0 ? h.path : `${h.path}:${h.line}: ${h.text}`));
-		const next = shown < page.hits.length ? resumeAt(page.hits[shown]!) : page.next;
-		const summary =
-			`${page.searched} file${page.searched === 1 ? "" : "s"} searched` +
-			(page.binary > 0 ? `, ${page.binary} binary passed over` : "") +
-			(next ? `. More: call again with cursor ${encodeCursor(next)}` : ". Nothing more.");
-		return `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${summary}`;
+/** The text the model is shown of one page, fitted to one tool result: hits that do not fit go to the next page, and
+ * the first hit is always shown (its line cut, and at worst its path, if that is what fits). `seal` turns where to go
+ * on into the token the model passes back. */
+export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) => string): string {
+	const tokens = new Map<number, string>();
+	const token = (shown: number, cursor: SearchCursor): string => {
+		let sealed = tokens.get(shown);
+		if (sealed === undefined) {
+			sealed = seal(cursor);
+			tokens.set(shown, sealed);
+		}
+		return sealed;
+	};
+	const shownHit = (h: SearchHit, text = h.text): string =>
+		h.line === 0 ? `${h.path}${h.kind === "folder" ? "/" : ""}` : `${h.path}:${h.line}: ${text}`;
+	const render = (shown: number, first?: string): string => {
+		const lines = page.hits.slice(0, shown).map((h, i) => (i === 0 && first !== undefined ? first : shownHit(h)));
+		const cut = shown < page.hits.length;
+		const next = cut ? resumeAt(page.hits[shown]!) : page.next;
+		// A page cut short counts nothing: the next page searches its files again.
+		const counts = cut
+			? "Part of a page"
+			: `${page.searched} file${page.searched === 1 ? "" : "s"} searched` +
+				(page.binary > 0 ? `, ${page.binary} binary passed over` : "");
+		const more = next ? `. More: call again with cursor ${token(shown, next)}` : ". Nothing more.";
+		return `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`;
 	};
 	let shown = page.hits.length;
-	while (shown > 0 && !fitsOneResult(render(shown))) shown--;
-	return render(shown);
+	while (shown > 1 && !fitsOneResult(render(shown))) shown--;
+	if (shown === 0 || fitsOneResult(render(shown))) return render(shown);
+	// One hit that does not fit whole: its line shorter and shorter, then its path.
+	const hit = page.hits[0]!;
+	const chars = Array.from(hit.text);
+	for (let keep = chars.length; keep >= 0; keep = keep === 0 ? -1 : Math.floor(keep / 2)) {
+		const text = render(1, shownHit(hit, `${chars.slice(0, keep).join("")}${keep < chars.length ? "…" : ""}`));
+		if (fitsOneResult(text)) return text;
+	}
+	const path = Array.from(hit.path);
+	for (let keep = path.length; keep > 0; keep = Math.floor(keep / 2)) {
+		const text = render(1, `${path.slice(0, keep).join("")}… (path cut)`);
+		if (fitsOneResult(text)) return text;
+	}
+	return render(0);
 }
 
-/** The release ids of one answer: derived from the run and the call, so a replay of the call reuses them. */
-function releaseId(runId: string, callId: string, part: number): string {
-	const hex = createHash("sha256").update(`qorpera.folder-search-release/v1:${runId}:${callId}:${part}`).digest("hex");
+/** The release ids of one answer: derived from the run, the call and the text shown, so a replay of the same answer
+ * reuses them and one that shows something else gets its own. */
+function releaseId(runId: string, callId: string, outputSha256: string, part: number): string {
+	const hex = createHash("sha256")
+		.update(`qorpera.folder-search-release/v1:${runId}:${callId}:${outputSha256}:${part}`)
+		.digest("hex");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+const ARGUMENTS = ["query", "path", "glob", "names_only", "case_sensitive", "cursor"];
+
 function closedArguments(value: JsonValue): Record<string, JsonValue> {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
-		throw new Error("company_search takes an object");
-	for (const key of Object.keys(value))
-		if (!["query", "path", "glob", "names_only", "case_sensitive", "cursor"].includes(key))
-			throw new Error(`company_search does not take ${key}`);
+		throw new CloudToolArgumentRefusal(`company_search takes an object with ${ARGUMENTS.join(", ")}`);
+	if (Object.keys(value).some((key) => !ARGUMENTS.includes(key)))
+		throw new CloudToolArgumentRefusal(`company_search takes only ${ARGUMENTS.join(", ")}`);
 	return value as Record<string, JsonValue>;
 }
 
@@ -391,9 +437,11 @@ function searchText(value: JsonValue | undefined, label: string): string {
 		value.length > MAX_QUERY ||
 		/[\u0000-\u001f\u007f]/.test(value)
 	)
-		throw new Error(`${label} must be text of 1 to ${MAX_QUERY} characters, on one line`);
+		throw new CloudToolArgumentRefusal(`${label} must be text of 1 to ${MAX_QUERY} characters, on one line`);
 	return value;
 }
+
+const CURSOR_TOKEN = /^[A-Za-z0-9_-]{16}$/;
 
 /** `company_search`, for a folder-v2 run whose host has the node's folder search. */
 export function cloudFolderSearchTool(options: {
@@ -434,14 +482,23 @@ export function cloudFolderSearchTool(options: {
 		parseArguments(value) {
 			const input = closedArguments(value);
 			const query = searchText(input.query, "query");
-			const path = input.path === undefined || input.path === "" ? "" : parseCloudCompanyPath(input.path);
+			let path = "";
+			if (input.path !== undefined && input.path !== "") {
+				try {
+					path = parseCloudCompanyPath(input.path);
+				} catch {
+					throw new CloudToolArgumentRefusal(
+						"path must be a company-relative folder or file, like docs or docs/plan.md (no leading or trailing /)",
+					);
+				}
+			}
 			const glob = input.glob === undefined ? null : searchText(input.glob, "glob");
 			for (const flag of ["names_only", "case_sensitive"] as const)
 				if (input[flag] !== undefined && typeof input[flag] !== "boolean")
-					throw new Error(`${flag} must be true or false`);
-			if (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 8192))
-				throw new Error("cursor must be one this tool gave");
-			const cursor = input.cursor === undefined ? null : encodeCursor(decodeCursor(input.cursor));
+					throw new CloudToolArgumentRefusal(`${flag} must be true or false`);
+			if (input.cursor !== undefined && (typeof input.cursor !== "string" || !CURSOR_TOKEN.test(input.cursor)))
+				throw new CloudToolArgumentRefusal("cursor must be the token a page of this search gave");
+			const cursor = input.cursor === undefined ? null : input.cursor;
 			return {
 				query,
 				path,
@@ -460,6 +517,11 @@ export function cloudFolderSearchTool(options: {
 				case_sensitive: boolean;
 				cursor: string | null;
 			};
+			const after = input.cursor === null ? null : search.open(input.cursor);
+			if (after === undefined)
+				throw new CloudToolRefusal(
+					"CURSOR_UNKNOWN: that cursor is not one this run's search gave (cursors last for the run); search again",
+				);
 			let page: SearchPage;
 			try {
 				page = await search.page(
@@ -469,7 +531,7 @@ export function cloudFolderSearchTool(options: {
 						glob: input.glob,
 						namesOnly: input.names_only,
 						caseSensitive: input.case_sensitive,
-						after: input.cursor === null ? null : decodeCursor(input.cursor),
+						after,
 					},
 					context.signal,
 				);
@@ -483,13 +545,13 @@ export function cloudFolderSearchTool(options: {
 					"COMPANY_FOLDER_UNAVAILABLE: the folder could not be searched now; try again, or read with company_read",
 				);
 			}
-			const text = folderSearchText(page);
+			const text = folderSearchText(page, (cursor) => search.seal(cursor));
 			// Released before the model sees the page, under the hash of exactly this text; cited by its first release.
 			let companyReadId: string | undefined;
 			const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
 			try {
 				for (let part = 0; part * MAX_RELEASED < page.reads.length; part++) {
-					const id = releaseId(runId, context.callId, part);
+					const id = releaseId(runId, context.callId, outputSha256, part);
 					await folder.release(
 						id,
 						page.reads.slice(part * MAX_RELEASED, (part + 1) * MAX_RELEASED),
