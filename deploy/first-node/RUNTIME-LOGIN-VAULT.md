@@ -292,7 +292,13 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     `42501`); a capability hash that names another company's authority is refused with `22023`. It runs at
     read committed only (`25000` otherwise): its race handling re-reads the other copy's committed row.
   - Every existing broker function then serves the company unchanged: each call names the company's own
-    authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
+    authority and capability. Because every broker and the shared vault share one database login, that
+    capability is the only proof a call is for the company, so every broker function compares it, and every
+    other proof the caller sends (capture capability, digests, operation facts), null-safely: `is distinct
+    from` against a NOT NULL column, or `coalesce(<test>, true)` around a pattern or length test. A plain
+    `<>` or `!~` is unknown for a NULL argument and skips the refusal. Migration `20260929999990` fixed the
+    last three that did not (capture describe and seal, operation authorization); SQL test 806 sends them
+    NULLs. A new broker function follows the same rule and gets the same kind of test. Locks: the new authority row and the switch row, plus the key-share locks
     their foreign keys take on the company's profile row and the principal row (a registration waits at
     most 2 s behind a lock on the company's profile).
   - An operator creates the principal once (`insert` with the capability hash and the start time). One
