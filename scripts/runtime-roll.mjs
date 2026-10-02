@@ -15,7 +15,8 @@
 // Packets, in order (node A is emptied and updated first, then node B; node A must be no home of a
 // node-disk login, which 00-check enforces):
 //   00-check          dry-run only: preflight; prints the gates, the node-disk logins and N's pending inputs
-//   10-migration-*    one per release migration, gated on N being active; no pause
+//   05-rehearse-migrations  dry-run only: every release migration in one transaction, rolled back
+//   10-migration-*    one per release migration, gated on N being active and the one before it; no pause
 //   20-declare-b      node B's orchestrators declared N
 //   30-runs-off-a     node A takes no new runs (machines carry on)
 //   31-drain-a        dry-run only: node A's drain status (wait for readyForNodeRelease)
@@ -254,6 +255,18 @@ export function rollPackets(options) {
 		`'nodeDiskLogins', (${NODE_DISK_LOGINS})`,
 		`'pendingInputs', (${N_PENDING(from.sha)})`,
 	]);
+	// The schema rehearsal (dry-run only): every release migration in order in one transaction, rolled back. Each
+	// 10-* packet needs the one before it recorded, so this is the only way to check them all (every exact-text
+	// patch included) before the first commit.
+	if (ordered.length)
+		files["05-rehearse-migrations.sql"] = packet([
+			gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not the active bundle`], ...ordered.map((m) => NOT_RECORDED(m.name))]),
+			...ordered.flatMap((migration) => {
+				const body = migrationBody(migration.text);
+				return [body, historyInsert(migration.name, body)];
+			}),
+			`select jsonb_build_object('rehearsed', jsonb_build_array(${ordered.map((m) => literal(m.name)).join(", ")}), 'ok', true) as roll_rehearsal;`,
+		]);
 	ordered.forEach((migration, index) => {
 		const body = migrationBody(migration.text);
 		// Timestamp order even by hand: each migration needs the one before it.
@@ -481,7 +494,7 @@ export function assertOneTransaction(name, text) {
 		throw new Error(`${name} is not exactly one outer transaction`);
 }
 
-export const DRY_RUN_ONLY = ["00-check.sql", "31-drain-a.sql", "50-check-n.sql", "61-drain-b.sql"];
+export const DRY_RUN_ONLY = ["00-check.sql", "05-rehearse-migrations.sql", "31-drain-a.sql", "50-check-n.sql", "61-drain-b.sql"];
 
 /** The packet directory: files plus packet.json (digests, order, dry-run-only files). */
 export function writeRoll(out, options) {
@@ -502,7 +515,7 @@ export function writeRoll(out, options) {
 		empty: options.empty ?? "runs",
 		source: options.source ?? null,
 		order: Object.keys(files),
-		dryRunOnly: DRY_RUN_ONLY,
+		dryRunOnly: DRY_RUN_ONLY.filter((name) => name in files),
 		emergencyOnly: ["90-pause-now.sql", "91-reverse.sql", "92-clear-declarations.sql", "93-resume.sql"],
 		files: digests,
 	};

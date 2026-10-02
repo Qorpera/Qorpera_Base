@@ -45,6 +45,7 @@ test("every packet is exactly one outer transaction, in the procedure's order", 
 	const packets = rollPackets(options());
 	assert.deepEqual(Object.keys(packets), [
 		"00-check.sql",
+		"05-rehearse-migrations.sql",
 		`10-migration-${migration.name}`,
 		"20-declare-b.sql",
 		"30-runs-off-a.sql",
@@ -161,6 +162,7 @@ test("the row the operator reads is each packet's last statement (the runner kee
 	const packets = rollPackets(options());
 	const rows = {
 		"00-check.sql": "roll_check",
+		"05-rehearse-migrations.sql": "roll_rehearsal",
 		[`10-migration-${migration.name}`]: "roll_migration",
 		"31-drain-a.sql": "roll_drain",
 		"40-switch.sql": "roll_switched",
@@ -206,6 +208,19 @@ test("each release migration is gated on N and recorded with its own text", () =
 	assert.ok(!text.includes("begin;\ncreate table"), "the migration's own begin is removed");
 });
 
+test("the schema rehearsal applies every release migration in order in one transaction, dry-run only", () => {
+	const later = { name: "20260928400500_later.sql", text: "begin;\nalter table public.probe add column note text;\ncommit;\n" };
+	const packets = rollPackets(options({ migrations: [later, migration] }));
+	const text = packets["05-rehearse-migrations.sql"];
+	assert.ok(DRY_RUN_ONLY.includes("05-rehearse-migrations.sql"));
+	assert.ok(text.includes(`${migration.name} is already recorded`) && text.includes(`${later.name} is already recorded`));
+	assert.match(text, /create table public\.probe\(id integer\);[\s\S]*'20260928400000','probe'[\s\S]*alter table public\.probe add column note text;[\s\S]*'20260928400500','later'/);
+	assert.ok(!text.includes("is not recorded yet"), "the rehearsal needs no migration recorded");
+	assert.ok(!text.includes("begin;\nalter table"), "each migration's own begin is removed");
+	// A roll with no release migration has no rehearsal, and packet.json lists only files it has.
+	assert.equal(rollPackets(options({ migrations: [] }))["05-rehearse-migrations.sql"], undefined);
+});
+
 test("bad inputs are refused", () => {
 	assert.throws(() => rollPackets(options({ nodeB: nodeA })), /Two different node ids/);
 	assert.throws(() => rollPackets(options({ to: { version: 166, sha: to.sha } })), /next version/);
@@ -244,6 +259,10 @@ test("the packet directory carries every file's digest, the order and the dry-ru
 			assert.equal(createHash("sha256").update(readFileSync(join(out, name))).digest("hex"), digest, name);
 		assert.deepEqual(written.dryRunOnly, DRY_RUN_ONLY);
 		assert.throws(() => writeRoll(out, options()), /written once/);
+		// Without release migrations there is no rehearsal, and dryRunOnly names only files that exist.
+		const bare = writeRoll(join(dir, "bare"), options({ migrations: [] }));
+		assert.deepEqual(bare.dryRunOnly, DRY_RUN_ONLY.filter((name) => name !== "05-rehearse-migrations.sql"));
+		for (const name of bare.dryRunOnly) assert.ok(bare.files[name], name);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

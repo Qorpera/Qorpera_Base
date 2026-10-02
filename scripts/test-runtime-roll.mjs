@@ -163,9 +163,19 @@ async function rehearse(empty, path = "roll") {
 		assert.equal(check.ok, true, JSON.stringify(check.failures));
 		for (const name of DRY_RUN_ONLY) assert(p(name), name);
 
+		// Only the rehearsal's own runs wait for a claim: the fixture's other unclaimed jobs are settled first.
+		// Claims take the oldest job, and under load one of them could be the first node B takes.
+		sql(`update public.qorpera_runner_jobs as job set status = 'cancelled', cancelled_at = clock_timestamp(), cancelled_by_user_id = created_by_user_id,
+		lease_token_sha256 = null, lease_expires_at = null
+		where job.status = 'queued' and not exists (select 1 from public.qorpera_runner_job_claims claim
+			where claim.job_id = job.id and claim.status in ('claimed','assigned','accepted'));`);
 		// A queued N run before the roll; node B's fast host will take it.
 		const runN = newRun();
 		const runN2 = newRun(); // a second N run, still queued when node B is about to leave N
+		// 05: the schema rehearsal applies every release migration and rolls back: nothing is recorded.
+		const rehearsal = lastJson(dryRun(p("05-rehearse-migrations.sql")));
+		assert.deepEqual(rehearsal.rehearsed, [migration.name]);
+		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "0");
 		// 10, 20: the release migration and node B declared N.
 		commit(`10-migration-${migration.name}`);
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
