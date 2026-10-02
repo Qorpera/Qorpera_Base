@@ -1729,6 +1729,10 @@ authorize browser session use.
 
 ### 16.2 Interaction surfaces
 
+> **Amended 2026-10-02.** The list gains offers to a member: of a card, an area, the supervision of an area's
+> agents, or an agent joining a supervised area. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 9.
+
 Qorpera MUST use distinct state machines for:
 
 - destructive or external-action approval;
@@ -1964,6 +1968,10 @@ distinguish quota exhaustion (switch) from transient rate limiting (retry)
 and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
+
+Amended 2026-10-02: for a supervised agent's work alone, the supervisor stands where the requester stands, and
+their own login pays within the rules below; see the
+[interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 10.
 
 2026-09-28 amendment: the member who started the work pays. A member's own
 model login pays only for work that member started: their turns and room
@@ -4121,9 +4129,12 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 4. **Tables are company state.**
    - `tables/<table>.toml` defines a table: its columns, its key and who writes it.
    - Its rows live in `tables/<table>.csv`, a structured file checked at every save against the definition, within
-     the folder core's limit for a checked file (founder decision, 2 October 2026: rows in a file first).
-   - A save of a definition that the existing rows no longer fit is refused, unless the same change set rewrites the
-     rows.
+     the folder core's current bound for a checked file (founder decision, 2 October 2026: rows in a file first).
+     That bound is the core's, not a product limit (5.5).
+   - A rows file needs its definition. A rows file without one is refused. Deleting or moving a definition while its
+     rows file stays is refused. A rows file moves or is renamed only together with its definition.
+   - A change set that changes a definition is checked as a whole: the rows must fit the definition as the change
+     set leaves it.
    - The database holds rows only as the folder's index of those files (5.6).
    - A table that outgrows a file waits for the company's table store. The store has its own amendment, which says
      where it runs. Its rows belong to the company like the folder: they never go to the database, the folder gets a
@@ -4143,9 +4154,12 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
    - **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member. The offer is a
      request card (item 9) and changes nothing in the file. When the member says yes, the platform saves the change as
      that member, and the save is allowed because the open offer names them.
-   - **Agents** act for their supervisor (item 10): an agent may take for its supervisor, release what its supervisor
-     holds, and offer what its supervisor holds or what is empty. An agent never changes who owns or supervises an
-     area.
+   - **Agents** act for their supervisor (item 10):
+     - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
+       what is empty;
+     - an agent never changes an area's owner, supervisor or agents.
+   - **Leaving:** when a member leaves the company, the platform clears the cells that name them, and the owners are
+     told.
    - The save check refuses any other change to such a column, whoever makes it and however.
 7. **Agents use interfaces as members do.**
    - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`).
@@ -4156,9 +4170,10 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
      - changing `access`;
      - creating a table, or changing its columns or writers.
 
-     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026). The review recorder
-     (C2) takes `save_interface` and classifies each call by what it changes. Until the review of changes no tool
-     carried exists (C2's R2), an agent makes these changes only with `save_interface`.
+     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026). `save_interface` joins
+     the tools the review recorder (C2) records, and the review gate and the database classify each call by what it
+     changes. Until the review of changes no tool carried exists (C2's R2), an agent makes these changes only with
+     `save_interface`.
    - Layout, wording, order and sources apply at once, whatever carries them. The agent's thread shows the change with
      Undo, and it can be restored from the version history.
    - Members' own changes are not reviewed.
@@ -4169,28 +4184,47 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
      `interfaces/order.md`.
    - An interface whose `needs` are not met is not listed.
    - Pins and hiding are each member's own (2026-09-24 amendment, item 3).
-9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains: an offer to a member of a card, an area or
-   the supervision of an area's agents. It waits durably for that member. Dismissal or no answer is never a yes (16.2).
+9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains an offer to a member of:
+   - a card;
+   - an area;
+   - the supervision of an area's agents;
+   - an agent joining a supervised area.
+
+   An offer waits durably for that member. Dismissal or no answer is never a yes (16.2).
 10. **Supervision (founder decision, 2 October 2026; amends section 17).**
     - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
       `tables/areas.csv`, the seeded table the platform reads supervision from.
     - **What follows from it.** For the agents' work alone (routine occurrences, event and file-change wakes, and the
-      wakes those runs start), the supervisor stands where the requester stands: their questions and review cards go
-      to the supervisor, the supervisor's personal rules apply, and the supervisor's own login pays.
+      wakes those runs start), the supervisor stands where the requester stands:
+      - their questions, and the review cards that go to the requester today, go to the supervisor;
+      - the supervisor's personal rules apply;
+      - the supervisor's own login pays.
+
+      Cards that go to owners and admins (company rules, built-in checks; 4.2 and the 2026-09-25 amendment) still go
+      to them.
     - **What it changes in section 17.** For supervised agents it changes section 17's "An agent's standing execution
       authority names a company account only; it never pays with a member's login." Every other rule of section 17
       still decides which login may pay:
-      - a ChatGPT plan pays only for scheduled work, and only after its member turned on away work, never for a
-        listener (2026-10-01 amendment);
+      - a ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it.
+        So for a supervised agent it pays only for routines the supervisor saved themselves, and only after they
+        turned on away work; never for a listener (2026-10-01 amendment);
       - a Claude login never pays for agent work;
       - work stops at a usage limit.
 
       Where the supervisor's login may not pay, today's rule applies. A member's own messages still run on that
       member's own account.
     - **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings
-      in the database. It is made when they say yes to supervising: by taking an area or accepting a supervisor
-      request. It can be withdrawn at any time, and ends when they release the area or leave the company; the owners
-      are told. A cell that names a member without a live consent record decides nothing.
+      in the database.
+      - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
+        `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to
+        the taker on the same screen.
+      - It can be withdrawn at any time. It ends when they release the area or leave the company, and the owners are
+        told.
+      - A cell that names a member without a live consent record decides nothing.
+    - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member adding an agent
+      to its `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents
+      never change `agents` (item 6).
+    - **One area per agent.** An agent sits in at most one area's `agents`, and the save check refuses a second.
     - **What areas are not.** Areas grant nothing and are not the retired responsibility objects (2026-09-20
       amendment, item 1).
     - **Until it is built** (step I9b), today's rules apply.

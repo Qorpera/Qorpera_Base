@@ -10,7 +10,7 @@ gives the exact keys, limits and refusals the parser enforces. Where it adds det
 is marked **proposed** and can change in review without a new founder decision, as long as it keeps the page's rules.
 
 Everything stored in the folder applies to `folder-v2` companies only (core §1). On `snapshot-v1` companies the web
-client draws the first interfaces from definitions it ships with (§8, steps I1–I4), reading today's sources. Nothing is
+client draws the first interfaces from definitions it ships with (§10, steps I1–I4), reading today's sources. Nothing is
 migrated.
 
 ## 1. What an interface is
@@ -27,7 +27,7 @@ in a member's browser or on a Qorpera origin. This replaces the isolated-frame "
 item 7: there is no page code to isolate.
 
 Members and agents use the same pages. A member opens one from the rail's Interfaces tab. An agent reads one as text
-with `interface_read`, and changes one like any other file.
+with `interface_read`, and changes one with `save_interface` (§7).
 
 ## 2. Where things live
 
@@ -44,7 +44,7 @@ tables/                           seeded; can't be deleted or moved
 
 - **Names.** Folder and file names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most
   64 characters, `-2`, `-3` when taken. A table's name is the stem of its `.toml`; its rows file has the same stem.
-- **Seeded at founding** (§7): `interfaces/`, `tables/`, Pulse (the main interface), Mailbox and Members, with the
+- **Seeded at founding** (§8): `interfaces/`, `tables/`, Pulse (the main interface), Mailbox and Members, with the
   tables `numbers`, `areas` and `cards`.
 - **Cannot be deleted or moved:**
   - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
@@ -66,7 +66,9 @@ file.
 **Proposed: every rows file is checked, within 64 KiB.** The design page allowed plain rows files up to 2 MiB. The
 review of this document found a problem: a file's kind can't depend on another file, so whether a CSV is checked
 can't follow a `needs_yes` column in its definition. Every rows file is therefore checked, and a table that
-outgrows 64 KiB (about 800 short rows) waits for the table store (decision 1).
+outgrows 64 KiB waits for the table store (decision 1). 64 KiB is the folder core's current bound for a checked
+file, not a product limit (contract 5.5). As a guide, the seeded numbers table holds a year of weekly readings for
+about ten numbers; finer history waits for the store.
 
 ## 3. `interface.toml`
 
@@ -293,8 +295,12 @@ members = "all"                     # all | owners | none
 - Two rows with the same key are refused.
 - Every save of a rows file is checked against the table's definition, within 64 KiB. The checks are: the header,
   each value's type, the key, `[write]` (who may write rows) and the claim rule below.
-- A save of a definition that the existing rows no longer fit is refused, unless the same change set rewrites the
-  rows.
+- **A rows file and its definition go together:**
+  - a rows file without a definition is refused;
+  - deleting or moving a definition while its rows file stays is refused;
+  - a rows file moves or is renamed only together with its definition.
+- A change set that changes a definition is checked as a whole: the rows must fit the definition as the change set
+  leaves it.
 - The database holds the rows only as the folder's index of the file, like every structured file (contract 5.6).
 
 ### The claim rule ("nobody assigns anybody")
@@ -310,7 +316,9 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 - **Agents act for their supervisor** (§5.1):
   - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
     what is empty;
-  - an agent never changes who owns or supervises an area.
+  - an agent never changes an area's `owner`, `supervisor` or `agents`.
+- **Leaving:** when a member leaves the company, the platform clears the cells that name them, and the owners are
+  told.
 - **Anything else** that changes the column is refused at save, whoever makes it and however.
 
 ### 5.1 Supervision
@@ -320,28 +328,35 @@ its `owner`, `supervisor` and `agents` columns are fixed. An area's supervisor i
 Jonas, 2 October 2026 (decision 4); contract amendment item 10.
 
 - **Where they stand.** For the agents' work alone, the supervisor stands where the requester stands today:
-  - the agents' questions and review cards go to the supervisor;
+  - the agents' questions, and the review cards that go to the requester today, go to the supervisor;
   - the supervisor's personal rules apply;
   - the supervisor's own login pays.
 
-  "Work alone" means routine occurrences, event and file-change wakes, and the wakes those runs start.
+  "Work alone" means routine occurrences, event and file-change wakes, and the wakes those runs start. Cards that go to
+  owners and admins (company rules and built-in checks; contract 4.2, 2026-09-25 amendment) still go to them.
 - **Which login may pay.** Section 17 still decides it. This only changes its "An agent's standing execution
   authority names a company account only" for supervised agents.
-  - A ChatGPT plan pays only for scheduled work, and only after its member turned on away work. It never pays for a
-    listener, an event or file-change wake (2026-10-01 amendment).
+  - A ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it.
+    For a supervised agent, that means only routines the supervisor saved themselves, and only after they turned on
+    away work. It never pays for a listener, an event or file-change wake (2026-10-01 amendment).
   - A Claude login never pays for agent work.
   - Work stops at a usage limit.
   - Where the supervisor's login may not pay, today's rule applies.
 - **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings in
   the database.
-  - It is made when they say yes to supervising: by taking an area, or by accepting a supervisor request.
+  - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
+    `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to the
+    taker on the same screen.
   - They can withdraw it at any time. It also ends when they release the area or leave the company, and the owners
     are told.
   - A cell that names a member with no live consent record decides nothing, and the board shows the area as waiting
     for that member.
-- **Proposed:**
-  - an agent sits in at most one area's `agents`;
-  - a member's own messages still run on their own account.
+- **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member adding an agent to its
+  `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents never change
+  `agents`.
+- **One area per agent.** An agent sits in at most one area's `agents`; the save check refuses a second, because it
+  decides who pays.
+- A member's own messages still run on their own account.
 - **Areas grant nothing.** They are not the retired responsibility objects (2026-09-20 amendment, item 1).
 - **Until it is built** (step I9b, S2), today's rules apply.
 
@@ -367,21 +382,27 @@ files (STATE-FILES §3).
 | `unknown_key` | a key this table doesn't take |
 | `missing_key` | a required key is missing |
 | `bad_value` | a value of the wrong type, or outside its list or bounds |
-| `duplicate` | two views, blocks, buttons or columns with one name or id, or two rows with one key |
+| `duplicate` | two views, blocks, buttons or columns with one name or id |
 | `unknown_source` | `from` names no source of §4 |
 | `unknown_column` | a block names a column its source doesn't have, where the source's columns are fixed (§4) |
 | `unknown_button` | a block lists a button that isn't defined |
 | `unknown_target` | `opens` or `from_view` names nothing in the file |
 | `too_large` | over the size or count limit |
-| `row` | a CSV row that doesn't fit its definition |
 
 **The save check** (the database's `decide`, as `structured_rule` in the state files) refuses what needs other
 files or state:
 - no main interface, or two;
 - `edit = "owners"` for anyone else;
+- the rows against their definition: the header, each row (`row`), two rows with one key (`duplicate`), and the
+  definition as the change set leaves it;
+- a rows file without its definition, or a definition removed or moved without its rows;
 - `[write]`;
-- a rows file its definition doesn't fit;
-- the claim rule (§5), with `claim`.
+- the claim rule (§5), with `claim`;
+- `tables/areas.csv`'s fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
+  one area per agent.
+
+The parser's `parseTableRows` gives the same row results to a writer that has the definition, so a tool can refuse
+early. The database decides against the definition as it is at commit.
 
 A table that loses a column a page still uses is not refused. That page's block shows which column is gone, and the
 agent that keeps the page is told.
@@ -396,8 +417,8 @@ agent that keeps the page is told.
   - adding or changing a button, including a built-in verb a block lists;
   - changing `[access]`;
   - creating a table, or changing its columns or `[write]`.
-- **The review recorder** (C2) takes `save_interface` and classifies each call by what it changes, as it does for
-  `decide_routine`. Until C2's R2 reviews changes no tool carried, an agent makes these changes only with
+- **The review recorder** (C2) gains `save_interface`. The review gate and the database classify each call by what
+  it changes, as they do for `decide_routine`. Until C2's R2 reviews changes no tool carried, an agent makes these changes only with
   `save_interface`; through the mount or a shell they are refused.
 - **Changes that apply at once:** layout, wording, order and sources, whatever carries them. The agent's thread shows
   the change with Undo (decision 2).
