@@ -1,7 +1,8 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-1 (20260929999500): the guest's native host reaches the database with the publishable key through one entry
--- point, qorpera_native_host_call, and the runner job's lease token. Test 300's fixture leases a run's job on a
--- runner; its lease token's hash is set here to a known token's.
+-- G2-1 (20260929999500): the guest's native host reaches the database with the publishable key through two entry
+-- points, qorpera_native_host_call (8 s) and qorpera_native_host_call_long (25 s, the lease validator), and the runner
+-- job's lease token. Test 300's fixture leases a run's job on a runner; its lease token's hash is set here to a known
+-- token's.
 reset role;
 select set_config('qorpera_test.g2_token', 'g2-lease-token-0123456789abcdef', false);
 update public.qorpera_runner_jobs
@@ -139,6 +140,13 @@ begin
 		v_batch), 'refused', 'a wrong token');
 	perform pg_temp.g2_expect(pg_temp.g2_call(pg_temp.g2_job(), 'short', 'qorpera_record_runtime_observation_batch',
 		v_batch), 'refused', 'a token too short');
+	-- Too short even when it is the job's own: a token is 16 to 512 bytes.
+	update public.qorpera_runner_jobs set lease_token_sha256 = encode(extensions.digest(convert_to('short-tok1', 'utf8'), 'sha256'), 'hex')
+	where id = pg_temp.g2_job();
+	perform pg_temp.g2_expect(pg_temp.g2_call(pg_temp.g2_job(), 'short-tok1', 'qorpera_company_machines_available', '{}'),
+		'refused', 'the job''s own token, too short');
+	update public.qorpera_runner_jobs set lease_token_sha256 = encode(extensions.digest(convert_to(v_token, 'utf8'), 'sha256'), 'hex')
+	where id = pg_temp.g2_job();
 	perform pg_temp.g2_expect(pg_temp.g2_call(v_other, v_token, 'qorpera_record_runtime_observation_batch', v_batch),
 		'refused', 'another job');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_claim_coding_session', jsonb_build_object('p_owner', 'guest')),

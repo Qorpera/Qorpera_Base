@@ -8,9 +8,9 @@
 --   qorpera_native_host_call(p_job_id, p_job_lease_token, p_name, p_args)       8 s
 --   qorpera_native_host_call_long(p_job_id, p_job_lease_token, p_name, p_args)  25 s, the lease validator only
 -- 1. It checks the runner job's lease token first, by the job's primary key and with no lock: the job is an
---    agent turn's (its type and capability), leased, its lease is current, and the token's sha256 is the job's lease_token_sha256 (the runner
---    unit in the same guest holds the token; its hash is set at claim and cleared at the end). Every refusal is
---    one 42501 "native host call is refused".
+--    agent turn's (its type and capability), leased, its lease is current, and the token's sha256 is the job's
+--    lease_token_sha256 (the runner unit in the same guest holds the token; its hash is set at claim and cleared at
+--    the end). Every refusal is one 42501 "native host call is refused".
 -- 2. It allows only the calls listed in qorpera_native_host_calls (changed by migrations only; no API role reads
 --    or writes it), each with a scope rule that ties the call's arguments to that job's run: binding (p_binding),
 --    lease (p_job_id and p_run_id), run (p_run_id), identity (p_compute_identity_id), profile (p_profile_id),
