@@ -1,7 +1,8 @@
 # Qorpera guest guard (E-1). Machines on our LXD bridges reach the internet, their bridge's DNS and DHCP,
 # and the short list of our own services below. They never reach the NAS, the office network, the nodes'
-# other ports, Tailscale or link-local addresses. Only connections a guest starts are checked: replies,
-# and connections the node itself opens to a guest, pass untouched.
+# other ports, Tailscale, link-local addresses or each other. A guest's new connections are checked;
+# replies, and connections the node itself opens to a guest, pass. Every packet from a guest must carry an
+# address of its own bridge.
 #
 # Load it with qorpera-guest-guard.sh, never with `nft -f` alone: the script picks the mode (observe or
 # enforce) and replaces the table in one transaction. The same file runs on every node. See README.md.
@@ -13,8 +14,17 @@ table inet qorpera_guest_guard {
 		elements = { "qorpera0", "coding-net", "qofficebuild0", "pr146build0", "testmach0", "machine-net" }
 	}
 
-	# Each bridge's own address, for its own guests' DNS (53) and ping only. DHCP (67) is allowed on every
-	# guest bridge, broadcast included.
+	# The only source addresses a bridge's guests may use.
+	set bridge_subnets {
+		type ifname . ipv4_addr
+		flags interval
+		elements = {
+			"qorpera0" . 10.41.0.0/24, "coding-net" . 10.200.0.0/24, "qofficebuild0" . 10.203.0.0/24,
+			"pr146build0" . 10.133.254.0/24, "testmach0" . 10.201.0.0/24, "machine-net" . 10.88.0.0/22
+		}
+	}
+
+	# Each bridge's own address, for its own guests' DHCP, DNS and ping only.
 	set bridge_gateways {
 		type ifname . ipv4_addr
 		elements = {
@@ -51,6 +61,14 @@ table inet qorpera_guest_guard {
 		}
 	}
 
+	# A refused flow is logged once an hour, so a rare flow is never crowded out by a frequent one.
+	set logged_flows {
+		type ifname . ipv4_addr . ipv4_addr . inet_proto . inet_service
+		flags dynamic, timeout
+		timeout 1h
+		size 65536
+	}
+
 	counter allowed_services_used {
 	}
 
@@ -60,28 +78,44 @@ table inet qorpera_guest_guard {
 	counter refused_input {
 	}
 
+	counter refused_spoofed {
+	}
+
+	counter refused_quiet {
+	}
+
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
-		iifname @guest_bridges ct state new jump guest_forward
+		iifname @guest_bridges jump guest_forward
 	}
 
 	chain input {
 		type filter hook input priority filter - 10; policy accept;
-		iifname @guest_bridges ct state new jump guest_input
+		iifname @guest_bridges jump guest_input
 	}
 
-	# A guest's connection through the node: the internet passes, our own networks only as listed.
+	# A guest's packet through the node, or (with br_netfilter) to another guest on its own bridge.
 	chain guest_forward {
-		meta nfproto ipv6 goto refuse_forward
-		ip daddr != @internal4 return
+		meta nfproto ipv6 goto refuse_quiet
+		iifname . ip saddr != @bridge_subnets goto refuse_spoofed
+		ct state established,related return
+		ct state invalid goto refuse_quiet
+		meta pkttype { broadcast, multicast } goto refuse_quiet
 		iifname . ip daddr . meta l4proto . th dport @allowed_services counter name "allowed_services_used" return
+		oifname "tailscale0" goto refuse_forward
+		ip daddr != @internal4 return
 		goto refuse_forward
 	}
 
-	# A guest's connection to the node itself, on any of its addresses.
+	# A guest's packet to the node itself, on any of its addresses.
 	chain guest_input {
-		meta nfproto ipv6 goto refuse_input
-		udp dport 67 return
+		meta nfproto ipv6 goto refuse_quiet
+		udp sport 68 udp dport 67 ip daddr 255.255.255.255 return
+		iifname . ip saddr != @bridge_subnets goto refuse_spoofed
+		ct state established,related return
+		ct state invalid goto refuse_quiet
+		iifname . ip daddr @bridge_gateways udp sport 68 udp dport 67 return
+		meta pkttype { broadcast, multicast } goto refuse_quiet
 		iifname . ip daddr @bridge_gateways udp dport 53 return
 		iifname . ip daddr @bridge_gateways tcp dport 53 return
 		iifname . ip daddr @bridge_gateways icmp type echo-request return
@@ -89,14 +123,25 @@ table inet qorpera_guest_guard {
 		goto refuse_input
 	}
 
-	# Observe mode stops here: count and log. Enforce mode appends the rejects (qorpera-guest-guard.sh).
+	# Observe mode stops at the end of these chains: count and log. Enforce mode appends a TCP reset and an
+	# ICMP reject to refuse_forward and refuse_input, and a drop to refuse_spoofed and refuse_quiet.
 	chain refuse_forward {
 		counter name "refused_forward"
-		limit rate 30/minute burst 60 packets log prefix "qorpera-guest-guard forward: " level info
+		iifname . ip saddr . ip daddr . meta l4proto . th dport != @logged_flows limit rate 10/second burst 100 packets update @logged_flows { iifname . ip saddr . ip daddr . meta l4proto . th dport } log prefix "qorpera-guest-guard forward: " level info
 	}
 
 	chain refuse_input {
 		counter name "refused_input"
-		limit rate 30/minute burst 60 packets log prefix "qorpera-guest-guard input: " level info
+		iifname . ip saddr . ip daddr . meta l4proto . th dport != @logged_flows limit rate 10/second burst 100 packets update @logged_flows { iifname . ip saddr . ip daddr . meta l4proto . th dport } log prefix "qorpera-guest-guard input: " level info
+	}
+
+	chain refuse_spoofed {
+		counter name "refused_spoofed"
+		iifname . ip saddr . ip daddr . meta l4proto . th dport != @logged_flows limit rate 10/second burst 100 packets update @logged_flows { iifname . ip saddr . ip daddr . meta l4proto . th dport } log prefix "qorpera-guest-guard spoofed: " level info
+	}
+
+	# Broadcast and multicast, IPv6 and invalid packets: counted, never logged.
+	chain refuse_quiet {
+		counter name "refused_quiet"
 	}
 }
