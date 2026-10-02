@@ -418,6 +418,32 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		},
 	);
 
+	it("reads a vault_fill as a box, an account and a field, never a value", () => {
+		const fill = {
+			kind: "browser",
+			action: "vault_fill",
+			role: "textbox",
+			name: "Password",
+			account: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+			field: "password",
+		};
+		// An id in either letter case is read in the lower case the database prints.
+		expect(parseCompanyComputerAction(fill)).toEqual({ ...fill, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+		expect(parseCompanyComputerAction({ ...fill, role: "spinbutton", field: "code" })).toMatchObject({
+			field: "code",
+		});
+		for (const bad of [
+			{ ...fill, text: "Pw-1234" },
+			{ ...fill, value: "Pw-1234" },
+			{ ...fill, field: "new_password" },
+			{ ...fill, field: "token" },
+			{ ...fill, role: "button" },
+			{ ...fill, account: "vercel" },
+			{ ...fill, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
+
 	it("bounds input and validates coordinates before cloud acquisition", async () => {
 		const harness = toolHarness();
 		await expect(

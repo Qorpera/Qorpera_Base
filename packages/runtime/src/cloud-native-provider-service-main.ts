@@ -438,6 +438,16 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								serviceRoleKey: serviceKey,
 								fetch: dispatch.fetch,
 							}),
+							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3).
+							...(secretBrokerOrigin && secretBrokerToken
+								? {
+										accountFills: new HttpCloudSecretBrokerClient({
+											origin: secretBrokerOrigin,
+											runtimeToken: secretBrokerToken,
+											companyId: state.companyId,
+										}),
+									}
+								: {}),
 						}),
 					}
 				: {}),

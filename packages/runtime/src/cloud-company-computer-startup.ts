@@ -13,10 +13,19 @@ import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-
 export class CompanyComputerStartupControl {
 	readonly #identity;
 	readonly #registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
+	readonly #fillPublicKey: string | undefined;
 	#activationId: string | undefined;
-	constructor(identity: CompanyComputerStartupIdentity, registry: Pick<HttpCloudCompanyComputerRegistry, "call">) {
+	constructor(
+		identity: CompanyComputerStartupIdentity,
+		registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
+		/** The service's key for company account fills (A1-3), reported with readiness and kept by that activation. */
+		options: { fillPublicKey?: string } = {},
+	) {
 		this.#identity = parseCompanyComputerStartupIdentity(identity);
 		this.#registry = registry;
+		if (options.fillPublicKey !== undefined && !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(options.fillPublicKey))
+			throw new Error("OFFICE_FILL_KEY_MALFORMED");
+		this.#fillPublicKey = options.fillPublicKey;
 	}
 	async check(signal: AbortSignal) {
 		return this.#call("qorpera_check_runtime_office_startup", {}, signal);
@@ -65,7 +74,12 @@ export class CompanyComputerStartupControl {
 			signal.throwIfAborted();
 			const authority = await this.#call(
 				"qorpera_report_runtime_office_ready",
-				{ p_activation_id: this.#activationId, p_native_port: ports.nativePort, p_viewer_port: ports.viewerPort },
+				{
+					p_activation_id: this.#activationId,
+					p_native_port: ports.nativePort,
+					p_viewer_port: ports.viewerPort,
+					...(this.#fillPublicKey === undefined ? {} : { p_fill_public_key: this.#fillPublicKey }),
+				},
 				signal,
 			);
 			if (authority.state === "prepared") throw new Error("OFFICE_STARTUP_READINESS_UNCONFIRMED");
