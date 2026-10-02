@@ -162,7 +162,7 @@ account (A1-4b's words). Nothing tries to pass such a check.
   clear it). Read actions (snapshot, list_tabs, select_tab, screenshots) stay allowed, so the agent can describe the
   page and a member can take over.
 
-## A1-5a: which mail is an account's own (migration `20260929999960`, SQL test 809)
+## A1-5a: which mail is an account's own (migration `20260928439960`, SQL test 809)
 
 Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
 codes and reset links, so it is shown only as "<site> · sign-in mail · used by <agent> <time>".
@@ -180,11 +180,80 @@ codes and reset links, so it is shown only as "<site> · sign-in mail · used by
   company's accounts (the planner uses the company index, or `qorpera_company_accounts_login` (profile,
   environment, lower(login)) when companies hold many accounts on average).
 
+## A1-4a: the account tool's database side (migration `20260928439965`, SQL test 813)
+
+The agent's account tool (A1-4b) needs three things the vault's calls do not give it. Inert until that tool is
+offered and accounts are switched on.
+
+- `qorpera_find_company_accounts(p_binding, p_request)`: one read for the running agent, a native host call bound
+  to its run (G2-1 scope `binding`, budget standard; listed in `NATIVE_HOST_CALLS` and the path control). The
+  request is `{todo?, site?}`:
+  - the company's accounts that are not closed, newest first, at most 20 with `more` when there are others; on
+    one website when `site` is named, as the account's site or one of its sign-in hosts, in any letter case;
+  - each account's id, site, sign-in hosts, login, two-step, status, whether this agent opened it, and when it
+    was last used, never a value, envelope or key id;
+  - the company's mailbox addresses (removed ones left out), for the tagged login;
+  - with `todo` (a todo key), that todo's id, when it is this agent's own open or blocked todo (22023 otherwise):
+    agents know a todo by its key, and the opening names it by id.
+  It refuses 0A000 while accounts are switched off and for folder-v2 companies, and 22023 for any other request
+  shape. Granted to the service role only.
+- An agent's account signs up with a tagged address of one of the company's mailboxes. A trigger on
+  `qorpera_company_accounts` (before insert, for an agent's opening only) refuses any other login with 22023,
+  which the vault passes to the agent as a refusal it can act on: `<mailbox>+<tag>@<mail domain>`, the mailbox
+  the company's and not removed, the tag 1 to 64 of `[a-z0-9._-]`, the domain the platform's mail domain, ASCII
+  only (checked before lowering: under a Unicode collation `lower()` turns look-alikes into ASCII letters) in any
+  letter case. A member's hand-over (A1-6) keeps any login. With no mail domain or no mailbox, no agent opens an
+  account: an owner adds a mailbox first.
+- Observations name the tool `company_account` (`qorpera_record_runtime_observation`, an exact-text patch after
+  `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list and test
+  320 do (`scripts/check-runtime-observation-vocabulary.test.mjs` checks all three).
+
+## A1-4b: the agent's tool (`company_account`, runtime only)
+
+Offered to a company run's agent (not a worker, not a folder-v2 company) when the host has the vault
+(`QORPERA_CLOUD_SECRET_BROKER_URL` and token): the same broker client serves connectors and accounts. Inert while
+accounts are switched off (the read answers "switched off"). `cloud-company-account-tools.ts`:
+
+- `find {site?}`: the read of A1-4a (the company's accounts and mailboxes); its refusals reach the agent as
+  `REFUSED: <message>`.
+- `open {site, signInHosts?, mailbox?, todo, purpose, password?, operationKey}`, in this order:
+  1. Which way in (Jonas, 2 October), as the arguments are read, before any review, so no member is ever asked to
+     approve such an opening: a service with an official connection is refused with "use it" (GitHub, Google: the
+     connector catalog's) or "the company cannot add it yet" (Microsoft, Slack); a site with strict bot checks
+     (Apple, LinkedIn, X, Meta, Amazon and its regional stores) and a payment provider (PayPal, Stripe) are refused as a person's task in
+     their own browser. Matched on the site and its sign-in hosts, the domain or any name under it. Banks are in the
+     words only.
+  2. The read with the todo key and the site: the todo's id, the mailboxes, the site's accounts.
+  3. The mailbox: none is a refusal; else the one named (one of the company's), else the company's only one;
+     several unnamed is a refusal that lists them.
+  4. The login, made by the tool: `<mailbox>+<site>@<mail domain>`; when the part before the @ would pass 64
+     characters the tag is cut and ends in `-` and 8 hex characters of the site's SHA-256; a mailbox that leaves
+     under 12 characters for a long site carries no tag (refused: name another mailbox).
+  5. Reuse first: an account on the same website (the site, a name under it or above it, or a sign-in host, `www.`
+     aside; among the site's accounts and the company's newest 20) under another address is refused with its id
+     ("use it"); one under this address is this opening repeated (the receipt answers) or the vault's 23505.
+  6. The effect: receipt `company_account:open:<operationKey>` (arguments: site, sign-in hosts, login, purpose, the
+     todo's id, the password rules), then the vault's `POST /v1/company-accounts`; its answer (the account, or its
+     refusal in its own words) completes the receipt and is the call's result.
+- `state {account, status, operationKey}`: receipt `company_account:state:<account>:<operationKey>`, then the vault.
+- Review: `find` is a read; `open` acts outside; `connected` and `needs_person` are the company's bookkeeping;
+  `closed` is destructive, and its card says it deletes the password and authenticator for good (the "deleting
+  things outside" check). A `vault_fill` card names the account and the field, never a value.
+- `computer_browser` now offers `vault_fill {role, name, account, field}`; the computer tools' words say a company
+  account's values are typed only by the vault, and a CAPTCHA, bot check, unusual activity warning or block page
+  ends the attempt at once, never retried, the account marked `needs_person`. The agents' instructions gain
+  "Accounts on websites" with the same rules.
+- Rollout: the vault's nginx needs `location = /v1/company-accounts` and `location = /v1/company-account-fills`
+  (to `$qorpera_operations_broker`, as `/v1/operations`), then the coordinator switches accounts on. #682 (fill
+  hardening) must be in the office image before agents get `vault_fill`, and accounts stay switched off until an
+  office image with A1-4c is live: until then the stop at a block page is only the agent's words.
+
 ## Notes for later steps
 
-- A1-4 must make every account's mail markable (A1-5a), since nothing in the database enforces it:
-  - The account tool makes the login itself, `<handle>+<tag>@<mail domain>` from the agent's mailbox and the
-    site; the agent never picks it, and no account is opened on the bare mailbox address.
+- A1-4 must make every account's mail markable (A1-5a). The database enforces the tagged address (A1-4a); the
+  rest is the tool's:
+  - The account tool makes the login itself, `<mailbox>+<tag>@<mail domain>` from one of the company's mailboxes
+    and the site; the agent never picks it, and no account is opened on the bare mailbox address.
   - The tag is at most 64 characters of `[a-z0-9._-]` (Q1's limit), while a site name can be 253: a long site
     gets a shortened tag (for example its first 55 characters, `-` and 8 hex characters of its hash).
   - The account row is opened before the address is typed into any form, also for sign-ups that start with the

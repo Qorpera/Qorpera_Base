@@ -121,44 +121,52 @@ grant execute on function pg_temp.ca_receipt(text,text), pg_temp.ca_done(text), 
 	pg_temp.ca_open(text,text,text,text,text,text,text,text,text,text,text,text,text), pg_temp.ca_call(text,text,text),
 	pg_temp.ca_version_args(text,text,text) to qorpera_secret_broker;
 
+-- The company's mailbox: an agent's account signs up with a tagged address of it (A1-4a's trigger).
+update public.qorpera_mail_settings set domain = 'nordlys.example';
+select set_config('session_replication_role','replica',true);
+insert into public.qorpera_company_mailboxes(hook_id,profile_id,environment_id,local_part)
+values ('79400000-0000-4000-8000-000000000090','29000000-0000-4000-8000-000000000010',
+	'29000000-0000-4000-8000-000000000020','agents');
+select set_config('session_replication_role','origin',true);
+
 -- 1. Switched off, and only the broker may call.
 select pg_temp.ca_receipt('01','company_account:open:r1');
 set local session authorization qorpera_secret_broker;
-select set_config('qorpera_test.ca_off',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_off',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 reset session authorization;
 update public.qorpera_company_account_settings set enabled = true;
-select set_config('qorpera_test.ca_not_broker',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_not_broker',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 
 set local session authorization qorpera_secret_broker;
 -- 2. Refusals before anything is written.
-select set_config('qorpera_test.ca_other_broker',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_other_broker',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060','79400000-0000-4000-8000-000000000041',repeat('e',64)),true);
-select set_config('qorpera_test.ca_capability',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_capability',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060','79400000-0000-4000-8000-000000000040',repeat('d',64)),true);
-select set_config('qorpera_test.ca_no_todo',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_no_todo',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000069'),true);
-select set_config('qorpera_test.ca_done_todo',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_done_todo',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000061'),true);
-select set_config('qorpera_test.ca_other_todo',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_other_todo',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000062'),true);
-select set_config('qorpera_test.ca_bad_site',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_bad_site',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_site => 'Vercel.com'),true);
 -- A DNS label has at most 63 characters; sign-in hosts are a flat list.
-select set_config('qorpera_test.ca_long_label',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_long_label',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_site => repeat('a',64) || '.example'),true);
-select set_config('qorpera_test.ca_nested_hosts',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_nested_hosts',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_hosts => '{{"a.example","b.example"}}'),true);
-select set_config('qorpera_test.ca_bad_input',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_bad_input',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_input => repeat('f',64)),true);
-select set_config('qorpera_test.ca_bad_digest',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_bad_digest',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_sha => repeat('0',64)),true);
-select set_config('qorpera_test.ca_bad_key',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_bad_key',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_key => 'company-kek-0'),true);
-select set_config('qorpera_test.ca_bad_environment',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_bad_environment',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_environment => '79400000-0000-4000-8000-000000000020'),true);
-select set_config('qorpera_test.ca_bad_company',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_bad_company',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_company => '79400000-0000-4000-8000-000000000010'),true);
 reset session authorization;
 -- A folder company's accounts come with their connection file (A1-7): refused for now. The run's company is
@@ -167,7 +175,7 @@ select set_config('qorpera_test.ca_job_v2',pg_get_functiondef('public.qorpera_jo
 create or replace function public.qorpera_job_is_folder_v2(p_job_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
 set local session authorization qorpera_secret_broker;
-select set_config('qorpera_test.ca_folder',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_folder',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 reset session authorization;
 do $$ begin execute current_setting('qorpera_test.ca_job_v2'); end $$;
@@ -187,15 +195,15 @@ select set_config('qorpera_test.ca_null_digests',pg_temp.ca_try('select public.q
 select set_config('qorpera_test.ca_null_downstream',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
 	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),null)'),true);
-select set_config('qorpera_test.ca_open_null_capability',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_open_null_capability',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_capability => null),true);
-select set_config('qorpera_test.ca_open_null_input',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_open_null_input',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_input => null),true);
-select set_config('qorpera_test.ca_opened',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_opened',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
-select set_config('qorpera_test.ca_repeat',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_repeat',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
-select set_config('qorpera_test.ca_repeat_new_id',pg_temp.ca_open('01','agents@nordlys.example',
+select set_config('qorpera_test.ca_repeat_new_id',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_secret => '79400000-0000-4000-8000-000000000299'),true);
 select pg_temp.ca_done('01');
 -- A finished receipt opens nothing, nor does one begun for another action.
@@ -205,11 +213,11 @@ select pg_temp.ca_receipt('02','company_account:use:r2');
 select set_config('qorpera_test.ca_describe_wrong_action',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
 	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000102'',repeat(''a'',64),repeat(''b'',64))'),true);
-select set_config('qorpera_test.ca_wrong_action',pg_temp.ca_open('02','agents@nordlys.example',
+select set_config('qorpera_test.ca_wrong_action',pg_temp.ca_open('02','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_done('02');
 select pg_temp.ca_receipt('03','company_account:open:r3');
-select set_config('qorpera_test.ca_duplicate',pg_temp.ca_open('03','Agents@Nordlys.example',
+select set_config('qorpera_test.ca_duplicate',pg_temp.ca_open('03','Agents+Vercel.com@Nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_done('03');
 select pg_temp.ca_receipt('04','company_account:open:r4');
@@ -285,7 +293,7 @@ begin
 	v_account := current_setting('qorpera_test.ca_account')::uuid;
 	if (substring(current_setting('qorpera_test.ca_opened') from 4)::jsonb - 'accountId') is distinct from jsonb_build_object(
 		'schema','qorpera.company-account/v1','site','vercel.com','signInHosts','[]'::jsonb,
-		'login','agents@nordlys.example','twoStep','none','status','pending','version',1) then
+		'login','agents+vercel.com@nordlys.example','twoStep','none','status','pending','version',1) then
 		raise exception 'Wrong opened account: %',current_setting('qorpera_test.ca_opened');
 	end if;
 	if current_setting('qorpera_test.ca_context') is distinct from 'ok:' || jsonb_build_object(
@@ -382,7 +390,7 @@ select set_config('qorpera_test.ca_use_closed',pg_temp.ca_call('qorpera_use_comp
 select pg_temp.ca_done('10');
 -- A closed account frees its login: the company may open it again.
 select pg_temp.ca_receipt('11','company_account:open:r11');
-select set_config('qorpera_test.ca_reopened',pg_temp.ca_open('11','agents@nordlys.example',
+select set_config('qorpera_test.ca_reopened',pg_temp.ca_open('11','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_done('11');
 reset session authorization;
@@ -529,9 +537,9 @@ select set_config('qorpera_test.ca_use_revoked_secret',pg_temp.ca_call('qorpera_
 	'''79400000-0000-4000-8000-000000000072'''),true);
 select pg_temp.ca_done('16');
 select pg_temp.ca_receipt('15','company_account:open:r15');
-select set_config('qorpera_test.ca_taken_id',pg_temp.ca_open('15','agents@nordlys.example',
+select set_config('qorpera_test.ca_taken_id',pg_temp.ca_open('15','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_secret => '79400000-0000-4000-8000-000000000071'),true);
-select set_config('qorpera_test.ca_reopened_again',pg_temp.ca_open('15','agents@nordlys.example',
+select set_config('qorpera_test.ca_reopened_again',pg_temp.ca_open('15','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_done('15');
 reset session authorization;

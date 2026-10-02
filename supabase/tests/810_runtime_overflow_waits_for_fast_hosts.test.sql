@@ -1,5 +1,5 @@
 -- @fixture 643_runtime_runs_follow_placement.test.sql until "-- END FAST PLACEMENT FIXTURE"
--- 20260929999997: with a fast host on each node, a run one fast host refuses for capacity goes to the other
+-- 20260928439975: with a fast host on each node, a run one fast host refuses for capacity goes to the other
 -- fast host first. The fresh-VM overflow takes it at once only when no fast host the run may use is left to
 -- try it; otherwise only after its 10 s wait. Node A: fast host ...092 (the fixture's) and the overflow ...a2.
 -- Node B: fast host ...b1. Test 643 covers the main path (B refuses: the overflow waits; both refuse: it takes).

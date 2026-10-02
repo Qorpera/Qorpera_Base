@@ -1,5 +1,5 @@
 -- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
--- F3, the run view open (20260929999970) under concurrency: two first opens in one job at once, two opens with a view
+-- F3, the run view open (20260928439970) under concurrency: two first opens in one job at once, two opens with a view
 -- open, an open beside a save in flight through the view, an open beside the run's completion, and a refused actor
 -- beside a held job. The order is the run completion's (job, then the job's run views, then the view open's run
 -- entry), so nothing deadlocks, a refused call never waits, and the last opener's view wins.

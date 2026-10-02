@@ -15,6 +15,7 @@ import {
 	prefetchCloudCodexArtifact,
 	prepareCloudCodexSpare,
 } from "./cloud-codex-tool-session.ts";
+import { type CloudCompanyAccountClient, cloudCompanyAccountTool } from "./cloud-company-account-tools.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
@@ -28,6 +29,7 @@ import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
+import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -124,9 +126,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
+	readonly #companyAccounts: CloudCompanyAccountClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
+	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #folderBytes:
 		| ((binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes)
 		| undefined;
@@ -147,6 +151,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
 		chatGptPlanAuth?: CloudChatGptPlanAuth;
 		secretBroker?: CloudSecretOperationClient;
+		/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
+		companyAccounts?: CloudCompanyAccountClient;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
 		/** The coding composition (Order 9): only a node with the coding command
@@ -158,6 +164,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** A folder-v2 run's file bytes (core C1d: the object gateway's folder route). Without it a folder-v2 run
 		 * keeps the legacy state tools, which refuse. */
 		folderBytes?: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
+		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
+		 * company_search over it. */
+		folderSearch?: { readonly socketPath: string };
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -171,10 +180,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#chatGptPlanAuth = options.chatGptPlanAuth;
 		this.#secretBroker = options.secretBroker;
+		this.#companyAccounts = options.companyAccounts;
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
 		this.#folderBytes = options.folderBytes;
+		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -584,6 +595,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						const computer = await this.#computerSession?.(run, operations);
+						// The node's folder search (F3, "Light threads"): a folder-v2 run on a host that has it. A worker
+						// gets it too: it only reads.
+						const folderSearch =
+							folder && this.#folderSearch
+								? new CloudFolderSearch({
+										socketPath: this.#folderSearch.socketPath,
+										folder: folder.client,
+										environmentId: identity.environmentId,
+									})
+								: undefined;
 						// Contract 13: a worker reads, works and reports to its parent. It has no mouth, no
 						// coworker channel and no delegation; an ordinary company run is the dispatcher.
 						const work = cloudWorkerToolFilter(wake);
@@ -592,6 +613,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							tools: [
 								...(computer?.tools ?? []),
 								...gateway.tools().filter(work.companyFile),
+								...(folder && folderSearch
+									? [
+											cloudFolderSearchTool({
+												search: folderSearch,
+												folder: folder.client,
+												runId: identity.runId,
+											}),
+										]
+									: []),
 								cloudCompanyContextTool(context, binding, this.#paths),
 								// A worker has no outbound effects: no mouth, no connectors.
 								...(this.#secretBroker && !work.isWorker
@@ -602,6 +632,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											operations,
 											broker: this.#secretBroker,
 										})
+									: []),
+								// The company's own website accounts (A1-4): not a worker's, and a folder company's come
+								// with its connection files (A1-7).
+								...(this.#companyAccounts && !work.isWorker && !context.folder
+									? [
+											cloudCompanyAccountTool({
+												binding,
+												identity,
+												control: this.#paths,
+												operations,
+												accounts: this.#companyAccounts,
+											}),
+										]
 									: []),
 								...(work.isWorker
 									? []
@@ -767,7 +810,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								gateway.recordContextView(frame, outputs, requestSignal),
 							fenceContextView: (frame, outputs, requestSignal) =>
 								gateway.fenceContextView(frame, outputs, requestSignal),
-							...(computer ? { close: () => computer.close() } : {}),
+							...(computer || folderSearch
+								? {
+										close: async () => {
+											folderSearch?.close();
+											await computer?.close();
+										},
+									}
+								: {}),
 						};
 					},
 				});

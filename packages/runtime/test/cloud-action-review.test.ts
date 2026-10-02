@@ -66,6 +66,8 @@ describe("which calls are reviewed", () => {
 			},
 			"internal",
 		],
+		// The node's folder search (F3): a read with the run's own view.
+		["company_search", { query: "plan" }, "read"],
 		// An email from a company mailbox leaves the company (M2b).
 		[
 			"send_mail",

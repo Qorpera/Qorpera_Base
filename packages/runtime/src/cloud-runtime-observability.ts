@@ -59,6 +59,10 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"send_mail",
 	"find_mail",
 	"save_attachment",
+	// The node's folder search (F3, "Light threads").
+	"company_search",
+	// Company accounts (A1-4): the company's own accounts on websites.
+	"company_account",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
