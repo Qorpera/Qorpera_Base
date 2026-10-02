@@ -693,6 +693,14 @@ wake), so no agent runs and nothing is charged before it.
   gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
   Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
   allowance.
+- Members read mail (20260929999998_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
+  `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
+  (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
+  `qorpera_member_mail_thread(p_environment_id, p_thread)` (`{thread, address, messages, more?, waiting}`),
+  `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
+  Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
+  thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
+  answered through `qorpera_answer_action_review` with its `reviewId`.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 

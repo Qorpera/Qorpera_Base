@@ -7,7 +7,9 @@
  * agent at the mailbox's address, plain text with the AI line the database added, and a reply's thread headers and
  * Auto-Submitted: auto-replied. An email with attachments (M2c-1) carries the company files as they were when queued,
  * read from the company's objects in Storage (each a manifest and its chunks, checked against their digests) and sent
- * as the email's attachments; a file whose bytes are not in Storage yet is tried again later.
+ * as the email's attachments; a file whose bytes are not in Storage yet is tried again later. After the sends it reads
+ * back the provider's Message-ID of a few sent emails (I5a), so an answer to an email an agent started joins its
+ * thread; best effort, asked again after five minutes for a day.
  * Each email's provider idempotency key is its id, so a send repeated after a lost answer or an expired lease is
  * the same email. A sent email is completed; a failure the provider may get past (a timeout, a rate limit, a server
  * error) is retried after 1, 2, 4 ... minutes, and any other fails the email. Sends are paced, since the provider
@@ -18,6 +20,8 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
 export const BATCH = 10;
+/** Sent emails whose Message-ID is read back in one call, paced like the sends. */
+export const MESSAGE_ID_BATCH = 5;
 /** Between two sends: the provider allows a few requests a second across the platform's email. */
 export const PACE_MS = 600;
 const SEND_TIMEOUT_MS = 10_000;
@@ -79,11 +83,16 @@ export interface MailOutboxStore {
 	claim(limit: number, leaseId: string): Promise<unknown>;
 	complete(job: MailJob, providerMessageId: string): Promise<void>;
 	fail(mailId: string, leaseId: string, message: string, retryable: boolean): Promise<void>;
+	/** Sent emails whose Message-ID is still unknown: `[{mailId, providerMessageId}]`. */
+	messageIdsDue(limit: number): Promise<unknown>;
+	recordMessageId(mailId: string, providerMessageId: string, messageId: string): Promise<void>;
 }
 
 /** Sends one email; resolves to the provider's message id or throws MailSendError. */
 export interface MailSender {
 	send(email: ProviderEmail, idempotencyKey: string): Promise<string>;
+	/** The Message-ID header the provider gave a sent email, or null when it has none (yet). */
+	messageId(providerMessageId: string): Promise<string | null>;
 }
 
 /** The company's objects: one object's bytes by its sha256, or null when Storage has none. */
@@ -300,6 +309,21 @@ export class StorageObjectReader implements ObjectReader {
 	}
 }
 
+/** The sent emails due for their Message-ID; an answer that cannot be read is none. */
+export function parseMessageIdsDue(value: unknown): { mailId: string; providerMessageId: string }[] {
+	if (!Array.isArray(value) || value.length > 10) return [];
+	return value.flatMap((item) => {
+		const due = item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : {};
+		return typeof due.mailId === "string" &&
+			UUID.test(due.mailId) &&
+			typeof due.providerMessageId === "string" &&
+			due.providerMessageId.length >= 1 &&
+			due.providerMessageId.length <= 256
+			? [{ mailId: due.mailId, providerMessageId: due.providerMessageId }]
+			: [];
+	});
+}
+
 /** What the provider is asked to send: no empty cc, no empty headers, each file's bytes in base64. */
 export function providerEmail(job: MailJob, contents: readonly string[] = []): ProviderEmail {
 	if (contents.length !== job.attachments.length) throw new Error("The email's attachments are not all read");
@@ -375,6 +399,25 @@ export class ResendSender implements MailSender {
 			throw new MailSendError("Resend returned an invalid message id", true);
 		return id;
 	}
+
+	async messageId(providerMessageId: string): Promise<string | null> {
+		const response = await this.#fetch(`https://api.resend.com/emails/${encodeURIComponent(providerMessageId)}`, {
+			headers: { Authorization: `Bearer ${this.#apiKey}` },
+			signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+		});
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return null;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Resend returned HTTP ${response.status}`);
+		}
+		const body: unknown = await response.json();
+		const id =
+			body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).message_id : null;
+		return typeof id === "string" && id.length <= 998 ? id : null;
+	}
 }
 
 /** The Edge Function. */
@@ -401,7 +444,14 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 	}
 	const pace = outbox.pace ?? PACE_MS;
 	const sleep = outbox.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-	const counts = { claimed: claim.jobs.length + claim.rejected.length, sent: 0, retrying: 0, failed: 0, rejected };
+	const counts = {
+		claimed: claim.jobs.length + claim.rejected.length,
+		sent: 0,
+		retrying: 0,
+		failed: 0,
+		rejected,
+		messageIds: 0,
+	};
 	const objects = outbox.objects?.(presented);
 	for (const [index, job] of claim.jobs.entries()) {
 		if (index > 0 && pace > 0) await sleep(pace);
@@ -428,6 +478,21 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		try {
 			await store.complete(job, providerMessageId);
 			counts.sent += 1;
+		} catch {}
+	}
+	// The provider's Message-ID of what was sent (I5a): best effort, the database asks again in five minutes.
+	let due: { mailId: string; providerMessageId: string }[] = [];
+	try {
+		due = parseMessageIdsDue(await store.messageIdsDue(MESSAGE_ID_BATCH));
+	} catch {}
+	for (const [index, item] of due.entries()) {
+		if ((claim.jobs.length > 0 || index > 0) && pace > 0) await sleep(pace);
+		try {
+			const messageId = await outbox.sender.messageId(item.providerMessageId);
+			if (messageId) {
+				await store.recordMessageId(item.mailId, item.providerMessageId, messageId);
+				counts.messageIds += 1;
+			}
 		} catch {}
 	}
 	return json(counts);
