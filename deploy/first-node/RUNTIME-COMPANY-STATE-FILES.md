@@ -1666,9 +1666,9 @@ choices made while building:
 - 785 now hires its asking agent, uses a due date in 2099, makes a task's folder as its person after the task, and
   expects H2's answers where they come first (the seeded root, a task with a folder keeping its name, the person's
   rule); its secret cases use new ids, so H1's rule still answers them and names `secret_state`.
-- 74 mutants of the migration, mine and the code review's (each path, person, company, reference, contact, lock,
-  index, verify and seeding rule): 73 caught by 803, 785 or 805, and one equivalent (it rewrote the final-task check
-  into the same rule).
+- 65 distinct mutants of the migration, mine and the code review's (each path, person, company, reference, contact,
+  lock, index, verify, proof and seeding rule): 64 caught by 803, 785 or 805, and one equivalent (it rewrote the
+  final-task check into the same rule).
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a

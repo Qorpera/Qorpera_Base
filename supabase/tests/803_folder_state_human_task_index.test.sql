@@ -172,6 +172,25 @@ begin
 	if (pg_temp.idx('80300000-0000-4000-8000-0000000000e1')).status is distinct from 'done' then raise exception 'The index says done'; end if;
 end $$;
 
+-- Every listed kind of proof, each a file directly in proof/ named for its kind.
+do $$
+declare t jsonb := pg_temp.task('80300000-0000-4000-8000-0000000000b1', '{"proof":["photo","signature"]}');
+begin
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-s-1', pg_temp.save('human-tasks/sign.md', t)), 'saved', 'a task for a photo and a signature');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-s-2', jsonb_build_object('op','new_folder','path','human-tasks/sign',
+		'contents', jsonb_build_array(jsonb_build_object('path','proof','kind','folder'),
+			jsonb_build_object('path','proof/signature-1','kind','folder')))), 'saved', 'the folders');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-s-3', pg_temp.put('human-tasks/sign/proof/photo-1.jpg', 'a photo')), 'saved', 'a photo');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-s-4', pg_temp.put('human-tasks/sign/proof/signature-1/a.png', 'nested')),
+		'saved', 'a signature in a folder of its own');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-s-5', pg_temp.save('human-tasks/sign.md', t || '{"status":"done"}')),
+		'refused/structured_rule: done needs the proof the task asks for: signature', 'a nested file is no signature, and a photo is none');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-s-6', pg_temp.put('human-tasks/sign/proof/signature-1.png', 'signed')),
+		'saved', 'the signature');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-s-7', pg_temp.save('human-tasks/sign.md', t || '{"status":"done"}')),
+		'saved', 'done with both');
+end $$;
+
 -- 4. The company's side: done is the person's; returned goes back with a reason and a new due; final never changes -----
 
 do $$
@@ -285,6 +304,11 @@ begin
 	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-f-4d', jsonb_build_object('op','move','from','human-tasks/hand.md',
 		'to','human-tasks/hand-2.md','expectedVersion',pg_temp.version('human-tasks/hand.md'))),
 		'refused/structured_rule: the platform never renames or removes a member''s task', 'the platform renames a member''s task');
+	perform pg_temp.is(pg_temp.one(pg_temp.mem(), 'human-f-4e', jsonb_build_object('op','move','from','human-tasks/own.md',
+		'to','human-tasks/own-2.md','expectedVersion',pg_temp.version('human-tasks/own.md'))),
+		'refused/structured_rule: the task''s person never renames or removes its file', 'the person renames their own task');
+	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-f-4f', pg_temp.del('human-tasks/own.md')),
+		'refused/structured_rule: the platform never renames or removes a member''s task', 'the platform removes a member''s task');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-f-5', pg_temp.del('human-tasks/fit-disk')), 'saved', 'a member removes a final task''s folder');
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-f-6', pg_temp.del('human-tasks/fit-disk.md')), 'saved', 'then its file');
 	if (pg_temp.idx('80300000-0000-4000-8000-0000000000e1')).retired_at is null then raise exception 'A removed task retires'; end if;
@@ -329,6 +353,14 @@ begin
 		'refused/structured_rule: as the task''s person you may only tick%', 'the platform edits a contact''s task');
 	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-k-6', pg_temp.save('human-tasks/file-vat.md', vat || '{"status":"done"}')),
 		'saved', 'the contact marks it done');
+	-- On a contact's task the platform is the person: it never renames or removes the file.
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-6b', pg_temp.save('human-tasks/vat-2.md', vat
+		|| '{"id":"80300000-0000-4000-8000-0000000000b2"}')), 'saved', 'a second contact''s task, with no folder');
+	perform pg_temp.is(pg_temp.one('{"kind":"platform"}', 'human-k-6c', jsonb_build_object('op','move','from','human-tasks/vat-2.md',
+		'to','human-tasks/vat-3.md','expectedVersion',pg_temp.version('human-tasks/vat-2.md'))),
+		'refused/structured_rule: the task''s person never renames or removes its file', 'the link service renames a contact''s task');
+	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-6d', pg_temp.save('human-tasks/vat-2.md', vat
+		|| '{"id":"80300000-0000-4000-8000-0000000000b2","status":"cancelled"}')), 'saved', 'the second one is cancelled');
 	-- While the task is not final its contact stays, and keeps its email; one id, one file.
 	perform pg_temp.is(pg_temp.one(pg_temp.owner(), 'human-k-7', pg_temp.del('contacts/maria-jensen.md')),
 		'refused/structured_rule: a contact named by a task that is not final stays; cancel its tasks first', 'deleting the contact');

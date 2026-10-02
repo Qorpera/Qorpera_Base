@@ -183,7 +183,7 @@ select set_config('qorpera_test.h2_forget', pg_temp.sql_commit('80500000-0000-40
 	jsonb_build_array(jsonb_build_object('op','delete','path','contacts/maria.md','expectedVersion',pg_temp.version('contacts/maria.md'),
 		'asOfSeq',pg_temp.seq()))::text), false) \g /dev/null
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['h2race_a','h2race_b']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['h2race_a','h2race_b']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['h2race_a','h2race_b']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['h2race_a','h2race_b']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
