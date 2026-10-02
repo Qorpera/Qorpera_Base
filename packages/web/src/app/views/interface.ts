@@ -56,7 +56,13 @@ export function renderInterface(container: HTMLElement, company: CompanyControll
 		);
 		return { block, rows: rows.filter((row) => kept.has(row.row)) };
 	});
-	const key = JSON.stringify([name, file.name, blocks.map(({ block, rows }) => [block.title, rows])]);
+	// A part-width block whose neighbours have no source today stands alone, so it takes the whole row.
+	const widths = blocks.map(({ block }, index) => {
+		if (block.width === "full") return "full";
+		const partner = (at: number) => blocks[at] !== undefined && blocks[at]?.block.width !== "full";
+		return partner(index - 1) || partner(index + 1) ? block.width : "full";
+	});
+	const key = JSON.stringify([name, file.name, widths, blocks.map(({ block, rows }) => [block.title, rows])]);
 	if (shownIn.get(container) === key) return;
 	shownIn.set(container, key);
 
@@ -91,8 +97,8 @@ export function renderInterface(container: HTMLElement, company: CompanyControll
 			h(
 				"div",
 				{ class: "interface-page" },
-				...blocks.map(({ block, rows }) =>
-					listBlock(block, rows, nameOf, (agentId) =>
+				...blocks.map(({ block, rows }, index) =>
+					listBlock({ ...block, width: widths[index] ?? "full" }, rows, nameOf, (agentId) =>
 						agentFigure(company.staffById(agentId), nameOf("agent", agentId), { size: 30 }),
 					),
 				),
