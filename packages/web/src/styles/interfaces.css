@@ -87,7 +87,8 @@
 .interface-item { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-radius: 9px; color: var(--text); text-decoration: none; }
 .interface-item-copy { flex: 1; }
 a.interface-item:hover { background: var(--hover); text-decoration: none; }
-.interface-list li + li .interface-item { border-top: 1px solid var(--border); border-radius: 0; }
+.interface-list li + li { border-top: 1px solid var(--border); }
+.interface-list li + li .interface-item { border-radius: 0; }
 .interface-item-figure .figure { width: 30px; height: 30px; }
 .interface-item-copy { display: flex; flex-direction: column; min-width: 0; }
 .interface-item-copy strong { font-size: 13px; font-weight: 600; }
@@ -99,7 +100,8 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-dots i:nth-child(3) { animation-delay: 0.3s; }
 @keyframes interface-dot { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 .interface-cards .interface-list { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-.interface-cards .interface-list li + li .interface-item { border-top: 0; border-radius: 12px; }
+.interface-cards .interface-list li + li { border-top: 0; }
+.interface-cards .interface-list li + li .interface-item { border-radius: 12px; }
 .interface-cards .interface-item { padding: 10px 12px; border-radius: 12px; background: var(--warning-soft); }
 .interface-empty { margin: 4px 0 2px; color: var(--text-soft); font-size: 12.5px; }
 .interface-missing { display: grid; gap: 8px; padding: 32px; color: var(--text-muted); }
@@ -129,9 +131,12 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-cards .interface-item-row > .interface-item { background: transparent; }
 .interface-actions { display: inline-flex; flex: none; flex-wrap: wrap; gap: 6px; }
 .interface-button {
-	display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 8px;
-	background: var(--pane-strong); color: var(--text); font-size: 12.5px; font-weight: 600; text-decoration: none;
+	display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: 8px;
+	background: var(--pane-strong); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600;
+	text-decoration: none; cursor: pointer;
 }
+.interface-button:disabled { opacity: 0.6; cursor: default; }
+.interface-button:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
 .interface-button:hover { text-decoration: none; background: var(--hover); }
 
 /* A table: sortable headings, a filter above, a row that opens. */

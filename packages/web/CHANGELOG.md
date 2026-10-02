@@ -5,14 +5,15 @@
 ### Added
 
 - Interface pages draw more of the fixed blocks (Interfaces step I3a; `deploy/first-node/RUNTIME-INTERFACES.md` §3):
-  - **Views** are tabs under the page's head. A view built from another (`from_view`) shows that view's blocks with its own `where` added. A view with nothing this client can draw is left out.
-  - **`table`** sorts by its headings and filters by its text. The filter keeps focus and the caret while the table redraws.
-  - **`opens` and `detail`:** a list or table row that opens shows that record's fields and text in its `detail` block, beside the list. On a phone it is the next screen, with Back. A `detail` block that nothing opens is not drawn.
-  - **Buttons** are drawn for the verbs this client can carry out:
-    - `answer` takes the member to the thread where the platform's own card waits.
-    - `open` leads to an agent's thread or another interface the member can open.
-    - `message` opens the agent's thread with the text in its composer, and nothing is sent until the member sends it. A value from outside content, such as an email's subject, goes in «» with a quoted line saying so, never as the member's own words.
-    - Buttons for agents only, and verbs that need folder tables or a file route, are not drawn.
+  - **Views** are tabs under the page's head. A view built from another (`from_view`) shows that view's blocks narrowed by its own `where`: rows must match both. A block narrowed by a column its source doesn't have, and a view left with nothing to draw, are left out.
+  - **`table`** sorts by its headings (an agent column by the name shown) and filters by its text. The filter keeps focus and the caret while the table redraws, and a letter being composed isn't cut off.
+  - **`opens` and `detail`:** a list or table row that opens shows that record's fields and text in its `detail` block, beside the list. On a phone it is the next screen, and focus moves to Back and returns to the row. A row whose target isn't drawn keeps its own link. An open row follows its own item, never another item of the same agent.
+  - **Buttons** are drawn only where the member can use them:
+    - `answer` appears where a platform card waits for the member, and takes them to its thread.
+    - `open` leads to an agent who still works here, or to another interface the member can open.
+    - `message` opens the agent's thread with the text in its composer. Nothing is sent until the member sends it. A value from outside content, such as an email's subject, goes in «» on one line (it can't close the marks or start a line of its own) with a quoted line saying so.
+    - Answer and message need a member who can write.
+  - Every control keeps keyboard focus through live redraws. The platform's column names and the kinds of what waits are in the member's language.
   - Pulse's "Needs you" cards show their Answer button.
 - The rail splits into **Agents | Interfaces** (contract, 2026-10-02 interfaces amendment, item 8; Interfaces steps I1 and I4):
   - **The top row** (rail top option A, Jonas, 2 Oct): the **Agents | Interfaces** tabs fill the row, then a search button and the add button.
