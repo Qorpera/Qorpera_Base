@@ -908,6 +908,7 @@ it.each([
 				"read_event",
 				"send_mail",
 				"find_mail",
+				"save_attachment",
 				"read_context",
 				"read_skill",
 				"recall_memory",

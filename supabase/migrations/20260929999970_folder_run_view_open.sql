@@ -25,7 +25,7 @@ set local lock_timeout = '3s';
 
 create function public.qorpera_folder_run_view_open(p_environment_id uuid, p_actor jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_attempt integer;
+declare v_attempt integer; v_constraint text;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if jsonb_typeof(p_actor) is distinct from 'object' or p_actor ->> 'kind' is distinct from 'run'
@@ -49,8 +49,10 @@ begin
 			return public.qorpera_folder_view_open(p_environment_id, p_actor, 'run_box', '{}'::jsonb);
 		exception when unique_violation then
 			-- Another open of this job committed its view while this one was being made: close it too, and open again
-			-- (the locks taken inside this attempt go with it, and are taken again in the same order).
-			if v_attempt = 2 then raise; end if;
+			-- (the locks taken inside this attempt go with it, and are taken again in the same order). Any other
+			-- unique violation is raised as it came.
+			get stacked diagnostics v_constraint = constraint_name;
+			if v_attempt = 2 or v_constraint is distinct from 'qorpera_folder_views_open_run_box' then raise; end if;
 		end;
 	end loop;
 end $$;

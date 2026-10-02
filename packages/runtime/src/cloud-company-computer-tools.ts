@@ -17,7 +17,7 @@ import {
 	parseCompanyComputerFileExport,
 	parseCompanyComputerFileImport,
 } from "@qorpera/cloud-client/cloud-file-transfer";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
 import {
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
@@ -37,6 +37,14 @@ export type CompanyComputerAction =
 	| { kind: "browser"; action: "click"; role: CompanyComputerBrowserRole; name: string }
 	| { kind: "browser"; action: "fill"; role: "textbox" | "combobox"; name: string; text: string }
 	| { kind: "browser"; action: "press"; key: string }
+	| {
+			kind: "browser";
+			action: "vault_fill";
+			role: "textbox" | "spinbutton";
+			name: string;
+			account: string;
+			field: "login" | "password" | "code";
+	  }
 	| { kind: "screenshot"; surface: "browser" | "desktop" }
 	| { kind: "desktop"; action: "click"; x: number; y: number; button: "left" | "middle" | "right" }
 	| { kind: "desktop"; action: "move"; x: number; y: number }
@@ -158,6 +166,23 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 			keys(input, ["kind", "action", "key"]);
 			if (typeof input.key !== "string" || !KEY.test(input.key)) throw new Error("INVALID_COMPUTER_ARGUMENTS");
 			return { kind: "browser", action: "press", key: input.key };
+		}
+		if (input.action === "vault_fill") {
+			// A company account's value the vault types into one box (A1-3); the action never holds the value.
+			keys(input, ["kind", "action", "role", "name", "account", "field"]);
+			if (input.role !== "textbox" && input.role !== "spinbutton") throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			const account = normalizeUuid(input.account);
+			if (account === null) throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			if (input.field !== "login" && input.field !== "password" && input.field !== "code")
+				throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			return {
+				kind: "browser",
+				action: "vault_fill",
+				role: input.role,
+				name: text(input.name, 512),
+				account,
+				field: input.field,
+			};
 		}
 	}
 	if (input.kind === "screenshot") {

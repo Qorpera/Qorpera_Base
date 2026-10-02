@@ -1,5 +1,6 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { leave } from "./motion.ts";
 import { uiScale } from "./scale.ts";
 
 /* A right-click menu, Grok Bot's shape: icon rows, separators, a submenu that
@@ -48,7 +49,9 @@ export function openMenu(): ContextMenu | undefined {
 
 /** Places a fixed element at (x, y), flipped or clamped to stay on screen. */
 function place(element: HTMLElement, x: number, y: number, flipX?: number): void {
-	const { width, height } = element.getBoundingClientRect();
+	// The layout box: the menu's first frame is scaled as it opens (styles/motion.css).
+	const width = element.offsetWidth;
+	const height = element.offsetHeight;
 	const margin = MARGIN * uiScale();
 	let left = x;
 	if (left + width > window.innerWidth - margin)
@@ -203,7 +206,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			closed = true;
 			lifetime.abort();
 			closeSubmenu();
-			root.remove();
+			leave(root, "is-leaving", () => root.remove());
 			opener?.classList.remove("menu-open");
 			if (active === handle) active = undefined;
 			// Focus returns only when it was in the menu; a press elsewhere keeps its own target.

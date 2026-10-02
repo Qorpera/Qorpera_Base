@@ -11,8 +11,8 @@ export const NATIVE_HOST_DISPATCH_DEFAULT: NativeHostDispatchMode = "off";
 export type NativeHostDispatchMode = "off" | "on";
 
 /** The native host's calls inside a job, and the entry point (statement budget) of each: qorpera_native_host_calls as
- * migrations 20260928409985 and 20260929999920 (find_mail) list them, without the two identity calls, which the host
- * makes between jobs (G2-3). */
+ * migrations 20260928409985, 20260929999920 (find_mail) and 20260929999940 (save_attachment) list them, without the two
+ * identity calls, which the host makes between jobs (G2-3). */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],
@@ -64,6 +64,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_native_company_file_write_source", "standard"],
 	["qorpera_native_machine_manage", "standard"],
 	["qorpera_native_machine_start", "standard"],
+	["qorpera_native_mail_attachment", "standard"],
 	["qorpera_native_office_capture", "standard"],
 	["qorpera_native_office_descriptor", "standard"],
 	["qorpera_native_office_operation", "standard"],

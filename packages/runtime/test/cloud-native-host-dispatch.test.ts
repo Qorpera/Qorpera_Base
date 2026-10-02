@@ -58,6 +58,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 	const rows = [
 		...rowsOf(migration),
 		...rowsOf(read("20260929999920_runtime_company_mail_find_and_tags.sql")),
+		...rowsOf(read("20260929999940_runtime_company_mail_attachments.sql")),
 		...rowsOf(read("20260929999970_folder_run_view_open.sql")),
 	];
 	const long = new Set(
@@ -68,7 +69,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(85);
+	expect(rows).toHaveLength(86);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_validate_native_provider_execution_lease", "long"],

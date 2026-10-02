@@ -13,5 +13,5 @@ end
 $$;
 
 select pg_temp.folder_company_search_patch('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
-	$old$'send_mail','find_mail',$old$,
-	$new$'send_mail','find_mail','company_search',$new$);
+	$old$'find_mail','save_attachment',$old$,
+	$new$'find_mail','save_attachment','company_search',$new$);

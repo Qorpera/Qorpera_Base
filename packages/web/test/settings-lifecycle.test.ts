@@ -344,7 +344,7 @@ describe("settings session lifecycle", () => {
 		composer.dispatchEvent(new Event("input", { bubbles: true }));
 		open(f.root);
 		await draw();
-		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
+		expect([...f.root.querySelectorAll('.settings-nav [role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
 			"Appearance",
 			"Company",
@@ -353,7 +353,8 @@ describe("settings session lifecycle", () => {
 			"My connections",
 			"Company connections",
 		]);
-		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
+		for (const tab of f.root.querySelectorAll('.settings-nav [role="tab"]'))
+			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Rules live on General, under the account's settings, for the chosen company.
 		expect(
 			f.root.querySelector('#settings-content .settings-rules input[aria-label="When an agent wants to:"]'),
@@ -435,7 +436,9 @@ describe("settings session lifecycle", () => {
 		// Company lists the invitations it sent, Friends the ones waiting for this account.
 		search.value = "invitations";
 		search.dispatchEvent(new Event("input"));
-		const shown = [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')].filter((tab) => !tab.hidden);
+		const shown = [...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')].filter(
+			(tab) => !tab.hidden,
+		);
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
@@ -447,7 +450,7 @@ describe("settings session lifecycle", () => {
 		const shown = (words: string) => {
 			search.value = words;
 			search.dispatchEvent(new Event("input"));
-			return [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')]
+			return [...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')]
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id);
 		};
