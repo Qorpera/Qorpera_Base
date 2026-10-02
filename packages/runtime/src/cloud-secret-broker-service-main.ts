@@ -13,6 +13,7 @@ import {
 	CloudConnectorTokenRevocationUpkeep,
 	CloudConnectorTokenRevoker,
 } from "./cloud-connector-token-revocation.ts";
+import { CloudEventVerifications, CloudEventVerificationUpkeep } from "./cloud-event-verification.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
@@ -377,6 +378,10 @@ export async function runCloudSecretBrokerServiceMain(
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
 			}),
 		});
+		// Deliveries to the company's signed hooks, checked against their signing secrets every five seconds (W1b).
+		const verifications = new CloudEventVerificationUpkeep({
+			verifications: new CloudEventVerifications({ authority, keyring }),
+		});
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
@@ -397,6 +402,7 @@ export async function runCloudSecretBrokerServiceMain(
 			signIns?.start();
 			upkeep.start();
 			revocations.start();
+			verifications.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -406,7 +412,13 @@ export async function runCloudSecretBrokerServiceMain(
 			process.removeListener("SIGTERM", shutdown);
 			// All at once: the server stops taking requests while a renewal in flight finishes, so a
 			// stop stays within the unit's 90 s.
-			await Promise.all([upkeep.close(), revocations.close(), signIns?.close(), service.close()]);
+			await Promise.all([
+				upkeep.close(),
+				revocations.close(),
+				verifications.close(),
+				signIns?.close(),
+				service.close(),
+			]);
 		}
 	} finally {
 		await pool.end();
