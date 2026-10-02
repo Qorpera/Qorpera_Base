@@ -348,14 +348,13 @@ export function rollPackets(options) {
 		// Node B is the last host of N: queued N work must be taken while B still serves it (step 7). A job
 		// an orchestrator already holds is running, as roll status counts it.
 		`do $roll_queued$
-declare v_jobs text;
+declare v_count bigint; v_jobs text;
 begin
-	select string_agg(queued.id::text, ', ') into v_jobs from (
-		select job.id from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id
+	select count(*), string_agg(queued.id::text, ', ' order by queued.id) filter (where queued.rank <= 20) into v_count, v_jobs from (
+		select job.id, row_number() over (order by job.id) rank from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id
 		where job.status = 'queued' and run.runtime_bundle_sha256 = ${literal(from.sha)}
-			and not exists (select 1 from public.qorpera_runner_job_claims claim where claim.job_id = job.id and claim.status in ('claimed', 'assigned'))
-		order by job.id limit 20) queued;
-	if v_jobs is not null then raise exception 'Work of the old bundle is still queued: let node B take it first (jobs %)', v_jobs; end if;
+			and not exists (select 1 from public.qorpera_runner_job_claims claim where claim.job_id = job.id and claim.status in ('claimed', 'assigned'))) queued;
+	if v_count > 0 then raise exception 'Work of the old bundle is still queued: let node B take it first (% jobs: %)', v_count, v_jobs; end if;
 end $roll_queued$;`,
 		...off(nodeB),
 	]);
