@@ -186,7 +186,7 @@ export class PreferencePicker {
 		this.#popover.hidden = false;
 		this.#button.setAttribute("aria-expanded", "true");
 		this.#shown = this.#rows.map((row) => row.el);
-		this.#place();
+		this.#place(true);
 		this.#activate((this.#rows.find((row) => row.option.value === current) ?? this.#rows[0])?.el, false);
 		// Open on the current value, in the middle of the list when it is long.
 		const chosen = this.#active;
@@ -288,7 +288,7 @@ export class PreferencePicker {
 
 	/** Under the button, right edges aligned, or above it when there is more
 	 * room there; always inside the window. */
-	#place(): void {
+	#place(opening = false): void {
 		const popover = this.#popover;
 		const anchor = this.#button.getBoundingClientRect();
 		// The constants are design pixels; the window and the button are measured in screen pixels.
@@ -306,10 +306,12 @@ export class PreferencePicker {
 		popover.style.top = `${top}px`;
 		// A transformed or filtered ancestor moves "fixed" off the window's
 		// corner; measure and correct so the list still sits at the button.
-		// (Measured without the opening animation's transform, which would read as an offset.)
-		popover.style.animation = "none";
+		// As it opens, measured without the opening animation's transform, which would read as an
+		// offset. (Turning the animation off and on starts it again, so only then: never while it
+		// is open, as it is placed again on every keystroke and scroll.)
+		if (opening) popover.style.animation = "none";
 		const placed = popover.getBoundingClientRect();
-		popover.style.removeProperty("animation");
+		if (opening) popover.style.removeProperty("animation");
 		if (placed.width > 0 && (placed.left !== left || placed.top !== top)) {
 			popover.style.left = `${2 * left - placed.left}px`;
 			popover.style.top = `${2 * top - placed.top}px`;

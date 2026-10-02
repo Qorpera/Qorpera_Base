@@ -6,6 +6,7 @@ import { renderRail } from "../src/app/views/shell.ts";
 import { openContextMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
 import { foldFrom } from "../src/ui/motion.ts";
+import { PreferencePicker } from "../src/ui/preference-picker.ts";
 import { fixture, profileA, session, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
 /* The views as they behave with an animation engine. jsdom has none, so every helper in
@@ -136,5 +137,37 @@ describe("the fold over an answered card", () => {
 		expect((ghost as HTMLElement).inert).toBe(true);
 		expect(document.querySelectorAll("[data-review-id]")).toHaveLength(1);
 		expect(document.querySelector("input[data-review-rule], #rule-r1, [name=rule], [for]")).toBeNull();
+	});
+});
+
+describe("a picker list that is open", () => {
+	it("is measured without its opening animation only as it opens, never again while it is searched", () => {
+		const picker = new PreferencePicker({
+			labelId: "zone-label",
+			searchLabel: "Search time zone",
+			options: () => [
+				{ value: "copenhagen", label: "Copenhagen" },
+				{ value: "lisbon", label: "Lisbon" },
+			],
+			value: () => "copenhagen",
+			display: (value) => value,
+			choose: () => {},
+		});
+		document.body.append(picker.el);
+		picker.el.querySelector<HTMLButtonElement>(".preference-picker-button")!.click();
+		const popover = document.querySelector<HTMLElement>(".preference-picker-popover")!;
+		expect(popover.hidden).toBe(false);
+		// Turning the animation off and on again would start it over: the list would blank out.
+		const restarts: string[] = [];
+		new MutationObserver(() => restarts.push(popover.style.animation)).observe(popover, {
+			attributes: true,
+			attributeFilter: ["style"],
+		});
+		const search = popover.querySelector<HTMLInputElement>("input")!;
+		search.value = "lis";
+		search.dispatchEvent(new Event("input", { bubbles: true }));
+		window.dispatchEvent(new Event("resize"));
+		expect(restarts).not.toContain("none");
+		expect(popover.style.animation).toBe("");
 	});
 });
