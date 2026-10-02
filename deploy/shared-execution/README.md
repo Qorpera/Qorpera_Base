@@ -232,11 +232,14 @@ last week, parked warm hosts included. The fresh-VM path stays on every node as 
      `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=` line for the script to fill. Never copy node 2's
      id: registering it here would take over node 2's orchestrator;
    - the credentials, as for node 2;
-   - every node 1 service URL on node 1's `:10000` front (tailnet address 100.75.4.70): `QORPERA_CLOUD_SECRET_BROKER_URL` (the example said
-     `:10443` until 2 Oct; `RUNTIME-LOGIN-VAULT.md`), `QORPERA_NATIVE_OBJECT_GATEWAY_URL` and the computer
-     URL. The guest guard on `qorpera0` (#684, observe mode first) lets a guest reach node 1 only on
-     its listed ports (443, 8443, 8444, 10000, 18443, 18444, 18543, 18544), DNS and the coding gateway
-     `10.41.0.1:8789`, plus the public internet (the model relay, Supabase).
+   - every node 1 service URL on node 1's `:10000` front (tailnet address 100.75.4.70):
+     `QORPERA_CLOUD_SECRET_BROKER_URL`, `QORPERA_NATIVE_OBJECT_GATEWAY_URL` and, if set,
+     `QORPERA_COMPANY_COMPUTER_URL`. The example still says `:10443` for the broker, which the guard
+     refuses; `RUNTIME-LOGIN-VAULT.md` says `:10000`. (The example is pinned by checksum in the
+     installer, so it changes only together with that pin.) The guest guard on `qorpera0` (#684,
+     observe mode first) lets a guest reach node 1 only on its listed ports (443, 8443, 8444, 10000,
+     18443, 18444, 18543, 18544), DNS and the coding gateway `10.41.0.1:8789`, plus the public internet
+     (the model relay, Supabase).
 
    Node 1's LXD provider must **not** set `QORPERA_LXD_EXECUTION_HOST_INSTANCE`/`_PROJECT`. With
    logins in the vault no identity volume is attached to the host, and an attached one would
@@ -283,12 +286,17 @@ last week, parked warm hosts included. The fresh-VM path stays on every node as 
 
 **Undo node 1's host.** Stop node 1's host **before** clearing any role: with no roles, node 1's two
 orchestrators would race on one adapter. Either:
-- **park it:** in the VM, `systemctl disable --now qorpera-runner-orchestrator.service` (it leaves the
-  placement after 30 s). The VM and its policy entry stay, so node 1 stays `ready`; or
-- **remove it:** switch node 1's runs off; stop the orchestrator as above; `lxc stop` and `lxc delete
-  qorpera-exec-node01`; then remove its entry from node 1's policy and sync the observer (an instance
-  the policy does not list, stopped or not, makes node 1 `unavailable`, so the VM goes first); lower the
-  headroom; revoke its orchestrator row (a revoked id never registers again); switch node 1's runs on.
+- **park it, briefly:** in the VM, `systemctl disable --now qorpera-runner-orchestrator.service` (it
+  leaves the placement after 30 s). The VM and its policy entry stay, so node 1 stays `ready`. The next
+  rolling update's rebuild starts it again, and its step 6.0 refuses a stopped orchestrator on node A:
+  remove the host before then if it should stay off; or
+- **remove it:** switch node 1's runs off and wait for `readyForNodeRelease` (stopping the orchestrator
+  ends no run in flight, and the VM's journals hold the releases its runs still owe); stop the
+  orchestrator as above; `lxc stop` and `lxc delete qorpera-exec-node01 --project <node 1 run project>`;
+  then remove its entry from node 1's policy and sync the observer (an instance the policy does not
+  list, stopped or not, makes node 1 `unavailable`, so the VM goes first; node 1 reads `unavailable`
+  only for the seconds between the replace and the observer restart); lower the headroom; revoke its
+  orchestrator row (a revoked id never registers again); switch node 1's runs on.
 
 ### In a rolling update
 

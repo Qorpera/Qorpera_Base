@@ -196,8 +196,9 @@ It sorts after change 4 because it reads its bundle declarations.
       job's insert and status changes), so the other host and then the overflow act on their next
       poll: about 0.5 s at 250 ms polling, up to the 10 s fallback with the realtime wake's 5 s
       backstop. When both hosts are full, the fresh VM starts that much later than before. The
-      overflow never claims within 15 s of its own refusal of that run, read from its released
-      claim, so two full paths cannot trade a job back and forth;
+      overflow never takes a run at once on a refusal within 15 s of its own refusal of that run,
+      read from its released claim, so two full paths cannot trade a job back and forth (its 10 s
+      fallback still applies);
     - no fast host may take the run;
     - or the run has waited 10 s.
   - Waits count from `queued_at`, so a retry or a sponsor handoff starts them again.
