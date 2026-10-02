@@ -45,7 +45,7 @@ passes as unknown.
 | `qorpera_describe_company_account_open(authority, capability, binding, receipt, input, downstream)` | `open` | What the broker needs before it seals version 1: the run's company and environment and the company's key id, after the same checks as the opening (no write). |
 | `qorpera_use_company_account(…, account)` | `use` | Returns the current version's envelope with its associated data (company, environment, account id, version, key id), and the site, sign-in hosts, login and two-step, to the broker, for a fill, a code or a password change. Refuses a closed or revoked account (22023). Records `last_used_at`/agent and an `account_used` event. |
 | `qorpera_add_company_account_version(…, account, base_version, two_step, key_id, envelope, envelope_sha256)` | `version` | Compare-and-swap over `base_version` (55000 "read it again" when it moved; never 40001). A repeat finds its own version by digest. May set `two_step`. `account_version_added` event. |
-| `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. Closing revokes the vault row, which wipes every envelope (20260929999750); a repeat close answers the closed account. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
+| `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. Closing revokes the vault row, which wipes every envelope (20260928429975); a repeat close answers the closed account. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
 
 The account row and its secret are locked `FOR UPDATE` (secret first) only by the version, state and use calls,
 after the receipt, and only when the secret is this company's `website` secret: any other id (another company's
@@ -80,7 +80,7 @@ wait (up to 25 s), as for every native tool call. Through the vault the database
   deletes the secret's envelope versions and closes its account (`removed_by_user_id` from the revoker), so
   nothing is left half open and the login is free for a new account.
 
-## A1-3a: filling in the database (migration `20260929999750`, SQL test 807)
+## A1-3a: filling in the database (migration `20260928429975`, SQL test 807)
 
 The office never talks to the vault. The office service makes an X25519 key pair in memory when it starts and
 reports the public half with its readiness; the native host already carries every computer action to the office,
@@ -118,8 +118,38 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   any more, so closing is a "deleting things outside" step the company's review rules check (A1-4); after it only the
   website's own account recovery gets back in. Accounts closed before this migration are revoked by it.
 
+## A1-5a: which mail is an account's own (migration `20260929999960`, SQL test 809)
+
+Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
+codes and reset links, so it is shown only as "<site> · sign-in mail · used by <agent> <time>".
+
+- An account's mail is marked by its login: a tagged address, `<handle>+<tag>@<mail domain>` (find_mail's tags).
+  Only a tagged login marks mail. A bare mailbox address or a username never does, so no account can hide a whole
+  mailbox (closed accounts count, and a closed row is kept until its company or environment goes). What makes
+  every account's login such an address is A1-4's job (see "Notes for later steps").
+- `qorpera_company_account_mail(profile, environment, addresses text[])`: the newest of the company's accounts
+  (closed ones included: a closed account's late mail is still a code or a link) whose login carries a tag and
+  equals one of the addresses, whole, in any letter case, spaces around it ignored; `{accountId, site, lastUsedBy,
+  lastUsedAt}` or SQL NULL. Accounts opened at the same moment answer by the lower id. SECURITY DEFINER, stable, no
+  grants to any API role or the broker: Q1's postgres-owned member read calls it (and guards on its absence) with
+  the delivery's own company and environment, never ids a caller chose. A plain read; its cost is bounded by one
+  company's accounts (the planner uses the company index, or `qorpera_company_accounts_login` (profile,
+  environment, lower(login)) when companies hold many accounts on average).
+
 ## Notes for later steps
 
+- A1-4 must make every account's mail markable (A1-5a), since nothing in the database enforces it:
+  - The account tool makes the login itself, `<handle>+<tag>@<mail domain>` from the agent's mailbox and the
+    site; the agent never picks it, and no account is opened on the bare mailbox address.
+  - The tag is at most 64 characters of `[a-z0-9._-]` (Q1's limit), while a site name can be 253: a long site
+    gets a shortened tag (for example its first 55 characters, `-` and 8 hex characters of its hash).
+  - The account row is opened before the address is typed into any form, also for sign-ups that start with the
+    address alone or send a link, so the first code is already marked (the lookup runs when a member reads it).
+  - A site that signs in with a username keeps the tagged address as the account's login; the username is kept
+    beside it, never instead of it, or the account's codes would show to members.
+  - The mail wait asks find_mail for the tagged address only (`to:`), so a site that accepts the tag but mails
+    the bare address is noticed (no code arrives): the account goes `needs_person`, and the bare mailbox is never
+    searched for its code.
 - Folder-v2 (A1-7): these calls lock the receipt before vault rows, the reverse of the folder core's ranks. On
   today's companies the lease validator's exclusive company fence serialises them, which also keeps the
   duplicate check and the vault-name loop free of races; folder-v2 has no such fence, so A1-7 must order them

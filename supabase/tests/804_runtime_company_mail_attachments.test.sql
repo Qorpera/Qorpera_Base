@@ -1,5 +1,5 @@
 -- @fixture 733_runtime_company_mail_sending.test.sql until "-- Switched off, nothing is queued."
--- Company mail attachments, step M2c-1 (20260929999940): an agent asks for a received email's attachment, which the
+-- Company mail attachments, step M2c-1 (20260928429984): an agent asks for a received email's attachment, which the
 -- platform's worker fetches once into the company's objects and the runtime then writes as a company file; the
 -- request checks the email is the company's and the attachment is one it lists, at most 40 MiB, while the email's
 -- text is kept; the worker claims fetches under a lease, completes them with chunks the catalog holds, and tries a
@@ -390,8 +390,10 @@ select pg_temp.wake_assert(jsonb_array_length(current_setting('qorpera_test.clai
 	'An email of 28 MiB has a claim of its own');
 -- Emails of 10, 10 and 28 MiB: a claim takes the first two (20 MiB), and the third waits.
 update public.qorpera_company_mail_outbox set status = 'pending', lease_id = null, lease_expires_at = null,
-	attempt_count = 0, next_attempt_at = clock_timestamp() - interval '1 minute',
-	attachment_bytes = case when call_id = 'files-fit' then 29360128 else 10485760 end
+	attempt_count = 0, attachment_bytes = case when call_id = 'files-fit' then 29360128 else 10485760 end,
+	-- In this order, whatever order the update visits them in.
+	next_attempt_at = clock_timestamp() - case call_id when 'files-1' then interval '3 minutes'
+		when 'files-2' then interval '2 minutes' else interval '1 minute' end
 where call_id in ('files-1', 'files-2', 'files-fit');
 select pg_temp.wake_assert(jsonb_array_length(public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000013')) = 2
 	and jsonb_array_length(public.qorpera_claim_company_mail(50, '80400000-0000-4000-8000-000000000014')) = 1,

@@ -51,6 +51,19 @@ function store(secretKey: string): MailOutboxStore {
 			if (error || data !== true) throw new Error("The mail completion failed");
 		},
 		fail,
+		async messageIdsDue(limit) {
+			const { data, error } = await client.rpc("qorpera_company_mail_message_ids_due", { p_limit: limit });
+			if (error) throw new Error("The mail message ids could not be read");
+			return data;
+		},
+		async recordMessageId(mailId, providerMessageId, messageId) {
+			const { error } = await client.rpc("qorpera_record_company_mail_message_id", {
+				p_mail_id: mailId,
+				p_provider_message_id: providerMessageId,
+				p_message_id: messageId,
+			});
+			if (error) throw new Error("The mail message id could not be recorded");
+		},
 	};
 }
 

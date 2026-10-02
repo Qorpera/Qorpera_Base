@@ -38,7 +38,13 @@ function job(n: number, extra: Record<string, unknown> = {}): Record<string, unk
 	};
 }
 
-function outbox(claimed: unknown, sender: MailSender, objects?: ObjectReader) {
+function outbox(
+	claimed: unknown,
+	sender: MailSender,
+	objects?: ObjectReader,
+	due: unknown = [],
+	recorded: [string, string, string][] = [],
+) {
 	const calls: { claim: [number, string][]; complete: [string, string][]; fail: [string, string, string, boolean][] } = {
 		claim: [],
 		complete: [],
@@ -55,6 +61,13 @@ function outbox(claimed: unknown, sender: MailSender, objects?: ObjectReader) {
 		async complete(mail: MailJob, providerMessageId) {
 			calls.complete.push([mail.mailId, providerMessageId]);
 			if (mail.subject === "Lost completion") throw new Error("lost");
+		},
+		async messageIdsDue() {
+			if (due instanceof Error) throw due;
+			return due;
+		},
+		async recordMessageId(mailId, providerMessageId, messageId) {
+			recorded.push([mailId, providerMessageId, messageId]);
 		},
 		async fail(mailId, leaseId, message, retryable) {
 			calls.fail.push([mailId, leaseId, message, retryable]);
@@ -89,6 +102,11 @@ function recording(fail?: (email: ProviderEmail) => Error | undefined) {
 			const error = fail?.(email);
 			if (error) throw error;
 			return `provider-${sent.length}`;
+		},
+		async messageId(providerMessageId) {
+			if (providerMessageId === "provider-gone") return null;
+			if (providerMessageId === "provider-down") throw new Error("down");
+			return `<${providerMessageId}@ses.example>`;
 		},
 	};
 	return { sent, sender };
@@ -126,7 +144,7 @@ describe("mail outbox", () => {
 		const response = await f.handle(post());
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("cache-control"), "no-store");
-		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0 });
+		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
 		assert.deepEqual(sent[0], [
 			{
 				from: '"Ada at Northwind" <support@mail.example.test>',
@@ -167,6 +185,7 @@ describe("mail outbox", () => {
 			retrying: 2,
 			failed: 1,
 			rejected: 0,
+			messageIds: 0,
 		});
 		assert.deepEqual(f.calls.fail, [
 			["73300000-0000-4000-8000-000000000001", LEASE, "Too many requests (429/rate_limit_exceeded)", true],
@@ -186,6 +205,7 @@ describe("mail outbox", () => {
 			retrying: 0,
 			failed: 0,
 			rejected: 2,
+			messageIds: 0,
 		});
 		assert.deepEqual(
 			f.calls.fail.map(([mailId, , , retryable]) => [mailId, retryable]),
@@ -203,6 +223,57 @@ describe("mail outbox", () => {
 	it("leaves out an empty cc and empty headers", () => {
 		const { jobs } = parseMailClaim([job(1)]);
 		assert.deepEqual(Object.keys(providerEmail(jobs[0])), ["from", "to", "subject", "text"]);
+	});
+});
+
+describe("mail outbox Message-IDs", () => {
+	it("reads back the provider's Message-ID of sent emails after the sends, paced, and records each it gets", async () => {
+		const { sender } = recording();
+		const recorded: [string, string, string][] = [];
+		const f = outbox(
+			[job(1)],
+			sender,
+			undefined,
+			[
+				{ mailId: "73300000-0000-4000-8000-0000000000d1", providerMessageId: "provider-a" },
+				{ mailId: "73300000-0000-4000-8000-0000000000d2", providerMessageId: "provider-gone" },
+				{ mailId: "73300000-0000-4000-8000-0000000000d3", providerMessageId: "provider-down" },
+				{ mailId: "not-a-mail", providerMessageId: "provider-b" },
+			],
+			recorded,
+		);
+		assert.deepEqual(await (await f.handle(post())).json(), {
+			claimed: 1,
+			sent: 1,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			messageIds: 1,
+		});
+		assert.deepEqual(recorded, [["73300000-0000-4000-8000-0000000000d1", "provider-a", "<provider-a@ses.example>"]]);
+		assert.deepEqual(f.sleeps, [PACE_MS, PACE_MS, PACE_MS]);
+		// A list that cannot be read, or none at all, sends as before.
+		const broken = outbox([], sender, undefined, new Error("down"));
+		assert.equal((await (await broken.handle(post())).json()).messageIds, 0);
+	});
+
+	it("asks Resend for a sent email's Message-ID with the platform key", async () => {
+		const requests: string[] = [];
+		const answers = [
+			Response.json({ id: "resend-1", message_id: "<abc@eu-west-1.amazonses.com>" }),
+			new Response("{}", { status: 404 }),
+			Response.json({ id: "resend-3" }),
+			new Response("{}", { status: 500 }),
+		];
+		const sender = new ResendSender("re_platform_key", (async (url: string, init: RequestInit) => {
+			requests.push(`${url} ${(init.headers as Record<string, string>).Authorization}`);
+			return answers.shift()!;
+		}) as unknown as typeof fetch);
+		assert.equal(await sender.messageId("resend-1"), "<abc@eu-west-1.amazonses.com>");
+		assert.equal(await sender.messageId("resend-2"), null);
+		assert.equal(await sender.messageId("resend-3"), null);
+		await assert.rejects(sender.messageId("resend-4"));
+		assert.equal(requests[0], "https://api.resend.com/emails/resend-1 Bearer re_platform_key");
 	});
 });
 
@@ -295,7 +366,7 @@ describe("mail outbox attachments", () => {
 		const files = [companyFile(objects, pdf, "invoice.pdf"), companyFile(objects, csv, "totals.csv")];
 		const { sent, sender } = recording();
 		const f = outbox([job(1, { companyId: COMPANY, attachments: files }), job(2)], sender, reader(objects));
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 2, sent: 2, retrying: 0, failed: 0, rejected: 0 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 2, sent: 2, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
 		assert.deepEqual(
 			sent[0][0].attachments?.map((file) => [file.filename, Buffer.from(file.content, "base64").equals(Buffer.from(file.filename === "invoice.pdf" ? pdf : csv))]),
 			[
@@ -327,7 +398,7 @@ describe("mail outbox attachments", () => {
 		);
 		const { sender, sent } = recording();
 		const f = outbox([job(1, { companyId: COMPANY, attachments: [file] })], sender, reader(missing));
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 1, sent: 0, retrying: 1, failed: 0, rejected: 0 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 1, sent: 0, retrying: 1, failed: 0, rejected: 0, messageIds: 0 });
 		assert.equal(sent.length, 0);
 	});
 
@@ -348,7 +419,7 @@ describe("mail outbox attachments", () => {
 			sender,
 			reader(new Map()),
 		);
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 7, sent: 0, retrying: 1, failed: 0, rejected: 6 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 7, sent: 0, retrying: 1, failed: 0, rejected: 6, messageIds: 0 });
 		assert.equal(sent.length, 0);
 	});
 
