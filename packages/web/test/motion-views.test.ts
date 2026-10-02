@@ -41,7 +41,14 @@ describe("a menu that animates out", () => {
 			x: 10,
 			y: 10,
 			opener,
-			items: [{ label: "Rename", select: () => (focusedWhenChosen = document.activeElement) }],
+			items: [
+				{
+					label: "Rename",
+					select: () => {
+						focusedWhenChosen = document.activeElement;
+					},
+				},
+			],
 		});
 		const item = menu.el.querySelector<HTMLElement>("[role^=menuitem]")!;
 		expect(document.activeElement).toBe(item);
