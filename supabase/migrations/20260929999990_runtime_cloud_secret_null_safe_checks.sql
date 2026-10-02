@@ -20,9 +20,9 @@
 -- digest) only ever sees a non-NULL argument now. The other 33 functions the login may call already compared
 -- null-safely (the PR lists each).
 --
--- Exact-text patches, as 20260929999900: each fails unless its text is found exactly once, so a function changed
--- since then stops this migration instead of losing that change. Each patched function names this migration in a
--- comment, for deploy guards. create or replace keeps each function's owner and grants.
+-- Exact-text patches, as #660 (20260928419980): each fails unless its text is found exactly once, so a function
+-- changed since then stops this migration instead of losing that change. Each patched function names this migration
+-- in a comment, for deploy guards. create or replace keeps each function's owner and grants.
 
 set local lock_timeout = '3s';
 
