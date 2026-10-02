@@ -40,21 +40,41 @@ refer to.
 
 ## Decided on 2 October 2026 (light threads)
 
-The contract's "2026-10-02 amendment: light threads" governs where this design still has a run box. That covers
-the end of [How a machine reaches the folder](#how-a-machine-reaches-the-folder-founder-decision-1),
-[Which view each machine gets](#which-view-each-machine-gets-founder-decision-2), section 4 and the run box steps of
-section 9. In short:
-- **A chat turn has no shell or run box.** In a turn, agents list, read and search the folder server-side with the
-  run's own view. Search runs on the node's folder service: the run opens its view through G2, and the execution host
-  carries the native host's connection to the node through a relay (F3, #687, #690, #656).
-- **Commands run on machines.** These are the company machine, coding machines and agents' own machines; each shows
-  the folder through its folder program.
-- **Folders shared with only some agents.** The agent's own machine mounts with the view of the run working in it.
-  The company machine stays company-wide.
-- **Folder work runs offline.** Folder-work commands run without network, so they need no review. A command that
-  needs the network passes the company's review rules. Coding sessions keep their open network.
-- **Reads on a company machine go to the run.** A computer's shell has a mount of its own, with a read log, so each
-  command's reads go to its run's read set.
+The contract's "2026-10-02 amendment: light threads" governs wherever this
+design still has a shell or a folder mount in a chat turn. In this document
+that is:
+- the run box rows and bullets of
+  [Which view each machine gets](#which-view-each-machine-gets-founder-decision-2);
+- the end of
+  [How a machine reaches the folder](#how-a-machine-reaches-the-folder-founder-decision-1);
+- the 28 September build order's run box steps;
+- section 1's execution-host mount;
+- section 4, and section 5's run box line and its shell-review bullet;
+- section 8's run box lines, and section 10's run box checks;
+- open questions 2, 3 and 5.
+
+In short:
+- **A chat turn has no shell or folder mount.** In a turn, agents list, read
+  and search the folder through the server, with the run's own view.
+  - Search runs on the node's folder service.
+  - The run opens its view through the native host's database entry point
+    (G2), which takes no service key.
+  - The execution host's relay carries the native host's connection to the
+    node, byte for byte.
+  - The F3 PRs are #687, #690 and #656.
+- **Commands run on machines:** the company machine, coding machines and
+  agents' own machines. Each shows the folder through its folder program.
+- **Folders shared with only some agents** may be mounted on the agent's own
+  machine with the view of the run working in it. The company machine stays
+  company-wide. Who else may use such a machine is open.
+- **Folder work runs offline.** Commands that work in the folder run without
+  network, and need no review of outside effects. A command that needs the
+  network passes the company's review rules. Coding sessions keep their open
+  network. How the rule holds on machines where commands run as root is open.
+- **Reads on a company machine go to the run.** Each shell command has a
+  folder mount of its own, owned by the run that started it. Its folder
+  program logs what the command reads (a read log), so the reads go to that
+  run's read set.
 
 ## Decided on 28 September 2026
 

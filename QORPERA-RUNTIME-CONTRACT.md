@@ -4282,65 +4282,97 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 
 ### 2026-10-02 amendment: light threads
 
-Founder decisions of 2 October 2026: "Light threads", then the same day where
-folders shared with only some agents are worked on, and that folder work runs
-offline. They amend:
-- the 2026-09-27 amendment "every machine works in the company folder" (items 2, 5 and 7);
-- the 2026-09-28 amendment "how machines reach the company folder" (item 2);
-- the word "run machine" in the 2026-09-28 amendment "compute for agents".
+Founder decisions of 2 October 2026. First "light threads": a chat turn has no
+shell. Then, the same day: folders shared with only some agents are worked on
+from the agent's own machine (item 4); folder work runs offline (item 5); a
+company machine's reads go to the run (item 6); and the company machine's
+wake time is accepted (item 3).
 
-Where older text conflicts with this amendment, this amendment governs.
+They amend these texts. Where older text conflicts with this amendment, this
+amendment governs.
+- The 2026-09-25 amendment, item 2: the computer shell as an outside effect.
+- The 2026-09-27 amendment "every machine works in the company folder", items
+  2, 5 and 7.
+- The 2026-09-27 amendment "the company folder layout": item 2 and its
+  "Tools" paragraph.
+- The 2026-09-28 amendment "how machines reach the company folder", item 2.
+- The 2026-09-28 amendment "compute for agents":
+  - in item 2, the review of every computer shell command, its shared
+    localhost, and "the run box does not change";
+  - in item 4, "narrower folders are never mounted on a machine", and the
+    review of every command on a machine with the folder.
 
 1. **A chat turn has no shell.** A conversation turn runs on an execution
    host with the model's harness and the runtime's tools only.
-   - No command box, shell or toolbox runs beside it. The 27 September
-     amendment's run box does not exist.
+   - No command box, shell or toolbox runs beside it.
+   - The run box keeps the meaning that "computer hours" and 7.4 give it:
+     where one run executes. It has no shell and no folder mount.
    - An execution host grows only to hold more conversations at once.
 2. **The folder through the server.** In a turn, an agent lists, reads and
    searches the company folder with server-side tools (`company_list`,
    `company_read`, `company_search`).
-   - These tools act with the run's own folder view. So a folder shared with
-     only some agents is there exactly for those agents.
+   - These tools act with the run's own folder view. A folder shared with only
+     some agents is there exactly for those agents.
    - Each answer is an authorized read in the run's read set (27 September,
-     item 3). What it showed is released with the run's authority, under the
-     hash of the text shown, before the model sees it.
+     item 3). It is bound to the exact text the model is shown, as 9.1 fences
+     output, before the model sees it.
    - Search runs on the node's folder service, not on the execution host.
-   - Writes keep the mutation gateway (27 September, item 4).
+   - A turn writes through the mutation gateway with today's one-file Company
+     File tools (27 September, item 4).
+   - Open: which write tools a turn has once machines publish change sets.
+     Until that is decided, 27 September item 2's retirement of the one-file
+     tools waits.
 3. **Commands run on machines.** Scripts, spreadsheets, documents and
    conversions run on a machine the agent hands the work to:
-   - the company machine, which wakes on demand (a cold start takes about
-     17 seconds);
+   - the company machine, which wakes on demand (its cold start, about 17
+     seconds, is accepted: founder, 2 October);
    - a coding machine;
-   - or the agent's own machine ("compute for agents", item 4).
+   - or the agent's own machine (compute item 4).
 
    Each machine shows the folder through its own folder program (28
-   September, item 1). The 27 September shell and edit tool (item 2), its
-   credential-free box (item 5) and its toolbox (item 7) are now the
-   machine's. The toolbox comes with the machine's image.
+   September, item 1). The shell of 27 September item 2 is the machine's
+   shell. It holds no credentials (compute items 2 and 4), as 27 September
+   item 5 asked of the run box.
 4. **Folders shared with only some agents are worked on from the agent's own
    machine.**
-   - An agent's own machine mounts the folder with the view of the run that
-     works in it, so such a folder is there for that agent and no other.
+   - An agent's own machine may mount the folder with the view of the run
+     working in it, so such a folder can be worked on there.
+   - This replaces compute item 4's "narrower folders are never mounted on a
+     machine", and 28 September item 2's "worked on from the agent's own run
+     box".
    - The company machine stays company-wide (28 September, item 2: its
      computers are not walls between agents).
-   - This replaces 28 September item 2's "worked on from the agent's own run
-     box".
+   - Open, to be settled before such a mount is built: who else may use a
+     machine while it carries such a view, and what members see of its
+     commands. Today compute item 4 lets any agent of the company use any
+     running machine.
 5. **Folder work runs offline.**
-   - A command that works in the folder runs without network, in a network
-     namespace of its own. On any machine it needs no review and runs at once,
-     as 27 September item 7 said of the run box's shell.
-   - A command that needs the network is an outside effect. It passes the
-     company's review rules (2026-09-25 amendment, item 2).
-   - Coding sessions keep their open network and stay unreviewed (27
-     September, item 9).
-6. **Reads on machines go to the run.** A company machine mounts the folder
-   for each computer's shell apart from its desktop (the 28 September design).
-   - A shell command's reads are recorded in its run's read set (27 September,
-     item 3).
-   - Its saves are attributed to it (28 September, item 2).
-7. **Words.** In older text, "run box" and "run machine" mean the agent's own
-   machine (item 4) when the work is on the folder. Neither means anything in
-   a chat turn.
+   - On a machine that carries the company folder, a command that works in
+     the folder runs without network, in a network namespace of its own. It
+     has a loopback of its own.
+   - Such a command is not an outside effect. It runs at once, without the
+     review of outside effects. Its saves still pass the gateway, and its
+     deletes and moves pass the review as 27 September item 6 says.
+   - On such a machine, a command that needs the network is an outside effect
+     and passes the company's review rules (2026-09-25 amendment, item 2).
+   - This replaces compute item 2's review of every computer shell command,
+     and compute item 4's review of every command on a machine with the
+     folder.
+   - Open, to be settled before the folder is mounted on agents' own
+     machines: how the rule holds there, where commands run as root (compute
+     item 4) and a namespace alone does not hold them.
+   - Agents' own machines without the folder keep compute item 4's
+     unreviewed commands. Coding sessions keep their open network and stay
+     unreviewed (27 September, item 9).
+6. **Reads on the company machine go to the run.** A company machine gives
+   each shell command a folder mount of its own, owned by the run that
+   started it, beside the mount of the computer's desktop (the 28 September
+   design).
+   - A command's reads go to its run's read set (27 September, item 3).
+   - Its saves are attributed to its run (28 September, item 2).
+7. **Words.** In the folder texts this amends, a "run box" that works on the
+   folder means the agent's own machine (item 4 above). Elsewhere, "run box"
+   keeps its meaning (item 1).
 
 ## 20. Enforcement matrix
 
