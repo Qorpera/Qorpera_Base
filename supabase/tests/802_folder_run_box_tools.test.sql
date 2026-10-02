@@ -35,9 +35,12 @@ begin
 	perform pg_temp.fx(format('insert into public.qorpera_native_execution_launches(run_id, runtime_bundle_id, runtime_bundle_sha256, binary_sha256,
 		reasoning_effort, reasoning_policy_sha256, tool_catalog_text, context_sha256, context_bytes) values (%L, %L, %L, %L, ''low'', %L, ''{}'', %L, 1)',
 		b ->> 'runId', extensions.gen_random_uuid(), repeat('b', 64), repeat('c', 64), repeat('d', 64), repeat('e', 64)));
-	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'box-setup', jsonb_build_array(
+	x := pg_temp.commit('{"kind":"platform"}', 'box-setup', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','box'),
 		jsonb_build_object('op','write','path','box/plan.md','file',pg_temp.stage('the plan')),
-		jsonb_build_object('op','write','path','box/notes.md','file',pg_temp.stage('notes')))), 1, 'saved');
+		jsonb_build_object('op','write','path','box/notes.md','file',pg_temp.stage('notes'))));
+	perform pg_temp.expect(x, 1, 'saved');
+	perform pg_temp.expect(x, 3, 'saved');
 
 	-- The shared execution service opens the run's box with the run actor (its pass goes only into the box's view file).
 	v_view := public.qorpera_folder_view_open(c_env, p, 'run_box', '{}');
