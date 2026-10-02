@@ -1,6 +1,6 @@
 -- @fixture 794_runtime_company_accounts.test.sql until "-- 4. Use, a new version, state changes."
 -- Company accounts, A1-5a: the lookup that marks a company account's mail. The 794 fixture opens two accounts
--- of company 29…10, environment 29…20: agents@nordlys.example and agents+2@nordlys.example on vercel.com.
+-- of company 29…10, environment 29…20: agents+vercel.com@nordlys.example and agents+2@nordlys.example on vercel.com (tagged addresses of its mailbox agents@nordlys.example).
 
 -- An older closed account and a newer open one on the same login, stored in mixed case (only the newest answers,
 -- though the older one was used last);

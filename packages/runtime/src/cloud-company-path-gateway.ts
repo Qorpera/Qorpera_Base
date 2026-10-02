@@ -152,7 +152,9 @@ export type CloudCompanyPathRpc =
 	// a received attachment's stored bytes (M2c-1).
 	| "qorpera_send_agent_mail"
 	| "qorpera_find_agent_mail"
-	| "qorpera_native_mail_attachment";
+	| "qorpera_native_mail_attachment"
+	// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
+	| "qorpera_find_company_accounts";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

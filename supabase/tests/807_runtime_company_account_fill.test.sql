@@ -320,7 +320,7 @@ begin
 	v_ok := substring(current_setting('qorpera_test.fill_ok') from 4)::jsonb;
 	if v_ok - 'encryptedEnvelopeBase64' is distinct from jsonb_build_object(
 		'schema', 'qorpera.company-account-fill-context/v1', 'accountId', current_setting('qorpera_test.ca_account'),
-		'site', 'vercel.com', 'signInHosts', '[]'::jsonb, 'login', 'agents@nordlys.example', 'twoStep', 'none',
+		'site', 'vercel.com', 'signInHosts', '[]'::jsonb, 'login', 'agents+vercel.com@nordlys.example', 'twoStep', 'none',
 		'status', 'pending', 'version', 1, 'companyId', '29000000-0000-4000-8000-000000000010',
 		'environmentId', '29000000-0000-4000-8000-000000000020', 'keyId', 'company-kek-1',
 		'envelopeSha256', encode(extensions.digest('\x0102'::bytea, 'sha256'), 'hex'),
