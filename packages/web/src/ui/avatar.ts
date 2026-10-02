@@ -104,6 +104,11 @@ const COLOR_TOKENS: Record<string, string> = {
 	"qorpera-gray": "#7c7c7a",
 };
 
+/** The hex of an agent colour name (`coral`), as `agent.md` and interface files write it. */
+export function colourNameHex(colour: string): string | undefined {
+	return COLOR_TOKENS[`qorpera-${colour}`];
+}
+
 function isFigure(value: string | undefined): value is FigureId {
 	return (FIGURE_IDS as readonly string[]).includes(value ?? "");
 }

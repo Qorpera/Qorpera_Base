@@ -14,6 +14,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
+import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
 import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
@@ -23,6 +24,7 @@ import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
+import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
 import type { Route } from "../router.ts";
 import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../update-group.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -259,6 +261,16 @@ export function renderTopbar(
  * the list keeps its scroll position, and a row is rebuilt only when what it shows
  * has changed. */
 interface RailParts {
+	/** The Agents | Interfaces switch above the toolbar (contract, 2026-10-02 interfaces amendment, item 8). */
+	readonly switcher: HTMLElement;
+	readonly tabAgents: HTMLButtonElement;
+	readonly tabInterfaces: HTMLButtonElement;
+	/** The Interfaces tab's list, kept like the agents' list. */
+	readonly interfaces: HTMLElement;
+	/** The tab shown, and the route it was last decided for: a new route picks its tab, a click picks between. */
+	tab: RailTab;
+	tabRoute: string;
+	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
@@ -302,6 +314,15 @@ interface HiddenParts {
 	open: boolean;
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
+type RailTab = "agents" | "interfaces";
+const RAIL_TAB_KEY = "qorpera.web.rail-tab";
+function storedTab(profileId: string): RailTab {
+	try {
+		return sessionStorage.getItem(`${RAIL_TAB_KEY}:${profileId}`) === "interfaces" ? "interfaces" : "agents";
+	} catch {
+		return "agents";
+	}
+}
 function hiddenParts(redraw: () => void): HiddenParts {
 	let open = false;
 	try {
@@ -388,7 +409,29 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll" });
+		const tab = (which: RailTab, iconName: string) =>
+			h(
+				"button",
+				{ type: "button", role: "tab", class: "rail-switch-tab", "data-tab": which },
+				icon(iconName),
+				h("span", { class: "rail-switch-label" }),
+			);
+		const tabAgents = tab("agents", "friends");
+		const tabInterfaces = tab("interfaces", "interfaces");
 		const created: RailParts = {
+			switcher: h(
+				"div",
+				{ class: "rail-switch", role: "tablist" },
+				h("span", { class: "rail-switch-pill", "aria-hidden": "true" }),
+				tabAgents,
+				tabInterfaces,
+			),
+			tabAgents,
+			tabInterfaces,
+			interfaces: h("div", { class: "rail-scroll rail-interfaces", role: "tabpanel" }),
+			tab: storedTab(company.profile.profileId),
+			tabRoute: "",
+			interfaceRows: new Map(),
 			toolbar: h("div", { class: "rail-toolbar" }, close, h("label", { class: "rail-search" }, input), add),
 			close,
 			add,
@@ -416,6 +459,24 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			redraw,
 		};
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
+		// A tab shows its list at once; it leaves the page where it is.
+		for (const button of [tabAgents, tabInterfaces]) {
+			button.addEventListener(
+				"click",
+				() => {
+					const next = button.dataset.tab === "interfaces" ? "interfaces" : "agents";
+					if (created.tab === next) return;
+					created.tab = next;
+					try {
+						sessionStorage.setItem(`${RAIL_TAB_KEY}:${company.profile.profileId}`, next);
+					} catch {
+						/* The choice lasts this view. */
+					}
+					created.redraw();
+				},
+				{ signal: company.signal },
+			);
+		}
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
@@ -460,6 +521,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	if (parts.locale !== locale) {
 		parts.locale = locale;
 		parts.input.placeholder = t("Search");
+		parts.tabAgents.querySelector(".rail-switch-label")!.textContent = t("Agents");
+		parts.tabInterfaces.querySelector(".rail-switch-label")!.textContent = t("Interfaces");
+		parts.tabAgents.title = t("Agents");
+		parts.tabInterfaces.title = t("Interfaces");
+		parts.switcher.setAttribute("aria-label", t("Agents or interfaces"));
+		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
@@ -638,7 +705,30 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
-	if (parts.toolbar.parentElement !== container) replace(container, parts.toolbar, parts.list, parts.foot);
+	// A new route picks its tab: an interface's page shows Interfaces, a conversation or the Co-Founder shows
+	// Agents. Between routes, the member's click decides.
+	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
+	if (routeKey !== parts.tabRoute) {
+		parts.tabRoute = routeKey;
+		if (section === "interface") parts.tab = "interfaces";
+		else if (section === "chat" || section === "staff" || section === "home") parts.tab = "agents";
+	}
+	const interfacesShown = companyInterfaces(company);
+	if (!interfacesShown.length) parts.tab = "agents";
+	const onInterfaces = parts.tab === "interfaces";
+	parts.tabAgents.setAttribute("aria-selected", String(!onInterfaces));
+	parts.tabInterfaces.setAttribute("aria-selected", String(onInterfaces));
+	parts.switcher.classList.toggle("on-interfaces", onInterfaces);
+	parts.add.hidden = onInterfaces;
+	reconcile(
+		container,
+		[
+			interfacesShown.length ? parts.switcher : null,
+			parts.toolbar,
+			onInterfaces ? parts.interfaces : parts.list,
+			parts.foot,
+		].filter((element): element is HTMLElement => element !== null),
+	);
 	parts.collapsed = isCollapsed(container);
 	const railQuery = parts.collapsed ? "" : parts.input.value.trim().toLowerCase();
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
@@ -647,6 +737,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
+	drawInterfaces(parts, company, interfacesShown, route, railQuery);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
@@ -989,6 +1080,74 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
 	restoreFocus();
+}
+
+/* ---- The Interfaces tab ------------------------------------------------------------- */
+
+/** The Interfaces tab: the main interface as the big card on top, the way the Co-Founder tops the agents, then
+ * the others as rows. Search filters them by name. A row is rebuilt only when what it shows changes. */
+function drawInterfaces(
+	parts: RailParts,
+	company: CompanyController,
+	shown: readonly CompanyInterface[],
+	route: Route,
+	query: string,
+): void {
+	const profileId = company.profile.profileId;
+	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
+	const rows = new Map<string, { shown: string; element: HTMLElement }>();
+	const elements = shown
+		.filter(({ file }) => !query || file.name.toLowerCase().includes(query))
+		.map(({ name, file }) => {
+			const href = `#/c/${profileId}/i/${name}`;
+			const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, file.main]);
+			const kept = parts.interfaceRows.get(name);
+			const element =
+				kept?.shown === model
+					? kept.element
+					: file.main
+						? h(
+								"a",
+								{
+									class: "cofounder-home interface-home",
+									href,
+									draggable: "false",
+									title: file.about ?? file.name,
+								},
+								h(
+									"span",
+									{ class: "cofounder-stand interface-stand" },
+									interfaceEmblem(file.emblem, file.colour, 64),
+								),
+								h("strong", null, file.name),
+							)
+						: h(
+								"a",
+								{
+									class: "rail-row rail-row-interface",
+									href,
+									draggable: "false",
+									title: file.about ?? file.name,
+								},
+								h("span", { class: "rail-row-stand" }, interfaceEmblem(file.emblem, file.colour, 40)),
+								h(
+									"span",
+									{ class: "rail-row-copy" },
+									h("strong", null, file.name),
+									file.about ? h("small", null, file.about) : null,
+								),
+							);
+			rows.set(name, { shown: model, element });
+			element.classList.toggle("active", name === activeName);
+			if (name === activeName) element.setAttribute("aria-current", "page");
+			else element.removeAttribute("aria-current");
+			return element;
+		});
+	parts.interfaceRows = rows;
+	reconcile(
+		parts.interfaces,
+		elements.length ? elements : [h("p", { class: "rail-empty" }, t("No matching interfaces."))],
+	);
 }
 
 /* ---- The rail's menus and dragging --------------------------------------------------- */

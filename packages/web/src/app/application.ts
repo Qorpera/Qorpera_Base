@@ -38,6 +38,7 @@ import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
+import { renderInterface } from "./views/interface.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
@@ -1202,6 +1203,9 @@ export function mountApplication(
 					},
 					current,
 				);
+				return;
+			case "interface":
+				renderInterface(main, controller, route.id ?? "");
 				return;
 			case "team":
 				renderTeam(
