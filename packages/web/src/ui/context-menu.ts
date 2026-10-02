@@ -49,7 +49,9 @@ export function openMenu(): ContextMenu | undefined {
 
 /** Places a fixed element at (x, y), flipped or clamped to stay on screen. */
 function place(element: HTMLElement, x: number, y: number, flipX?: number): void {
-	const { width, height } = element.getBoundingClientRect();
+	// The layout box: the menu's first frame is scaled as it opens (styles/motion.css).
+	const width = element.offsetWidth;
+	const height = element.offsetHeight;
 	const margin = MARGIN * uiScale();
 	let left = x;
 	if (left + width > window.innerWidth - margin)

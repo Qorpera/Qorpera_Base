@@ -74,7 +74,7 @@ label > input, label > select { font-weight: 400; }
 .btn {
 	min-height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 	background: var(--bg); padding: 0 12px; cursor: pointer; white-space: nowrap;
-	transition: background 120ms ease, border-color 120ms ease;
+	transition: background 120ms ease, border-color 120ms ease, transform var(--motion-base) var(--ease-spring);
 	display: inline-flex; align-items: center; gap: 6px;
 }
 .btn:hover:not(:disabled, [aria-disabled="true"]) { background: var(--hover); }
@@ -490,7 +490,7 @@ label > input, label > select { font-weight: 400; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
-	.rail .alert-mark::before, .rail .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
+	:is(.rail, .rail-drag-ghost) .alert-mark::before, :is(.rail, .rail-drag-ghost) .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
 }
 
 .avatar {
@@ -556,7 +556,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .hub-create-submit {
 	height: 48px; padding: 0 22px; border: 0; border-radius: 8px; background: var(--primary); color: var(--on-primary);
 	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; white-space: nowrap;
-	transition: background-color 160ms ease;
+	transition: background-color 160ms ease, transform var(--motion-base) var(--ease-spring);
 }
 .hub-create-submit:hover:not(:disabled) { background: var(--primary-hover); }
 .hub-create-submit:disabled { opacity: 0.5; cursor: default; }

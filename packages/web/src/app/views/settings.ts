@@ -325,7 +325,7 @@ export class SettingsView {
 	}
 
 	#onKey = (event: KeyboardEvent): void => {
-		if (document.querySelector("[role=alertdialog]")) return;
+		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
 		if (event.key === "Escape") {
 			event.preventDefault();
 			event.stopPropagation();

@@ -254,10 +254,8 @@
 .settings-overlay { animation: backdrop-in var(--motion-base) var(--ease-out) both; }
 @keyframes backdrop-in { from { opacity: 0; } }
 
-.surface-dialog.is-leaving,
 .modal-backdrop.is-leaving .modal,
 .settings-overlay.is-leaving .settings-dialog { animation: dialog-out var(--motion-fast) var(--ease-in) both; }
-.surface-dialog.is-leaving::backdrop,
 .modal-backdrop.is-leaving,
 .settings-overlay.is-leaving { animation: backdrop-out var(--motion-fast) var(--ease-in) both; }
 @keyframes dialog-out { to { opacity: 0; transform: translateY(6px) scale(0.97); } }
@@ -286,6 +284,3 @@
 	to { clip-path: circle(var(--theme-r, 150vmax) at var(--theme-x, 50%) var(--theme-y, 50%)); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.state-changed :is(.rail-row-status, .cofounder-status).failed { animation: none; }
-}

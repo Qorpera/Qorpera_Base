@@ -128,12 +128,24 @@ function reveal(changes: boolean, apply: () => void): void {
 		return;
 	}
 	const { innerWidth: width, innerHeight: height } = window;
-	const { x, y } = lastPress ?? { x: width / 2, y: height / 2 };
+	// From the press that chose it; chosen from the keyboard, from the focused choice.
+	const focused =
+		document.activeElement instanceof HTMLElement ? document.activeElement.getBoundingClientRect() : undefined;
+	const { x, y } =
+		lastPress ??
+		(focused?.width
+			? { x: focused.left + focused.width / 2, y: focused.top + focused.height / 2 }
+			: { x: width / 2, y: height / 2 });
 	const root = document.documentElement.style;
 	root.setProperty("--theme-x", `${x}px`);
 	root.setProperty("--theme-y", `${y}px`);
 	root.setProperty("--theme-r", `${Math.hypot(Math.max(x, width - x), Math.max(y, height - y))}px`);
-	transition.call(document, () => allAtOnce(apply));
+	const shown = transition.call(document, () => allAtOnce(apply)) as
+		| { ready?: Promise<unknown>; finished?: Promise<unknown> }
+		| undefined;
+	// A transition skipped by a quicker second choice rejects these; the look still applies.
+	shown?.ready?.catch(() => undefined);
+	shown?.finished?.catch(() => undefined);
 }
 
 /** Follow the device's appearance and choices made in other tabs. */
@@ -150,11 +162,16 @@ export function watchTheme(): () => void {
 	const press = (event: PointerEvent) => {
 		lastPress = { x: event.clientX, y: event.clientY };
 	};
+	const key = () => {
+		lastPress = undefined;
+	};
 	window.addEventListener("pointerdown", press, { capture: true, passive: true });
+	window.addEventListener("keydown", key, { capture: true, passive: true });
 	system.addEventListener("change", applyTheme);
 	window.addEventListener("storage", onStorage);
 	return () => {
 		window.removeEventListener("pointerdown", press, { capture: true });
+		window.removeEventListener("keydown", key, { capture: true });
 		system.removeEventListener("change", applyTheme);
 		window.removeEventListener("storage", onStorage);
 	};

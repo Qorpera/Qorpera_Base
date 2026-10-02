@@ -312,6 +312,13 @@ interface RailParts {
 	collapsed: boolean;
 	/** The highlight that slides to the conversation opened (ui/rail-selection.ts). */
 	readonly selection: RailSelection;
+	/** Where every agent and conversation the company has listed leads: a row that comes back
+	 * (a search cleared, Hidden opened, a pin) is not new, so only a link never seen arrives. */
+	readonly known: Set<string>;
+	/** The company has finished loading once: only changes after that are animated. */
+	settled: boolean;
+	/** Mentions had been read at the last draw, so a mention now is news. */
+	mentionsRead: boolean;
 	/** The latest draw's context: the menus and the drag act on it. */
 	context?: ShellContext;
 	readonly drag: RailDrag;
@@ -406,13 +413,19 @@ const isCollapsed = (element: Element) => element.closest(".rail-compact") !== n
 
 /** Makes a parent's children exactly these, removing first and then inserting only where
  * a child is out of place, so a child that keeps its place never leaves the page. */
-/** A row built anew says what changed (styles/motion.css): an agent that starts work gets its
- * dot and its line, a failed run folds the figure into a red "!" (and unfolds it when the
- * failure is dealt with), a mention's badge pops, and an agent who was not in the rail before
- * is dealt in like a card (a new chat drops in). Nothing plays on the rail's first draw. */
-function changedRow(before: string | undefined, after: string, element: HTMLElement, drawn: boolean): void {
+/** A row built anew, once the company has loaded, says what changed (styles/motion.css): an
+ * agent that starts work gets its dot and its line, a failed run folds the figure into a red
+ * "!" (and unfolds it when the failure is dealt with), a mention's badge pops, and an agent the
+ * company never listed before is placed like a card (a new chat drops in). */
+function changedRow(
+	before: string | undefined,
+	after: string,
+	element: HTMLElement,
+	unseen: boolean,
+	mentionsRead: boolean,
+): void {
 	if (before === undefined) {
-		if (drawn) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
+		if (unseen) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
 		return;
 	}
 	const was = JSON.parse(before) as Partial<AgentModel>;
@@ -428,7 +441,7 @@ function changedRow(before: string | undefined, after: string, element: HTMLElem
 						? "state-working"
 						: "state-changed",
 		);
-	if (!was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
+	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
 }
 
 function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
@@ -513,6 +526,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			connectionShown: "",
 			collapsed: false,
 			selection: new RailSelection(),
+			known: new Set(),
+			settled: false,
+			mentionsRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
@@ -938,7 +954,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				? kept
 				: { shown, element: build(model, href) };
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
-		if (entry !== kept) changedRow(kept?.shown, shown, entry.element, parts.rows.size > 0);
+		if (entry !== kept && parts.settled)
+			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
 		rows.set(key, entry);
 		entry.element.classList.toggle("active", current);
 		if (current) entry.element.setAttribute("aria-current", "page");
@@ -1222,6 +1239,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.selection.move(parts.list);
 	glideRows(parts.list, places);
 	parts.rows = rows;
+	// Everything the company lists now is known from here on, drawn or not (hidden, filtered out).
+	parts.known.add(`#/c/${profileId}`);
+	for (const agent of state.staff) parts.known.add(`#/c/${profileId}/staff/${agent.id}`);
+	for (const listed of state.sessions) parts.known.add(`#/c/${profileId}/chat/${listed.sessionId}`);
+	if (!state.loading) parts.settled = true;
+	parts.mentionsRead = parts.settled && state.mentions !== undefined;
 	parts.notices = notices;
 	parts.drag.refresh();
 	// A row moved to a new place loses focus on the way, so it gets it back too.
