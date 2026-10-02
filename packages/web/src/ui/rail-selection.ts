@@ -43,6 +43,8 @@ export class RailSelection {
 	#from: Box | undefined;
 	#target: HTMLElement | undefined;
 	#animation: Animation | undefined;
+	/** Where the travelling highlight is headed. */
+	#to: Box | undefined;
 
 	constructor() {
 		this.ghost = document.createElement("div");
@@ -72,7 +74,11 @@ export class RailSelection {
 		const from = this.#from;
 		this.#from = undefined;
 		const target = list.querySelector<HTMLElement>(SELECTED) ?? undefined;
-		if (target === this.#target && this.#animation) return; // already on its way there
+		// Already on its way there, unless the row moved meanwhile (a new row above it): then it re-aims.
+		if (target === this.#target && this.#animation && target?.offsetParent) {
+			const now = boxIn(list, target.getBoundingClientRect(), this.#to?.radius ?? "");
+			if (this.#to && Math.abs(now.top - this.#to.top) < 1 && Math.abs(now.left - this.#to.left) < 1) return;
+		}
 		if (!from || !target?.offsetParent || reducedMotion() || typeof this.ghost.animate !== "function") {
 			this.#finish();
 			return;
@@ -84,6 +90,7 @@ export class RailSelection {
 		}
 		this.#finish();
 		this.#target = target;
+		this.#to = to;
 		target.classList.add("selection-arriving");
 		if (this.ghost.parentElement !== list) list.append(this.ghost);
 		const distance = Math.hypot(to.top - from.top, to.left - from.left);
@@ -92,12 +99,11 @@ export class RailSelection {
 		const keyframes = [frame(from), frame(to)];
 		const animation = this.ghost.animate(keyframes, { duration, easing: easing("--ease-spring"), fill: "both" });
 		this.#animation = animation;
-		animation.finished.then(
-			() => {
-				if (this.#animation === animation) this.#finish();
-			},
-			() => undefined,
-		);
+		// Ended or cancelled from outside: either way the row gets its own background back.
+		const settle = () => {
+			if (this.#animation === animation) this.#finish();
+		};
+		animation.finished.then(settle, settle);
 	}
 
 	#finish(): void {

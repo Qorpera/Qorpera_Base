@@ -35,9 +35,12 @@ export function playOnce(element: Element, className: string): void {
 }
 
 /** Lets an element play its leaving animation (`className`), then calls `done`, which
- * removes or closes it. The element ignores the pointer while it leaves. */
+ * removes or closes it. What leaves is out of reach at once: focus moves on before the
+ * caller restores it, and the element is inert and marked `data-leaving` while it goes. */
 export function leave(element: HTMLElement, className: string, done: () => void): void {
-	if (reducedMotion() || !element.isConnected) {
+	const focused = document.activeElement;
+	if (focused instanceof HTMLElement && element.contains(focused)) focused.blur();
+	if (reducedMotion() || !element.isConnected || typeof element.getAnimations !== "function") {
 		done();
 		return;
 	}
@@ -48,20 +51,20 @@ export function leave(element: HTMLElement, className: string, done: () => void)
 		finished = true;
 		window.clearTimeout(timer);
 		element.removeEventListener("animationend", finish);
+		element.removeEventListener("animationcancel", finish);
 		done();
 	};
-	if (typeof element.getAnimations !== "function") {
-		done();
-		return;
-	}
+	element.inert = true;
+	element.dataset.leaving = "";
 	element.style.pointerEvents = "none";
 	element.classList.add(className);
-	// Nothing to wait for when no animation took hold (a part without a leaving style).
-	if (!element.getAnimations().length) {
+	// Nothing to wait for when no leaving animation took hold (an enter one that finished does not count).
+	if (!element.getAnimations().some((animation) => animation.playState !== "finished")) {
 		done();
 		return;
 	}
 	element.addEventListener("animationend", finish);
+	element.addEventListener("animationcancel", finish);
 	timer = window.setTimeout(finish, LONGEST);
 }
 
@@ -105,10 +108,11 @@ export function foldFrom(element: HTMLElement, height: number, was?: Element): v
 		Object.assign(ghost.style, { position: "absolute", inset: "0 0 auto 0", margin: "0", width: "100%" });
 		ghost.setAttribute("aria-hidden", "true");
 		ghost.inert = true;
-		// A copy only: nothing in it may be found as the card itself.
-		for (const part of [ghost, ...ghost.querySelectorAll("[id], [data-review-id]")]) {
-			part.removeAttribute("id");
-			part.removeAttribute("data-review-id");
+		// A copy only: nothing in it may be found as the card itself, by id, name or a data- hook.
+		for (const part of [ghost, ...ghost.querySelectorAll("*")]) {
+			for (const name of part.getAttributeNames())
+				if (name === "id" || name === "name" || name === "for" || name.startsWith("data-"))
+					part.removeAttribute(name);
 		}
 	}
 	if (ghost) element.append(ghost);

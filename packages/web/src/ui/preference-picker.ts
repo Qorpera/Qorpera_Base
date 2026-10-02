@@ -306,7 +306,10 @@ export class PreferencePicker {
 		popover.style.top = `${top}px`;
 		// A transformed or filtered ancestor moves "fixed" off the window's
 		// corner; measure and correct so the list still sits at the button.
+		// (Measured without the opening animation's transform, which would read as an offset.)
+		popover.style.animation = "none";
 		const placed = popover.getBoundingClientRect();
+		popover.style.removeProperty("animation");
 		if (placed.width > 0 && (placed.left !== left || placed.top !== top)) {
 			popover.style.left = `${2 * left - placed.left}px`;
 			popover.style.top = `${2 * top - placed.top}px`;
