@@ -12,7 +12,7 @@ import {
 	type TableRow,
 } from "@qorpera/cloud-client/interfaces";
 import { t } from "../ui/preferences.ts";
-import type { CompanyController } from "./company.ts";
+import { type CompanyController, isAgentPairSession } from "./company.ts";
 
 export interface CompanyInterface {
 	/** The interface's folder name, its route: `#/c/{id}/i/{name}`. */
@@ -65,11 +65,24 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 	});
 }
 
+/** Whether `[access] members` lets this member see the page. It only narrows: the data is read with the
+ * member's own rights either way. "owners" means owners and admins, as for `edit`. */
+function memberMaySee(file: InterfaceFile, company: CompanyController): boolean {
+	const access = file.access.members;
+	if (access === "all") return true;
+	if (access === "owners") {
+		const role = company.store.get().team?.role;
+		return role === "owner" || role === "admin";
+	}
+	return access.includes(company.userId);
+}
+
 /** The interfaces the Interfaces tab lists, the main one first. */
 export function companyInterfaces(company: CompanyController): CompanyInterface[] {
 	const shown = libraryInterfaces().filter(
 		({ file }) =>
 			file.status === "active" &&
+			memberMaySee(file, company) &&
 			needsMet(file, company) &&
 			file.views.some((view) => view.blocks.some(drawableBlock)),
 	);
@@ -109,7 +122,8 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 				rows.push({
 					row: {
 						id: agent.id,
-						kind: "question",
+						// An agent waiting on a member's decision: an action or change for review.
+						kind: "review",
 						title: t("{name} needs you", { name: agent.displayName }),
 						from: agent.id,
 						due: since(agent.id),
@@ -131,7 +145,8 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 		}
 		for (const [sessionId, count] of Object.entries(state.mentions ?? {})) {
 			const session = state.sessions.find((item) => item.sessionId === sessionId);
-			if (!session || count <= 0) continue;
+			// Only conversations the rail itself offers: open ones, never an agent pair's transcript.
+			if (!session || count <= 0 || session.status !== "open" || isAgentPairSession(session)) continue;
 			rows.push({
 				row: {
 					id: sessionId,

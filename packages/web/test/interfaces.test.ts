@@ -170,7 +170,7 @@ describe("the rail's Agents | Interfaces switch", () => {
 	const tabs = (element: HTMLElement) =>
 		[...element.querySelectorAll<HTMLButtonElement>(".rail-switch-tab")].map((tab) => [
 			tab.textContent,
-			tab.getAttribute("aria-selected"),
+			tab.getAttribute("aria-pressed"),
 		]);
 	const home: Route = { name: "company", profileId: profileA.profileId, section: "home" };
 
@@ -219,5 +219,83 @@ describe("the rail's Agents | Interfaces switch", () => {
 		input.value = "mail";
 		draw({ name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" });
 		expect(element.querySelector(".rail-interfaces")?.textContent).toBe("No matching interfaces.");
+	});
+});
+
+describe("review round 1 (web)", () => {
+	it("draws Pulse again after another page took the area, and follows the company", () => {
+		const { controller } = company([run(ada.id, 1, {})]);
+		const main = h("main");
+		document.body.append(main);
+		renderInterface(main, controller, "pulse");
+		const pulse = main.firstElementChild;
+		main.replaceChildren(h("section", null, "a thread"));
+		renderInterface(main, controller, "pulse");
+		expect(main.firstElementChild).not.toBe(pulse);
+		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Pulse");
+	});
+
+	it("shows rows in the block's order", () => {
+		const { controller } = company([
+			run(ada.id, 1, { updatedAt: "2026-10-02T09:00:00Z" }),
+			run(bo.id, 2, { updatedAt: "2026-10-02T10:00:00Z" }),
+		]);
+		const rows = interfaceRows(controller, "working") ?? [];
+		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
+		// Library Pulse lists "Working now" in source order; an ordered block keeps the query's order.
+		const main = h("main");
+		renderInterface(main, controller, "pulse");
+		expect([...main.querySelectorAll(".interface-block:nth-child(2) strong")].map((el) => el.textContent)).toEqual([
+			"Ada",
+			"Bo",
+		]);
+	});
+
+	it("waits while the company loads and says when live updates are not connected", () => {
+		const { controller } = company();
+		controller.store.set({ loading: true, staff: [] });
+		const main = h("main");
+		renderInterface(main, controller, "pulse");
+		expect(main.querySelector(".interface-waiting")).not.toBeNull();
+		expect(main.textContent).not.toContain("Nothing here right now.");
+		controller.store.set({ loading: false, staff: [cofounder, ada, bo, cy], realtime: "connecting" });
+		renderInterface(main, controller, "pulse");
+		expect(main.querySelector(".interface-live")?.textContent).toBe("connecting");
+		controller.store.set({ realtime: "connected" });
+		renderInterface(main, controller, "pulse");
+		expect(main.querySelector(".interface-live")?.textContent).toBe("Live");
+	});
+
+	it("calls a waiting decision a review, and skips mentions the rail doesn't offer", () => {
+		const closed = { ...session, sessionId: id(301), status: "closed" as const, title: "Closed" };
+		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })], {
+			mentions: { [session.sessionId]: 1, [closed.sessionId]: 1 },
+		});
+		controller.store.set({ sessions: [session, closed] });
+		const waiting = interfaceRows(controller, "waiting") ?? [];
+		expect(waiting.map(({ row }) => row.kind)).toEqual(["review", "mention"]);
+	});
+
+	it("labels the search for the list it searches", () => {
+		const { f, controller } = company();
+		const element = h("aside", { class: "rail" });
+		document.body.append(h("div", { class: "frame" }, element));
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "pulse" };
+		renderRail(element, controller, {
+			profiles: [profileA],
+			user: userA,
+			route,
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			agentActions: {},
+		});
+		expect(element.querySelector(".rail-search input")?.getAttribute("aria-label")).toBe("Search interfaces");
+		expect(element.querySelector(".rail-switch")?.getAttribute("role")).toBe("group");
+		expect(element.querySelectorAll("[role=tab]")).toHaveLength(0);
+		expect(element.querySelector(".interface-home")?.getAttribute("aria-label")).toBe("Pulse");
 	});
 });

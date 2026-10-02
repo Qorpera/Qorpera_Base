@@ -265,8 +265,9 @@ interface RailParts {
 	readonly switcher: HTMLElement;
 	readonly tabAgents: HTMLButtonElement;
 	readonly tabInterfaces: HTMLButtonElement;
-	/** The Interfaces tab's list, kept like the agents' list. */
+	/** The Interfaces tab's list, kept like the agents' list, and its line when a search matches none. */
 	readonly interfaces: HTMLElement;
+	readonly interfacesEmpty: HTMLElement;
 	/** The tab shown, and the route it was last decided for: a new route picks its tab, a click picks between. */
 	tab: RailTab;
 	tabRoute: string;
@@ -408,11 +409,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
-		const list = h("div", { class: "rail-scroll" });
+		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
 		const tab = (which: RailTab, iconName: string) =>
 			h(
 				"button",
-				{ type: "button", role: "tab", class: "rail-switch-tab", "data-tab": which },
+				{ type: "button", class: "rail-switch-tab", "data-tab": which, "aria-controls": `rail-list-${which}` },
 				icon(iconName),
 				h("span", { class: "rail-switch-label" }),
 			);
@@ -421,14 +422,15 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const created: RailParts = {
 			switcher: h(
 				"div",
-				{ class: "rail-switch", role: "tablist" },
+				{ class: "rail-switch", role: "group" },
 				h("span", { class: "rail-switch-pill", "aria-hidden": "true" }),
 				tabAgents,
 				tabInterfaces,
 			),
 			tabAgents,
 			tabInterfaces,
-			interfaces: h("div", { class: "rail-scroll rail-interfaces", role: "tabpanel" }),
+			interfaces: h("div", { class: "rail-scroll rail-interfaces", id: "rail-list-interfaces" }),
+			interfacesEmpty: h("p", { class: "rail-empty" }),
 			tab: storedTab(company.profile.profileId),
 			tabRoute: "",
 			interfaceRows: new Map(),
@@ -716,8 +718,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const interfacesShown = companyInterfaces(company);
 	if (!interfacesShown.length) parts.tab = "agents";
 	const onInterfaces = parts.tab === "interfaces";
-	parts.tabAgents.setAttribute("aria-selected", String(!onInterfaces));
-	parts.tabInterfaces.setAttribute("aria-selected", String(onInterfaces));
+	// Two pressed-or-not buttons: the switch is a choice between two lists, not tabs over the page.
+	parts.tabAgents.setAttribute("aria-pressed", String(!onInterfaces));
+	parts.tabInterfaces.setAttribute("aria-pressed", String(onInterfaces));
+	parts.input.setAttribute("aria-label", onInterfaces ? t("Search interfaces") : t("Search agents"));
 	parts.switcher.classList.toggle("on-interfaces", onInterfaces);
 	parts.add.hidden = onInterfaces;
 	reconcile(
@@ -1113,6 +1117,7 @@ function drawInterfaces(
 									href,
 									draggable: "false",
 									title: file.about ?? file.name,
+									"aria-label": file.name,
 								},
 								h(
 									"span",
@@ -1144,10 +1149,9 @@ function drawInterfaces(
 			return element;
 		});
 	parts.interfaceRows = rows;
-	reconcile(
-		parts.interfaces,
-		elements.length ? elements : [h("p", { class: "rail-empty" }, t("No matching interfaces."))],
-	);
+	if (parts.interfacesEmpty.textContent !== t("No matching interfaces."))
+		parts.interfacesEmpty.textContent = t("No matching interfaces.");
+	reconcile(parts.interfaces, elements.length ? elements : [parts.interfacesEmpty]);
 }
 
 /* ---- The rail's menus and dragging --------------------------------------------------- */

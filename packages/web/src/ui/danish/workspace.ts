@@ -69,6 +69,7 @@ export const WORKSPACE: Record<string, string> = {
 	Interfaces: "Interfaces",
 	"Agents or interfaces": "Agenter eller interfaces",
 	"No matching interfaces.": "Ingen interfaces passer.",
+	"Search interfaces": "Søg i interfaces",
 
 	// app/interfaces.ts and app/views/interface.ts
 	"{name} needs you": "{name} har brug for dig",
