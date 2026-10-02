@@ -181,7 +181,7 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 - **Board parts:** each `[[view.block.part]]` has `title`, `from` (a table), `card = { title, line, figures, note }`
   and an optional `opens`. The lane of a row is its table's `holder` column (§5): a member's lane, the Shared lane
   when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or an offer.
-- **`opens`** names a `detail` block in the same view. On a wide screen it opens beside the list; on a phone it opens as
+- **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens beside the list; on a phone it opens as
   the next screen.
 
 ### 3.3 Buttons
