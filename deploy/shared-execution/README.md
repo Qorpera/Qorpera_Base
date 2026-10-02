@@ -536,7 +536,10 @@ gets a box of its own on its slot (`deploy/first-node/RUNTIME-FOLDER-SERVICE.md`
    and `qorpera-shared-box@<n>.service` is started. A box still running on the
    slot (from before a crash, or from before boxes were switched off) is
    stopped first: when a sandbox starts there, and again before the start; a
-   new run's box always starts empty. It pulls in its socket and
+   new run's box always starts empty. While boxes are on, the native host's
+   environment names the slot's two sockets (`QORPERA_RUN_BOX_SOCKET`,
+   `QORPERA_RUN_BOX_READS`), so a folder-v2 run gets `exec_command` and
+   `write_stdin` (F3 step 2b-3). It pulls in its socket and
    `qorpera-shared-box-folder@<n>.service`, which mounts the view with
    `allow_other` (through the node's folder bridge, like any mount) and is
    started only once the folder is mounted.

@@ -284,11 +284,27 @@ feed brought, the path's earlier receipt or its folder's; a new receipt (after a
 like any change. A stale or missing receipt costs the core a per-path check at release, never a wrong record. Proof:
 the folder program's FUSE test, the service tests, and the systemd proof taking the log as the native host.
 
-**2b-3, the tools (next).** `exec_command` and `write_stdin` in the `qorpera` namespace, run by the native host
-through the box socket: review class "read" while the mount is read-only, answers fitted to the tool result size,
-and the reads of each answer released with the run actor (P8) so the next model request's context view cites them.
-Needs the observation vocabulary (SQL and TypeScript) and the prompt text; no view call (the root service opens and
-closes the view).
+**2b-3, the tools (this draft, on top of 2b-2).** `exec_command` and `write_stdin` in the `qorpera` namespace
+(`packages/runtime/src/cloud-run-box-tools.ts`), shaped like Codex's own and run by the native host, never by the
+harness:
+- Offered only to a folder-v2 run on a host that gives runs a box. The shared execution service names the slot's two
+  sockets in the native host's environment (`QORPERA_RUN_BOX_SOCKET`, `QORPERA_RUN_BOX_READS`) while boxes are on.
+- `exec_command {cmd, workdir?, yield_time_ms? (default 10 s, at most 30 s), tty?}` answers when the command ends or
+  the wait passes; a command still running keeps its session for `write_stdin {session_id, chars?, yield_time_ms?
+  (default 250 ms)}`. The answer says how the command stands, then its output: all of it, or its start and end with how
+  much was left out and where the whole of it is in the box, fitted so its tail survives the 8 KiB result envelope.
+- Each answer takes the box's read log and releases it with the run actor (`CloudCompanyFolderClient.release`, P8),
+  under the hash of the exact text shown, before the model sees it; it cites the release (`companyReadId`), so the next
+  model request's context view does. More than one release's worth goes in several under the same hash; no reads, no
+  release. A read the run may no longer make withholds the answer (`READ_REVOKED`); a release that cannot be recorded
+  does too. A read without a receipt goes with an empty one, which the core checks again.
+- Review class "read" (no network, the folder read-only); observed as `exec_command` and `write_stdin` (migration
+  `20260929999970`, TypeScript and SQL). SQL test 802 proves the path on the live functions: the run actor opens the
+  box, the view lists with receipts, the run actor releases them, the context view cites the release; a view's own
+  release is not citable; a stale or empty receipt is checked again; a snapshot-v1 company refuses the box with the
+  text the service knows it by.
+- No prompt change yet: the tool descriptions carry it. The `company_*` tools retire at step 3.
+- The systemd proof runs these tools, as the native host account, against the real box.
 
 ## Not in step 2
 
