@@ -219,7 +219,9 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      (change 3).
    - Re-enrol A's inventory digest if the policy still pins the fast host's image (with the fast
      host listed by role, change 6, this step goes away).
-   - Start A's orchestrators. While A takes no runs they report heartbeats but claim nothing.
+   - Check that A's orchestrators run: the fast host's was started by its rebuild, and the node release
+     restarts the node's own. Start any that is stopped. While A takes no runs they report heartbeats but
+     claim nothing.
 6. **Switch.** The activation cannot be undone without a pause. Run 6.0's checks, the activation, its
    migration history record, A's declaration, 6.3's gate and A's return as **one transaction** (the
    roll-mode switch packet). A message sent before its commit binds to N and runs on B; if any check
@@ -292,7 +294,7 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      cut. The member sees the failed run and sends again.
    - Update B as in step 5, except that N+1 is registered now: rebuild B's fast host with
      `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1 EXEC_RUNTIME_BUNDLE_SHA256=<N+1>` (the script declares
-     the bundle as its last step, before it starts the orchestrator).
+     the bundle once the host is set up, then starts the orchestrator).
    - Declare B as N+1 (`qorpera_declare_runtime_node_bundle('<B>', '<N+1 sha>')`). `agent apply` does
      not clear B's N declaration from step 3; only a re-registration does.
    - Gate: the query of step 6.3 for B returns no rows, and N's `declaredBy` in the roll status is
@@ -356,7 +358,8 @@ fixture nodes, from the active bundle to a fixture bundle, and the emergency way
 ## If something goes wrong
 
 - **Node A fails its checks in step 5** (before the activation). A stays empty. Roll it back
-  (`agent rollback`, and rebuild the fast host from N), declare A's orchestrators as N (N is
+  (`agent rollback`, and rebuild the fast host from N with `EXEC_CLEAR_PARKED=1
+  EXEC_START_ORCHESTRATOR=1`), declare A's orchestrators as N (N is
   registered), and return A with both switches (`qorpera_set_runtime_node_runs(A, true, …)`, and
   `qorpera_set_runtime_node_serving(A, true, …)` if it was switched off fully). Clear the declarations
   once both nodes run N. The switch never happened, and B served throughout.

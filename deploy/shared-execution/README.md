@@ -110,7 +110,11 @@ the ratified window is 5 minutes, `300000`).
   runner unit or an active journal (a run in flight) still refuses. A rolling
   update uses it on a node that takes no runs (`RUNTIME-ROLLING-UPDATE.md`), with
   `EXEC_START_ORCHESTRATOR=1` to start the orchestrator again once the host is
-  healthy: while the node takes no runs it reports heartbeats and claims nothing.
+  healthy and declared (the script fails unless it is still running a few
+  seconds later): while the node takes no runs it reports heartbeats and claims
+  nothing. A release still owed by a slot whose retries ran out sits in
+  `journals/archive/*.lost.json`, which the rebuild wipes; in a roll the node's
+  drain gate (`readyForNodeRelease`, no run machine left) covers it.
 
 ## A fast host on every node (identical nodes, change 5, 2026-09-28)
 

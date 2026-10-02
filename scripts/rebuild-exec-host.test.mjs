@@ -28,13 +28,13 @@ case "$1" in
 		case "$cmd" in
 			true) exit 0;;
 			"systemctl disable --now qorpera-runner-orchestrator.service") echo stopped > "$S/orchestrator"; exit 0;;
-			"systemctl enable --now qorpera-runner-orchestrator.service") echo active > "$S/orchestrator"; exit 0;;
+			"systemctl enable --now qorpera-runner-orchestrator.service") echo "\${STUB_ORCHESTRATOR_STARTS_AS:-active}" > "$S/orchestrator"; exit 0;;
 			"systemctl is-active qorpera-runner-orchestrator.service") cat "$S/orchestrator"; exit 0;;
 			"systemctl is-active qorpera-shared-execution.service") echo active; exit 0;;
 			*"list-units"*"qorpera-shared-run-host@*"*"qorpera-shared-runner@*"*) cat "$S/hosts" "$S/runners"; exit 0;;
 			*"list-units"*"qorpera-shared-runner@*"*) cat "$S/runners"; exit 0;;
 			*"list-units"*"qorpera-shared-run-host@*"*) cat "$S/hosts"; exit 0;;
-			"systemctl stop qorpera-shared-run-host@*") : > "$S/hosts"; exit 0;;
+			"systemctl stop qorpera-shared-run-host@"*) : > "$S/hosts"; exit 0;;
 			"sh -c ls /var/lib/qorpera-shared-execution/journals/*.json 2>/dev/null || true") cat "$S/journals"; exit 0;;
 			"sha256sum /opt/qorpera-harnesses/native-company/codex") echo "${"e".repeat(64)}  codex"; exit 0;;
 			curl*) echo 200; exit 0;;
@@ -47,9 +47,12 @@ esac
 const CURL = `#!/usr/bin/env bash
 cat > /dev/null
 for arg in "$@"; do
+	case "$arg" in */rpc/*) echo "curl \${arg##*/rpc/}" >> "$STUB_STATE/log";; esac
+done
+for arg in "$@"; do
 	case "$arg" in
 		*qorpera_register_runner_orchestrator) echo '{"status":"active"}'; exit 0;;
-		*qorpera_declare_runner_orchestrator_bundle) echo '{"runtimeBundleSha256":"'"$STUB_BUNDLE"'"}'; exit 0;;
+		*qorpera_declare_runner_orchestrator_bundle) echo '{"runtimeBundleSha256":"'"\${STUB_BUNDLE}"'"}'; exit 0;;
 	esac
 done
 exit 1
@@ -114,7 +117,7 @@ test("parked hosts end with EXEC_CLEAR_PARKED=1 and the orchestrator starts with
 		const result = rebuild(fixture, { EXEC_CLEAR_PARKED: "1", EXEC_START_ORCHESTRATOR: "1" });
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /Ended 1 parked hosts/);
-		assert.match(result.log, /systemctl stop qorpera-shared-run-host@\*/);
+		assert.match(result.log, /systemctl stop qorpera-shared-run-host@0\.service$/m);
 		assert.match(result.log, /lxc rebuild/);
 		assert.equal(result.orchestrator, "active");
 		assert.match(result.stdout, /orchestrator=active/);
@@ -129,6 +132,7 @@ test("a run in flight refuses the rebuild and stops nothing", { skip: linux === 
 		try {
 			const result = rebuild(fixture, { EXEC_CLEAR_PARKED: "1", EXEC_START_ORCHESTRATOR: "1" });
 			assert.notEqual(result.status, 0);
+			assert.match(result.stderr, /live on qorpera-exec-node02/);
 			assert.doesNotMatch(result.log, /systemctl stop/);
 			assert.doesNotMatch(result.log, /lxc rebuild/);
 			assert.equal(result.orchestrator, "stopped", "the orchestrator stays stopped");
@@ -152,6 +156,63 @@ test("without EXEC_CLEAR_PARKED a parked host still refuses, and the orchestrato
 	} finally {
 		rmSync(fixture.dir, { recursive: true, force: true });
 	}
+});
+
+test("the bundle is declared before the orchestrator starts; a refused declaration starts nothing", { skip: linux === true ? false : linux }, () => {
+	const declared = "d".repeat(64);
+	let fixture = setup();
+	try {
+		const result = rebuild(fixture, { EXEC_START_ORCHESTRATOR: "1", EXEC_RUNTIME_BUNDLE_SHA256: declared, STUB_BUNDLE: declared });
+		assert.equal(result.status, 0, result.stderr);
+		const order = ["curl qorpera_register_runner_orchestrator", "curl qorpera_declare_runner_orchestrator_bundle", "systemctl enable --now qorpera-runner-orchestrator.service"].map(
+			(line) => result.log.indexOf(line),
+		);
+		assert.ok(order.every((at) => at >= 0) && order[0] < order[1] && order[1] < order[2], result.log);
+		assert.equal(result.orchestrator, "active");
+	} finally {
+		rmSync(fixture.dir, { recursive: true, force: true });
+	}
+	fixture = setup();
+	try {
+		const result = rebuild(fixture, { EXEC_START_ORCHESTRATOR: "1", EXEC_RUNTIME_BUNDLE_SHA256: declared, STUB_BUNDLE: "e".repeat(64) });
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /declaration failed/);
+		assert.doesNotMatch(result.log, /systemctl enable --now qorpera-runner-orchestrator/);
+		assert.equal(result.orchestrator, "stopped");
+		assert.doesNotMatch(result.stdout, /Start the orchestrator when the cut is live/);
+	} finally {
+		rmSync(fixture.dir, { recursive: true, force: true });
+	}
+});
+
+test("an orchestrator that does not stay running fails the rebuild", { skip: linux === true ? false : linux }, () => {
+	const fixture = setup();
+	try {
+		const result = rebuild(fixture, { EXEC_START_ORCHESTRATOR: "1", STUB_ORCHESTRATOR_STARTS_AS: "activating" });
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /the orchestrator is activating/);
+	} finally {
+		rmSync(fixture.dir, { recursive: true, force: true });
+	}
+});
+
+test("the flags take 1 or nothing, and a new host never starts its orchestrator", { skip: linux === true ? false : linux }, () => {
+	const fixture = setup();
+	try {
+		for (const env of [{ EXEC_CLEAR_PARKED: "0" }, { EXEC_START_ORCHESTRATOR: "yes" }]) {
+			const result = rebuild(fixture, env);
+			assert.equal(result.status, 1);
+			assert.match(result.stderr, /must be 1 or unset/);
+		}
+		const fresh = rebuild(fixture, { EXEC_FRESH: "1", EXEC_START_ORCHESTRATOR: "1" });
+		assert.equal(fresh.status, 1);
+		assert.match(fresh.stderr, /never for a new host/);
+		assert.doesNotMatch(fresh.log, /lxc (stop|rebuild|start)/);
+	} finally {
+		rmSync(fixture.dir, { recursive: true, force: true });
+	}
+	const create = readFileSync(join(root, "deploy/shared-execution/create-exec-host.sh"), "utf8");
+	assert.match(create, /^unset .*\bEXEC_CLEAR_PARKED\b.*\bEXEC_START_ORCHESTRATOR\b/m, "create-exec-host.sh never passes the flags on");
 });
 
 test("the script still parses", () => {

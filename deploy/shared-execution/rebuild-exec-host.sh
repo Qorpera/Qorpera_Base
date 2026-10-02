@@ -28,14 +28,18 @@
 #                    the orchestrator after the activation, while the node is
 #                    still switched off (RUNTIME-ROLLING-UPDATE.md). It is
 #                    declared last, once the host is set up.
+#   (The two flags below take 1 or nothing; any other value is refused.)
 #   EXEC_CLEAR_PARKED=1  end parked warm hosts (a warm conversation's host waiting
 #                    for its next run) once the orchestrator is stopped, instead of
 #                    waiting out the warm window (rolling updates). A run in flight
 #                    (a runner unit or an active journal) still refuses the rebuild.
-#   EXEC_START_ORCHESTRATOR=1  start the orchestrator once the host is healthy.
-#                    For a node that takes no runs (rolling updates: the node's runs
-#                    switch is off) it reports heartbeats and claims nothing until the
-#                    node takes runs again. Unset: it is left stopped, as for a paused cut.
+#   EXEC_START_ORCHESTRATOR=1  start the orchestrator once the host is healthy and
+#                    declared, and exit 1 unless it is still running a few seconds
+#                    later. For a node that takes no runs (rolling updates: the node's
+#                    runs switch is off) it reports heartbeats and claims nothing until
+#                    the node takes runs again. Unset: it is left stopped, as for a
+#                    paused cut. Never with EXEC_FRESH (a new host stays stopped until
+#                    it is enrolled).
 #   EXEC_PREFLIGHT_ONLY=1  check the inputs, change nothing, exit
 #   EXEC_FRESH=1     set only by create-exec-host.sh: the host was just created
 #                    from this image and never started, so there is nothing to
@@ -73,6 +77,13 @@ done
 FRESH="${EXEC_FRESH:-}"
 if [[ ! ${SLOTS} =~ ^[1-9][0-9]?$ ]] || ((SLOTS > 64)); then
 	echo "EXEC_SLOTS must be 1-64." >&2
+	exit 1
+fi
+for name in EXEC_CLEAR_PARKED EXEC_START_ORCHESTRATOR; do
+	[[ -z ${!name:-} || ${!name} == 1 ]] || { echo "${name} must be 1 or unset." >&2; exit 1; }
+done
+if [[ -n ${FRESH} && -n ${EXEC_START_ORCHESTRATOR:-} ]]; then
+	echo "EXEC_START_ORCHESTRATOR is never for a new host: it stays stopped until it is enrolled." >&2
 	exit 1
 fi
 if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
@@ -132,9 +143,13 @@ else
 		runners=$(exec_in systemctl list-units --no-legend --plain --state=active,activating,deactivating,reloading,refreshing 'qorpera-shared-runner@*')
 		journals=$(exec_in sh -c 'ls /var/lib/qorpera-shared-execution/journals/*.json 2>/dev/null || true')
 		if [[ -z ${runners} && -z ${journals} ]]; then
-			parked=$(exec_in systemctl list-units --no-legend --plain --state=active,activating,deactivating,reloading,refreshing 'qorpera-shared-run-host@*' | wc -l | tr -d ' ')
-			exec_in systemctl stop 'qorpera-shared-run-host@*'
-			echo "Ended ${parked} parked hosts."
+			# The exact units listed, never a glob: nothing to stop when nothing is parked.
+			parked=$(exec_in systemctl list-units --no-legend --plain --state=active,activating,deactivating,reloading,refreshing 'qorpera-shared-run-host@*' | awk '{print $1}')
+			if [[ -n ${parked} ]]; then
+				# shellcheck disable=SC2086 # unit names, one per line, no spaces
+				exec_in systemctl stop ${parked}
+			fi
+			echo "Ended $(printf '%s\n' "${parked}" | sed '/^$/d' | wc -l | tr -d ' ') parked hosts."
 		fi
 	fi
 	echo "Refusing to rebuild while any sandbox exists:"
@@ -247,9 +262,18 @@ except Exception:
 	fi
 fi
 orchestrator=stopped
-if [[ -n ${EXEC_START_ORCHESTRATOR:-} && ${status} == active && ${health} == 200 && -z ${declaration_failed:-} ]]; then
-	exec_in systemctl enable --now qorpera-runner-orchestrator.service >/dev/null
-	orchestrator=$(exec_in systemctl is-active qorpera-runner-orchestrator.service || true)
+start_failed=
+if [[ -n ${EXEC_START_ORCHESTRATOR:-} && -z ${declaration_failed:-} ]]; then
+	if [[ ${status} == active && ${health} == 200 ]]; then
+		exec_in systemctl enable --now qorpera-runner-orchestrator.service >/dev/null
+		# Still running a few seconds later: a crash loop (Restart=on-failure) reads as activating.
+		for wait in 2 3; do
+			sleep "${wait}"
+			orchestrator=$(exec_in systemctl is-active qorpera-runner-orchestrator.service || true)
+			[[ ${orchestrator} == active ]] || break
+		done
+	fi
+	[[ ${orchestrator} == active ]] || start_failed="the orchestrator is ${orchestrator} (service=${status}, healthz=${health})"
 fi
 echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-any} service=${status} healthz=${health} orchestrator=${orchestrator}"
 if [[ -z ${FRESH} ]]; then
@@ -257,10 +281,14 @@ if [[ -z ${FRESH} ]]; then
 	echo "identity devices are not part of it when the entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
 	echo "A host listed by role needs no re-enrol while the release that pins this image is staged on the node."
 fi
+if [[ -n ${declaration_failed:-} ]]; then
+	echo "The host is set up, but the bundle declaration failed; the orchestrator is stopped and would claim any bundle until it is declared. Declare it, then start it: ${declaration_reply}" >&2
+	exit 1
+fi
+if [[ -n ${start_failed} ]]; then
+	echo "The host is set up, but ${start_failed}: check its journal (lxc exec ${VM} --project ${PROJECT} -- journalctl -u qorpera-runner-orchestrator.service)." >&2
+	exit 1
+fi
 if [[ ${orchestrator} != active ]]; then
 	echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"
-fi
-if [[ -n ${declaration_failed:-} ]]; then
-	echo "The host is set up, but the bundle declaration failed; the orchestrator claims any bundle until it is declared: ${declaration_reply}" >&2
-	exit 1
 fi
