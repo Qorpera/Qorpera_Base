@@ -326,7 +326,7 @@ closes the conversation; a restore reopens both, with the same conversation.
   its connector is the `service`. One file holds one account. A file saved before this slice is not
   trusted as the saved version until the platform writes it (the index points at its path).
 - **Deleting:** only the platform deletes the file, and only once the vault record is revoked
-  (refused while it is active, whether `connected` or `broken`). Disconnecting removes the file; the
+  (refused while it is active, whatever its status). Disconnecting removes the file; the
   writer treats a file already missing as done.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.

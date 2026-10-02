@@ -668,6 +668,7 @@ describe("connections, rules, todos and worker files", () => {
 			"a..example.com",
 			"a.example.com.",
 			`${"a".repeat(64)}.com`,
+			`a.${"b".repeat(64)}`,
 			"a_b.example.com",
 			"https://example.com",
 		])

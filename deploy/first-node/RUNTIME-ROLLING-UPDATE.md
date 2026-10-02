@@ -344,6 +344,11 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
   - Each company waits at most 2 s for its lock, so a long list stays inside the statement timeout.
   - `93-resume` resumes the same way.
   - The runner commits these files only when told to (`QORPERA_ROLL_EMERGENCY=<file>`).
+- The runner keeps only the rows of a packet's last statement that returns rows, so each packet whose
+  result the operator reads ends with a one-row summary: `roll_migration` (10-*), `roll_check` (00),
+  `roll_drain` (31, 61), `roll_switched` (40), `roll_check_n` (50), `roll_finished` (80), `roll_paused`
+  (90), `roll_reversed` (91), `roll_clearing` (92: `declaredNext` and `stillDeclared`) and `roll_resumed`
+  (93).
 - `node scripts/runtime-roll.mjs compare <00-check result> <50-check-n result>` lists N inputs that became
   pending after the check (live N work, step 7). It exits 1 when there are any.
 
@@ -386,7 +391,8 @@ back twice: right after the switch, and after the finish. No company is paused d
      the coordinator's `roll-rollback`, outside this repo), node B too if step 8 has started. Then
      clear all declarations (`92-clear-declarations`). Dry-run it first: `declaredNext` lists the
      orchestrators still declared N+1, and the packet cannot see which code a node runs. Commit it
-     only once each of them runs N again. Never declare a node as N while it still runs N+1: it would
+     only once each of them runs N again. Its `stillDeclared` must be 0; if not, an orchestrator of a
+     third node declares a bundle: stop and clear it by hand before `93-resume`. Never declare a node as N while it still runs N+1: it would
      take N runs and refuse them.
   4. Renew packaged offices' packages for N again; offices renewed for N+1 cannot start or reset
      under N.
