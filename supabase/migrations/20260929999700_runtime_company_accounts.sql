@@ -133,27 +133,29 @@ begin
 	end if;
 	select authority.* into v_authority from public.qorpera_cloud_secret_broker_authorities as authority
 	where authority.id = p_broker_authority_id;
-	if not found or v_authority.status <> 'active' or v_authority.capability_sha256 <> p_broker_capability_sha256 then
+	-- Every check is null-safe: a missing argument refuses, never passes as unknown.
+	if not found or p_broker_capability_sha256 is null or v_authority.status is distinct from 'active'
+		or v_authority.capability_sha256 is distinct from p_broker_capability_sha256 then
 		raise exception 'cloud secret broker authority is unavailable' using errcode = '42501';
 	end if;
-	if (p_binding ->> 'jobId') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+	if coalesce((p_binding ->> 'jobId') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', true)
 		or not exists (select 1 from public.qorpera_runner_jobs as job
 			where job.id = (p_binding ->> 'jobId')::uuid and job.profile_id = v_authority.profile_id) then
 		raise exception 'cloud secret broker does not serve this company' using errcode = '42501';
 	end if;
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
-	if v_authority.profile_id <> v_run.profile_id then
+	if v_authority.profile_id is distinct from v_run.profile_id then
 		raise exception 'cloud secret broker does not serve this company' using errcode = '42501';
 	end if;
 	select receipt.* into v_receipt from public.qorpera_run_operation_receipts as receipt
 	where receipt.id = p_receipt_id and receipt.run_id = v_run.id
 	for update;
-	if not found or v_receipt.status <> 'executing' or v_receipt.operation_kind <> 'cloud_tool'
-		or v_receipt.input_sha256 <> p_input_sha256
-		or p_downstream_idempotency_sha256 !~ '^[0-9a-f]{64}$'
-		or v_receipt.downstream_idempotency_sha256 <> p_downstream_idempotency_sha256
-		or v_receipt.logical_operation_key !~ ('^company_account:' || p_action || ':'
-			|| coalesce(p_account_id::text || ':', '') || '[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') then
+	if not found or v_receipt.status is distinct from 'executing' or v_receipt.operation_kind is distinct from 'cloud_tool'
+		or p_input_sha256 is null or v_receipt.input_sha256 is distinct from p_input_sha256
+		or coalesce(p_downstream_idempotency_sha256 !~ '^[0-9a-f]{64}$', true)
+		or v_receipt.downstream_idempotency_sha256 is distinct from p_downstream_idempotency_sha256
+		or coalesce(v_receipt.logical_operation_key !~ ('^company_account:' || p_action || ':'
+			|| coalesce(p_account_id::text || ':', '') || '[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'), true) then
 		raise exception 'company account effect receipt is unavailable' using errcode = '42501';
 	end if;
 	return query select v_run.id, v_run.profile_id, v_run.environment_id, v_run.staff_agent_id,
@@ -348,7 +350,7 @@ begin
 	if v_secret.id is null or v_account.secret_id is null or v_secret.status <> 'active' or v_account.status = 'closed' then
 		raise exception 'The company has no such open account' using errcode = '22023';
 	end if;
-	if v_secret.broker_authority_id <> p_authority_id then
+	if v_secret.broker_authority_id is distinct from p_authority_id then
 		raise exception 'cloud secret broker does not own this envelope' using errcode = '42501';
 	end if;
 	return v_account;
@@ -384,7 +386,8 @@ begin
 	select version.* into v_version from public.qorpera_cloud_secret_versions as version
 	where version.secret_id = p_account_id
 		and version.version = (select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = p_account_id);
-	if not found or v_version.broker_authority_id <> v_call.authority_id or v_version.key_id <> v_call.key_id then
+	if not found or v_version.broker_authority_id is distinct from v_call.authority_id
+		or v_version.key_id is distinct from v_call.key_id then
 		raise exception 'company account version is unavailable' using errcode = '42501';
 	end if;
 	update public.qorpera_company_accounts as account
@@ -452,7 +455,7 @@ begin
 	) then
 		return public.qorpera_company_account_descriptor(v_account, v_current);
 	end if;
-	if p_base_version is null or v_current <> p_base_version then
+	if p_base_version is null or v_current is distinct from p_base_version then
 		raise exception 'The account changed meanwhile; read it again' using errcode = '55000';
 	end if;
 	insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
@@ -639,7 +642,7 @@ begin
 	where account.secret_id = p_account_id and account.profile_id = p_profile_id
 	for update;
 	if v_role is null or v_role not in ('owner','admin') or v_secret.id is null or v_account.secret_id is null
-		or v_secret.connector_id <> 'website' then
+		or v_secret.connector_id is distinct from 'website' then
 		raise exception 'company account removal is unavailable' using errcode = '42501';
 	end if;
 	-- Revoking the secret wipes its envelopes and closes the account (qorpera_company_account_secret_revoked).

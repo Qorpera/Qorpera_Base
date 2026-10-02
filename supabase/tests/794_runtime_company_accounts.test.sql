@@ -172,6 +172,20 @@ set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.ca_context',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
 	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),repeat(''b'',64))'),true);
+-- A missing capability or digest refuses (never passes as unknown), before anything is opened.
+select set_config('qorpera_test.ca_null_capability',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
+	'''79400000-0000-4000-8000-000000000040'',null,current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),repeat(''b'',64))'),true);
+select set_config('qorpera_test.ca_null_digests',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000101'',null,null)'),true);
+select set_config('qorpera_test.ca_null_downstream',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),null)'),true);
+select set_config('qorpera_test.ca_open_null_capability',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_capability => null),true);
+select set_config('qorpera_test.ca_open_null_input',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_input => null),true);
 select set_config('qorpera_test.ca_opened',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select set_config('qorpera_test.ca_repeat',pg_temp.ca_open('01','agents@nordlys.example',
@@ -183,6 +197,9 @@ select pg_temp.ca_done('01');
 select set_config('qorpera_test.ca_finished',pg_temp.ca_open('01','agents+9@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_receipt('02','company_account:use:r2');
+select set_config('qorpera_test.ca_describe_wrong_action',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000102'',repeat(''a'',64),repeat(''b'',64))'),true);
 select set_config('qorpera_test.ca_wrong_action',pg_temp.ca_open('02','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_done('02');
@@ -261,6 +278,21 @@ begin
 		'schema','qorpera.company-account-context/v1','companyId','29000000-0000-4000-8000-000000000010',
 		'environmentId','29000000-0000-4000-8000-000000000020','keyId','company-kek-1')::text then
 		raise exception 'Wrong context for the broker: %',current_setting('qorpera_test.ca_context');
+	end if;
+	if current_setting('qorpera_test.ca_null_capability') is distinct from '42501:cloud secret broker authority is unavailable'
+		or current_setting('qorpera_test.ca_open_null_capability') is distinct from '42501:cloud secret broker authority is unavailable'
+		or current_setting('qorpera_test.ca_null_digests') is distinct from '42501:company account effect receipt is unavailable'
+		or current_setting('qorpera_test.ca_null_downstream') is distinct from '42501:company account effect receipt is unavailable'
+		or current_setting('qorpera_test.ca_open_null_input') is distinct from '42501:company account effect receipt is unavailable' then
+		raise exception 'A missing capability or digest was not refused: % % % % %',
+			current_setting('qorpera_test.ca_null_capability'),current_setting('qorpera_test.ca_open_null_capability'),
+			current_setting('qorpera_test.ca_null_digests'),current_setting('qorpera_test.ca_null_downstream'),
+			current_setting('qorpera_test.ca_open_null_input');
+	end if;
+	if current_setting('qorpera_test.ca_describe_wrong_action') is distinct from
+		'42501:company account effect receipt is unavailable' then
+		raise exception 'The broker read an opening''s context on another action''s receipt: %',
+			current_setting('qorpera_test.ca_describe_wrong_action');
 	end if;
 	-- The account carries the id the broker sealed into its envelope.
 	if v_account is distinct from '79400000-0000-4000-8000-000000000201'::uuid then

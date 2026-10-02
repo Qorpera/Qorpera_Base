@@ -35,7 +35,8 @@ the other actions (the receipt names the account, as a connector receipt names i
 folder-v2), the broker authority by plain read (42501 unless active with this capability), the run's job by
 plain read (42501 unless it is the authority's company: another company's run is refused before any of its rows
 is locked), the run, the authority's company equals the run's (42501), then the receipt `FOR UPDATE` (42501
-unless executing, cloud_tool, same input and downstream digests, this action and account).
+unless executing, cloud_tool, same input and downstream digests, this action and account). Every check is
+null-safe: a missing capability or digest refuses (42501), never passes as unknown.
 
 | Function | Action | What it does |
 | --- | --- | --- |
@@ -49,7 +50,8 @@ The account row and its secret are locked `FOR UPDATE` (secret first) only by th
 after the receipt, and only when the secret is this company's `website` secret: any other id (another company's
 account, a Gmail secret) is refused without being locked. The opening call inserts, taking the foreign keys'
 key-share locks. The 5 s `lock_timeout` covers the vault rows; the lease validator's company fence keeps its own
-wait (up to 25 s), as for every native tool call.
+wait (up to 25 s), as for every native tool call. Through the vault the database pool cancels a statement after
+4 s, so a longer wait ends as "outcome unconfirmed" and rolls back; the tool call's next attempt repeats it.
 
 ### Member calls
 
