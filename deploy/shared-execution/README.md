@@ -39,6 +39,9 @@ What does **not** change:
 | `/var/lib/qorpera-shared-execution/slots/<n>/host` | `qorpera-shared-host-<n>` | native host scratch (capsule opened here, wiped after the run) |
 | `/var/lib/qorpera-shared-execution/slots/<n>/runner/{state,workspace}` | `qorpera-shared-runner-<n>` | runner authority state and workspace |
 | `/run/qorpera-shared-execution/slots/<n>/{credentials/*,native-provider.env}` | root 0600, tmpfs | what PID 1 hands to the two units (`LoadCredential=`, `EnvironmentFile=`) |
+| `/opt/qorpera-folder/qorpera-folder`, `/etc/systemd/system/qorpera-folder-mount@.service` | root | the folder program and its mount unit (F3; pinned, started by nothing in this package) |
+| `/etc/qorpera-folder/mounts/<id>.json` | root 0600 in 0700 | a mount's view file (its company folder, view id and pass) |
+| `/srv/qorpera-folder/<id>` | root 0700 | a mount (read-only, served to its mounting account only); hidden, with `/etc/qorpera-folder`, from both slot units |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
 (assignment inbox), both loopback. The runner configuration is written into

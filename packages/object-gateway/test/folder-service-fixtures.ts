@@ -93,6 +93,8 @@ export class FakeCore implements FolderCore {
 	renewalFails = false;
 	/** The database's clock, for leases. */
 	now: () => number = Date.now;
+	/** When set, listings wait for it (a slow first listing). */
+	listGate: Promise<void> | undefined;
 
 	openView(viewId: string, pass: string, environmentId = ENV): void {
 		this.views.set(viewId, { pass, state: "open", renewals: 0, environmentId });
@@ -138,9 +140,11 @@ export class FakeCore implements FolderCore {
 
 	async list(environmentId: string, actor: FolderActor, after: string | null) {
 		this.listCalls++;
+		await this.listGate;
+		// A view in another company folder is refused as the real core does (view_resolve: 42501).
+		this.#check(actor, environmentId);
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
-		this.#check(actor, environmentId);
 		const all = this.#visible(actor);
 		const start = after === null ? 0 : all.findIndex((e) => e.path === after) + 1;
 		const page = all.slice(start, start + 2);
@@ -148,9 +152,9 @@ export class FakeCore implements FolderCore {
 	}
 
 	async feed(environmentId: string, actor: FolderActor, afterSeq: number) {
+		this.#check(actor, environmentId);
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
-		this.#check(actor, environmentId);
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>

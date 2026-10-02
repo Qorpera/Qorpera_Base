@@ -567,10 +567,10 @@ describe("folder service", () => {
 		socket.write(
 			encodeJson(Kind.hello, { protocol: 1, environmentId: ENV, viewId: "proof", pass: PASS, role: "io" }),
 		);
-		// 32 reads of 1 MiB sent at once, and nothing read back.
+		// 32 reads of 256 KiB sent at once, and nothing read back.
 		socket.pause();
 		for (let i = 0; i < 32; i++)
-			socket.write(encodeJson(Kind.read, { path: "big.bin", version: v(2), offset: 0, length: 1024 * 1024 }));
+			socket.write(encodeJson(Kind.read, { path: "big.bin", version: v(2), offset: 0, length: 256 * 1024 }));
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		expect(reads).toBeLessThan(16);
 		// Reading on gets every answer.
@@ -701,6 +701,45 @@ describe("run box views", () => {
 			role: "io",
 		});
 		expect((await elsewhere.json()).body.code).toBe("VIEW_REFUSED");
+	});
+
+	it("never lets a hello the core has not checked yet lock out the right one, whatever it named", async () => {
+		const { core, path } = await box();
+		let open = (): void => {};
+		core.listGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const elsewhere = await Client.open(path);
+		elsewhere.send(Kind.bridge, EXEC);
+		elsewhere.send(Kind.hello, {
+			protocol: 1,
+			environmentId: "22222222-2222-4333-8444-555555555555",
+			viewId: VIEW,
+			pass: BOX_PASS,
+			role: "io",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		// While the other company folder's hello is being checked, the right one is asked to try again.
+		const right = await Client.open(path);
+		expect((await right.hello("io", BOX_PASS, EXEC, VIEW)).body.code).toBe("UNAVAILABLE");
+		open();
+		core.listGate = undefined;
+		expect((await elsewhere.json()).body.code).toBe("VIEW_CLOSED");
+		const again = await Client.open(path);
+		expect((await again.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+	});
+
+	it("drops a core view no machine holds, and lists and renews it again when one comes back", async () => {
+		const { core, path } = await box();
+		const first = await Client.open(path);
+		await first.hello("io", BOX_PASS, EXEC, VIEW);
+		const lists = core.listCalls;
+		first.close();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const back = await Client.open(path);
+		expect((await back.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		expect(core.listCalls).toBeGreaterThan(lists);
+		expect(core.views.get(VIEW)!.renewals).toBe(2);
 	});
 
 	it("serves nothing past the lease the core confirmed, and serves again once a renewal succeeds", async () => {

@@ -56,7 +56,7 @@ const LEASE_MS = 120_000;
 class View {
 	readonly key: string;
 	readonly environmentId: string;
-	readonly actor: FolderActor;
+	readonly #actor: FolderActor;
 	readonly passSha256: Buffer;
 	/** A core view's id and pass, for renewals; dropped when the view closes. */
 	lease: Grant["lease"];
@@ -84,11 +84,18 @@ class View {
 	constructor(grant: Grant) {
 		this.key = grant.key;
 		this.environmentId = grant.environmentId;
-		this.actor = grant.actor;
+		this.#actor = grant.actor;
 		this.passSha256 = grant.passSha256;
 		this.lease = grant.lease;
 		this.leaseUntil = undefined;
 		this.confirmed = grant.lease === undefined;
+	}
+
+	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does. */
+	get actor(): FolderActor {
+		if (this.#actor.kind !== "view") return this.#actor;
+		if (!this.lease) throw new ProtocolError(ErrorCode.viewClosed, this.closed ?? "The view is closed");
+		return { kind: "view", viewId: this.lease.viewId, pass: this.lease.pass };
 	}
 }
 
@@ -168,6 +175,7 @@ export class FolderService {
 		const lease = view.lease;
 		if (!lease) return;
 		let renewal: Awaited<ReturnType<FolderCore["renewView"]>>;
+		const asked = this.#now();
 		try {
 			renewal = await this.#core.renewView(lease.viewId, lease.pass);
 		} catch (error) {
@@ -177,7 +185,7 @@ export class FolderService {
 		}
 		if (renewal.state === "closed") return this.#close(view, `The view was ${renewal.reason}`);
 		// The core's clock says until when; never trust it for longer than one lease from now.
-		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), this.#now() + LEASE_MS);
+		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), asked + LEASE_MS);
 		view.confirmed = true;
 	}
 
@@ -185,12 +193,14 @@ export class FolderService {
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
-		// Joining an open view takes the pass, and the company folder, it was opened with. A pass the core has not
+		// Joining an open view takes the pass, and the company folder, it was opened with. A hello the core has not
 		// checked yet never locks out another: while it is being checked the other is asked to try again, and an
 		// unchecked view is replaced.
-		if (view && !view.closed && view.environmentId !== grant.environmentId)
-			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
-		if (view && !view.closed && !timingSafeEqual(view.passSha256, grant.passSha256)) {
+		if (
+			view &&
+			!view.closed &&
+			(view.environmentId !== grant.environmentId || !timingSafeEqual(view.passSha256, grant.passSha256))
+		) {
 			if (view.confirmed)
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 			if (view.loading) throw new ProtocolError(ErrorCode.unavailable, "The view is being checked; try again");
@@ -209,7 +219,16 @@ export class FolderService {
 			released = true;
 			if (mine) view.sinks.delete(mine);
 			view.connections--;
-			if (view.connections === 0) view.idleSince = this.#now();
+			if (view.connections > 0) return;
+			view.idleSince = this.#now();
+			// A core view no machine holds is dropped at once (with its pass): its lease is not renewed while idle, so
+			// a machine that comes back lists it again and renews at once.
+			if (view.lease && this.#views.get(view.key) === view) {
+				this.#views.delete(view.key);
+				view.lease = undefined;
+				view.closed = "No machine holds the view";
+				view.tree = undefined;
+			}
 		};
 		try {
 			view.loading ??= this.#firstLoad(view);

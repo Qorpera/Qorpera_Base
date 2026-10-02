@@ -212,9 +212,9 @@ program in the pinned Rust image and passes it to the shared-execution packager 
 4. Execution host on node 2: a full `rebuild-exec-host.sh` with the shared-execution package, as at any cut (drain the
    host, the current image, the orchestrator restarted as the script says); it installs the folder program and
    refuses an unpinned one before stopping anything. Then the view file and `systemctl start
-   qorpera-folder-mount@proof`. Prove once, with the mount live and again with it hung (the folder service stopped),
-   that a slot pair still starts: `InaccessiblePaths=/srv/qorpera-folder` over a FUSE submount must neither fail nor
-   hang the start.
+   qorpera-folder-mount@proof`. Prove once, with the mount live and again with it hung (`kill -STOP` on the mount's
+   process, so the kernel waits on it rather than failing fast), that a slot pair still starts:
+   `InaccessiblePaths=/srv/qorpera-folder` over a FUSE submount must neither fail nor hang the start. Then `kill -CONT`.
 5. Acceptance (the design's step 1 proof), as root in the execution host:
    - `find /srv/qorpera-folder/proof | wc -l` equals the proof company's path count, and
      `rg -l <word> /srv/qorpera-folder/proof` finds what the web app's search finds;
@@ -239,9 +239,12 @@ program in the pinned Rust image and passes it to the shared-execution packager 
   once on the first listing, then every 40 s while a machine is connected (`qorpera_folder_view_renew`), and serves
   the view only until the lease the core confirmed: past it, during a database outage, every call is `UNAVAILABLE`
   until a renewal succeeds. A closed answer, or a refusal, closes the view on every connection and forgets its pass.
-  Further connections must present the same pass and company folder; while the first pass is still being checked,
-  another is asked to try again, so a wrong pass never locks out the right one. A view no machine holds is not
-  renewed. The run's end closes its run box in the core (and the next renewal tells the machines, within 40 s).
+  Further connections must present the same pass and company folder; while a first hello is still being checked,
+  another is asked to try again, and an unchecked view is replaced, so a wrong pass or company folder never locks out
+  the right one. A core view no machine holds is dropped at once with its pass (its lease is not renewed while idle);
+  a machine that comes back lists it again and renews at once. The run's end closes its run box in the core (and the
+  next renewal tells the machines, within 40 s). What a machine already cached stays readable on it until the feed or
+  the close says otherwise.
 - `scripts/test-folder-service-core-shapes.mjs` also opens a run box view for a leased run on the views test's company
   (639) and checks its listing, feed replay, renewal, close, and that a closed view is refused.
 
