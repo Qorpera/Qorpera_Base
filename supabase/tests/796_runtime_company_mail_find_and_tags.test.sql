@@ -35,6 +35,7 @@ begin
 		raise exception 'The native host cannot reach find_mail'; end if;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_mail_box_part(text)',
+			'public.qorpera_mail_header_value(text,integer)',
 			'public.qorpera_mail_delivery_headers(text[],text,text,jsonb)'] loop
 			if has_function_privilege(v_role, v_function, 'EXECUTE') then
 				raise exception '% is exposed to %', v_function, v_role; end if;
@@ -206,6 +207,22 @@ select pg_temp.wake_assert(jsonb_array_length(pg_temp.find('{"to":"support+big@m
 	and pg_temp.find('{"to":"support+big@mail.example.test"}') ->> 'more' = 'true'
 	and octet_length((pg_temp.find('{"to":"support+big@mail.example.test"}') -> 'mails')::text) <= 6100,
 	'Large answers are cut to fit: ' || jsonb_array_length(pg_temp.find('{"to":"support+big@mail.example.test"}') -> 'mails'));
+-- Characters the answer escapes count for what they cost there, and nextBefore pages to the rest.
+select pg_temp.mail(pg_temp.mail_id(490 + n), 'support+lt@mail.example.test', repeat('<', 200)) from generate_series(1, 6) as n;
+select pg_temp.wake_assert(jsonb_array_length(pg_temp.find('{"to":"support+lt@mail.example.test"}') -> 'mails') between 1 and 5
+	and pg_temp.find('{"to":"support+lt@mail.example.test"}') ->> 'more' = 'true'
+	and jsonb_array_length(pg_temp.find(jsonb_build_object('to', 'support+lt@mail.example.test',
+		'before', pg_temp.find('{"to":"support+lt@mail.example.test"}') ->> 'nextBefore')) -> 'mails')
+		= 6 - jsonb_array_length(pg_temp.find('{"to":"support+lt@mail.example.test"}') -> 'mails'),
+	'Escaped characters count, and nextBefore shows the older ones');
+select pg_temp.mail(pg_temp.mail_id(500 + n), 'support+quote@mail.example.test', repeat('"', 200)) from generate_series(1, 6) as n;
+select pg_temp.wake_assert(jsonb_array_length(pg_temp.find('{"to":"support+quote@mail.example.test"}') -> 'mails') between 1 and 5
+	and pg_temp.find('{"to":"support+quote@mail.example.test"}') ->> 'more' = 'true',
+	'Quotes count for their escapes too');
+-- A search that shows everything says no more and gives no next page.
+select pg_temp.wake_assert(pg_temp.find('{"subject":"code is 123456"}') ->> 'more' = 'false'
+	and not (pg_temp.find('{"subject":"code is 123456"}') ? 'nextBefore'),
+	'Nothing more, no next page');
 
 -- Only verified mail.
 insert into public.qorpera_event_deliveries (hook_id, profile_id, status, event_type, content_type, headers, body, body_bytes,
@@ -215,6 +232,14 @@ select hook_id, profile_id, 'refused', 'mail.received', 'application/json',
 from public.qorpera_company_mailboxes where local_part = 'support' and removed_at is null;
 select pg_temp.wake_assert(pg_temp.found('{"to":"support+refused@mail.example.test"}') = '{}',
 	'A delivery that is not verified is not found');
+-- Only received mail: another kind of event on a mailbox's hook is not mail.
+insert into public.qorpera_event_deliveries (hook_id, profile_id, status, delivery_key, event_type, content_type, headers, body,
+	body_bytes, body_sha256, verified_at)
+select hook_id, profile_id, 'verified', 'other:1', 'other.event', 'application/json',
+	'{"delivered-to":"support+other@mail.example.test"}', '\x7b7d', 2, repeat('0', 64), clock_timestamp()
+from public.qorpera_company_mailboxes where local_part = 'support' and removed_at is null;
+select pg_temp.wake_assert(pg_temp.found('{"to":"support+other@mail.example.test"}') = '{}',
+	'Another kind of event is not found');
 
 -- Only the company's own mail: not another company's mailbox, not a removed mailbox, not another hook's events.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
@@ -259,8 +284,14 @@ select pg_temp.wake_assert(pg_temp.found('{"to":"support+old@mail.example.test"}
 	and pg_temp.find('{"to":"support+old@mail.example.test"}') ->> 'more' = 'true'
 	and pg_temp.found(jsonb_build_object('to', 'support+old@mail.example.test',
 		'before', to_char(current_setting('qorpera_test.cut')::timestamptz at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+		= array[current_setting('qorpera_test.old_mail')::uuid]
+	-- With nothing shown, nextBefore is where the search stopped: a next page reaches the old match.
+	and (pg_temp.find('{"to":"support+old@mail.example.test"}') ->> 'nextBefore')::timestamptz
+		> current_setting('qorpera_test.cut')::timestamptz
+	and pg_temp.found(jsonb_build_object('to', 'support+old@mail.example.test', 'before',
+		pg_temp.find('{"to":"support+old@mail.example.test"}') ->> 'nextBefore'))
 		= array[current_setting('qorpera_test.old_mail')::uuid],
-	'Behind 2000 newer mails, more says so and before reaches it');
+	'Behind 2000 newer mails, more says so and nextBefore reaches it');
 select pg_temp.find_error('{"before":"soon"}', '22023', 'Mail search is invalid');
 
 rollback;

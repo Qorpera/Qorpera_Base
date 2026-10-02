@@ -18,11 +18,12 @@
 -- default) and before a time (to page back). It looks at the newest 2000 mails in that window and returns at
 -- most 10, newest first, as many as fit the tool's 8 KiB answer, each with its delivery id for read_event; no
 -- mail text and no matching inside it. more says there are others (or that the 2000 were not all it could
--- see). The runtime polls it to wait for a mail (waitSeconds). It is a read: the run's company and environment
--- only, through the native tool binding.
+-- see), and nextBefore is the before that shows the next older ones. The runtime polls it to wait for a mail
+-- (waitSeconds). It is a read: the run's company and environment only, through the native tool binding.
 --
--- Locks: find takes the run's job and run rows as read_event does, and reads deliveries without locking, on
--- the company's (profile_id, received_at) index.
+-- Locks: find takes the run's job and run rows as read_event does, and reads deliveries without locking: one
+-- ordered scan of each mailbox's (hook_id, received_at) index, each stopping at 2000 rows, so a company's
+-- volume never makes a search read more than 2000 rows a mailbox.
 
 set local lock_timeout = '3s';
 
@@ -190,6 +191,9 @@ declare
 	v_hooks uuid[];
 	v_found jsonb;
 	v_more boolean;
+	v_next_before timestamptz;
+	v_searched bigint;
+	v_oldest_searched timestamptz;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	if jsonb_typeof(p_request) is distinct from 'object'
@@ -224,15 +228,20 @@ begin
 	if v_mailbox is not null and cardinality(v_hooks) = 0 then
 		raise exception 'No mailbox of this company has that address; list_hooks shows them' using errcode = '22023';
 	end if;
-	-- The newest 2000 mails in the window bound the search (the company's index stops there); matching reads
-	-- only the kept headers. The answer keeps as many of the 10 newest matches as fit 6000 bytes.
+	-- The newest 2000 mails in the window bound the search: each mailbox's own index scan stops at 2000, and the
+	-- newest 2000 of those are searched. Matching reads only the kept headers.
 	with candidate as (
-		select delivery.id, delivery.hook_id, delivery.received_at, delivery.headers
-		from public.qorpera_event_deliveries as delivery
-		where delivery.profile_id = v_run.profile_id and delivery.hook_id = any (v_hooks)
-			and delivery.status = 'verified' and delivery.event_type = 'mail.received'
-			and delivery.received_at >= v_since and (v_before is null or delivery.received_at < v_before)
-		order by delivery.received_at desc, delivery.id desc
+		select picked.* from unnest(v_hooks) as box(hook_id)
+		cross join lateral (
+			select delivery.id, delivery.hook_id, delivery.received_at, delivery.headers
+			from public.qorpera_event_deliveries as delivery
+			where delivery.hook_id = box.hook_id and delivery.status = 'verified'
+				and delivery.event_type = 'mail.received' and delivery.received_at >= v_since
+				and (v_before is null or delivery.received_at < v_before)
+			order by delivery.received_at desc, delivery.id desc
+			limit 2000
+		) as picked
+		order by picked.received_at desc, picked.id desc
 		limit 2000
 	), matched as (
 		select candidate.id, candidate.received_at, jsonb_strip_nulls(jsonb_build_object(
@@ -251,18 +260,36 @@ begin
 		order by candidate.received_at desc, candidate.id desc
 		limit 11
 	), sized as (
-		select matched.item, row_number() over (order by matched.received_at desc, matched.id desc) as place,
-			sum(octet_length(matched.item::text) + 1) over (order by matched.received_at desc, matched.id desc) as running
+		-- The bytes each mail takes in the tool's answer, which carries this text inside a JSON string and escapes
+		-- < > & as \u003c: a quote or backslash costs one byte more, those three five more. The answer keeps the
+		-- newest match always, then as many of the 10 as fit 6000 such bytes.
+		select matched.item, matched.received_at,
+			row_number() over (order by matched.received_at desc, matched.id desc) as place,
+			sum(octet_length(matched.item::text) + 1
+				+ (length(matched.item::text) - length(translate(matched.item::text, '"\', '')))
+				+ 5 * (length(matched.item::text) - length(translate(matched.item::text, '<>&', ''))))
+				over (order by matched.received_at desc, matched.id desc) as running
 		from matched
+	), kept as (
+		select sized.*, sized.place <= 10 and (sized.place = 1 or sized.running <= 6000) as shown from sized
 	)
-	select coalesce(jsonb_agg(sized.item order by sized.place)
-			filter (where sized.place <= 10 and (sized.place = 1 or sized.running <= 6000)), '[]'::jsonb),
-		coalesce(bool_or(sized.place > 10 or (sized.place > 1 and sized.running > 6000)), false)
-			or (select count(*) from candidate) = 2000
-	into v_found, v_more
-	from sized;
-	return jsonb_build_object('schema', 'qorpera.agent-mail-search/v1', 'runId', v_run.id, 'since', v_since,
-		'mails', v_found, 'more', v_more);
+	select coalesce(jsonb_agg(kept.item order by kept.place) filter (where kept.shown), '[]'::jsonb),
+		coalesce(bool_or(not kept.shown), false),
+		min(kept.received_at) filter (where kept.shown),
+		(select count(*) from candidate), (select min(candidate.received_at) from candidate)
+	into v_found, v_more, v_next_before, v_searched, v_oldest_searched
+	from kept;
+	-- The next page starts before the oldest mail shown when matches were left out, or before the oldest mail
+	-- searched when the 2000 bound was reached (so a page that shows nothing still has a next one).
+	if not v_more then
+		v_next_before := null;
+	end if;
+	if v_searched = 2000 then
+		v_more := true;
+		v_next_before := coalesce(v_next_before, v_oldest_searched);
+	end if;
+	return jsonb_strip_nulls(jsonb_build_object('schema', 'qorpera.agent-mail-search/v1', 'runId', v_run.id,
+		'since', v_since, 'mails', v_found, 'more', v_more, 'nextBefore', v_next_before));
 end
 $$;
 revoke all on function public.qorpera_find_agent_mail(jsonb, jsonb) from public, anon, authenticated, service_role;
