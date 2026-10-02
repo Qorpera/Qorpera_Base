@@ -30,6 +30,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
 | `rules/<name>.md` | rule | yes |
+| `human-tasks/<name>.md` | human-task | yes (H1, inert until H2) |
+| `contacts/<name>.md` | contact | yes (H1, inert until H2) |
 
 A path's kind is decided on the folder's key (`companyPathKey`, the same NFKC-casefold as
 `qorpera_company_path_key`, 20260828005000), because two spellings with one key are one entry:
@@ -38,8 +40,8 @@ refuses a unit on a structured key that carries no parse. JavaScript and Postgre
 few characters differently (`İ`); such a path then fails closed in the database, and the
 comparison test below includes these spellings. Every other file is ordinary: one
 pattern match and nothing else. Files nested deeper (a note in `routines/notes/`, a worker's
-output next to its brief) are ordinary. Core §5's list gains `vision/vision.md` and the two
-worker files.
+output next to its brief) are ordinary. Core §5's list gains `vision/vision.md`, the two
+worker files, and (H1) `human-tasks/<name>.md` and `contacts/<name>.md`.
 
 The parser is `@qorpera/cloud-client/company-state-files` (`companyStatePath`,
 `parseCompanyStateFile`, the canonical `write*File` writers and `setCompanyStateSettings`).
@@ -53,7 +55,8 @@ Folder and file names follow contract 5.6 as written (not only as keys): lowerca
 digits and single hyphens, at most 64 characters, and a lowercase `.md` extension. The whole
 path of a structured file is written exactly as its key, so `agents/anna/Agent.md` or a
 compatibility spelling is refused with the spelling to use. The rule covers agent and group
-folders, routine, todo, rule and connection files, and todo and worker folders.
+folders, routine, todo, rule, connection, human-task and contact files, todo and worker folders,
+the top folders `human-tasks` and `contacts`, and a human task's folder and its `proof/` folder.
 
 These path checks are `companyStatePathProblems(path, folder)`. They need no text, so the
 database runs the same list, and the comparison test covers both. `decide` runs them on the
@@ -61,8 +64,10 @@ path an entry is actually stored under, its parent folder's stored spelling incl
 - for every file a unit writes;
 - for every structured file a move or rename carries, at its new path;
 - for every folder a unit creates or renames at a structured place: `agents/<h>`,
-  `agents/groups/<g>`, `agents/<h>/routines`, `agents/<h>/todos`, `agents/<h>/todos/<t>` and
-  `agents/<h>/todos/<t>/<w>`.
+  `agents/groups/<g>`, `agents/<h>/routines`, `agents/<h>/todos`, `agents/<h>/todos/<t>`,
+  `agents/<h>/todos/<t>/<w>`, `human-tasks`, `contacts`, `human-tasks/<t>` and
+  `human-tasks/<t>/proof`. The two top folders carry no name of their own; they are places only so
+  that a wrong spelling such as `Contacts/` cannot be made and block every later save.
 
 So a rename can never leave a file that no later save could pass. Renaming
 `routines/daily.md` to `Daily report.md`, or case-only to `Daily.md`, is refused. So is
@@ -517,6 +522,178 @@ Only the platform writes these two files:
 This holds for every worker species (contract 13). The worker's folder also holds the files a
 write-access worker makes (today `work/todos/<agent>/<todo>/<worker>/`).
 
+### `human-tasks/<name>.md`
+
+Work an agent hands to a person: a member, or a contact outside the company (Q1 §5, "Work for
+people"). One file per task; the task's folder beside it holds what the person sends back. It is
+the last step of the escalation order (16.1, as the 2026-10-02 amendment widens it).
+
+```
+---
+id: 5d0c2f7e-8b1a-4c55-9a43-0f6e2b7d91c4
+title: Fit the second disk in node 2
+status: open
+member: 0b7d2e41-6c3a-4f18-9e25-8a1d4c6f2b90   # Jonas
+from: 7f3a9c21-44d0-4e6b-8a55-2c1f0b9e3d77     # Operations
+todo: 3c9e1a52-7d4b-4f60-8e21-5b0a9c7d2e14     # node-2-storage
+due: 2026-10-09T16:00:00Z
+minutes: 40
+proof: [photo, note]
+---
+## Why
+Node 2's storage is 91% full and fills up on 21 October at this rate.
+## Steps
+- [ ] Order a 4 TB NVMe, same model as slot 1
+- [x] Agree a 30-minute window with the coordinator
+- [ ] Fit it in slot 2 and power on
+- [ ] Photograph the label, serial number readable
+## Done looks like
+The photo, and a note with the time node 2 was back up.
+```
+
+| Key | Required | Values |
+| --- | --- | --- |
+| `id` | yes | lowercase UUID; never changes |
+| `title` | yes | one line, 1–200 bytes |
+| `status` | yes | `open`, `done`, `accepted`, `returned`, `declined`, `cancelled` |
+| `member` | exactly one of `member` and `contact` | the member it is for: a lowercase user id |
+| `contact` | exactly one of `member` and `contact` | the contact it is for: a contact file's `id` |
+| `from` | yes | the asking agent's id |
+| `todo` | no | the `id` of the asking agent's todo that waits on it (a note may name it) |
+| `due` | yes | UTC instant |
+| `minutes` | no | the expected time, whole minutes 1–480 (shown as "About 40 minutes") |
+| `proof` | no | what counts as done: one or more of `photo`, `file`, `signature`, `note`, no repeats |
+| `files` | no | 1–20 company-folder paths of files the person needs (a draft to check); rules below |
+| `reason` | with `returned` and `declined`; allowed with `cancelled`; refused otherwise | one line, 1–500 bytes: why it went back, why the person can't, or why it was cancelled |
+| `secret` | no; with `member` only | one line, 1–100 bytes: the label of the one secret the person enters ("Code from the SMS") |
+| `secret_state` | with `secret`, and only then | `asked` or `saved` |
+| `connection` | no | the `id` of the `connections/` file the step is for (A1) |
+| `step` | no | the kind of step a website demands of a person (A1): `sign_in`, `captcha`, `phone_code`, `id_check`, `payment`, `create_account`, `other` |
+| body | yes | 1 byte to 32 KiB trimmed; the headings `## Why`, `## Steps`, `## Done looks like` are the convention, not required |
+
+A list key is either left out or holds at least one item (`proof: []` is refused: leave it out).
+
+- **Steps.** The steps are the lines of the first section whose heading line is exactly
+  `## Steps` (after the closing `#`s and the spaces around the text are dropped, as `sections.md`
+  reads headings). The section ends at the next line that starts with `# ` or `## `. A step is a
+  line in that section that starts, at column 0, with `- [ ] ` (open) or `- [x] ` / `- [X] `
+  (done); its text is the rest of the line, trimmed of U+0020 spaces. A carriage return before
+  a line end is dropped first. Other lines in the section are text. Fenced code gets no special
+  reading. The file is refused if a step's text is empty, longer than 500 bytes, or not one line
+  (a C0 or C1 control character, a tab included, or U+2028/U+2029, as §1's one-line fields), or
+  if there are more than 50 steps. The parse lists them as
+  `steps: [{line, text, done}]` (`line`, the file's line number, lets H2 compare two versions line
+  by line). A body without such a section has no steps. The whole body stays the task's
+  `instructions`. In H2 a person's own change may flip a box and nothing else: no text changed,
+  no line added or removed.
+- **`files`.** Each entry is a literal path the company folder can hold, by the core's path rule
+  (`parseCloudCompanyPath`, SQL's `qorpera_company_path_valid`: relative, NFC, at most 4096 bytes,
+  no empty, `.` or `..` part, no trailing `/`, no `\`, `%` or `:`, no part ending in `.` or a
+  space, no reserved device name), and one line; a pattern character such as `*` is part of a
+  name, never a pattern. A plain entry that YAML reads as something other than text (`42`,
+  `true`) is written in double quotes, as in `asks`. Repeats are compared by key
+  (`companyPathKey`), since two spellings are one entry; the database compares by its own key.
+  The two keys fold some characters differently (74 in the BMP today, among them `ß`, `İ` and
+  U+A7F1; §1), so either side may refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `agents/`,
+  `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
+  people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
+  - a listed file opens only if the agent that sent the link may read it at that moment, by its
+    standing read authority (not the ended run's), and on a member's own task page only if that
+    member may read it;
+  - a contact's link keeps the list its review approved, and an open shows only the paths on both
+    that list and the current one: a removal works at once, an addition needs a new reviewed
+    send. A path that no longer exists, or became a folder, is not shown;
+  - the reviewed send also pins each listed file's version: an open shows that version, and only
+    while the sender may still read the path. A newer version needs a new reviewed send, like an
+    addition, so a contact never sees content nobody reviewed;
+  - the address and the expiry are pinned the same way: a later change of the contact's `email`
+    or the task's `due` never redirects or extends a link already sent;
+  - a link goes out only through a reviewed send, never from a file save.
+- **Secrets.** `secret` holds only a label. The value goes to the vault, bound to the task's
+  `id` (as W1b binds a hook's signing secret to its hook), so a task file can never point at
+  another secret, and the file has no secret name. Only the platform sets `secret_state: saved`;
+  H1's database already refuses `saved` from anyone else unless the file the save replaces had
+  `saved` with the same `id` and the same label.
+- **No contact details.** A member is reached through their account and a contact at the address
+  in their contact file. A link's token (kept only as a hash), an email's delivery and a
+  secret's value are runtime state or vault records, never the file: every member and agent reads
+  the folder.
+- **The task's folder:** `human-tasks/<name>/proof/` holds the person's files (H2 names them as
+  they arrive) and `human-tasks/<name>/note.md` the person's own note. Both are ordinary files.
+  The folder's name is the task file's name.
+- **What H1 does not decide (H2):**
+  - who may set which status: the agent `open`, `accepted`, `returned` and `cancelled`; the
+    person `done` and `declined`. A person's own change is a tick, or `done` or `declined` with
+    its proof, note and `reason`, saved in one change set by the platform as the person's change,
+    and not reviewed;
+  - that `member`, `contact` and `connection` exist in this company, and `todo` is an open todo of
+    the `from` agent, so a task never wakes another agent's todo; that `from` is the saving
+    agent's own id and never changes; that `id` is unique among the tasks and never changes; a
+    `member` change hands the task on;
+  - that a contact's task shares company files outside the company. The link's send is the
+    reviewed outside action, like `send_mail`, and nothing is sent by a file save; whether
+    creating or changing a contact's task (or its `files`) is also reviewed needs a review class
+    folder commits do not have today, and H2 decides it. A task for a contact with no `email` is
+    refused when it is created (H2, H5);
+  - the task's folder follows its file: the platform's writer carries the folder in the same change
+    set when a member or an agent moves or deletes a task file (so a task with proof can still be
+    renamed or removed), and a new task file is refused while a folder of its name exists; only
+    the platform writes under `human-tasks/<name>/`, as the person's change; a contact's proof and
+    note are outside content (11.1);
+  - the overdue wake and the wake on `done` and `declined`; the index; seeding `human-tasks/` and
+    `contacts/` in new companies (and whether they join the seeded folders that cannot be
+    deleted or moved);
+  - a file saved before H2 is trusted for its shape only: H2's first index of it checks every id
+    and every value only the platform may set.
+
+  A1's takeover tasks need H2, not only these keys. Until H2 a human-task file is a checked
+  format and nothing more.
+
+### `contacts/<name>.md`
+
+Everyone outside the company it deals with, one file per person or firm: contractors, suppliers,
+customers and leads. Agents keep the file current. A contact never has an account; it reaches a
+task only through a task link (H5) sent to the address in this file.
+
+```
+---
+id: 9a1f6c3e-2b7d-4e58-a0c4-7d3e1f9b6a25
+name: Maria Jensen
+organization: Jensen Revision ApS
+email: maria@jensen-revision.example
+asks: [bookkeeping review, VAT filing]
+---
+Our accountant since 2025. Files VAT every quarter.
+## History
+- 2026-10-08 Filed Q3 VAT (human-tasks/file-vat-q3/proof/receipt.pdf)
+```
+
+| Key | Required | Values |
+| --- | --- | --- |
+| `id` | yes | lowercase UUID; tasks name the contact by it; never changes |
+| `name` | yes | one line, 1–200 bytes |
+| `organization` | no | one line, 1–200 bytes |
+| `email` | no | 3–254 bytes of printable ASCII (`!` to `~`, so no space), exactly one `@` with text on both sides, and a domain that neither starts nor ends with `.` |
+| `phone` | no | `+` and 6–20 digits, with single U+0020 spaces allowed between digits |
+| `asks` | no | what the contact may be asked to do: 1–50 one-line items of 1–100 bytes without spaces at either end, no exact repeats |
+| body | no | up to 32 KiB trimmed: notes, then `## History` lines agents add after each task |
+
+- **Personal data.** A contact who asks to be forgotten needs an erasure of any deleted path:
+  core §8 today erases only a deleted agent's folder, and is not built yet (C2). That widening is
+  F1's, and lands before H5 sends any link. It covers the contact file, the folders of that
+  contact's tasks, and path names in commit units, as core §8 does for agents. It cannot find
+  free text elsewhere (task titles and bodies, `reason`, `## History` lines, agents' memory),
+  which a member removes by hand. The writing skill tells agents to name a contact by id only.
+- **What H1 does not decide (H2):** that `asks` covers a task's work is the agent's judgement (the
+  seeded skill `skills/human-task/SKILL.md`), not a database rule; that `id` is unique among the
+  contacts; the index; a task link (H5).
+
+The parses, with absent values `null` and absent lists `[]`:
+- human-task: `{kind, id, title, status, member, contact, from, todo, due, minutes, proof, files,
+  reason, secret, secretState, connection, step, instructions, steps}`;
+- contact: `{kind, id, name, organization, email, phone, asks, notes}`, with `notes` the trimmed
+  body (`""` when there is none).
+
 ## 3. Refused files
 
 A unit whose structured file cannot be read, or breaks a rule, is `refused`. The live file
@@ -594,6 +771,7 @@ of the body, for readers that should not reach the storage server.
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
+| human-task, contact | none until H2: the stored parse only | — | — |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
   todos along (core §5).
@@ -1188,6 +1366,61 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with
 core step C4.
+
+**Plan (H1): human tasks and contacts, the formats** (Q1 §5; design reviewed by Q1 and in an
+independent review). Inert: no index, no database rule but one (only the platform marks a secret
+saved), no seeding. Two PRs, released in this order:
+- **H1a, the parser** (no SQL): the two kinds in `companyStatePath`; their keys, limits and
+  cross-key rules (§2); the steps grammar; the canonical writers `writeHumanTaskFile` and
+  `writeContactFile`; the path checks for the file names and for the folder places `human-tasks`,
+  `contacts`, `human-tasks/<t>` and `human-tasks/<t>/proof` (`companyStatePathProblems`,
+  `structuredFolderNames`). Released first, to every writer that sends structured entries (the
+  runtime bundle active, the object gateway and the folder service deployed), since SQL refuses
+  a structured key that carries no parse (`qorpera_company_state_checked`), and a writer sends a
+  parse only for the kinds its parser knows.
+- **H1b, the database** (one migration, 20260929999000, after H1a is live). It replaces:
+  - `qorpera_structured_path_kind`: `human-tasks/<name>.md` and `contacts/<name>.md`;
+  - `qorpera_structured_folder_names`: the four folder places;
+  - `qorpera_company_state_path_problems`: the file name at position 2 for both kinds;
+  - `qorpera_company_state_parse_problems`: the two shapes, their limits and cross-key rules,
+    as for the kinds already indexed, so H2's index can trust what is stored;
+  - `qorpera_company_state_checked`: its list of shape-checked kinds;
+  - `qorpera_company_state_carried`: its roots gain `human-tasks` and `contacts`, so a folder
+    move or copy into or out of them is `kind_change` or `structured_copy` (without it, moving an
+    ordinary `drafts/` into `contacts` would land files with no parse, and moving `human-tasks/`
+    away would quietly make every task ordinary);
+  - `qorpera_folder_structured_decide`: one rule, `secret_state: saved` only from the platform,
+    unless the file the save replaces had `saved` with the same `id` and `secret`.
+
+  The review class stays plain, and no index, lock target or verify row is added.
+- **Before H1:** a file saved at these paths while they were ordinary (only an operator's test
+  companies can have one) can then only be deleted: an edit must parse, and a move out is a kind
+  change. H2 says how it treats a structured key whose current version has no parse.
+- **Contract:** the proposed amendment of 2 October (work for people) writes Jonas's decisions 4
+  and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's own text changes when it is
+  approved. The seeding code is H2's.
+- **Tests:** the parser's cases and round trips; the comparison lists, both kept by hand
+  (`supabase/tests/700_folder_state_vision_agents.test.sql` §7 and the kinds test in
+  `packages/cloud-client/test/company-state-files.test.ts`), with the new spellings; and SQL test
+  785: the shapes and limits, `human-tasks/my_task.md` and a `human-tasks/T/proof` folder refused,
+  a folder move of `drafts/` into `contacts`, of `human-tasks/` out and a folder copy of
+  `contacts/` refused, the secret rule, and no index.
+
+**Built (H1a): the parser** (`packages/cloud-client/src/company-state-files.ts`), as planned, with these choices made
+while building:
+- A contact's `asks` entry may not start or end with a space (a quoted entry could keep one), since the database's
+  shape check holds one-line values trimmed.
+- `asks` and `files` are the first free-text lists, so a plain item YAML reads as something other than text
+  (`true`, `42`, `null`) is refused with `quote`, as the settings' text fields are; the writers quote such items.
+- `files` entries are held to the core's path rule, so a task never names a path that rule refuses (the commit's own
+  key limit of 2,600 bytes is not checked here).
+- No `computer` key (A1, 2 October): a takeover step is always done on the asking agent's own computer, which the
+  platform finds from `from` when the person opens the task, also when a company runs several machines. The file
+  names nothing that can go stale; `step` and `connection` say what to do and for which account.
+
+**Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
+screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
+human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
 
 ## 9. The seeded tree
 
