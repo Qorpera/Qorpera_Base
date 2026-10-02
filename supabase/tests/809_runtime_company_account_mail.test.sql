@@ -2,7 +2,8 @@
 -- Company accounts, A1-5a: the lookup that marks a company account's mail. The 794 fixture opens two accounts
 -- of company 29…10, environment 29…20: agents@nordlys.example and agents+2@nordlys.example on vercel.com.
 
--- An older closed account and a newer open one on the same login, stored in mixed case (only the newest answers);
+-- An older closed account and a newer open one on the same login, stored in mixed case (only the newest answers,
+-- though the older one was used last);
 -- an account of another environment of the same company (never answers here); two accounts opened at the same
 -- moment on one login (the lower id answers); an older open account and a newer closed one on one login (the
 -- newest answers, closed or not); and a login on the bare mailbox address (never marks).
@@ -12,7 +13,8 @@ insert into public.qorpera_company_accounts(secret_id, profile_id, environment_i
 values
 	('80900000-0000-4000-8000-000000000001', '29000000-0000-4000-8000-000000000010',
 		'29000000-0000-4000-8000-000000000020', 'stripe.com', 'Nordlys+Stripe.com@Inbox.Qorpera.com', 'closed',
-		'29000000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z', null, null, null),
+		'29000000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z', '2026-09-05T00:00:00Z',
+		'29000000-0000-4000-8000-000000000030', null),
 	('80900000-0000-4000-8000-000000000002', '29000000-0000-4000-8000-000000000010',
 		'29000000-0000-4000-8000-000000000020', 'stripe.com', 'Nordlys+Stripe.com@Inbox.Qorpera.com', 'connected',
 		'29000000-0000-4000-8000-000000000001', '2026-09-03T00:00:00Z', null, '2026-09-04T14:52:00Z',

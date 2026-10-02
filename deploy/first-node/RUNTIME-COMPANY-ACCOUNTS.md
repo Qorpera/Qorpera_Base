@@ -123,14 +123,10 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
 Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
 codes and reset links, so it is shown only as "<site> · sign-in mail · used by <agent> <time>".
 
-- A company account's login is its own tagged address, `<handle>+<site>@<mail domain>` (find_mail's tags). A1-4's
-  account tool makes it from the agent's mailbox and the site; the agent never picks the login. A1-4 opens the
-  account row before the address is typed into any form, also for sign-ups that start with the address alone or
-  send a link, so the first code already matches (the lookup happens when a member reads the mail).
-- Only a tagged login marks mail. A bare mailbox address or a username never does, so no account can hide a whole
-  mailbox (closed accounts count, and a closed row is never deleted). A site that refuses the tagged address, or
-  signs in with a username, gets no mark: its codes would show to members, so A1-4 does not open such an account
-  on the bare address.
+- An account's mail is marked by its login: a tagged address, `<handle>+<tag>@<mail domain>` (find_mail's tags).
+  Only a tagged login marks mail. A bare mailbox address or a username never does, so no account can hide a whole
+  mailbox (closed accounts count, and a closed row is kept until its company or environment goes). What makes
+  every account's login such an address is A1-4's job (see "Notes for later steps").
 - `qorpera_company_account_mail(profile, environment, addresses text[])`: the newest of the company's accounts
   (closed ones included: a closed account's late mail is still a code or a link) whose login carries a tag and
   equals one of the addresses, whole, in any letter case, spaces around it ignored; `{accountId, site, lastUsedBy,
@@ -138,10 +134,22 @@ codes and reset links, so it is shown only as "<site> · sign-in mail · used by
   grants to any API role or the broker: Q1's postgres-owned member read calls it (and guards on its absence) with
   the delivery's own company and environment, never ids a caller chose. A plain read; its cost is bounded by one
   company's accounts (the planner uses the company index, or `qorpera_company_accounts_login` (profile,
-  environment, lower(login)) when one company has many accounts).
+  environment, lower(login)) when companies hold many accounts on average).
 
 ## Notes for later steps
 
+- A1-4 must make every account's mail markable (A1-5a), since nothing in the database enforces it:
+  - The account tool makes the login itself, `<handle>+<tag>@<mail domain>` from the agent's mailbox and the
+    site; the agent never picks it, and no account is opened on the bare mailbox address.
+  - The tag is at most 64 characters of `[a-z0-9._-]` (Q1's limit), while a site name can be 253: a long site
+    gets a shortened tag (for example its first 55 characters, `-` and 8 hex characters of its hash).
+  - The account row is opened before the address is typed into any form, also for sign-ups that start with the
+    address alone or send a link, so the first code is already marked (the lookup runs when a member reads it).
+  - A site that signs in with a username keeps the tagged address as the account's login; the username is kept
+    beside it, never instead of it, or the account's codes would show to members.
+  - The mail wait asks find_mail for the tagged address only (`to:`), so a site that accepts the tag but mails
+    the bare address is noticed (no code arrives): the account goes `needs_person`, and the bare mailbox is never
+    searched for its code.
 - Folder-v2 (A1-7): these calls lock the receipt before vault rows, the reverse of the folder core's ranks. On
   today's companies the lease validator's exclusive company fence serialises them, which also keeps the
   duplicate check and the vault-name loop free of races; folder-v2 has no such fence, so A1-7 must order them

@@ -1,12 +1,12 @@
 -- Company accounts A1-5a: which mail is a company account's own (sign-up codes, reset links), so the company
 -- Mailbox shows it only as "GitHub · sign-in mail · used by …" and never its text (the Interfaces design, I5b;
 -- members never see an account's secrets). A company account's login is its own tagged address,
--- `<handle>+<site>@<mail domain>` (find_mail's tags): A1-4's account tool makes it, the agent never picks it. A
--- delivery is account mail when one of its delivered-to addresses is the tagged login of one of the company's
+-- `<handle>+<tag>@<mail domain>` (find_mail's tags); A1-4's account tool must make it (the agent never picks it).
+-- A delivery is account mail when one of its delivered-to addresses is the tagged login of one of the company's
 -- accounts, closed ones included (a closed account's late mail is still a code or a link). Only a tagged login
 -- marks: a bare mailbox address or a username never does, so no account can hide a whole mailbox. A lookup, not a
--- mark kept at receive time: A1-4 opens the account row before the address is typed into any form, so the first
--- code already matches.
+-- mark kept at receive time: A1-4 must open the account row before the address is typed into any form, so the
+-- first code already matches.
 
 set local lock_timeout = '3s';
 
