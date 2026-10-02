@@ -1402,6 +1402,23 @@ saved), no seeding. Two PRs, released in this order:
 building: a contact's `asks` entry may not start or end with a space (a quoted entry could keep one), since the
 database's shape check holds one-line values trimmed.
 
+**Built (H1b): the database** (migration 20260929999000, SQL test 785), as planned, with these choices made while
+building:
+- The seven functions are patched by exact anchors, each of which must match once or the migration stops, so a
+  definition changed since is caught rather than overwritten.
+- A parse that breaks a rule is refused as for the indexed kinds: one problem naming the rules it breaks ("the
+  platform read this file differently from its rules (files)"). `files` has no trimming rule, since a file name may
+  start or end with a space; its entries are checked as the parser checks them.
+- The secret rule reads the stored parse of the version the save replaces (the current version at the same key), as
+  the agent rules read their base, and refuses with `structured_rule` and the problem on `secret_state`. A move keeps
+  the file's bytes and so its mark; a copy of a task file is refused anyway (`structured_copy`).
+- A folder that holds no `.md` file may still be moved or copied onto `contacts` or `human-tasks` while the root does
+  not exist: what it holds stays ordinary.
+- A task or contact save takes no lock and its review class stays plain (785 §7).
+- Proof besides 785 and 700 §7: 2,000 random files written by `writeHumanTaskFile` and `writeContactFile`; every parse
+  the parser accepted (1,859) passes `qorpera_company_state_parse_problems`. 60 mutants of the migration (each rule,
+  limit and place) are each caught by 785.
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
 human task through `computer`, `connection`, `step` and the secret keys, once H2 is in.

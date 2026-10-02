@@ -367,7 +367,12 @@ begin
 		('vision/vision.md', false, 0), ('agents/groups/launch-team/group.md', false, 0),
 		-- The seeded agents/groups is spelled in lowercase; any other spelling is read as an agent's folder.
 		('agents/groups', true, 0), ('Agents/Groups', true, 1), ('agents/Groups', true, 1), ('AGENTS/GROUPS', true, 1),
-		('Agents/groups/launch', true, 1)) v(path, folder, problems)
+		('Agents/groups/launch', true, 1),
+		-- H1: a task's and a contact's file names, the two roots as places, and a task's folders.
+		('human-tasks/fit-disk.md', false, 0), ('human-tasks/my_task.md', false, 1), ('contacts/Maria.md', false, 1),
+		('contacts/.md', false, 1), ('human-tasks', true, 0), ('contacts', true, 0), ('human-tasks/fit-disk', true, 0),
+		('human-tasks/fit-disk/proof', true, 0), ('Human-Tasks', true, 1), ('Contacts', true, 1), ('human-tasks/Fit Disk', true, 1),
+		('human-tasks/fit-disk/Proof', true, 1), ('human-tasks/fit-disk/photos', true, 0), ('contacts/archive', true, 0)) v(path, folder, problems)
 	loop
 		if jsonb_array_length(public.qorpera_company_state_path_problems(t.path, t.folder)) is distinct from t.problems then
 			raise exception 'Path % (folder %) expected % problems, got %', t.path, t.folder, t.problems,
@@ -378,7 +383,9 @@ begin
 		('agents/a/routines/r.md', 'routine'), ('agents/a/todos/t.md', 'todo'), ('agents/a/todos/t/w/brief.md', 'worker-brief'),
 		('agents/a/todos/t/w/results.md', 'worker-results'), ('agents/groups/g/group.md', 'group'), ('connections/c.md', 'connection'),
 		('rules/r.md', 'rule'), ('rules/.md', 'rule'), ('agents/groups/agent.md', null), ('agents/a/routines/notes/x.md', null),
-		('agents/sections.md/agent.md', null), ('skills/x/SKILL.md', null)) v(key, kind)
+		('agents/sections.md/agent.md', null), ('skills/x/SKILL.md', null), ('human-tasks/fit-disk-node-2.md', 'human-task'),
+		('contacts/maria-jensen.md', 'contact'), ('human-tasks/fit-disk-node-2/note.md', null),
+		('human-tasks/fit-disk-node-2/proof/label.md', null), ('contacts/archive/old.md', null)) v(key, kind)
 	loop
 		if public.qorpera_structured_path_kind(t.key) is distinct from t.kind then
 			raise exception 'Key % expected kind %, got %', t.key, t.kind, public.qorpera_structured_path_kind(t.key); end if;
