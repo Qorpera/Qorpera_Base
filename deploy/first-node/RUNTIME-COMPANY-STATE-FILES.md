@@ -593,8 +593,8 @@ A list key is either left out or holds at least one item (`proof: []` is refused
   name, never a pattern. A plain entry that YAML reads as something other than text (`42`,
   `true`) is written in double quotes, as in `asks`. Repeats are compared by key
   (`companyPathKey`), since two spellings are one entry; the database compares by its own key.
-  The two keys fold three characters differently (`ß`, `İ`, U+A7F1; §1), so either side may
-  refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `agents/`,
+  The two keys fold some characters differently (74 in the BMP today, among them `ß`, `İ` and
+  U+A7F1; §1), so either side may refuse as repeats two entries the other keeps apart. On a contact's task an entry whose key is under `agents/`,
   `contacts/`, `human-tasks/`, `connections/`, `rules/` or `hooks/` is refused: the company's
   people, other tasks, accounts and rules are not for outside readers. `files` never grants anything (H3, H5):
   - a listed file opens only if the agent that sent the link may read it at that moment, by its
