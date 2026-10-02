@@ -192,7 +192,10 @@ It sorts after change 4 because it reads its bundle declarations.
       `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. For a full or
       retiring host, only once every fast host in the run's placement has refused it recently
       (`20260929999997`, test 810): with a host on each node, the other node's host takes it first,
-      in about 2 s instead of a fresh VM's 17 s. It never does so within 15 s of its own refusal of
+      in about 2 s instead of a fresh VM's 17 s. A refusal wakes no orchestrator (wakes come with a
+      job's insert and status changes), so the other host and then the overflow act on their next
+      poll: about 0.5 s at 250 ms polling, up to the 10 s fallback with the realtime wake's 5 s
+      backstop. When both hosts are full, the fresh VM starts that much later than before. It never does so within 15 s of its own refusal of
       that run, read from its released claim, so two full paths cannot trade a job back and forth;
     - no fast host may take the run;
     - or the run has waited 10 s.
@@ -250,7 +253,9 @@ It sorts after change 4 because it reads its bundle declarations.
    - `qorpera_runtime_node_placements` rows read `CLAIM_TURN_*`;
    - member reply start is about 2 s.
 
-   To undo, set the roles to `null`.
+   To undo, set the roles to `null`. Once node 1 has its own fast host, stop that host's orchestrator
+   first (`deploy/shared-execution/README.md`, "Undo node 1's host"): with no roles, node 1's two
+   orchestrators would race on one adapter.
 
 ## Change 4: each run keeps its version (migration `20260928182000`)
 

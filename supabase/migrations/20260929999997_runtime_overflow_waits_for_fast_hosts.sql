@@ -21,14 +21,21 @@ begin
 end
 $$;
 
+-- The overflow branch reads the run's placement once: for the new rule and for its NO_FAST_HOST fall-through.
 select pg_temp.overflow_waits_patch('public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure,
 $anchor$		if ((v_error in ('ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED', 'ADMISSION_REFUSED:SANDBOX_RETIRING')
 				and p_job.dispatch_refused_by is distinct from p_orchestrator_id)
 $anchor$,
-$replacement$		-- 20260929999997: only once every fast host the run may use has refused it recently; until then the other
+$replacement$		v_placement := public.qorpera_runtime_run_placement(p_job, p_run);
+		-- 20260929999997: only once every fast host the run may use has refused it recently; until then the other
 		-- fast host takes it.
 		if ((v_error in ('ADMISSION_REFUSED:SANDBOX_CAPACITY_EXHAUSTED', 'ADMISSION_REFUSED:SANDBOX_RETIRING')
 				and p_job.dispatch_refused_by is distinct from p_orchestrator_id
-				and not exists (select 1 from jsonb_array_elements(public.qorpera_runtime_run_placement(p_job, p_run) -> 'fast') as fast_host
+				and not exists (select 1 from jsonb_array_elements(v_placement -> 'fast') as fast_host
 					where not public.qorpera_runtime_refused_recently(p_job.run_id, (fast_host ->> 'orchestratorId')::uuid)))
+$replacement$);
+select pg_temp.overflow_waits_patch('public.qorpera_runtime_claim_turn(uuid,public.qorpera_runner_jobs,public.qorpera_execution_runs)'::regprocedure,
+$anchor$		return public.qorpera_runtime_run_placement(p_job, p_run) ->> 'reason' = 'NO_FAST_HOST';
+$anchor$,
+$replacement$		return v_placement ->> 'reason' = 'NO_FAST_HOST';
 $replacement$);
