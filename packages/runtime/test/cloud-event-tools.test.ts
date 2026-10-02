@@ -350,9 +350,7 @@ describe("agent event tools", () => {
 				expect(kept["delivered-to"]).toBe(headers["delivered-to"]);
 				// The first piece keeps about a kilobyte of the result for the body.
 				expect(
-					Buffer.byteLength(
-						JSON.stringify(JSON.stringify(first.text)).replace(/[<>&\u2028\u2029]/g, "\\u0000"),
-					),
+					Buffer.byteLength(JSON.stringify(JSON.stringify(first.text)).replace(/[<>&\u2028\u2029]/g, "\\u0000")),
 				).toBeGreaterThan(1000);
 				// The rest carry no headers, so a sender's long ones cannot make the body slow to read.
 				for (const piece of rest) {
