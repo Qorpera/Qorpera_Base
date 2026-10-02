@@ -123,14 +123,22 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
 Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
 codes and reset links, so it is shown only as "<site> · sign-in mail · used by <agent> <time>".
 
-- Every company account signs up with its own tagged address, `<handle>+<site>@inbox.qorpera.com` (find_mail's
-  tags), which is its login. The account row exists from the opening, before the sign-up form is sent, so the first
-  code already matches.
+- A company account's login is its own tagged address, `<handle>+<site>@<mail domain>` (find_mail's tags). A1-4's
+  account tool makes it from the agent's mailbox and the site; the agent never picks the login. A1-4 opens the
+  account row before the address is typed into any form, also for sign-ups that start with the address alone or
+  send a link, so the first code already matches (the lookup happens when a member reads the mail).
+- Only a tagged login marks mail. A bare mailbox address or a username never does, so no account can hide a whole
+  mailbox (closed accounts count, and a closed row is never deleted). A site that refuses the tagged address, or
+  signs in with a username, gets no mark: its codes would show to members, so A1-4 does not open such an account
+  on the bare address.
 - `qorpera_company_account_mail(profile, environment, addresses text[])`: the newest of the company's accounts
-  (closed ones included: a closed account's late mail is still a code or a link) whose login equals one of the
-  addresses, whole and in any letter case; `{accountId, site, lastUsedBy, lastUsedAt}` or SQL NULL. SECURITY
-  DEFINER, stable, no grants to any API role or the broker: Q1's postgres-owned member read calls it (and guards on
-  its absence). A plain read, served by `qorpera_company_accounts_login` (profile, environment, lower(login)).
+  (closed ones included: a closed account's late mail is still a code or a link) whose login carries a tag and
+  equals one of the addresses, whole, in any letter case, spaces around it ignored; `{accountId, site, lastUsedBy,
+  lastUsedAt}` or SQL NULL. Accounts opened at the same moment answer by the lower id. SECURITY DEFINER, stable, no
+  grants to any API role or the broker: Q1's postgres-owned member read calls it (and guards on its absence) with
+  the delivery's own company and environment, never ids a caller chose. A plain read; its cost is bounded by one
+  company's accounts (the planner uses the company index, or `qorpera_company_accounts_login` (profile,
+  environment, lower(login)) when one company has many accounts).
 
 ## Notes for later steps
 
