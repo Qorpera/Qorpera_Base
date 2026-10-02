@@ -63,15 +63,15 @@ impl Machines {
 				Some(k) if k.confirmed.elapsed() < CONFIRMED_FOR => return (Lookup::Found, Some(k.machine.clone())),
 				Some(_) if state.confirming.contains(&cid) => state = self.done.wait(state).unwrap(),
 				Some(k) => {
-					let machine = k.machine.clone();
+					let hint = (k.machine.clone(), k.confirmed);
 					state.confirming.insert(cid);
-					break Some(machine);
+					break Some(hint);
 				}
 				None => break None,
 			}
 		};
 		drop(state);
-		if let Some(machine) = hint {
+		if let Some((machine, seen)) = hint {
 			let confirmed = self.confirm(cid, &machine);
 			let mut state = self.state.lock().unwrap();
 			state.confirming.remove(&cid);
@@ -82,7 +82,10 @@ impl Machines {
 					return (Lookup::Found, Some(machine));
 				}
 				Ok(false) => {
-					state.known.remove(&cid);
+					// Only the entry that was checked: a listing meanwhile may have put a fresh one there.
+					if state.known.get(&cid).is_some_and(|k| k.confirmed == seen) {
+						state.known.remove(&cid);
+					}
 				}
 				Err(_) => return (Lookup::Unavailable, None),
 			}
