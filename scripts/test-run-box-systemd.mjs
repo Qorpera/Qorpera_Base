@@ -4,8 +4,9 @@
  * The box's folder is this repository's folder service (core in memory) mounted by the real folder program, which is
  * built here in the pinned Rust image unless QORPERA_FOLDER_MOUNT_BIN names a build. Needs Docker with /dev/fuse:
  *
- *   QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> node scripts/test-run-box-systemd.mjs
+ *   QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> QORPERA_RUN_BOX_REQUIRE_TOOLBOX=1 node scripts/test-run-box-systemd.mjs
  *
+ * with the image from scripts/fixtures/run-box-toolbox-image.Dockerfile, so the box's tools run in the real unit too
  * (deploy/test-machine/README.md, "The systemd suites"). */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -20,7 +21,7 @@ const repository = resolve(import.meta.dirname, "..");
 const image = process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
 if (process.argv.length !== 2 || !image || !/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))
 	throw new Error(
-		"Usage: QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=<digest-pinned local image> [QORPERA_FOLDER_MOUNT_BIN=<built program>] node scripts/test-run-box-systemd.mjs",
+		"Usage: QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=<digest-pinned local image> [QORPERA_FOLDER_MOUNT_BIN=<built program>] [QORPERA_RUN_BOX_REQUIRE_TOOLBOX=1] node scripts/test-run-box-systemd.mjs",
 	);
 const temporary = await mkdtemp(join(tmpdir(), "run-box-systemd-"));
 const command = (file, args, timeout = 600_000) => {
@@ -86,7 +87,11 @@ try {
 	}
 	assert(ready, `Private systemd did not start: ${spawnSync("docker", ["logs", container], { encoding: "utf8" }).stdout}`);
 	await new Promise((done, fail) => {
-		const child = spawn("docker", ["exec", container, "node", "/fixture/check.mjs"], { stdio: "inherit", timeout: 300_000 });
+		const environment = process.env.QORPERA_RUN_BOX_REQUIRE_TOOLBOX === "1" ? ["-e", "QORPERA_RUN_BOX_REQUIRE_TOOLBOX=1"] : [];
+		const child = spawn("docker", ["exec", ...environment, container, "node", "/fixture/check.mjs"], {
+			stdio: "inherit",
+			timeout: 300_000,
+		});
 		child.once("error", fail);
 		child.once("exit", (code) => (code === 0 ? done() : fail(new Error("The run box systemd proof failed"))));
 	});

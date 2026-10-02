@@ -51,8 +51,8 @@ ProtectClock=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
-# Not even other slots' unit names and usage.
-ProtectControlGroups=private
+# Not even other slots' unit names and usage, and read-only (systemd 257 and later).
+ProtectControlGroups=strict
 KeyringMode=private
 NoNewPrivileges=yes
 CapabilityBoundingSet=

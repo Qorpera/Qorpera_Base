@@ -174,7 +174,7 @@ try {
 	}
 	check("only the slot's native host account can open the box socket");
 
-	const client = new Client("/run/qorpera-shared-box/0.sock", "qorpera-shared-host-0");
+	let client = new Client("/run/qorpera-shared-box/0.sock", "qorpera-shared-host-0");
 	assert.deepEqual(await client.ready(), []);
 	let reply = await client.sh("id -un; pwd; cat readme.md docs/plan.md; tools/run.sh; findmnt -n -o FSTYPE,OPTIONS /company");
 	assert.equal(reply.code, 0, reply.out);
@@ -229,6 +229,7 @@ try {
 	// The box's tools, when the image has them (run-box-toolbox-image.Dockerfile), inside the real unit: its system call
 	// filter, read-only /var and /run, no network.
 	const toolbox = (await client.sh("command -v soffice >/dev/null && echo yes || echo no")).out.trim() === "yes";
+	assert(toolbox || process.env.QORPERA_RUN_BOX_REQUIRE_TOOLBOX !== "1", "the image has the box's tools");
 	if (toolbox) {
 		reply = await client.sh(
 			[
@@ -263,6 +264,15 @@ try {
 	assert(reply.output.skippedBytes > 0 && reply.logPath?.startsWith("/tmp/home/output/"));
 	assert.match((await client.sh(`tail -n 1 ${reply.logPath}`)).out, /^100000\n$/);
 	check("a terminal command takes input, and long output is cut to head and tail with all of it kept in the home");
+
+	// A command can end the box host (it runs as the same account): the next connection gets a fresh one, folder and all.
+	await client.exec("kill -KILL $PPID", { yieldMs: 1_000 }).catch(() => undefined);
+	await until(async () => state("qorpera-shared-box@0.service") !== "active", "the box host ended");
+	const fresh = new Client("/run/qorpera-shared-box/0.sock", "qorpera-shared-host-0");
+	assert.deepEqual(await fresh.ready(), []);
+	assert.equal((await fresh.sh("cat /company/readme.md")).out, "hello from the company folder\n");
+	client = fresh;
+	check("a box host a command ended comes back on the next connection, with the folder");
 
 	peer.kill("SIGUSR1");
 	await until(async () => (await client.sh("cat /company/docs/plan.md")).out === "the plan, version two\n", "the edit shows");

@@ -92,7 +92,8 @@ await writeFile(
 	`${JSON.stringify(
 		{
 			schema: "qorpera.shared-execution-package/v1",
-			runtime: { node: ">=22.19.0", systemd: ">=255" },
+			// 257: the run box's private, read-only control group view (ProtectControlGroups=strict).
+			runtime: { node: ">=22.19.0", systemd: ">=257" },
 			artifacts,
 		},
 		null,
