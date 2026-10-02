@@ -403,7 +403,7 @@ not design intent and MUST NOT be presented as product limits.
 > seeded and kept; their files join the structured files, and the automatic
 > review gains the interface changes. See the
 > [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)
-> in section 19, item 11.
+> in section 19, item 12.
 
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
@@ -4085,65 +4085,82 @@ Ratified 2 October 2026 (Jonas). He named Interfaces and set their direction:
 - a marketplace comes later.
 
 The same day he approved the design page (https://claude.ai/artifact/PXouSQFWVSHTc6Vko3Gm7G) and its four decisions.
-This amendment extends 5.6, 14.5 and 16.2 and the 2026-09-24 and 2026-09-25 amendments. It supersedes item 7 of the
-2026-09-20 amendment. Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 
-1. **An interface is a page the company keeps as a file.**
-   `interfaces/<interface>/interface.toml` says what the page shows, where each part reads from, which buttons it has
-   and who sees it. The client draws it from a fixed set of building blocks that ship with the client. An interface
-   holds no code: no script, style, markup or network request from a file runs in a member's browser or on any
-   Qorpera origin. Agents write interfaces like any other file.
+This amendment:
+- extends 5.6, 14.5 and 16.2, section 17's payer rules, and the 2026-09-24 and 2026-09-25 amendments;
+- supersedes item 7 of the 2026-09-20 amendment.
+
+Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
+
+1. **An interface is a page the company keeps as a file.** `interfaces/<interface>/interface.toml` says what the page
+   shows, where each part reads from, which buttons it has and who sees it.
+   - The client draws it from a fixed set of building blocks that ship with the client.
+   - An interface holds no code: no script, style, markup or network request from a file runs in a member's browser
+     or on any Qorpera origin.
+   - Text a page shows from a file or an email is drawn without HTML and loads nothing from outside the company
+     folder.
 2. **An interface shows company state and decides nothing.** Like an index, it is read from files and says nothing the
    files don't. It grants nothing:
    - every part reads with the viewer's own authority (4.3), so a page shows a member or an agent only what they could
      open themselves;
    - `access` only narrows who sees a page;
-   - a part whose source does not exist is not drawn (14.5).
+   - a part whose source does not exist is not drawn (the client contract's rule against rendering missing machinery,
+     `supabase/CLIENT-CONTRACT.md`).
 3. **Sources are a closed list.**
    - From the folder: `vision`, a file, the indexes of structured files, and tables.
    - From runtime state, through calls the member already has: members, agents working now, activity, and what waits
      for the viewer.
-   - Mail: received mail is saved in the folder (2026-09-29 amendment, item 6). Sent mail is kept as files beside it
-     (founder decision, 2 October 2026). Until both are files, mail is read through a member read.
-   - Outside content (11.1) stays marked as outside content in every interface.
+   - Mail:
+     - received mail is saved in the folder under `hooks/<hook>/` once the core's writer lands (2026-09-29 amendment,
+       items 6 and 9);
+     - sent mail is kept as files beside it (founder decision, 2 October 2026), where Q1's M2c puts it;
+     - until both are files, mail is read through a member read.
+   - Outside content (11.1), such as an email, stays marked as outside content wherever an interface shows it or a
+     button carries it.
    - Mail the platform marks as sign-up or sign-in mail for a company account shows who used it, never its text.
 4. **Tables are company state.**
    - `tables/<table>.toml` defines a table: its columns, its key and who writes it.
-   - Its rows live first in `tables/<table>.csv` beside it, up to the size the format sets (founder decision, 2 October
-     2026).
-   - A table with a `needs_yes` column is a structured file, checked at save. Other rows are checked when read and
-     written through the table tool.
-   - A table too big for a file keeps its rows in the company's table store. The store belongs to the company like the
-     folder:
-     - the database (5.6) never holds rows;
-     - the folder gets a snapshot at least daily;
-     - deleting or erasing the company removes the store's rows too.
-   - The store is built only when a first table needs it, with its own amendment on where it runs.
+   - Its rows live in `tables/<table>.csv`, a structured file checked at every save against the definition, within
+     the folder core's limit for a checked file (founder decision, 2 October 2026: rows in a file first).
+   - A save of a definition that the existing rows no longer fit is refused, unless the same change set rewrites the
+     rows.
+   - The database holds rows only as the folder's index of those files (5.6).
+   - A table that outgrows a file waits for the company's table store. The store has its own amendment, which says
+     where it runs. Its rows belong to the company like the folder: they never go to the database, the folder gets a
+     snapshot at least daily, and deleting or erasing the company removes them.
 5. **Buttons are actions that already exist.**
    - A button names one verb: open, message, add, set, take, offer, release or answer.
    - Each verb is something the viewer can already do: post a message, save a file, or answer a card through its
      existing state machine (16.2).
-   - A button runs as the viewer, under the same review as doing it by hand, and does no more than its verb.
+   - A button runs as the viewer, under the same review as doing it by hand, and does no more than its verb. A
+     message button posts only after the viewer sends the prefilled text, and a value it fills in from outside content
+     travels as a marked quote, never as the viewer's own words.
    - The platform draws every confirmation. Money, sending and other outside effects keep their own review.
 6. **Nobody assigns anybody.** A member column marked `needs_yes` holds who has something: who holds a card, who owns
    or supervises an area.
-   - It is set to the viewer's own id when empty, or cleared by the person it names.
-   - Naming someone else creates a request card for that person. The file changes only when they say yes.
-   - An agent may name its own supervisor or no one.
-   - The save path refuses any other change to such a column, whoever makes it and however.
+   - **Take:** a member may put their own id in an empty cell.
+   - **Release:** a member may clear a cell that names them.
+   - **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member. The offer is a
+     request card (item 9) and changes nothing in the file. When the member says yes, the platform saves the change as
+     that member, and the save is allowed because the open offer names them.
+   - **Agents** act for their supervisor (item 10): an agent may take for its supervisor, release what its supervisor
+     holds, and offer what its supervisor holds or what is empty. An agent never changes who owns or supervises an
+     area.
+   - The save check refuses any other change to such a column, whoever makes it and however.
 7. **Agents use interfaces as members do.**
-   - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`, or the files
-     themselves).
-   - They create and change interfaces and tables with `save_interface`, or as files.
-   - The automatic review (2026-09-25 amendment) counts these folder changes as delegation:
+   - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`).
+   - They create and change interfaces and tables with `save_interface`.
+   - The automatic review (2026-09-25 amendment) counts these as delegation:
      - creating an interface;
-     - adding or changing a button;
+     - adding or changing a button, including a verb a block lists;
      - changing `access`;
      - creating a table, or changing its columns or writers.
 
-     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026).
-   - Layout, wording, order and sources apply at once. The agent's thread shows the change with Undo, and it can be
-     restored from the version history.
+     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026). The review recorder
+     (C2) takes `save_interface` and classifies each call by what it changes. Until the review of changes no tool
+     carried exists (C2's R2), an agent makes these changes only with `save_interface`.
+   - Layout, wording, order and sources apply at once, whatever carries them. The agent's thread shows the change with
+     Undo, and it can be restored from the version history.
    - Members' own changes are not reviewed.
    - Coding sessions see `interfaces/` and table definitions read-only.
 8. **The rail has two tabs (amends 14.5).**
@@ -4152,27 +4169,42 @@ This amendment extends 5.6, 14.5 and 16.2 and the 2026-09-24 and 2026-09-25 amen
      `interfaces/order.md`.
    - An interface whose `needs` are not met is not listed.
    - Pins and hiding are each member's own (2026-09-24 amendment, item 3).
-9. **Seeded interfaces and the library.**
-   - At founding the platform seeds `interfaces/` and `tables/` with:
-     - Pulse, the main interface, and its numbers table;
-     - Mailbox;
-     - Members, with its areas and cards tables.
-   - Each is copied from Qorpera's library and marked with where it came from.
-   - The main interface can be changed but not deleted.
-   - Adding a library interface later copies its files the same way, and the copy is the company's.
-   - A newer library version is offered, never applied by itself. A line both sides changed becomes a choice.
-   - The library holds only files of this format.
-10. **Supervision (founder decision, 2 October 2026).**
-    - An area's supervisor (Members) is the member its agents answer to. The supervisor gets their questions and news.
-    - Their work alone runs on the supervisor's AI account: routine occurrences, event wakes and the wakes they start
-      themselves. This changes section 17's 2026-09-28 rule, "the member who started the work pays", for
-      supervised agents: their work alone is paid by the supervisor's own login, which the supervisor agreed to, and
-      not by a company account only.
-    - A member's own messages still run on that member's account.
-    - The supervisor agrees once, when they take the area or accept the supervisor request.
-    - If the supervisor leaves or has no payable login, today's rule applies and the owners are told.
-    - Until it is built (step I9b), today's rule applies.
-11. **5.6 changes with this amendment.**
+9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains: an offer to a member of a card, an area or
+   the supervision of an area's agents. It waits durably for that member. Dismissal or no answer is never a yes (16.2).
+10. **Supervision (founder decision, 2 October 2026; amends section 17).**
+    - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
+      `tables/areas.csv`, the seeded table the platform reads supervision from.
+    - **What follows from it.** For the agents' work alone (routine occurrences, event and file-change wakes, and the
+      wakes those runs start), the supervisor stands where the requester stands: their questions and review cards go
+      to the supervisor, the supervisor's personal rules apply, and the supervisor's own login pays.
+    - **What it changes in section 17.** For supervised agents it changes section 17's "An agent's standing execution
+      authority names a company account only; it never pays with a member's login." Every other rule of section 17
+      still decides which login may pay:
+      - a ChatGPT plan pays only for scheduled work, and only after its member turned on away work, never for a
+        listener (2026-10-01 amendment);
+      - a Claude login never pays for agent work;
+      - work stops at a usage limit.
+
+      Where the supervisor's login may not pay, today's rule applies. A member's own messages still run on that
+      member's own account.
+    - **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings
+      in the database. It is made when they say yes to supervising: by taking an area or accepting a supervisor
+      request. It can be withdrawn at any time, and ends when they release the area or leave the company; the owners
+      are told. A cell that names a member without a live consent record decides nothing.
+    - **What areas are not.** Areas grant nothing and are not the retired responsibility objects (2026-09-20
+      amendment, item 1).
+    - **Until it is built** (step I9b), today's rules apply.
+11. **Seeded interfaces and the library.**
+    - At founding the platform seeds `interfaces/` and `tables/` with:
+      - Pulse, the main interface, and its numbers table;
+      - Mailbox;
+      - Members, with its areas and cards tables.
+    - Each is copied from Qorpera's library and marked with where it came from.
+    - The main interface can be changed but not deleted.
+    - Adding a library interface later copies its files the same way, and the copy is the company's.
+    - A newer library version is offered, never applied by itself. A line both sides changed becomes a choice.
+    - The library holds only files of this format.
+12. **5.6 changes with this amendment.**
     - The tree gains:
 
       ```
@@ -4183,14 +4215,20 @@ This amendment extends 5.6, 14.5 and 16.2 and the 2026-09-24 and 2026-09-25 amen
           README.md              what it is for (optional)
       tables/
         <table>.toml             a table's columns, key and writers
-        <table>.csv              its rows, when they live in the folder
+        <table>.csv              its rows
       ```
 
-    - "Structured files" gains interface files, `interfaces/order.md`, table definitions, and the rows of tables with a
-      `needs_yes` column.
-    - The seeded folders that can't be deleted or moved gain `interfaces/`, `interfaces/order.md`, `tables/`, and the
-      main interface's folder and file.
+    - "It holds all company state" gains one exception: rows in the table store (item 4).
+    - The database's list gains:
+      - each member's pins and hidden interfaces;
+      - their supervision consent records;
+      - open offers, as runtime state.
+    - "Structured files" gains interface files, `interfaces/order.md`, table definitions and table rows.
+    - The seeded folders that can't be deleted or moved gain:
+      - `interfaces/`, `interfaces/order.md`, and the main interface's folder and file;
+      - `tables/`, and `tables/areas.toml` with its rows file.
     - The automatic review's list gains item 7's changes.
+    - Coding sessions see `interfaces/` and table definitions read-only, beside `agents/` and `rules/`.
     - Until F2 writes these into 5.6's text with the save-hook step (I6), the note at the top of 5.6 points here.
 
 ## 20. Enforcement matrix

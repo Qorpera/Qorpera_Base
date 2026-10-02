@@ -39,15 +39,16 @@ interfaces/                       seeded; can't be deleted or moved
     README.md                     optional: what it is for
 tables/                           seeded; can't be deleted or moved
   <table>.toml                    a table: its columns, key and writers
-  <table>.csv                     its rows, when they live in the folder
+  <table>.csv                     its rows
 ```
 
 - **Names.** Folder and file names follow the agent-handle rule: lowercase a–z, digits and hyphens, plain Latin, at most
   64 characters, `-2`, `-3` when taken. A table's name is the stem of its `.toml`; its rows file has the same stem.
 - **Seeded at founding** (§7): `interfaces/`, `tables/`, Pulse (the main interface), Mailbox and Members, with the
   tables `numbers`, `areas` and `cards`.
-- **Cannot be deleted or moved:** `interfaces/`, `interfaces/order.md`, `tables/`, and the main interface's folder and
-  its `interface.toml`.
+- **Cannot be deleted or moved:**
+  - `interfaces/`, `interfaces/order.md`, and the main interface's folder and its `interface.toml`;
+  - `tables/`, and `tables/areas.toml` with `tables/areas.csv`, which the platform reads supervision from (§5.1).
 
 ### Structured files
 
@@ -56,15 +57,26 @@ tables/                           seeded; can't be deleted or moved
 | `interfaces/order.md` | interface-order | yes | 16 KiB |
 | `interfaces/<name>/interface.toml` | interface | yes | 64 KiB |
 | `tables/<name>.toml` | table | yes | 16 KiB |
-| `tables/<name>.csv` of a table with a `needs_yes` column | table-rows | yes | 64 KiB (the core's limit for checked files) |
-| `tables/<name>.csv` of any other table | plain file | no: checked when read | 2 MiB, at most 20,000 rows |
+| `tables/<name>.csv` | table-rows | yes, against its definition | 64 KiB (the core's limit for checked files) |
 
-These are the folder's first structured kinds that are not markdown. A save the parser refuses is refused for that
-file with its problems (§6). `README.md` is a plain file.
+A file's kind comes from its path alone, as for the state files. These are the folder's first structured kinds that
+are not markdown. A save that is refused is refused for that file with its problems (§6). `README.md` is a plain
+file.
+
+**Proposed: every rows file is checked, within 64 KiB.** The design page allowed plain rows files up to 2 MiB. The
+review of this document found a problem: a file's kind can't depend on another file, so whether a CSV is checked
+can't follow a `needs_yes` column in its definition. Every rows file is therefore checked, and a table that
+outgrows 64 KiB (about 800 short rows) waits for the table store (decision 1).
 
 ## 3. `interface.toml`
 
-Strict TOML 1.0. A key that is not listed for its table is refused, so a typo can't silently change a page.
+A strict subset of TOML 1.0, read by the platform's own reader:
+- comments and `[table]` and `[[array]]` headers;
+- `key = value` with no dotted keys;
+- values: one-line strings, decimal numbers, `true` and `false`, arrays, and one-line inline tables.
+
+No dates, multi-line strings or other number forms. A key that is not listed for its table is refused, so a typo
+can't silently change a page.
 
 ```toml
 format = "qorpera.interface/v0"     # required, exactly this
@@ -106,8 +118,8 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
   client as one solid shape in the interface's colour with white cuts, the material the agents' figures use.
 - **Colours:** the `colour` names of `agent.md` (charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink,
   gray).
-- **`main`:** exactly one active interface is the main one, drawn as the big card on top of the Interfaces tab. The
-  seeded Pulse is main. A save that leaves no main interface, or two, is refused.
+- **`main`:** exactly one interface is the main one, drawn as the big card on top of the Interfaces tab. The seeded
+  Pulse is main. The save check (§6) refuses a change that would leave no main interface, or two.
 - **`needs`:** the rail lists the interface only when every condition holds. The conditions are:
   - `mail`: the company has a live mailbox;
   - `team`: the company has two or more members;
@@ -116,7 +128,7 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
 - **`status = "off"`** hides the interface for everyone. The file stays.
 - **`[access]`** only narrows. `members` decides who sees the page in the rail; `agents` decides which agents may read
   it with `interface_read`. Neither changes what anyone may read: every block reads with the viewer's own authority.
-  `edit = "owners"` lets only owners and admins change the file.
+  `edit = "owners"` lets only owners and admins change the file; the save check enforces it.
 - **A view** may reuse another view's blocks with a filter (proposed): `from_view = "Inbox"` and `where = { … }`. It
   then has no blocks of its own.
 
@@ -136,7 +148,8 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
 | `buttons` | a list of button ids, or the built-in verbs `answer`, `take`, `offer`, `release` |
 
 Text in `title`, `label`, `line`, `sub`, `note` and button texts may name a column in braces, `{subject}`. The client
-fills it with that row's value as plain text. Braces naming no column are refused.
+fills it with that row's value as plain text. Braces that don't name a column are refused. A value from a source
+that carries outside content (§4) keeps its outside-content mark when it is shown or sent.
 
 ### 3.2 The ten blocks
 
@@ -179,15 +192,21 @@ fills it with that row's value as plain text. Braces naming no column are refuse
   - `message` posts as the member, or sends a coworker message as the agent;
   - `add`, `set`, `take`, `offer` and `release` save the table's file;
   - `answer` uses the card's existing state machine (contract 16.2).
+- **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
+  filled in from outside content goes as a marked quote, never as the viewer's own words. The reviewer reads it as
+  outside content (2026-09-25 amendment).
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
+- **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
+  adding one to a block counts as adding a button (§7).
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
 
 A block's `from` names one source. Each source reads with the viewer's own authority: a member sees what they could
 open themselves, and an agent reading through `interface_read` sees what its run may read. A block whose source does
-not exist yet is not drawn (contract 14.5).
+not exist yet is not drawn: the client contract's rule against rendering missing machinery
+(`supabase/CLIENT-CONTRACT.md`).
 
 **From the company folder** (the indexes rebuilt from files):
 
@@ -204,7 +223,7 @@ not exist yet is not drawn (contract 14.5).
 | `human_tasks` | id, title, status, person, from, due | H2 |
 | `interfaces` | id, name, about, emblem, status | I6 |
 | `table:<name>` | the table's columns | the table exists |
-| `mail` | thread, address, from_name, from_address, subject, last_at, state, handled_by, direction, unread | Q1's member read (I5a); later mail files (M2c) |
+| `mail` | thread, address, from_name, from_address, subject, last_at, state, handled_by, direction, unread | Q1's member read (I5a); later the mail files (§9, decision 3) |
 | `mail_addresses` | address, handled_by, routine, last_7_days | as `mail` |
 
 **From runtime state** (through calls the member already has):
@@ -217,6 +236,9 @@ not exist yet is not drawn (contract 14.5).
 | `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`), title, from, due |
 
 - **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block.
+- **Nothing remote, no HTML.** A `text` block draws markdown with the client's own renderer: no HTML, and images only
+  from the company folder, read with the viewer's authority. A `mail` block draws an email's plain text, never its
+  HTML. Neither loads anything from outside.
 - **Account mail.** Mail the platform marks as sign-up or sign-in mail for a company account shows only who used it
   and when, never its text (A1, I5b).
 
@@ -269,76 +291,116 @@ members = "all"                     # all | owners | none
 - `tables/<name>.csv` is RFC 4180 CSV in UTF-8. Its first line is the column names in the definition's order.
 - An empty field is allowed only in an `optional` column.
 - Two rows with the same key are refused.
-- **Checked when saved:** a table with a `needs_yes` column, within 64 KiB. Its rows are parsed at save, so the claim
-  rule below can't be bypassed by editing the file by hand.
-- **Checked when read:** every other table, up to 2 MiB. `table_write` refuses a bad row up front. A row edited in by
-  hand that does not fit is left out, and shown as a problem with its line to the viewer and to the agent that wrote
-  it.
+- Every save of a rows file is checked against the table's definition, within 64 KiB. The checks are: the header,
+  each value's type, the key, `[write]` (who may write rows) and the claim rule below.
+- A save of a definition that the existing rows no longer fit is refused, unless the same change set rewrites the
+  rows.
+- The database holds the rows only as the folder's index of the file, like every structured file (contract 5.6).
 
 ### The claim rule ("nobody assigns anybody")
 
-A `needs_yes` member column holds who has something: a card's holder, an area's owner or supervisor.
-- **Take:** anyone may set it to their own id when it is empty.
-- **Release:** the person it names may clear it.
-- **Offer:** naming someone else creates a request card for that person. The file changes only when they say yes;
-  not now, or no answer, changes nothing.
-- **Agents:** an agent may set it to its own supervisor (§5.1) or clear it. Anything else from an agent is an offer.
+A `needs_yes` member column holds who has something: a card's holder, or an area's owner or supervisor.
+
+- **Take:** a member may put their own id in an empty cell.
+- **Release:** a member may clear a cell that names them.
+- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member, through the
+  `offer` button or `table_write`. The offer is a request card for that member (16.2, as amended) and changes
+  nothing in the file. When they say yes, the platform saves the change as them, and the save is allowed because the
+  open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Agents act for their supervisor** (§5.1):
+  - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
+    what is empty;
+  - an agent never changes who owns or supervises an area.
 - **Anything else** that changes the column is refused at save, whoever makes it and however.
 
 ### 5.1 Supervision
 
-In the Members tables, an area's `supervisor` is the member its agents answer to. Jonas, 2 October 2026 (decision 4):
-- the supervisor gets the agents' questions and news;
-- the agents' work alone runs on the supervisor's AI account: routine occurrences, event wakes and wakes they start
-  themselves;
-- the supervisor agrees once, when they take the area or say yes to the supervisor request.
+`tables/areas.csv` is the table the platform reads supervision from. It is seeded and can't be deleted or moved, and
+its `owner`, `supervisor` and `agents` columns are fixed. An area's supervisor is the member its agents answer to.
+Jonas, 2 October 2026 (decision 4); contract amendment item 10.
 
-A member's own messages still run on that member's account. An agent sits in at most one area. Built as step I9b
-(S2). Until it is built, today's rule ("the member who started the work pays") applies.
+- **Where they stand.** For the agents' work alone, the supervisor stands where the requester stands today:
+  - the agents' questions and review cards go to the supervisor;
+  - the supervisor's personal rules apply;
+  - the supervisor's own login pays.
+
+  "Work alone" means routine occurrences, event and file-change wakes, and the wakes those runs start.
+- **Which login may pay.** Section 17 still decides it. This only changes its "An agent's standing execution
+  authority names a company account only" for supervised agents.
+  - A ChatGPT plan pays only for scheduled work, and only after its member turned on away work. It never pays for a
+    listener, an event or file-change wake (2026-10-01 amendment).
+  - A Claude login never pays for agent work.
+  - Work stops at a usage limit.
+  - Where the supervisor's login may not pay, today's rule applies.
+- **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings in
+  the database.
+  - It is made when they say yes to supervising: by taking an area, or by accepting a supervisor request.
+  - They can withdraw it at any time. It also ends when they release the area or leave the company, and the owners
+    are told.
+  - A cell that names a member with no live consent record decides nothing, and the board shows the area as waiting
+    for that member.
+- **Proposed:**
+  - an agent sits in at most one area's `agents`;
+  - a member's own messages still run on their own account.
+- **Areas grant nothing.** They are not the retired responsibility objects (2026-09-20 amendment, item 1).
+- **Until it is built** (step I9b, S2), today's rules apply.
 
 ### 5.2 The table store (later)
 
-`rows = "store"` keeps rows in the company's table store on Qorpera's own nodes. The store is built only when a first
-table outgrows a file (decision 1). It keeps these rules:
-- the database never holds rows;
+`rows = "store"` keeps rows in the company's table store. The store is built only when a first table outgrows a
+file (decision 1), under its own amendment that says where it runs. It keeps these rules:
+- the database never holds its rows;
 - the folder gets a snapshot of each table at least daily;
-- deleting or erasing the company removes the store's rows.
+- deleting or erasing the company removes its rows.
 
 ## 6. Refusals
 
-A save the parser refuses is refused for that file with a list of problems: `{ line, key, reason }`, at most 50, like
-the state files (STATE-FILES §3). The reasons (proposed):
+A refused save lists its problems as `{ line, key, code, message }`, at most 50, in the same shape as the state
+files (STATE-FILES §3).
 
-| Reason | When |
+**The parser** refuses what the file's own bytes decide, so the same bytes always give the same result:
+
+| Code | When |
 | --- | --- |
-| `toml` | not valid TOML 1.0 |
+| `toml` | not the TOML this format reads (§3) |
 | `format` | `format` missing or not this format |
 | `unknown_key` | a key this table doesn't take |
 | `missing_key` | a required key is missing |
-| `bad_value` | a value of the wrong type or outside its list or bounds |
-| `duplicate` | two views, blocks, buttons or columns with one name or id |
+| `bad_value` | a value of the wrong type, or outside its list or bounds |
+| `duplicate` | two views, blocks, buttons or columns with one name or id, or two rows with one key |
 | `unknown_source` | `from` names no source of §4 |
-| `unknown_column` | a column a block, button or `{…}` names is not in its source |
+| `unknown_column` | a block names a column its source doesn't have, where the source's columns are fixed (§4) |
 | `unknown_button` | a block lists a button that isn't defined |
 | `unknown_target` | `opens` or `from_view` names nothing in the file |
-| `main` | no main interface, or two |
 | `too_large` | over the size or count limit |
-| `row` | a CSV row that doesn't fit its definition (checked tables) |
-| `claim` | a `needs_yes` column changed outside the claim rule |
+| `row` | a CSV row that doesn't fit its definition |
+
+**The save check** (the database's `decide`, as `structured_rule` in the state files) refuses what needs other
+files or state:
+- no main interface, or two;
+- `edit = "owners"` for anyone else;
+- `[write]`;
+- a rows file its definition doesn't fit;
+- the claim rule (§5), with `claim`.
+
+A table that loses a column a page still uses is not refused. That page's block shows which column is gone, and the
+agent that keeps the page is told.
 
 ## 7. Who changes what, and review
 
 - **Members** change interfaces and tables like any file, and their changes are never reviewed. `edit = "owners"`
-  limits an interface to owners and admins; a table's `[write]` limits who writes rows.
-- **Agents** change them with `save_interface` and `table_write`, or as files. The automatic review (2026-09-25
-  amendment) counts these as delegation, like hiring:
+  limits an interface to owners and admins, and a table's `[write]` limits who writes its rows.
+- **Agents** change interfaces and tables with `save_interface` and `table_write`. The automatic review (2026-09-25
+  amendment) counts these changes as delegation, like hiring:
   - creating an interface;
-  - adding or changing a button;
+  - adding or changing a button, including a built-in verb a block lists;
   - changing `[access]`;
   - creating a table, or changing its columns or `[write]`.
-
-  Layout, wording, order and sources apply at once, and the agent's thread shows the change with Undo (decision 2).
-  The review recorder learns `save_interface` the way it knows `hire_agent` (step I8).
+- **The review recorder** (C2) takes `save_interface` and classifies each call by what it changes, as it does for
+  `decide_routine`. Until C2's R2 reviews changes no tool carried, an agent makes these changes only with
+  `save_interface`; through the mount or a shell they are refused.
+- **Changes that apply at once:** layout, wording, order and sources, whatever carries them. The agent's thread shows
+  the change with Undo (decision 2).
 - **Coding sessions** see `interfaces/` and table definitions read-only.
 
 ## 8. Library, seeding and updates
@@ -346,7 +408,8 @@ the state files (STATE-FILES §3). The reasons (proposed):
 - **The library.** Qorpera's library holds interfaces in this same format: a folder of an `interface.toml`, its
   tables and a README. Pulse, Mailbox and Members are its first three.
 - **Adding one** copies its files into `interfaces/` and `tables/` in one change set. The copy is marked with
-  `[template] from` and `version`, and from then on it is the company's to change.
+  `[template] from` and `version`, and from then on it is the company's to change. The platform never relies on
+  `[template]`: supervision is read from `tables/areas.csv` by its path.
 - **Seeding.** At founding the platform copies the three first ones and lists them in `interfaces/order.md`. Mailbox
   needs `mail`; Members needs `team`.
 - **Updates.** When the library has a newer version, the platform offers it and never applies it by itself. Lines the
@@ -371,10 +434,15 @@ wherever it is listed. Interfaces not listed follow by name.
 1. **Table rows** live in a CSV file beside the table's TOML first. The table store comes later, when a table outgrows
    a file.
 2. **Pages made or changed by agents** pass the automatic review plus Undo, not a member's yes.
-3. **Sent mail** is kept as files beside received mail (Q1, M2c). Received mail is already saved under
-   `hooks/<hook>/` (2026-09-29 amendment, item 6). The Mailbox reads both from the folder.
-4. **Supervising an agent** means its work alone runs on the supervisor's AI account (§5.1). This changes "the member
-   who started the work pays" for supervised agents.
+3. **Sent mail** is kept as files beside received mail (Q1, M2c, which places it; its plan names `mail/<address>/`).
+   Received mail is saved under `hooks/<hook>/` once the core's writer lands (2026-09-29 amendment, items 6 and 9).
+   The Mailbox reads both from the folder.
+4. **Supervising an agent** means its work alone runs on the supervisor's AI account (§5.1), within section 17's
+   rules on which login may pay. This changes "the member who started the work pays" for supervised agents.
+
+   Found in review: a ChatGPT plan login never pays for a listener (2026-10-01 amendment). So on a plan login,
+   supervision pays only for scheduled work the supervisor turned on away work for. Event and file-change wakes keep
+   today's rule.
 
 ## 10. Build order
 
@@ -384,7 +452,7 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | --- | --- | --- | --- |
 | I0 | this document and the contract amendment | Interfaces | — |
 | I1 | the rail's Agents and Interfaces tabs, routes `#/c/{id}/i/{interface}` (web) | Interfaces | — |
-| I2 | `@qorpera/cloud-client/interfaces`: the parser of §3, §5 and §6, and the query evaluator of §3.1 (pure TS) | Interfaces | — |
+| I2 | `@qorpera/cloud-client/interfaces`: the parser of §3, §5 and §6 (its own strict TOML reader, no new dependency), the claim rule, the query evaluator of §3.1 and the library files (pure TS) | Interfaces | — |
 | I3 | the ten blocks in the web client, reusing the email, review and question cards | Interfaces | I2 |
 | I4 | Pulse on today's sources, from a definition the client ships | Interfaces | I1, I3 |
 | I5a | a member read of mail | Q1 | — |
@@ -392,9 +460,9 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I5c | the Mailbox page, dark until mail is switched on | Interfaces | I5a, I5b |
 | I6 | the interface and table kinds in the save hook; seeding | F2, with Interfaces | C2's founding seed, I2 |
 | I7 | the web client reads definitions and tables from the folder, live | Interfaces | C4, I6 |
-| I8 | `interface_read`, `table_read`, `table_write`, `save_interface` | Interfaces | C3, I6 |
+| I8 | `interface_read`, `table_read`, `table_write`, `save_interface`; the review recorder takes `save_interface` | Interfaces, with F2 | C3, C2's recorder, I6 |
 | I9 | Members | Interfaces | I6, I7, C4 member writes |
-| I9b | supervisors pay (§5.1) | S2 | I9 |
+| I9b | supervision: consent records, supervisors as requester and payer (§5.1) | S2 | I9 |
 | I10 | pages made by agents: the review card with a live preview, Undo | Interfaces | I6, I8 |
 | I11 | the Mailbox reads mail from the folder | Q1, with Interfaces | M2c |
 
