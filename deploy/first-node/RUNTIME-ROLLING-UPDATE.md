@@ -199,6 +199,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    select public.qorpera_declare_runtime_node_bundle('<B>', '<N sha>');
    ```
 4. **Empty node A of runs.**
+   - First check that B serves runs, is observed ready, and every active orchestrator on it is live: B
+     is about to be the only node that claims runs.
    - `qorpera_set_runtime_node_runs(A, false, <version>, 'roll vN+1')`. If the release also changes A's
      office provider or coding executor, switch A off fully instead (`qorpera_set_runtime_node_serving`)
      and wait for `readyForUpdate`.
@@ -286,7 +288,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
 
    B still serves N, so let such work run there. Never relabel an input's bundle.
 8. **Empty and update node B.**
-   - Empty B of runs as in step 4 and wait for `readyForNodeRelease`.
+   - Empty B of runs as in step 4 (A now must serve runs, be observed ready, with every orchestrator
+     live) and wait for `readyForNodeRelease`.
    - Check N once more: no queued or running N run, and no N pending input outside the baseline.
      If there is one, return B (it still runs N), let it finish, and empty B again. N work that
      appears after B is updated has no N host left: it waits until step 9 clears the declarations,
@@ -338,6 +341,7 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
     being deleted: a folder-v2 company through its operator pause, any other under that founder (the
     pause records that founder). Each company is tried on its own, so a busy lock or a refusal stops only
     that one. The result names what failed; run the packet again for those.
+  - Each company waits at most 2 s for its lock, so a long list stays inside the statement timeout.
   - `93-resume` resumes the same way.
   - The runner commits these files only when told to (`QORPERA_ROLL_EMERGENCY=<file>`).
 - `node scripts/runtime-roll.mjs compare <00-check result> <50-check-n result>` lists N inputs that became
@@ -348,17 +352,17 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | `00-check` | 1, the preflight. It also lists the node-disk logins and records N's pending inputs |
 | `10-migration-*` | 2, one per release migration, gated on N and not yet recorded |
 | `20-declare-b` | 3 |
-| `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`) |
+| `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`). `30` needs B serving runs, ready, with live orchestrators |
 | (node release, fast host) | 5 and 8: `agent apply`, then `rebuild-exec-host.sh` with `EXEC_CLEAR_PARKED=1 EXEC_START_ORCHESTRATOR=1` (and the bundle on node B) |
-| `40-switch` | 6, as one transaction (6.0 gates, activation, history record, declaration, 6.3 gate, return) |
+| `40-switch` | 6, as one transaction (6.0 gates, activation, history record, declaration, 6.3 gate, return). Its result says whether B still serves (`nodeBServes`); it does not refuse on B, since that would keep A off too |
 | `50-check-n` | 7 |
-| `60-runs-off-b`, `61-drain-b` | 8, emptying |
+| `60-runs-off-b`, `61-drain-b` | 8, emptying. `60` needs A serving runs, ready, with live orchestrators, and refuses while N work is queued that no orchestrator holds yet (it names up to 20 jobs) |
 | `70-return-b` | 8, declaration, gate and return after node B's update |
 | `80-finish` | 9. It reports the N work left (`oldBundleWorkLeft`); `60-runs-off-b` already refuses while N work is queued |
 
 `scripts/test-runtime-roll.mjs` (part of the hosted-db step) rehearses a whole roll with these packets on two
-fixture nodes, from the active bundle to a fixture bundle, and the emergency way back, once with each
-`--empty`. No company is paused during the roll.
+fixture nodes, from the active bundle to a fixture bundle, once with each `--empty`, and the emergency way
+back twice: right after the switch, and after the finish. No company is paused during the roll.
 
 ## If something goes wrong
 
@@ -376,14 +380,19 @@ fixture nodes, from the active bundle to a fixture bundle, and the emergency way
   2. Reverse the activation (`91-reverse`). It needs every company paused, checks that exactly N+1 is
      active, and moves the active pointer back to the existing N row; N's row already exists
      (`unique (bundle_key, version)`, and the table is immutable). The declarations stay: a node
-     still on N+1 code must not take N runs.
+     still on N+1 code must not take N runs. After `80-finish` nothing is declared, so it declares
+     both nodes N+1.
   3. Move **every** node that runs N+1 back to N (`agent rollback`, and the fast host rebuilt from N:
-     `roll-rollback`), node B too if step 8 has started. Then clear all declarations
-     (`92-clear-declarations`). Never declare a node as N while it still runs N+1: it would take N runs
-     and refuse them.
+     the coordinator's `roll-rollback`, outside this repo), node B too if step 8 has started. Then
+     clear all declarations (`92-clear-declarations`). Dry-run it first: `declaredNext` lists the
+     orchestrators still declared N+1, and the packet cannot see which code a node runs. Commit it
+     only once each of them runs N again. Never declare a node as N while it still runs N+1: it would
+     take N runs and refuse them.
   4. Renew packaged offices' packages for N again; offices renewed for N+1 cannot start or reset
      under N.
-  5. Resume (`93-resume`).
+  5. Resume (`93-resume`). Its `runsOn` shows any node still emptied: return it with the switches it
+     was emptied with (`qorpera_set_runtime_node_runs(…, true, …)`, and
+     `qorpera_set_runtime_node_serving(…, true, …)` if it was switched off fully).
 
   Runs and pending inputs already bound to N+1 fail with their reason.
 - **N work left over** (an input that can never run, or a session held on a sponsorship): see steps

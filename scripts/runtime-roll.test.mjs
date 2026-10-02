@@ -101,6 +101,12 @@ test("migrations apply in timestamp order whatever the argument order", () => {
 		Object.keys(rollPackets(options({ migrations: [later, migration] }))).filter((name) => name.startsWith("10-")),
 		[`10-migration-${migration.name}`, `10-migration-${later.name}`],
 	);
+	// By hand too: the later one needs the earlier one recorded; the caller's list is left as given.
+	const given = [later, migration];
+	const packets = rollPackets(options({ migrations: given }));
+	assert.ok(packets[`10-migration-${later.name}`].includes(`${migration.name} is not recorded yet`));
+	assert.ok(!packets[`10-migration-${migration.name}`].includes("is not recorded yet"));
+	assert.deepEqual(given, [later, migration]);
 });
 
 test("old-bundle work: node B is not emptied while N work is queued; the finish reports what is left", () => {
@@ -122,8 +128,27 @@ test("the emergency packets: per-company savepoints, folder-v2 companies, declar
 	}
 	assert.ok(packets["90-pause-now.sql"].includes("qorpera_folder_pause("));
 	assert.ok(packets["93-resume.sql"].includes("qorpera_folder_resume("));
-	assert.ok(!packets["91-reverse.sql"].includes("qorpera_declare_runtime_node_bundle"), "91 keeps the declarations");
+	// 91 keeps the declarations; it declares only when none is left (an emergency after 80-finish).
+	assert.ok(!packets["91-reverse.sql"].includes(", null)"), "91 clears no declaration");
+	assert.match(packets["91-reverse.sql"], /qorpera_declare_runtime_node_bundle\('[^']+'::uuid, '[0-9a-f]{64}'\) as roll_declare_b\nwhere not exists \(select 1 from public\.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null\);/);
 	assert.ok(packets["92-clear-declarations.sql"].includes(`qorpera_declare_runtime_node_bundle('${nodeA}'::uuid, null)`));
+	assert.ok(packets["92-clear-declarations.sql"].indexOf("'declaredNext'") < packets["92-clear-declarations.sql"].indexOf(", null)"), "92 lists what it clears first");
+	assert.ok(packets["90-pause-now.sql"].includes("set local lock_timeout = '2s';"));
+	assert.ok(packets["93-resume.sql"].includes("'runsOn'"));
+});
+
+test("emptying one node needs the other to claim: 30 checks node B, 60 checks node A; held N jobs are not queued", () => {
+	const packets = rollPackets(options());
+	const gateOf = (name) => packets[name].slice(packets[name].indexOf("do $roll_gate$"), packets[name].indexOf("end $roll_gate$"));
+	for (const [name, node] of [["30-runs-off-a.sql", nodeB], ["60-runs-off-b.sql", nodeA]]) {
+		const gate = gateOf(name);
+		assert.ok(gate.includes(`select enabled and runs_enabled from public.qorpera_runtime_nodes where id = '${node}'::uuid`), name);
+		assert.ok(gate.includes("last_heartbeat_at >= statement_timestamp() - interval '30 seconds'"), name);
+		assert.ok(gate.includes(`'${node}'`) && /observed ready/.test(gate), name);
+	}
+	assert.ok(!gateOf("40-switch.sql").includes(`runs_enabled from public.qorpera_runtime_nodes where id = '${nodeB}'`), "40 does not refuse on node B");
+	assert.ok(packets["40-switch.sql"].includes("'nodeBServes'"));
+	assert.match(packets["60-runs-off-b.sql"], /claim\.status in \('claimed', 'assigned'\)[\s\S]*still queued: let node B take it first \(jobs %\)/);
 });
 
 test("--empty full switches a node off fully and returns it with both switches", () => {
@@ -158,6 +183,7 @@ test("bad inputs are refused", () => {
 	assert.throws(() => rollPackets(options({ to: { version: 165, sha: from.sha } })), /Two different bundle digests/);
 	assert.throws(() => rollPackets(options({ reason: "two\nlines" })), /letters, digits/);
 	assert.throws(() => rollPackets(options({ reason: "roll $roll_pause$" })), /letters, digits/);
+	assert.throws(() => rollPackets(options({ reason: "   " })), /not only spaces/);
 	assert.throws(() => rollPackets(options({ to: { version: 165, sha: "c".repeat(64) } })), /does not move 164 to 165/);
 	assert.throws(
 		() => rollPackets(options({ migrations: [migration, { ...migration, name: "20260928400000_other.sql" }] })),

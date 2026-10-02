@@ -166,7 +166,13 @@ async function rehearse(empty, path = "roll") {
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
 		assert.match(fails(p(`10-migration-${migration.name}`)), /already recorded/);
 		commit("20-declare-b.sql");
-		// 30: node A takes no runs; its orchestrator claims nothing, node B's takes the N run.
+		// 30: node A takes no runs; its orchestrator claims nothing, node B's takes the N run. Node B must
+		// be able to claim first: with its orchestrator silent, 30 refuses.
+		const stale = (orchestrator) =>
+			sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() - interval '5 minutes' where id = '${orchestrator}';`);
+		stale(orchestratorB);
+		assert.match(fails(p("30-runs-off-a.sql")), /node B is not running/);
+		heartbeat();
 		commit("30-runs-off-a.sql");
 		assert.equal(claim(orchestratorA), null, "node A claims nothing while its runs are off");
 		assert.equal(claim(orchestratorB).work.run_id, runN, "node B takes the N run");
@@ -174,12 +180,13 @@ async function rehearse(empty, path = "roll") {
 		finish(sql(`select run_id from public.qorpera_runner_job_claims where orchestrator_id = '${orchestratorA}' order by created_at, id limit 1;`));
 		assert.equal(lastJson(dryRun(p("31-drain-a.sql"))).status[ready], true);
 		// 40: the switch refuses while node A's orchestrator looks dead, then switches in one transaction.
-		sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() - interval '5 minutes' where id = '${orchestratorA}';`);
-		assert.match(fails(p("40-switch.sql")), /not running/);
+		stale(orchestratorA);
+		assert.match(fails(p("40-switch.sql")), /node A is not running/);
 		assert.deepEqual(active(), [String(from.version), from.sha], "a refused switch changes nothing");
 		heartbeat();
 		observeBoth();
-		commit("40-switch.sql");
+		const switched = lastJson(commit("40-switch.sql"));
+		assert.equal(switched.nodeBServes, true, "the switch reports node B still serving N");
 		assert.deepEqual(active(), [String(to.version), to.sha]);
 		assert.equal(paused(), 0, "no company was paused");
 		// N+1 work goes to node A only; node B still runs N.
@@ -212,6 +219,10 @@ async function rehearse(empty, path = "roll") {
 			assert.match(fails(p("70-return-b.sql")), /not emptied of runs/);
 			finish(runN);
 			finish(runN2);
+			// Node A must be able to claim before node B leaves.
+			stale(orchestratorA);
+			assert.match(fails(p("60-runs-off-b.sql")), /node A is not running/);
+			heartbeat();
 			commit("60-runs-off-b.sql");
 			assert.equal(lastJson(dryRun(p("61-drain-b.sql"))).status[ready], true);
 			heartbeat();
@@ -225,6 +236,23 @@ async function rehearse(empty, path = "roll") {
 			assert.equal(sql("select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 is not null;"), "0");
 			assert.equal(sql(`select bool_and(enabled and runs_enabled) from public.qorpera_runtime_nodes where id in ('${nodeA}','${nodeB}');`), "t");
 			assert.equal(paused(), 0, "the whole roll paused no company");
+			if (path === "late") {
+				// N+1 misbehaves after the finish: nothing is declared, both nodes run N+1. 91 declares both
+				// N+1 so that neither takes an N run until it is rolled back.
+				lastJson(commit("90-pause-now.sql"));
+				commit("91-reverse.sql");
+				assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
+				newRun();
+				heartbeat();
+				assert.equal(claim(orchestratorA), null, "node A (N+1 code) takes no N run");
+				assert.equal(claim(orchestratorB), null, "node B (N+1 code) takes no N run");
+				const clearing = JSON.parse(dryRun(p("92-clear-declarations.sql")).split("\n").find((line) => line.startsWith('{"declaredNext"')));
+				assert.equal(clearing.declaredNext.length, 2, JSON.stringify(clearing));
+				commit("92-clear-declarations.sql");
+				const resumed = lastJson(commit("93-resume.sql"));
+				assert.equal(paused(), 0, "the companies resume: " + JSON.stringify(resumed));
+				assert.deepEqual(resumed.runsOn, { a: true, b: true });
+			}
 		}
 		console.log(JSON.stringify({ schema: "qorpera.runtime-roll-rehearsal/v1", empty, path, from: from.version, to: to.version, packets: Object.keys(packets).length, paused: 0, passed: true }));
 	} finally {
@@ -237,3 +265,4 @@ async function rehearse(empty, path = "roll") {
 await rehearse("runs");
 await rehearse("full");
 await rehearse("runs", "emergency");
+await rehearse("runs", "late");
