@@ -620,6 +620,75 @@ describe("connections, rules, todos and worker files", () => {
 		});
 	});
 
+	it("reads a website account's own keys, and only on a website account (A1)", () => {
+		const file = {
+			id: ID,
+			service: "website",
+			account: "ops@nordlys.dk",
+			status: "pending" as const,
+			actions: [],
+			connectedBy: GROUP,
+			connectedAt: "2026-10-02T08:00:00Z",
+			site: "accounts.example.com",
+			twoStep: "authenticator" as const,
+			openedFor: IDA,
+			purpose: "The supplier portal.",
+		};
+		const text = writeConnectionFile(file);
+		expect(text).toContain("site: accounts.example.com\ntwo_step: authenticator\nopened_for: ");
+		expect(ok("connections/example-portal.md", text)).toStrictEqual({ kind: "connection", ...file });
+		for (const status of ["connected", "needs_person", "broken"] as const)
+			expect(ok("connections/p.md", writeConnectionFile({ ...file, status, openedFor: null }))).toMatchObject({
+				status,
+				openedFor: null,
+			});
+		// Any other service keeps its shape: none of the three keys, and only connected or broken.
+		const gmail = writeConnectionFile({
+			...file,
+			service: "gmail",
+			status: "connected",
+			site: undefined,
+			twoStep: undefined,
+			openedFor: undefined,
+		});
+		expect(gmail).not.toContain("site:");
+		expect(Object.keys(ok("connections/g.md", gmail) as object).sort()).toEqual(
+			["kind", "id", "service", "account", "status", "actions", "connectedBy", "connectedAt", "purpose"].sort(),
+		);
+		const block = (lines: string, service = "website") =>
+			`---\nid: ${ID}\nservice: ${service}\naccount: a@b.dk\nstatus: connected\nactions: []\nconnected_by: ${JONAS}\nconnected_at: 2026-10-02T08:00:00Z\n${lines}\n---\n`;
+		const problems = (lines: string, service?: string) => keys(refused("connections/p.md", block(lines, service)));
+		expect(problems("two_step: none")).toEqual([["site", "missing"]]);
+		expect(problems("site: example.com")).toEqual([["two_step", "missing"]]);
+		for (const site of [
+			"Example.com",
+			"example",
+			"-a.example.com",
+			"a-.example.com",
+			"a..example.com",
+			"a.example.com.",
+			`${"a".repeat(65)}.com`,
+			"a_b.example.com",
+			"https://example.com",
+		])
+			expect(problems(`site: "${site}"\ntwo_step: none`)).toEqual([["site", "value"]]);
+		// The vault's rule, exactly: a label of up to 64 characters, a host of up to 253.
+		expect(ok("connections/p.md", block(`site: ${"a".repeat(64)}.com\ntwo_step: none`))).toBeTruthy();
+		const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+		expect(ok("connections/p.md", block(`site: ${longest}\ntwo_step: none`))).toMatchObject({ site: longest });
+		expect(problems(`site: ${longest}d\ntwo_step: none`)).toEqual([["site", "value"]]);
+		expect(problems("site: example.com\ntwo_step: phone")).toEqual([["two_step", "value"]]);
+		expect(problems("site: example.com\ntwo_step: none\nopened_for: todo-1")).toEqual([["opened_for", "value"]]);
+		expect(problems("site: example.com\ntwo_step: none", "gmail")).toEqual([
+			["site", "value"],
+			["two_step", "value"],
+		]);
+		expect(problems(`opened_for: ${IDA}`, "gmail")).toEqual([["opened_for", "value"]]);
+		expect(
+			keys(refused("connections/p.md", block("").replace("connected\n", "pending\n").replace("website", "gmail"))),
+		).toEqual([["status", "value"]]);
+	});
+
 	it("keeps a rule to how the sentence ends", () => {
 		const file = { id: ID, outcome: "ask-first" as const, text: "send an email to a customer." };
 		expect(ok("rules/ask-before-emailing-customers.md", writeRuleFile(file))).toEqual({ kind: "rule", ...file });
