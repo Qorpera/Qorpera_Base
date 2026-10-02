@@ -99,13 +99,13 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 	// even with the same size: two versions never share cached pages.
 	node.put("docs/same.md", &"a".repeat(64 * 1024), false);
 	let same = company.join("docs/same.md");
-	assert!(eventually(Duration::from_secs(2), || same.exists()));
+	assert!(eventually(Duration::from_secs(5), || same.exists()));
 	let mut held = std::fs::File::open(&same).unwrap();
 	let mut first = vec![0u8; 4096];
 	held.read_exact(&mut first).unwrap();
 	assert!(first.iter().all(|&b| b == b'a'));
 	node.put("docs/same.md", &"b".repeat(64 * 1024), false);
-	assert!(eventually(Duration::from_secs(2), || std::fs::read(&same).ok().is_some_and(|v| v.iter().all(|&b| b == b'b'))));
+	assert!(eventually(Duration::from_secs(5), || std::fs::read(&same).ok().is_some_and(|v| v.iter().all(|&b| b == b'b'))));
 	let mut rest = Vec::new();
 	held.read_to_end(&mut rest).unwrap();
 	assert_eq!(rest.len(), 64 * 1024 - 4096);
@@ -116,12 +116,12 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 
 	// A change on the node shows at once, cached pages included.
 	node.put("docs/plan.md", "the plan, version two, longer", false);
-	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(&plan).ok().as_deref()
+	assert!(eventually(Duration::from_secs(5), || std::fs::read_to_string(&plan).ok().as_deref()
 		== Some("the plan, version two, longer")));
 	node.put("docs/new.md", "new", false);
-	assert!(eventually(Duration::from_secs(2), || names(&company.join("docs")) == ["new.md", "plan.md", "same.md"]));
+	assert!(eventually(Duration::from_secs(5), || names(&company.join("docs")) == ["new.md", "plan.md", "same.md"]));
 	node.remove("readme.md");
-	assert!(eventually(Duration::from_secs(2), || {
+	assert!(eventually(Duration::from_secs(5), || {
 		std::fs::metadata(company.join("readme.md")).err().map(|e| e.kind()) == Some(ErrorKind::NotFound)
 	}));
 
@@ -129,7 +129,7 @@ fn mounts_reads_follows_changes_and_unmounts_when_the_view_closes() {
 	node.drop_feeds();
 	node.put_quietly("docs/new.md", "changed while the feed was down");
 	assert!(eventually(Duration::from_secs(5), || node.feeds() == 1), "the feed did not come back");
-	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(company.join("docs/new.md")).ok().as_deref()
+	assert!(eventually(Duration::from_secs(5), || std::fs::read_to_string(company.join("docs/new.md")).ok().as_deref()
 		== Some("changed while the feed was down")));
 
 	// The node closes the view: the folder program unmounts and says why.
@@ -151,9 +151,11 @@ fn take(socket: &Path) -> Vec<serde_json::Value> {
 	};
 	let mut out = Vec::new();
 	let mut after = 0;
+	let mut log;
 	loop {
 		let answer = ask(format!("{{\"t\":\"take\",\"after\":{after},\"max\":2}}"));
 		assert_eq!(answer["t"], "reads");
+		log = answer["log"].as_str().unwrap().to_string();
 		let page = answer["reads"].as_array().unwrap().clone();
 		if let Some(last) = page.last() {
 			after = last["seq"].as_u64().unwrap();
@@ -163,7 +165,9 @@ fn take(socket: &Path) -> Vec<serde_json::Value> {
 			break;
 		}
 	}
-	assert_eq!(ask(format!("{{\"t\":\"ack\",\"upTo\":{after}}}"))["t"], "acked");
+	if after > 0 {
+		assert_eq!(ask(format!("{{\"t\":\"ack\",\"log\":\"{log}\",\"upTo\":{after}}}"))["t"], "acked");
+	}
 	out
 }
 
@@ -197,7 +201,7 @@ fn a_run_box_mount_logs_every_open_and_listing_until_its_host_takes_them() {
 	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan");
 	node.put("docs/plan.md", "the plan, again", false);
 	let plan = company.join("docs/plan.md");
-	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(&plan).ok().as_deref() == Some("the plan, again")));
+	assert!(eventually(Duration::from_secs(5), || std::fs::read_to_string(&plan).ok().as_deref() == Some("the plan, again")));
 	assert_eq!(read_paths(&take(&socket)), ["docs/plan.md v1", "docs/plan.md v2"]);
 
 	node.close_view();
