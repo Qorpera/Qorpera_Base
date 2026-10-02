@@ -222,7 +222,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - Start A's orchestrators. While A takes no runs they report heartbeats but claim nothing.
 6. **Switch.** The activation cannot be undone without a pause. Run 6.0's checks, the activation, its
    migration history record, A's declaration, 6.3's gate and A's return as **one transaction** (the
-   roll-mode switch packet). New messages wait only for its commit; if any check fails, nothing changes.
+   roll-mode switch packet). A message sent before its commit binds to N and runs on B; if any check
+   fails, nothing changes.
    0. Before the activation, all of these must hold:
       - every active orchestrator on B is still declared N (the query of step 6.3 for B and N
         returns no rows);
@@ -237,6 +238,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
         where o.status = 'active' and n.node_id = '<A>'
           and o.last_heartbeat_at < statement_timestamp() - interval '30 seconds';
         ```
+      - A is still no home of a node-disk login (the query of step 1 again: a sign-in routed to A
+        before its runs went off could have made it one);
       - A's observer publishes `ready` for A under A's current policy, fresh enough for placement,
         so A's run machines, sign-ins and machine wakes are admitted once it returns. This must
         return `true`:
@@ -354,8 +357,9 @@ fixture nodes, from the active bundle to a fixture bundle, and the emergency way
 
 - **Node A fails its checks in step 5** (before the activation). A stays empty. Roll it back
   (`agent rollback`, and rebuild the fast host from N), declare A's orchestrators as N (N is
-  registered), and return A. Clear the declarations once both nodes run N. The switch never
-  happened, and B served throughout.
+  registered), and return A with both switches (`qorpera_set_runtime_node_runs(A, true, …)`, and
+  `qorpera_set_runtime_node_serving(A, true, …)` if it was switched off fully). Clear the declarations
+  once both nodes run N. The switch never happened, and B served throughout.
 - **The switch transaction fails** (a gate, the activation, a declaration or the return). Nothing
   changed: N stays active, A takes no runs, and B serves N. Fix the cause and run step 6 again.
 - **N+1 misbehaves after the switch.** There is no rolling way back once N+1 is active. The node

@@ -354,6 +354,24 @@ select pg_temp.wake_assert(public.qorpera_runtime_node_placement_decide(extensio
 	and public.qorpera_runtime_node_placement_decide(extensions.gen_random_uuid(),'native','process',null::uuid)
 		->> 'preferredNodeId' = '79500000-0000-4000-8000-00000000000b',
 	'The five- and four-argument choosers pass no bundle and decide as before');
+-- The identity-home branch (a login still on a node disk): its only home is node A, whose orchestrator is
+-- declared for another bundle. The claimant there is refused (it waits), never deferred into admission.
+savepoint home_branch;
+reset role;
+insert into public.qorpera_runtime_machine_allocations(id,profile_id,login_session_id,login_compute_identity_id,provider_adapter,instance_sha256,released_at)
+select '79500000-0000-4000-8000-0000000000d9',run.profile_id,(current_setting('qorpera_test.wake_login')::jsonb ->> 'login_id')::uuid,
+	run.compute_identity_id,'process',repeat('8',64),clock_timestamp()
+from public.qorpera_execution_runs run where run.id = current_setting('qorpera_test.rs_run2')::uuid;
+select pg_temp.wake_assert(public.qorpera_runtime_login_identity_homes((select compute_identity_id from public.qorpera_execution_runs
+	where id = current_setting('qorpera_test.rs_run2')::uuid)) = array['79500000-0000-4000-8000-00000000000a'::uuid],'The login''s home is node A');
+set local role service_role;
+select public.qorpera_declare_runner_orchestrator_bundle('30000000-0000-4000-8000-000000000092',current_setting('qorpera_test.rs_next'));
+select pg_temp.wake_assert(public.qorpera_runtime_node_placement_decide(extensions.gen_random_uuid(),'native','process',
+		(select compute_identity_id from public.qorpera_execution_runs where id = current_setting('qorpera_test.rs_run2')::uuid),
+		null::uuid,current_setting('qorpera_test.rs_bundle')) ->> 'reason' = 'NODE_NOT_PREFERRED',
+	'At its home of another bundle the claimant is refused');
+rollback to savepoint home_branch;
+set local role service_role;
 -- The run reservation passes its run's bundle (no dispatch roles here, so the chooser decides). The run's
 -- identity moves into the vault first, as 691 does, so it has no home node and the general rule places it.
 reset role;

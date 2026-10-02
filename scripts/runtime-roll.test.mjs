@@ -74,6 +74,7 @@ test("the switch runs the activation verbatim between its gates, then declares a
 	const steps = [
 		at("Node B is not declared for the running bundle"),
 		at("Node A must have runs off"),
+		at("Node A became the home of a node-disk login"),
 		at(activation.text),
 		at("insert into supabase_migrations.schema_migrations"),
 		at(`qorpera_declare_runtime_node_bundle('${nodeA}'::uuid, '${to.sha}')`),

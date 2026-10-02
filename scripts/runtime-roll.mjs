@@ -294,6 +294,7 @@ export function rollPackets(options) {
 			[`not ${RUNS_ON(nodeA)}`, "Node A must have runs off"],
 			live(nodeA),
 			[NODE_READY(nodeA), "Node A is not observed ready"],
+			[NO_LOGIN_HOME(nodeA), "Node A became the home of a node-disk login: its N runs could not run anywhere"],
 		]),
 		activationBody,
 		historyInsert(activation.name, activationBody),
