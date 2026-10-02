@@ -68,6 +68,11 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   may step down. A cloud without several founders omits
   them; a client then falls back to "the owner deletes, others leave".
 
+Native host entry points (G2-1, migration 20260929999500): the publishable key's role (`anon`) may also call
+`qorpera_native_host_call` and `qorpera_native_host_call_long`. They are for the platform's native host inside a
+runner guest and work only with that runner job's current lease token. Clients never call them; without the token
+they answer 42501 "native host call is refused".
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 175 functions, grouped for navigation. Signatures: see the migration that defines each.
