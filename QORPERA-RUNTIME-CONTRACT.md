@@ -4368,9 +4368,11 @@ amendment governs.
    - Open, to be settled before the folder is mounted on agents' own
      machines: how the rule holds there, where commands run as root (compute
      item 4) and a namespace alone does not hold them.
-   - Agents' own machines without the folder keep compute item 4's
-     unreviewed commands. Coding sessions keep their open network and stay
-     unreviewed (27 September, item 9).
+   - Until the folder is on a machine, its commands keep today's rules: a
+     company machine's shell commands keep compute item 2's review, and
+     agents' own machines keep compute item 4's unreviewed commands. Coding
+     sessions keep their open network and stay unreviewed (27 September,
+     item 9).
 6. **Reads on the company machine go to the run.** A company machine gives
    each shell command a folder mount of its own, owned by the run that
    started it, beside the mount of the computer's desktop (the 28 September
