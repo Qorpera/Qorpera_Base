@@ -18,8 +18,9 @@ Status: W1a is live (v150, `20260928259260_runtime_event_intake`) and W2 is live
 `20260928269290_runtime_event_wakes`), both accepted; the intake is switched on. M2a is merged
 (`20260928299650_runtime_company_mailboxes`, release v154), with mail switched off until the domain exists.
 M2b is merged (`20260928309740_runtime_company_mail_sending`, release v155), with sending switched off, and so is
-the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is in review
-(`20260929998000_runtime_event_signed_hooks`).
+the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_names`). W1b, signed hooks, is merged
+(`20260928409980_runtime_event_signed_hooks`, release v165, then a broker roll). Plus addresses and find_mail are in
+review (`20260929999920_runtime_company_mail_find_and_tags`).
 
 ## Words
 
@@ -36,7 +37,7 @@ the founder's sender-name rule (`20260928319810_runtime_company_mail_sender_name
 | Step | What | Slot |
 | --- | --- | --- |
 | W1a | Hooks, deliveries, the public intake function, address-proven hooks end to end, member RPCs | `20260928259260` |
-| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260929998000` |
+| W1b | Signed hooks: the vault verifies Stripe, GitHub and Standard Webhooks signatures | `20260928409980` |
 | W2 | Routine trigger on a hook, event wakes, the agent tools `list_hooks` and `read_event` | `20260928269290` |
 | W3 | Agents create, pause and remove hooks (`manage_hook`) | registered when started |
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
@@ -205,7 +206,7 @@ therefore not reported to the sender. It is recorded as `refused` with the reaso
 
 ## Verification in the vault (W1b)
 
-Migration `20260929998000_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
+Migration `20260928409980_runtime_event_signed_hooks` and the runtime's `cloud-event-verification.ts`.
 
 **Creating.** Owners and admins now create `stripe`, `github` and `hmac-sha256` hooks with
 `qorpera_create_event_hook`. The descriptor carries `signingSecret: {connectorId: "event_hook",
@@ -491,6 +492,44 @@ texts seven days after they settle, keeping the receipt; an email already attemp
 Switched off, the claim sends nothing and queued email waits; the first claim after sending is switched on again
 fails what waited more than a day. Texts are cleared only by the claim, so unscheduling the worker stops that too.
 Agents learn an email was queued, not that it arrived; bounces and complaints, and a sent-mail view, follow.
+
+**Plus addresses and find_mail** (migration `20260929999920_runtime_company_mail_find_and_tags`, agreed with A1 on 2
+October, for accounts the company owns).
+- **Plus addresses.** `local+tag@<mail domain>` reaches the mailbox `local@`, so an agent can open a second account
+  on one site (`agents+stripe@`). The tag is lowercase letters, digits, dots, hyphens and underscores, and the whole
+  local part, tag included, is at most 64 characters (the mail door's limit); any other tag reaches no mailbox
+  (`unknown`). A message to several tags of one mailbox is stored once. Plus addresses
+  only receive: `send_mail` sends from a mailbox's own address, and refuses a company's own mailboxes as recipients
+  with or without a tag.
+- **What a mail delivery keeps.** Each received mail's delivery now records in `headers`:
+  - `delivered-to`: the message's recipients that reach that mailbox, tags included, whole addresses up to 2048 bytes;
+  - `from` and `subject`: control characters become spaces, at most 998 characters, cut further to 2048 bytes of JSON;
+  - `authentication-results`: the mail door's verdicts, `spf=… dkim=… dmarc=…`.
+
+  So the headers always fit their 8 KiB check. They count toward the company's hourly byte budget with the body
+  (contract item 3), and are cleared with the body after 7 days. Mail received before the migration keeps none.
+- **`find_mail`.** An agent searches its company's received mail (`qorpera_find_agent_mail`, through the run
+  binding like `read_event`), with these filters:
+  - `mailbox`: its address, which must be one of the company's;
+  - `to`: an address the mail was delivered to, tag included;
+  - `from` and `subject`: parts of them, in any case;
+  - `since`: an instant with its offset; by default the last 24 hours, never more than 7 days back;
+  - `before`: an instant with its offset, to page back.
+
+  It returns up to 10, newest first, as many as fit the tool's 8 KiB answer (about 6000 bytes of mails). Each has
+  `deliveryId`, `mailbox`, up to 5 `deliveredTo`, `from` and `subject` (200 characters each), `authentication` and
+  `receivedAt`. `more` is true when there are other matches, or when the search reached its bound: it looks at the
+  newest 2000 mails in the window (one ordered index scan per mailbox, planned with that mailbox's own values and
+  stopping at 2000 rows, whatever the company's volume) and reads only the kept headers. `nextBefore` is the `before` that shows the next older ones,
+  even when a page shows none. The answer's size counts the escaping it gets inside the tool's 8 KiB. It returns no mail text and matches nothing
+  inside it; the agent reads a mail with `read_event`. With `waitSeconds` (up to 120) the runtime asks again every 3
+  seconds until a match arrives. It is a read for the automatic review.
+- **Deploy.** The migration patches `qorpera_receive_mail`, `qorpera_send_agent_mail` and
+  `qorpera_record_runtime_observation` by exact text, and adds `qorpera_find_agent_mail` to G2-1's native host
+  allowlist. It rolls with a bundle carrying this runtime: an older runtime has no `find_mail`. Received mail now
+  records its headers and counts their bytes, tagged or not; nothing else changes for untagged mail. Acceptance: an agent
+  signs a test company up on a site with `agents+<site>@`, waits with `find_mail` for the confirmation, reads it
+  with `read_event`, and the account is opened.
 
 **Founder decisions (1 October 2026).** The AI line stays as written, as its own last paragraph on every email.
 `Auto-Submitted` goes only on automatic replies, the loop guard, and never on new emails, so help desks do not drop

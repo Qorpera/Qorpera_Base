@@ -1,5 +1,5 @@
 -- @fixture 165_native_account_refresh_requests.test.sql until "select set_config('qorpera_test.refresh_login_count'"
--- An account refresh expires five minutes after its own created_at (20260929994000). Before, created_at and expires_at
+-- An account refresh expires five minutes after its own created_at (20260928409940). Before, created_at and expires_at
 -- defaulted to two separate clock_timestamp() calls, so a row inserted with both defaults could get an expires_at a few
 -- microseconds past created_at + 5 minutes and be refused by the table's check (23514; node 2's hosted-db run of test
 -- 764 on 2026-10-01). Test 165's fixture: the owner's member compute identity with an active Codex login, and no
@@ -71,7 +71,7 @@ begin
 end $$;
 
 -- 4. Many rows with both defaults in one statement: each row's clock is read apart, and every one expires exactly five
---    minutes after its own creation. Before 20260929994000 this statement failed the check (23514) almost surely.
+--    minutes after its own creation. Before 20260928409940 this statement failed the check (23514) almost surely.
 do $$
 declare v_wrong bigint;
 begin
