@@ -128,7 +128,7 @@ describe("company account envelope fields", () => {
 	});
 
 	it("refuses unknown fields, bad JSON and malformed parts", () => {
-		for (const fields of [
+		const cases: Record<string, string>[] = [
 			{ password: "x", token: "y" },
 			{ password: "x", totp: "{" },
 			{ password: "" },
@@ -147,7 +147,8 @@ describe("company account envelope fields", () => {
 					{ code: "abcd", used: false },
 				]),
 			},
-		])
+		];
+		for (const fields of cases)
 			expect(() => parseCompanyAccountFields(fields), JSON.stringify(fields)).toThrow(/Company account/);
 	});
 
