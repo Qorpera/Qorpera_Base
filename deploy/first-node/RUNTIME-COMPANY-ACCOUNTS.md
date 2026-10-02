@@ -118,6 +118,20 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
   any more, so closing is a "deleting things outside" step the company's review rules check (A1-4); after it only the
   website's own account recovery gets back in. Accounts closed before this migration are revoked by it.
 
+## A1-5a: which mail is an account's own (migration `20260929999960`, SQL test 809)
+
+Members read the company's mail (Interfaces I5, Q1's member read), but an account's sign-up and sign-in mail carries
+codes and reset links, so it is shown only as "<site> · sign-in mail · used by <agent> <time>".
+
+- Every company account signs up with its own tagged address, `<handle>+<site>@inbox.qorpera.com` (find_mail's
+  tags), which is its login. The account row exists from the opening, before the sign-up form is sent, so the first
+  code already matches.
+- `qorpera_company_account_mail(profile, environment, addresses text[])`: the newest of the company's accounts
+  (closed ones included: a closed account's late mail is still a code or a link) whose login equals one of the
+  addresses, whole and in any letter case; `{accountId, site, lastUsedBy, lastUsedAt}` or SQL NULL. SECURITY
+  DEFINER, stable, no grants to any API role or the broker: Q1's postgres-owned member read calls it (and guards on
+  its absence). A plain read, served by `qorpera_company_accounts_login` (profile, environment, lower(login)).
+
 ## Notes for later steps
 
 - Folder-v2 (A1-7): these calls lock the receipt before vault rows, the reverse of the folder core's ranks. On

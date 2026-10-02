@@ -1,0 +1,29 @@
+-- Company accounts A1-5a: which mail is a company account's own (sign-up codes, reset links), so the company
+-- Mailbox shows it only as "GitHub · sign-in mail · used by …" and never its text (the Interfaces design, I5b;
+-- members never see an account's secrets). Every company account signs up with its own tagged address
+-- (`<handle>+<site>@inbox.qorpera.com`, find_mail's tags), which is its login. A delivery is account mail when one
+-- of its delivered-to addresses is the login of one of the company's accounts, closed ones included (a closed
+-- account's late mail is still a code or a link). A lookup, not a mark kept at receive time: the account row
+-- exists from the opening, before the sign-up form is sent, so the first code already matches.
+
+set local lock_timeout = '3s';
+
+-- Every account by login, closed ones too (the open-login unique index leaves closed ones out).
+create index qorpera_company_accounts_login
+	on public.qorpera_company_accounts(profile_id, environment_id, lower(login));
+
+-- The newest of the company's accounts whose login is one of `p_addresses` (whole addresses, tags included, any
+-- letter case): its id, site, and the agent that last used it and when; SQL NULL when none is. A plain read.
+create function public.qorpera_company_account_mail(p_profile_id uuid, p_environment_id uuid, p_addresses text[])
+returns jsonb
+language sql stable security definer set search_path = '' as $$
+	select jsonb_build_object('accountId', account.secret_id, 'site', account.site,
+		'lastUsedBy', account.last_used_by_staff_agent_id, 'lastUsedAt', account.last_used_at)
+	from public.qorpera_company_accounts as account
+	where account.profile_id = p_profile_id and account.environment_id = p_environment_id
+		and lower(account.login) in (select lower(address) from unnest(p_addresses) as address)
+	order by account.created_at desc, account.secret_id
+	limit 1
+$$;
+revoke all on function public.qorpera_company_account_mail(uuid,uuid,text[])
+	from public, anon, authenticated, service_role;
