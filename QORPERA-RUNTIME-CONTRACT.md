@@ -4427,7 +4427,7 @@ It amends these texts. Where older text conflicts with this amendment, this amen
        never shown (the A1 account-mail mark).
      - The check is made once, when the message is written. The fence never needs the thread again, so a thread
        deleted later changes nothing.
-   - A message with `quotes` has no `displayText`. One with both is refused.
+   - A message with `quotes` has no `displayText`. One with both is refused (22023).
 2. **Only the member's client writes quotes,** from content it showed the member. Today that is a message button
    (interfaces amendment, item 5).
    - The client keeps the quoted words in «» marks so people can see them.
@@ -4435,6 +4435,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      around it.
    - A draft keeps its quotes beside its text, room drafts included, so a reload, another device or a co-editor
      keeps them.
+   - Once a draft holds a quote, a save that leaves out its quotes or changes a quote's words is refused.
+   - A client that has lost a quote doesn't send until the member removes it or fills it in again.
    - An agent's message button sends a coworker message, which is never authority (9.2). It carries no `quotes`.
 3. **The platform checks quotes before it writes the message.**
    - The input RPCs check `quotes` after membership and the right to write, and before the first lock the call

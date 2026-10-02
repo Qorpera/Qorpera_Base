@@ -203,13 +203,14 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - `answer` uses the card's existing state machine (contract 16.2).
 - **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
   filled in from outside content goes as a marked quote, never as the viewer's own words.
-  - §4 says which columns are outside content. Today they are `mail`'s `from_name`, `from_address` and `subject`.
-    A message button whose text names an outside-content column of a source the quote list lacks is refused (§6).
+  - §4 says which columns are outside content. A message button whose text names an outside-content column of a
+    source the quote list lacks is refused (`outside_value`, §6). Today that list is only `mail`.
   - People see the quote in «» marks. The message carries the quote's place, source and record (`quotes`), so the
     platform fences those words like a tool result, and the review never reads them. This is the contract's
     section 19 amendment "2026-10-02 amendment: quoted outside content in a member's message".
   - A quote is one piece: the viewer keeps it or removes it. Words they type around it are their own.
-  - A value is cut to 2,000 characters before it is filled in, and a button fills in at most 16.
+  - A value is cut to 2,000 characters before it is filled in. A button whose text names more than 16 outside
+    values is refused (`outside_value`).
   - Until that amendment is built (step I5d, §10), a message button fills in no value from outside content.
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
@@ -251,9 +252,13 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | `activity` | at, kind, agent, member, line: one plain sentence per run, wake, answer or change |
 | `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`, `run` for a run that did not finish, `mention`), title, from, due |
 
-- **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block. The
-  outside-content columns are `mail`'s `from_name`, `from_address` and `subject`. A source added later names its
-  own.
+- **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block. These are
+  outside content:
+  - `mail`'s `from_name`, `from_address` and `subject`;
+  - a `file:` source's `text` under `hooks/<hook>/` (saved events, and received mail once it moves there with I11);
+  - a `file:` source's `text` under `human-tasks/<task>/` that a contact sent back.
+
+  A source added later names its own.
 - **Nothing remote, no HTML.** A `text` block draws markdown with the client's own renderer: no HTML, and images only
   from the company folder, read with the viewer's authority. A `mail` block draws an email's plain text, never its
   HTML. Neither loads anything from outside.
@@ -413,6 +418,7 @@ files (STATE-FILES §3).
 | `unknown_button` | a block lists a button that isn't defined |
 | `unknown_target` | `opens` names no `detail` or `mail` block in the same view, or `from_view` no view above it |
 | `too_large` | over the size or count limit |
+| `outside_value` | a `message` button's text names a value from outside content (§4) that can't travel as a quote, or more than 16 such values |
 
 **The save check** (the database's `decide`, as `structured_rule` in the state files) refuses what needs other
 files or state:
