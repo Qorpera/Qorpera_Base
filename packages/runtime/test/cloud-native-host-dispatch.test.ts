@@ -47,14 +47,15 @@ function rpc(body: string, extra: Omit<RequestInit, "body"> = {}): RequestInit &
 }
 
 it("lists exactly the calls the host makes inside a job, with the long budget for the lease validator only", () => {
-	const migration = readFileSync(
-		new URL("../../../supabase/migrations/20260928409985_runtime_native_host_call.sql", import.meta.url),
-		"utf8",
-	);
-	const insert = migration.slice(
-		migration.indexOf("insert into public.qorpera_native_host_calls(name, scope) values"),
-	);
-	const rows = [...insert.slice(0, insert.indexOf(";\n")).matchAll(/\('(qorpera_[a-z0-9_]+)', '([a-z]+)'\)/g)];
+	const read = (name: string) =>
+		readFileSync(new URL(`../../../supabase/migrations/${name}`, import.meta.url), "utf8");
+	const migration = read("20260928409985_runtime_native_host_call.sql");
+	// Each migration that adds calls inserts them in one statement.
+	const rowsOf = (text: string) => {
+		const insert = text.slice(text.indexOf("insert into public.qorpera_native_host_calls(name, scope) values"));
+		return [...insert.slice(0, insert.indexOf(";\n")).matchAll(/\('(qorpera_[a-z0-9_]+)', '([a-z]+)'\)/g)];
+	};
+	const rows = [...rowsOf(migration), ...rowsOf(read("20260929999920_runtime_company_mail_find_and_tags.sql"))];
 	const long = new Set(
 		[...migration.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
 	);
@@ -63,7 +64,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(83);
+	expect(rows).toHaveLength(84);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_validate_native_provider_execution_lease", "long"],
