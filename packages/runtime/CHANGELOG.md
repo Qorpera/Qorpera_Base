@@ -1,5 +1,6 @@
 # Changelog
 
+- The folder core checks a website account's connection file (F2's A1-7b, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2 and §8; migration `20260929999950`, SQL test 801): with `service: website` the parse carries `site` (the vault's host rule), `twoStep` and `openedFor`, and the status may also be `pending` or `needs_person`; every other connection keeps its exact shape and `connected` or `broken`. Inert until A1's vault writer writes such files. Release after A1-7a's parser is live on every writer.
 ## [Unreleased]
 
 ### Breaking Changes
