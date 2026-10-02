@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { CoreEntry } from "../src/folder-service/core.ts";
-import { ObjectIntegrityError } from "../src/folder-service/objects.ts";
+import { ObjectIntegrityError, ObjectMissingError } from "../src/folder-service/objects.ts";
 import type { SearchRequest } from "../src/folder-service/protocol.ts";
 import {
-	globPattern,
+	compileGlob,
+	globMatches,
 	type SearchAnswer,
 	type SearchSource,
 	searchView,
@@ -20,7 +21,10 @@ const RECEIPT = {
 };
 
 /** A view of these files (their folders listed too), and a source that reads them from memory. */
-function stage(files: Record<string, string | Buffer>, options: { clock?: () => number; broken?: string[] } = {}) {
+function stage(
+	files: Record<string, string | Buffer>,
+	options: { clock?: () => number; broken?: string[]; missing?: string[] } = {},
+) {
 	const tree = new ViewTree();
 	const bytes = new Map<string, Buffer>();
 	let n = 0;
@@ -50,6 +54,7 @@ function stage(files: Record<string, string | Buffer>, options: { clock?: () => 
 		async read(entry: TreeEntry, offset: number, length: number) {
 			asked.push(`${entry.path}@${offset}`);
 			if (options.broken?.includes(entry.path)) throw new ObjectIntegrityError("bad chunk");
+			if (options.missing?.includes(entry.path)) throw new ObjectMissingError("not on the share");
 			return bytes.get(entry.path)!.subarray(offset, offset + length);
 		},
 	};
@@ -128,9 +133,22 @@ describe("folder search", () => {
 		expect(await paths("d/**/*.md")).toEqual(["d/e/f.md"]);
 		expect(await paths("**/*.txt")).toEqual(["a.txt", "d/g.txt"]);
 		expect(await paths("?.txt")).toEqual(["a.txt", "d/g.txt"]);
-		expect(globPattern("a.b*").test("a.bc")).toBe(true);
-		expect(globPattern("a.b*").test("axbc")).toBe(false);
-		expect(globPattern("(x)[y]").test("(x)[y]")).toBe(true);
+		const matches = (glob: string, path: string) => globMatches(compileGlob(glob), path);
+		expect(matches("a.b*", "a.bc")).toBe(true);
+		expect(matches("a.b*", "axbc")).toBe(false);
+		expect(matches("(x)[y]", "(x)[y]")).toBe(true);
+		expect(matches("a**b", "axxb")).toBe(true);
+		expect(matches("a**b", "a/b")).toBe(false);
+		expect(matches("**/x.md", "x.md")).toBe(true);
+		expect(matches("d/**", "d/e/f")).toBe(true);
+		expect(matches("d/**/f", "d/f")).toBe(true);
+		expect(matches("*.md", "a\nb.md")).toBe(true);
+		// Linear time, whatever the model sends: this pattern against a long name of a's backtracks exponentially in a
+		// regular expression.
+		const started = performance.now();
+		expect(matches("*a*a*a*a*a*a*a*a*a*a*a*a*ab", "a".repeat(255))).toBe(false);
+		expect(matches("**/**/**/**/**/**/**/**/**/x", Array.from({ length: 200 }, () => "a").join("/"))).toBe(false);
+		expect(performance.now() - started).toBeLessThan(200);
 	});
 
 	it("passes over binary files (still read: that is how it knows) and files whose bytes fail their check", async () => {
@@ -254,6 +272,89 @@ describe("folder search", () => {
 			}),
 		);
 		expect(seen(rest)).toEqual(seen(page).slice(2));
+	});
+
+	it("passes over a file whose bytes are missing from the share, says so, and goes on", async () => {
+		const logged: string[] = [];
+		const { source } = stage(
+			{ "a.md": "plan a", "gone.md": "plan gone", "z.md": "plan z" },
+			{ missing: ["gone.md"] },
+		);
+		const page = await searchView({ ...source, log: (line) => logged.push(line) }, request("plan"));
+		expect(page.hits.map((h) => h.path)).toEqual(["a.md", "z.md"]);
+		expect(page.unreadable).toBe(1);
+		expect(page.reads.map((r) => r.path)).toEqual(["a.md", "z.md"]);
+		expect(logged).toEqual([expect.stringContaining("gone.md")]);
+	});
+
+	it("searches a very long line in stretches: one line number, a match across stretches found, one hit per line", async () => {
+		const long = `${"x".repeat(100)}pl${"an".slice(0, 2)}${"x".repeat(100)}plan`;
+		const { source } = stage({ "a.txt": `first\n${long}\nplan three\n` });
+		const page = await searchView({ ...source, longestLine: 40 }, request("plan"));
+		expect(page.hits.map((h) => [h.line, h.offset])).toEqual([
+			[2, 6],
+			[3, 6 + long.length + 1],
+		]);
+		expect(page.hits[0]!.text).toContain("plan");
+		// A match that straddles two stretches of a long line is found.
+		const split = `${"y".repeat(38)}plan${"y".repeat(100)}`;
+		const straddle = stage({ "b.txt": `${split}\n` });
+		expect(
+			seen(await searchView({ ...straddle.source, longestLine: 40 }, request("plan"))).map((h) => h.line),
+		).toEqual([1]);
+	});
+
+	it("shows the match in a hit's text after characters that count double", async () => {
+		const { source } = stage({ "e.md": `${"\u{1F600}".repeat(300)} the plan ${"\u{1F600}".repeat(300)}\n` });
+		const page = await searchView(source, request("PLAN"));
+		expect(page.hits[0]!.text).toContain("plan");
+	});
+
+	it("gives the node's event loop a turn while it works, and always moves the search on", async () => {
+		const files: Record<string, string> = {};
+		for (let i = 0; i < 20_000; i++) files[`f/${String(i).padStart(6, "0")}.md`] = "x";
+		const { source } = stage(files);
+		let turns = 0;
+		const ticker = setInterval(() => turns++, 1);
+		await searchView({ ...source, sliceMs: 60_000 }, request("zzz", { namesOnly: true }));
+		clearInterval(ticker);
+		expect(turns).toBeGreaterThan(0);
+		// A clock already past every deadline: each page still moves on, and the pages together cover everything.
+		const late = stage(
+			{ "a.md": "plan", "b.md": "plan", "c/d.md": "plan" },
+			{ clock: () => Number.MAX_SAFE_INTEGER },
+		);
+		let t = 0;
+		const jumping = (): number => {
+			t += 10_000;
+			return t;
+		};
+		const { pages, hits } = await all({ ...late.source, now: jumping }, request("plan"));
+		expect(pages.length).toBeGreaterThan(1);
+		expect(hits).toEqual(["a.md:1:plan", "b.md:1:plan", "c/d.md:1:plan"]);
+	});
+
+	it("walks from a cursor straight to it, in the same order as a whole walk", () => {
+		const { tree } = stage({
+			"a-c.md": "x",
+			"a/b.md": "x",
+			"a/z/q.md": "x",
+			"a0.md": "x",
+			"b/c/d.md": "x",
+			"b/e.md": "x",
+		});
+		const all = [...tree.walk("")].map((e) => e.path);
+		// A cursor never names the root (the request's parser refuses an empty path).
+		for (const from of [...all.filter((p) => p !== ""), "a/m", "a/zz", "b/c/a", "zz", "a"]) {
+			const expected = all.filter((p) => p !== "" && treeOrder(p, from) >= 0);
+			expect(
+				[...tree.walk("", from)].map((e) => e.path),
+				from,
+			).toEqual(expected);
+		}
+		expect([...tree.walk("a", "a/z")].map((e) => e.path)).toEqual(["a/z", "a/z/q.md"]);
+		expect([...tree.walk("b", "a/z")].map((e) => e.path)).toEqual(["b", "b/c", "b/c/d.md", "b/e.md"]);
+		expect([...tree.walk("a", "b")].map((e) => e.path)).toEqual([]);
 	});
 
 	it("orders paths depth first, name by name", () => {

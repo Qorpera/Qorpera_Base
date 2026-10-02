@@ -25,6 +25,14 @@ export class ObjectUnavailableError extends Error {
 	}
 }
 
+/** The object is not on the storage server at all: asking again will not find it. */
+export class ObjectMissingError extends ObjectUnavailableError {
+	constructor(message: string) {
+		super(message);
+		this.name = "ObjectMissingError";
+	}
+}
+
 interface Chunk {
 	readonly sha256: string;
 	readonly bytes: number;
@@ -212,9 +220,9 @@ export class NasObjects {
 			handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			throw code === "ELOOP"
-				? new ObjectIntegrityError("Object is a link")
-				: new ObjectUnavailableError(`Object could not be opened (${code ?? "unknown"})`);
+			if (code === "ELOOP") throw new ObjectIntegrityError("Object is a link");
+			if (code === "ENOENT") throw new ObjectMissingError("Object is not on the storage server");
+			throw new ObjectUnavailableError(`Object could not be opened (${code ?? "unknown"})`);
 		}
 		try {
 			const info = await handle.stat();

@@ -19,6 +19,10 @@ AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# A vsock socket needs no device node.
+PrivateDevices=yes
+DevicePolicy=closed
+PrivateIPC=yes
 ProtectProc=invisible
 ProcSubset=pid
 ProtectKernelTunables=yes

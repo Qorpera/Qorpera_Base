@@ -7,13 +7,19 @@ use crate::transport::{self, Stream};
 use std::io;
 use std::os::unix::net::UnixListener;
 
-/// Serves every connection to `listener` until it fails, each over its own connection to `upstream`.
+/// Serves every connection to `listener`, each over its own connection to `upstream`. An accept that fails (no
+/// descriptors left, a caller gone before it was taken) is logged and the relay goes on, so the slot's other
+/// connections stay up.
 pub fn run(listener: UnixListener, upstream: &str) -> io::Result<()> {
 	for local in listener.incoming() {
 		let local = match local {
 			Ok(s) => s,
 			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-			Err(e) => return Err(e),
+			Err(e) => {
+				eprintln!("qorpera-folder relay: accept: {e}");
+				std::thread::sleep(std::time::Duration::from_millis(100));
+				continue;
+			}
 		};
 		let upstream = upstream.to_string();
 		let spawned = std::thread::Builder::new().name("relay".into()).spawn(move || match transport::connect(&upstream) {

@@ -104,8 +104,11 @@ class FakeUnits implements SharedExecutionUnitControl {
 	readonly unkillable = new Set<string>();
 	/** Running units whose health endpoint does not answer yet (still loading). */
 	readonly loading = new Set<string>();
+	/** Units whose start fails. */
+	readonly failing = new Set<string>();
 	async start(unit: string): Promise<void> {
 		this.log.push(`start ${unit}`);
+		if (this.failing.has(unit)) throw new Error(`${unit} failed`);
 		this.activeUnits.add(unit);
 	}
 	async stop(unit: string): Promise<void> {
@@ -404,6 +407,12 @@ describe("shared execution provider backend", () => {
 		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "off" })).toBe(false);
 		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" })).toBe(true);
 		expect(() => folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "yes" })).toThrow("on or off");
+		// A relay that does not start costs the run its search, never the run.
+		const broken = await fixture({ folderSearch: true });
+		broken.units.failing.add("qorpera-folder-relay@0.socket");
+		await expect(broken.backend.acquire(runId, work(), new AbortController().signal)).resolves.toMatchObject({
+			runnerId,
+		});
 		const off = await fixture();
 		await off.backend.acquire(runId, work(), new AbortController().signal);
 		expect(await readFile(join(off.runRoot, "slots", "0", "native-provider.env"), "utf-8")).not.toContain(

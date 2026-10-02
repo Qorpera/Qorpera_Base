@@ -868,6 +868,7 @@ describe("run box views", () => {
 			hits: [{ path: "docs/plan.md", kind: "file", line: 1, text: "the plan", version: v(1), offset: 0 }],
 			searched: 1,
 			binary: 0,
+			unreadable: 0,
 			reads: [
 				{ path: "docs", kind: "folder", version: v(1), authority: receipt },
 				{ path: "docs/plan.md", kind: "file", version: v(1), authority: receipt },
@@ -884,6 +885,11 @@ describe("run box views", () => {
 		expect(names).toMatchObject({ hits: [{ path: "docs/plan.md", kind: "file", line: 0, text: "" }], next: null });
 		// The name shown is a read of its entry.
 		expect((names.reads as { path: string }[]).map((r) => r.path)).toEqual(["docs", "docs/plan.md"]);
+		// An operator mount's machine never searches through this service: search is for a run's own view.
+		const operator = await Client.open(path);
+		expect((await operator.hello("io")).kind).toBe(Kind.helloOk);
+		operator.send(Kind.search, search);
+		expect((await operator.json()).body.code).toBe("BAD_REQUEST");
 	});
 
 	it("takes no core view at all from a node with no run box hosts", () => {

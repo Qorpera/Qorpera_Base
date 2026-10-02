@@ -1,5 +1,6 @@
+import { setImmediate as nextTurn } from "node:timers/promises";
 import type { CoreReceipt } from "./core.ts";
-import { ObjectIntegrityError } from "./objects.ts";
+import { ObjectIntegrityError, ObjectMissingError } from "./objects.ts";
 import type { SearchCursor, SearchRequest } from "./protocol.ts";
 import { byteOrder, type TreeEntry, type ViewTree } from "./view-tree.ts";
 
@@ -12,15 +13,20 @@ import { byteOrder, type TreeEntry, type ViewTree } from "./view-tree.ts";
  * Literal text in the lines of text files, or in the names of files and folders, in the order a machine lists them.
  * One call is one page of the search: it answers when its hits fill the answer, when it has drawn on as many paths as
  * one answer carries, or after about two seconds of work, with where to go on. There is no end the search stops at.
+ * The node's event loop serves every machine on the node, so a page gives it a turn every few milliseconds, and no
+ * step of a page (a glob, a line) costs more than linear time.
  *
  * Every path an answer drew on is in its `reads`, with its receipt: each folder whose names were looked through, each
  * file whose bytes were read (binary ones too: that they are binary was read from them), and each entry whose name is
- * a hit. A folder shown only because it holds readable paths (no version of its own) is never a name hit. The run releases them
- * with the run actor under the hash of the text it shows, before the model sees it.
+ * a hit. A folder shown only because it holds readable paths (no version of its own) is never a name hit. The run
+ * releases them with the run actor under the hash of the text it shows, before the model sees it. `next` names a path
+ * the page did not draw on: a client never shows it (the run seals it).
  */
 
 /** About how long one call works before it answers with where to go on. */
 export const SEARCH_SLICE_MS = 2_000;
+/** How long a page works before it gives the node's event loop a turn. */
+const TURN_MS = 10;
 /** The JSON its hits may take: the run shows them in one tool result of 8 KiB. */
 const HITS_BYTES = 6 * 1024;
 /** A hit's text: the line around its first match. */
@@ -31,7 +37,8 @@ const READS_PER_ANSWER = 4_000;
 const READS_BYTES = 1024 * 1024;
 /** A file with a NUL byte in its first this many bytes is binary: it is not searched. */
 const BINARY_PROBE = 8 * 1024;
-/** Bytes read from a file at a time, and the most a line may run before it is cut there. */
+/** Bytes read from a file at a time. A line longer than LONGEST_LINE is searched as it comes, a stretch at a time,
+ * keeping the query's length of its end so a match across two stretches is found; its number stays one line. */
 const PIECE_BYTES = 4 * 1024 * 1024;
 const LONGEST_LINE = 1024 * 1024;
 /** Files whose first piece is asked for ahead of the one being searched. */
@@ -63,6 +70,8 @@ export interface SearchAnswer {
 	readonly searched: number;
 	/** Binary files passed over. */
 	readonly binary: number;
+	/** Files passed over because their bytes are missing from the storage server or fail their check (logged). */
+	readonly unreadable: number;
 	readonly reads: readonly SearchRead[];
 	readonly next: SearchCursor | null;
 }
@@ -72,9 +81,13 @@ export interface SearchSource {
 	/** Up to `length` bytes of a file's version from `offset`. */
 	read(entry: TreeEntry, offset: number, length: number): Promise<Buffer>;
 	readonly now: () => number;
+	/** Throws once the view may no longer be served (closed, or past its confirmed lease): checked at every turn. */
+	readonly serving?: () => void;
+	readonly log?: (line: string) => void;
 	readonly sliceMs?: number;
-	/** Bytes read at a time (tests make it small). */
+	/** Bytes read at a time, and the length past which a line is searched in stretches (tests make them small). */
 	readonly pieceBytes?: number;
+	readonly longestLine?: number;
 }
 
 /** Depth-first order of two paths: name by name, a folder before what it holds. */
@@ -88,47 +101,100 @@ export function treeOrder(a: string, b: string): number {
 	return x.length - y.length;
 }
 
-/** A glob as a whole-match pattern: `**` across folders, `*` and `?` within a name, everything else literal. */
-export function globPattern(glob: string): RegExp {
-	let source = "";
-	for (let i = 0; i < glob.length; i++) {
-		const c = glob[i]!;
-		if (c === "*" && glob[i + 1] === "*") {
-			// `**/` also matches no folder at all.
-			if (glob[i + 2] === "/") {
-				source += "(?:.*/)?";
-				i += 2;
-			} else {
-				source += ".*";
-				i += 1;
-			}
-		} else if (c === "*") source += "[^/]*";
-		else if (c === "?") source += "[^/]";
-		else source += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-	}
-	return new RegExp(`^${source}$`, "u");
+/** A compiled glob: its '/'-separated parts, each a name pattern (code points) or `**` (any number of folders). A
+ * glob without '/' is matched against a path's name alone. */
+export interface Glob {
+	readonly parts: readonly (readonly string[] | "**")[];
+	readonly nameOnly: boolean;
 }
 
-/** One page of the search. Throws what reading a file threw, except a file whose bytes fail their check, which is
- * passed over (and not read). */
+export function compileGlob(glob: string): Glob {
+	return {
+		parts: glob.split("/").map((part) => (part === "**" ? "**" : Array.from(part))),
+		nameOnly: !glob.includes("/"),
+	};
+}
+
+/** One name against one pattern: `*` any run of characters (a `**` inside a name is the same), `?` any one, the rest
+ * literal. The two-pointer walk with one place to go back to: at most name × pattern steps, never exponential. */
+function nameMatches(pattern: readonly string[], name: readonly string[]): boolean {
+	let p = 0;
+	let n = 0;
+	let star = -1;
+	let mark = 0;
+	while (n < name.length) {
+		if (p < pattern.length && pattern[p] !== "*" && (pattern[p] === "?" || pattern[p] === name[n])) {
+			p++;
+			n++;
+		} else if (p < pattern.length && pattern[p] === "*") {
+			star = p++;
+			mark = n;
+		} else if (star >= 0) {
+			p = star + 1;
+			n = ++mark;
+		} else return false;
+	}
+	while (p < pattern.length && pattern[p] === "*") p++;
+	return p === pattern.length;
+}
+
+/** A path (relative to the search) against a glob: the same walk over the path's names, `**` standing for any run of
+ * them. */
+export function globMatches(glob: Glob, path: string): boolean {
+	const names = path.split("/");
+	if (glob.nameOnly) return nameMatches(glob.parts[0] as readonly string[], Array.from(names[names.length - 1]!));
+	let p = 0;
+	let n = 0;
+	let star = -1;
+	let mark = 0;
+	while (n < names.length) {
+		const part = glob.parts[p];
+		if (part !== undefined && part !== "**" && nameMatches(part, Array.from(names[n]!))) {
+			p++;
+			n++;
+		} else if (part === "**") {
+			star = p++;
+			mark = n;
+		} else if (star >= 0) {
+			p = star + 1;
+			n = ++mark;
+		} else return false;
+	}
+	while (p < glob.parts.length && glob.parts[p] === "**") p++;
+	return p === glob.parts.length;
+}
+
+/** One page of the search. Throws what reading a file threw, except a file whose bytes are missing or fail their
+ * check, which is passed over (not read) and logged. */
 export async function searchView(source: SearchSource, request: SearchRequest): Promise<SearchAnswer> {
 	const deadline = source.now() + (source.sliceMs ?? SEARCH_SLICE_MS);
 	const pieceBytes = source.pieceBytes ?? PIECE_BYTES;
+	const longestLine = source.longestLine ?? LONGEST_LINE;
 	const hits: SearchHit[] = [];
 	const reads: SearchRead[] = [];
 	let hitBytes = 0;
 	let readBytes = 0;
 	let searched = 0;
 	let binary = 0;
-	const glob = request.glob === null ? undefined : globPattern(request.glob);
+	let unreadable = 0;
+	let examined = 0;
+	let turnAt = performance.now();
+	/** Gives the event loop a turn once this page has worked TURN_MS, and stops if the view may no longer be served. */
+	const turn = async (): Promise<void> => {
+		if (performance.now() - turnAt < TURN_MS) return;
+		await nextTurn();
+		turnAt = performance.now();
+		source.serving?.();
+	};
+	const glob = request.glob === null ? undefined : compileGlob(request.glob);
 	const fold = (text: string): string => (request.caseSensitive ? text : text.toLowerCase());
 	const query = fold(request.query);
-	const relative = (path: string): string => (request.path === "" ? path : path.slice(request.path.length + 1));
+	/** Bytes of the query's longest UTF-8 form, kept of a long line's end so a match across two stretches is found. */
+	const overlap = Buffer.byteLength(request.query) * 3 + 4;
 	const matchesGlob = (entry: TreeEntry): boolean => {
 		if (!glob) return true;
-		const rel =
-			entry.path === request.path ? entry.path.slice(entry.path.lastIndexOf("/") + 1) : relative(entry.path);
-		return glob.test(request.glob!.includes("/") ? rel : rel.slice(rel.lastIndexOf("/") + 1));
+		if (entry.path === request.path) return globMatches(glob, entry.path.slice(entry.path.lastIndexOf("/") + 1));
+		return globMatches(glob, request.path === "" ? entry.path : entry.path.slice(request.path.length + 1));
 	};
 	const read = (entry: TreeEntry): void => {
 		if (entry.version === "") return; // the root, or a folder shown only because it holds readable paths
@@ -150,7 +216,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		hitBytes += bytes;
 		return true;
 	};
-	const answer = (next: SearchCursor | null): SearchAnswer => ({ hits, searched, binary, reads, next });
+	const answer = (next: SearchCursor | null): SearchAnswer => ({ hits, searched, binary, unreadable, reads, next });
 	const at = (entry: TreeEntry, offset = 0, line = 0): SearchCursor => ({
 		path: entry.path,
 		version: entry.version,
@@ -158,9 +224,10 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		line,
 	});
 
-	// The walk, from where the last call left it, with the next files' first pieces asked for ahead.
-	const walk = source.tree.walk(request.path);
+	// The walk, from where the last call left it (straight there, not past what came before), with the next files'
+	// first pieces asked for ahead.
 	const after = request.after;
+	const walk = source.tree.walk(request.path, after?.path);
 	const ahead: TreeEntry[] = [];
 	let exhausted = false;
 	const text = (entry: TreeEntry): boolean =>
@@ -173,7 +240,6 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 				break;
 			}
 			const entry = next.value;
-			if (after && treeOrder(entry.path, after.path) < 0) continue;
 			ahead.push(entry);
 			// Only to warm the node's memory: what this read brings is read again, checked, when its turn comes.
 			if (text(entry) && !(after && entry.path === after.path))
@@ -183,12 +249,11 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 	};
 
 	for (let entry = pull(); entry; entry = pull()) {
-		if (
-			reads.length >= READS_PER_ANSWER ||
-			readBytes >= READS_BYTES ||
-			(source.now() >= deadline && (reads.length > 0 || hits.length > 0))
-		)
+		await turn();
+		// A page ends once it has moved the search on: never before its first entry.
+		if (examined > 0 && (reads.length >= READS_PER_ANSWER || readBytes >= READS_BYTES || source.now() >= deadline))
 			return answer(at(entry));
+		examined++;
 		if (entry.kind === "folder") {
 			// Its names are looked through (to walk it, and for name hits beneath it).
 			read(entry);
@@ -210,18 +275,34 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		}
 		if (!text(entry)) continue;
 		const resume = after && entry.path === after.path && entry.version === after.version ? after : undefined;
+		/** The next byte to read; the number of whole lines before the line in hand, and where that line starts. */
 		let offset = resume?.offset ?? 0;
 		let line = resume?.line ?? 0;
+		let lineStart = offset;
+		/** The line in hand: its bytes not yet searched (all of it, or for a long line the stretch's end kept for a
+		 * match across stretches), and whether it is long (searched in stretches) or already has its hit. */
 		let carry: Buffer = Buffer.alloc(0);
-		let carryStart = offset;
+		let long = false;
+		let lineHit = false;
 		let started = false;
 		let skipped = false;
+		/** Searches a stretch of the line in hand; false when the answer is full (the page ends at this line). */
+		const stretch = (bytes: Buffer): boolean => {
+			if (lineHit || bytes.byteLength === 0) return true;
+			const textLine = bytes.toString("utf8");
+			const found = fold(textLine).indexOf(query);
+			if (found < 0) return true;
+			lineHit = true;
+			return hit(entry, line + 1, around(textLine, found, request.caseSensitive), lineStart);
+		};
 		for (;;) {
 			let piece: Buffer;
 			try {
 				piece = await source.read(entry, offset, pieceBytes);
 			} catch (error) {
-				if (error instanceof ObjectIntegrityError) {
+				if (error instanceof ObjectIntegrityError || error instanceof ObjectMissingError) {
+					source.log?.(`folder-service: search passed over ${entry.path} (${entry.version}): ${error.message}`);
+					unreadable++;
 					skipped = true;
 					break;
 				}
@@ -239,48 +320,64 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			const end = offset + piece.byteLength;
 			const last = end >= entry.bytes || piece.byteLength === 0;
 			const bytes = carry.byteLength === 0 ? piece : Buffer.concat([carry, piece]);
-			// The whole lines in hand; a line longer than LONGEST_LINE is cut there.
-			let cut = last ? bytes.byteLength : bytes.lastIndexOf(0x0a) + 1;
-			if (cut === 0 && bytes.byteLength >= LONGEST_LINE) cut = bytes.byteLength;
-			const lines = bytes.subarray(0, cut);
-			carry = bytes.subarray(cut);
-			// Most pieces hold no match: those only count their lines.
-			if (lines.byteLength > 0 && !fold(lines.toString("utf8")).includes(query)) {
-				let newline = lines.indexOf(0x0a);
+			// `bytes` starts `carry` bytes before `offset`; its whole lines end at its last newline.
+			const base = offset - carry.byteLength;
+			const cut = bytes.lastIndexOf(0x0a) + 1;
+			// Most stretches hold no match: those only count their lines.
+			const whole = bytes.subarray(0, cut);
+			if (cut > 0 && !lineHit && !long && !fold(whole.toString("utf8")).includes(query)) {
+				let newline = whole.indexOf(0x0a);
 				while (newline >= 0) {
 					line++;
-					newline = lines.indexOf(0x0a, newline + 1);
+					newline = whole.indexOf(0x0a, newline + 1);
 				}
-				if (lines[lines.byteLength - 1] !== 0x0a) line++;
+				lineStart = base + cut;
 			} else {
 				let start = 0;
-				while (start < lines.byteLength) {
-					let stop = lines.indexOf(0x0a, start);
-					if (stop < 0) stop = lines.byteLength;
+				for (let stop = bytes.indexOf(0x0a); stop >= 0 && stop < cut; stop = bytes.indexOf(0x0a, start)) {
+					if (!stretch(bytes.subarray(start, stop))) return answer(at(entry, lineStart, line));
 					line++;
-					const textLine = lines.subarray(start, stop).toString("utf8");
-					const found = fold(textLine).indexOf(query);
-					if (found >= 0 && !hit(entry, line, around(textLine, found), carryStart + start))
-						return answer(at(entry, carryStart + start, line - 1));
+					lineStart = base + stop + 1;
+					long = false;
+					lineHit = false;
 					start = stop + 1;
 				}
 			}
-			carryStart += cut;
-			if (last) break;
+			const rest = bytes.subarray(cut);
+			if (last) {
+				// The last line, with no newline after it.
+				if (rest.byteLength > 0) {
+					if (!stretch(rest)) return answer(at(entry, lineStart, line));
+					line++;
+				}
+				break;
+			}
+			if (rest.byteLength >= longestLine) {
+				// A long line: searched as it comes, keeping its end for a match across stretches.
+				if (!stretch(rest)) return answer(at(entry, lineStart, line));
+				long = true;
+				let keep = Math.max(0, rest.byteLength - overlap);
+				while (keep < rest.byteLength && (rest[keep]! & 0xc0) === 0x80) keep++;
+				carry = rest.subarray(keep);
+			} else carry = rest;
 			offset = end;
-			// Out of time, once this piece moved the search on (a line still unfinished is read again next time).
-			if (cut > 0 && source.now() >= deadline) return answer(at(entry, carryStart, line));
+			await turn();
+			// Out of time, between lines only: a long line in hand is finished first, so no hit is shown twice.
+			if (!long && cut > 0 && source.now() >= deadline) return answer(at(entry, lineStart, line));
 		}
 		if (!skipped) searched++;
 	}
 	return answer(null);
 }
 
-/** A line as a hit shows it: around its first match, at most HIT_CHARS long, control characters as spaces. */
-function around(line: string, found: number): string {
+/** A line as a hit shows it: around its first match, at most HIT_CHARS long, control characters as spaces. `found` is
+ * the match's index in the folded line, placed back on the line's own characters. */
+function around(line: string, found: number, caseSensitive: boolean): string {
 	const chars = Array.from(line.replace(/[\u0000-\u0008\u000a-\u001f\u007f]/g, " "));
 	if (chars.length <= HIT_CHARS) return chars.join("");
-	// `found` counts UTF-16 units; close enough to place the window.
-	const start = Math.max(0, Math.min(found - HIT_CHARS / 4, chars.length - HIT_CHARS));
+	let at = 0;
+	for (let folded = 0; at < chars.length && folded < found; at++)
+		folded += caseSensitive ? chars[at]!.length : chars[at]!.toLowerCase().length;
+	const start = Math.max(0, Math.min(at - HIT_CHARS / 4, chars.length - HIT_CHARS));
 	return `${start > 0 ? "…" : ""}${chars.slice(start, start + HIT_CHARS).join("")}${start + HIT_CHARS < chars.length ? "…" : ""}`;
 }

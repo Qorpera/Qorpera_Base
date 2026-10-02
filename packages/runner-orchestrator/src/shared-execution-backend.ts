@@ -797,9 +797,15 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// its start and its retry starts a fresh sandbox.
 			if (current.reusedHost && !(await this.#units.active(this.#unit("host", current.slot), timeout)))
 				throw new Error("The warm slot's native host is no longer running");
-			// The relay is a socket the native host may connect to whenever it searches: up before the host.
+			// The relay is a socket the native host connects to at its first search: asked for before the host. A relay
+			// that does not start costs the run its search (the tool answers that the folder cannot be searched), never
+			// the run itself.
 			if (this.#config.folderSearch && !(await this.#units.active(folderRelayUnit(current.slot), timeout)))
-				await this.#units.start(folderRelayUnit(current.slot), timeout);
+				await this.#units.start(folderRelayUnit(current.slot), timeout).catch((error: unknown) => {
+					console.error(
+						`shared-execution: slot ${current.slot}: the folder relay did not start: ${String(error)}`,
+					);
+				});
 			// A replay after a restart may find either unit not yet started. The runner
 			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
 			// health: it boots and activates while the host loads. The assignment is

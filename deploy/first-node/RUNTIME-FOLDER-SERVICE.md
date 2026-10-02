@@ -279,26 +279,46 @@ service, so the execution host stays small:
   missing receipt costs the core a per-path check at release, never a wrong record. Members and operator mounts get
   none.
 - **`S` / `s` frames.** `{query, path, glob, namesOnly, caseSensitive, after}` answers `{hits: [{path, kind, line,
-  text, version, offset}], searched, binary, reads: [{path, kind, version, authority?}], next}`. A hit names its
-  version and the byte its line starts at (0 for a name), so a run that shows a page in part goes on from the first
-  hit it left out. The search is literal text in the lines of text files (a NUL in a file's first 8 KiB makes it
-  binary: passed over and counted), or with `namesOnly` in the names of files and folders; `glob` keeps to matching
-  paths (`*` and `?` in a name, `**` across folders; a glob without '/' is matched against the name). It walks the
-  view in the order a machine lists it and answers one page: when its hits fill about 6 KiB, when it has drawn on
-  4,000 paths or 1 MiB of them (so a page always fits one frame, however long its paths), or after about 2 s of
-  work, with `next` (a path, and inside a file the byte and line to go on from, in the version it was searched at).
-  A page is never the search's end: there is no cap. A path not in the view is `NOT_FOUND`; a share that cannot be
-  read now fails the page (`UNAVAILABLE`); a file whose bytes fail their hash check is passed over and not read.
-- **What a page read.** `reads` names every folder whose names it looked through, every file whose bytes it read
-  (binary ones too), and every entry whose name is a hit, each with its receipt. A folder shown only because it
-  holds readable paths (no version of its own) is never a name hit. The run releases them with the run actor under
-  the hash of the text it shows (`qorpera_folder_record_release`, P8), before the model sees it.
-- **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection:
-  `qorpera-folder-relay@N.socket` (`/run/qorpera-folder-relay/N.sock`, the slot's native host account only, 0600)
-  runs `qorpera-folder relay`, which copies bytes both ways to the node's bridge (vsock 2:5250) and reads none of
-  them. The relay runs as a dynamic user with no capabilities and only `AF_UNIX` and `AF_VSOCK`. The shared execution
-  service starts the slot's relay socket before its native host and names it in the host's environment
-  (`QORPERA_FOLDER_SEARCH_SOCKET`) only while `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`.
+  text, version, offset}], searched, binary, unreadable, reads: [{path, kind, version, authority?}], next}`. Only a
+  run's own view (a core view) searches; an operator mount's machine gets `BAD_REQUEST`.
+  - **What it finds.** Literal text in the lines of text files (a NUL in a file's first 8 KiB makes it binary: passed
+    over and counted), or with `namesOnly` in the names of files and folders. A hit names its version and the byte its
+    line starts at (0 for a name), so a run that shows a page in part goes on from the first hit it left out. A line
+    longer than 1 MiB is searched as it comes, a stretch at a time, keeping the query's length of each stretch's end,
+    so a match across two stretches is found; it keeps one line number and gives one hit.
+  - **Globs.** `glob` keeps to matching paths: `*` and `?` within a name, a whole `**` part for any number of folders
+    (a `**` inside a name is a `*`); a glob without '/' is matched against the name. Matching walks the name and the
+    pattern with one place to go back to: at most their lengths multiplied, never exponential, whatever the glob.
+  - **One page per call.** It walks the view in the order a machine lists it, straight from the cursor (never past
+    what came before it), and answers when its hits fill about 6 KiB, when it has drawn on 4,000 paths or 1 MiB of them
+    (so a page always fits one frame, however long its paths), or after about 2 s of work. It ends only once it has
+    moved the search on (at least one entry, and inside a file only between lines), so no page repeats the last. Every
+    10 ms it gives the node's event loop a turn and checks the view is still served (a page never runs past a closed
+    view or a lapsed lease). `next` is a path, and inside a file the byte and line to go on from, in the version it was
+    searched at; a client never shows it (the run seals it). A page is never the search's end: there is no cap.
+  - **Errors.** A path not in the view is `NOT_FOUND`. A storage server that cannot be read now fails the page
+    (`UNAVAILABLE`). A file whose bytes are missing from it, or fail their hash check, is passed over, counted in
+    `unreadable`, logged and not read. A `path` that names a file may give an empty page; that only confirms what the
+    model named.
+- **What a page read.** `reads` names every folder whose names it walked, every file whose bytes it read (binary
+  ones too), and every entry whose name is a hit, each with its receipt. A folder shown only because it holds readable
+  paths (no version of its own) is never a name hit. A resumed page passes through the cursor's folders without
+  reading them again: the page that gave the cursor drew on them. The run releases a page's reads with the run actor
+  under the hash of the text it shows (`qorpera_folder_record_release`, P8), before the model sees it.
+- **Memory.** A searching run holds its view's tree, about 670 bytes a path: 16 runs at once of a 100,000-path
+  company take about 1 GiB of the service's memory beside its object cache.
+- **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection.
+  - `qorpera-folder-relay@N.socket` (`/run/qorpera-folder-relay/N.sock`, the slot's native host account only, 0600)
+    runs `qorpera-folder relay`. It copies bytes both ways to the node's bridge (vsock 2:5250), reads none of them, and
+    goes on past a failed accept.
+  - The relay runs as a dynamic user with no capabilities, private devices and IPC, and only `AF_UNIX` and `AF_VSOCK`.
+  - While `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`, the shared execution service asks for the slot's relay socket
+    before its native host and names it in the host's environment (`QORPERA_FOLDER_SEARCH_SOCKET`). The host connects
+    at its first search. A relay that does not start costs that run its search, never the run.
+  - **Switching it off:** set the variable `off` and restart the service, end the warm slots, then
+    `systemctl stop 'qorpera-folder-relay@*.socket' 'qorpera-folder-relay@*.service'`.
+  - **Before switch-on (rollout):** one hello through `/run/qorpera-folder-relay/0.sock`, as the slot's host account,
+    must reach the node's folder service (socket activation, the dynamic user and the vsock connect on the real host).
 - The `company_search` tool itself is the runtime's (its own PR).
 
 ## Not here

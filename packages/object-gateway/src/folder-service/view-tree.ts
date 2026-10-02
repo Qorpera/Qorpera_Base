@@ -150,13 +150,47 @@ export class ViewTree {
 	}
 
 	/** `path` and everything under it, depth first in the order a machine lists them (each folder's names in byte
-	 * order). The tree may change meanwhile: a path gone by the time it is reached is passed over. */
-	*walk(path: string): Generator<TreeEntry> {
+	 * order), from `from` on when given (that path and what follows it), reached straight, without passing what comes
+	 * before. The tree may change meanwhile: a path gone by the time it is reached is passed over. */
+	*walk(path: string, from?: string): Generator<TreeEntry> {
 		const entry = this.get(path);
 		if (!entry) return;
-		yield entry;
+		if (from === undefined || from === path) {
+			yield entry;
+			if (entry.kind !== "folder") return;
+			for (const name of this.#names(path)) yield* this.walk(path === "" ? name : `${path}/${name}`);
+			return;
+		}
+		const prefix = path === "" ? "" : `${path}/`;
+		// A `from` outside `path`: all of it if `from` comes first, none of it if after.
+		if (!from.startsWith(prefix)) {
+			if (path !== "" && byteOrder(from, path) < 0) yield* this.walk(path);
+			return;
+		}
 		if (entry.kind !== "folder") return;
-		for (const name of this.#names(path)) yield* this.walk(path === "" ? name : `${path}/${name}`);
+		yield* this.#walkFrom(path, from.slice(prefix.length).split("/"));
+	}
+
+	/** The paths under the folder `path` at or after its descendant named by `rest`, in walk order. */
+	*#walkFrom(path: string, rest: readonly string[]): Generator<TreeEntry> {
+		const names = this.#names(path);
+		const first = rest[0]!;
+		let lo = 0;
+		let hi = names.length;
+		while (lo < hi) {
+			const mid = (lo + hi) >>> 1;
+			if (byteOrder(names[mid]!, first) < 0) lo = mid + 1;
+			else hi = mid;
+		}
+		const join = (name: string): string => (path === "" ? name : `${path}/${name}`);
+		if (lo < names.length && names[lo] === first) {
+			const child = this.get(join(first));
+			// The named entry itself and all it holds, or, deeper, only what it holds from there on.
+			if (rest.length === 1) yield* this.walk(join(first));
+			else if (child?.kind === "folder") yield* this.#walkFrom(join(first), rest.slice(1));
+			lo++;
+		}
+		for (let i = lo; i < names.length; i++) yield* this.walk(join(names[i]!));
 	}
 
 	/** A folder's names in byte order (cached until the folder changes). */

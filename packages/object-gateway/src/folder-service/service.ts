@@ -126,6 +126,7 @@ export class FolderService {
 	readonly #log: (line: string) => void;
 	readonly #views = new Map<string, View>();
 	readonly #profiles = new Map<string, string>();
+	readonly #profileLookups = new Map<string, Promise<string>>();
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#heartbeat: ReturnType<typeof setInterval> | undefined;
 	#renewals: ReturnType<typeof setInterval> | undefined;
@@ -508,6 +509,8 @@ export class FolderService {
 	 * is NOT_FOUND; a share that cannot be read now fails the whole page (UNAVAILABLE), so no answer leaves a file out
 	 * without saying so. */
 	async #search(view: View, request: SearchRequest): Promise<SearchAnswer> {
+		// A run's own view only (a core view): an operator mount's machine never searches through this service.
+		if (!view.lease) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
 		const tree = this.#tree(view);
 		if (!tree.get(request.path)) throw new ProtocolError(ErrorCode.notFound, "No such path");
 		try {
@@ -517,6 +520,9 @@ export class FolderService {
 					read: async (entry, offset, length) =>
 						this.#objects.read(await this.#profile(view, entry), entry, offset, length),
 					now: this.#now,
+					// The view closed or its lease lapsed while the page ran: the page stops (never one slice past it).
+					serving: () => void this.#tree(view),
+					log: this.#log,
 				},
 				request,
 			);
@@ -533,8 +539,18 @@ export class FolderService {
 	async #profile(view: View, entry: TreeEntry): Promise<string> {
 		const known = this.#profiles.get(view.environmentId);
 		if (known) return known;
-		const profileId = await this.#core.objectProfile(view.environmentId, view.actor, entry.manifestSha256!);
-		this.#profiles.set(view.environmentId, profileId);
-		return profileId;
+		// One lookup at a time per company: a search's reads ahead all wait for the same one.
+		let pending = this.#profileLookups.get(view.environmentId);
+		if (!pending) {
+			pending = this.#core
+				.objectProfile(view.environmentId, view.actor, entry.manifestSha256!)
+				.then((profileId) => {
+					this.#profiles.set(view.environmentId, profileId);
+					return profileId;
+				})
+				.finally(() => this.#profileLookups.delete(view.environmentId));
+			this.#profileLookups.set(view.environmentId, pending);
+		}
+		return pending;
 	}
 }
