@@ -13,7 +13,9 @@ What does **not** change:
 - the guest image: the execution host boots the pinned LXD runner guest image
   and runs its `qorpera-native-provider-host.mjs`, `qorpera-ephemeral-runner.mjs`
   and bubblewrap containment unchanged; this package only adds the service,
-  two unit templates, the slot accounts and the co-located orchestrator;
+  two unit templates, the slot accounts, the co-located orchestrator, and the
+  folder program with its mount unit (F3, `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`:
+  installed, pinned, started by nothing here);
 - the control plane: the same runner rows (`qorpera_provision_execution_runner`),
   the same company-ceiling reservation per sandbox
   (`qorpera_reserve_runtime_machine` / `qorpera_release_runtime_machine`), the
@@ -210,7 +212,8 @@ for id in <computeIdentityId...>; do
     source="phql-a1-identity-${id}" path="/var/lib/qorpera/identities/${id}" --project qn25b2
 done
 lxc start qorpera-exec-node02 --project qn25b2
-# Stage the package (node scripts/package-shared-execution-service.mjs --out <dir>)
+# Stage the package (node scripts/build-folder-program.mjs --out <program>, then
+# node scripts/package-shared-execution-service.mjs --out <dir> --folder-program <program>)
 # under /var/lib/qorpera-bootstrap/shared-execution and run the installer.
 lxc file push --project qn25b2 -r <dir>/ qorpera-exec-node02/var/lib/qorpera-bootstrap/
 lxc exec qorpera-exec-node02 --project qn25b2 -- \

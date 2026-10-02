@@ -16,7 +16,7 @@ EXPECTED_ORCHESTRATOR_SHA256="2a6605135bbdb66a6879298d3d04571cf429738d6b5361d874
 EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
 # The folder program's recorded build (deploy/folder-service/folder-program-linux-x64.json) and its mount unit.
 EXPECTED_FOLDER_PROGRAM_SHA256="214e6ea47db0b7f6cf946bd90207a7352dd35cd05c247cb07d121d93a4e33b43"
-EXPECTED_FOLDER_MOUNT_UNIT_SHA256="984a236cd49ee40a83de8fefefd546ff90dcd4c3d379a7a56f516abd6df6cd89"
+EXPECTED_FOLDER_MOUNT_UNIT_SHA256="778e1d8475a757cc013bb81e48404e0738fdb2de6e882ed6052bbd8efba1719e"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -127,6 +127,10 @@ install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-folder" /opt/qorpera-fo
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-mount@.service" /etc/systemd/system/qorpera-folder-mount@.service
 install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder
 /opt/qorpera-folder/qorpera-folder version
+if [[ ! -c /dev/fuse ]] || ! grep -qw fuse /proc/filesystems; then
+	# Runs do not need it yet; a folder mount will not start until the image has FUSE.
+	echo "Warning: this host has no FUSE (/dev/fuse or the fuse filesystem is missing); folder mounts cannot start."
+fi
 
 /usr/bin/node --check "${INSTALL_ROOT}/qorpera-shared-execution-service.mjs"
 /usr/bin/node --check "${ORCHESTRATOR_ROOT}/qorpera-runner-orchestrator.mjs"

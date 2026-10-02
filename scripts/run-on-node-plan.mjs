@@ -12,6 +12,7 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
+import { CARGO_BUILD } from "./folder-program-artifact.mjs";
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
 /** The function tests the old workflows ran (web-client and step2-lxd); the others never ran in CI. */
@@ -188,7 +189,7 @@ export const STEPS = [
 		// Crates are cached in a named volume between runs; the built program passes between the two containers in
 		// a volume of this run's own, removed at the end.
 		commands: [
-			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && cargo build --locked --release && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
+			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
 		],
 	},
 	{

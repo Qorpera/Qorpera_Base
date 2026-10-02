@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { recordFor } from "./folder-program-artifact.mjs";
+import { CARGO_BUILD, recordFor } from "./folder-program-artifact.mjs";
 import { RUST_IMAGE } from "./run-on-node-plan.mjs";
 
 /** Builds crates/qorpera-folder for x86-64 Linux in the pinned Rust image (the one its tests run in), with the
@@ -33,7 +33,7 @@ try {
 			RUST_IMAGE,
 			"sh",
 			"-c",
-			"cargo build --locked --release && install -m 0755 /tmp/target/release/qorpera-folder /out/qorpera-folder",
+			`${CARGO_BUILD} && install -m 0755 /tmp/target/release/qorpera-folder /out/qorpera-folder`,
 		],
 		{ stdio: "inherit" },
 	);

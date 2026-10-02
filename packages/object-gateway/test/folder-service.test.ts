@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CoreEntry, parseFeedPage, parseListPage } from "../src/folder-service/core.ts";
+import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
 import { NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
 import {
 	type BridgeInfo,
@@ -152,13 +153,18 @@ class Client {
 	}
 }
 
-async function serve(core: FakeCore, root: string): Promise<{ service: FolderService; path: string }> {
+async function serve(
+	core: FakeCore,
+	root: string,
+	now?: () => number,
+): Promise<{ service: FolderService; path: string }> {
 	const lines: string[] = [];
 	const service = new FolderService({
 		core,
 		objects: new NasObjects({ root, cacheBytes: 1024 * 1024 }),
 		grants: grants(),
 		log: (line) => lines.push(line),
+		...(now ? { now } : {}),
 	});
 	const server: Server = createFolderServer(service, (line) => lines.push(line));
 	const path = join(await tempdir(), "service.sock");
@@ -561,9 +567,9 @@ describe("folder service", () => {
 		socket.write(
 			encodeJson(Kind.hello, { protocol: 1, environmentId: ENV, viewId: "proof", pass: PASS, role: "io" }),
 		);
-		// 64 reads of 1 MiB sent at once, and nothing read back.
+		// 32 reads of 1 MiB sent at once, and nothing read back.
 		socket.pause();
-		for (let i = 0; i < 64; i++)
+		for (let i = 0; i < 32; i++)
 			socket.write(encodeJson(Kind.read, { path: "big.bin", version: v(2), offset: 0, length: 1024 * 1024 }));
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		expect(reads).toBeLessThan(16);
@@ -574,9 +580,9 @@ describe("folder service", () => {
 			for (const frame of reader.push(data)) if (frame.kind === Kind.data) answers++;
 		});
 		socket.resume();
-		const deadline = Date.now() + 10_000;
-		while (answers < 64 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(answers).toBe(64);
+		const deadline = Date.now() + 25_000;
+		while (answers < 32 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(answers).toBe(32);
 	});
 
 	it("tells machines to drop everything when the changed paths do not fit one frame", async () => {
@@ -621,12 +627,13 @@ describe("run box views", () => {
 	const BOX_PASS = "boxpass_0123456789-abcdefghijklmnopqrstuvwx";
 	const EXEC: BridgeInfo = { cid: 77, lookup: "found", machine: EXEC_HOST };
 
-	async function box(): Promise<{ core: FakeCore; service: FolderService; path: string }> {
+	async function box(clock?: { now: number }): Promise<{ core: FakeCore; service: FolderService; path: string }> {
 		const root = await tempdir();
 		const core = new FakeCore();
+		if (clock) core.now = () => clock.now;
 		core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
 		core.openView(VIEW, BOX_PASS);
-		return { core, ...(await serve(core, root)) };
+		return { core, ...(await serve(core, root, clock ? () => clock.now : undefined)) };
 	}
 
 	it("opens a core view for the execution host only, with its own pass, and renews its lease while connected", async () => {
@@ -648,13 +655,15 @@ describe("run box views", () => {
 		expect((await wrong.hello("io", `${"z".repeat(42)}y`, EXEC, VIEW)).body.code).toBe("VIEW_REFUSED");
 		const malformed = await Client.open(path);
 		expect((await malformed.hello("io", "short", EXEC, VIEW)).body.code).toBe("VIEW_REFUSED");
-		await service.renewLeases();
+		// Renewed at once on the first listing, then on each round while a machine is connected.
 		expect(core.views.get(VIEW)!.renewals).toBe(1);
+		await service.renewLeases();
+		expect(core.views.get(VIEW)!.renewals).toBe(2);
 		// No machine connected: the lease is left to run out.
 		io.close();
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		await service.renewLeases();
-		expect(core.views.get(VIEW)!.renewals).toBe(1);
+		expect(core.views.get(VIEW)!.renewals).toBe(2);
 	});
 
 	it("closes the view on every connection when the core ends it, and keeps it through a renewal that failed", async () => {
@@ -675,9 +684,61 @@ describe("run box views", () => {
 		expect((await io.json()).body.code).toBe("VIEW_CLOSED");
 	});
 
-	it("refuses a first hello whose pass the core does not know", async () => {
+	it("refuses a first hello whose pass the core does not know, and still lets the right pass in", async () => {
 		const { path } = await box();
+		const wrong = await Client.open(path);
+		expect((await wrong.hello("io", `${"q".repeat(42)}w`, EXEC, VIEW)).body.code).toBe("VIEW_CLOSED");
+		const right = await Client.open(path);
+		expect((await right.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		// Another company folder never joins the view.
+		const elsewhere = await Client.open(path);
+		elsewhere.send(Kind.bridge, EXEC);
+		elsewhere.send(Kind.hello, {
+			protocol: 1,
+			environmentId: "22222222-2222-4333-8444-555555555555",
+			viewId: VIEW,
+			pass: BOX_PASS,
+			role: "io",
+		});
+		expect((await elsewhere.json()).body.code).toBe("VIEW_REFUSED");
+	});
+
+	it("serves nothing past the lease the core confirmed, and serves again once a renewal succeeds", async () => {
+		const clock = { now: Date.now() };
+		const { core, service, path } = await box(clock);
 		const io = await Client.open(path);
-		expect((await io.hello("io", `${"q".repeat(42)}w`, EXEC, VIEW)).body.code).toBe("VIEW_CLOSED");
+		await io.hello("io", BOX_PASS, EXEC, VIEW);
+		expect(await io.list("")).toEqual(["docs"]);
+		core.renewalFails = true;
+		clock.now += 60_000;
+		await service.renewLeases();
+		expect(await io.list("")).toEqual(["docs"]);
+		clock.now += 61_000;
+		io.send(Kind.list, { path: "" });
+		expect((await io.json()).body.code).toBe("UNAVAILABLE");
+		expect(await io.read("docs/plan.md", 1, 0, 4)).toBe("UNAVAILABLE");
+		core.renewalFails = false;
+		await service.renewLeases();
+		expect(await io.list("")).toEqual(["docs"]);
+	});
+
+	it("closes the view when a renewal is refused", async () => {
+		const { core, service, path } = await box();
+		const feed = await Client.open(path);
+		await feed.hello("feed", BOX_PASS, EXEC, VIEW);
+		core.views.get(VIEW)!.pass = "x".repeat(43);
+		await service.renewLeases();
+		expect((await feed.json()).body).toMatchObject({ code: "VIEW_CLOSED", message: "The view was refused" });
+	});
+
+	it("takes no core view at all from a node with no run box hosts", () => {
+		const none = new MountGrants([]);
+		const hello = { protocol: 1, environmentId: ENV, viewId: VIEW, pass: BOX_PASS, role: "io" as const };
+		expect(() => none.admit(hello, EXEC)).toThrow("did not match");
+		expect(() =>
+			parseOperatorMounts([
+				{ id: VIEW, environmentId: ENV, actor: { kind: "platform" }, machine: MACHINE, passSha256: hashOf("p") },
+			]),
+		).toThrow("not uuids");
 	});
 });

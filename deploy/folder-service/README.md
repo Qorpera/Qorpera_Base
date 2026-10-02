@@ -52,12 +52,14 @@ Then, as root, without echoing anything secret:
 			"passSha256": "<sha256 of the pass in the machine's view file>"
 		}
 	],
-	"runBoxHosts": [{ "project": "qn25b2", "name": "qorpera-exec-node02", "physicalId": "<its volatile.uuid>" }]
+	"runBoxHosts": []
 }
 ```
 
-`runBoxHosts` (step 2a) names the machines on this node that may present the core's run box views: its execution
-host. Leave it empty until runs use the folder.
+`runBoxHosts` (step 2a) names the machines on this node that may present the core's run box views, as
+`{"project", "name", "physicalId"}` (its execution host: `qn25b2`, `qorpera-exec-node02`, its `volatile.uuid`). It stays
+empty until runs use the folder; any view kind presented from such a machine is accepted, so list only execution
+hosts.
 
 - Objects on the share are 0600, owned by the object gateway's account. Give the service that uid with a drop-in
   (`User=`) or a read grant on the storage server, and check with `sudo -u <account> head -c1 <one object>`.

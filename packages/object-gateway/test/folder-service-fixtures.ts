@@ -86,18 +86,25 @@ export class FakeCore implements FolderCore {
 	listCalls = 0;
 	profileCalls = 0;
 	/** Core views (run boxes): id to pass and state, as C1b-3a keeps them. */
-	readonly views = new Map<string, { pass: string; state: "open" | "closed"; renewals: number }>();
+	readonly views = new Map<
+		string,
+		{ pass: string; state: "open" | "closed"; renewals: number; environmentId: string }
+	>();
 	renewalFails = false;
+	/** The database's clock, for leases. */
+	now: () => number = Date.now;
 
-	openView(viewId: string, pass: string): void {
-		this.views.set(viewId, { pass, state: "open", renewals: 0 });
+	openView(viewId: string, pass: string, environmentId = ENV): void {
+		this.views.set(viewId, { pass, state: "open", renewals: 0, environmentId });
 	}
 
-	/** A view actor reads only with its own pass, and only while its view is open (view_resolve: 42501). */
-	#check(actor: FolderActor): void {
+	/** A view actor reads only in its own company folder, with its own pass, and only while its view is open
+	 * (view_resolve: 42501). */
+	#check(actor: FolderActor, environmentId: string): void {
 		if (actor.kind !== "view") return;
 		const view = this.views.get(actor.viewId);
-		if (!view || view.pass !== actor.pass || view.state !== "open") throw new CoreRefusal("denied");
+		if (!view || view.pass !== actor.pass || view.state !== "open" || view.environmentId !== environmentId)
+			throw new CoreRefusal("denied");
 	}
 
 	seed(entries: CoreEntry[]): void {
@@ -133,7 +140,7 @@ export class FakeCore implements FolderCore {
 		this.listCalls++;
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
-		this.#check(actor);
+		this.#check(actor, environmentId);
 		const all = this.#visible(actor);
 		const start = after === null ? 0 : all.findIndex((e) => e.path === after) + 1;
 		const page = all.slice(start, start + 2);
@@ -143,7 +150,7 @@ export class FakeCore implements FolderCore {
 	async feed(environmentId: string, actor: FolderActor, afterSeq: number) {
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
-		this.#check(actor);
+		this.#check(actor, environmentId);
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>
@@ -168,7 +175,7 @@ export class FakeCore implements FolderCore {
 	async objectProfile(environmentId: string, actor: FolderActor) {
 		this.profileCalls++;
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
-		this.#check(actor);
+		this.#check(actor, environmentId);
 		return PROFILE;
 	}
 
@@ -178,7 +185,7 @@ export class FakeCore implements FolderCore {
 		if (this.renewalFails) throw new Error("The database did not answer");
 		view.renewals++;
 		return view.state === "open"
-			? { state: "open", leaseUntil: new Date(Date.now() + 120_000).toISOString() }
+			? { state: "open", leaseUntil: new Date(this.now() + 120_000).toISOString() }
 			: { state: "closed", reason: "ended" };
 	}
 }

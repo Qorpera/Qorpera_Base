@@ -209,9 +209,12 @@ program in the pinned Rust image and passes it to the shared-execution packager 
    commit's `deploy/folder-service/folder-program-linux-x64.json`.
 3. Node 2 host: install, write `config.json` and the key, enable the socket and the bridge. Node 1 host: the same,
    with an empty `mounts` list (node parity compares every `qorpera-*` unit).
-4. Execution host on node 2: `rebuild-exec-host.sh` with the shared-execution package (it installs the folder program
-   and refuses an unpinned one before stopping anything), then the view file and `systemctl start
-   qorpera-folder-mount@proof`.
+4. Execution host on node 2: a full `rebuild-exec-host.sh` with the shared-execution package, as at any cut (drain the
+   host, the current image, the orchestrator restarted as the script says); it installs the folder program and
+   refuses an unpinned one before stopping anything. Then the view file and `systemctl start
+   qorpera-folder-mount@proof`. Prove once, with the mount live and again with it hung (the folder service stopped),
+   that a slot pair still starts: `InaccessiblePaths=/srv/qorpera-folder` over a FUSE submount must neither fail nor
+   hang the start.
 5. Acceptance (the design's step 1 proof), as root in the execution host:
    - `find /srv/qorpera-folder/proof | wc -l` equals the proof company's path count, and
      `rg -l <word> /srv/qorpera-folder/proof` finds what the web app's search finds;
@@ -231,10 +234,14 @@ program in the pinned Rust image and passes it to the shared-execution packager 
   test step checks a fresh build gives the recorded bytes.
 - **The folder service takes the core's run box views.** A hello whose view id is a uuid is a core view: its pass must
   have the core's shape (43 base64url characters), the calling machine must be one of this node's `runBoxHosts` (the
-  execution host; P7 later adds the view's own node), and the core checks the pass on every list, read and feed (a
-  wrong first pass closes the view). Further connections must present the same pass. While a machine is connected the
-  service renews the view's lease every 40 s (`qorpera_folder_view_renew`); a closed answer, or a refusal, closes it
-  on every connection. A view no machine holds is not renewed. The run's end closes its run box in the core.
+  execution host; any view kind from it is accepted until P7 adds the view's own node), and the core checks the pass
+  when the view is first listed and at every renewal (a wrong first pass closes it). The service renews the lease at
+  once on the first listing, then every 40 s while a machine is connected (`qorpera_folder_view_renew`), and serves
+  the view only until the lease the core confirmed: past it, during a database outage, every call is `UNAVAILABLE`
+  until a renewal succeeds. A closed answer, or a refusal, closes the view on every connection and forgets its pass.
+  Further connections must present the same pass and company folder; while the first pass is still being checked,
+  another is asked to try again, so a wrong pass never locks out the right one. A view no machine holds is not
+  renewed. The run's end closes its run box in the core (and the next renewal tells the machines, within 40 s).
 - `scripts/test-folder-service-core-shapes.mjs` also opens a run box view for a leased run on the views test's company
   (639) and checks its listing, feed replay, renewal, close, and that a closed view is refused.
 

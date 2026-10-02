@@ -115,6 +115,9 @@ test("packages and pins the shared execution service", async () => {
 		assert.ok(installer.includes("Nothing starts here"));
 		assert.ok(installer.includes('verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"'));
 		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-mount/.test(installer), "no mount starts at install");
+		// The slot units' InaccessiblePaths has no "-": without these folders every slot would fail to start.
+		const folders = installer.indexOf("install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder");
+		assert.ok(folders > 0 && folders < installer.indexOf("systemctl daemon-reload"));
 		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", join(outputRoot, "install-shared-execution-guest.sh")], {
 			encoding: "utf-8",
 		});

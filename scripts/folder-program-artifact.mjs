@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -12,6 +12,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const CRATE = "crates/qorpera-folder";
 export const RECORD = "deploy/folder-service/folder-program-linux-x64.json";
+/** The one build command: scripts/build-folder-program.mjs and the run-on-node step `folder-program` both run it. */
+export const CARGO_BUILD = "cargo build --locked --release";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -26,11 +28,14 @@ function files(directory) {
 	return out;
 }
 
-/** One digest of what the program is built from (paths and contents): the manifest, the lock file and `src/`. Tests
- * and documents are not part of the program. */
+/** One digest of what the program is built from (paths and contents): the manifest, the lock file, `src/`, and a
+ * build script, toolchain file or cargo configuration if the crate ever has one. Tests and documents are not part of
+ * the program. */
 export function folderProgramSourceSha256(root = repository) {
 	const crate = join(root, CRATE);
-	const inputs = [join(crate, "Cargo.toml"), join(crate, "Cargo.lock"), ...files(join(crate, "src"))];
+	const optional = ["build.rs", "rust-toolchain", "rust-toolchain.toml"].map((name) => join(crate, name)).filter(existsSync);
+	const cargoConfig = existsSync(join(crate, ".cargo")) ? files(join(crate, ".cargo")) : [];
+	const inputs = [join(crate, "Cargo.toml"), join(crate, "Cargo.lock"), ...optional, ...cargoConfig, ...files(join(crate, "src"))];
 	const lines = inputs.map((path) => `${relative(crate, path).split("\\").join("/")}\0${sha256(readFileSync(path))}\n`).sort();
 	return sha256(lines.join(""));
 }

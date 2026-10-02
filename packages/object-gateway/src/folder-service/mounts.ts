@@ -39,8 +39,9 @@ export function parseOperatorMounts(value: unknown): OperatorMount[] {
 		const keys = ["id", "environmentId", "actor", "machine", "passSha256"];
 		if (Object.keys(m).length !== keys.length || keys.some((k) => !(k in m)))
 			throw new Error("A mount is {id, environmentId, actor, machine, passSha256}");
-		if (typeof m.id !== "string" || !ID.test(m.id) || seen.has(m.id))
-			throw new Error("Mount ids must be unique slugs");
+		// A uuid-shaped id would be taken for a core view's and could never be used.
+		if (typeof m.id !== "string" || !ID.test(m.id) || isUuid(m.id) || seen.has(m.id))
+			throw new Error("Mount ids must be unique slugs, not uuids");
 		seen.add(m.id);
 		if (typeof m.environmentId !== "string" || !isUuid(m.environmentId)) throw new Error("Bad mount environment");
 		const a = m.actor as Record<string, unknown>;
@@ -93,9 +94,10 @@ export class MountGrants {
 		};
 	}
 
-	/** A view the core opened (step 2: a run's box, opened by the execution host's service). The core checks its pass
-	 * on every list, read and feed; here only its shape, and that the calling machine may present one at all. Which
-	 * run box views a host may hold is the core's (P7 adds the node). */
+	/** A view the core opened (step 2: a run's box, opened by the execution host's service). The core checks the pass
+	 * when the view is first listed and at every renewal (40 s); between them the service serves from memory, never
+	 * past the lease the core confirmed. Here only the pass's shape, and that the calling machine may present a core
+	 * view at all: which views a host may hold, and their kind, are the core's (P7 adds the node). */
 	#coreView(hello: Hello, bridge: BridgeInfo): Grant {
 		if (!CORE_PASS.test(hello.pass))
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");

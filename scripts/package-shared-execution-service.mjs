@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -67,7 +67,8 @@ const copies = [
 for (const source of copies) {
 	await copyFile(resolve(repositoryRoot, source), resolve(outputRoot, source.split("/").at(-1)));
 }
-await writeFile(resolve(outputRoot, "qorpera-folder"), program, { mode: 0o755 });
+await writeFile(resolve(outputRoot, "qorpera-folder"), program);
+await chmod(resolve(outputRoot, "qorpera-folder"), 0o755);
 
 const files = [
 	...entryPoints.map(([, file]) => file),

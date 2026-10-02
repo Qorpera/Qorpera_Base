@@ -51,13 +51,20 @@ const SUPERSEDED_PER_PATH = 16;
 const HEARTBEAT_MS = 15_000;
 /** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
 const RENEW_MS = 40_000;
+const LEASE_MS = 120_000;
 
 class View {
 	readonly key: string;
 	readonly environmentId: string;
 	readonly actor: FolderActor;
 	readonly passSha256: Buffer;
-	readonly lease: Grant["lease"];
+	/** A core view's id and pass, for renewals; dropped when the view closes. */
+	lease: Grant["lease"];
+	/** Until when the core confirmed a core view's lease (ms). Past it, nothing is served until a renewal succeeds. */
+	leaseUntil: number | undefined;
+	/** The pass was checked: an operator mount's by its configured hash, a core view's by the core (first listing and
+	 * renewal). Until then another pass may replace the view; after, it is refused. */
+	confirmed: boolean;
 	tree: ViewTree | undefined;
 	seq = 0;
 	cursor: FeedCursor | null = null;
@@ -80,6 +87,8 @@ class View {
 		this.actor = grant.actor;
 		this.passSha256 = grant.passSha256;
 		this.lease = grant.lease;
+		this.leaseUntil = undefined;
+		this.confirmed = grant.lease === undefined;
 	}
 }
 
@@ -138,31 +147,55 @@ export class FolderService {
 
 	/** Renews the lease of every core view a machine is connected to; a view the core closed is closed on every
 	 * connection. A view no machine holds is not renewed: its lease runs out, unless the core closed it first (a run's
-	 * end closes its run box). Exposed for tests. */
+	 * end closes its run box). A renewal that cannot reach the core leaves the confirmed lease to run out: past it the
+	 * view is not served (UNAVAILABLE) until a renewal succeeds. Exposed for tests. */
 	async renewLeases(): Promise<void> {
 		await Promise.all(
 			[...this.#views.values()]
-				.filter((view) => view.lease && view.connections > 0 && !view.closed)
+				.filter((view) => view.lease && view.tree && view.connections > 0 && !view.closed)
 				.map(async (view) => {
 					try {
-						const renewal = await this.#core.renewView(view.lease!.viewId, view.lease!.pass);
-						if (renewal.state === "closed") this.#close(view, `The view was ${renewal.reason}`);
+						await this.#renew(view);
 					} catch (error) {
-						if (error instanceof CoreRefusal && error.reason === "denied")
-							this.#close(view, "The view was refused");
-						else this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`);
+						this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`);
 					}
 				}),
 		);
+	}
+
+	/** One renewal: the confirmed lease moves on, or the view closes. Throws when the core could not answer. */
+	async #renew(view: View): Promise<void> {
+		const lease = view.lease;
+		if (!lease) return;
+		let renewal: Awaited<ReturnType<FolderCore["renewView"]>>;
+		try {
+			renewal = await this.#core.renewView(lease.viewId, lease.pass);
+		} catch (error) {
+			if (error instanceof CoreRefusal && error.reason === "denied")
+				return this.#close(view, "The view was refused");
+			throw error;
+		}
+		if (renewal.state === "closed") return this.#close(view, `The view was ${renewal.reason}`);
+		// The core's clock says until when; never trust it for longer than one lease from now.
+		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), this.#now() + LEASE_MS);
+		view.confirmed = true;
 	}
 
 	/** Checks a machine's hello and opens (or joins) its view. The first connection of a view lists its tree. */
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
-		// Joining an open view takes the pass it was opened with. (A core view's first pass is checked by the core.)
-		if (view && !view.closed && !timingSafeEqual(view.passSha256, grant.passSha256))
+		// Joining an open view takes the pass, and the company folder, it was opened with. A pass the core has not
+		// checked yet never locks out another: while it is being checked the other is asked to try again, and an
+		// unchecked view is replaced.
+		if (view && !view.closed && view.environmentId !== grant.environmentId)
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
+		if (view && !view.closed && !timingSafeEqual(view.passSha256, grant.passSha256)) {
+			if (view.confirmed)
+				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
+			if (view.loading) throw new ProtocolError(ErrorCode.unavailable, "The view is being checked; try again");
+			view = undefined;
+		}
 		if (!view || view.closed) {
 			view = new View(grant);
 			this.#views.set(grant.key, view);
@@ -276,6 +309,9 @@ export class FolderService {
 	#close(view: View, reason: string): void {
 		view.closed = reason;
 		view.tree = undefined;
+		// The pass goes with it: a closed view makes no more calls.
+		view.lease = undefined;
+		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
 		for (const sink of view.sinks) sink.closed(ErrorCode.viewClosed, reason);
 		view.sinks.clear();
 		this.#log(`folder-service: ${view.key} closed: ${reason}`);
@@ -284,10 +320,14 @@ export class FolderService {
 	async #firstLoad(view: View): Promise<void> {
 		try {
 			const { tree, seq } = await this.#listAll(view);
+			// A core view is served only under a lease the core confirmed: renewed at once, whenever its machine came.
+			await this.#renew(view);
+			if (view.closed) return;
 			view.tree = tree;
 			view.seq = seq;
 			view.cursor = null;
 			view.loadedAt = this.#now();
+			view.confirmed = true;
 			this.#log(`folder-service: ${view.key} listed: ${tree.size} paths at change ${seq}`);
 		} catch (error) {
 			view.loading = undefined;
@@ -402,6 +442,8 @@ export class FolderService {
 	#tree(view: View): ViewTree {
 		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 		if (!view.tree) throw new ProtocolError(ErrorCode.unavailable, "The view is not listed yet");
+		if (view.lease && (view.leaseUntil === undefined || this.#now() >= view.leaseUntil))
+			throw new ProtocolError(ErrorCode.unavailable, "The view's lease is not confirmed now; try again");
 		return view.tree;
 	}
 
