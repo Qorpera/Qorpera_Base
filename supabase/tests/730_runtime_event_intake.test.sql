@@ -95,7 +95,7 @@ end
 $$;
 select pg_temp.hook_assert((select not enabled from public.qorpera_event_intake_settings), 'The intake was not built switched off');
 
--- Only owners and admins create hooks, and only address-proven ones in this step.
+-- Only owners and admins create hooks (signed ones and their verification: test 784, W1b).
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000003');
 set local role authenticated;
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
@@ -127,8 +127,6 @@ select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0
 	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', null)$q$, '22023');
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'carrier-pigeon')$q$, '22023');
-select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
-	'73000000-0000-4000-8000-000000000020', 'stripe', 'Payments', 'stripe')$q$, '0A000');
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
 	'73000000-0000-4000-8000-000000000020', 'forms', 'Website form', 'address', 512)$q$, '22023');
 select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000010',
@@ -370,7 +368,7 @@ where profile_id = '73000000-0000-4000-8000-000000000010' and deliveries = 2000;
 delete from public.qorpera_event_deliveries where id in (current_setting('qorpera_test.ordered')::uuid,
 	current_setting('qorpera_test.forged')::uuid, (current_setting('qorpera_test.kolkata')::jsonb ->> 'deliveryId')::uuid);
 
--- A signed hook takes nothing until the vault can check it (W1b), and writes nothing.
+-- A signed hook takes nothing until its signing secret is in the vault (W1b), and writes nothing.
 insert into public.qorpera_event_hooks(id, profile_id, environment_id, name, purpose, proof, address)
 values ('73000000-0000-4000-8000-000000000031', '73000000-0000-4000-8000-000000000010', '73000000-0000-4000-8000-000000000020',
 	'payments', 'Stripe payments', 'stripe', repeat('S', 43));
