@@ -24,7 +24,7 @@ const BOX_SCHEMA = "qorpera.company-account-fill-box/v1";
 const PAYLOAD_SCHEMA = "qorpera.company-account-fill/v1";
 const INFO = Buffer.from("qorpera.company-account-fill/v1", "utf8");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const HOST = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
+const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 /** The X25519 SubjectPublicKeyInfo prefix (RFC 8410), for a raw 32-byte key. */
 const SPKI_X25519 = Buffer.from("302a300506032b656e032100", "hex");
 const MAX_VALUE = 256;

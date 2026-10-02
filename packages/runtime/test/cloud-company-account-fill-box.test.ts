@@ -83,6 +83,14 @@ describe("company account fill box", () => {
 			);
 		expect(() => sealCompanyAccountFill(fill, Buffer.alloc(32).toString("base64url"), identity, now)).toThrow();
 		expect(parseCompanyComputerFillPublicKey(key.publicKey).asymmetricKeyType).toBe("x25519");
+		// A DNS label of 63 characters is a host.
+		const long = sealCompanyAccountFill(
+			{ value: "x", hosts: [`${"a".repeat(63)}.example`] },
+			key.publicKey,
+			identity,
+			now,
+		);
+		expect(key.open(long, identity, now).hosts).toEqual([`${"a".repeat(63)}.example`]);
 	});
 
 	it("seals only a typeable value for known hosts and a well-formed call", () => {
@@ -95,6 +103,7 @@ describe("company account fill box", () => {
 			{ value: "x", hosts: ["Vercel.com"] },
 			{ value: "x", hosts: ["vercel.com", "vercel.com"] },
 			{ value: "x", hosts: ["https://vercel.com"] },
+			{ value: "x", hosts: [`${"a".repeat(64)}.example`] },
 		])
 			expect(() => sealCompanyAccountFill(bad, key.publicKey, identity, now), JSON.stringify(bad)).toThrow(
 				/Company account fill/,
