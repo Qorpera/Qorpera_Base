@@ -203,10 +203,14 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - `answer` uses the card's existing state machine (contract 16.2).
 - **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
   filled in from outside content goes as a marked quote, never as the viewer's own words.
-  - People see the quote in «» marks.
-  - The message carries the quote's place, source and record (`quotes`), so the runtime fences those words like a
-    tool result. The reviewer reads them as outside content (contract: the 2026-10-02 quote provenance amendment).
-  - Words the member edits before sending are their own.
+  - §4 says which columns are outside content. Today they are `mail`'s `from_name`, `from_address` and `subject`.
+    A message button whose text names an outside-content column of a source the quote list lacks is refused (§6).
+  - People see the quote in «» marks. The message carries the quote's place, source and record (`quotes`), so the
+    platform fences those words like a tool result, and the review never reads them. This is the contract's
+    section 19 amendment "2026-10-02 amendment: quoted outside content in a member's message".
+  - A quote is one piece: the viewer keeps it or removes it. Words they type around it are their own.
+  - A value is cut to 2,000 characters before it is filled in, and a button fills in at most 16.
+  - Until that amendment is built (step I5d, §10), a message button fills in no value from outside content.
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
@@ -247,7 +251,9 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | `activity` | at, kind, agent, member, line: one plain sentence per run, wake, answer or change |
 | `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`, `run` for a run that did not finish, `mention`), title, from, due |
 
-- **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block.
+- **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block. The
+  outside-content columns are `mail`'s `from_name`, `from_address` and `subject`. A source added later names its
+  own.
 - **Nothing remote, no HTML.** A `text` block draws markdown with the client's own renderer: no HTML, and images only
   from the company folder, read with the viewer's authority. A `mail` block draws an email's plain text, never its
   HTML. Neither loads anything from outside.
@@ -499,7 +505,8 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I4 | Pulse on today's sources, from a definition the client ships | Interfaces | I1, I3 |
 | I5a | a member read of mail | Q1 | — |
 | I5b | the account-mail mark | A1 | — |
-| I5c | the Mailbox page, dark until mail is switched on | Interfaces | I5a, I5b |
+| I5c | the Mailbox page, dark until mail is switched on | Interfaces | I5a, I5b, I5d |
+| I5d | quotes: the input checks, the fence and the review, the composer and drafts | Interfaces, with the runtime | I5a, I5b |
 | I6 | the interface and table kinds in the save hook; seeding | F2, with Interfaces | C2's founding seed, I2 |
 | I7 | the web client reads definitions and tables from the folder, live | Interfaces | C4, I6 |
 | I8 | `interface_read`, `table_read`, `table_write`, `save_interface`; the review recorder takes `save_interface` | Interfaces, with F2 | C3, C2's recorder, I6 |
