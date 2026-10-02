@@ -1,12 +1,14 @@
 -- @fixture 730_runtime_event_intake.test.sql until "-- Paused hooks refuse; resumed ones take deliveries again"
--- Signed hooks, step W1b (20260929998000): owners create Stripe, GitHub and HMAC hooks; a member saves the
--- signing secret through the vault's capture; until then the hook answers not_ready. A signed delivery waits as
--- received; the company's broker claims it with the sealed secret and answers verified (the sender's id and the
--- event's type), duplicate, refused or retry. Claims are the authority's own company's, held 60 seconds and
--- refused after five; a removed hook, a gone secret or one sealed for another authority refuses at the claim.
+-- Signed hooks, step W1b (20260929998000): owners create Stripe, GitHub and Standard Webhooks hooks; an owner
+-- saves the signing secret through the vault's capture; until then the hook answers not_ready. A signed delivery
+-- waits as received; the company's broker claims it with the sealed secret and answers verified (the sender's id
+-- and the event's type), duplicate, refused or retry. Claims are the authority's own company's, held 60 seconds;
+-- retries wait longer each time and the fifth refuses; a removed hook, a gone secret or one sealed for another
+-- authority refuses at the claim, and at the verdict. Removing a hook revokes its secret. The shared vault asks
+-- once which of its companies have deliveries due.
 
 -- The broker's calls, as the broker role.
-create function pg_temp.vclaim(p_authority uuid, p_capability text, p_limit integer default 16) returns jsonb
+create function pg_temp.vclaim_batch(p_authority uuid, p_capability text, p_limit integer default 16) returns jsonb
 language plpgsql as $$
 declare v_claimed jsonb;
 begin
@@ -16,7 +18,29 @@ begin
 	return v_claimed;
 end
 $$;
+grant execute on function pg_temp.vclaim_batch(uuid, text, integer) to qorpera_secret_broker;
+-- The claimed deliveries alone, after checking the claim's shape.
+create function pg_temp.vclaim(p_authority uuid, p_capability text, p_limit integer default 16) returns jsonb
+language plpgsql as $$
+declare v_batch jsonb := pg_temp.vclaim_batch(p_authority, p_capability, p_limit);
+begin
+	perform pg_temp.hook_assert(v_batch ->> 'schema' = 'qorpera.event-verification-claim/v1'
+		and (select array_agg(key order by key) from jsonb_object_keys(v_batch) as key) = array['deliveries', 'refused', 'schema'],
+		'A claim has its shape: ' || v_batch::text);
+	return v_batch -> 'deliveries';
+end
+$$;
 grant execute on function pg_temp.vclaim(uuid, text, integer) to qorpera_secret_broker;
+create function pg_temp.vdue(p_capability text default repeat('f', 64)) returns jsonb language plpgsql as $$
+declare v_due jsonb;
+begin
+	set local session authorization qorpera_secret_broker;
+	v_due := public.qorpera_broker_principal_event_verifications_due('78400000-0000-4000-8000-0000000002b0', p_capability);
+	reset session authorization;
+	return v_due;
+end
+$$;
+grant execute on function pg_temp.vdue(text) to qorpera_secret_broker;
 create function pg_temp.vfinish(p_delivery uuid, p_claim uuid, p_verdict text, p_key text, p_type text, p_reason text,
 	p_authority uuid default '78400000-0000-4000-8000-0000000002a0', p_capability text default repeat('c', 64)) returns jsonb
 language plpgsql as $$
@@ -65,7 +89,8 @@ do $$
 declare v_role text; v_function text;
 begin
 	foreach v_function in array array['public.qorpera_claim_event_verifications(uuid,text,integer)',
-		'public.qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)'] loop
+		'public.qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)',
+		'public.qorpera_broker_principal_event_verifications_due(uuid,text)'] loop
 		foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 			if has_function_privilege(v_role, v_function, 'EXECUTE') then
 				raise exception '% is exposed to %', v_function, v_role; end if;
@@ -75,7 +100,8 @@ begin
 	end loop;
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_event_hook_secret_name(uuid)',
-			'public.qorpera_event_hook_secret(public.qorpera_event_hooks)'] loop
+			'public.qorpera_event_hook_secret(public.qorpera_event_hooks)',
+			'public.qorpera_event_hook_revoke_signing_secret()'] loop
 			if has_function_privilege(v_role, v_function, 'EXECUTE') then
 				raise exception '% is exposed to %', v_function, v_role; end if;
 		end loop;
@@ -83,13 +109,17 @@ begin
 end
 $$;
 
--- The company's broker authority, and another company's.
-insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
+-- The company's broker authority, and another company's, both served by one shared vault (a principal).
+insert into public.qorpera_cloud_secret_broker_principals(id, service_origin, key_id, capability_sha256,
+	registers_companies_created_after)
+values ('78400000-0000-4000-8000-0000000002b0', 'https://vault.qorpera.test', 'vault-root-1', repeat('f', 64), now());
+insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256,
+	principal_id)
 values
 	('78400000-0000-4000-8000-0000000002a0', '73000000-0000-4000-8000-000000000010', 'https://secrets.qorpera.test',
-		'company-kek-1', repeat('c', 64)),
+		'company-kek-1', repeat('c', 64), '78400000-0000-4000-8000-0000000002b0'),
 	('78400000-0000-4000-8000-0000000002a1', '73000000-0000-4000-8000-000000000011', 'https://secrets.qorpera.test',
-		'other-kek-1', repeat('e', 64));
+		'other-kek-1', repeat('e', 64), '78400000-0000-4000-8000-0000000002b0');
 
 -- Owners create signed hooks; the descriptor names the secret to save and says it is not there yet.
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000001');
@@ -165,6 +195,20 @@ update public.qorpera_cloud_secret_broker_authorities set status = 'active', ret
 where id = '78400000-0000-4000-8000-0000000002a0';
 select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a1', repeat('e', 64)) = '[]'::jsonb,
 	'Another company''s broker claims nothing of this company');
+-- The other company serves from its own broker now, with a delivery waiting there.
+update public.qorpera_cloud_secret_broker_authorities set principal_id = null where id = '78400000-0000-4000-8000-0000000002a1';
+insert into public.qorpera_event_hooks(id, profile_id, environment_id, name, purpose, proof, address)
+values ('78400000-0000-4000-8000-0000000000e0', '73000000-0000-4000-8000-000000000011', '73000000-0000-4000-8000-000000000021',
+	'other-billing', 'Stripe events', 'stripe', repeat('T', 43));
+insert into public.qorpera_event_deliveries (hook_id, profile_id, status, content_type, headers, body, body_bytes, body_sha256)
+values ('78400000-0000-4000-8000-0000000000e0', '73000000-0000-4000-8000-000000000011', 'received', 'application/json', '{}',
+	'\x7b7d', 2, repeat('0', 64));
+-- The shared vault asks once which of its companies have something due; only the broker, with the principal's capability.
+select pg_temp.hook_assert(pg_temp.vdue() = jsonb_build_object('schema', 'qorpera.broker-principal-event-verifications/v1',
+	'companyIds', jsonb_build_array('73000000-0000-4000-8000-000000000010')), 'The company with a delivery waiting is due');
+select pg_temp.hook_error($q$select pg_temp.vdue(repeat('d', 64))$q$, '42501');
+select pg_temp.hook_error($q$select public.qorpera_broker_principal_event_verifications_due(
+	'78400000-0000-4000-8000-0000000002b0', repeat('f', 64))$q$, '42501');
 select set_config('qorpera_test.claim', pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64))::text, true);
 select pg_temp.hook_assert(count(*) = 1 and bool_and(item ->> 'schema' = 'qorpera.event-verification/v1'
 		and item ->> 'deliveryId' = current_setting('qorpera_test.d1')
@@ -186,8 +230,9 @@ select pg_temp.hook_assert(count(*) = 1 and bool_and(item ->> 'schema' = 'qorper
 			from pg_temp.delivery(current_setting('qorpera_test.d1')::uuid))),
 	'The claim carries the delivery and the sealed secret: ' || coalesce(string_agg(item::text, ', '), 'nothing'))
 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as claimed(item);
-select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) = '[]'::jsonb,
-	'A claimed delivery is not claimed twice');
+select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) = '[]'::jsonb
+	and pg_temp.vdue() -> 'companyIds' = '[]'::jsonb,
+	'A claimed delivery is not claimed twice, and its company is not due while the claim holds');
 
 -- The verdict: only the claim that holds the delivery answers, in a valid shape.
 select set_config('qorpera_test.c1', current_setting('qorpera_test.claim')::jsonb -> 0 ->> 'claim', true);
@@ -206,8 +251,8 @@ from (values ('verified', null, null, null), ('verified', 'body:abc', null, null
 select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d1')::uuid, current_setting('qorpera_test.c1')::uuid,
 	'verified', 'evt_1', 'invoice.paid', null) ->> 'outcome' = 'verified', 'The broker verifies the delivery');
 select pg_temp.hook_assert(status = 'verified' and delivery_key = 'evt_1' and event_type = 'invoice.paid'
-		and verified_at is not null and verify_claim is null and body is not null,
-	'A verified signed delivery carries its sender id and type')
+		and verified_at > now() and verify_claim is null and body is not null,
+	'A verified signed delivery carries its sender id and type, stamped by the clock')
 from pg_temp.delivery(current_setting('qorpera_test.d1')::uuid);
 select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d1')::uuid, current_setting('qorpera_test.c1')::uuid,
 	'verified', 'evt_1', 'invoice.paid', null) ->> 'outcome' = 'stale', 'A verdict is given once');
@@ -235,37 +280,50 @@ select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d2')::u
 select pg_temp.hook_assert((select status = 'duplicate' and delivery_key = 'evt_1' and body is null and verified_at is not null
 		and reason = 'An earlier delivery had this key' from pg_temp.delivery(current_setting('qorpera_test.d2')::uuid))
 	and (select status = 'refused' and reason = 'The Stripe signature does not match' and verified_at is null
+			and body is null and body_sha256 is not null
 		from pg_temp.delivery(current_setting('qorpera_test.d3')::uuid))
 	and (select status = 'received' and verify_claim is null and verify_attempts = 1
-			and verify_claim_until between clock_timestamp() + interval '25 seconds' and clock_timestamp() + interval '30 seconds'
+			and verify_claim_until between clock_timestamp() + interval '55 seconds' and clock_timestamp() + interval '60 seconds'
 		from pg_temp.delivery(current_setting('qorpera_test.d4')::uuid)),
 	'Each verdict leaves its delivery as it says');
 select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) = '[]'::jsonb,
 	'A retry waits before it is offered again');
 
--- Each retry waits four times longer; a delivery claimed five times without a verdict is refused.
+-- Each retry waits five times longer; the fifth attempt's retry refuses the delivery.
 do $$
-declare v_claimed jsonb; v_until timestamptz;
+declare v_claimed jsonb; v_until timestamptz; v_answer jsonb;
 begin
 	for n in 2..5 loop
 		update public.qorpera_event_deliveries set verify_claim_until = clock_timestamp() - interval '1 second'
 		where id = current_setting('qorpera_test.d4')::uuid;
 		v_claimed := pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64));
 		perform pg_temp.hook_assert(jsonb_array_length(v_claimed) = 1, format('Attempt %s takes it again', n));
-		perform pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d4')::uuid,
-			(v_claimed -> 0 ->> 'claim')::uuid, 'retry', null, null, null) ->> 'outcome' = 'retry', 'The broker retries');
-		v_until := (pg_temp.delivery(current_setting('qorpera_test.d4')::uuid)).verify_claim_until;
-		perform pg_temp.hook_assert(v_until between clock_timestamp() + interval '30 seconds' * power(4, n - 1) - interval '5 seconds'
-			and clock_timestamp() + interval '30 seconds' * power(4, n - 1), format('Retry %s waits %s', n, v_until - clock_timestamp()));
+		v_answer := pg_temp.vfinish(current_setting('qorpera_test.d4')::uuid, (v_claimed -> 0 ->> 'claim')::uuid, 'retry',
+			null, null, null);
+		if n < 5 then
+			v_until := (pg_temp.delivery(current_setting('qorpera_test.d4')::uuid)).verify_claim_until;
+			perform pg_temp.hook_assert(v_answer ->> 'outcome' = 'retry' and v_until
+				between clock_timestamp() + interval '1 minute' * power(5, n - 1) - interval '5 seconds'
+				and clock_timestamp() + interval '1 minute' * power(5, n - 1), format('Retry %s waits %s', n, v_until - clock_timestamp()));
+		end if;
 	end loop;
-	update public.qorpera_event_deliveries set verify_claim_until = clock_timestamp() - interval '1 second'
-	where id = current_setting('qorpera_test.d4')::uuid;
-	perform pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) = '[]'::jsonb,
-		'A sixth claim takes nothing');
-	perform pg_temp.hook_assert((select status = 'refused' and reason = 'The vault could not check it' and verify_attempts = 5
-		from pg_temp.delivery(current_setting('qorpera_test.d4')::uuid)), 'Five claims without a verdict refuse it');
+	perform pg_temp.hook_assert(v_answer ->> 'outcome' = 'refused' and (select status = 'refused'
+			and reason = 'The vault could not check it' and verify_attempts = 5 and body is null and verify_claim is null
+		from pg_temp.delivery(current_setting('qorpera_test.d4')::uuid)), 'The fifth retry refuses it: ' || v_answer::text);
 end
 $$;
+-- A delivery whose fifth claim ended without a verdict is refused at the next claim.
+select set_config('qorpera_test.d4b', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
+	'{"id":"evt_4b"}') ->> 'deliveryId', true);
+update public.qorpera_event_deliveries set verify_attempts = 5, verify_claim = gen_random_uuid(),
+	verify_claim_until = clock_timestamp() - interval '1 second'
+where id = current_setting('qorpera_test.d4b')::uuid;
+select pg_temp.hook_assert(pg_temp.vclaim_batch('78400000-0000-4000-8000-0000000002a0', repeat('c', 64))
+		= jsonb_build_object('schema', 'qorpera.event-verification-claim/v1', 'deliveries', '[]'::jsonb, 'refused', 1)
+	and (select status = 'refused' and reason = 'The vault could not check it' and body is null
+			and verify_claim is null and verify_claim_until is null
+		from pg_temp.delivery(current_setting('qorpera_test.d4b')::uuid)),
+	'Five claims without a verdict refuse it at the claim');
 
 -- A delivery the purge refused while it was claimed keeps its refusal.
 select set_config('qorpera_test.d11', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
@@ -285,10 +343,26 @@ values ('78400000-0000-4000-8000-0000000000d1', current_setting('qorpera_test.ho
 select set_config('qorpera_test.d12', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
 	'{"id":"evt_12"}') ->> 'deliveryId', true);
 update public.qorpera_event_deliveries set body = null where id = current_setting('qorpera_test.d12')::uuid;
-select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) = '[]'::jsonb
-	and (select reason = 'The hook is not signed' from pg_temp.delivery('78400000-0000-4000-8000-0000000000d1'))
+select set_config('qorpera_test.d13', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
+	'{"id":"evt_13"}') ->> 'deliveryId', true);
+select set_config('qorpera_test.d14', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
+	'{"id":"evt_14"}') ->> 'deliveryId', true);
+select set_config('qorpera_test.claim', pg_temp.vclaim_batch('78400000-0000-4000-8000-0000000002a0', repeat('c', 64), 1)::text,
+	true);
+select pg_temp.hook_assert((current_setting('qorpera_test.claim')::jsonb ->> 'refused')::integer = 2
+	and current_setting('qorpera_test.claim')::jsonb #>> '{deliveries,0,deliveryId}' = current_setting('qorpera_test.d13')
+	and jsonb_array_length(current_setting('qorpera_test.claim')::jsonb -> 'deliveries') = 1
+	and (select reason = 'The hook is not signed' and body is null from pg_temp.delivery('78400000-0000-4000-8000-0000000000d1'))
 	and (select reason = 'The delivery''s body is gone' from pg_temp.delivery(current_setting('qorpera_test.d12')::uuid)),
-	'What no check could fix is refused at the claim');
+	'What no check could fix is refused at the claim, which looks past it: ' || current_setting('qorpera_test.claim'));
+select pg_temp.hook_assert((select verify_claim is null and verify_attempts = 0
+		from pg_temp.delivery(current_setting('qorpera_test.d14')::uuid)),
+	'A claim takes no more than it asked for');
+select pg_temp.vfinish(current_setting('qorpera_test.d13')::uuid,
+	(current_setting('qorpera_test.claim')::jsonb #>> '{deliveries,0,claim}')::uuid, 'verified', 'evt_13', null, null);
+select pg_temp.vfinish(current_setting('qorpera_test.d14')::uuid,
+	(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) -> 0 ->> 'claim')::uuid, 'verified', 'evt_14',
+	null, null);
 
 -- The claim refuses what no verdict could fix: a secret sealed for another authority, a gone secret, a removed hook.
 select set_config('qorpera_test.d5', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
@@ -301,6 +375,10 @@ select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0'
 	'A secret sealed for another authority refuses at the claim');
 update public.qorpera_cloud_secret_versions set broker_authority_id = '78400000-0000-4000-8000-0000000002a0'
 where secret_id = current_setting('qorpera_test.secret')::uuid;
+select set_config('qorpera_test.d6b', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
+	'{"id":"evt_6b"}') ->> 'deliveryId', true);
+select set_config('qorpera_test.c6b', pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) -> 0 ->> 'claim',
+	true);
 select set_config('qorpera_test.d6', pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address',
 	'{"id":"evt_6"}') ->> 'deliveryId', true);
 update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = clock_timestamp()
@@ -309,6 +387,11 @@ select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0'
 	and (select reason = 'The hook''s signing secret is gone' from pg_temp.delivery(current_setting('qorpera_test.d6')::uuid))
 	and pg_temp.post(current_setting('qorpera_test.billing')::jsonb ->> 'address', '{"id":"evt_7"}') ->> 'outcome' = 'not_ready',
 	'A revoked secret refuses what waits and takes nothing new');
+select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d6b')::uuid, current_setting('qorpera_test.c6b')::uuid,
+		'verified', 'evt_6b', null, null) ->> 'outcome' = 'refused'
+	and (select status = 'refused' and reason = 'The hook''s signing secret is gone' and delivery_key is null and body is null
+		from pg_temp.delivery(current_setting('qorpera_test.d6b')::uuid)),
+	'A delivery claimed before its secret was revoked is not verified after');
 
 -- A new version of the secret is the one claimed.
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000001');
@@ -329,10 +412,15 @@ reset role;
 select pg_temp.vcomplete(current_setting('qorpera_test.ticket')::jsonb, convert_to('github version two', 'UTF8'));
 select set_config('qorpera_test.d8', pg_temp.post(current_setting('qorpera_test.prs')::jsonb ->> 'address',
 	'{"action":"opened"}') ->> 'deliveryId', true);
+select set_config('qorpera_test.claim', pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64))::text, true);
 select pg_temp.hook_assert(count(*) = 1 and bool_and((item ->> 'secretVersion')::integer = 2 and item ->> 'proof' = 'github'
 		and convert_from(decode(item ->> 'encryptedEnvelopeBase64', 'base64'), 'UTF8') = 'github version two'),
 	'The claim carries the current version: ' || coalesce(string_agg(item::text, ', '), 'nothing'))
-from jsonb_array_elements(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64))) as claimed(item);
+from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as claimed(item);
+select set_config('qorpera_test.c8', current_setting('qorpera_test.claim')::jsonb -> 0 ->> 'claim', true);
+-- One more waits unclaimed when the hook is removed.
+select set_config('qorpera_test.d8b', pg_temp.post(current_setting('qorpera_test.prs')::jsonb ->> 'address',
+	'{"action":"closed"}') ->> 'deliveryId', true);
 
 -- A member's own secret of the hook's name, or a company secret of another connector, is not the hook's.
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000003');
@@ -366,16 +454,19 @@ select set_config('qorpera_test.ticket', public.qorpera_begin_cloud_secret_captu
 reset role;
 select pg_temp.vcomplete(current_setting('qorpera_test.ticket')::jsonb, convert_to('backend version one', 'UTF8'));
 
--- A removed hook's waiting deliveries are refused at the next claim.
-update public.qorpera_event_deliveries set verify_claim_until = clock_timestamp() - interval '1 second'
-where id = current_setting('qorpera_test.d8')::uuid;
+-- A removed hook's deliveries are refused: a claimed one at its verdict, a waiting one at the next claim.
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_event_hook_status((current_setting('qorpera_test.prs')::jsonb ->> 'id')::uuid, 'removed');
 reset role;
+select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d8')::uuid, current_setting('qorpera_test.c8')::uuid,
+		'verified', 'sig:' || repeat('b', 64), 'pull_request.opened', null) ->> 'outcome' = 'refused'
+	and (select status = 'refused' and reason = 'The hook was removed' and delivery_key is null and body is null
+		from pg_temp.delivery(current_setting('qorpera_test.d8')::uuid)),
+	'A delivery claimed before its hook was removed is not verified after');
 select pg_temp.hook_assert(pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) = '[]'::jsonb
 	and (select status = 'refused' and reason = 'The hook was removed' and verify_claim is null and verify_claim_until is null
-		from pg_temp.delivery(current_setting('qorpera_test.d8')::uuid)),
+		from pg_temp.delivery(current_setting('qorpera_test.d8b')::uuid)),
 	'A removed hook''s waiting delivery is refused');
 select pg_temp.hook_assert((select status = 'revoked' and revoked_at is not null
 		and revoked_by_user_id = '73000000-0000-4000-8000-000000000001'
@@ -390,7 +481,7 @@ select pg_temp.hook_assert((select status = 'revoked' and revoked_at is not null
 			and secret_name = current_setting('qorpera_test.backend')::jsonb #>> '{signingSecret,secretName}'),
 	'Removing a hook revokes its signing secret, and only its own');
 
--- Two verdicts with the same sender id: the index lets one be verified, the other becomes a duplicate.
+-- Two verdicts with the same sender id: one is verified, the other a duplicate.
 select set_config('qorpera_test.d9', pg_temp.post(current_setting('qorpera_test.backend')::jsonb ->> 'address', '{"n":1}')
 	->> 'deliveryId', true);
 select set_config('qorpera_test.d10', pg_temp.post(current_setting('qorpera_test.backend')::jsonb ->> 'address', '{"n":1}')
@@ -401,5 +492,25 @@ select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d9')::u
 	and pg_temp.vfinish(current_setting('qorpera_test.d10')::uuid, current_setting('qorpera_test.c3')::uuid,
 		'verified', 'sig:' || repeat('a', 64), null, null) ->> 'outcome' = 'duplicate',
 	'An exact replay of one signature is a duplicate');
+
+-- Pausing keeps the secret; however a hook is removed, its secret goes with it (here without a member's session, as
+-- an agent's removal will be), and a member's own secret of that name stays.
+update public.qorpera_event_hooks set status = 'paused' where id = (current_setting('qorpera_test.backend')::jsonb ->> 'id')::uuid;
+select pg_temp.hook_assert((select count(*) = 1 from public.qorpera_cloud_secrets where connector_id = 'event_hook'
+		and owner_kind = 'company' and status = 'active'
+		and secret_name = current_setting('qorpera_test.backend')::jsonb #>> '{signingSecret,secretName}'),
+	'Pausing a hook revoked its secret');
+select pg_temp.hook_claims('service_role');
+update public.qorpera_event_hooks set status = 'removed', removed_at = statement_timestamp()
+where id = (current_setting('qorpera_test.backend')::jsonb ->> 'id')::uuid;
+select pg_temp.hook_assert((select status = 'revoked' and revoked_by_user_id is null from public.qorpera_cloud_secrets
+		where connector_id = 'event_hook' and owner_kind = 'company'
+			and secret_name = current_setting('qorpera_test.backend')::jsonb #>> '{signingSecret,secretName}')
+	and (select status = 'active' from public.qorpera_cloud_secrets where connector_id = 'event_hook' and owner_kind = 'member'
+		and secret_name = current_setting('qorpera_test.backend')::jsonb #>> '{signingSecret,secretName}')
+	and (select count(*) = 2 from public.qorpera_cloud_secret_audit_events
+		where profile_id = '73000000-0000-4000-8000-000000000010' and connector_id = 'event_hook'
+			and event_type = 'secret_revoked'),
+	'Removing a hook without a member''s session revokes its secret too');
 
 rollback;

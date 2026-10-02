@@ -46,6 +46,7 @@ begin
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
 		'qorpera_broker_principal_companies(uuid,text)',
+		'qorpera_broker_principal_event_verifications_due(uuid,text)',
 		'qorpera_claim_connector_token_revocations(uuid,text,integer)',
 		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
 		'qorpera_claim_event_verifications(uuid,text,integer)',

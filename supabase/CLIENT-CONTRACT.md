@@ -633,18 +633,23 @@ wake), so no agent runs and nothing is charged before it.
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
 - Signed hooks (20260929998000_runtime_event_signed_hooks, step W1b): the
-  descriptor of a `stripe`, `github` or `hmac-sha256` hook carries
-  `signingSecret` (`connectorId` `event_hook`, `secretName`
-  `h<hook id without hyphens>`, `ready`). An owner or admin saves the
-  sender's signing secret with `qorpera_begin_cloud_secret_capture(company,
-  environment, 'company', null, 'event_hook', secretName, purpose)` and then
+  descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
+  also Svix's headers) hook carries `signingSecret` (`connectorId`
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). An owner
+  or admin saves the sender's signing secret with
+  `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
+  'event_hook', secretName, purpose)` and then
   `POST <serviceOrigin>/v1/captures/<ticketId>?company=<profileId>` with
-  `fields: {"signing_secret": "<secret>"}`; passing the existing secret id
-  replaces it. Until `ready` is true the hook answers senders `not_ready`.
-  A signed delivery is listed `received` until the vault checks it (seconds),
-  then `verified` with `deliveryKey` and `eventType`, `duplicate`, or
-  `refused` with a fixed `reason` ("The Stripe signature does not match").
-  Removing the hook revokes its secret.
+  `{"schema": "qorpera.cloud-secret-capture-request/v1", "captureCapability":
+  <the ticket's captureCapability>, "fields": {"signing_secret": "<secret>"}}`
+  (exactly these keys); passing the existing secret id to the begin call
+  replaces it. An `hmac-sha256` secret is a Standard Webhooks one
+  (`whsec_<base64>`). Until `ready` is true the hook answers senders
+  `not_ready`. A signed delivery is listed `received` until the vault checks
+  it (seconds), then `verified` with `deliveryKey` (an id the signature
+  covers: Stripe's event id, `webhook-id`, or for GitHub `sig:<signature>`)
+  and `eventType`, `duplicate`, or `refused` with a fixed `reason` ("The
+  Stripe signature does not match"). Removing the hook revokes its secret.
 
 ### Company mailboxes (20260928299650_runtime_company_mailboxes)
 

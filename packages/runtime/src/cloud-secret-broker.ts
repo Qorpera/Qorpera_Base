@@ -1431,6 +1431,16 @@ export class PostgresCloudSecretBrokerPrincipal {
 		);
 	}
 
+	/** The served companies with signed deliveries due a check (W1b): one call a pass. */
+	eventVerificationsDue(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
 	/** Registers a new company: its authority row carries the hash of the capability derived for it. */
 	register(companyId: string, signal: AbortSignal): Promise<unknown> {
 		const capability = sharedBrokerCapability(this.#principalSecret, companyId);

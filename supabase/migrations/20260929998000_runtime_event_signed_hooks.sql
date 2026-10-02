@@ -1,26 +1,27 @@
 -- Signed hooks, build step W1b (Q1; contract section 19, 2026-09-29 amendment "events wake agents", item 8;
 -- design deploy/first-node/RUNTIME-EVENT-INTAKE.md, "Verification in the vault (W1b)").
 --
--- Owners and admins may now create hooks proven by a Stripe, GitHub or HMAC-SHA256 signature. The sender's
--- signing secret is a company vault secret, connector event_hook and name h<hook id without hyphens>, which a
--- member saves through the vault's capture; the hook descriptor names it and says whether it is in the vault.
--- Until it is, the hook answers not_ready; removing the hook revokes it. A signed delivery is stored as
--- received, without a sender id or a
--- type. The broker that serves the company (the company's own broker or the shared vault) claims it, opens the
--- secret in memory, checks the signature and records verified with the sender's id and the event's type,
--- duplicate, or refused with a reason. The secret and its plaintext never leave the broker; this database
--- hands the broker only the sealed envelope, and the broker hands back only a verdict.
+-- Owners and admins may now create hooks proven by a Stripe, GitHub or Standard Webhooks (proof hmac-sha256)
+-- signature. The sender's signing secret is a company vault secret, connector event_hook and name h<hook id
+-- without hyphens>, which an owner or admin saves through the vault's capture; the hook descriptor names it and
+-- says whether it is in the vault. Until it is, the hook answers not_ready; removing the hook revokes it. A
+-- signed delivery is stored as received, without a sender id or a type. The broker that serves the company
+-- (the company's own broker, or the shared vault where it has something due) claims it, opens the secret in
+-- memory, checks the signature and records verified with a sender id the signature covers and the event's
+-- type, duplicate, or refused with a reason. The secret and its plaintext never leave the broker; this
+-- database hands the broker only the sealed envelope, and the broker hands back only a verdict.
 --
--- A claim holds a delivery for 60 seconds. A retry (the broker could not open the secret) waits 30 seconds,
--- then four times longer after each attempt; a delivery claimed five times without a verdict is refused (about
--- three hours of retries), and one still received after 24 hours is refused by the purge (W1a). verified_at is stamped with
--- clock_timestamp() in a one-row transaction, as event wakes need (W2: listeners' watermarks trail the clock by
--- a minute).
+-- A claim holds a delivery for 60 seconds and counts an attempt. A retry (the broker could not open the
+-- secret) waits a minute, then five times longer after each attempt; the fifth attempt without a verdict
+-- refuses the delivery (about two and a half hours), and one still received after 24 hours is refused by the
+-- purge (W1a). A verdict re-checks the hook and its secret, so nothing is verified after either is gone.
+-- verified_at is stamped with clock_timestamp() in a one-row transaction, as event wakes need (W2: listeners'
+-- watermarks trail the clock by a minute). A refused delivery keeps no body.
 --
 -- Lock order: a claim takes its broker authority row shared, then deliveries of that company (skip locked); a
--- finish takes the authority row shared, then one delivery. Neither touches the hook or the company row. A
+-- finish takes the authority row shared, then one delivery. Neither locks the hook or the company row. A
 -- receive inserts a delivery and reads the vault's secret row without locking it. Removing a hook takes the
--- hook row, then its secret row; nothing takes them the other way round.
+-- hook row, then (its trigger) its secret row; nothing takes them the other way round.
 
 set local lock_timeout = '3s';
 
@@ -95,34 +96,40 @@ $old$,
 			'ready', (public.qorpera_event_hook_secret(p_hook)).id is not null) end,
 $new$);
 
--- A removed hook's signing secret is revoked with it, as a member's revoke would (the name is bound to this
--- hook, so nothing else uses it).
-select pg_temp.signed_hooks_patch('public.qorpera_set_event_hook_status(uuid,text)'::regprocedure,
-	$old$		where id = v_hook.id
-		returning * into v_hook;
-	end if;
-$old$,
-	$new$		where id = v_hook.id
-		returning * into v_hook;
-		if p_status = 'removed' then
-			with revoked as (
-				update public.qorpera_cloud_secrets as secret
-				set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = auth.uid(),
-					updated_at = statement_timestamp()
-				where secret.profile_id = v_hook.profile_id and secret.environment_id = v_hook.environment_id
-					and secret.owner_kind = 'company' and secret.connector_id = 'event_hook'
-					and secret.secret_name = public.qorpera_event_hook_secret_name(v_hook.id) and secret.status = 'active'
-				returning secret.*
-			)
-			insert into public.qorpera_cloud_secret_audit_events (
-				profile_id, environment_id, secret_id, secret_version, event_type, actor_user_id, connector_id
-			)
-			select revoked.profile_id, revoked.environment_id, revoked.id, revoked.current_version, 'secret_revoked',
-				auth.uid(), revoked.connector_id
-			from revoked;
-		end if;
-	end if;
-$new$);
+-- A removed hook's signing secret is revoked with it, as a member's revoke would, however the hook is removed
+-- (the name is bound to this hook, so nothing else uses it).
+create function public.qorpera_event_hook_revoke_signing_secret()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+	with revoked as (
+		update public.qorpera_cloud_secrets as secret
+		set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = auth.uid(),
+			updated_at = statement_timestamp()
+		where secret.profile_id = new.profile_id and secret.environment_id = new.environment_id
+			and secret.owner_kind = 'company' and secret.connector_id = 'event_hook'
+			and secret.secret_name = public.qorpera_event_hook_secret_name(new.id) and secret.status = 'active'
+		returning secret.*
+	)
+	insert into public.qorpera_cloud_secret_audit_events (
+		profile_id, environment_id, secret_id, secret_version, event_type, actor_user_id, connector_id
+	)
+	select revoked.profile_id, revoked.environment_id, revoked.id, revoked.current_version, 'secret_revoked',
+		auth.uid(), revoked.connector_id
+	from revoked;
+	return null;
+end
+$$;
+revoke all on function public.qorpera_event_hook_revoke_signing_secret() from public, anon, authenticated, service_role;
+create trigger qorpera_event_hooks_revoke_signing_secret
+	after update of status on public.qorpera_event_hooks
+	for each row
+	when (new.status = 'removed' and old.status is distinct from 'removed'
+		and new.proof in ('stripe', 'github', 'hmac-sha256'))
+	execute function public.qorpera_event_hook_revoke_signing_secret();
 
 -- ---------------------------------------------------------------------------
 -- 4. A signed delivery waits for the vault
@@ -154,12 +161,13 @@ $old$,
 $new$);
 
 -- ---------------------------------------------------------------------------
--- 5. The broker's two functions
+-- 5. The broker's functions
 -- ---------------------------------------------------------------------------
 -- Up to p_limit received deliveries of the broker authority's company, oldest first, each with its hook's
 -- proof, the kept headers, the body and the sealed current version of the hook's secret. A delivery whose hook
 -- was removed, whose secret is gone or was sealed for another authority, or that was claimed five times, is
--- refused here instead. A claim carries at most 16 bodies of at most 256 KiB (the hooks' largest body).
+-- refused here instead and counted in refused (up to three times p_limit of them a call), so a backlog of those
+-- never hides a delivery behind it. A claim carries at most 16 bodies of at most 256 KiB (the hooks' largest).
 create function public.qorpera_claim_event_verifications(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -177,6 +185,7 @@ declare
 	v_now timestamptz := clock_timestamp();
 	v_claim uuid := extensions.gen_random_uuid();
 	v_claimed jsonb := '[]'::jsonb;
+	v_refused integer := 0;
 	v_reason text;
 begin
 	if session_user <> 'qorpera_secret_broker' then
@@ -199,15 +208,17 @@ begin
 			version.envelope_sha256, version.broker_authority_id as sealed_for
 		from public.qorpera_event_deliveries as delivery
 		join public.qorpera_event_hooks as hook on hook.id = delivery.hook_id
-		left join lateral (select (public.qorpera_event_hook_secret(hook)).*) as secret on true
+		-- A function in FROM runs once a row (a row of nulls when the hook has no live secret).
+		left join lateral public.qorpera_event_hook_secret(hook) as secret on true
 		left join public.qorpera_cloud_secret_versions as version
 			on version.secret_id = secret.id and version.version = secret.current_version
 		where delivery.status = 'received' and delivery.profile_id = v_authority.profile_id
 			and (delivery.verify_claim_until is null or delivery.verify_claim_until <= v_now)
 		order by delivery.received_at, delivery.id
-		limit p_limit
+		limit p_limit * 4
 		for update of delivery skip locked
 	loop
+		exit when jsonb_array_length(v_claimed) >= p_limit;
 		v_reason := case
 			when v_row.hook_status = 'removed' then 'The hook was removed'
 			when v_row.proof not in ('stripe', 'github', 'hmac-sha256') then 'The hook is not signed'
@@ -218,8 +229,9 @@ begin
 		end;
 		if v_reason is not null then
 			update public.qorpera_event_deliveries
-			set status = 'refused', reason = v_reason, verify_claim = null, verify_claim_until = null
+			set status = 'refused', reason = v_reason, body = null, verify_claim = null, verify_claim_until = null
 			where id = v_row.id;
+			v_refused := v_refused + 1;
 			continue;
 		end if;
 		update public.qorpera_event_deliveries
@@ -241,7 +253,8 @@ begin
 			'envelopeSha256', v_row.envelope_sha256
 		));
 	end loop;
-	return v_claimed;
+	return jsonb_build_object('schema', 'qorpera.event-verification-claim/v1', 'deliveries', v_claimed,
+		'refused', v_refused);
 end
 $$;
 revoke all on function public.qorpera_claim_event_verifications(uuid, text, integer)
@@ -250,8 +263,9 @@ grant execute on function public.qorpera_claim_event_verifications(uuid, text, i
 
 -- The broker's verdict on one claimed delivery: verified with the sender's id and the event's type (a duplicate
 -- when that id was verified before), refused with a reason, or retry (the claim is released and the delivery
--- offered again after 30 seconds times four to the attempts before). Only the claim that holds the delivery may
--- answer; a stale claim changes nothing.
+-- offered again after a minute times five to the attempts before; the fifth attempt's retry refuses it). Only the
+-- claim that holds the delivery may answer; a stale claim changes nothing. A verified verdict is refused instead
+-- when the hook was removed or its secret is gone since the claim.
 create function public.qorpera_finish_event_verification(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -271,6 +285,8 @@ as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_delivery public.qorpera_event_deliveries%rowtype;
+	v_hook public.qorpera_event_hooks%rowtype;
+	v_reason text;
 begin
 	if session_user <> 'qorpera_secret_broker' then
 		raise exception 'cloud secret broker authority is required' using errcode = '42501';
@@ -296,16 +312,25 @@ begin
 	if v_delivery.id is null or v_delivery.status <> 'received' or v_delivery.verify_claim is distinct from p_claim then
 		return jsonb_build_object('outcome', 'stale');
 	end if;
-	if p_verdict = 'retry' then
+	if p_verdict = 'retry' and v_delivery.verify_attempts < 5 then
 		update public.qorpera_event_deliveries
 		set verify_claim = null,
-			verify_claim_until = clock_timestamp() + interval '30 seconds' * power(4, v_delivery.verify_attempts - 1)
+			verify_claim_until = clock_timestamp() + interval '1 minute' * power(5, v_delivery.verify_attempts - 1)
 		where id = p_delivery_id;
 		return jsonb_build_object('outcome', 'retry');
 	end if;
-	if p_verdict = 'refused' then
+	if p_verdict = 'verified' then
+		select hook.* into v_hook from public.qorpera_event_hooks as hook where hook.id = v_delivery.hook_id;
+		v_reason := case
+			when v_hook.id is null or v_hook.status = 'removed' then 'The hook was removed'
+			when (public.qorpera_event_hook_secret(v_hook)).id is null then 'The hook''s signing secret is gone'
+		end;
+	else
+		v_reason := coalesce(p_reason, 'The vault could not check it');
+	end if;
+	if v_reason is not null then
 		update public.qorpera_event_deliveries
-		set status = 'refused', reason = p_reason, verify_claim = null, verify_claim_until = null
+		set status = 'refused', reason = v_reason, body = null, verify_claim = null, verify_claim_until = null
 		where id = p_delivery_id;
 		return jsonb_build_object('outcome', 'refused');
 	end if;
@@ -335,3 +360,35 @@ revoke all on function public.qorpera_finish_event_verification(uuid, text, uuid
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_finish_event_verification(uuid, text, uuid, uuid, text, text, text, text)
 	to qorpera_secret_broker;
+
+-- The companies of a shared vault's principal that have signed deliveries due a check (at most 1000 a call):
+-- one call a pass, so the vault claims only where something waits instead of asking every company it serves.
+create function public.qorpera_broker_principal_event_verifications_due(p_principal_id uuid, p_capability_sha256 text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_principal public.qorpera_cloud_secret_broker_principals%rowtype;
+	v_due jsonb;
+begin
+	v_principal := public.qorpera_broker_principal(p_principal_id, p_capability_sha256);
+	select coalesce(jsonb_agg(due.profile_id order by due.profile_id), '[]'::jsonb) into v_due
+	from (
+		select distinct delivery.profile_id
+		from public.qorpera_event_deliveries as delivery
+		join public.qorpera_cloud_secret_broker_authorities as authority
+			on authority.profile_id = delivery.profile_id and authority.principal_id = v_principal.id
+				and authority.status = 'active'
+		where delivery.status = 'received'
+			and (delivery.verify_claim_until is null or delivery.verify_claim_until <= clock_timestamp())
+		limit 1000
+	) as due;
+	return jsonb_build_object('schema', 'qorpera.broker-principal-event-verifications/v1', 'companyIds', v_due);
+end
+$$;
+revoke all on function public.qorpera_broker_principal_event_verifications_due(uuid, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_broker_principal_event_verifications_due(uuid, text) to qorpera_secret_broker;

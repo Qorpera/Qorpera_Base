@@ -81,7 +81,10 @@ function servedEntry(value: unknown): { companyId: string; authorityId: string; 
 }
 
 export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompanies {
-	readonly #principal: Pick<PostgresCloudSecretBrokerPrincipal, "companies" | "register" | "authority">;
+	readonly #principal: Pick<
+		PostgresCloudSecretBrokerPrincipal,
+		"companies" | "register" | "authority" | "eventVerificationsDue"
+	>;
 	readonly #keyring: CloudSecretKeyring;
 	readonly #adapters: readonly CloudSecretConnectorAdapter[];
 	readonly #helper: (ModelLoginSignInHelper & ModelLoginRenewer) | undefined;
@@ -106,7 +109,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	#closed = false;
 
 	constructor(options: {
-		principal: Pick<PostgresCloudSecretBrokerPrincipal, "companies" | "register" | "authority">;
+		principal: Pick<
+			PostgresCloudSecretBrokerPrincipal,
+			"companies" | "register" | "authority" | "eventVerificationsDue"
+		>;
 		keyring: CloudSecretKeyring;
 		adapters: readonly CloudSecretConnectorAdapter[];
 		/** The login helper on this host: renewals and members' sign-ins. Absent, nothing renews or signs in. */
@@ -294,12 +300,25 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		}
 	}
 
-	/** Each company's deliveries to signed hooks in turn. */
+	/** The deliveries to signed hooks of each company that has some due, in turn: one call asks which. */
 	async verifyEvents(): Promise<void> {
-		for (const served of [...this.#served.values()]) {
+		if (this.#closed) return;
+		const answer = record(
+			await this.#principal.eventVerificationsDue(
+				AbortSignal.any([this.#closing.signal, AbortSignal.timeout(DEADLINE_MS)]),
+			),
+			"Shared vault event verifications",
+		);
+		if (
+			answer.schema !== "qorpera.broker-principal-event-verifications/v1" ||
+			!Array.isArray(answer.companyIds) ||
+			answer.companyIds.length > 1000
+		)
+			throw new Error("Shared vault event verifications are invalid");
+		for (const companyId of new Set(answer.companyIds.map(company))) {
 			if (this.#closed) return;
-			if (this.#served.get(served.scope.companyId) === served)
-				await logEventVerificationPass(served.verifications, this.#closing.signal);
+			const served = this.#served.get(companyId);
+			if (served) await logEventVerificationPass(served.verifications, this.#closing.signal);
 		}
 	}
 
