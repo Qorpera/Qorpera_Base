@@ -377,7 +377,7 @@ The migration is safe for the running bundle: providers keep calling the same RP
 chooser still works. The exec host's new machine key ships with the next provider build; until then a retry
 on the same slot of node 2 can still collide, as today. No activation guard is needed.
 
-## Rolling step 1: the runs switch and placement by bundle (migration `20260929996000`)
+## Rolling step 1: the runs switch and placement by bundle (migration `20260928409960`)
 
 A node release restarts only the node's run provider and orchestrator (the node agent's roles), and the
 fast host rebuild touches only the fast host. Company computers, coding machines and agent machines run on

@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Rolling updates, step 1 (20260929996000).
+-- Rolling updates, step 1 (20260928409960).
 --   * The runs switch stops new runs and sign-ins on a node and nothing else: its orchestrators claim
 --     nothing new, run and sign-in candidates leave it out, the ledger refuses a new run reservation there,
 --     and machines (here a coding machine) are still admitted. A held reservation passes again.
