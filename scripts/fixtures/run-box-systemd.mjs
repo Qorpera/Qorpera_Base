@@ -31,7 +31,8 @@ function takeReads(account) {
 		"const s=require('net').connect(process.argv[1]);s.on('error',e=>{console.error(e.code);process.exit(3)});" +
 		"let b='',first;s.write(JSON.stringify({t:'take',after:0,max:10000})+'\\n');" +
 		"s.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const a=JSON.parse(b.slice(0,i));b=b.slice(i+1);" +
-		"if(a.t==='reads'){first=a;const last=a.reads.at(-1);s.write(JSON.stringify({t:'ack',upTo:last?last.seq:0})+'\\n')}" +
+		"if(a.t==='reads'){first=a;const last=a.reads.at(-1);if(!last){process.stdout.write(JSON.stringify(a)+'\\n');s.end();return}" +
+		"s.write(JSON.stringify({t:'ack',log:a.log,upTo:last.seq})+'\\n')}" +
 		"else{process.stdout.write(JSON.stringify(first)+'\\n');s.end()}}});";
 	const result = spawnSync("/usr/bin/node", ["-e", script, "/run/qorpera-shared-box/0.reads"], {
 		encoding: "utf8",

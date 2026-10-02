@@ -151,9 +151,11 @@ fn take(socket: &Path) -> Vec<serde_json::Value> {
 	};
 	let mut out = Vec::new();
 	let mut after = 0;
+	let mut log = String::new();
 	loop {
 		let answer = ask(format!("{{\"t\":\"take\",\"after\":{after},\"max\":2}}"));
 		assert_eq!(answer["t"], "reads");
+		log = answer["log"].as_str().unwrap().to_string();
 		let page = answer["reads"].as_array().unwrap().clone();
 		if let Some(last) = page.last() {
 			after = last["seq"].as_u64().unwrap();
@@ -163,7 +165,9 @@ fn take(socket: &Path) -> Vec<serde_json::Value> {
 			break;
 		}
 	}
-	assert_eq!(ask(format!("{{\"t\":\"ack\",\"upTo\":{after}}}"))["t"], "acked");
+	if after > 0 {
+		assert_eq!(ask(format!("{{\"t\":\"ack\",\"log\":\"{log}\",\"upTo\":{after}}}"))["t"], "acked");
+	}
 	out
 }
 
