@@ -141,10 +141,21 @@ class LineSocket {
 }
 
 /** The run's box: one connection, opened when first needed and again after the box restarted. */
+/** What the box read for one answer: the reads, the number to acknowledge once they are released, and whether the box's
+ * read log restarted since the last answer (its earlier reads are gone, so this answer cannot be accounted for). */
+export interface CloudRunBoxReads {
+	readonly reads: CloudCompanyFolderRelease[];
+	readonly upTo: number;
+	readonly restarted: boolean;
+}
+
 export class CloudRunBox {
 	readonly #paths: CloudRunBoxPaths;
 	readonly #waitMs: number;
 	#connection: LineSocket | undefined;
+	/** The box's read log as last seen, and the reads it holds up to `#acked` are released. */
+	#log: string | undefined;
+	#acked = 0;
 
 	/** `waitMs`: how long a call waits for the box to appear (tests shorten it). */
 	constructor(paths: CloudRunBoxPaths, waitMs = BOX_WAIT_MS) {
@@ -178,20 +189,51 @@ export class CloudRunBox {
 		return reply;
 	}
 
-	/** Everything the box read since the last take. */
-	async takeReads(signal: AbortSignal): Promise<CloudCompanyFolderRelease[]> {
+	/** Everything the box read that is not released yet. Nothing leaves the log until `ackReads`. */
+	async takeReads(signal: AbortSignal): Promise<CloudRunBoxReads> {
 		const log = await LineSocket.open(this.#paths.reads, signal);
 		if (!log) throw new Error("The run box's read log is unavailable");
 		try {
 			const reads: CloudCompanyFolderRelease[] = [];
+			let after = this.#acked;
+			let id: string | undefined;
 			for (;;) {
-				log.send(JSON.stringify({ t: "take", max: READS_PAGE }));
+				log.send(JSON.stringify({ t: "take", after, max: READS_PAGE }));
 				const line = await log.next(READS_PAGE_MS, signal);
 				if (line === undefined) throw new Error("The run box's read log did not answer");
-				const answer = parseReads(line);
+				const answer = parseReads(line, after);
+				if (id !== undefined && answer.log !== id)
+					throw new Error("The run box's read log changed while it was read");
+				id = answer.log;
+				if (answer.log !== this.#log && (this.#log !== undefined || after > 0)) {
+					// A new log: the program restarted, and what it held before is gone. Start over with this one.
+					this.#log = answer.log;
+					this.#acked = 0;
+					return { reads: [], upTo: 0, restarted: true };
+				}
+				this.#log = answer.log;
 				reads.push(...answer.reads);
-				if (!answer.more) return reads;
+				after = answer.last ?? after;
+				if (!answer.more) return { reads, upTo: after, restarted: false };
 			}
+		} finally {
+			log.close();
+		}
+	}
+
+	/** The reads up to `upTo` are released: they leave the box's log. */
+	async ackReads(upTo: number, signal: AbortSignal): Promise<void> {
+		if (upTo <= this.#acked) return;
+		const log = await LineSocket.open(this.#paths.reads, signal);
+		if (!log) throw new Error("The run box's read log is unavailable");
+		try {
+			log.send(JSON.stringify({ t: "ack", upTo }));
+			const line = await log.next(READS_PAGE_MS, signal);
+			const answer =
+				line === undefined ? undefined : (JSON.parse(line) as { t?: unknown; log?: unknown; upTo?: unknown });
+			if (answer?.t !== "acked" || answer.log !== this.#log || answer.upTo !== upTo)
+				throw new Error("The run box's read log did not take the acknowledgement");
+			this.#acked = upTo;
 		} finally {
 			log.close();
 		}
@@ -222,37 +264,45 @@ export class CloudRunBox {
 	}
 }
 
-function parseReads(line: string): { reads: CloudCompanyFolderRelease[]; more: boolean } {
-	const value = JSON.parse(line) as { t?: unknown; reads?: unknown; more?: unknown };
+function parseReads(
+	line: string,
+	after: number,
+): { log: string; reads: CloudCompanyFolderRelease[]; last: number | undefined; more: boolean } {
+	const value = JSON.parse(line) as { t?: unknown; log?: unknown; reads?: unknown; more?: unknown };
 	if (
 		value.t !== "reads" ||
+		typeof value.log !== "string" ||
+		!/^[0-9a-f]{32}$/.test(value.log) ||
 		!Array.isArray(value.reads) ||
 		typeof value.more !== "boolean" ||
 		value.reads.length > READS_PAGE
 	)
 		throw new Error("The run box's read log answered something else");
-	return {
-		more: value.more,
-		reads: value.reads.map((item: unknown) => {
-			const read = item as { path?: unknown; kind?: unknown; version?: unknown; authority?: unknown };
-			if (typeof read.path !== "string" || typeof read.version !== "string" || !isUuid(read.version))
-				throw new Error("The run box's read log named a read it should not");
-			const authority = read.authority as Partial<CloudCompanyFolderAuthority> | undefined;
-			const receipt =
-				authority &&
-				typeof authority.resourceId === "string" &&
-				isUuid(authority.resourceId) &&
-				Number.isSafeInteger(authority.resourceRevision) &&
-				(authority.grantId === null
-					? authority.grantRevision === null
-					: typeof authority.grantId === "string" &&
-						isUuid(authority.grantId) &&
-						Number.isSafeInteger(authority.grantRevision))
-					? (authority as CloudCompanyFolderAuthority)
-					: NO_RECEIPT;
-			return { path: read.path, version: read.version, authority: receipt };
-		}),
-	};
+	let last: number | undefined;
+	const reads = value.reads.map((item: unknown): CloudCompanyFolderRelease => {
+		const read = item as { seq?: unknown; path?: unknown; version?: unknown; authority?: unknown };
+		// Numbered after what was asked for, in order.
+		if (typeof read.seq !== "number" || !Number.isSafeInteger(read.seq) || read.seq <= (last ?? after))
+			throw new Error("The run box's read log numbered a read out of order");
+		last = read.seq;
+		if (typeof read.path !== "string" || typeof read.version !== "string" || !isUuid(read.version))
+			throw new Error("The run box's read log named a read it should not");
+		const authority = read.authority as Partial<CloudCompanyFolderAuthority> | undefined;
+		const receipt =
+			authority &&
+			typeof authority.resourceId === "string" &&
+			isUuid(authority.resourceId) &&
+			Number.isSafeInteger(authority.resourceRevision) &&
+			(authority.grantId === null
+				? authority.grantRevision === null
+				: typeof authority.grantId === "string" &&
+					isUuid(authority.grantId) &&
+					Number.isSafeInteger(authority.grantRevision))
+				? (authority as CloudCompanyFolderAuthority)
+				: NO_RECEIPT;
+		return { path: read.path, version: read.version, authority: receipt };
+	});
+	return { log: value.log, reads, last, more: value.more };
 }
 
 /** The release ids of one answer: derived from the run and the call, so a replay of the call reuses them. */
@@ -375,15 +425,21 @@ export function cloudRunBoxTools(options: {
 		if (reply.t === "error") throw new CloudToolRefusal(`${reply.code}: ${reply.message}`.slice(0, 600));
 		if (reply.t !== "result") throw new CloudToolRefusal("RUN_BOX_UNAVAILABLE: the run box answered something else");
 		const text = runBoxAnswerText(reply);
-		let reads: CloudCompanyFolderRelease[];
+		let taken: CloudRunBoxReads;
 		try {
-			reads = await box.takeReads(signal);
+			taken = await box.takeReads(signal);
 		} catch {
 			throw new CloudToolRefusal(
 				"RUN_BOX_UNAVAILABLE: the run box's read log did not answer, so this output is not shown; try again",
 			);
 		}
-		const companyReadId = await releaseAnswer(folder, runId, callId, reads, text, signal);
+		if (taken.restarted)
+			throw new CloudToolRefusal(
+				"RUN_BOX_UNAVAILABLE: the run box's folder restarted, so what this command read cannot be accounted for and its output is not shown; run it again",
+			);
+		const companyReadId = await releaseAnswer(folder, runId, callId, taken.reads, text, signal);
+		// Released: the reads leave the box's log. Should this fail, the next answer releases them again.
+		await box.ackReads(taken.upTo, signal).catch(() => undefined);
 		return { kind: "text", value: text, ...(companyReadId ? { companyReadId } : {}) };
 	};
 	return [

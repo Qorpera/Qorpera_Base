@@ -23,11 +23,41 @@ afterEach(async () => {
 
 type Answer = (request: Record<string, unknown>) => Record<string, unknown> | string;
 
+/** The box's read log as the folder program keeps it: numbered reads that wait until acknowledged, under a log id. */
+class ReadLog {
+	id = "a".repeat(32);
+	next = 1;
+	waiting: (Record<string, unknown> & { seq: number })[] = [];
+	takes: number[] = [];
+	acks: number[] = [];
+	add(...reads: Record<string, unknown>[]): void {
+		for (const read of reads) this.waiting.push({ ...read, seq: this.next++ });
+	}
+	restart(): void {
+		this.id = "b".repeat(32);
+		this.waiting = [];
+	}
+	answer(request: { t: string; after?: number; max?: number; upTo?: number }): Record<string, unknown> {
+		if (request.t === "ack") {
+			this.acks.push(request.upTo as number);
+			this.waiting = this.waiting.filter((read) => read.seq > (request.upTo as number));
+			return { t: "acked", log: this.id, upTo: request.upTo };
+		}
+		this.takes.push(request.max as number);
+		const after = this.waiting.filter((read) => read.seq > (request.after as number));
+		return {
+			t: "reads",
+			log: this.id,
+			reads: after.slice(0, request.max),
+			more: after.length > (request.max as number),
+		};
+	}
+}
+
 /** A stand-in box host and read log on Unix sockets, answering as the test says. */
-async function stage(answer: Answer, reads: () => unknown[] = () => []) {
+async function stage(answer: Answer, readLog = new ReadLog()) {
 	const root = await mkdtemp(join(tmpdir(), "run-box-tools-"));
 	const requests: Record<string, unknown>[] = [];
-	const takes: number[] = [];
 	const serve = (path: string, onLine: (line: string, socket: Socket) => void, greet?: string) =>
 		new Promise<Server>((resolve) => {
 			const server = createServer((socket) => {
@@ -56,19 +86,14 @@ async function stage(answer: Answer, reads: () => unknown[] = () => []) {
 		'{"t":"ready","protocol":1,"sessions":[]}',
 	);
 	const log = await serve(join(root, "box.reads"), (line, socket) => {
-		const request = JSON.parse(line) as { max: number };
-		takes.push(request.max);
-		const all = reads();
-		socket.write(
-			`${JSON.stringify({ t: "reads", reads: all.slice(0, request.max), more: all.length > request.max })}\n`,
-		);
+		socket.write(`${JSON.stringify(readLog.answer(JSON.parse(line)))}\n`);
 	});
 	cleanup.push(async () => {
 		box.close();
 		log.close();
 		await rm(root, { recursive: true, force: true });
 	});
-	return { paths: { socket: join(root, "box.sock"), reads: join(root, "box.reads") }, requests, takes };
+	return { paths: { socket: join(root, "box.sock"), reads: join(root, "box.reads") }, requests, log: readLog };
 }
 
 function folder(failure?: CloudCompanyFolderError) {
@@ -121,15 +146,13 @@ async function tools(paths: { socket: string; reads: string }, client: CloudComp
 }
 
 describe("run box tools", () => {
-	it("runs a command, releases what it read with the run, and cites the release", async () => {
-		const box = await stage(
-			() => ended(),
-			() => [read("docs/plan.md")],
-		);
+	it("runs a command, releases what it read with the run, cites the release, and only then acknowledges it", async () => {
+		const box = await stage(() => ended());
 		const { client, releases } = folder();
 		const { exec } = await tools(box.paths, client);
 		const parsed = exec.parseArguments({ cmd: "cat docs/plan.md" } as JsonValue);
 		expect(parsed).toEqual({ cmd: "cat docs/plan.md", workdir: null, yield_time_ms: 10_000, tty: false });
+		box.log.add(read("docs/plan.md"));
 		const content = await exec.execute(parsed, context());
 		expect(content.kind).toBe("text");
 		const text = content.value as string;
@@ -151,25 +174,26 @@ describe("run box tools", () => {
 			},
 		]);
 		expect(content.companyReadId).toBe(releases[0]?.id);
+		expect(box.log.acks).toEqual([1]);
+		expect(box.log.waiting).toEqual([]);
 		// The same call replayed releases under the same id; another call under another.
+		box.log.add(read("docs/plan.md"));
 		await exec.execute(parsed, context());
+		box.log.add(read("docs/plan.md"));
 		await exec.execute(parsed, context("call-2"));
 		expect(releases[1]?.id).toBe(releases[0]?.id);
 		expect(releases[2]?.id).not.toBe(releases[0]?.id);
+		expect(box.log.acks).toEqual([1, 2, 3]);
 	});
 
 	it("releases nothing and cites nothing when the command read nothing, and files a read without a receipt for the core to check", async () => {
-		let reads: unknown[] = [];
-		const box = await stage(
-			() => ended({ head: "4\n", totalBytes: 2 }),
-			() => reads,
-		);
+		const box = await stage(() => ended({ head: "4\n", totalBytes: 2 }));
 		const { client, releases } = folder();
 		const { exec } = await tools(box.paths, client);
 		const content = await exec.execute(exec.parseArguments({ cmd: "echo 4" }), context());
 		expect(content.companyReadId).toBeUndefined();
 		expect(releases).toEqual([]);
-		reads = [read("rules/tone.md", null), read("docs/a.md", { resourceId: "not-a-uuid", resourceRevision: 1 })];
+		box.log.add(read("rules/tone.md", null), read("docs/a.md", { resourceId: "not-a-uuid", resourceRevision: 1 }));
 		await exec.execute(exec.parseArguments({ cmd: "cat rules/tone.md docs/a.md" }), context("call-3"));
 		expect(releases[0]?.reads.map((r) => r.authority.resourceId)).toEqual([
 			"00000000-0000-0000-0000-000000000000",
@@ -178,30 +202,21 @@ describe("run box tools", () => {
 	});
 
 	it("splits more reads than one release holds, all under the answer's hash, and cites the first", async () => {
-		const many = Array.from({ length: 10_001 }, (_, n) => read(`docs/${n}.md`));
-		let taken = 0;
-		const box = await stage(
-			() => ended(),
-			() => {
-				const rest = many.slice(taken);
-				taken += Math.min(rest.length, 2_000);
-				return rest;
-			},
-		);
+		const box = await stage(() => ended());
+		box.log.add(...Array.from({ length: 10_001 }, (_, n) => read(`docs/${n}.md`)));
 		const { client, releases } = folder();
 		const { exec } = await tools(box.paths, client);
 		const content = await exec.execute(exec.parseArguments({ cmd: "rg -l plan" }), context());
-		expect(box.takes).toEqual(Array.from({ length: 6 }, () => 2_000));
+		expect(box.log.takes).toEqual(Array.from({ length: 6 }, () => 2_000));
 		expect(releases.map((r) => r.reads.length)).toEqual([10_000, 1]);
 		expect(new Set(releases.map((r) => r.sha)).size).toBe(1);
 		expect(content.companyReadId).toBe(releases[0]?.id);
+		expect(box.log.acks).toEqual([10_001]);
 	});
 
-	it("withholds the output when a read may no longer be made or cannot be recorded", async () => {
-		const box = await stage(
-			() => ended(),
-			() => [read("docs/plan.md")],
-		);
+	it("withholds the output when a read may no longer be made or cannot be recorded, and releases those reads with the next answer", async () => {
+		const box = await stage(() => ended());
+		box.log.add(read("docs/plan.md"));
 		const revoked = await tools(box.paths, folder(new CloudCompanyFolderError("read_revoked")).client);
 		await expect(
 			revoked.exec.execute(revoked.exec.parseArguments({ cmd: "cat docs/plan.md" }), context()),
@@ -210,6 +225,29 @@ describe("run box tools", () => {
 		await expect(down.exec.execute(down.exec.parseArguments({ cmd: "cat docs/plan.md" }), context())).rejects.toThrow(
 			/^COMPANY_FOLDER_UNAVAILABLE/,
 		);
+		expect(box.log.acks).toEqual([]);
+		// Nothing was acknowledged: the next answer that releases takes those reads along.
+		const { client, releases } = folder();
+		const later = await tools(box.paths, client);
+		box.log.add(read("docs/other.md"));
+		await later.exec.execute(later.exec.parseArguments({ cmd: "cat docs/other.md" }), context("call-4"));
+		expect(releases[0]?.reads.map((r) => r.path)).toEqual(["docs/plan.md", "docs/other.md"]);
+		expect(box.log.acks).toEqual([2]);
+	});
+
+	it("withholds an answer when the box's read log restarted, and goes on with the new one", async () => {
+		const box = await stage(() => ended());
+		const { client, releases } = folder();
+		const { exec } = await tools(box.paths, client);
+		box.log.add(read("docs/plan.md"));
+		await exec.execute(exec.parseArguments({ cmd: "cat docs/plan.md" }), context());
+		box.log.restart();
+		box.log.add(read("docs/new.md"));
+		await expect(exec.execute(exec.parseArguments({ cmd: "cat docs/new.md" }), context("call-2"))).rejects.toThrow(
+			/^RUN_BOX_UNAVAILABLE: the run box's folder restarted/,
+		);
+		await exec.execute(exec.parseArguments({ cmd: "cat docs/new.md" }), context("call-3"));
+		expect(releases.map((r) => r.reads.map((read) => read.path))).toEqual([["docs/plan.md"], ["docs/new.md"]]);
 	});
 
 	it("reads on and writes to a running command", async () => {

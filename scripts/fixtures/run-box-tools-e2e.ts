@@ -39,7 +39,7 @@ const run = async (tool: typeof exec, args: JsonValue) => {
 	return { text: content.value as string, companyReadId: content.companyReadId ?? null };
 };
 
-const read = await run(exec, { cmd: "cat docs/plan.md; ls tools" });
+const read = await run(exec, { cmd: "cat docs/plan.md; ls docs" });
 const started = await run(exec, { cmd: "sleep 2; echo late", yield_time_ms: 300 });
 const session = Number(/session ID (\d+)/.exec(started.text)?.[1]);
 const finished = await run(write, { session_id: session, yield_time_ms: 10_000 });
