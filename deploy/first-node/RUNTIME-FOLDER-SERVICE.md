@@ -193,9 +193,11 @@ For step 2 (the run box), recorded now so they are planned:
 
 ## Rollout (coordinator)
 
-Changes: two new units and a socket on each node host, one new unit in the execution host. No runtime bundle, image,
-provider, SQL or LXD configuration change; the node inventory is unaffected (no instance or device change). Safe for
-the running bundle.
+Changes: two new units and a socket on each node host; in the execution host, the folder program and its mount unit,
+carried by the shared-execution package (step 2a), and `/srv/qorpera-folder` and `/etc/qorpera-folder` hidden from
+both slot units. No runtime bundle, image, provider, SQL or LXD configuration change; the node inventory is
+unaffected (no instance or device change). Safe for the running bundle. The coordinator's cut builds the folder
+program in the pinned Rust image and passes it to the shared-execution packager (`--folder-program`).
 
 1. Read-only prechecks, both nodes:
    - `ss -l --vsock` shows nothing on port 5250; `lsmod | grep vhost_vsock`.
@@ -203,10 +205,13 @@ the running bundle.
      the folder service's read access (README).
    - In the execution host: `ls -l /dev/fuse; grep fuse /proc/filesystems`.
    - `lxc config get qorpera-exec-node02 volatile.uuid --project qn25b2`.
-2. Build and package on the node 2 test machine from the release commit (README); record both sha256 values.
+2. Build and package on the node 2 test machine from the release commit (README); the build's record must equal the
+   commit's `deploy/folder-service/folder-program-linux-x64.json`.
 3. Node 2 host: install, write `config.json` and the key, enable the socket and the bridge. Node 1 host: the same,
    with an empty `mounts` list (node parity compares every `qorpera-*` unit).
-4. Execution host on node 2: guest installer, view file, `systemctl start qorpera-folder-mount@proof`.
+4. Execution host on node 2: `rebuild-exec-host.sh` with the shared-execution package (it installs the folder program
+   and refuses an unpinned one before stopping anything), then the view file and `systemctl start
+   qorpera-folder-mount@proof`.
 5. Acceptance (the design's step 1 proof), as root in the execution host:
    - `find /srv/qorpera-folder/proof | wc -l` equals the proof company's path count, and
      `rg -l <word> /srv/qorpera-folder/proof` finds what the web app's search finds;
@@ -217,8 +222,33 @@ the running bundle.
 6. Rollback: stop the mount unit (it unmounts), then disable the bridge, the socket and the service. Nothing else is
    kept.
 
-## Not in step 1
+## Step 2a: run box views and the package (draft, on top of step 1)
 
-Writes; the run box and `allow_other`; company, coding and test machines; hiding `/srv/qorpera-folder` in the slot
-units; carrying the folder program in the shared-execution package (so it survives an image rebuild). Each is a
-later step.
+- **The shared-execution package carries the folder program** (pinned by `EXPECTED_FOLDER_PROGRAM_SHA256`, recorded in
+  `deploy/folder-service/folder-program-linux-x64.json`) and `qorpera-folder-mount@.service`; both slot units hide
+  `/srv/qorpera-folder` and `/etc/qorpera-folder`. A change to `crates/qorpera-folder` needs a new record (the
+  scripts test fails until it is committed) built with `scripts/build-folder-program.mjs`, and the `folder-program`
+  test step checks a fresh build gives the recorded bytes.
+- **The folder service takes the core's run box views.** A hello whose view id is a uuid is a core view: its pass must
+  have the core's shape (43 base64url characters), the calling machine must be one of this node's `runBoxHosts` (the
+  execution host; P7 later adds the view's own node), and the core checks the pass on every list, read and feed (a
+  wrong first pass closes the view). Further connections must present the same pass. While a machine is connected the
+  service renews the view's lease every 40 s (`qorpera_folder_view_renew`); a closed answer, or a refusal, closes it
+  on every connection. A view no machine holds is not renewed. The run's end closes its run box in the core.
+- `scripts/test-folder-service-core-shapes.mjs` also opens a run box view for a leased run on the views test's company
+  (639) and checks its listing, feed replay, renewal, close, and that a closed view is refused.
+
+## Step 2b (not built yet)
+
+The box itself: a third account per slot and a root-started `qorpera-shared-box@N` (no network, no credentials, the
+slot's host and runner folders, the credential and identity folders and `/run/qorpera-shared-execution` hidden), the
+run's view opened by the root shared-execution service when it hands the job over (it knows the run, holds the
+service key, starts units) and mounted with `allow_other` into the box only, then `exec_command`/`write_stdin` as
+Qorpera tools run by the native host, reads released with the run actor (P8). It waits on real folder-v2 runs (C3,
+C4, C1c-3d–3m) and step 1 being live. Two choices go to the coordinator first: where the box's tools come from (the
+runner image has no rg, fd, Python libraries or LibreOffice: rebuild it or ship a toolbox image), and the execution
+host's size (two slots at 4 vCPU / 8 GiB leave nothing for a 2 GiB box each).
+
+## Not in step 2a
+
+Writes; the box and `allow_other`; company, coding and test machines. Each is a later step.

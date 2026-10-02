@@ -18,7 +18,7 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 function files(directory) {
 	const out = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
-		if (entry.name === "target" || entry.name.startsWith(".")) continue;
+		if (entry.name.startsWith(".")) continue;
 		const path = join(directory, entry.name);
 		if (entry.isDirectory()) out.push(...files(path));
 		else if (entry.isFile()) out.push(path);
@@ -26,12 +26,12 @@ function files(directory) {
 	return out;
 }
 
-/** One digest of the crate's files (paths and contents), build output and dot files excepted. */
+/** One digest of what the program is built from (paths and contents): the manifest, the lock file and `src/`. Tests
+ * and documents are not part of the program. */
 export function folderProgramSourceSha256(root = repository) {
 	const crate = join(root, CRATE);
-	const lines = files(crate)
-		.map((path) => `${relative(crate, path).split("\\").join("/")}\0${sha256(readFileSync(path))}\n`)
-		.sort();
+	const inputs = [join(crate, "Cargo.toml"), join(crate, "Cargo.lock"), ...files(join(crate, "src"))];
+	const lines = inputs.map((path) => `${relative(crate, path).split("\\").join("/")}\0${sha256(readFileSync(path))}\n`).sort();
 	return sha256(lines.join(""));
 }
 
