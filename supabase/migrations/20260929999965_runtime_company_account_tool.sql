@@ -128,7 +128,7 @@ insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_find_
 -- 2. An agent's account signs up with a tagged company address
 -- ---------------------------------------------------------------------------
 -- `<mailbox>+<tag>@<mail domain>`: the mailbox one of the company's (paused ones included, removed ones not), the
--- tag one find_mail takes ([a-z0-9._-], 1 to 64), the domain the platform's mail domain; any letter case.
+-- tag one find_mail takes ([a-z0-9._-], 1 to 64), the domain the platform's mail domain; ASCII in any letter case.
 create function public.qorpera_company_account_agent_login()
 returns trigger
 language plpgsql
@@ -141,7 +141,9 @@ declare
 	v_mailbox text := public.qorpera_mail_box_part(new.login);
 begin
 	select lower(settings.domain) into v_domain from public.qorpera_mail_settings as settings;
-	if v_domain is null or v_mailbox is null
+	-- ASCII only, checked before any lowering: under a Unicode collation lower() turns look-alikes such as U+0130
+	-- or the Kelvin sign into ASCII letters, while a website would send the mail to another (punycode) domain.
+	if new.login !~ '^[A-Za-z0-9._+@-]+$' or v_domain is null or v_mailbox is null
 		or coalesce(v_login !~ '^[^@+]+\+[a-z0-9._-]{1,64}@[^@]+$', true)
 		or split_part(v_login, '@', 2) is distinct from v_domain
 		or not exists (select 1 from public.qorpera_company_mailboxes as mailbox
@@ -163,8 +165,9 @@ create trigger qorpera_company_account_agent_login
 -- ---------------------------------------------------------------------------
 -- 3. Observations name the new tool
 -- ---------------------------------------------------------------------------
+-- After save_attachment (M2c-1), so a later patch anchored on 'find_mail','save_attachment', still finds it.
 select pg_temp.account_tool_patch('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
-	$old$'send_mail','find_mail',$old$,
-	$new$'send_mail','find_mail','company_account',$new$);
+	$old$'find_mail','save_attachment',$old$,
+	$new$'find_mail','save_attachment','company_account',$new$);
 
 drop function pg_temp.account_tool_patch(regprocedure, text, text);

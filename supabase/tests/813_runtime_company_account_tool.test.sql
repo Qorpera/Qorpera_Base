@@ -47,7 +47,39 @@ begin
 	end if;
 end $$;
 
--- 2. The todo's id by its key: only the agent's own open or blocked todo.
+-- 2. The todo's id by its key: only the agent's own open or blocked todo, of this company and environment, not
+--    retired with its folder. Todos with other keys, as the agent's own elsewhere: another environment's, another
+--    company's, and a retired one.
+select set_config('session_replication_role', 'replica', true);
+insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title, state,
+	requested_by_user_id, created_by_run_id, updated_by_run_id, folder_environment_id, folder_path, folder_path_version,
+	folder_commit_id, folder_retired_at)
+select todo.id, todo.company, todo.environment, '29000000-0000-4000-8000-000000000030', todo.key, 'Elsewhere', 'open',
+	'29000000-0000-4000-8000-000000000001', run.id, run.id,
+	case when todo.retired is not null then todo.environment end,
+	case when todo.retired is not null then 'work/todos/retired.md' end,
+	case when todo.retired is not null then '81300000-0000-4000-8000-0000000000c1'::uuid end,
+	case when todo.retired is not null then '81300000-0000-4000-8000-0000000000c2'::uuid end, todo.retired
+from (values
+	('81300000-0000-4000-8000-000000000061'::uuid, '29000000-0000-4000-8000-000000000010'::uuid,
+		'81300000-0000-4000-8000-000000000099'::uuid, 'other-environment', null::timestamptz),
+	('81300000-0000-4000-8000-000000000062'::uuid, '79400000-0000-4000-8000-000000000010'::uuid,
+		'29000000-0000-4000-8000-000000000020'::uuid, 'other-company', null::timestamptz),
+	('81300000-0000-4000-8000-000000000063'::uuid, '29000000-0000-4000-8000-000000000010'::uuid,
+		'29000000-0000-4000-8000-000000000020'::uuid, 'retired', '2026-09-01T00:00:00Z'::timestamptz)
+) as todo(id, company, environment, key, retired)
+cross join (select (current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')::uuid as id) as run;
+select set_config('session_replication_role', 'origin', true);
+do $$
+declare v_key text;
+begin
+	foreach v_key in array array['other-environment', 'other-company', 'retired'] loop
+		if coalesce(pg_temp.fa_refused(format('''{"todo": "%s"}''::jsonb', v_key)), '')
+			not like '22023:No open todo of yours%' then
+			raise exception 'The todo % was found', v_key;
+		end if;
+	end loop;
+end $$;
 do $$
 begin
 	if pg_temp.fa_answer(pg_temp.fa_find('''{"todo": "website-online"}''::jsonb')) -> 'todo'
@@ -67,6 +99,24 @@ begin
 		raise exception 'A blocked todo was not found';
 	end if;
 	update public.qorpera_runtime_agent_todos set state = 'open' where id = '79400000-0000-4000-8000-000000000060';
+end $$;
+
+-- A binding that is not the run's raises, as every native host call does.
+do $$
+declare v_result text;
+begin
+	perform pg_temp.path_claims('service_role');
+	set local role service_role;
+	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(null, ''{}''::jsonb)');
+	if v_result is distinct from '22023:company account run binding is malformed' then
+		raise exception 'A missing binding was answered: %', v_result;
+	end if;
+	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(jsonb_set(current_setting('
+		'''qorpera_test.path_binding'')::jsonb, ''{runId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
+	if v_result not like '42501:%' then
+		raise exception 'Another run''s binding was answered: %', v_result;
+	end if;
+	reset role;
 end $$;
 
 -- 3. A malformed request is refused, never read as "everything".
@@ -170,16 +220,28 @@ begin
 end $$;
 
 -- 6. An agent's opening needs a tagged address of one of the company's live mailboxes on the mail domain, in any
---    letter case; a member's hand-over keeps any login. Another company's mailbox 'sales' is not this company's.
+--    letter case, ASCII only; a member's hand-over keeps any login. Mailboxes that are not this company's in this
+--    environment: another company's in another environment ('sales'), another company's in this environment
+--    ('billing'), this company's in another environment ('ops').
 select set_config('session_replication_role', 'replica', true);
 insert into public.qorpera_company_mailboxes(hook_id, profile_id, environment_id, local_part)
 values ('81300000-0000-4000-8000-000000000091', '79400000-0000-4000-8000-000000000010',
-	'81300000-0000-4000-8000-000000000098', 'sales');
+		'81300000-0000-4000-8000-000000000098', 'sales'),
+	('81300000-0000-4000-8000-000000000092', '79400000-0000-4000-8000-000000000010',
+		'29000000-0000-4000-8000-000000000020', 'billing'),
+	('81300000-0000-4000-8000-000000000093', '29000000-0000-4000-8000-000000000010',
+		'81300000-0000-4000-8000-000000000099', 'ops');
 select set_config('session_replication_role', 'origin', true);
+-- What an opening leaves behind, counted before the attempts.
+select set_config('qorpera_test.fa_before', (select jsonb_build_object(
+	'secrets', (select count(*) from public.qorpera_cloud_secrets),
+	'versions', (select count(*) from public.qorpera_cloud_secret_versions),
+	'events', (select count(*) from public.qorpera_cloud_secret_audit_events),
+	'accounts', (select count(*) from public.qorpera_company_accounts)))::text, true);
 do $$
 begin
 	if pg_temp.fa_answer(pg_temp.fa_find('''{}''::jsonb')) -> 'mailboxes' is distinct from '["agents@nordlys.example"]' then
-		raise exception 'Another company''s mailbox was listed';
+		raise exception 'Another company''s or environment''s mailbox was listed';
 	end if;
 end $$;
 select pg_temp.ca_receipt('81', 'company_account:open:r81');
@@ -191,6 +253,15 @@ select set_config('qorpera_test.fa_outside', pg_temp.ca_open('81', 'someone+netl
 select set_config('qorpera_test.fa_other_domain', pg_temp.ca_open('81', 'agents+netlify.com@gmail.example',
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
 select set_config('qorpera_test.fa_other_box', pg_temp.ca_open('81', 'sales+netlify.com@nordlys.example',
+	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
+select set_config('qorpera_test.fa_other_company_box', pg_temp.ca_open('81', 'billing+netlify.com@nordlys.example',
+	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
+select set_config('qorpera_test.fa_other_environment_box', pg_temp.ca_open('81', 'ops+netlify.com@nordlys.example',
+	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
+-- A look-alike letter (U+0130, the Kelvin sign) is refused before any lowering.
+select set_config('qorpera_test.fa_lookalike', pg_temp.ca_open('81', 'agents+netlify.com@nordlys.examplİ',
+	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
+select set_config('qorpera_test.fa_kelvin', pg_temp.ca_open('81', 'agents+netlify.com@nordlys.exampl' || chr(8490),
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
 select set_config('qorpera_test.fa_bad_tag', pg_temp.ca_open('81', 'agents+netlify com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060', p_site => 'netlify.com'), true);
@@ -219,6 +290,39 @@ select set_config('qorpera_test.fa_removed_box', pg_temp.ca_open('82', 'agents+r
 	'79400000-0000-4000-8000-000000000060', p_site => 'render.com'), true);
 reset session authorization;
 select pg_temp.ca_done('82');
+-- Without a mail domain no agent opens an account, and no mailbox is listed.
+select set_config('session_replication_role', 'replica', true);
+update public.qorpera_company_mailboxes set removed_at = null where local_part = 'agents';
+select set_config('session_replication_role', 'origin', true);
+update public.qorpera_mail_settings set domain = null;
+select pg_temp.ca_receipt('83', 'company_account:open:r83');
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.fa_no_domain', pg_temp.ca_open('83', 'agents+fly.example@nordlys.example',
+	'79400000-0000-4000-8000-000000000060', p_site => 'fly.example'), true);
+reset session authorization;
+select pg_temp.ca_done('83');
+do $$
+begin
+	if pg_temp.fa_answer(pg_temp.fa_find('''{}''::jsonb')) -> 'mailboxes' is distinct from '[]' then
+		raise exception 'A mailbox was listed without a mail domain';
+	end if;
+end $$;
+update public.qorpera_mail_settings set domain = 'nordlys.example';
+-- The refused attempts left nothing: one secret, version, audit event and account more, the mixed-case opening's.
+do $$
+declare v_before jsonb := current_setting('qorpera_test.fa_before')::jsonb;
+begin
+	if (select count(*) from public.qorpera_cloud_secrets) <> (v_before ->> 'secrets')::bigint + 1
+		or (select count(*) from public.qorpera_cloud_secret_versions) <> (v_before ->> 'versions')::bigint + 1
+		or (select count(*) from public.qorpera_cloud_secret_audit_events) <> (v_before ->> 'events')::bigint + 1
+		or (select count(*) from public.qorpera_company_accounts) <> (v_before ->> 'accounts')::bigint + 1 then
+		raise exception 'A refused opening left rows behind: % then %', v_before, jsonb_build_object(
+			'secrets', (select count(*) from public.qorpera_cloud_secrets),
+			'versions', (select count(*) from public.qorpera_cloud_secret_versions),
+			'events', (select count(*) from public.qorpera_cloud_secret_audit_events),
+			'accounts', (select count(*) from public.qorpera_company_accounts));
+	end if;
+end $$;
 -- A member's hand-over (no agent, no todo) keeps the login it has.
 insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id,
 	connector_id, secret_name, purpose, current_version, created_by_user_id)
@@ -239,15 +343,15 @@ declare
 	v_refusal constant text := '22023:An agent''s account signs up with a tagged address of one of the company''s mailboxes: <mailbox>+<tag>@<mail domain>, the tag 1 to 64 of a-z, 0-9, dot, dash and underscore';
 	v_name text;
 begin
-	foreach v_name in array array['fa_bare', 'fa_outside', 'fa_other_domain', 'fa_other_box', 'fa_bad_tag', 'fa_long_tag', 'fa_two_tags',
-		'fa_removed_box'] loop
+	foreach v_name in array array['fa_bare', 'fa_outside', 'fa_other_domain', 'fa_other_box', 'fa_other_company_box',
+		'fa_other_environment_box', 'fa_lookalike', 'fa_kelvin', 'fa_bad_tag', 'fa_long_tag', 'fa_two_tags',
+		'fa_removed_box', 'fa_no_domain'] loop
 		if current_setting('qorpera_test.' || v_name) is distinct from v_refusal then
 			raise exception 'An agent opened an account on % : %', v_name, current_setting('qorpera_test.' || v_name);
 		end if;
 	end loop;
-	if pg_temp.ca_id(current_setting('qorpera_test.fa_mixed_case')) = ''
-		or (select account.login from public.qorpera_company_accounts as account
-			where account.secret_id = pg_temp.ca_id(current_setting('qorpera_test.fa_mixed_case'))::uuid)
+	if (select account.login from public.qorpera_company_accounts as account
+			where account.secret_id::text = pg_temp.ca_id(current_setting('qorpera_test.fa_mixed_case')))
 			is distinct from 'Agents+Netlify.com@Nordlys.Example' then
 		raise exception 'A tagged address in another letter case was refused: %', current_setting('qorpera_test.fa_mixed_case');
 	end if;
@@ -278,7 +382,7 @@ begin
 		raise exception 'The login rule''s function is reachable';
 	end if;
 	if pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
-		not like '%''send_mail'',''find_mail'',''company_account'',%' then
+		not like '%''company_account''%' then
 		raise exception 'Observations do not name company_account';
 	end if;
 end $$;

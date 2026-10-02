@@ -156,10 +156,13 @@ offered and accounts are switched on.
 - An agent's account signs up with a tagged address of one of the company's mailboxes. A trigger on
   `qorpera_company_accounts` (before insert, for an agent's opening only) refuses any other login with 22023,
   which the vault passes to the agent as a refusal it can act on: `<mailbox>+<tag>@<mail domain>`, the mailbox
-  the company's and not removed, the tag 1 to 64 of `[a-z0-9._-]`, the domain the platform's mail domain, in any
+  the company's and not removed, the tag 1 to 64 of `[a-z0-9._-]`, the domain the platform's mail domain, ASCII
+  only (checked before lowering: under a Unicode collation `lower()` turns look-alikes into ASCII letters) in any
   letter case. A member's hand-over (A1-6) keeps any login. With no mail domain or no mailbox, no agent opens an
   account: an owner adds a mailbox first.
-- Observations name the tool `company_account` (`qorpera_record_runtime_observation`, an exact-text patch).
+- Observations name the tool `company_account` (`qorpera_record_runtime_observation`, an exact-text patch after
+  `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list and test
+  320 do (`scripts/check-runtime-observation-vocabulary.test.mjs` checks all three).
 
 ## A1-4b: the agent's tool (`company_account`, runtime only)
 
