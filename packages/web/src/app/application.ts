@@ -38,6 +38,7 @@ import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
+import { renderInterface } from "./views/interface.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
@@ -173,7 +174,14 @@ export function mountApplication(
 		main.inert = navigationOpen && isPhoneLayout();
 	}
 	function onEscape(event: KeyboardEvent): void {
-		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
+		if (
+			event.key === "Escape" &&
+			!event.isComposing &&
+			navigationOpen &&
+			!settings &&
+			!feedback &&
+			!event.defaultPrevented
+		) {
 			setNavigationOpen(false);
 		}
 	}
@@ -746,9 +754,13 @@ export function mountApplication(
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 			});
 		if (navigationFocus) {
+			// The drawer opens on its first control: the chosen tab, or the search field when it is open (the tabs
+			// are inert under it) or there are no tabs.
 			const target =
 				navigationFocus === "rail"
-					? rail.querySelector<HTMLInputElement>("input")
+					? (rail.querySelector<HTMLElement>(
+							".rail-toolbar:not(.is-searching) .rail-switch:not([hidden]) [role='tab'][aria-selected='true']",
+						) ?? rail.querySelector<HTMLInputElement>(".rail-search input"))
 					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
 						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
 			target?.focus();
@@ -1202,6 +1214,9 @@ export function mountApplication(
 					},
 					current,
 				);
+				return;
+			case "interface":
+				renderInterface(main, controller, route.id ?? "");
 				return;
 			case "team":
 				renderTeam(

@@ -54,6 +54,18 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// A received attachment saved into the company folder, through the governed gateway (M2c-1).
+		[
+			"save_attachment",
+			{
+				deliveryId: "73100000-0000-4000-8000-00000000000a",
+				attachment: 1,
+				path: "finance/invoice.pdf",
+				operationKey: "save-1",
+				expectedVersion: null,
+			},
+			"internal",
+		],
 		// An email from a company mailbox leaves the company (M2b).
 		[
 			"send_mail",
@@ -168,6 +180,16 @@ describe("what the card shows", () => {
 				text: "Hi",
 			}).details,
 		).toEqual({ from: "support@mail.example.test", subject: "Hello", text: "Hi" });
+		// The company files that leave with it.
+		expect(
+			describeCloudAction(tool("send_mail"), {
+				from: "support@mail.example.test",
+				to: ["bob@acme.test"],
+				subject: "Invoice",
+				text: "Attached.",
+				attachments: ["finance/invoice-42.pdf", "finance/totals.csv"],
+			}).details.attachments,
+		).toBe("finance/invoice-42.pdf, finance/totals.csv");
 		const many = Array.from({ length: 10 }, (_, i) => `recipient-number-${i}-${"x".repeat(40)}@acme.test`);
 		const target = describeCloudAction(tool("send_mail"), {
 			from: "support@mail.example.test",

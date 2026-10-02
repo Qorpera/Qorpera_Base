@@ -1,0 +1,286 @@
+/* ---- motion ---------------------------------------------------------------------
+ * Every animation of the app's moments, on the tokens in tokens.css (--motion-*,
+ * --ease-*), which drop to zero under reduced motion. ui/motion.ts adds the one-play
+ * classes (is-arriving, is-entering, state-changed, ...) and holds what is leaving.
+ *
+ * The language: what arrives springs in from where it came from (your message from
+ * the composer, a menu from its button), what leaves is quicker and quieter, agents
+ * are characters (they hop when they start work), and a press always answers.
+ */
+
+/* ---- the thread ---- */
+
+/* A conversation opened, or its messages taking the skeleton's place: they fade up. */
+.messages.is-entering,
+.messages-log.is-filling { animation: thread-in var(--motion-slow) var(--ease-out) both; }
+@keyframes thread-in { from { opacity: 0; transform: translateY(10px); } }
+
+/* A new reply, card or the working figure springs up from the agent's side. */
+.messages-log > .is-arriving {
+	transform-origin: 0 100%;
+	animation: arrive-from-agent var(--motion-spring) var(--ease-spring) both;
+}
+@keyframes arrive-from-agent {
+	from { opacity: 0; transform: translateY(14px) scale(0.94); }
+	35% { opacity: 1; }
+}
+/* A reply arrives whole and opens out of the corner where the working figure stood, each
+ * bubble a beat after the one before, the way the theme opens out of its button. The words
+ * settle in just behind the bubble's edge. */
+.messages-log > .message.from-agent:not(.thread-activity).is-arriving {
+	animation: motion-hold calc(var(--motion-spring) + 420ms) linear;
+}
+/* Holds a one-play class (ui/motion.ts playOnce) on a parent while its children play. */
+@keyframes motion-hold { to { opacity: 1; } }
+.messages-log > .message.from-agent.is-arriving > .bubble {
+	transform-origin: 0 100%;
+	animation: reply-open var(--motion-spring) var(--ease-out) both;
+}
+.messages-log > .message.from-agent.is-arriving > .bubble > * {
+	animation: reply-words var(--motion-slow) var(--ease-out) both;
+	animation-delay: inherit;
+}
+.messages-log > .message.from-agent.is-arriving > .bubble:nth-child(2) { animation-delay: 90ms; }
+.messages-log > .message.from-agent.is-arriving > .bubble:nth-child(3) { animation-delay: 180ms; }
+.messages-log > .message.from-agent.is-arriving > .bubble:nth-child(4) { animation-delay: 260ms; }
+.messages-log > .message.from-agent.is-arriving > .bubble:nth-child(n + 5) { animation-delay: 330ms; }
+@keyframes reply-open {
+	from { clip-path: circle(0 at 0 100%); transform: translateY(6px) scale(0.97); }
+	to { clip-path: circle(150% at 0 100%); transform: none; }
+}
+@keyframes reply-words {
+	0%, 25% { opacity: 0; transform: translateY(4px); }
+	100% { opacity: 1; transform: none; }
+}
+
+/* Your message rises out of the composer into its place. */
+.messages-log > .message.mine.is-arriving {
+	transform-origin: 100% 100%;
+	animation-name: arrive-from-composer;
+}
+@keyframes arrive-from-composer {
+	from { opacity: 0; transform: translateY(34px) scale(0.86); }
+	30% { opacity: 1; }
+}
+/* "Queued" settles to full colour once the cloud has it. */
+.message .bubble { transition: opacity var(--motion-base) var(--ease-out); }
+.message-caption { animation: caption-in var(--motion-base) var(--ease-out) both; }
+@keyframes caption-in { from { opacity: 0; } }
+
+/* ---- the composer ---- */
+
+.composer-send {
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring);
+}
+/* The send button wakes up when there is something to send. */
+.composer-send:not(:disabled) { animation: send-ready var(--motion-spring) var(--ease-bounce); }
+@keyframes send-ready { from { transform: scale(0.72); } }
+.composer-send:not(:disabled):active { transform: scale(0.88); }
+
+/* ---- the rail ---- */
+
+/* Above the travelling highlight. (:where keeps any other position, the drag ghost's, in charge.) */
+:where(.rail-row, .rail-pin, .cofounder-home) { position: relative; z-index: 1; }
+/* The hover tint fades in; leaving it, or losing the selection to the travelling
+ * highlight, lets go at once, so two highlights never show. */
+.rail-row, .rail-pin, .cofounder-home {
+	transition:
+		color var(--motion-base) ease,
+		transform var(--motion-base) var(--ease-spring);
+}
+:is(.rail-row, .rail-pin, .cofounder-home):hover:not(.active) {
+	transition:
+		background-color var(--motion-fast) ease,
+		color var(--motion-base) ease,
+		transform var(--motion-base) var(--ease-spring);
+}
+.rail-row:active, .rail-pin:active, .cofounder-home:active { transform: scale(0.975); }
+/* The drag ghost follows the pointer exactly. */
+.rail-drag-ghost, .rail-drag-ghost * { transition: none !important; animation: none !important; }
+:is(.rail-row-status, .cofounder-status) { transition: border-color var(--motion-fast) ease; }
+
+/* The highlight travelling to the conversation opened (ui/rail-selection.ts). The row it
+ * goes to keeps its own background off until it lands, and its text turns white as it comes. */
+.rail-selection-ghost {
+	position: absolute; z-index: 0; pointer-events: none;
+	background: var(--rail-selection);
+}
+:is(.rail-row, .rail-pin, .cofounder-home).active.selection-arriving,
+:is(.rail-row, .rail-pin, .cofounder-home).active.selection-arriving:hover { background: transparent; }
+:is(.rail-row, .rail-pin, .cofounder-home).selection-arriving :is(.rail-row-status, .cofounder-status) { border-color: transparent; }
+
+/* An agent's state: quiet and exact. The figure's own motion already says it is working;
+ * the rail only brings in the dot and the new line. */
+:is(.rail-row, .rail-pin, .cofounder-home):is(.state-changed, .state-working, .state-recovered, .mention-arrived) { animation: motion-hold 900ms linear; }
+:is(.rail-row, .rail-pin, .cofounder-home).state-failed { animation: motion-hold 1300ms linear; }
+:is(.state-changed, .state-working, .state-recovered) :is(.rail-row-status, .cofounder-status) { animation: disc-in var(--motion-base) var(--ease-out) 60ms both; }
+:is(.state-changed, .state-working, .state-recovered, .state-failed) .rail-row-copy small { animation: line-in var(--motion-base) var(--ease-out) both; }
+@keyframes disc-in { from { opacity: 0; transform: scale(0.4); } }
+@keyframes line-in { from { opacity: 0; transform: translateY(3px); } }
+
+/* A failed run: the figure gives way to a red "!" (shell.ts statusDisc), which stays until the
+ * failure is dealt with. It folds in once as it happens, rocking a little; when the failure is
+ * dismissed the figure unfolds back. */
+:is(.rail-row-stand, .rail-pin-stand, .cofounder-stand):has(> .alert-mark) > .figure { opacity: 0; transform: scale(0.3, 0.6); }
+.alert-mark { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.alert-mark::before, .alert-mark::after {
+	content: ""; position: absolute; left: 50%; width: 22%; aspect-ratio: 1; border-radius: 999px;
+	background: var(--rail-status-failed, #ff3b30); translate: -50% 0;
+}
+.alert-mark::before { top: 14%; aspect-ratio: auto; height: 48%; }
+.alert-mark::after { top: 69%; }
+:is(.rail-row-stand, .rail-pin-stand, .cofounder-stand) > .figure { transform-origin: 50% 70%; }
+.state-failed :is(.rail-row-stand, .rail-pin-stand, .cofounder-stand) > .figure { animation: figure-fold var(--motion-base) var(--ease-in) both; }
+@keyframes figure-fold { from { opacity: 1; transform: none; } }
+.state-failed .alert-mark { animation: alert-in 1100ms var(--ease-in-out) 120ms both; }
+@keyframes alert-in {
+	0% { opacity: 0; transform: scale(0.4); }
+	22% { opacity: 1; transform: scale(1.06); }
+	32% { transform: scale(1); }
+	50% { transform: rotate(-8deg); }
+	70% { transform: rotate(5deg); }
+	100% { transform: none; }
+}
+.state-recovered :is(.rail-row-stand, .rail-pin-stand, .cofounder-stand) > .figure { animation: figure-unfold var(--motion-slow) var(--ease-spring) both; }
+@keyframes figure-unfold { from { opacity: 0; transform: scale(0.3, 0.6); } }
+@keyframes disc-pop { from { transform: scale(0); } }
+.mention-arrived .rail-mention { animation: disc-pop var(--motion-spring) var(--ease-bounce) both; }
+
+/* A new hire or a new chat drops into the rail with a little squash. */
+:is(.rail-row, .rail-pin).is-arriving { animation: row-drop var(--motion-spring) var(--ease-out) both; }
+@keyframes row-drop {
+	0% { opacity: 0; transform: translateY(-14px) scale(0.92); }
+	45% { opacity: 1; transform: translateY(2px) scale(1.02, 0.97); }
+	70% { transform: translateY(-1px) scale(0.99, 1.01); }
+	100% { transform: none; }
+}
+
+/* ---- a new hire: placed in the rail like a card ----
+ * The row itself comes in as a card lifted off the table, in the app's own paper, and slides
+ * in from the rail's edge while the rows below make room (ui/rail-flip.ts). It lands with a
+ * small give, settles flat into the rail as its paper and shadow fade, a light runs across it
+ * once, and the name is written in. No colour of its own: the agent's figure is the colour. */
+:is(.rail-row, .rail-pin).is-hired { animation: hire-place 1200ms both; }
+@keyframes hire-place {
+	0% { transform: translateX(115%) rotate(5deg); background-color: var(--overlay); box-shadow: 0 16px 34px rgb(0 0 0 / 16%), 0 2px 6px rgb(0 0 0 / 8%); animation-timing-function: var(--ease-out); }
+	36% { transform: translateX(-1.5%) rotate(-0.6deg); background-color: var(--overlay); box-shadow: 0 10px 24px rgb(0 0 0 / 13%), 0 2px 6px rgb(0 0 0 / 7%); animation-timing-function: var(--ease-in-out); }
+	46% { transform: none; background-color: var(--overlay); box-shadow: 0 4px 12px rgb(0 0 0 / 10%), 0 1px 3px rgb(0 0 0 / 6%); animation-timing-function: var(--ease-in-out); }
+	100% { transform: none; background-color: transparent; box-shadow: 0 0 0 rgb(0 0 0 / 0%), 0 0 0 rgb(0 0 0 / 0%); }
+}
+:is(.rail-row, .rail-pin).is-hired::after {
+	content: ""; position: absolute; inset: 0; z-index: 3; border-radius: inherit; pointer-events: none;
+	background: linear-gradient(105deg, transparent 38%, rgb(255 255 255 / 45%) 50%, transparent 62%) no-repeat;
+	background-size: 250% 100%;
+	animation: hire-shine 620ms var(--ease-in-out) 520ms both;
+}
+@keyframes hire-shine {
+	from { background-position: 120% 0; }
+	to { background-position: -120% 0; }
+}
+.rail-row.is-hired .rail-row-copy strong { animation: hire-name 420ms var(--ease-out) 460ms both; }
+.rail-row.is-hired .rail-row-copy small { animation: line-in var(--motion-base) var(--ease-out) 700ms both; }
+.rail-pin.is-hired .rail-pin-name { animation: hire-name 420ms var(--ease-out) 460ms both; }
+@keyframes hire-name { from { clip-path: inset(-2px 100% -2px 0); } to { clip-path: inset(-2px -2px -2px 0); } }
+.is-hired :is(.rail-row-status, .rail-mention) { animation: disc-in var(--motion-base) var(--ease-out) 820ms both; }
+
+/* ---- a decision: answered cards settle, calmly ----
+ * The answered card folds down to its outcome line while the card it was fades out over it
+ * (ui/motion.ts foldFrom). The outcome's check or cross draws itself in and the line fades
+ * up beside it. An approval card keeps its facts; its edge glows once in the answer's colour
+ * and its check draws in. */
+.action-review-card.is-decided { animation: motion-hold calc(var(--motion-spring) + 420ms) linear; }
+.action-review-card.is-decided .review-mark { animation: decided-mark var(--motion-base) var(--ease-out) 140ms both; }
+@keyframes decided-mark { from { opacity: 0; transform: scale(0.7); } }
+.action-review-card.is-decided .review-mark path,
+.auth-card.is-decided .decision-heading > .icon path { stroke-dasharray: 24; animation: draw-stroke 420ms var(--ease-out) 220ms both; }
+@keyframes draw-stroke { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+.action-review-card.is-decided .review-outcome { animation: decided-line var(--motion-slow) var(--ease-out) 260ms both; }
+@keyframes decided-line { from { opacity: 0; transform: translateX(-4px); } }
+.auth-card.is-decided:not(.action-review-card) { animation: decided-edge 1400ms var(--ease-out), motion-hold calc(var(--motion-spring) + 420ms) linear; }
+.auth-card.is-decided[data-decision-state="approved"] { --decided: var(--ok); }
+.auth-card.is-decided:not([data-decision-state="approved"]) { --decided: var(--text-soft); }
+@keyframes decided-edge { from { border-color: color-mix(in srgb, var(--decided) 75%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--decided) 14%, transparent); } }
+.auth-card.is-decided .decision-heading .badge { animation: decided-line var(--motion-slow) var(--ease-out) 120ms both; }
+/* The card it was, laid over the fold and fading out (foldFrom). */
+.fold-ghost { position: absolute; inset: 0 0 auto; z-index: 1; pointer-events: none; animation: fold-ghost var(--motion-base) var(--ease-out) both; }
+@keyframes fold-ghost { to { opacity: 0; } }
+/* A question answered or declined settles to its quiet colours. */
+.interaction-card.is-decided { animation: decided-line var(--motion-slow) var(--ease-out) both; }
+
+/* ---- the agent's computer: it opens out of the header's computer button ---- */
+
+.computer-panel {
+	transform-origin: var(--computer-origin-x, calc(100% - 12px)) var(--computer-origin-y, -32px);
+	animation: computer-open var(--motion-spring) var(--ease-spring) both;
+}
+@keyframes computer-open {
+	from { opacity: 0; transform: scale(0.06); border-radius: 40px; }
+	25% { opacity: 1; }
+}
+.computer-panel.is-closing { animation: computer-close var(--motion-base) var(--ease-in) both; }
+@keyframes computer-close { to { opacity: 0; transform: scale(0.06); border-radius: 40px; } }
+
+/* ---- menus and popovers: they open out of what opened them ---- */
+
+.context-menu,
+.account-popover,
+.account-picture-menu,
+.preference-picker-popover { transform-origin: top left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
+.composer-menu,
+.skill-menu,
+.mention-picker,
+.recipient-menu { transform-origin: bottom left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
+.recipient-menu { transform-origin: top left; }
+@keyframes menu-in {
+	from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+	50% { opacity: 1; }
+}
+.context-menu.is-leaving { animation: menu-out var(--motion-fast) var(--ease-in) both; }
+@keyframes menu-out { to { opacity: 0; transform: scale(0.97); } }
+
+/* ---- dialogs and settings ---- */
+
+.surface-dialog[open],
+.modal,
+.settings-dialog,
+.feedback-dialog[open] { animation: dialog-in var(--motion-slow) var(--ease-spring) both; }
+@keyframes dialog-in {
+	from { opacity: 0; transform: translateY(10px) scale(0.96); }
+	40% { opacity: 1; }
+}
+.surface-dialog::backdrop,
+.feedback-dialog::backdrop,
+.modal-backdrop,
+.settings-overlay { animation: backdrop-in var(--motion-base) var(--ease-out) both; }
+@keyframes backdrop-in { from { opacity: 0; } }
+
+.modal-backdrop.is-leaving .modal,
+.settings-overlay.is-leaving .settings-dialog { animation: dialog-out var(--motion-fast) var(--ease-in) both; }
+.modal-backdrop.is-leaving,
+.settings-overlay.is-leaving { animation: backdrop-out var(--motion-fast) var(--ease-in) both; }
+@keyframes dialog-out { to { opacity: 0; transform: translateY(6px) scale(0.97); } }
+@keyframes backdrop-out { to { opacity: 0; } }
+
+/* ---- presses: every button answers the finger ---- */
+
+.btn, .icon-button, .hub-create-submit {
+	transition-property: background-color, border-color, color, box-shadow, transform;
+	transition-duration: var(--motion-fast), var(--motion-fast), var(--motion-fast), var(--motion-fast), var(--motion-base);
+	transition-timing-function: ease, ease, ease, ease, var(--ease-spring);
+}
+.btn:active:not(:disabled, [aria-disabled="true"]),
+.icon-button:active:not(:disabled),
+.hub-create-submit:active:not(:disabled) { transform: scale(0.95); }
+.context-menu-item, .composer-menu button, .preference-picker-option { transition: background-color var(--motion-fast) ease; }
+
+/* ---- theme: the new look washes out from where it was chosen (ui/appearance.ts) ---- */
+
+:root[data-theme-changing] *, :root[data-theme-changing] *::before, :root[data-theme-changing] *::after { transition: none !important; }
+::view-transition-old(root),
+::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-new(root) { animation: theme-reveal 560ms var(--ease-in-out); }
+@keyframes theme-reveal {
+	from { clip-path: circle(0 at var(--theme-x, 50%) var(--theme-y, 50%)); }
+	to { clip-path: circle(var(--theme-r, 150vmax) at var(--theme-x, 50%) var(--theme-y, 50%)); }
+}
+

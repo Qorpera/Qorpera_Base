@@ -14,6 +14,11 @@ import { type JsonValue, parseCompanyComputerNativeRoute, parseCompanyComputerNa
 
 export { parseCompanyComputerNativeRoute, parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 
+import type {
+	CompanyAccountFillAnswer,
+	CompanyAccountFillRequest,
+	CompanyAccountRefusal,
+} from "./cloud-company-account-vault.ts";
 import {
 	type CloudCompanyComputerSessionFactory,
 	createCloudCompanyComputerSession,
@@ -31,6 +36,15 @@ import {
 import type { CompanyComputerCloudEndpoint } from "./cloud-company-computer-tools.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
+
+/** The vault, for a vault_fill (company accounts A1-3): HttpCloudSecretBrokerClient. */
+export interface CompanyComputerAccountFills {
+	companyAccountFill(
+		request: CompanyAccountFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal>;
+}
 
 export const COMPANY_COMPUTER_NATIVE_SCHEMA = "qorpera.company-computer-native/v1";
 export const COMPANY_COMPUTER_NATIVE_MAX_REQUEST = 96 * 1024;
@@ -107,6 +121,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	readonly #url: string;
 	readonly #token: string;
 	readonly #fetch: typeof fetch;
+	readonly #accountFills: CompanyComputerAccountFills | undefined;
 	readonly #leases = new Map<string, CompanyComputerScreenLease>();
 	#closed = false;
 
@@ -117,6 +132,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		token: string;
 		registry: HttpCloudCompanyComputerRegistry;
 		fetch?: typeof fetch;
+		accountFills?: CompanyComputerAccountFills;
 	}) {
 		const descriptor = parseCompanyComputerNativeDescriptor(options.descriptor, options.run);
 		const endpoint = parseCompanyComputerNativeUrl(options.url);
@@ -132,6 +148,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		this.#url = endpoint.url;
 		this.#token = options.token;
 		this.#fetch = options.fetch ?? fetch;
+		this.#accountFills = options.accountFills;
 		this.#effects = new CloudCompanyComputerEffectControl({
 			run: options.run,
 			scope: descriptor.scope,
@@ -215,6 +232,38 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 			throw new Error("OFFICE_NATIVE_IDENTITY_CHANGED");
 		const signal = AbortSignal.any([context.signal, this.#run.signal]);
 		await this.#run.assertActive(signal);
+		// A vault_fill: the vault seals the value to the boot key of the computer this lease holds, for exactly
+		// this call (the receipt's input digest is this envelope's), and this host only carries the box. A
+		// refusal (accounts switched off, no such account, an older computer) is the call's answer, unsent.
+		let fill: Readonly<Record<string, string>> | undefined;
+		const action = operation.arguments as { kind?: unknown; action?: unknown };
+		if (action.kind === "browser" && action.action === "vault_fill") {
+			const answer = this.#accountFills
+				? await this.#accountFills.companyAccountFill(
+						{
+							binding: this.#run.binding,
+							receiptId: context.receiptId,
+							idempotencyKey: context.idempotencyKey,
+							envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
+						},
+						signal,
+					)
+				: ({
+						schema: "qorpera.company-account-refusal/v1",
+						code: "0A000",
+						message: "Company accounts are not set up for this company's computers",
+					} as const);
+			if (answer.schema !== "qorpera.company-account-fill-answer/v1")
+				return {
+					kind: "json",
+					value: {
+						action: "vault_fill",
+						completed: false,
+						refused: { code: answer.code, message: answer.message },
+					},
+				};
+			fill = answer.box;
+		}
 		// Retain cleanup after ambiguous delivery. Never mark a remote session
 		// unused just because its response was lost or its caller was cancelled.
 		this.#leases.set(lease.leaseId, structuredClone(lease));
@@ -225,6 +274,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 					operation,
 					lease,
 					receipt: { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey },
+					...(fill ? { fill } : {}),
 				},
 				signal,
 			),
@@ -269,6 +319,8 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	registry: HttpCloudCompanyComputerRegistry;
 	fetch?: typeof fetch;
 	objectGateway?: { baseUrl: string; token: string; fetch?: typeof fetch };
+	/** The vault, for vault_fill (A1-3); without it every fill is refused before the office. */
+	accountFills?: CompanyComputerAccountFills;
 }): CloudCompanyComputerSessionFactory {
 	// One computer, or every computer of the company: the run reaches the one its screen is on.
 	const route = parseCompanyComputerNativeRoute(options.url);
