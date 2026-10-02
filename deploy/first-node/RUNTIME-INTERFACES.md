@@ -298,14 +298,17 @@ members = "all"                     # all | owners | none
 
 ### Rows
 
-- `rows.csv` is RFC 4180 CSV in UTF-8. Its first line names its columns, in any order. It may leave out optional
+- `rows.csv` is RFC 4180 CSV in UTF-8, with or without a byte order mark. Its first line names its columns, in any
+  order. It may leave out optional
   columns, which then read as empty, and it names no column the definition lacks.
 - An empty field is allowed only in an `optional` column.
 - Two rows with the same key are refused.
 - Every save of a rows file is checked against the table's definition, within 64 KiB. The checks are: the header,
   each value's type, the key, `[write]` (who may write rows) and the claim rule below.
-- **A table's two files stay together.** Creating, moving or deleting a table is one unit: its folder. Deleting
-  `table.toml` or `rows.csv` on its own is refused, as is a `rows.csv` outside a table folder.
+- **A table's two files stay together.** Creating, moving or deleting a table is one unit: its folder. Deleting or
+  moving `table.toml` or `rows.csv` on its own is refused, as is a `rows.csv` outside a table folder.
+- **A table folder** holds `table.toml`, `rows.csv` and an optional `README.md`, nothing else. A table without
+  `rows.csv` yet is valid and has no rows; a `rows.csv` without `table.toml` is refused.
 - **A definition change lands only if the rows it finds still fit.** The folder core commits a change set one unit
   at a time, so two files never change as one. Changes therefore go in steps, each its own save, and `save_interface`
   makes them in order:
@@ -391,7 +394,7 @@ files (STATE-FILES §3).
 | Code | When |
 | --- | --- |
 | `toml` | not the TOML this format reads (§3) |
-| `encoding` | not UTF-8 text, or a byte order mark |
+| `encoding` | not UTF-8 text; a byte order mark is refused in TOML files and ignored at the start of `rows.csv`, which spreadsheet exports add |
 | `format` | `format` missing or not this format |
 | `unknown_key` | a key this table doesn't take |
 | `missing_key` | a required key is missing |

@@ -4132,7 +4132,7 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
      - `rows.csv` holds its rows: a structured file checked at every save against the definition (founder decision,
        2 October 2026: rows in a file first), within the folder core's current bound for a checked file, which is
        the core's and not a product limit (5.5).
-   - Deleting `table.toml` or `rows.csv` on its own is refused; deleting the folder deletes the table.
+   - Deleting or moving `table.toml` or `rows.csv` on its own is refused; deleting the folder deletes the table.
    - The rows name their columns in their first line, in any order, and may leave out optional ones.
    - A definition change lands only if the rows it finds still fit. To add a required column, add it as optional,
      fill the rows, then make it required. To remove one, make it optional, drop it from the rows, then remove it.
