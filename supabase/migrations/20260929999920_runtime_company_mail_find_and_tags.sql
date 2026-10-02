@@ -22,8 +22,8 @@
 -- (waitSeconds). It is a read: the run's company and environment only, through the native tool binding.
 --
 -- Locks: find takes the run's job and run rows as read_event does, and reads deliveries without locking: one
--- ordered scan of each mailbox's (hook_id, received_at) index, each stopping at 2000 rows, so a company's
--- volume never makes a search read more than 2000 rows a mailbox.
+-- ordered scan of each mailbox's (hook_id, received_at) index, each planned with that mailbox's values and
+-- stopping at 2000 rows, so a company's volume never makes a search read more than 2000 rows a mailbox.
 
 set local lock_timeout = '3s';
 
@@ -189,6 +189,11 @@ declare
 	v_from text;
 	v_subject text;
 	v_hooks uuid[];
+	v_hook uuid;
+	v_ids uuid[] := '{}';
+	v_times timestamptz[] := '{}';
+	v_box_ids uuid[];
+	v_box_times timestamptz[];
 	v_found jsonb;
 	v_more boolean;
 	v_next_before timestamptz;
@@ -229,20 +234,34 @@ begin
 		raise exception 'No mailbox of this company has that address; list_hooks shows them' using errcode = '22023';
 	end if;
 	-- The newest 2000 mails in the window bound the search: each mailbox's own index scan stops at 2000, and the
-	-- newest 2000 of those are searched. Matching reads only the kept headers.
-	with candidate as (
-		select picked.* from unnest(v_hooks) as box(hook_id)
-		cross join lateral (
-			select delivery.id, delivery.hook_id, delivery.received_at, delivery.headers
-			from public.qorpera_event_deliveries as delivery
-			where delivery.hook_id = box.hook_id and delivery.status = 'verified'
-				and delivery.event_type = 'mail.received' and delivery.received_at >= v_since
-				and (v_before is null or delivery.received_at < v_before)
-			order by delivery.received_at desc, delivery.id desc
-			limit 2000
-		) as picked
+	-- newest 2000 of those are searched. Each mailbox is planned on its own, with its hook id and times as values
+	-- (EXECUTE), so the planner sees that mailbox's own volume and keeps to its (hook_id, received_at) index, where
+	-- the times are the index's bounds. Matching reads only the kept headers.
+	foreach v_hook in array v_hooks loop
+		execute 'select coalesce(array_agg(picked.id), ''{}''), coalesce(array_agg(picked.received_at), ''{}'')
+			from (select delivery.id, delivery.received_at from public.qorpera_event_deliveries as delivery
+				where delivery.hook_id = $1 and delivery.status = ''verified''
+					and delivery.event_type = ''mail.received'' and delivery.received_at >= $2
+					and delivery.received_at < $3
+				order by delivery.received_at desc, delivery.id desc
+				limit 2000) as picked'
+		into v_box_ids, v_box_times using v_hook, v_since, coalesce(v_before, 'infinity'::timestamptz);
+		v_ids := v_ids || v_box_ids;
+		v_times := v_times || v_box_times;
+	end loop;
+	-- The kept 2000 are read back one by one by their key (the limit keeps it a lookup, never a scan of the table).
+	with picked as (
+		select picked.id, picked.received_at from unnest(v_ids, v_times) as picked(id, received_at)
 		order by picked.received_at desc, picked.id desc
 		limit 2000
+	), candidate as (
+		select delivery.* from picked
+		cross join lateral (
+			select one.id, one.hook_id, one.received_at, one.headers
+			from public.qorpera_event_deliveries as one
+			where one.id = picked.id
+			limit 1
+		) as delivery
 	), matched as (
 		select candidate.id, candidate.received_at, jsonb_strip_nulls(jsonb_build_object(
 			'deliveryId', candidate.id,
@@ -261,13 +280,15 @@ begin
 		limit 11
 	), sized as (
 		-- The bytes each mail takes in the tool's answer, which carries this text inside a JSON string and escapes
-		-- < > & as \u003c: a quote or backslash costs one byte more, those three five more. The answer keeps the
-		-- newest match always, then as many of the 10 as fit 6000 such bytes.
+		-- < > & U+2028 U+2029 as \u003c: a quote or backslash costs one byte more, < > & five more, the two line
+		-- separators (three bytes each in UTF-8) three more. The answer keeps the newest match always, then as many
+		-- of the 10 as fit 6000 such bytes.
 		select matched.item, matched.received_at,
 			row_number() over (order by matched.received_at desc, matched.id desc) as place,
 			sum(octet_length(matched.item::text) + 1
 				+ (length(matched.item::text) - length(translate(matched.item::text, '"\', '')))
-				+ 5 * (length(matched.item::text) - length(translate(matched.item::text, '<>&', ''))))
+				+ 5 * (length(matched.item::text) - length(translate(matched.item::text, '<>&', '')))
+				+ 3 * (length(matched.item::text) - length(translate(matched.item::text, E'\u2028\u2029', ''))))
 				over (order by matched.received_at desc, matched.id desc) as running
 		from matched
 	), kept as (

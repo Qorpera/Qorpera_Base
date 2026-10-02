@@ -219,6 +219,13 @@ select pg_temp.mail(pg_temp.mail_id(500 + n), 'support+quote@mail.example.test',
 select pg_temp.wake_assert(jsonb_array_length(pg_temp.find('{"to":"support+quote@mail.example.test"}') -> 'mails') between 1 and 5
 	and pg_temp.find('{"to":"support+quote@mail.example.test"}') ->> 'more' = 'true',
 	'Quotes count for their escapes too');
+-- The two line separators, should one be kept: 3 bytes each, 6 in the answer.
+select pg_temp.mail(pg_temp.mail_id(510 + n), 'support+line@mail.example.test', 'Line ' || n) from generate_series(1, 6) as n;
+update public.qorpera_event_deliveries set headers = headers || jsonb_build_object('subject', repeat(chr(8232), 100) || repeat(chr(8233), 100))
+where headers ->> 'delivered-to' = 'support+line@mail.example.test';
+select pg_temp.wake_assert(jsonb_array_length(pg_temp.find('{"to":"support+line@mail.example.test"}') -> 'mails') between 1 and 5
+	and pg_temp.find('{"to":"support+line@mail.example.test"}') ->> 'more' = 'true',
+	'Line separators count for their escapes too');
 -- A search that shows everything says no more and gives no next page.
 select pg_temp.wake_assert(pg_temp.find('{"subject":"code is 123456"}') ->> 'more' = 'false'
 	and not (pg_temp.find('{"subject":"code is 123456"}') ? 'nextBefore'),

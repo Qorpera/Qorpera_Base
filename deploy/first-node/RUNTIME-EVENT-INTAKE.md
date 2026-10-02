@@ -519,8 +519,8 @@ October, for accounts the company owns).
   It returns up to 10, newest first, as many as fit the tool's 8 KiB answer (about 6000 bytes of mails). Each has
   `deliveryId`, `mailbox`, up to 5 `deliveredTo`, `from` and `subject` (200 characters each), `authentication` and
   `receivedAt`. `more` is true when there are other matches, or when the search reached its bound: it looks at the
-  newest 2000 mails in the window (one ordered index scan per mailbox, each stopping at 2000 rows, whatever the
-  company's volume) and reads only the kept headers. `nextBefore` is the `before` that shows the next older ones,
+  newest 2000 mails in the window (one ordered index scan per mailbox, planned with that mailbox's own values and
+  stopping at 2000 rows, whatever the company's volume) and reads only the kept headers. `nextBefore` is the `before` that shows the next older ones,
   even when a page shows none. The answer's size counts the escaping it gets inside the tool's 8 KiB. It returns no mail text and matches nothing
   inside it; the agent reads a mail with `read_event`. With `waitSeconds` (up to 120) the runtime asks again every 3
   seconds until a match arrives. It is a read for the automatic review.
