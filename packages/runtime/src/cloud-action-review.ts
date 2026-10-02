@@ -191,6 +191,7 @@ export function cloudActionEffect(
 		case "machine_list":
 		case "list_hooks":
 		case "read_event":
+		case "find_mail":
 			return "read";
 		case "company_write":
 		case "company_mkdir":

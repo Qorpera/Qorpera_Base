@@ -650,6 +650,9 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
+- Plus addresses (20260929999800_runtime_company_mail_find_and_tags): `<local part>+<tag>@<mail domain>` reaches the
+  mailbox, for a tag of 1–64 lowercase letters, digits, dots, hyphens and underscores; mailboxes show only their own
+  `email`. Agents find received mail with the runtime tool `find_mail`; there is no client surface.
 - Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
   tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
