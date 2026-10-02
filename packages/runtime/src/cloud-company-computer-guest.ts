@@ -16,6 +16,11 @@ import type { BrowserContext, Page } from "playwright-core";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
+import {
+	companyComputerPrivateFieldMasks,
+	readCompanyComputerPrivateValues,
+	redactCompanyComputerSnapshot,
+} from "./cloud-company-computer-private-fields.ts";
 import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
@@ -304,6 +309,7 @@ export class CompanyComputerGuestAutomation {
 	readonly #boundary: CompanyComputerGuestBoundary;
 	readonly #commands?: CompanyComputerGuestCommands;
 	readonly #browser?: CompanyComputerBrowserSession;
+	readonly #screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 	readonly #screenshots: CompanyComputerScreenshotPublisher;
 	readonly #fileImports: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter | undefined;
 	readonly #fileExports:
@@ -319,6 +325,8 @@ export class CompanyComputerGuestAutomation {
 		boundary: CompanyComputerGuestBoundary;
 		commands?: CompanyComputerGuestCommands;
 		browser?: CompanyComputerBrowserSession;
+		/** The browser window open on this screen now, whether or not this run drives it; it never opens one. */
+		screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 		screenshots: CompanyComputerScreenshotPublisher;
 		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
@@ -331,6 +339,7 @@ export class CompanyComputerGuestAutomation {
 		this.#boundary = options.boundary;
 		this.#commands = options.commands;
 		this.#browser = options.browser;
+		this.#screenBrowser = options.screenBrowser;
 		this.#screenshots = options.screenshots;
 		this.#fileExports = options.fileExports;
 		this.#fileImports = options.fileImports;
@@ -349,6 +358,35 @@ export class CompanyComputerGuestAutomation {
 			if (error instanceof CompanyComputerActionNotStartedError || error instanceof CompanyComputerActionFailedError)
 				throw error;
 			throw new CompanyComputerActionFailedError(error);
+		}
+	}
+
+	/**
+	 * A whole-screen capture shows the browser unmasked. It is refused while a shown
+	 * tab of the window on this screen holds a private value in any frame, and while
+	 * a tab cannot answer (crashed or hung): a member closes that tab, or the agent
+	 * uses a browser screenshot, which masks.
+	 */
+	async #assertNoPrivateValueShown(signal: AbortSignal): Promise<void> {
+		let pages: Page[];
+		try {
+			// A window still opening is waited for: it may show a box a moment later.
+			const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+			pages = context?.pages() ?? [];
+		} catch (error) {
+			signal.throwIfAborted();
+			throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+		}
+		signal.throwIfAborted();
+		for (const page of pages) {
+			if (page.isClosed()) continue;
+			let values: string[];
+			try {
+				values = await readCompanyComputerPrivateValues(page, { shownOnly: true, allFrames: true });
+			} catch (error) {
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			}
+			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
 		}
 	}
 
@@ -484,7 +522,7 @@ export class CompanyComputerGuestAutomation {
 						page.screenshot({
 							type: "png",
 							timeout: 5_000,
-							mask: [page.locator('input[type="password"],input[autocomplete="one-time-code"]')],
+							mask: companyComputerPrivateFieldMasks(page),
 						}),
 					),
 					lease,
@@ -525,7 +563,13 @@ export class CompanyComputerGuestAutomation {
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
 			if (action.action === "snapshot") {
-				const snapshot = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				// The aria snapshot copies every box's value; read the private ones on both sides of it.
+				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				const aria = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				const snapshot = await this.#pageCall(async () =>
+					redactCompanyComputerSnapshot(aria, [...before, ...after]),
+				);
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
@@ -544,13 +588,12 @@ export class CompanyComputerGuestAutomation {
 		}
 		if (!this.#commands) throw new Error("CONTAINED_COMPUTER_COMMANDS_UNAVAILABLE");
 		if (action.kind === "screenshot") {
-			return this.#publish(
-				await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 }),
-				lease,
-				effect,
-				"desktop",
-				operation,
-			);
+			// The whole screen shows the browser unmasked: no capture while a shown tab holds a private value,
+			// checked again after the capture for one typed meanwhile.
+			await this.#assertNoPrivateValueShown(signal);
+			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
+			await this.#assertNoPrivateValueShown(signal);
+			return this.#publish(png, lease, effect, "desktop", operation);
 		}
 		let args: string[];
 		if (action.kind === "shell") args = ["--noprofile", "--norc", "-c", action.command];
