@@ -105,7 +105,16 @@ the ratified window is 5 minutes, `300000`).
   (once per service start) wipes the scratch of every untracked slot.
 - `rebuild-exec-host.sh` refuses while any slot unit runs, parked hosts
   included: stop the orchestrator, wait one window (5 minutes) for the parked
-  hosts to end, then rebuild.
+  hosts to end, then rebuild. With `EXEC_CLEAR_PARKED=1` the script ends parked
+  hosts itself once the orchestrator is stopped (no run can claim them then); a
+  runner unit or an active journal (a run in flight) still refuses. A rolling
+  update uses it on a node that takes no runs (`RUNTIME-ROLLING-UPDATE.md`), with
+  `EXEC_START_ORCHESTRATOR=1` to start the orchestrator again once the host is
+  healthy and declared (the script fails unless it is still running a few
+  seconds later): while the node takes no runs it reports heartbeats and claims
+  nothing. A release still owed by a slot whose retries ran out sits in
+  `journals/archive/*.lost.json`, which the rebuild wipes; in a roll the node's
+  drain gate (`readyForNodeRelease`, no run machine left) covers it.
 
 ## A fast host on every node (identical nodes, change 5, 2026-09-28)
 

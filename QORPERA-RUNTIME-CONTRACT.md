@@ -4013,6 +4013,55 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
 
+### 2026-10-02 amendment: work for people
+
+Proposed 2 October 2026 (F2, step H1); pending founder approval. It writes
+into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
+on Qorpera", section 5) and widens 16.1's last step. The folder names
+`human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
+and can still be renamed. Formats:
+`deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2.
+
+1. **Physical work is a file.** Work only a person can do (signing, paying,
+   posting letters, fitting hardware, a step a website demands of a person) is
+   a human task: `human-tasks/<task>.md`, with instructions a stranger could
+   follow, a checklist, a due date and the proof that counts as done. What the
+   person sends back lands beside it in `human-tasks/<task>/`. The task names
+   its person (a member, or a contact) and the agent that asked.
+2. **16.1's last step widens.** Step 6 reads: "a typed request to the
+   relevant member, or, for work only a person can do, a human task for a
+   member or a contact (5.6)". Cards stay for quick answers.
+3. **Outside people are contacts, never accounts.** `contacts/<contact>.md`
+   holds one person or firm the company deals with: name, organization, how to
+   reach them and what they may be asked to do. A contact reaches a task only
+   through a link to that one task, sent through a reviewed outside action. A
+   contact's proof and notes are outside content (11.1). A contact who asks to
+   be forgotten is erased with the folder core's erasure, widened from a
+   deleted agent's folder to any deleted path (core §8) before any link is
+   sent; free text that names the contact elsewhere is removed by a member.
+4. **No secret or delivery state in the folder.** A code a person enters goes
+   to the vault, bound to the task. A task link's token is kept only as a hash,
+   and an email's delivery is runtime state (5.6's list of what the database
+   holds).
+5. **5.6 changes when this is approved:**
+   - the tree gains
+
+     ```
+     human-tasks/
+       <task>.md                work an agent hands to a member or a contact
+       <task>/                  what the person sends back: proof/ and note.md
+     contacts/
+       <contact>.md             one file per outside person or firm
+     ```
+
+   - "Structured files" gains task and contact files: a fixed format, with
+     their index once the folder core keeps it (H2);
+   - the platform seeds both folders when a company is created, once that
+     index exists; whether they join the seeded folders that cannot be
+     deleted or moved is decided then.
+6. **16.2 is unchanged here.** Turning the office sign-in handoff into a human
+   task (A1, company accounts) is for A1's own amendment.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
