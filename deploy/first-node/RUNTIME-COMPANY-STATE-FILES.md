@@ -1398,6 +1398,10 @@ saved), no seeding. Two PRs, released in this order:
   a folder move of `drafts/` into `contacts`, of `human-tasks/` out and a folder copy of
   `contacts/` refused, the secret rule, and no index.
 
+**Built (H1a): the parser** (`packages/cloud-client/src/company-state-files.ts`), as planned. One choice made while
+building: a contact's `asks` entry may not start or end with a space (a quoted entry could keep one), since the
+database's shape check holds one-line values trimmed.
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
 human task through `computer`, `connection`, `step` and the secret keys, once H2 is in.
