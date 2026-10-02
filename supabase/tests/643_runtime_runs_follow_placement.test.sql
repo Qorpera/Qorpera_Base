@@ -43,6 +43,7 @@ select public.qorpera_enroll_runtime_node_provider('64300000-0000-4000-8000-0000
 select public.qorpera_enroll_runtime_node_provider('64300000-0000-4000-8000-00000000000b',repeat('b',64),'native','native-b',repeat('2',64),4000,8589934592);
 select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000b1','Node B fast host','native-b',repeat('4',64),3600);
 select public.qorpera_register_runner_orchestrator('64300000-0000-4000-8000-0000000000a2','Node A fresh VMs','process',repeat('5',64),3600);
+-- END FAST PLACEMENT FIXTURE (test 810 runs after this line)
 
 -- Without roles nothing changes: the first orchestrator to ask takes the run.
 reset role;
@@ -99,9 +100,9 @@ savepoint refused;
 select pg_temp.wake_assert(pg_temp.fp_claim('30000000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'After the preferred node refused, the other fast host takes the run');
 rollback to savepoint refused;
-select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2')::text,true);
-select pg_temp.wake_assert(current_setting('qorpera_test.fp_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
-	'After a fast host refused for capacity, the fresh-VM path takes the run');
+-- The fresh-VM path waits while the other node's fast host may still take it (20260929999997; test 810).
+select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,
+	'After one fast host refused for capacity, the fresh-VM path waits for the other fast host');
 -- A fast host refuses work it does not serve (NODE_NOT_PREFERRED): the overflow takes it at once.
 rollback to savepoint refused;
 select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('30000000-0000-4000-8000-000000000092')::text,true);
@@ -109,7 +110,10 @@ select pg_temp.fp_refuse('30000000-0000-4000-8000-000000000092',current_setting(
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'The fresh-VM path takes what a fast host does not serve');
 -- The overflow never skips its own wait: its node is full too, so everyone waits, the overflow included.
+-- (Node A's fast host refuses first: before that the overflow leaves the run to it, 20260929999997.)
 rollback to savepoint refused;
+select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('30000000-0000-4000-8000-000000000092')::text,true);
+select pg_temp.fp_refuse('30000000-0000-4000-8000-000000000092',current_setting('qorpera_test.fp_claim')::jsonb,'SANDBOX_CAPACITY_EXHAUSTED');
 select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2')::text,true);
 select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000a2',current_setting('qorpera_test.fp_claim')::jsonb,'NODE_CAPACITY_EXHAUSTED');
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,'The overflow waits out its own refusal');
@@ -172,6 +176,7 @@ rollback to savepoint unbound;
 -- take the job again at once (no claim/refuse loop); it waits out its own refusal.
 savepoint loop_guard;
 select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000b1',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000b1'),'SANDBOX_CAPACITY_EXHAUSTED');
+select pg_temp.fp_refuse('30000000-0000-4000-8000-000000000092',pg_temp.fp_claim('30000000-0000-4000-8000-000000000092'),'SANDBOX_CAPACITY_EXHAUSTED');
 select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000a2',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2'),'NODE_CAPACITY_EXHAUSTED');
 reset role;
 update public.qorpera_runner_jobs set dispatch_deferred_until = null, dispatch_refused_by = null

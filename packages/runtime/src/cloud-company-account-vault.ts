@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	isUuid,
 	parseBoundedText,
@@ -8,10 +9,13 @@ import {
 	parseSha256Hex,
 	parseUuid,
 } from "@qorpera/contracts";
+import { type CompanyAccountFillField, sealCompanyAccountFill } from "./cloud-company-account-fill-box.ts";
 import {
 	type CompanyAccountPasswordPolicy,
 	companyAccountFields,
+	companyAccountTotpCode,
 	generateCompanyAccountPassword,
+	parseCompanyAccountFields,
 } from "./cloud-company-accounts.ts";
 import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
@@ -26,6 +30,12 @@ export const COMPANY_ACCOUNT_REQUEST_SCHEMA = "qorpera.company-account-request/v
 const DESCRIPTOR_SCHEMA = "qorpera.company-account/v1";
 const REFUSAL_SCHEMA = "qorpera.company-account-refusal/v1";
 const CONTEXT_SCHEMA = "qorpera.company-account-context/v1";
+export const COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA = "qorpera.company-account-fill-request/v1";
+const FILL_CONTEXT_SCHEMA = "qorpera.company-account-fill-context/v1";
+const FILL_ANSWER_SCHEMA = "qorpera.company-account-fill-answer/v1";
+const SHA256 = /^[0-9a-f]{64}$/;
+/** An authenticator code with less time left than this waits for the next one, so it is not stale when typed. */
+const CODE_MARGIN_MS = 3_000;
 /** Lowercase DNS labels of 1-63 characters (SQL qorpera_company_account_host_valid). */
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -96,8 +106,25 @@ export interface CompanyAccountOpening {
 	readonly envelopeSha256: string;
 }
 
-/** The broker-role database calls (supabase migration 20260929999700). */
+/** One `computer_browser` `vault_fill` call of an agent's run, as the native host begun it (A1-3). */
+export interface CompanyAccountFillRequest {
+	readonly binding: CloudNativeToolBinding;
+	readonly receiptId: string;
+	/** The receipt's downstream idempotency key; the database keeps its SHA-256. */
+	readonly idempotencyKey: string;
+	/** The call's operation envelope, exactly as the receipt's input digest was taken of it. */
+	readonly envelope: string;
+}
+
+/** The value sealed to the computer's boot key; only that office service opens it. */
+export interface CompanyAccountFillAnswer {
+	readonly schema: typeof FILL_ANSWER_SCHEMA;
+	readonly box: Readonly<Record<string, string>>;
+}
+
+/** The broker-role database calls (supabase migrations 20260929999700 and 20260929999750). */
 export interface CompanyAccountAuthority {
+	readCompanyAccountFill(request: CompanyAccountFillRequest, signal: AbortSignal): Promise<unknown>;
 	describeCompanyAccountOpen(call: CompanyAccountCall, signal: AbortSignal): Promise<unknown>;
 	openCompanyAccount(call: CompanyAccountCall, opening: CompanyAccountOpening, signal: AbortSignal): Promise<unknown>;
 	setCompanyAccountState(
@@ -229,6 +256,126 @@ export function parseCompanyAccountAnswer(value: unknown): CompanyAccountAnswer 
 	};
 }
 
+/** A fill request as the runtime sends it; anything else is refused. */
+export function parseCompanyAccountFillRequest(value: unknown): CompanyAccountFillRequest {
+	const input = parseClosedRecord(value, "Company account fill request", [
+		"schema",
+		"binding",
+		"receiptId",
+		"idempotencyKey",
+		"envelope",
+	]);
+	if (input.schema !== COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA)
+		throw new Error("Company account fill request is malformed");
+	return {
+		binding: parseCloudNativeToolBinding(input.binding),
+		receiptId: parseUuid(input.receiptId, "Company account fill receipt"),
+		idempotencyKey: parseSha256Hex(input.idempotencyKey, "Company account fill idempotency key"),
+		envelope: parseBoundedText(input.envelope, "Company account fill call", 65_536),
+	};
+}
+
+/** The vault's answer to a fill, as the runtime reads it: a sealed box or a refusal. */
+export function parseCompanyAccountFillAnswer(value: unknown): CompanyAccountFillAnswer | CompanyAccountRefusal {
+	const input = parseRecord(value, "Company account fill answer");
+	if (input.schema === REFUSAL_SCHEMA) return parseCompanyAccountAnswer(input) as CompanyAccountRefusal;
+	parseClosedRecord(input, "Company account fill answer", ["schema", "box"]);
+	if (input.schema !== FILL_ANSWER_SCHEMA) throw new Error("Company account fill answer is malformed");
+	const box = parseClosedRecord(input.box, "Company account fill box", [
+		"schema",
+		"ephemeralPublicKey",
+		"iv",
+		"tag",
+		"ciphertext",
+	]);
+	const out: Record<string, string> = {};
+	for (const [name, part] of Object.entries(box)) out[name] = parseBoundedText(part, "Company account fill box", 8192);
+	return { schema: FILL_ANSWER_SCHEMA, box: out };
+}
+
+interface FillContext {
+	readonly account: CompanyAccountDescriptor;
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly keyId: string;
+	readonly envelope: Buffer;
+	readonly receiptId: string;
+	readonly field: CompanyAccountFillField;
+	readonly companyComputerId: string;
+	readonly computerGeneration: number;
+	readonly fillPublicKey: string;
+}
+
+/** What the database answers for a fill; the envelope is checked against its digest. */
+function fillContext(value: unknown): FillContext {
+	const input = parseClosedRecord(value, "Company account fill context", [
+		"schema",
+		"accountId",
+		"site",
+		"signInHosts",
+		"login",
+		"twoStep",
+		"status",
+		"version",
+		"companyId",
+		"environmentId",
+		"keyId",
+		"encryptedEnvelopeBase64",
+		"envelopeSha256",
+		"receiptId",
+		"field",
+		"companyComputerId",
+		"computerGeneration",
+		"fillPublicKey",
+	]);
+	if (input.schema !== FILL_CONTEXT_SCHEMA) throw new Error("Company account fill context is malformed");
+	const { companyId, environmentId, keyId, encryptedEnvelopeBase64, envelopeSha256, receiptId, field } = input;
+	const { companyComputerId, computerGeneration, fillPublicKey, ...facts } = input;
+	const account = parseCompanyAccountAnswer({
+		schema: DESCRIPTOR_SCHEMA,
+		accountId: facts.accountId,
+		site: facts.site,
+		signInHosts: facts.signInHosts,
+		login: facts.login,
+		twoStep: facts.twoStep,
+		status: facts.status,
+		version: facts.version,
+	}) as CompanyAccountDescriptor;
+	// PostgreSQL's encode(…, 'base64') breaks lines every 76 characters; the line breaks carry nothing.
+	const base64 = typeof encryptedEnvelopeBase64 === "string" ? encryptedEnvelopeBase64.replace(/\n/g, "") : null;
+	if (
+		typeof keyId !== "string" ||
+		!KEY_ID.test(keyId) ||
+		base64 === null ||
+		!/^[A-Za-z0-9+/]+={0,2}$/.test(base64) ||
+		typeof envelopeSha256 !== "string" ||
+		!SHA256.test(envelopeSha256) ||
+		(field !== "login" && field !== "password" && field !== "code") ||
+		typeof fillPublicKey !== "string"
+	)
+		throw new Error("Company account fill context is malformed");
+	const envelope = Buffer.from(base64, "base64");
+	if (
+		envelope.toString("base64") !== base64 ||
+		createHash("sha256").update(envelope).digest("hex") !== envelopeSha256
+	) {
+		envelope.fill(0);
+		throw new Error("Company account fill envelope is malformed");
+	}
+	return {
+		account,
+		companyId: parseUuid(companyId, "Company account company"),
+		environmentId: parseUuid(environmentId, "Company account environment"),
+		keyId,
+		envelope,
+		receiptId: parseUuid(receiptId, "Company account fill receipt"),
+		field,
+		companyComputerId: parseUuid(companyComputerId, "Company Computer"),
+		computerGeneration: parseInteger(computerGeneration, "Company Computer generation", 1, Number.MAX_SAFE_INTEGER),
+		fillPublicKey,
+	};
+}
+
 function refusal(error: unknown): CompanyAccountRefusal | null {
 	if (!error || typeof error !== "object") return null;
 	const { code, message } = error as { code?: unknown; message?: unknown };
@@ -241,17 +388,98 @@ export class CompanyAccountVault {
 	readonly #keys: CloudSecretKeyring;
 	readonly #random: (bytes: number) => Uint8Array;
 	readonly #newId: () => string;
+	readonly #now: () => number;
+	readonly #wait: (ms: number, signal: AbortSignal) => Promise<void>;
 
 	constructor(options: {
 		authority: CompanyAccountAuthority;
 		keys: CloudSecretKeyring;
 		random?: (bytes: number) => Uint8Array;
 		newId?: () => string;
+		now?: () => number;
+		wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keys;
 		this.#random = options.random ?? ((bytes) => randomBytes(bytes));
 		this.#newId = options.newId ?? randomUUID;
+		this.#now = options.now ?? Date.now;
+		this.#wait = options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
+	}
+
+	/**
+	 * One vault_fill: the value (the login, the password, or the authenticator's code now) sealed to the boot key
+	 * of the computer the run's screen lease holds, for this tool call; or the database's refusal. The value is
+	 * never in an answer, a log or an error.
+	 */
+	async fill(
+		request: CompanyAccountFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
+		try {
+			return await this.#fill(request, signal);
+		} catch (error) {
+			const refused = refusal(error);
+			if (refused) return refused;
+			throw new Error("Company account fill unconfirmed");
+		}
+	}
+
+	async #fill(
+		request: CompanyAccountFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
+		const context = fillContext(await this.#authority.readCompanyAccountFill(request, signal));
+		try {
+			if (context.receiptId !== request.receiptId) throw new Error("Company account fill context is malformed");
+			const secret = await this.#keys.use(
+				context.envelope,
+				{
+					companyId: context.companyId,
+					environmentId: context.environmentId,
+					secretId: context.account.accountId,
+					version: context.account.version,
+					keyId: context.keyId,
+				},
+				async (fields) => parseCompanyAccountFields(fields),
+			);
+			let value: string;
+			if (context.field === "login") value = context.account.login;
+			else if (context.field === "password") value = secret.password;
+			else {
+				const totp = secret.totp;
+				if (!totp)
+					return {
+						schema: REFUSAL_SCHEMA,
+						code: "22023",
+						message: "This account has no authenticator in the vault; its code comes by mail or text",
+					};
+				// A timer and the wall clock can disagree by a little: look again after each wait.
+				const period = totp.period * 1000;
+				for (let attempt = 0; attempt < 3; attempt++) {
+					const left = period - (this.#now() % period);
+					if (left >= CODE_MARGIN_MS) break;
+					await this.#wait(left + 50, signal);
+				}
+				value = companyAccountTotpCode(totp, this.#now());
+			}
+			const box = sealCompanyAccountFill(
+				{ value, hosts: [context.account.site, ...context.account.signInHosts] },
+				context.fillPublicKey,
+				{
+					companyId: context.companyId,
+					companyComputerId: context.companyComputerId,
+					computerGeneration: context.computerGeneration,
+					receiptId: context.receiptId,
+					accountId: context.account.accountId,
+					field: context.field,
+				},
+				this.#now(),
+			);
+			return { schema: FILL_ANSWER_SCHEMA, box };
+		} finally {
+			context.envelope.fill(0);
+		}
 	}
 
 	/** One company_account call: the account's facts, or the database's refusal an agent can act on. */

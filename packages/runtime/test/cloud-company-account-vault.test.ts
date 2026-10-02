@@ -93,6 +93,10 @@ function vaultFixture(authority: Partial<CompanyAccountAuthority> = {}) {
 		setCompanyAccountState: vi.fn(async (_call: CompanyAccountCall, id: string, status: string) =>
 			descriptor(id, status),
 		),
+		// Fills have their own tests (cloud-company-account-fill-vault.test.ts).
+		readCompanyAccountFill: vi.fn(async () => {
+			throw new Error("not a fill test");
+		}),
 		...authority,
 	};
 	const vault = new CompanyAccountVault({ authority: fake, keys: keyring, newId: () => accountId });
@@ -386,6 +390,7 @@ describe("company accounts over the broker", () => {
 				throw databaseError("23505", "The company already has this account; use it");
 			}),
 			setCompanyAccountState: f.authority.setCompanyAccountState,
+			readCompanyAccountFill: f.authority.readCompanyAccountFill,
 		};
 		const runtimeToken = randomBytes(32).toString("base64url");
 		const codingExecutorToken = randomBytes(32).toString("base64url");

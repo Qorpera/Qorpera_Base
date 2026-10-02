@@ -1,4 +1,5 @@
 import { button, h } from "./dom.ts";
+import { leave } from "./motion.ts";
 import { t } from "./preferences.ts";
 
 export interface NameDialogOptions {
@@ -37,7 +38,7 @@ export function nameDialog(options: NameDialogOptions): Promise<string | undefin
 		const close = (result: string | undefined) => {
 			if (closed) return;
 			closed = true;
-			dialog.remove();
+			leave(dialog, "is-leaving", () => dialog.remove());
 			options.signal?.removeEventListener("abort", cancel);
 			window.removeEventListener("hashchange", cancel);
 			if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
