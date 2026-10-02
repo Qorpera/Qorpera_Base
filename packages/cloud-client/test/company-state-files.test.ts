@@ -996,6 +996,9 @@ describe("human tasks: the proof's names and the person's change (H2a)", () => {
 		expect(humanTaskProofPath(path, "signature", 2, "png")).toBe("human-tasks/fit-disk/proof/signature-2.png");
 		expect(humanTaskNotePath(path)).toBe("human-tasks/fit-disk/note.md");
 		expect(() => humanTaskFolder("contacts/maria.md")).toThrow(RangeError);
+		// Only the spelling the database keeps: a compatibility or upper-case spelling is refused here, not later.
+		expect(() => humanTaskFolder("ＨＵＭＡＮ-TASKS/fit.md")).toThrow(RangeError);
+		expect(() => humanTaskFolder("human-tasks/Fit.md")).toThrow(RangeError);
 		expect(() => humanTaskProofPath(path, "note" as "photo", 1, "md")).toThrow(RangeError);
 		expect(() => humanTaskProofPath(path, "photo", 0, "jpg")).toThrow(RangeError);
 		expect(() => humanTaskProofPath(path, "photo", 1, "JPG")).toThrow(RangeError);
@@ -1015,6 +1018,12 @@ describe("human tasks: the proof's names and the person's change (H2a)", () => {
 			crlf.replace("- [X] Agree", "- [x] Agree"),
 		);
 		expect(() => humanTaskPersonChange(path, text, { kind: "tick", step: 2, done: true })).toThrow(/no step 2/);
+		// A byte-order mark and notes in the settings stay as they were.
+		const noted = `\ufeff${file("open", "minutes: 40 # about\n")}`;
+		expect(humanTaskPersonChange(path, noted, { kind: "tick", step: 0, done: true })).toBe(
+			noted.replace("- [ ] Order the disk", "- [x] Order the disk"),
+		);
+		expect(humanTaskPersonChange(path, noted, { kind: "done" })).toBe(noted.replace("status: open", "status: done"));
 	});
 
 	it("marks a task done or declined, and only an open or returned one", () => {

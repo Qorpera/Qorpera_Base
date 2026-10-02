@@ -30,8 +30,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
 | `rules/<name>.md` | rule | yes |
-| `human-tasks/<name>.md` | human-task | yes (H1, inert until H2) |
-| `contacts/<name>.md` | contact | yes (H1, inert until H2) |
+| `human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
+| `contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
 
 A path's kind is decided on the folder's key (`companyPathKey`, the same NFKC-casefold as
 `qorpera_company_path_key`, 20260828005000), because two spellings with one key are one entry:
@@ -773,7 +773,7 @@ of the body, for readers that should not reach the storage server.
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
-| human-task, contact | none until H2: the stored parse only | — | — |
+| human-task, contact | `qorpera_folder_human_task_index` and `qorpera_folder_contact_index` (H2), keyed by environment and id | path, path version, status and references of a task; whether a contact has an email | the wake markers (H2c) |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
   todos along (core §5).
@@ -1451,10 +1451,12 @@ declined and overdue"; §2's "What H1 does not decide"). Stacked on H1b. Still n
 What the core gives H2, and what it does not (inventory of 2 October):
 - A unit is atomic; a change set is not. Each unit is decided and applied on its own, and a later unit
   sees an earlier one's result, so two units cannot be made to land together.
-- Actors are `member {userId}`, `platform {}` (no other field), and a run or view, which the hooks see as
-  `staff_agent {staffAgentId, runId, requesterUserId, ...}`. No actor speaks "for" a member.
+- Actors are `member {userId}`, `platform {}` (no other field), and a run or view. The hooks see a run,
+  and an agent's view, as `staff_agent {staffAgentId, runId, requesterUserId, ...}`; a member's own
+  desktop view as that `member`. No actor speaks "for" a member.
 - No member can write a folder-v2 file yet: the web and the object gateway write snapshot-v1 only, until
-  C4. The only folder writer in production is the runtime's run client.
+  C4, and a member's desktop gets its folder with F3. The only folder writer in production is the
+  runtime's run client.
 - The commit never inserts a wake. Folder-v2 wakes are queued by run effects and delivered once C4 adds
   their drain; C4 also brings the folder listener (core §6), which reacts to commits after they land.
 
@@ -1498,9 +1500,9 @@ What the core gives H2, and what it does not (inventory of 2 October):
 - `accepted`, `declined` and `cancelled` are final: no later save changes the file. Only a final task
   may be deleted (§4).
 - `done` and `declined` are the person's only.
-- Changing `member` or `contact` hands an open or returned task to someone else; `due` may move to a
-  later time. `from` may change only while the asking agent is no longer active, only to an active
-  agent, and only by a member or the Co-Founder (Q1: "escalate to the Co-Founder"); `todo` is then
+- Changing `member` or `contact` hands an open or returned task to someone else; `due` may move to any
+  time in the future. `from` may change only while the asking agent is no longer active, only to an
+  active agent, and only by a member or the Co-Founder (Q1: "escalate to the Co-Founder"); `todo` is then
   cleared or names an open or blocked todo of the new `from`.
 
 **3. Ids and references**, checked when a save sets or changes them, as todos check `requested_by`;
@@ -1527,13 +1529,15 @@ units cannot land together. The rules keep a folder from ever outliving its task
   platform is held to it too.
 - A new task file, or a task file moved to a new name, is refused while a folder of that name exists.
 - A task file whose folder exists is neither moved nor deleted: a task with proof keeps its name (Q1
-  agreed), and its folder goes first.
+  agreed), and its folder goes first. A task file is renamed or removed only by the company's side: never
+  by its person, and never by the platform on a member's task.
 - Directly under `human-tasks/` there are only task files (`*.md`) and task folders; another plain file
   there would block a task's folder.
 - Under `human-tasks/<t>/`, by the task's status:
   - `open` or `returned`: only the person (the platform on a contact's task) writes, moves or deletes;
   - `done`: nobody changes it, while the agent checks the proof;
-  - final: a member or the platform may delete the whole folder; agents never; nobody writes.
+  - final: a member or the platform may delete the whole folder (not single files in it); agents never;
+    nobody writes.
   A folder without its task file (made before H2, or by an operator) may be deleted by a member or the
   platform, and nothing else.
 - Removing a final task with proof takes two units, folder first, then the file. This may leave a task
@@ -1600,15 +1604,15 @@ against C4's listener interface, which the H2 PR body proposes:
 **What H2b without H2c means.** Q1's H2 row is met except the wakes, which wait for C4. Until then no
 member can write a task (no member writer before C4, no link service before H5), so no `done` or
 `declined` can happen, and nobody misses its wake. Tasks agents create can pass their `due` with no
-overdue wake. H3 must not go live before H2c, or a `done` would wake nobody. Q1's step table shows H2c
-waiting for C4.
+overdue wake. No member writer of folder-v2 files (H3's web, F3's desktop) may go live before H2c, or a
+`done` would wake nobody. Q1's step table shows H2c waiting for C4.
 
 **Three PRs, stacked on H1b:**
 - **H2a, TS:** the seed tree and seeded paths (with the TS comparison list), the skill text, the proof
   file names, and the writers' shared helper for the person's change (tick, done, declined).
 - **H2b, SQL:** the two index tables, apply and verify, the rules of §1–§4, the lock targets of §6
-  (with `qorpera_folder_structured_lock`), and the seeded list, in one migration; one SQL test; 785 §7
-  and 700 §7 updated.
+  (with `qorpera_folder_structured_lock`), and the seeded list, in one migration; SQL test 803, a race
+  test (805), and 785 updated to H2's rules.
 - **H2c, wakes:** after C4's listener exists, against its interface (§9).
 H2a and H2b do not depend on each other (`companyStateSeedTree` is used only by tests today), so their
 order is free.
