@@ -61,6 +61,7 @@ begin
 		'qorpera_complete_model_login_account_refresh(uuid,text,uuid,text)',
 		'qorpera_complete_model_login_sign_in(uuid,text,uuid,text,uuid,text,text,text,timestamp with time zone,timestamp with time zone,text,text)',
 		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)',
+		'qorpera_describe_company_account_open(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_sign_in(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',

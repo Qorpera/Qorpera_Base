@@ -167,11 +167,17 @@ select set_config('qorpera_test.ca_folder',pg_temp.ca_open('01','agents@nordlys.
 reset session authorization;
 do $$ begin execute current_setting('qorpera_test.ca_job_v2'); end $$;
 set local session authorization qorpera_secret_broker;
--- 3. Opened, then a repeat of the same call, a duplicate and a second account on the same website.
+-- 3. What the broker reads before sealing; then opened, a repeat of the same call (also one that drew a
+--    new id), a duplicate and a second account on the same website.
+select set_config('qorpera_test.ca_context',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),repeat(''b'',64))'),true);
 select set_config('qorpera_test.ca_opened',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select set_config('qorpera_test.ca_repeat',pg_temp.ca_open('01','agents@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
+select set_config('qorpera_test.ca_repeat_new_id',pg_temp.ca_open('01','agents@nordlys.example',
+	'79400000-0000-4000-8000-000000000060',p_secret => '79400000-0000-4000-8000-000000000299'),true);
 select pg_temp.ca_done('01');
 -- A finished receipt opens nothing, nor does one begun for another action.
 select set_config('qorpera_test.ca_finished',pg_temp.ca_open('01','agents+9@nordlys.example',
@@ -250,6 +256,19 @@ begin
 		'schema','qorpera.company-account/v1','site','vercel.com','signInHosts','[]'::jsonb,
 		'login','agents@nordlys.example','twoStep','none','status','pending','version',1) then
 		raise exception 'Wrong opened account: %',current_setting('qorpera_test.ca_opened');
+	end if;
+	if current_setting('qorpera_test.ca_context') is distinct from 'ok:' || jsonb_build_object(
+		'schema','qorpera.company-account-context/v1','companyId','29000000-0000-4000-8000-000000000010',
+		'environmentId','29000000-0000-4000-8000-000000000020','keyId','company-kek-1')::text then
+		raise exception 'Wrong context for the broker: %',current_setting('qorpera_test.ca_context');
+	end if;
+	-- The account carries the id the broker sealed into its envelope.
+	if v_account is distinct from '79400000-0000-4000-8000-000000000201'::uuid then
+		raise exception 'The account did not get the broker''s id: %',v_account;
+	end if;
+	if current_setting('qorpera_test.ca_repeat_new_id') is distinct from current_setting('qorpera_test.ca_opened')
+		or exists (select 1 from public.qorpera_cloud_secrets where id = '79400000-0000-4000-8000-000000000299') then
+		raise exception 'A repeat that drew a new id opened a second account: %',current_setting('qorpera_test.ca_repeat_new_id');
 	end if;
 	if current_setting('qorpera_test.ca_repeat') is distinct from current_setting('qorpera_test.ca_opened') then
 		raise exception 'A repeat after a lost answer did not find its account: %',current_setting('qorpera_test.ca_repeat');
@@ -481,7 +500,7 @@ begin
 		raise exception 'A revoked account was used: % / %',current_setting('qorpera_test.ca_use_revoked'),
 			current_setting('qorpera_test.ca_use_revoked_secret');
 	end if;
-	if current_setting('qorpera_test.ca_taken_id') is distinct from '23505:The account id is taken' then
+	if current_setting('qorpera_test.ca_taken_id') is distinct from '42501:company account id is taken' then
 		raise exception 'An account took another secret''s id: %',current_setting('qorpera_test.ca_taken_id');
 	end if;
 	if current_setting('qorpera_test.ca_reopened_again') not like 'ok:%' then

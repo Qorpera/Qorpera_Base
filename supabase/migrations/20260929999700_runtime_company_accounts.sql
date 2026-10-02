@@ -228,8 +228,10 @@ begin
 		or p_secret_id is null then
 		raise exception 'company account envelope is unavailable' using errcode = '42501';
 	end if;
+	-- A broker's random id never collides in practice; if it did, the call fails like any broker fault
+	-- (never as a refusal the agent would read) and the tool call's next attempt draws a new id.
 	if exists (select 1 from public.qorpera_cloud_secrets as secret where secret.id = p_secret_id) then
-		raise exception 'The account id is taken' using errcode = '23505';
+		raise exception 'company account id is taken' using errcode = '42501';
 	end if;
 	if not public.qorpera_company_account_host_valid(p_site)
 		or p_sign_in_hosts is null or cardinality(p_sign_in_hosts) > 4
@@ -297,6 +299,30 @@ begin
 	values (v_call.profile_id, v_call.environment_id, v_secret_id, 1, v_call.run_id, p_receipt_id, 'account_opened',
 		v_call.acting_user_id, 'website');
 	return public.qorpera_company_account_descriptor(v_account, 1);
+end
+$$;
+
+-- Before it opens an account the broker reads what the envelope's associated data
+-- needs: the run's company and environment and the company's key id, after the
+-- same checks the opening makes (the receipt must be an executing open).
+create function public.qorpera_describe_company_account_open(
+	p_broker_authority_id uuid,
+	p_broker_capability_sha256 text,
+	p_binding jsonb,
+	p_receipt_id uuid,
+	p_input_sha256 text,
+	p_downstream_idempotency_sha256 text
+)
+returns jsonb
+language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
+declare
+	v_call record;
+begin
+	select call.* into strict v_call from public.qorpera_company_account_call(p_broker_authority_id,
+		p_broker_capability_sha256, p_binding, p_receipt_id, p_input_sha256, p_downstream_idempotency_sha256, 'open', null)
+		as call;
+	return jsonb_build_object('schema', 'qorpera.company-account-context/v1', 'companyId', v_call.profile_id,
+		'environmentId', v_call.environment_id, 'keyId', v_call.key_id);
 end
 $$;
 
@@ -495,12 +521,14 @@ end
 $$;
 
 revoke all on function
+	public.qorpera_describe_company_account_open(uuid,text,jsonb,uuid,text,text),
 	public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text),
 	public.qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid),
 	public.qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text),
 	public.qorpera_set_company_account_state(uuid,text,jsonb,uuid,text,text,uuid,text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function
+	public.qorpera_describe_company_account_open(uuid,text,jsonb,uuid,text,text),
 	public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text),
 	public.qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid),
 	public.qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text),
