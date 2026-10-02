@@ -16,18 +16,18 @@
 -- change wait at that row, holding nothing the call needs; a change that holds the key share makes the next agent
 -- call's lease wait for it. Both land.
 --
--- Who still never waits: a caller the function refuses for its authority, or for an id nobody has. The plain checks
--- stay before the key share; refusals that depend on a row's state (a revoked secret, an inactive agent, a capture's
--- code) are decided under the locks, as before, and now wait at the company row first. The three member functions
--- that read the caller's membership FOR SHARE first now read it plainly, refuse there and in their plain check of
--- the row (20260928339820's), take the key share, and then read the membership FOR SHARE again (members are rank 1),
--- so a member who lost the role while the call waited is still refused, as before. The share read the role once,
--- without a lock, so an admin who lost the role while it waited still shared; it now reads it again after the key
--- share too. qorpera_revoke_cloud_secret_grant had no plain check of the grant: it locked the grant and then checked
--- the caller. It now refuses before any lock the caller its locked check refuses, with the same error. The share and
--- the rotation take the key share only for a secret that exists: their plain checks have refused every other caller
--- of an existing secret by then, and a call for a secret nobody has gets its error as before, without waiting. The
--- broker takes it only for a ticket its own authority issued. Each inserted lock names this migration, for deploy
+-- Who still never waits: a caller the function refuses for its authority, or for a secret, grant or ticket nobody has.
+-- The plain checks stay before the key share; refusals decided under the locks (a revoked secret, an unknown or
+-- inactive agent or operation, a capture's code) are decided there as before, and now wait at the company row first.
+-- The three member functions that read the caller's membership FOR SHARE first now read it plainly, refuse there and in
+-- their plain check of the row (20260928339820's), take the key share, and then read the membership FOR SHARE again
+-- (members are rank 1), so a member who lost the role while the call waited is still refused, as before. The share read
+-- the role once, without a lock, so an admin who lost the role while it waited still shared; it now reads it again
+-- after the key share too. qorpera_revoke_cloud_secret_grant had no plain check of the grant: it locked the grant and
+-- then checked the caller. It now refuses before any lock the caller its locked check refuses, with the same error. The
+-- share and the rotation take the key share only for a secret that exists: their plain checks have refused every other
+-- caller of an existing secret by then, and a call for a secret nobody has gets its error as before, without waiting.
+-- The broker takes it only for a ticket its own authority issued. Each inserted lock names this migration, for deploy
 -- guards.
 --
 -- Exact-text patches: each fails unless its text is found exactly once.

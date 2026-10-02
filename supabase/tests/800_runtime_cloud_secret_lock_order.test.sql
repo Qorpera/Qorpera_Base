@@ -246,7 +246,8 @@ create function pg_temp.cs_company() returns text language sql as $$
 $$;
 
 -- 1. Refused at once while the company row is held: someone outside the company and a contributor, for each
---    function; a call for a secret nobody has, for the share and the rotation.
+--    function; the owner for a member's own connection and its grant; a grant nobody has, and a secret nobody has
+--    for the share and the rotation.
 select pg_temp.cs_check(outcome ->> 'waited' = 'false' and outcome ->> 'state' = state and outcome ->> 'error' = error,
 	format('%s waited for the company row or was not refused as before: %s', who, outcome))
 from (values
