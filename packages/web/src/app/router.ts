@@ -3,7 +3,20 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type CompanySection = "home" | "chat" | "staff" | "file" | "snapshot" | "proposal" | "team" | "new" | "meet";
+/** "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment). */
+export type CompanySection =
+	| "home"
+	| "chat"
+	| "staff"
+	| "file"
+	| "snapshot"
+	| "proposal"
+	| "team"
+	| "new"
+	| "meet"
+	| "interface";
+
+const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export type Route =
 	| { name: "hub" }
@@ -23,6 +36,9 @@ export function parseRoute(hash: string): Route {
 		const section = parts[2];
 		const id = parts[3];
 		if (!section) return { name: "company", profileId, section: "home" };
+		if (section === "i" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
+			return { name: "company", profileId, section: "interface", id };
+		}
 		if ((section === "chat" || section === "staff" || section === "snapshot" || section === "proposal") && id) {
 			return { name: "company", profileId, section, id };
 		}
@@ -44,6 +60,7 @@ export function routeHash(route: Route): string {
 			return `#/found/${route.profileId}`;
 		case "company":
 			if (route.section === "home") return `#/c/${route.profileId}`;
+			if (route.section === "interface") return `#/c/${route.profileId}/i/${route.id ?? ""}`;
 			return route.id
 				? `#/c/${route.profileId}/${route.section}/${route.id}`
 				: `#/c/${route.profileId}/${route.section}`;

@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 import {
+	attachmentBytes,
 	BATCH,
 	handleMailOutbox,
 	type MailJob,
 	type MailOutboxStore,
 	MailSendError,
 	type MailSender,
+	MAX_ATTACHMENT_BYTES,
+	type ObjectReader,
 	PACE_MS,
 	type ProviderEmail,
 	parseMailClaim,
 	providerEmail,
 	ResendSender,
+	StorageObjectReader,
 } from "./mail-outbox.ts";
 
 const KEY = "sb_secret_0123456789abcdefghij";
@@ -33,7 +38,13 @@ function job(n: number, extra: Record<string, unknown> = {}): Record<string, unk
 	};
 }
 
-function outbox(claimed: unknown, sender: MailSender) {
+function outbox(
+	claimed: unknown,
+	sender: MailSender,
+	objects?: ObjectReader,
+	due: unknown = [],
+	recorded: [string, string, string][] = [],
+) {
 	const calls: { claim: [number, string][]; complete: [string, string][]; fail: [string, string, string, boolean][] } = {
 		claim: [],
 		complete: [],
@@ -51,6 +62,13 @@ function outbox(claimed: unknown, sender: MailSender) {
 			calls.complete.push([mail.mailId, providerMessageId]);
 			if (mail.subject === "Lost completion") throw new Error("lost");
 		},
+		async messageIdsDue() {
+			if (due instanceof Error) throw due;
+			return due;
+		},
+		async recordMessageId(mailId, providerMessageId, messageId) {
+			recorded.push([mailId, providerMessageId, messageId]);
+		},
 		async fail(mailId, leaseId, message, retryable) {
 			calls.fail.push([mailId, leaseId, message, retryable]);
 		},
@@ -66,6 +84,7 @@ function outbox(claimed: unknown, sender: MailSender) {
 					keys.push(key);
 					return store;
 				},
+				...(objects ? { objects: () => objects } : {}),
 				sender,
 				leaseId: () => LEASE,
 				sleep: async (ms) => {
@@ -83,6 +102,11 @@ function recording(fail?: (email: ProviderEmail) => Error | undefined) {
 			const error = fail?.(email);
 			if (error) throw error;
 			return `provider-${sent.length}`;
+		},
+		async messageId(providerMessageId) {
+			if (providerMessageId === "provider-gone") return null;
+			if (providerMessageId === "provider-down") throw new Error("down");
+			return `<${providerMessageId}@ses.example>`;
 		},
 	};
 	return { sent, sender };
@@ -120,7 +144,7 @@ describe("mail outbox", () => {
 		const response = await f.handle(post());
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("cache-control"), "no-store");
-		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0 });
+		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
 		assert.deepEqual(sent[0], [
 			{
 				from: '"Ada at Northwind" <support@mail.example.test>',
@@ -161,6 +185,7 @@ describe("mail outbox", () => {
 			retrying: 2,
 			failed: 1,
 			rejected: 0,
+			messageIds: 0,
 		});
 		assert.deepEqual(f.calls.fail, [
 			["73300000-0000-4000-8000-000000000001", LEASE, "Too many requests (429/rate_limit_exceeded)", true],
@@ -180,6 +205,7 @@ describe("mail outbox", () => {
 			retrying: 0,
 			failed: 0,
 			rejected: 2,
+			messageIds: 0,
 		});
 		assert.deepEqual(
 			f.calls.fail.map(([mailId, , , retryable]) => [mailId, retryable]),
@@ -197,6 +223,57 @@ describe("mail outbox", () => {
 	it("leaves out an empty cc and empty headers", () => {
 		const { jobs } = parseMailClaim([job(1)]);
 		assert.deepEqual(Object.keys(providerEmail(jobs[0])), ["from", "to", "subject", "text"]);
+	});
+});
+
+describe("mail outbox Message-IDs", () => {
+	it("reads back the provider's Message-ID of sent emails after the sends, paced, and records each it gets", async () => {
+		const { sender } = recording();
+		const recorded: [string, string, string][] = [];
+		const f = outbox(
+			[job(1)],
+			sender,
+			undefined,
+			[
+				{ mailId: "73300000-0000-4000-8000-0000000000d1", providerMessageId: "provider-a" },
+				{ mailId: "73300000-0000-4000-8000-0000000000d2", providerMessageId: "provider-gone" },
+				{ mailId: "73300000-0000-4000-8000-0000000000d3", providerMessageId: "provider-down" },
+				{ mailId: "not-a-mail", providerMessageId: "provider-b" },
+			],
+			recorded,
+		);
+		assert.deepEqual(await (await f.handle(post())).json(), {
+			claimed: 1,
+			sent: 1,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			messageIds: 1,
+		});
+		assert.deepEqual(recorded, [["73300000-0000-4000-8000-0000000000d1", "provider-a", "<provider-a@ses.example>"]]);
+		assert.deepEqual(f.sleeps, [PACE_MS, PACE_MS, PACE_MS]);
+		// A list that cannot be read, or none at all, sends as before.
+		const broken = outbox([], sender, undefined, new Error("down"));
+		assert.equal((await (await broken.handle(post())).json()).messageIds, 0);
+	});
+
+	it("asks Resend for a sent email's Message-ID with the platform key", async () => {
+		const requests: string[] = [];
+		const answers = [
+			Response.json({ id: "resend-1", message_id: "<abc@eu-west-1.amazonses.com>" }),
+			new Response("{}", { status: 404 }),
+			Response.json({ id: "resend-3" }),
+			new Response("{}", { status: 500 }),
+		];
+		const sender = new ResendSender("re_platform_key", (async (url: string, init: RequestInit) => {
+			requests.push(`${url} ${(init.headers as Record<string, string>).Authorization}`);
+			return answers.shift()!;
+		}) as unknown as typeof fetch);
+		assert.equal(await sender.messageId("resend-1"), "<abc@eu-west-1.amazonses.com>");
+		assert.equal(await sender.messageId("resend-2"), null);
+		assert.equal(await sender.messageId("resend-3"), null);
+		await assert.rejects(sender.messageId("resend-4"));
+		assert.equal(requests[0], "https://api.resend.com/emails/resend-1 Bearer re_platform_key");
 	});
 });
 
@@ -244,5 +321,136 @@ describe("Resend sender", () => {
 			throw new TypeError("network down");
 		}) as unknown as typeof fetch);
 		await assert.rejects(unreachable.send(email, "k1"), (error: unknown) => error instanceof MailSendError && error.retryable);
+	});
+});
+
+const COMPANY = "73300000-0000-4000-8000-000000000010";
+const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+/** A company file as the path gateway stores it: its chunks of 4 MiB and a v1 manifest, all in one object store. */
+function companyFile(store: Map<string, Uint8Array>, bytes: Uint8Array, filename: string) {
+	const chunks = [];
+	for (let offset = 0; offset < bytes.length; offset += 4 * 1024 * 1024) {
+		const chunk = bytes.slice(offset, offset + 4 * 1024 * 1024);
+		store.set(sha(chunk), chunk);
+		chunks.push({ sha256: sha(chunk), bytes: chunk.length });
+	}
+	const manifest = new TextEncoder().encode(
+		JSON.stringify({
+			schema: "qorpera.cloud-file-manifest/v1",
+			fileSha256: sha(bytes),
+			bytes: bytes.length,
+			mediaType: "application/octet-stream",
+			chunks,
+		}),
+	);
+	store.set(sha(manifest), manifest);
+	return { filename, manifestSha256: sha(manifest), fileSha256: sha(bytes), bytes: bytes.length };
+}
+
+function reader(store: Map<string, Uint8Array>): ObjectReader {
+	return {
+		async get(companyId, sha256) {
+			assert.equal(companyId, COMPANY);
+			return store.get(sha256) ?? null;
+		},
+	};
+}
+
+describe("mail outbox attachments", () => {
+	const pdf = new Uint8Array(5 * 1024 * 1024).map((_, index) => (index * 7) & 0xff);
+	const csv = new TextEncoder().encode("name,amount\nNorthwind,42\n");
+
+	it("sends the company files as attachments, in base64, in the order queued", async () => {
+		const objects = new Map<string, Uint8Array>();
+		const files = [companyFile(objects, pdf, "invoice.pdf"), companyFile(objects, csv, "totals.csv")];
+		const { sent, sender } = recording();
+		const f = outbox([job(1, { companyId: COMPANY, attachments: files }), job(2)], sender, reader(objects));
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 2, sent: 2, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
+		assert.deepEqual(
+			sent[0][0].attachments?.map((file) => [file.filename, Buffer.from(file.content, "base64").equals(Buffer.from(file.filename === "invoice.pdf" ? pdf : csv))]),
+			[
+				["invoice.pdf", true],
+				["totals.csv", true],
+			],
+		);
+		assert.equal(sent[1][0].attachments, undefined, "an email without files has no attachments");
+	});
+
+	it("tries again a file not in Storage yet, and fails one that does not match its digests", async () => {
+		const objects = new Map<string, Uint8Array>();
+		const file = companyFile(objects, pdf, "invoice.pdf");
+		const missing = new Map(objects);
+		missing.delete([...objects.keys()].find((key) => objects.get(key)!.length === 4 * 1024 * 1024)!);
+		await assert.rejects(
+			attachmentBytes(COMPANY, file, reader(missing)),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /not in storage yet/.test(error.message),
+		);
+		const tampered = new Map(objects);
+		tampered.set(file.manifestSha256, new TextEncoder().encode("{}"));
+		await assert.rejects(
+			attachmentBytes(COMPANY, file, reader(tampered)),
+			(error: unknown) => error instanceof MailSendError && !error.retryable && /integrity/.test(error.message),
+		);
+		await assert.rejects(
+			attachmentBytes(COMPANY, { ...file, bytes: file.bytes - 1 }, reader(objects)),
+			(error: unknown) => error instanceof MailSendError && !error.retryable && /manifest/.test(error.message),
+		);
+		const { sender, sent } = recording();
+		const f = outbox([job(1, { companyId: COMPANY, attachments: [file] })], sender, reader(missing));
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 1, sent: 0, retrying: 1, failed: 0, rejected: 0, messageIds: 0 });
+		assert.equal(sent.length, 0);
+	});
+
+	it("fails for good a claimed email whose attachments cannot be read", async () => {
+		const file = { filename: "a.pdf", manifestSha256: "a".repeat(64), fileSha256: "b".repeat(64), bytes: 1 };
+		const { sender, sent } = recording();
+		const f = outbox(
+			[
+				job(1, { companyId: COMPANY, attachments: [] }),
+				job(2, { attachments: [file] }),
+				job(3, { companyId: COMPANY, attachments: [{ ...file, filename: "../a.pdf" }] }),
+				job(4, { companyId: COMPANY, attachments: [{ ...file, bytes: MAX_ATTACHMENT_BYTES + 1 }] }),
+				job(5, { companyId: COMPANY, attachments: Array.from({ length: 11 }, () => file) }),
+				job(6, { companyId: COMPANY, attachments: [{ ...file, filename: `${"n".repeat(253)}.md` }] }),
+				// 203 characters, as the database counts them, in 403 UTF-16 units: read, then not in storage yet.
+				job(7, { companyId: COMPANY, attachments: [{ ...file, filename: `${"\u{1F4CE}".repeat(200)}.md` }] }),
+			],
+			sender,
+			reader(new Map()),
+		);
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 7, sent: 0, retrying: 1, failed: 0, rejected: 6, messageIds: 0 });
+		assert.equal(sent.length, 0);
+	});
+
+	it("reads the company's objects from Storage with the presented key", async () => {
+		const requests: [string, RequestInit][] = [];
+		const answers = [
+			new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+			new Response(JSON.stringify({ statusCode: "404", error: "not_found" }), { status: 400 }),
+			new Response("{}", { status: 404 }),
+			new Response(JSON.stringify({ statusCode: "403", error: "Unauthorized" }), { status: 400 }),
+			new Response("{}", { status: 503 }),
+		];
+		const storage = new StorageObjectReader("https://project.example.test/", "sb_secret_0123456789abcdefghij", (async (
+			url: string,
+			init: RequestInit,
+		) => {
+			requests.push([url, init]);
+			return answers.shift()!;
+		}) as unknown as typeof fetch);
+		assert.deepEqual(await storage.get(COMPANY, "c".repeat(64)), new Uint8Array([1, 2, 3]));
+		assert.equal(await storage.get(COMPANY, "c".repeat(64)), null);
+		assert.equal(await storage.get(COMPANY, "c".repeat(64)), null);
+		await assert.rejects(
+			storage.get(COMPANY, "c".repeat(64)),
+			(error: unknown) => error instanceof MailSendError && error.retryable && /refused/.test(error.message),
+		);
+		await assert.rejects(storage.get(COMPANY, "c".repeat(64)), (error: unknown) => error instanceof MailSendError && error.retryable);
+		assert.equal(
+			requests[0][0],
+			`https://project.example.test/storage/v1/object/authenticated/qorpera-profile-objects/${COMPANY}/${"c".repeat(64)}`,
+		);
+		assert.deepEqual(requests[0][1].headers, { apikey: "sb_secret_0123456789abcdefghij" });
 	});
 });

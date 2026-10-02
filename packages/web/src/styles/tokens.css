@@ -126,6 +126,31 @@
 	   no overlay element, no per-frame compositing cost) */
 	--surface-grain: none;
 	--surface-grain-size: 256px 256px;
+
+	/* motion — one vocabulary for every animation (styles/motion.css, ui/motion.ts).
+	   Things that arrive spring in; things that leave are quicker and ease in.
+	   Hover and colour changes are fast; a reply, a page or a card takes its time. */
+	--ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+	--ease-in: cubic-bezier(0.4, 0, 1, 1);
+	--ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+	/* a settle with a hair of overshoot: menus, bubbles, the rail selection */
+	--ease-spring: cubic-bezier(0.3, 1.25, 0.5, 1);
+	/* a bounce you can see: a figure hopping, a status disc popping */
+	--ease-bounce: cubic-bezier(0.3, 1.6, 0.5, 1);
+	--motion-fast: 140ms;
+	--motion-base: 220ms;
+	--motion-slow: 340ms;
+	--motion-spring: 520ms;
+}
+/* The springs as drawn curves, where the browser has linear(); the cubic curves above stand in. */
+@supports (transition-timing-function: linear(0, 1)) {
+	:root {
+		--ease-spring: linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 15.4%, 0.938 22.4%, 1.017 28.1%, 1.044 33.6%, 1.045 38.7%, 1.025 48.3%, 1.004 61.3%, 0.998 77.6%, 1);
+		--ease-bounce: linear(0, 0.034 2.7%, 0.141 5.6%, 0.567 15.4%, 0.795 22.1%, 0.962 29.2%, 1.067 36.9%, 1.123 46.9%, 1.115 52.5%, 1.073 61.4%, 0.997 81.7%, 1);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	:root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; --motion-spring: 0ms; }
 }
 
 /* Small restores the original scale. Phones and tablets keep it in both sizes. */

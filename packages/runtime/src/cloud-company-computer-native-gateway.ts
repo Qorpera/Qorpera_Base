@@ -278,11 +278,15 @@ export class CompanyComputerNativeGateway {
 	}
 	async #dispatch(value: unknown, signal: AbortSignal): Promise<unknown> {
 		const action = value && typeof value === "object" && "action" in value ? value.action : undefined;
+		// A vault_fill carries the box the vault sealed to this computer (company accounts A1-3), nothing else does.
+		const sealed = action === "perform" && value && typeof value === "object" && "fill" in value;
 		const body = officeNativeRecord(
 			value,
 			action === "release"
 				? "action,lease,nativeBinding,schema"
-				: "action,lease,nativeBinding,operation,receipt,schema",
+				: sealed
+					? "action,fill,lease,nativeBinding,operation,receipt,schema"
+					: "action,lease,nativeBinding,operation,receipt,schema",
 		);
 		if (body.schema !== COMPANY_COMPUTER_NATIVE_SCHEMA || (action !== "perform" && action !== "release"))
 			throw new Error("INVALID_OFFICE_NATIVE_MESSAGE");
@@ -316,6 +320,15 @@ export class CompanyComputerNativeGateway {
 		)
 			throw new Error("INVALID_OFFICE_OPERATION");
 		const operation = op as unknown as CompanyComputerOperation;
+		if (sealed !== (parsedAction.kind === "browser" && parsedAction.action === "vault_fill"))
+			throw new Error("INVALID_OFFICE_OPERATION");
+		let fill: Readonly<Record<string, string>> | undefined;
+		if (sealed) {
+			const box = officeNativeRecord(body.fill, "ciphertext,ephemeralPublicKey,iv,schema,tag");
+			if (!Object.values(box).every((part) => typeof part === "string" && part.length > 0 && part.length <= 8192))
+				throw new Error("INVALID_OFFICE_OPERATION");
+			fill = Object.freeze({ ...(box as Record<string, string>) });
+		}
 		const receipt = officeNativeRecord(body.receipt, "idempotencyKey,receiptId");
 		if (
 			typeof receipt.receiptId !== "string" ||
@@ -359,6 +372,7 @@ export class CompanyComputerNativeGateway {
 				receiptId: receipt.receiptId as string,
 				idempotencyKey: receipt.idempotencyKey as string,
 				signal: combined,
+				...(fill ? { fill } : {}),
 			});
 			await session.run.assertActive(combined);
 			return {

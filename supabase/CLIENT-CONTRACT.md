@@ -673,7 +673,7 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
-- Plus addresses (20260929999920_runtime_company_mail_find_and_tags): `<local part>+<tag>@<mail domain>` reaches the
+- Plus addresses (20260928429982_runtime_company_mail_find_and_tags): `<local part>+<tag>@<mail domain>` reaches the
   mailbox, for a tag of lowercase letters, digits, dots, hyphens and underscores (the whole local part at most 64
   characters); mailboxes show only their own `email`. A received mail's delivery keeps `delivered-to`, `from`,
   `subject` and `authentication-results` headers. Agents find received mail with the runtime tool `find_mail`; there
@@ -687,6 +687,20 @@ wake), so no agent runs and nothing is charged before it.
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents save a received email's
+  attachment into the company folder with the runtime tool `save_attachment`, and attach company files to
+  `send_mail`; there is no client surface. A saved attachment is an ordinary company file, written through the path
+  gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
+  Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
+  allowance.
+- Members read mail (20260929999998_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
+  `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
+  (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
+  `qorpera_member_mail_thread(p_environment_id, p_thread)` (`{thread, address, messages, more?, waiting}`),
+  `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
+  Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
+  thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
+  answered through `qorpera_answer_action_review` with its `reviewId`.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
