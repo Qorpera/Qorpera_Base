@@ -367,6 +367,22 @@ Item 33 of section 21 carries the adversarial event case of item 10.
 - `read_event(deliveryId, offset?)` reads one verified delivery of the agent's own company: text in
   pieces of at most 16,000 characters and 32 KiB of JSON, or base64 of 24 KiB of raw bytes. `next` is
   the offset of the following piece (characters for text, bytes for base64).
+  - **Every piece fits one tool result.** The result fence cuts every tool result to 8 KiB from its
+    end, and the result's keys are sorted, so a whole database piece would lose the tail of its text
+    while `next` survived: reading on from `next` skipped what was cut. The runtime tool therefore
+    cuts the piece again before it answers, to what one result shows whole. It measures the receipt
+    as the fence does: the tool's JSON is one string inside the fence's JSON, `< > & U+2028 U+2029`
+    take six bytes, and 3 KiB stay free for the fence's provenance (as `read_context` keeps). The cut
+    falls at a character (text) or after whole three bytes (base64), and `next` points right after it.
+    The hook, type, content type and headers count too. Headers that would leave the body less than
+    1 KiB are cut first, every value to the same number of characters, and the piece says
+    `headersCut`.
+  - A piece is about 4,000 characters of plain text, fewer when characters need escaping (quoted
+    or HTML text about 2,000), or about 3 KiB of bytes as base64. A 256 KiB email takes about 70
+    reads.
+  - The tool refuses a receipt whose `next` is not exactly its offset plus the piece it carries (code
+    points for text, bytes for base64), or whose `done` contradicts `next`. The database's pieces
+    hold to this; the SQL is unchanged.
 
 Both are reads for the automatic review. Agents creating and removing hooks (`manage_hook`, W3,
 reviewed as a new connection; a signed hook asks a member for its secret, connector `event_hook`,
