@@ -239,6 +239,9 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
+		// The run box's tools (F3 step 2b) come with the image.
+		for (const tool of ["ripgrep", "fd-find", "jq", "python3-pandas", "libreoffice-nogui", "poppler-utils", "pandoc"])
+			assert.match(installer, new RegExp(`apt-get install --yes --no-install-recommends[^\\n]*(\\\\\\n[^\\n]*)?\\b${tool}\\b`));
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));
 		// The published image never updates itself (run d1f454e2, 2026-09-24): the
 		// units the guest bootstraps check are masked before anything is installed,

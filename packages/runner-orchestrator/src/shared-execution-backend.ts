@@ -80,6 +80,13 @@ const VAULT_LOGIN_MARKER = sha256("qorpera.model-login-vault/v1");
  * failure: the deferral has no bound of its own (the run deadline is a century). */
 const IDENTITY_WAIT_MS = 120_000;
 const TRACKED_IDENTITY_WAITS = 256;
+/** F3 run boxes: after delivery the run's view is asked for until the runner holds its job lease (a second or two),
+ * at this pace, for at most this long. */
+const BOX_OPEN_RETRY_MS = 250;
+const BOX_OPEN_WINDOW_MS = 60_000;
+/** The run's view of the company folder, on the slot's tmpfs, read by the slot's folder unit (root). */
+const BOX_VIEW_FILE = "box-view.json";
+const VIEW_SCHEMA = "qorpera.folder-view/v1";
 
 export type SharedExecutionPhysicalState =
 	| "reserving"
@@ -124,6 +131,32 @@ export interface SharedExecutionProviderConfig {
 	 * host keeps the run's opened capsule for as long. Absent: every run retires its slot.
 	 */
 	warmIdleMs?: number;
+	/**
+	 * F3 run boxes (deploy/first-node/RUNTIME-FOLDER-SERVICE.md, "Step 2b"): a run on a folder-v2 company gets a box
+	 * of its own on its slot, with the company folder read-only at /company, no network and no credentials. The
+	 * service opens the run's view once the runner holds its job, mounts it for the box and starts the box; the box
+	 * stops when the run does, also when its native host parks. Absent: no run gets a box.
+	 */
+	runBox?: {
+		/** `<unitPrefix>N.service` (the box) and `<unitPrefix>N.socket` (only the slot's native host may open it). */
+		unitPrefix: string;
+		/** `<folderUnitPrefix>N.service`: the run's view of the company folder, mounted for the box. */
+		folderUnitPrefix: string;
+	};
+}
+
+/** F3: a run's box, journaled from delivery on when boxes are on. */
+interface SharedExecutionRunBox {
+	/**
+	 * opening: the view is asked for until the run holds its job; open: the view file is written and the box was
+	 * started; none: the company has no folder-v2 folder (or this kind of run gets no view); failed: no view in time.
+	 */
+	state: "opening" | "open" | "none" | "failed";
+	environmentId: string;
+	jobId: string;
+	viewId?: string;
+	/** Delivery time: opening gives up BOX_OPEN_WINDOW_MS after it. */
+	since: string;
 }
 
 /** A slot whose native host outlived its run, waiting for the same conversation's next run. */
@@ -233,6 +266,7 @@ export interface SharedExecutionJournal {
 	hostIdentity?: { epoch: number; masterKeySha256: string };
 	/** This run took a warm slot: its native host was already running. */
 	reusedHost?: boolean;
+	box?: SharedExecutionRunBox;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -376,6 +410,18 @@ function validateConfig(config: SharedExecutionProviderConfig): void {
 		(!Number.isSafeInteger(config.warmIdleMs) || config.warmIdleMs < 1 || config.warmIdleMs > 5 * 60_000)
 	)
 		throw new Error("Warm window is outside the supported range");
+	if (
+		config.runBox &&
+		(!UNIT_PREFIX_PATTERN.test(config.runBox.unitPrefix) ||
+			!UNIT_PREFIX_PATTERN.test(config.runBox.folderUnitPrefix) ||
+			new Set([
+				config.hostUnitPrefix,
+				config.runnerUnitPrefix,
+				config.runBox.unitPrefix,
+				config.runBox.folderUnitPrefix,
+			]).size !== 4)
+	)
+		throw new Error("Run box unit prefixes must name distinct systemd templates");
 }
 
 /** Work this host can run. Malformed work is an error; well-formed work this
@@ -470,6 +516,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	#swept = false;
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
+	/** Acquisitions whose box view is being opened by this process. */
+	readonly #boxOpening = new Set<string>();
 	#endedRunnersCheckedAt = 0;
 	#serial: Promise<void> = Promise.resolve();
 
@@ -515,6 +563,19 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		for (const journal of live) {
 			try {
 				await this.#reconcileJournal(journal, active, signal);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
+			}
+		}
+		if (this.#config.runBox) {
+			// A box still opening (this process restarted meanwhile) is asked for again. A box no run holds stops and
+			// its view closes, before any slot wipe below removes the view's file.
+			for (const journal of live)
+				if (journal.physicalState === "assigned" && journal.box?.state === "opening")
+					this.#openBoxSoon(journal.acquisitionId);
+			try {
+				await this.#stopOrphanBoxes(signal);
 			} catch (error) {
 				if (signal?.aborted) throw error;
 				failures.push(error);
@@ -743,8 +804,20 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					...journal,
 					physicalState: "assigned",
 					assignmentId: delivery.assignment.assignmentId,
+					...(this.#config.runBox && !journal.box
+						? {
+								box: {
+									state: "opening" as const,
+									environmentId: delivery.work.environmentId,
+									jobId: delivery.assignment.jobId,
+									since: new Date(this.#now()).toISOString(),
+								},
+							}
+						: {}),
 				});
 		});
+		// The run's box opens beside the run: the delivery does not wait for it.
+		if (this.#config.runBox) this.#openBoxSoon(acquisitionId);
 	}
 
 	async stop(
@@ -936,14 +1009,20 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				return next;
 			});
 			if (!marked) return;
-			// Parking keeps the host for the conversation's next run: only the runner stops.
+			// Parking keeps the host for the conversation's next run: only the runner stops. The run's box stops first
+			// and always, also when the host parks: its commands end with the run.
 			const park = options.park === true;
+			const boxUnits = await this.#boxUnitsToStop(marked, signal);
+			for (const unit of boxUnits) await this.#units.stop(unit, signal).catch(() => undefined);
 			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
 			if (!park) await this.#units.stop(this.#unit("host", marked.slot), signal).catch(() => undefined);
 			signal?.throwIfAborted();
-			const slotUnits = park
-				? [this.#unit("runner", marked.slot)]
-				: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
+			const slotUnits = [
+				...boxUnits,
+				...(park
+					? [this.#unit("runner", marked.slot)]
+					: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)]),
+			];
 			let stillActive = await this.#units.activeSet(slotUnits, signal);
 			if (stillActive.size > 0) {
 				// A stop the unit ignored is answered with SIGKILL before the slot
@@ -962,6 +1041,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					await this.#writeJournal({ ...current, retireAttempts: (current.retireAttempts ?? 0) + 1 });
 					throw new Error("Sandbox units are still running; the slot stays quarantined");
 				}
+				await this.#closeBoxView(current.slot, signal);
 				if (park) await this.#wipeRunner(current.slot);
 				else await this.#wipeSlot(current.slot);
 				try {
@@ -1056,6 +1136,188 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	#unit(kind: "host" | "runner", slot: number): string {
 		return `${kind === "host" ? this.#config.hostUnitPrefix : this.#config.runnerUnitPrefix}${slot}.service`;
+	}
+
+	/** The box, its socket and its folder mount, in the order they stop. */
+	#boxUnits(slot: number): string[] {
+		const box = this.#config.runBox;
+		if (!box) return [];
+		return [
+			`${box.unitPrefix}${slot}.service`,
+			`${box.unitPrefix}${slot}.socket`,
+			`${box.folderUnitPrefix}${slot}.service`,
+		];
+	}
+
+	#boxViewPath(slot: number): string {
+		return join(this.#slotRun(slot), BOX_VIEW_FILE);
+	}
+
+	/** A box that was started stops whole (a start may still be queued); otherwise whatever of it runs. */
+	async #boxUnitsToStop(journal: SharedExecutionJournal, signal?: AbortSignal): Promise<string[]> {
+		const units = this.#boxUnits(journal.slot);
+		if (units.length === 0 || journal.box?.state === "open") return units;
+		const active = await this.#units.activeSet(units, signal);
+		return units.filter((unit) => active.has(unit));
+	}
+
+	#openBoxSoon(acquisitionId: string): void {
+		if (this.#boxOpening.has(acquisitionId)) return;
+		this.#boxOpening.add(acquisitionId);
+		void this.#openBox(acquisitionId)
+			.catch(() => undefined)
+			.finally(() => this.#boxOpening.delete(acquisitionId));
+	}
+
+	/**
+	 * Opens the run's view with the run's own authority (the run actor, under the run check), writes it where the
+	 * slot's folder unit reads it, and starts the box. The view is refused until the runner has taken its job lease,
+	 * so it is asked for again for a while. A run that ended meanwhile gets no box, and its view is closed at once.
+	 * A failure here never fails the run: its box is missing, and its box tools say so.
+	 */
+	async #openBox(acquisitionId: string): Promise<void> {
+		for (;;) {
+			const journal = await this.#readJournal(acquisitionId);
+			const box = journal?.box;
+			if (!journal || !box || box.state !== "opening" || journal.physicalState !== "assigned") return;
+			if (!journal.assignmentId) return;
+			let opened: { viewId: string; pass: string } | "none" | "retry";
+			try {
+				opened = await this.#openView(journal, box);
+			} catch {
+				opened = "retry";
+			}
+			if (opened === "retry" && this.#now() - Date.parse(box.since) < BOX_OPEN_WINDOW_MS) {
+				await delay(BOX_OPEN_RETRY_MS);
+				continue;
+			}
+			if (opened === "retry" || opened === "none") {
+				await this.#exclusive(async () => {
+					const latest = await this.#readJournal(acquisitionId);
+					if (latest?.box?.state === "opening")
+						await this.#writeJournal({
+							...latest,
+							box: { ...latest.box, state: opened === "none" ? "none" : "failed" },
+						});
+				});
+				return;
+			}
+			const view = opened;
+			const started = await this.#exclusive(async () => {
+				const latest = await this.#readJournal(acquisitionId);
+				if (!latest || latest.physicalState !== "assigned" || latest.box?.state !== "opening") return false;
+				const path = this.#boxViewPath(latest.slot);
+				await rm(path, { force: true });
+				await writePrivateFile(
+					path,
+					`${JSON.stringify({ environmentId: latest.box.environmentId, viewId: view.viewId, pass: view.pass })}\n`,
+				);
+				await this.#writeJournal({ ...latest, box: { ...latest.box, state: "open", viewId: view.viewId } });
+				// Queued under the lock: a retire marks the journal only after this, so its stop follows this start.
+				await this.#units.start(this.#boxUnits(latest.slot)[0] as string);
+				return true;
+			});
+			if (!started) await this.#closeView(view.viewId, view.pass).catch(() => undefined);
+			return;
+		}
+	}
+
+	/** `none`: the company has no folder-v2 folder, or this kind of run gets no view; `retry`: anything else, such as
+	 * a runner that has not taken its job lease yet. */
+	async #openView(
+		journal: SharedExecutionJournal,
+		box: SharedExecutionRunBox,
+	): Promise<{ viewId: string; pass: string } | "none" | "retry"> {
+		const response = await this.#fetch(new URL("/rest/v1/rpc/qorpera_folder_view_open", this.#config.supabaseUrl), {
+			method: "POST",
+			redirect: "error",
+			headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+			body: JSON.stringify({
+				p_environment_id: box.environmentId,
+				p_opener: {
+					kind: "run",
+					runId: journal.runId,
+					jobId: box.jobId,
+					runnerId: journal.runner.runnerId,
+					assignmentId: journal.assignmentId,
+				},
+				p_kind: "run_box",
+				p_anchor: {},
+			}),
+			signal: AbortSignal.timeout(10_000),
+		});
+		const answer: unknown = await response.json().catch(() => undefined);
+		if (!response.ok) {
+			const failure = answer && typeof answer === "object" ? (answer as Record<string, unknown>) : {};
+			// The SQL's own refusals for a company without a folder-v2 folder and for runs that get no view yet
+			// (20260928259230 view_open, 20260928249000 run_resolve).
+			if (failure.message === "Company folder is unavailable" || failure.code === "0A000") return "none";
+			return "retry";
+		}
+		const view = record(answer, "Folder view");
+		if (
+			view.schema !== VIEW_SCHEMA ||
+			typeof view.viewId !== "string" ||
+			!UUID_PATTERN.test(view.viewId) ||
+			typeof view.pass !== "string" ||
+			!TOKEN_PATTERN.test(view.pass)
+		)
+			throw new Error("Folder view answer is invalid");
+		return { viewId: view.viewId.toLowerCase(), pass: view.pass };
+	}
+
+	async #closeView(viewId: string, pass: string): Promise<void> {
+		const response = await this.#fetch(new URL("/rest/v1/rpc/qorpera_folder_view_close", this.#config.supabaseUrl), {
+			method: "POST",
+			redirect: "error",
+			headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+			body: JSON.stringify({ p_view_id: viewId, p_pass: pass }),
+			signal: AbortSignal.timeout(10_000),
+		});
+		void response.body?.cancel().catch(() => undefined);
+	}
+
+	/** Once the box is down: close the run's view (best effort: the run's end and the lease close it anyway) and
+	 * remove its file. */
+	async #closeBoxView(slot: number, signal?: AbortSignal): Promise<void> {
+		const path = this.#boxViewPath(slot);
+		let encoded: string;
+		try {
+			encoded = await readFile(path, "utf-8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		signal?.throwIfAborted();
+		try {
+			const view = record(JSON.parse(encoded), "Run box view file");
+			if (typeof view.viewId === "string" && typeof view.pass === "string")
+				await this.#closeView(view.viewId, view.pass);
+		} catch {
+			/* The view ends with the run regardless. */
+		}
+		await rm(path, { force: true });
+	}
+
+	/** A box running on a slot no live run holds (this process crashed mid-retire, or a warm slot parked without
+	 * one) stops, and its view closes. */
+	async #stopOrphanBoxes(signal?: AbortSignal): Promise<void> {
+		const all = Array.from({ length: this.#config.slotCount }, (_, slot) => this.#boxUnits(slot)).flat();
+		const active = await this.#units.activeSet(all, signal);
+		for (let slot = 0; slot < this.#config.slotCount; slot++) {
+			const units = this.#boxUnits(slot);
+			if (!units.some((unit) => active.has(unit))) continue;
+			const held = (await this.#journals()).some(
+				(journal) => !terminal(journal.physicalState) && journal.slot === slot,
+			);
+			if (held) continue;
+			for (const unit of units) await this.#units.stop(unit, signal).catch(() => undefined);
+			await this.#exclusive(async () => {
+				if ((await this.#journals()).some((journal) => !terminal(journal.physicalState) && journal.slot === slot))
+					return;
+				if ((await this.#units.activeSet(units, signal)).size === 0) await this.#closeBoxView(slot, signal);
+			});
+		}
 	}
 
 	#slotRun(slot: number): string {

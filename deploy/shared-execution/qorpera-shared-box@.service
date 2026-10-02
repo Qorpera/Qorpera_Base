@@ -1,0 +1,62 @@
+[Unit]
+Description=Qorpera shared execution: the run box for slot %i (the company folder read-only, no network, no credentials)
+Documentation=https://github.com/Qorpera/Qorpera_Base
+# The socket is the only way in: only the slot's native host account can open it.
+Requires=qorpera-shared-box@%i.socket
+# The run's view of the company folder, mounted first; the box ends when the mount does.
+BindsTo=qorpera-shared-box-folder@%i.service
+After=qorpera-shared-box@%i.socket qorpera-shared-box-folder@%i.service
+AssertPathIsMountPoint=/srv/qorpera-folder/box-%i
+
+[Service]
+Type=exec
+User=qorpera-shared-box-%i
+Group=qorpera-shared-box-%i
+ExecStart=/usr/bin/node --jitless /opt/qorpera/shared-execution/qorpera-shared-box-host.mjs
+WorkingDirectory=/company
+# Home and /tmp are one memory file system of the box's own: gone when the run ends.
+Environment=HOME=/tmp/home TMPDIR=/tmp LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin
+# The run's commands end with the run (the service stops the box when the run's runner ends); nothing restarts it
+# except the next connection to its socket.
+Restart=no
+KillMode=control-group
+TimeoutStopSec=5s
+UMask=0077
+LimitCORE=0
+# A box is 2 GiB of memory (founder decision on sizing, 2026-10-02); its commands have no time or count limit.
+MemoryMax=2G
+MemorySwapMax=0
+
+# What the box sees: the image's programs and settings read-only, the company folder read-only at /company, and its
+# own /tmp. Nothing of the host's state, run material, credentials, other slots or other mounts.
+ProtectSystem=strict
+ProtectHome=yes
+TemporaryFileSystem=/tmp:mode=1777,size=1G
+TemporaryFileSystem=/dev/shm:mode=1777,size=256M
+TemporaryFileSystem=/var:ro /run:ro /srv:ro /opt:ro /mnt:ro /media:ro
+BindReadOnlyPaths=/srv/qorpera-folder/box-%i:/company
+BindReadOnlyPaths=/opt/qorpera/shared-execution/qorpera-shared-box-host.mjs
+BindReadOnlyPaths=-/var/cache/fontconfig
+InaccessiblePaths=-/etc/qorpera -/etc/qorpera-folder -/etc/qorpera-folder-service -/etc/credstore -/etc/credstore.encrypted -/boot
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+KeyringMode=private
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

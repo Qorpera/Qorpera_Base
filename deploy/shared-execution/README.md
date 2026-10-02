@@ -13,9 +13,11 @@ What does **not** change:
 - the guest image: the execution host boots the pinned LXD runner guest image
   and runs its `qorpera-native-provider-host.mjs`, `qorpera-ephemeral-runner.mjs`
   and bubblewrap containment unchanged; this package only adds the service,
-  two unit templates, the slot accounts, the co-located orchestrator, and the
+  two unit templates, the slot accounts, the co-located orchestrator, the
   folder program with its mount unit (F3, `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`:
-  installed, pinned, started by nothing here);
+  installed, pinned, started by nothing here), and the run box (F3 step 2b,
+  "Run boxes" below: a third account per slot, its host program, unit, socket
+  and folder unit; off unless `QORPERA_SHARED_EXECUTION_RUN_BOX=on`);
 - the control plane: the same runner rows (`qorpera_provision_execution_runner`),
   the same company-ceiling reservation per sandbox
   (`qorpera_reserve_runtime_machine` / `qorpera_release_runtime_machine`), the
@@ -42,6 +44,11 @@ What does **not** change:
 | `/opt/qorpera-folder/qorpera-folder`, `/etc/systemd/system/qorpera-folder-mount@.service` | root | the folder program and its mount unit (F3; pinned, started by nothing in this package) |
 | `/etc/qorpera-folder/mounts/<id>.json` | root 0600 in 0700 | a mount's view file (its company folder, view id and pass) |
 | `/srv/qorpera-folder/<id>` | root 0755 in a root 0700 `/srv/qorpera-folder` | a mount (read-only, served to its mounting account only); hidden, with `/etc/qorpera-folder`, from both slot units |
+| `/opt/qorpera/shared-execution/qorpera-shared-box-host.mjs`, `qorpera-shared-box@.service`, `qorpera-shared-box@.socket`, `qorpera-shared-box-folder@.service` | root | the run box (F3 step 2b): its host program, unit, socket and folder unit; started by the service for a folder-v2 run |
+| `/run/qorpera-shared-execution/slots/<n>/box-view.json` | root 0600, tmpfs | the run's view of the company folder (company folder, view id, pass), for the box's folder unit |
+| `/srv/qorpera-folder/box-<n>` | root, FUSE, `allow_other` | the run's company folder, read-only; bound into the box as `/company` |
+| `/run/qorpera-shared-box/<n>.sock` | `qorpera-shared-host-<n>` 0600 | the box's socket: only the slot's native host opens it |
+| `/company` | root 0755, empty | the box's mount point (made by the installer, so systemd creates nothing on the host) |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
 (assignment inbox), both loopback. The runner configuration is written into
@@ -499,6 +506,64 @@ and exercising four CPU threads in total, plus the shared-slot lifecycle
 tests. This verifies basic operation after resizing, not representative native
 agent throughput. Measure real run latency, queue delay and peak memory before
 raising execution concurrency.
+
+## Run boxes (F3 step 2b)
+
+Off unless `QORPERA_SHARED_EXECUTION_RUN_BOX=on`. A run on a folder-v2 company
+gets a box of its own on its slot (`deploy/first-node/RUNTIME-FOLDER-SERVICE.md`,
+"Step 2b"; design `RUNTIME-COMPANY-FOLDER.md` section 4):
+
+1. `deliver` journals the box as `opening` and returns; the service then asks
+   for the run's view (`qorpera_folder_view_open` with the run actor, which the
+   database refuses until the runner has taken its job lease) every 250 ms for
+   at most a minute. A company without a folder-v2 folder, or a kind of run that
+   gets no view yet, journals `none`; a minute of refusals journals `failed`.
+   Neither fails the run: its box tools say the box is missing.
+2. With the view: under the service lock, the view file goes on the slot's tmpfs
+   (root 0600), the journal records `open` with the view id (never the pass),
+   and `qorpera-shared-box@<n>.service` is started. It pulls in its socket and
+   `qorpera-shared-box-folder@<n>.service`, which mounts the view with
+   `allow_other` (through the node's folder bridge, like any mount) and is
+   started only once the folder is mounted.
+3. Retire stops the box first, also when the native host parks: the box, its
+   socket and its folder unit, so every command ends with the run. With the box
+   down, the service closes the view (best effort: the run's end and the lease
+   close it anyway) and removes its file. A box no live run holds is stopped on
+   the next pass, before any slot wipe.
+
+The box (`qorpera-shared-box@.service`) runs the box host as the slot's third
+account, `qorpera-shared-box-<n>`, with the company folder read-only at
+`/company`, home and `/tmp` in a 1 GiB memory file system of its own,
+`PrivateNetwork=yes` (not even the host's loopback ports), no capability, its
+own `/dev/shm`, and nothing of `/var`, `/run`, `/srv`, `/opt` (but its own
+program), `/etc/qorpera*`, `/home` or `/root`. `MemoryMax=2G`; no time, task
+or output limit of its own. Its tools come with the runner image
+(`deploy/lxd-runner-guest/install-image-contract.sh`: ripgrep, fd, jq, Python
+with pandas, openpyxl, python-docx and pypdf, sqlite3, pandoc, poppler,
+ImageMagick, LibreOffice without a display, zip). The protocol between the
+native host and the box host is `@qorpera/contracts` `run-box.ts`.
+`scripts/test-run-box-systemd.mjs` proves all of it under real systemd with
+the real installer and folder program.
+
+### Rollout (coordinator)
+
+1. **Image.** The next runner image is built from
+   `install-image-contract.sh` with the box tools (the guest manifest re-pin is
+   the release's). One-run guests get the tools too; nothing there uses them.
+2. **Size.** Grow node 2's execution host so each slot gets a box: proposed
+   **8 vCPU / 16 GiB for the two slots** (per slot: native host 2 GiB, box
+   2 GiB, box folder mount up to 512 MiB; the service, the orchestrator and the
+   page cache in the rest). Same drain as "Capacity sizing" above; update the
+   instance limits, the inventory configuration digest, and the observer and
+   node headroom together. The slot count stays two.
+3. **Package and install** with the cut's shared-execution package (it carries
+   the box files and the folder program) through `rebuild-exec-host.sh` as at
+   any cut. It adds `qorpera-shared-box-<n>` per slot and `/company`, and
+   starts nothing.
+4. **Turn on** only once the folder service runs on node 2 with this host in
+   `runBoxHosts` and real folder-v2 runs exist (C3, C4): set
+   `QORPERA_SHARED_EXECUTION_RUN_BOX=on` in the staged env and restart the
+   service. Off again: unset it and restart; a running box stops with its run.
 
 ## Not in this package
 

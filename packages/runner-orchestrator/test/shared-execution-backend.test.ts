@@ -144,6 +144,12 @@ interface Fixture {
 	clock: { now: number };
 	/** Runner ids the control plane reports as ended; undefined: a database without the check. */
 	endedRunners?: string[];
+	/** F3 run boxes: how the next view opens are answered (then "ok"), the views opened and closed, and a gate the
+	 * next open waits on. */
+	viewAnswers: Array<"ok" | "run-unavailable" | "no-folder" | "not-yet">;
+	views: Array<{ viewId: string; pass: string }>;
+	closedViews: Array<{ viewId: string; pass: string }>;
+	viewGate?: Promise<void>;
 }
 
 async function fixture(
@@ -153,6 +159,7 @@ async function fixture(
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
+		runBox?: boolean;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -219,6 +226,9 @@ async function fixture(
 		provisioned: 0,
 		activations: new Map<string, string>(),
 		clock: { now: Date.parse("2026-09-22T12:00:00Z") },
+		viewAnswers: [],
+		views: [],
+		closedViews: [],
 	};
 	const config: SharedExecutionProviderConfig = {
 		adapterId: "native26-test",
@@ -244,6 +254,9 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
+		...(options.runBox
+			? { runBox: { unitPrefix: "qorpera-shared-box@", folderUnitPrefix: "qorpera-shared-box-folder@" } }
+			: {}),
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -252,6 +265,28 @@ async function fixture(
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			state.rpc.push({ name, body });
 			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);
+			if (name === "qorpera_folder_view_open") {
+				const gate = state.viewGate;
+				state.viewGate = undefined;
+				if (gate) await gate;
+				const answer = state.viewAnswers.shift() ?? "ok";
+				if (answer === "run-unavailable")
+					return Response.json({ code: "42501", message: "Run is unavailable" }, { status: 403 });
+				if (answer === "no-folder")
+					return Response.json({ code: "42501", message: "Company folder is unavailable" }, { status: 403 });
+				if (answer === "not-yet")
+					return Response.json(
+						{ code: "0A000", message: "Folder writes by this kind of run are not available yet" },
+						{ status: 501 },
+					);
+				const view = { viewId: crypto.randomUUID(), pass: token() };
+				state.views.push(view);
+				return Response.json({ schema: "qorpera.folder-view/v1", ...view, leaseUntil: "2099-01-01T00:00:00Z" });
+			}
+			if (name === "qorpera_folder_view_close") {
+				state.closedViews.push({ viewId: String(body.p_view_id), pass: String(body.p_pass) });
+				return Response.json(null);
+			}
 			if (name === "qorpera_runtime_ended_runners")
 				return state.endedRunners === undefined
 					? Response.json({ code: "PGRST202" }, { status: 404 })
@@ -1075,5 +1110,161 @@ describe("warm conversations", () => {
 			signal,
 		);
 		expect(f.units.log).toEqual([`kill ${hostUnit(0)}`, `start ${hostUnit(0)}`, `start ${runnerUnit(0)}`]);
+	});
+});
+
+describe("run boxes (F3)", () => {
+	const box = (slot: number) => [
+		`qorpera-shared-box@${slot}.service`,
+		`qorpera-shared-box@${slot}.socket`,
+		`qorpera-shared-box-folder@${slot}.service`,
+	];
+
+	async function until(check: () => Promise<boolean> | boolean, label: string): Promise<void> {
+		const started = Date.now();
+		while (!(await check())) {
+			if (Date.now() - started > 5_000) throw new Error(`timed out: ${label}`);
+			await delay(10);
+		}
+	}
+
+	async function boxState(f: Fixture): Promise<unknown> {
+		return ((await journal(f)).box as { state?: string } | undefined)?.state;
+	}
+
+	async function deliverRun(f: Fixture): Promise<void> {
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		await f.backend.deliver(runner, delivery());
+	}
+
+	it("opens a folder-v2 run's view once the runner holds its job, starts its box, and stops both with the run", async () => {
+		const f = await fixture({ runBox: true });
+		f.viewAnswers.push("run-unavailable", "run-unavailable");
+		await deliverRun(f);
+		await until(async () => (await boxState(f)) === "open", "the box opens");
+		const opens = f.rpc.filter((call) => call.name === "qorpera_folder_view_open");
+		expect(opens).toHaveLength(3);
+		expect(opens[2]?.body).toEqual({
+			p_environment_id: work().environmentId,
+			p_opener: {
+				kind: "run",
+				runId,
+				jobId: "30000000-0000-4000-8000-000000000003",
+				runnerId,
+				assignmentId: "30000000-0000-4000-8000-000000000031",
+			},
+			p_kind: "run_box",
+			p_anchor: {},
+		});
+		const [view] = f.views;
+		const viewFile = join(f.runRoot, "slots", "0", "box-view.json");
+		expect(JSON.parse(await readFile(viewFile, "utf-8"))).toEqual({
+			environmentId: work().environmentId,
+			viewId: view?.viewId,
+			pass: view?.pass,
+		});
+		expect((await stat(viewFile)).mode & 0o077).toBe(0);
+		// The journal names the view; its pass lives only in the view file.
+		const recorded = await journal(f);
+		expect(recorded.box).toMatchObject({ state: "open", viewId: view?.viewId });
+		expect(JSON.stringify(recorded)).not.toContain(view?.pass as string);
+		expect(f.units.log.at(-1)).toBe("start qorpera-shared-box@0.service");
+		for (const unit of box(0)) f.units.activeUnits.add(unit);
+
+		// The runner exits: the box stops first, then the run's units, then the view closes and its file goes.
+		f.units.log.length = 0;
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		expect(f.units.log).toEqual([
+			...box(0).map((unit) => `stop ${unit}`),
+			"stop qorpera-shared-runner@0.service",
+			"stop qorpera-shared-run-host@0.service",
+		]);
+		expect(f.closedViews).toEqual([view]);
+		await expect(stat(viewFile)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", box: { state: "open" } });
+	});
+
+	it("gives no box to a company without a folder-v2 folder, to a run kind with no view, or when boxes are off", async () => {
+		for (const answer of ["no-folder", "not-yet"] as const) {
+			const f = await fixture({ runBox: true });
+			f.viewAnswers.push(answer);
+			await deliverRun(f);
+			await until(async () => (await boxState(f)) === "none", "no box");
+			expect(f.units.log.some((line) => line.includes("qorpera-shared-box"))).toBe(false);
+			await expect(stat(join(f.runRoot, "slots", "0", "box-view.json"))).rejects.toMatchObject({ code: "ENOENT" });
+			// The run's end stops nothing of a box that never ran.
+			f.units.log.length = 0;
+			f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+			await f.backend.reconcile();
+			expect(f.units.log).toEqual([
+				"stop qorpera-shared-runner@0.service",
+				"stop qorpera-shared-run-host@0.service",
+			]);
+		}
+		const off = await fixture();
+		await deliverRun(off);
+		await off.backend.reconcile();
+		expect(off.rpc.some((call) => call.name.startsWith("qorpera_folder_view"))).toBe(false);
+		expect((await journal(off)).box).toBeUndefined();
+	});
+
+	it("closes the view at once when the run ended while it opened, and never starts the box", async () => {
+		const f = await fixture({ runBox: true });
+		let release = (): void => undefined;
+		f.viewGate = new Promise<void>((done) => {
+			release = done;
+		});
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		await f.backend.deliver(runner, delivery());
+		await until(() => f.rpc.some((call) => call.name === "qorpera_folder_view_open"), "the view is asked for");
+		await f.backend.stop(runner, "revoked");
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped" });
+		release();
+		await until(() => f.closedViews.length === 1, "the view closes");
+		expect(f.closedViews).toEqual(f.views);
+		expect(f.units.log.some((line) => line.startsWith("start qorpera-shared-box"))).toBe(false);
+		await expect(stat(join(f.runRoot, "slots", "0", "box-view.json"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("gives up on a view that stays refused, and stops a box no live run holds", async () => {
+		const f = await fixture({ runBox: true });
+		f.viewAnswers.push(...Array.from({ length: 1000 }, () => "run-unavailable" as const));
+		await deliverRun(f);
+		await until(() => f.rpc.filter((call) => call.name === "qorpera_folder_view_open").length >= 2, "retries");
+		f.clock.now += 61_000;
+		await until(async () => (await boxState(f)) === "failed", "the box gives up");
+		expect(f.units.log.some((line) => line.startsWith("start qorpera-shared-box"))).toBe(false);
+
+		// Slot 1 has no run, yet its box runs and its view file is there (a crash mid-retire).
+		const orphanView = { viewId: "30000000-0000-4000-8000-000000000099", pass: token() };
+		await mkdir(join(f.runRoot, "slots", "1"), { recursive: true, mode: 0o700 });
+		await writeFile(
+			join(f.runRoot, "slots", "1", "box-view.json"),
+			JSON.stringify({ environmentId: work().environmentId, ...orphanView }),
+			{ mode: 0o600 },
+		);
+		for (const unit of box(1)) f.units.activeUnits.add(unit);
+		f.units.log.length = 0;
+		await f.backend.reconcile();
+		expect(f.units.log).toEqual(box(1).map((unit) => `stop ${unit}`));
+		expect(f.closedViews).toEqual([orphanView]);
+		await expect(stat(join(f.runRoot, "slots", "1", "box-view.json"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("stops the box when its run's native host parks", async () => {
+		const f = await fixture({ runBox: true, warmIdleMs: 300_000 });
+		await deliverRun(f);
+		await until(async () => (await boxState(f)) === "open", "the box opens");
+		for (const unit of box(0)) f.units.activeUnits.add(unit);
+		f.units.log.length = 0;
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		expect(f.units.log).toEqual([...box(0).map((unit) => `stop ${unit}`), "stop qorpera-shared-runner@0.service"]);
+		expect(f.units.activeUnits.has("qorpera-shared-run-host@0.service")).toBe(true);
+		expect(f.closedViews).toEqual(f.views);
+		await expect(stat(join(f.runRoot, "slots", "0", "box-view.json"))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });

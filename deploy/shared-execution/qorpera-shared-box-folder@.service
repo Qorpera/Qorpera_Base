@@ -1,0 +1,37 @@
+[Unit]
+Description=Qorpera shared execution: the company folder for slot %i's run box (read-only, from this node's folder service)
+Documentation=https://github.com/Qorpera/Qorpera_Base
+# The shared execution service writes the run's view file and starts the box, which pulls this mount in and binds it.
+# When the box stops, nothing needs the mount any more and it stops too.
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /srv/qorpera-folder
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /srv/qorpera-folder/box-%i
+# allow_other: the box runs as the slot's box account. Every file is root's and read-only to it.
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-shared-execution/slots/%i/box-view.json --mountpoint /srv/qorpera-folder/box-%i --allow-other yes
+# Started means mounted: the box binds the mount as it starts.
+ExecStartPost=/bin/sh -c 'until /usr/bin/mountpoint -q /srv/qorpera-folder/box-%i; do sleep 0.05; done'
+TimeoutStartSec=30s
+# A program killed hard leaves its mount behind; take it away.
+ExecStopPost=-/usr/bin/umount -l /srv/qorpera-folder/box-%i
+# One run's view: a mount that ends is not started again; the box ends with it.
+Restart=no
+KillMode=mixed
+TimeoutStopSec=20s
+LimitCORE=0
+# The mount must appear in PID 1's mount namespace, so no option here makes a namespace of its own (ProtectSystem,
+# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups).
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/fuse rw
+RestrictAddressFamilies=AF_UNIX AF_VSOCK
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+MemoryMax=512M
+MemorySwapMax=0

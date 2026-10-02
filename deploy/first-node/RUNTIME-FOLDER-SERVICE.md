@@ -248,17 +248,41 @@ program in the pinned Rust image and passes it to the shared-execution packager 
 - `scripts/test-folder-service-core-shapes.mjs` also opens a run box view for a leased run on the views test's company
   (639) and checks its listing, feed replay, renewal, close, and that a closed view is refused.
 
-## Step 2b (not built yet)
+## Step 2b: the run box (drafts, on top of step 2a)
 
-The box itself: a third account per slot and a root-started `qorpera-shared-box@N` (no network, no credentials, the
-slot's host and runner folders, the credential and identity folders and `/run/qorpera-shared-execution` hidden), the
-run's view opened by the root shared-execution service when it hands the job over (it knows the run, holds the
-service key, starts units) and mounted with `allow_other` into the box only, then `exec_command`/`write_stdin` as
-Qorpera tools run by the native host, reads released with the run actor (P8). It waits on real folder-v2 runs (C3,
-C4, C1c-3d–3m) and step 1 being live. Two choices go to the coordinator first: where the box's tools come from (the
-runner image has no rg, fd, Python libraries or LibreOffice: rebuild it or ship a toolbox image), and the execution
-host's size (two slots at 4 vCPU / 8 GiB leave nothing for a 2 GiB box each).
+Three stacked drafts. Founder choices (2026-10-02): the box's tools come with the runner image; the execution host
+grows so each slot gets a box.
 
-## Not in step 2a
+**2b-1, the box (this draft).** Every run on a folder-v2 company gets a box of its own on its slot of the shared
+execution host (`deploy/shared-execution/README.md`, "Run boxes"):
 
-Writes; the box and `allow_other`; company, coding and test machines. Each is a later step.
+- The root shared-execution service opens the run's view itself, with the run actor, once the runner holds its job
+  (`view_open` refuses before), writes the view file on the slot's tmpfs and starts `qorpera-shared-box@N`. That pulls
+  in the box's folder unit, which mounts the view with `allow_other` through the node's folder bridge, and the box's
+  socket, which only the slot's native host account can open. At the run's end the box goes first (also when the
+  native host parks), then the service closes the view and removes its file.
+- The box runs the box host (`packages/runner-orchestrator/src/run-box-host.ts`) as a third account per slot:
+  `/company` read-only, home and `/tmp` in memory, no network, no capability, its own `/dev/shm`, nothing of the
+  host's state, run material or credentials. The box host runs commands under bash (optionally on a terminal, for
+  input), answers with their output since the last answer (head and tail when long, all of it kept in the box's
+  home) and lets them run on after an answer; they end with the run. Its protocol is `@qorpera/contracts`
+  `run-box.ts`, and the native host trusts none of its answers.
+- Proof: `scripts/test-run-box-systemd.mjs` installs the package with its real installer in a disposable systemd
+  container and runs one box against this repository's folder service (core in memory) with the real folder
+  program, from the native host's account: reads, no writes, nothing secret visible, no network, no capability, a
+  terminal command, long output, a member's edit showing, every command ending at the run's end, a fresh box per run,
+  and no box for a refused view.
+- Inert until `QORPERA_SHARED_EXECUTION_RUN_BOX=on`, and without real folder-v2 runs (C3, C4, C1c-3d–3m) nothing opens.
+
+**2b-2, the read log (next).** The folder service keeps, per view, which file versions the box read, and hands them to
+the run's native host on request, so its tools can release them as the run's reads.
+
+**2b-3, the tools (next).** `exec_command` and `write_stdin` in the `qorpera` namespace, run by the native host
+through the box socket: review class "read" while the mount is read-only, answers fitted to the tool result size,
+and the reads of each answer released with the run actor (P8) so the next model request's context view cites them.
+Needs the observation vocabulary (SQL and TypeScript) and the prompt text; no view call (the root service opens and
+closes the view).
+
+## Not in step 2
+
+Writes; company, coding and test machines. Each is a later step.

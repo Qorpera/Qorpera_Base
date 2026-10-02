@@ -53,6 +53,19 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=256M\n' > /etc/systemd/journ
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install --yes bubblewrap ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns uidmap
+# The run box's tools (F3 step 2b; deploy/first-node/RUNTIME-COMPANY-FOLDER.md section 4, "Toolbox image"): an agent's
+# commands over the company folder run with these in its box on the shared execution host. One-run guests get them
+# too; nothing there uses them.
+apt-get install --yes --no-install-recommends fd-find file fonts-dejavu-core imagemagick jq libreoffice-nogui pandoc \
+	poppler-utils python3 python3-docx python3-openpyxl python3-pandas python3-pypdf ripgrep sqlite3 unzip zip
+ln -sfn /usr/bin/fdfind /usr/local/bin/fd
+for tool in rg fd jq python3 sqlite3 pandoc pdftotext convert soffice zip unzip file; do
+	if ! command -v "${tool}" >/dev/null; then
+		echo "The run box tool ${tool} is missing from the image." >&2
+		exit 1
+	fi
+done
+python3 -c 'import docx, openpyxl, pandas, pypdf'
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then

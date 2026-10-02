@@ -31,6 +31,13 @@ function integer(name: string, fallback: number, minimum: number, maximum: numbe
 	return value;
 }
 
+function runBoxes(): boolean {
+	const value = process.env.QORPERA_SHARED_EXECUTION_RUN_BOX;
+	if (value === undefined || value === "off") return false;
+	if (value === "on") return true;
+	throw new Error("QORPERA_SHARED_EXECUTION_RUN_BOX must be on or off");
+}
+
 async function systemdCredential(name: string): Promise<string | undefined> {
 	const directory = process.env.CREDENTIALS_DIRECTORY;
 	if (!directory) return undefined;
@@ -100,6 +107,10 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		// Warm conversations (2026-09-27): off unless set.
 		...(process.env.QORPERA_SHARED_EXECUTION_WARM_IDLE_MS
 			? { warmIdleMs: integer("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS", 300_000, 1, 5 * 60_000) }
+			: {}),
+		// F3 run boxes: off unless set; the installer puts the box units in place.
+		...(runBoxes()
+			? { runBox: { unitPrefix: "qorpera-shared-box@", folderUnitPrefix: "qorpera-shared-box-folder@" } }
 			: {}),
 	};
 	return { config, providerToken, host, port: integer("QORPERA_RUNNER_PROVIDER_PORT", 18_450, 1, 65_535) };

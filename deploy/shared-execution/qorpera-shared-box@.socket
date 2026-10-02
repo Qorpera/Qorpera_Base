@@ -1,0 +1,13 @@
+[Unit]
+Description=Qorpera shared execution: the run box socket for slot %i (only the slot's native host opens it)
+Documentation=https://github.com/Qorpera/Qorpera_Base
+
+[Socket]
+ListenStream=/run/qorpera-shared-box/%i.sock
+SocketUser=qorpera-shared-host-%i
+SocketGroup=qorpera-shared-host-%i
+SocketMode=0600
+DirectoryMode=0755
+Accept=no
+RemoveOnStop=yes
+# No [Install]: the shared execution service starts the box (which pulls this in) for a run and stops both with it.

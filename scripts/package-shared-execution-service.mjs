@@ -8,7 +8,8 @@ import { jitlessServiceBundleOptions } from "./jitless-service-bundle.mjs";
 /** Shared execution package: the service that turns one execution host VM
  * into a sandbox pool, its slot unit templates, the co-located orchestrator,
  * the folder program with its mount unit (F3: built by
- * scripts/build-folder-program.mjs, pinned by the installer) and the
+ * scripts/build-folder-program.mjs, pinned by the installer), the run box
+ * (F3 step 2b: its host program, unit, socket and folder unit) and the
  * fail-closed guest installer. Installed on top of the pinned runner guest
  * image; the image itself is not part of this package. */
 
@@ -41,6 +42,7 @@ await mkdir(outputRoot, { recursive: true });
 const entryPoints = [
 	["packages/runner-orchestrator/src/shared-execution-cli.ts", "qorpera-shared-execution-service.mjs"],
 	["packages/runner-orchestrator/src/cli.ts", "qorpera-runner-orchestrator.mjs"],
+	["packages/runner-orchestrator/src/run-box-host-cli.ts", "qorpera-shared-box-host.mjs"],
 ];
 for (const [entryPoint, file] of entryPoints) {
 	await build({
@@ -63,6 +65,9 @@ const copies = [
 	"deploy/shared-execution/install-shared-execution-guest.sh",
 	"deploy/first-node/qorpera-runner-orchestrator.service",
 	"deploy/folder-service/qorpera-folder-mount@.service",
+	"deploy/shared-execution/qorpera-shared-box@.service",
+	"deploy/shared-execution/qorpera-shared-box@.socket",
+	"deploy/shared-execution/qorpera-shared-box-folder@.service",
 ];
 for (const source of copies) {
 	await copyFile(resolve(repositoryRoot, source), resolve(outputRoot, source.split("/").at(-1)));

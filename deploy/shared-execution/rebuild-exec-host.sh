@@ -70,7 +70,8 @@ if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
 	echo "EXEC_RUNTIME_BUNDLE_SHA256 must be a sha256." >&2
 	exit 1
 fi
-for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json qorpera-folder qorpera-folder-mount@.service; do
+for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json qorpera-folder qorpera-folder-mount@.service \
+	qorpera-shared-box-host.mjs qorpera-shared-box@.service qorpera-shared-box@.socket qorpera-shared-box-folder@.service; do
 	[[ -f ${PACKAGE}/${file} ]] || { echo "Package is incomplete: ${PACKAGE}/${file}" >&2; exit 1; }
 done
 # The installer refuses a folder program other than the pinned build, but only after the root disk is replaced:

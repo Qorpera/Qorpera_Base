@@ -52,6 +52,10 @@ test("packages and pins the shared execution service", async () => {
 				"qorpera-shared-runner@.service",
 				"qorpera-folder",
 				"qorpera-folder-mount@.service",
+				"qorpera-shared-box-host.mjs",
+				"qorpera-shared-box@.service",
+				"qorpera-shared-box@.socket",
+				"qorpera-shared-box-folder@.service",
 				"shared-execution.env.example",
 			].sort((a, b) => a.localeCompare(b, "en")),
 		);
@@ -67,7 +71,10 @@ test("packages and pins the shared execution service", async () => {
 		assert.ok(service.includes("qorpera.shared-execution-journal/v1"));
 		assert.ok(service.includes("qorpera_reserve_runtime_machine"));
 		assert.ok(!service.includes("import { spawn }"), "the service must be a single bundled artifact");
-		for (const file of ["qorpera-shared-execution-service.mjs", "qorpera-runner-orchestrator.mjs"]) {
+		const boxHost = contents.get("qorpera-shared-box-host.mjs").toString("utf-8");
+		assert.ok(boxHost.includes("qorpera-shared-box@.socket"), "the box host is the bundled run box host");
+		assert.ok(!boxHost.includes("supabase"), "the box host talks to nothing but its socket");
+		for (const file of ["qorpera-shared-execution-service.mjs", "qorpera-runner-orchestrator.mjs", "qorpera-shared-box-host.mjs"]) {
 			const checked = spawnSync(process.execPath, ["--check", join(outputRoot, file)], { encoding: "utf-8" });
 			assert.equal(checked.status, 0, checked.stderr);
 		}
@@ -90,6 +97,20 @@ test("packages and pins the shared execution service", async () => {
 		// The folder (F3) is root's: neither slot unit can see the mounts or the view files with their passes.
 		for (const unit of [hostUnit, runnerUnit])
 			assert.match(unit, /^InaccessiblePaths=.* \/srv\/qorpera-folder \/etc\/qorpera-folder /m);
+		// The run box (F3 step 2b): its own account, the folder read-only at /company, no network, its own memory.
+		const boxUnit = contents.get("qorpera-shared-box@.service").toString("utf-8");
+		const boxSocket = contents.get("qorpera-shared-box@.socket").toString("utf-8");
+		const boxFolder = contents.get("qorpera-shared-box-folder@.service").toString("utf-8");
+		assert.match(boxUnit, /^User=qorpera-shared-box-%i$/m);
+		assert.match(boxUnit, /^BindReadOnlyPaths=\/srv\/qorpera-folder\/box-%i:\/company$/m);
+		assert.match(boxUnit, /^TemporaryFileSystem=\/var:ro \/run:ro \/srv:ro \/opt:ro \/mnt:ro \/media:ro$/m);
+		for (const line of ["PrivateNetwork=yes", "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "CapabilityBoundingSet=", "NoNewPrivileges=yes", "MemoryMax=2G"])
+			assert.ok(boxUnit.split("\n").includes(line), `the box unit sets ${line}`);
+		assert.ok(!/LoadCredential|EnvironmentFile|SupplementaryGroups/.test(boxUnit), "the box holds no credential");
+		assert.match(boxSocket, /^SocketUser=qorpera-shared-host-%i$/m);
+		assert.match(boxSocket, /^SocketMode=0600$/m);
+		assert.match(boxFolder, /--view-file \/run\/qorpera-shared-execution\/slots\/%i\/box-view\.json --mountpoint \/srv\/qorpera-folder\/box-%i --allow-other yes$/m);
+		assert.match(runnerUnit, /^InaccessiblePaths=.* -\/run\/qorpera-shared-box( |$)/m);
 		const installer = contents.get("install-shared-execution-guest.sh").toString("utf-8");
 		const expectedPins = [
 			`EXPECTED_SERVICE_UNIT_SHA256="${sha256(contents.get("qorpera-shared-execution.service"))}"`,
@@ -98,15 +119,20 @@ test("packages and pins the shared execution service", async () => {
 			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(contents.get("shared-execution.env.example"))}"`,
 			`EXPECTED_ORCHESTRATOR_UNIT_SHA256="${sha256(contents.get("qorpera-runner-orchestrator.service"))}"`,
 			`EXPECTED_FOLDER_MOUNT_UNIT_SHA256="${sha256(contents.get("qorpera-folder-mount@.service"))}"`,
+			`EXPECTED_BOX_UNIT_SHA256="${sha256(contents.get("qorpera-shared-box@.service"))}"`,
+			`EXPECTED_BOX_SOCKET_SHA256="${sha256(contents.get("qorpera-shared-box@.socket"))}"`,
+			`EXPECTED_BOX_FOLDER_UNIT_SHA256="${sha256(contents.get("qorpera-shared-box-folder@.service"))}"`,
 		];
 		if (process.platform === "linux" && process.arch === "x64") {
 			expectedPins.push(
 				`EXPECTED_SERVICE_SHA256="${sha256(contents.get("qorpera-shared-execution-service.mjs"))}"`,
 				`EXPECTED_ORCHESTRATOR_SHA256="${sha256(contents.get("qorpera-runner-orchestrator.mjs"))}"`,
+				`EXPECTED_BOX_HOST_SHA256="${sha256(contents.get("qorpera-shared-box-host.mjs"))}"`,
 			);
 		} else {
 			assert.match(installer, /EXPECTED_SERVICE_SHA256="[0-9a-f]{64}"/);
 			assert.match(installer, /EXPECTED_ORCHESTRATOR_SHA256="[0-9a-f]{64}"/);
+			assert.match(installer, /EXPECTED_BOX_HOST_SHA256="[0-9a-f]{64}"/);
 		}
 		for (const expected of expectedPins) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
@@ -114,7 +140,8 @@ test("packages and pins the shared execution service", async () => {
 		assert.ok(installer.includes("useradd --system --no-create-home"));
 		assert.ok(installer.includes("Nothing starts here"));
 		assert.ok(installer.includes('verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"'));
-		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-folder-mount/.test(installer), "no mount starts at install");
+		assert.ok(!/systemctl (enable|start)[^\n]*qorpera-(folder-mount|shared-box)/.test(installer), "no mount or box starts at install");
+		assert.ok(installer.includes('for prefix in qorpera-shared-host qorpera-shared-runner qorpera-shared-box; do'), "a box account per slot");
 		// The slot units' InaccessiblePaths has no "-": without these folders every slot would fail to start.
 		const folders = installer.indexOf("install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder");
 		assert.ok(folders > 0 && folders < installer.indexOf("systemctl daemon-reload"));
