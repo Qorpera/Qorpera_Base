@@ -115,6 +115,11 @@ async function rehearse(empty, path = "roll") {
 		const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
 		assert.equal(wake.length, 2);
 		sql(`${wake[0]}\ncommit;`);
+		// The fixture leases its run for 120 s. A loaded machine outlasts that: the next claim's reconcile requeues
+		// the run with its old created_at, and node B would take it before the rehearsal's N run. Renew the
+		// leases, as a live runner does.
+		sql(`update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() + interval '1 hour' where status = 'leased';
+		update public.qorpera_runner_job_claims set lease_expires_at = clock_timestamp() + interval '1 hour' where status = 'accepted';`);
 		// Two nodes: node A runs the fixture orchestrator's adapter, node B a fast host.
 		sql(`${service} set role service_role;
 			select public.qorpera_configure_runtime_node(${literal(policy(nodeA, "node-a", "a".repeat(64)))},0);
@@ -163,12 +168,6 @@ async function rehearse(empty, path = "roll") {
 		assert.equal(check.ok, true, JSON.stringify(check.failures));
 		for (const name of DRY_RUN_ONLY) assert(p(name), name);
 
-		// Only the rehearsal's own runs wait for a claim: the fixture's other unclaimed jobs are settled first.
-		// Claims take the oldest job, and under load one of them could be the first node B takes.
-		sql(`update public.qorpera_runner_jobs as job set status = 'cancelled', cancelled_at = clock_timestamp(), cancelled_by_user_id = created_by_user_id,
-		lease_token_sha256 = null, lease_expires_at = null
-		where job.status = 'queued' and not exists (select 1 from public.qorpera_runner_job_claims claim
-			where claim.job_id = job.id and claim.status in ('claimed','assigned','accepted'));`);
 		// A queued N run before the roll; node B's fast host will take it.
 		const runN = newRun();
 		const runN2 = newRun(); // a second N run, still queued when node B is about to leave N

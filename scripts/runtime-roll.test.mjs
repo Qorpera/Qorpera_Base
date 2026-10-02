@@ -219,6 +219,27 @@ test("the schema rehearsal applies every release migration in order in one trans
 	assert.ok(!text.includes("begin;\nalter table"), "each migration's own begin is removed");
 	// A roll with no release migration has no rehearsal, and packet.json lists only files it has.
 	assert.equal(rollPackets(options({ migrations: [] }))["05-rehearse-migrations.sql"], undefined);
+	// Each migration starts with its packet's settings, and the summary reports the roll's guards.
+	assert.equal(text.match(/set local lock_timeout = '5s';\nset local statement_timeout = '120s';\s*(create table|alter table)/g)?.length, 2);
+	assert.match(text, /'ok', true, 'guards', coalesce\(\(select not exists/);
+});
+
+test("a release's pg_temp helpers and temporary tables are its own migration's, under names no other one creates", () => {
+	const helper = (name, body) => ({ name, text: `create function pg_temp.${body}() returns void language sql as $$ select 1 $$;\nselect pg_temp.${body}();\n` });
+	const first = helper("20260928400100_one.sql", "roll_patch");
+	assert.throws(() => rollPackets(options({ migrations: [first, helper("20260928400200_two.sql", "roll_patch")] })), /both create pg_temp\.roll_patch/);
+	const borrow = { name: "20260928400200_two.sql", text: "select pg_temp.roll_patch();\n" };
+	assert.throws(() => rollPackets(options({ migrations: [first, borrow] })), /uses pg_temp\.roll_patch, which it does not create/);
+	// A temporary table filled with a column list is not a call; one made `if not exists` may be shared.
+	const table = (name, ifNotExists) => ({
+		name,
+		text: `create temporary table ${ifNotExists ? "if not exists " : ""}roll_rows (id integer) on commit drop;\ninsert into pg_temp.roll_rows (id) values (1);\n`,
+	});
+	assert.ok(rollPackets(options({ migrations: [first, table("20260928400200_two.sql", false)] }))["05-rehearse-migrations.sql"]);
+	assert.throws(() => rollPackets(options({ migrations: [table("20260928400100_one.sql", false), table("20260928400200_two.sql", false)] })), /both create pg_temp\.roll_rows/);
+	assert.ok(rollPackets(options({ migrations: [table("20260928400100_one.sql", true), table("20260928400200_two.sql", true)] })));
+	// A name in a comment is not a use.
+	assert.ok(rollPackets(options({ migrations: [{ name: "20260928400100_one.sql", text: "-- like pg_temp.elsewhere(x)\nselect 1;\n" }] })));
 });
 
 test("bad inputs are refused", () => {

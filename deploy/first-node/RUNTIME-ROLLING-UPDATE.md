@@ -46,12 +46,12 @@ A release **rolls** when both of these hold:
   the web API and the edge functions (such as `runner-orchestrator`) serve both nodes at once, so
   they cannot be updated one node at a time. A release that changes one of them is deployed at
   step 2 only if the new version works with both bundles; otherwise the release pauses. A node 1
-  shared service that restarts (the secret broker, the vault front, the object gateway) briefly stops
-  starts on both nodes, so its update goes outside the roll, in its own quiet minute (v166's broker
-  update did). A new broker endpoint is reachable only once the vault front routes it: a
+  shared service that restarts (the secret broker, the vault's nginx on node 1, the object gateway)
+  briefly stops new runs from starting on both nodes, so its update goes outside the roll, in its own
+  quiet minute (v166's broker update did). A new broker endpoint is reachable only once the vault's
+  nginx routes it (the `:10000` server block in `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`): a
   `location = /v1/company-accounts` (POST only) proxied through `$qorpera_operations_broker`, exactly
-  like `/v1/operations` (`RUNTIME-STEP-7-CLOUD-CONNECTORS.md`). That line belongs to the feature's
-  switch-on, not to the roll.
+  like `/v1/operations`. That line belongs to the feature's switch-on, not to the roll.
 - Its node release's `order` is `schema-first` or `either`: the migrations come before node A's
   update. With `pause`, `agent apply` insists on `--defer`.
 
@@ -169,18 +169,23 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      and runtime_bundle_sha256 = '<N sha>';
    ```
 2. **Migrations.** Apply the release's migrations, not the activation.
-   - Deploy the release's changed edge functions and other shared services now, and only if they
-     work with both bundles (see "Does a release roll or pause?").
+   - Deploy the release's changed edge functions now, and only if they work with both bundles (see
+     "Does a release roll or pause?"). A changed node 1 service that restarts (the secret broker, the
+     vault's nginx, the object gateway) goes outside the roll, in its own quiet minute.
    - Rehearse first: `05-rehearse-migrations` (dry-run only) applies every release migration in
      order in one transaction and rolls back, so every exact-text patch is checked before anything
-     commits. Each `10-migration-*` packet needs the one before it recorded, so on its own only the
+     commits, and it reports whether the roll's guards survive them (`guards`). It holds every
+     migration's locks until its rollback (for v166: `qorpera_runner_jobs`, `qorpera_profiles`, the
+     vault tables), so run it in the same quiet minute as the commits, never in a busy hour; a `55P03`
+     from it only means "try again later". A release with no migration has no `05`. Each `10-migration-*` packet needs the one before it recorded, so on its own only the
      first could be dry-run before a commit. A lighter check that takes no lock (v166's): read-only,
      each exact-text anchor occurs exactly once in `pg_get_functiondef` of its target function. It
      covers a patch whose target no earlier migration of the release replaces; the rehearsal covers
      every case.
-   - A migration that runs in a transaction: dry run first, then commit. A failed commit (for example
-     `55P03`, a lock timeout) changed nothing and is not recorded: run it again. A landed one is
-     recorded, and the packet refuses a second commit.
+   - A migration that runs in a transaction: dry run first, then commit. A commit the database refused
+     (for example `55P03`, a lock timeout) changed nothing: run it again. Running it again is safe even
+     when the outcome is unknown (a lost reply): a commit that landed is recorded, and the packet
+     refuses a second one.
    - A `create index concurrently` migration cannot run in a transaction: apply it on its own, as
      rehearsed, and record it in the migration history as today's cut does.
 
@@ -377,7 +382,7 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
 | Packet | Procedure step |
 |---|---|
 | `00-check` | 1, the preflight. It also lists the node-disk logins and records N's pending inputs |
-| `05-rehearse-migrations` | 2, before the first commit: every release migration in one transaction, rolled back (dry-run only) |
+| `05-rehearse-migrations` | 2, before the first commit, in the same quiet minute: every release migration in one transaction, rolled back, and the guards after them (dry-run only; absent without migrations) |
 | `10-migration-*` | 2, one per release migration, gated on N, the one before it recorded, and not yet recorded |
 | `20-declare-b` | 3 |
 | `30-runs-off-a`, `31-drain-a` | 4 (wait until `readyForNodeRelease`). `30` needs B serving runs, ready, with live orchestrators |

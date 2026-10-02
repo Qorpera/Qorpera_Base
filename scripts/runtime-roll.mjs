@@ -222,6 +222,22 @@ export function rollPackets(options) {
 	// The history order: two migrations that replace one function must apply in timestamp order.
 	const ordered = [...migrations].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	if (new Set(ordered.map((m) => MIGRATION_NAME.exec(m.name)?.[1])).size !== ordered.length) throw new Error("Two migrations share a version");
+	// pg_temp helpers and temporary tables: each migration creates its own, under a name no other release migration
+	// creates. 05 runs them all in one transaction (a shared name fails there) while each 10-* packet runs alone (a
+	// borrowed one fails there). A table made `if not exists` may be shared.
+	const helpers = new Map();
+	for (const migration of ordered) {
+		const text = migration.text.replace(/--[^\n]*/g, "").toLowerCase();
+		const functions = [...text.matchAll(/create\s+(?:or\s+replace\s+)?function\s+pg_temp\.([a-z0-9_]+)/g)].map((m) => m[1]);
+		const tables = [...text.matchAll(/create\s+(?:temporary|temp)\s+table\s+(if\s+not\s+exists\s+)?(?:pg_temp\.)?([a-z0-9_]+)/g)];
+		for (const name of [...new Set(functions), ...tables.filter((m) => !m[1]).map((m) => m[2])]) {
+			if (helpers.has(name)) throw new Error(`${migration.name} and ${helpers.get(name)} both create pg_temp.${name}`);
+			helpers.set(name, migration.name);
+		}
+		const created = new Set([...functions, ...tables.map((m) => m[2])]);
+		for (const [, name] of text.matchAll(/pg_temp\.([a-z0-9_]+)\s*\(/g))
+			if (!created.has(name)) throw new Error(`${migration.name} uses pg_temp.${name}, which it does not create`);
+	}
 	for (const migration of ordered) {
 		if (!MIGRATION_NAME.test(migration.name) || migration.name >= activation.name)
 			throw new Error(`${migration.name} is no migration that sorts before the activation`);
@@ -261,11 +277,13 @@ export function rollPackets(options) {
 	if (ordered.length)
 		files["05-rehearse-migrations.sql"] = packet([
 			gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not the active bundle`], ...ordered.map((m) => NOT_RECORDED(m.name))]),
+			// Each migration starts with its packet's settings: a `set local` of one must not carry into the next.
 			...ordered.flatMap((migration) => {
 				const body = migrationBody(migration.text);
-				return [body, historyInsert(migration.name, body)];
+				return [`set local lock_timeout = '5s';\nset local statement_timeout = '120s';`, body, historyInsert(migration.name, body)];
 			}),
-			`select jsonb_build_object('rehearsed', jsonb_build_array(${ordered.map((m) => literal(m.name)).join(", ")}), 'ok', true) as roll_rehearsal;`,
+			// The guards the roll relies on, after every migration: a release that loses one pauses instead.
+			`select jsonb_build_object('rehearsed', jsonb_build_array(${ordered.map((m) => literal(m.name)).join(", ")}), 'ok', true, 'guards', coalesce((${MARKERS}), false)) as roll_rehearsal;`,
 		]);
 	ordered.forEach((migration, index) => {
 		const body = migrationBody(migration.text);
