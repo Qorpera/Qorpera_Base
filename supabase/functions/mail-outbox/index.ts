@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
-import { handleMailOutbox, type MailOutboxStore, ResendSender } from "./mail-outbox.ts";
+import { handleMailOutbox, type MailOutboxStore, ResendSender, StorageObjectReader } from "./mail-outbox.ts";
 
 function required(name: string): string {
 	const value = Deno.env.get(name)?.trim();
@@ -54,4 +54,11 @@ function store(secretKey: string): MailOutboxStore {
 	};
 }
 
-Deno.serve((request) => handleMailOutbox(request, { keys: secretKeys(), store, sender }));
+Deno.serve((request) =>
+	handleMailOutbox(request, {
+		keys: secretKeys(),
+		store,
+		objects: (secretKey) => new StorageObjectReader(supabaseUrl, secretKey),
+		sender,
+	}),
+);
