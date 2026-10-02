@@ -239,7 +239,7 @@ those. A pass runs every five seconds and makes up to four claims.
    - one sealed for another authority ("The hook's signing secret must be saved again");
    - a delivery whose body is gone ("The delivery's body is gone");
    - a delivery claimed five times ("The vault could not check it").
-   It looks past up to three times `limit` of those, and the broker claims again while a claim refused
+   A call looks at up to four times `limit` rows, and the broker claims again while a claim refused
    any, so a backlog of them never holds up a delivery behind it.
 2. The broker opens the secret in memory and checks the signature, comparing in constant time. The
    sender id is always one the signature covers:
@@ -249,9 +249,11 @@ those. A pass runs every five seconds and makes up to four claims.
    - `github`: `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 of the body. GitHub signs neither
      `X-GitHub-Delivery` nor `X-GitHub-Event`, so the sender id is `sig:<signature>`: GitHub's own
      redelivery and anyone's replay of a body are duplicates. The type is `X-GitHub-Event`, followed by
-     `.<action>` when the body has one (`pull_request.opened`); a replay with another name is still a
-     duplicate. GitHub signs no time, so a body replayed after its row is deleted (30 days) is taken
-     again.
+     `.<action>` when the body has one (`pull_request.opened`). The name is unsigned: a replay under
+     another name is a duplicate once the genuine copy is verified, but someone who held the signed body
+     before GitHub's own copy arrived could land it first under another name, which a listener's `only`
+     filter would act on. GitHub signs no time, so a body replayed after its row is deleted (30 days) is
+     taken again.
    - `hmac-sha256`: Standard Webhooks (standardwebhooks.com), under its own headers or Svix's
      (`svix-id`, `svix-timestamp`, `svix-signature`): `webhook-signature: v1,<base64>` (one or more)
      over `<webhook-id>.<webhook-timestamp>.<body>`, keyed by the secret's base64 key (`whsec_`
@@ -267,7 +269,9 @@ those. A pass runs every five seconds and makes up to four claims.
    reason)`, broker role only, records the verdict when this claim still holds the delivery
    (otherwise `stale`, changing nothing):
    - `verified` with the sender id and the type, unless the hook was removed or its secret is gone
-     since the claim: then the delivery is refused with that reason. A sender id is unique per hook
+     since the claim: then the delivery is refused with that reason. If the hook's current secret is no
+     longer the version the claim handed out (saved again, or replaced), the verdict is not taken: the
+     delivery is offered again at once and checked with the current version (answer `retry`). A sender id is unique per hook
      among verified deliveries, as for address hooks; a second one becomes `duplicate` without its
      body. Each verdict is its own short transaction stamping `verified_at` with `clock_timestamp()`,
      as event wakes need (W2).
@@ -276,8 +280,9 @@ those. A pass runs every five seconds and makes up to four claims.
      damaged envelope). The delivery is offered again after a minute, then five times longer after
      each attempt (1, 5, 25 and 125 minutes); the fifth attempt's retry refuses it ("The vault could not
      check it"), about two and a half hours after it arrived.
-   A claim whose broker stopped expires after 60 seconds and counts as an attempt. A refused delivery
-   keeps no body.
+   A claim whose broker stopped expires after 60 seconds and counts as an attempt. A delivery the vault
+   refuses keeps no body; one the purge refuses keeps it until the seven-day clear. The shared vault's due
+   list takes the lowest company ids first when more than 1000 companies are due at once.
 
 A delivery still `received` after 24 hours is refused by the purge ("Not verified in time").
 
@@ -554,7 +559,7 @@ mail sent automatically. After it is live:
 
 ## Deploy (W1b)
 
-The migration adds three columns and a partial index to `qorpera_event_deliveries`, two helper functions, a
+The migration adds five columns and a partial index to `qorpera_event_deliveries`, two helper functions, a
 trigger on the hooks' status and the broker's three functions, and patches three existing functions by exact
 text: `qorpera_create_event_hook` (signed proofs are allowed), `qorpera_event_hook_descriptor`
 (`signingSecret`) and `qorpera_receive_event` (a signed delivery is stored as `received`). No Edge Function

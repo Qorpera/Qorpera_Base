@@ -417,7 +417,36 @@ select pg_temp.hook_assert(count(*) = 1 and bool_and((item ->> 'secretVersion'):
 		and convert_from(decode(item ->> 'encryptedEnvelopeBase64', 'base64'), 'UTF8') = 'github version two'),
 	'The claim carries the current version: ' || coalesce(string_agg(item::text, ', '), 'nothing'))
 from jsonb_array_elements(current_setting('qorpera_test.claim')::jsonb) as claimed(item);
-select set_config('qorpera_test.c8', current_setting('qorpera_test.claim')::jsonb -> 0 ->> 'claim', true);
+-- A secret saved again while a delivery is held: its verdict is not taken, and the next claim checks it with the
+-- current version.
+select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.ticket', public.qorpera_begin_cloud_secret_capture('73000000-0000-4000-8000-000000000010',
+	'73000000-0000-4000-8000-000000000020', 'company', null, 'event_hook',
+	current_setting('qorpera_test.prs')::jsonb #>> '{signingSecret,secretName}', 'GitHub signing secret',
+	current_setting('qorpera_test.prs_secret')::uuid)::text, true);
+reset role;
+select pg_temp.vcomplete(current_setting('qorpera_test.ticket')::jsonb, convert_to('github version three', 'UTF8'));
+select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d8')::uuid,
+		(current_setting('qorpera_test.claim')::jsonb -> 0 ->> 'claim')::uuid, 'verified', 'sig:' || repeat('b', 64),
+		'pull_request.opened', null) ->> 'outcome' = 'retry'
+	and (select status = 'received' and verify_claim is null and verify_claim_until is null and delivery_key is null
+		from pg_temp.delivery(current_setting('qorpera_test.d8')::uuid)),
+	'A verdict on a secret version that is no longer current is not taken');
+select set_config('qorpera_test.claim', pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64))::text, true);
+select pg_temp.hook_assert(current_setting('qorpera_test.claim')::jsonb #>> '{0,deliveryId}' = current_setting('qorpera_test.d8')
+	and (current_setting('qorpera_test.claim')::jsonb #>> '{0,secretVersion}')::integer = 3
+	and (select verify_secret_id = current_setting('qorpera_test.prs_secret')::uuid and verify_secret_version = 3
+		from pg_temp.delivery(current_setting('qorpera_test.d8')::uuid)),
+	'The next claim carries the current version: ' || current_setting('qorpera_test.claim'));
+-- So does one whose secret is another than the claim handed out.
+update public.qorpera_event_deliveries set verify_secret_id = gen_random_uuid() where id = current_setting('qorpera_test.d8')::uuid;
+select pg_temp.hook_assert(pg_temp.vfinish(current_setting('qorpera_test.d8')::uuid,
+		(current_setting('qorpera_test.claim')::jsonb -> 0 ->> 'claim')::uuid, 'verified', 'sig:' || repeat('b', 64),
+		'pull_request.opened', null) ->> 'outcome' = 'retry',
+	'A verdict on another secret is not taken');
+select set_config('qorpera_test.c8', pg_temp.vclaim('78400000-0000-4000-8000-0000000002a0', repeat('c', 64)) -> 0 ->> 'claim',
+	true);
 -- One more waits unclaimed when the hook is removed.
 select set_config('qorpera_test.d8b', pg_temp.post(current_setting('qorpera_test.prs')::jsonb ->> 'address',
 	'{"action":"closed"}') ->> 'deliveryId', true);
@@ -472,7 +501,7 @@ select pg_temp.hook_assert((select status = 'revoked' and revoked_at is not null
 		and revoked_by_user_id = '73000000-0000-4000-8000-000000000001'
 		from public.qorpera_cloud_secrets where id = current_setting('qorpera_test.prs_secret')::uuid)
 	and (select count(*) = 1 and bool_and(secret_id = current_setting('qorpera_test.prs_secret')::uuid
-			and secret_version = 2 and actor_user_id = '73000000-0000-4000-8000-000000000001')
+			and secret_version = 3 and actor_user_id = '73000000-0000-4000-8000-000000000001')
 		from public.qorpera_cloud_secret_audit_events
 		where profile_id = '73000000-0000-4000-8000-000000000010' and connector_id = 'event_hook'
 			and event_type = 'secret_revoked')
