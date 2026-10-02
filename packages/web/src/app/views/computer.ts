@@ -7,6 +7,7 @@ import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { ComputerViewerUnavailable, loadComputerViewer, reloadPage } from "../../ui/computer-viewer.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 
 /** Thrown inside the open flow when the agent's screen belongs on another computer. */
@@ -74,7 +75,13 @@ export class ComputerPanel {
 		this.#fitPreview = attachComputerDrag(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();
 		this.#setExpanded = (expanded: boolean) => {
+			// Going full size and back is one zoom from the box it had (styles/motion.css has the open).
+			const from =
+				this.el.isConnected && expanded !== this.el.classList.contains("is-entered")
+					? this.el.getBoundingClientRect()
+					: undefined;
 			this.el.classList.toggle("is-entered", expanded);
+			zoomFrom(this.el, from);
 			if (expanded) {
 				for (const child of this.el.parentElement?.querySelector(".thread-conversation")?.children ?? []) {
 					if (!(child instanceof HTMLElement) || child.classList.contains("thread-header") || covered.has(child))
@@ -461,6 +468,21 @@ export class ComputerPanel {
 		this.#close = close;
 		body.append(this.el);
 		this.#fitPreview();
+		this.#aimAtButton();
+	}
+
+	/** The panel opens out of the header's computer button and closes back into it. */
+	#aimAtButton(): void {
+		const button = this.el.parentElement?.querySelector<HTMLElement>(".thread-computer");
+		const parent = this.el.offsetParent;
+		if (!button || !(parent instanceof HTMLElement) || !this.el.offsetWidth) return;
+		// From the layout box (offsets), not the drawn one, which the open animation scales.
+		const from = button.getBoundingClientRect();
+		const frame = parent.getBoundingClientRect();
+		const left = frame.left + parent.clientLeft + this.el.offsetLeft;
+		const top = frame.top + parent.clientTop + this.el.offsetTop;
+		this.el.style.setProperty("--computer-origin-x", `${from.left + from.width / 2 - left}px`);
+		this.el.style.setProperty("--computer-origin-y", `${from.top + from.height / 2 - top}px`);
 	}
 
 	/** Leave the thread, keeping the connection for the next thread that attaches it. */
@@ -492,8 +514,13 @@ export class ComputerPanel {
 		// Leaving the company sends nothing; its transport refuses after teardown.
 		this.#withdrawWakes();
 		this.#close = () => {};
-		replace(this.el);
-		this.el.remove();
+		// It goes back into its button (the viewer already closed with the abort above).
+		this.#aimAtButton();
+		this.el.style.removeProperty("animation");
+		leave(this.el, "is-closing", () => {
+			replace(this.el);
+			this.el.remove();
+		});
 	}
 }
 
