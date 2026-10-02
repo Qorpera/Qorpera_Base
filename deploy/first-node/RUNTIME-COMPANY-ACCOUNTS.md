@@ -19,7 +19,7 @@ https://claude.ai/artifact/GfmXyKyFSC4M5ULeTBC72e ("Company Accounts").
 - The account file `connections/<stem>.md` (F2 format, written by the vault's writer, A1-7) shows `site`,
   `two_step` and `opened_for`; folder-v2 companies are refused until then.
 
-## A1-1: the vault's records (migration `20260929999700`, SQL tests 794 and 797)
+## A1-1: the vault's records (migration `20260928419970`, SQL tests 794 and 797)
 
 Switched off: `qorpera_company_account_settings.enabled` (single row, false). The coordinator turns it on with
 `update public.qorpera_company_account_settings set enabled = true;` once the broker (A1-2) and the computer

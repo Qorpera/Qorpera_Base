@@ -35,7 +35,7 @@ begin
 	-- completing an account refresh. Company delete D6 adds claiming and completing the broker's
 	-- queued connector token revocations. ChatGPT plan logins (20260928329830) add the v2 sign-in
 	-- read, completing a plan sign-in, saving a plan renewal, and taking and finishing a plan login's
-	-- revocation. Company accounts (20260929999700) add reading what an opening seals, opening, using, versioning
+	-- revocation. Company accounts (20260928419970) add reading what an opening seals, opening, using, versioning
 	-- and recording the state of a company website account, each bound to the agent's effect receipt; filling
 	-- one into the Company Computer (20260929999750) adds reading it for a vault_fill browser call.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions

@@ -300,12 +300,12 @@ revoke all on function public.qorpera_fill_company_account(uuid,text,jsonb,uuid,
 grant execute on function public.qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text) to qorpera_secret_broker;
 
 -- 5. Closing an account revokes its vault row at once (A1-7 review, with F2): the revoke trigger of
---    20260929999700 wipes its envelopes in the same statement, so nothing keeps a closed account's password
+--    20260928419970 wipes its envelopes in the same statement, so nothing keeps a closed account's password
 --    and its connection file can be removed at close (the folder core keeps a file while its secret is active).
 --    Closing is a "deleting things outside" step the company's review rules check (A1-4): after it the password
 --    and any authenticator are gone, and only the website's own account recovery gets back in. A repeat of a close,
 --    or a close of an account already closed, answers the closed account instead of "no such open account".
---    The body is 20260929999700's (null-safe, r5/r6) plus the close.
+--    The body is 20260928419970's (null-safe, r5/r6) plus the close.
 create or replace function public.qorpera_set_company_account_state(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,

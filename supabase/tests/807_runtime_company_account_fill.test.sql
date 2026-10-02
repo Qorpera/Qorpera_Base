@@ -276,6 +276,23 @@ select pg_temp.ca_receipt('53', 'company_account:state:80700000-0000-4000-8000-0
 select set_config('qorpera_test.close_theirs', pg_temp.ca_call('qorpera_set_company_account_state', '53',
 	'''80700000-0000-4000-8000-000000000070'',''closed'''), true);
 select pg_temp.ca_done('53');
+-- The company's own closed account in another of its environments: not this run's either.
+select pg_temp.fill_set($$
+	insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind,
+		connector_id, secret_name, purpose, status, current_version, created_by_user_id, revoked_at)
+	values ('80700000-0000-4000-8000-000000000072', '29000000-0000-4000-8000-000000000010',
+		'80700000-0000-4000-8000-000000000073', '79400000-0000-4000-8000-000000000040', 'company', 'website',
+		'staging-site', 'Staging', 'revoked', 1, '29000000-0000-4000-8000-000000000001', clock_timestamp());
+	insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, status,
+		opened_by_user_id, closed_at)
+	values ('80700000-0000-4000-8000-000000000072', '29000000-0000-4000-8000-000000000010',
+		'80700000-0000-4000-8000-000000000073', 'staging.example', 'staging@nordlys.example', 'closed',
+		'29000000-0000-4000-8000-000000000001', clock_timestamp())
+$$);
+select pg_temp.ca_receipt('54', 'company_account:state:80700000-0000-4000-8000-000000000072:r54');
+select set_config('qorpera_test.close_other_environment', pg_temp.ca_call('qorpera_set_company_account_state', '54',
+	'''80700000-0000-4000-8000-000000000072'',''closed'''), true);
+select pg_temp.ca_done('54');
 select set_config('qorpera_test.fill_env52', pg_temp.fill_envelope('fill-52'), true);
 select pg_temp.fill_receipt('52', current_setting('qorpera_test.fill_env52'), 'fill-52');
 select set_config('qorpera_test.fill_closed', pg_temp.fill('52', current_setting('qorpera_test.fill_env52')), true);
@@ -374,6 +391,7 @@ begin
 		or current_setting('qorpera_test.reopen_closed') is distinct from '22023:The company has no such open account'
 		or current_setting('qorpera_test.fill_closed') is distinct from '22023:The company has no such open account'
 		or current_setting('qorpera_test.close_theirs') is distinct from '22023:The company has no such open account'
+		or current_setting('qorpera_test.close_other_environment') is distinct from '22023:The company has no such open account'
 		or not exists (select 1 from public.qorpera_cloud_secrets where id = current_setting('qorpera_test.ca_account')::uuid
 			and status = 'revoked' and revoked_by_user_id is null)
 		or exists (select 1 from public.qorpera_cloud_secret_versions
@@ -384,10 +402,10 @@ begin
 		or (select count(*) from public.qorpera_cloud_secret_audit_events
 			where secret_id = current_setting('qorpera_test.ca_account')::uuid and event_type = 'account_state_changed'
 				and operation_id = 'closed') <> 1 then
-		raise exception 'A close did not revoke and wipe the account once: % % % % % %', current_setting('qorpera_test.close'),
+		raise exception 'A close did not revoke and wipe the account once: % % % % % % %', current_setting('qorpera_test.close'),
 			current_setting('qorpera_test.close_repeat'), current_setting('qorpera_test.close_again'),
 			current_setting('qorpera_test.reopen_closed'), current_setting('qorpera_test.fill_closed'),
-			current_setting('qorpera_test.close_theirs');
+			current_setting('qorpera_test.close_theirs'), current_setting('qorpera_test.close_other_environment');
 	end if;
 	if current_setting('qorpera_test.fill_no_key') is distinct from v_no_key
 		or current_setting('qorpera_test.fill_superseded') is distinct from v_no_key
