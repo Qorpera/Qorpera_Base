@@ -52,7 +52,13 @@ function text(value: unknown, label: string, max: number): string {
 /** RFC 4648 base32, letter case and spaces, hyphens and padding ignored (as authenticator apps accept it). */
 export function decodeCompanyAccountBase32(value: string): Uint8Array {
 	const clean = value.replace(/[\s-]/g, "").replace(/=+$/, "").toUpperCase();
-	if (clean.length === 0 || clean.length > 128 || ![...clean].every((c) => BASE32.includes(c)))
+	// RFC 4648: an unpadded quantum ends after 2, 4, 5 or 7 characters, never 1, 3 or 6.
+	if (
+		clean.length === 0 ||
+		clean.length > 128 ||
+		[1, 3, 6].includes(clean.length % 8) ||
+		![...clean].every((c) => BASE32.includes(c))
+	)
 		throw new Error("Company account authenticator seed is malformed");
 	const bytes: number[] = [];
 	let buffer = 0;
@@ -214,12 +220,29 @@ export function parseCompanyAccountOtpauth(uri: string): CompanyAccountTotp {
 	}
 	if (url.protocol !== "otpauth:" || url.hostname.toLowerCase() !== "totp")
 		throw new Error("Company account authenticator link is not a time-based code");
-	const secret = url.searchParams.get("secret");
-	if (secret === null) throw new Error("Company account authenticator link has no seed");
-	const algorithm = (url.searchParams.get("algorithm") ?? "SHA1").toUpperCase();
-	const digits = Number(url.searchParams.get("digits") ?? "6");
-	const period = Number(url.searchParams.get("period") ?? "30");
-	return totp({ seed: secret.replace(/[\s=-]/g, "").toUpperCase(), digits, period, algorithm });
+	// Parameter names in any case, each at most once: a second seed or an ignored "Algorithm" would make
+	// codes the website never accepts.
+	const params = new Map<string, string>();
+	for (const [name, value] of url.searchParams) {
+		const key = name.toLowerCase();
+		if (params.has(key)) throw new Error("Company account authenticator link is malformed");
+		params.set(key, value);
+	}
+	const secret = params.get("secret");
+	if (secret === undefined) throw new Error("Company account authenticator link has no seed");
+	const number = (name: string, fallback: number): number => {
+		const value = params.get(name);
+		if (value === undefined) return fallback;
+		if (!/^[0-9]{1,4}$/.test(value)) throw new Error("Company account authenticator link is malformed");
+		return Number(value);
+	};
+	const algorithm = (params.get("algorithm") ?? "SHA1").toUpperCase();
+	return totp({
+		seed: secret.replace(/[\s=-]/g, "").toUpperCase(),
+		digits: number("digits", 6),
+		period: number("period", 30),
+		algorithm,
+	});
 }
 
 /** Recovery codes as a website shows or downloads them: one per line (or comma), numbering and spaces dropped. */
