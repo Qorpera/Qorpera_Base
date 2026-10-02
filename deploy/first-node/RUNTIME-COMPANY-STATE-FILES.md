@@ -1565,9 +1565,10 @@ longer current, which the wakes (H2c) report or §2's hand-off repairs.
 
 **7. Seeding.** `human-tasks/` and `contacts/` join `companyStateSeedTree` and the seeded folders that
 are never deleted or moved (`COMPANY_STATE_SEEDED_PATHS`, `qorpera_company_state_seeded`), with the seeded
-skill `skills/human-task/SKILL.md` (how to write a good task, Q1 §5). Joining the protected list changes
-contract 5.6's seeded tree, which the 2 October amendment leaves to "then": Jonas's yes first. Existing
-folder-v2 companies (operator test companies) get the two folders from the operator's `mkdir`, and no skill.
+skill `skills/human-task/SKILL.md` (how to write a good task, Q1 §5). Jonas said yes on 2 October: both
+folders are fixed in every company, like `connections/` (contract 5.6's tree and its list of seeded
+folders, written in). Existing folder-v2 companies (operator test companies) get the two folders from the
+operator's `mkdir`, and no skill.
 
 **8. Review class.** Plain for both kinds: creating or changing a task is inside the company (Q1 §5). H5
 must pin what it sends, as H1 pins the files, address and expiry: a contact's page shows the task as of
@@ -1610,8 +1611,6 @@ order is free.
 
 **Questions before building:**
 - F1 (the coordinator decides while F1 is idle): H2c's interface (§9), proposed in the H2 PR body.
-- Jonas (asked by the coordinator): protecting `human-tasks/` and `contacts/` as seeded folders (§7, a
-  contract 5.6 change).
 - Q1: the person never acting as the company on their own task (§1); `due` in the future when set (§2);
   deleting only final tasks (§2, §4); H2c waiting for C4 in the step table.
 - A1: references are no longer re-checked on the person's change, so a disconnected account never
