@@ -8,6 +8,7 @@ import {
 	type NativeProviderLoginPrompt,
 } from "@qorpera/cloud-client/native-provider-login";
 import type { JsonValue } from "@qorpera/contracts";
+import { isNativeHostPublishableKey } from "./cloud-native-host-dispatch.ts";
 import type { BindCloudRunnerProviderSessionInput, CloudRunnerNativeAuthority } from "./cloud-runner-broker.ts";
 import {
 	type CloudRunnerExecutionResult,
@@ -39,7 +40,7 @@ export interface NativeProviderComputerBridge {
 	/** No Company File mount, local context, artifact directory or model-chosen route. */
 	startCompany?(
 		authority: CloudRunnerNativeAuthority,
-		job: { jobId: string; attemptCount: number },
+		job: { jobId: string; attemptCount: number; leaseToken?: string },
 	): Promise<CloudRunnerSandboxProcess>;
 }
 
@@ -264,6 +265,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 	readonly #fetch: typeof fetch;
 	readonly #signal?: AbortSignal;
 	readonly #requestTimeoutMs: number | undefined;
+	readonly #publishableKey?: string;
 
 	constructor(
 		baseUrl: string,
@@ -273,6 +275,8 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 			signal?: AbortSignal;
 			requestTimeoutMs?: number;
 			executionBoundary?: NativeProviderExecutionBoundary;
+			/** The project's publishable key, sent with each company execution for the host's calls (G2-2). */
+			publishableKey?: string;
 		} = {},
 	) {
 		const base = bridgeUrl(baseUrl);
@@ -285,6 +289,8 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		this.#bridgeToken = bridgeToken;
 		this.#fetch = fetchImplementation;
 		this.#signal = options.signal;
+		// Sent only when it is a publishable key; a host whose calls need it refuses the execution without it.
+		if (isNativeHostPublishableKey(options.publishableKey)) this.#publishableKey = options.publishableKey;
 		// A run has no deadline (founder, 2026-09-24); a timeout is a test or operator choice.
 		this.#requestTimeoutMs = options.requestTimeoutMs;
 		this.executionGuarantees = nativeProviderExecutionGuarantees(options.executionBoundary ?? "test");
@@ -320,7 +326,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 
 	async startCompany(
 		authority: CloudRunnerNativeAuthority,
-		job: { jobId: string; attemptCount: number },
+		job: { jobId: string; attemptCount: number; leaseToken?: string },
 	): Promise<CloudRunnerSandboxProcess> {
 		if (
 			!this.#bridgeToken ||
@@ -329,14 +335,26 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 			authority.nativeHarness !== "codex-cli" ||
 			!UUID_PATTERN.test(job.jobId) ||
 			!Number.isSafeInteger(job.attemptCount) ||
-			job.attemptCount < 1
+			job.attemptCount < 1 ||
+			(job.leaseToken !== undefined && !TOKEN_PATTERN.test(job.leaseToken))
 		) {
 			throw new Error("Native provider bridge received an unsupported company runtime");
 		}
+		// G2-2: the job's lease token and the publishable key travel with the execution, for the host's calls
+		// through qorpera_native_host_call; the host holds them for that execution only.
+		const credential =
+			job.leaseToken !== undefined && this.#publishableKey !== undefined
+				? { leaseToken: job.leaseToken, publishableKey: this.#publishableKey }
+				: undefined;
 		return this.#startExecution(authority, {
 			schema: "qorpera.native-company-execution/v1",
 			authority: bridgeAuthorityProjection(authority),
-			job: { job_id: job.jobId, attempt_count: job.attemptCount },
+			job: {
+				job_id: job.jobId,
+				attempt_count: job.attemptCount,
+				...(credential ? { lease_token: credential.leaseToken } : {}),
+			},
+			...(credential ? { native_host: { publishable_key: credential.publishableKey } } : {}),
 		});
 	}
 

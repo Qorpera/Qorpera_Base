@@ -610,9 +610,11 @@ gives a fixed format:
 - `agents/<name>/routines/*.md` and `agents/<name>/todos/*.md`;
 - `agents/groups/<name>/group.md`;
 - `connections/*.md`;
-- `rules/*.md`.
+- `rules/*.md`;
+- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, with no index until H2).
 
-The same table is exported to TypeScript. An ordinary file pays for one
+STATE-FILES §1 also lists `vision/vision.md` and the worker files. The same table is exported to
+TypeScript. An ordinary file pays for one
 pattern match and nothing else.
 
 ### Parsing and schemas
