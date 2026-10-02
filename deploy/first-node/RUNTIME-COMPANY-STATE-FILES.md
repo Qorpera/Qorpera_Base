@@ -1693,7 +1693,7 @@ Two PRs, in this order:
   them. Another connection's parse keeps its exact shape, so the rule that a member may change
   only the text below the settings (which compares the settings with the saved version's) keeps
   working on every file saved before.
-- **A1-7b, the database** (migration 20260929999950, SQL test 801):
+- **A1-7b, the database** (migration 20260928439950, SQL test 801):
   `qorpera_company_state_parse_problems` checks the connection parse per service, with the
   vault's host rule. Nothing else changes: the platform's save still needs the vault row active
   with the connector `website`.

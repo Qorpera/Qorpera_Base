@@ -191,7 +191,7 @@ It sorts after change 4 because it reads its bundle declarations.
     - a fast host refused the run (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, or
       `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. For a full or
       retiring host, only once every fast host in the run's placement has refused it recently
-      (`20260929999997`, test 810): with a host on each node, the other node's host takes it first,
+      (`20260928439975`, test 810): with a host on each node, the other node's host takes it first,
       in about 2 s instead of a fresh VM's 17 s. A refusal wakes no orchestrator (wakes come with a
       job's insert and status changes), so the other host and then the overflow act on their next
       poll: about 0.5 s at 250 ms polling, up to the 10 s fallback with the realtime wake's 5 s
