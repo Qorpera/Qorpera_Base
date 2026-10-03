@@ -495,6 +495,9 @@ begin
 		'expectedVersion',pg_temp.f2_version(f),'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	if (select folder_retired_at from public.qorpera_runtime_workers where id = w.id) is null then raise exception 'Not retired'; end if;
+	-- A retired worker's folder: nothing to cancel, never a retry.
+	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)',
+		current_setting('qorpera_test.ada')::jsonb -> 'binding', jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0005')), 'P0002');
 	-- A folder alone, the brief alone, or other bytes: refused.
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0007', jsonb_build_array(jsonb_build_object('op','mkdir','path',f))),
 		1, 'comes back whole');

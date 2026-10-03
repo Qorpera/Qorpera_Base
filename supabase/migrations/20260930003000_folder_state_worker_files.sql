@@ -838,8 +838,9 @@ begin
 	if v_begun ->> 'state' = 'completed' then return v_begun -> 'result'; end if;
 	if v_begun ->> 'receipt_id' is distinct from v_receipt_id::text or v_begun ->> 'state' is distinct from 'executing' then
 		raise exception 'Worker operation needs reconciliation' using errcode = '55000'; end if;
-	-- No worker at the folder: there is nothing to cancel (never a retry).
-	if v_worker.id is null then raise exception 'Worker is unavailable' using errcode = 'P0002'; end if;
+	-- No worker at the folder, or only a retired one (its folder was deleted): nothing to cancel (never a retry).
+	if v_worker.id is null or v_worker.folder_retired_at is not null then
+		raise exception 'Worker is unavailable' using errcode = 'P0002'; end if;
 	-- Read again under the locks: the worker the targets named, still at its folder.
 	select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id;
 	if v_worker.id is null or v_worker.folder_retired_at is not null or v_worker.folder_environment_id <> v_run.environment_id
