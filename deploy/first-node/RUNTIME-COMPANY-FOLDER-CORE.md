@@ -322,7 +322,8 @@ is never upgraded. The steps:
    3. execution authorities;
    4. rooms, then room members;
    5. the other index rows (sections, routines with their schedule cursors,
-      todos, connections, rules), by table then id;
+      todos, workers, human tasks, contacts, tables (P16), connections,
+      rules), by table then id;
    6. resources, in ancestors-first order of their paths;
    7. grants;
    8. vault rows;
@@ -623,7 +624,9 @@ gives a fixed format:
 - `agents/groups/<name>/group.md`;
 - `connections/*.md`;
 - `rules/*.md`;
-- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, with no index until H2).
+- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, indexed since H2);
+- `interfaces/order.md`, `interfaces/*/interface.toml`, `tables/*/table.toml` and `tables/*/rows.csv` (P16;
+  RUNTIME-INTERFACES.md §6.1, with a table index and no interface index before I7).
 
 STATE-FILES §1 also lists `vision/vision.md` and the worker files. The same table is exported to
 TypeScript. An ordinary file pays for one
