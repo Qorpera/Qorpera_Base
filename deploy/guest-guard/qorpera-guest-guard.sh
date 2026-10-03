@@ -111,6 +111,12 @@ compare_bridges() {
 		return 1
 	}
 	for bridge in $(ip -o link show type bridge | awk -F': ' '{print $2}' | cut -d@ -f1); do
+		if [[ $bridge == qagent0 ]]; then
+			# The agent exit's bridge (deploy/agent-exit): its machines reach only the exit, which guards them. Listing
+			# it here would refuse their bridged traffic to the exit.
+			[[ -n ${guarded[$bridge]:-} ]] || echo "bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here"
+			continue
+		fi
 		if [[ -z ${guarded[$bridge]:-} ]]; then
 			echo "NOT GUARDED bridge $bridge (add it to guest_bridges, bridge_subnets and bridge_gateways)"
 			[[ $status -eq 1 ]] || status=2
@@ -173,6 +179,12 @@ check() {
 	batch enforce | nft -c -f /dev/stdin
 	echo "rules parse (both modes); current mode: $(current_mode); mode file: $(wanted_mode)"
 	compare_bridges || status=$?
+	# The agent exit's bridge must never be a guest bridge, whether or not it exists on this node yet. Only check
+	# says so: loading never stops on it, so a hand-edited rules file cannot leave a node without the guard at boot.
+	if grep -q '"qagent0"' "$rules"; then
+		echo "MISMATCH bridge qagent0 is listed in the rules; it is the agent exit's bridge and must never be"
+		status=1
+	fi
 	echo "br_netfilter: $(br_netfilter) (1: guests on one bridge are checked against each other too)"
 	echo "nftables.service: $(systemctl is-enabled nftables.service 2>/dev/null || true) (must stay disabled: /etc/nftables.conf flushes every table)"
 	return $status

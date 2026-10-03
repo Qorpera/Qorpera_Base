@@ -353,7 +353,9 @@ export function cloudCompanyFolderFailure(error: unknown): unknown {
 	if (error.code === "55000") return new CloudCompanyFolderError("stopped");
 	if (error.code === "42501")
 		return new CloudCompanyFolderError(READ_REVOKED.has(error.detail) ? "read_revoked" : "unavailable");
-	if (error.code === "55P03") return new CloudCompanyFolderError("contended");
+	// 55P03: a lock wait past the budget. QRC01: the folder core's conflict envelope, which a commit or release
+	// retries first and which staging answers for an object GC holds (C1D §9.7). Both are asked again later.
+	if (error.code === "55P03" || error.code === "QRC01") return new CloudCompanyFolderError("contended");
 	if (error.code === "0A000") return new CloudCompanyFolderError("unavailable");
 	return error;
 }
