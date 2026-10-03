@@ -9,8 +9,6 @@ export type CompanySection =
 	| "chat"
 	| "staff"
 	| "file"
-	| "snapshot"
-	| "proposal"
 	| "team"
 	| "new"
 	| "meet"
@@ -39,11 +37,11 @@ export function parseRoute(hash: string): Route {
 		if (section === "i" && id && id.length <= 64 && INTERFACE_NAME.test(id)) {
 			return { name: "company", profileId, section: "interface", id };
 		}
-		if ((section === "chat" || section === "staff" || section === "snapshot" || section === "proposal") && id) {
+		if ((section === "chat" || section === "staff") && id) {
 			return { name: "company", profileId, section, id };
 		}
 		if (section === "file" || section === "team" || section === "new" || section === "meet") {
-			return { name: "company", profileId, section, ...(section === "file" && id === "history" ? { id } : {}) };
+			return { name: "company", profileId, section };
 		}
 		return { name: "company", profileId, section: "home" };
 	}
