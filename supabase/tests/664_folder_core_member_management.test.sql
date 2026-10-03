@@ -62,10 +62,13 @@ begin
 			|| E'\tend if;\n',
 			E'\tperform 1 from public.qorpera_profiles where id = old.profile_id for update;\n')) <> '488053172974066541f7261c96373d63' then
 		raise exception 'The founder guard''s snapshot-v1 text changed'; end if;
+	-- The join's prelude as C1c-3d-1 (20260930000200) left it: only the invitee of a live invitation takes it.
 	if md5(replace(pg_get_functiondef('public.qorpera_accept_profile_invitation(uuid)'::regprocedure),
-			E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
+			E'\t-- 20260930000200: only the invitee of a live invitation (the select below refuses anyone else) takes the fence.\n'
+			|| E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
 			|| E'\tfrom public.qorpera_profile_invitations as invitation\n'
-			|| E'\twhere invitation.id = p_invitation_id and public.qorpera_company_is_folder_v2(invitation.profile_id);\n', ''))
+			|| E'\twhere invitation.id = p_invitation_id and invitation.email = v_email and invitation.expires_at > statement_timestamp()\n'
+			|| E'\t\tand public.qorpera_company_is_folder_v2(invitation.profile_id);\n', ''))
 		<> '062a100a20d3c8f595b9a22f9d95dc8d' then
 		raise exception 'The join''s snapshot-v1 text changed'; end if;
 end $$;

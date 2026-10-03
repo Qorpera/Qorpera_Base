@@ -457,10 +457,16 @@ begin
 	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
 end $$;
 
--- E2. A member joins while a message runs. The member trigger re-ensures every agent thread; on folder-v2 it first takes
--- every thread room FOR UPDATE in id order, then every thread conversation, before any of those writes, so it never
--- holds one room and waits for another that a message holds KEY SHARE (review r1, S2).
-insert into auth.users(id,email) values ('65700000-0000-4000-8000-000000000005','wakes-race-joiner@example.test');
+-- E2. A member joins while a message runs. A join takes every thread room FOR UPDATE in id order, then every thread
+-- conversation, before any of those writes (since C1c-3d-1 in its prelude, before the invitation; the member trigger
+-- then finds them held), so it never holds one room and waits for another that a message holds KEY SHARE (review r1,
+-- S2). A member row written with no prelude (as an account deletion writes one) takes them NOWAIT in the trigger and
+-- refuses at once, retryably.
+insert into auth.users(id,email,email_confirmed_at) values ('65700000-0000-4000-8000-000000000005','wakes-race-joiner@example.test',
+	clock_timestamp());
+insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, expires_at)
+values ('65700000-0000-4000-8000-0000000000e5', '64800000-0000-4000-8000-000000000010', 'wakes-race-joiner@example.test', 'contributor',
+	'64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 day');
 do $$
 declare v_join text; v_message text; c_cf constant uuid := '64800000-0000-4000-8000-0000000000c0';
 	v_first_session uuid;
@@ -471,10 +477,17 @@ begin
 	perform dblink_exec('fence_three', 'begin');
 	perform * from dblink('fence_three', format('select 1 from public.qorpera_shared_sessions where id = %L for update', v_first_session))
 		as t(x integer);
-	perform dblink_exec('fence_two', 'begin');
 	perform dblink_send_query('fence_two', $q$insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 		values ('64800000-0000-4000-8000-000000000010','65700000-0000-4000-8000-000000000005','wakes-race-joiner@example.test','Joiner','contributor')
 		returning 'ok'::text$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_three') then
+		raise exception 'A member row written with no prelude must not wait at the held conversation'; end if;
+	v_join := pg_temp.outcome('fence_two');
+	if v_join not like 'PGRST %"QRC01"%An agent thread is busy; try again%' then
+		raise exception 'A member row written with no prelude: %', v_join; end if;
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"authenticated","sub":"65700000-0000-4000-8000-000000000005","email":"wakes-race-joiner@example.test"}'$q$);
+	perform dblink_exec('fence_two', 'begin');
+	perform dblink_send_query('fence_two', $q$select public.qorpera_accept_profile_invitation('65700000-0000-4000-8000-0000000000e5')::text$q$);
 	if not pg_temp.waits_for('fence_two', 'fence_three') then raise exception 'The join must wait at the held conversation'; end if;
 	-- By then the join holds both thread rooms: the message waits at the first room, holding no room.
 	perform dblink_send_query('fence_one', pg_temp.sql_cw('qorpera_test.binding', c_cf, 'while-joining'));
@@ -484,6 +497,7 @@ begin
 	perform dblink_exec('fence_three', 'rollback');
 	v_join := pg_temp.outcome('fence_two');
 	perform dblink_exec('fence_two', 'commit');
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
 	v_message := pg_temp.outcome('fence_one');
 	if v_join <> 'ok' or v_message <> 'ok' then raise exception 'A member joining beside a message: % / %', v_join, v_message; end if;
 end $$;
