@@ -167,6 +167,7 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 		adapterId: config.adapterId,
 		supabaseUrl: config.supabaseUrl,
 		supabaseServiceKey: config.supabaseServiceKey,
+		supabasePublishableKey: config.supabasePublishableKey,
 		stateRoot: resolve(required("QORPERA_LXD_LOGIN_STATE_ROOT")),
 		project: config.project,
 		loginProfile: required("QORPERA_LXD_LOGIN_PROFILE"),

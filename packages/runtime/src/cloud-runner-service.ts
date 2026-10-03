@@ -46,6 +46,9 @@ export interface EphemeralCloudRunnerServiceConfig {
 	nativeBridgeUrl?: string;
 	nativeBridgeBoundary?: Exclude<NativeProviderExecutionBoundary, "test">;
 	nativeBridgeSharedGid?: number;
+	/** G2-3: on an execution host's slot, this run's machine's identity credential, sent with each execution (a warm
+	 * host's systemd credentials are fixed when it starts). */
+	nativeIdentityCredential?: string;
 	assignmentHost?: string;
 	assignmentPort?: number;
 	assignmentTrustedSource?: string;
@@ -290,6 +293,15 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 	if (nativeBridgeSharedGid !== undefined && nativeBridgeUrl === undefined) {
 		throw new Error("Native provider shared group requires the native execution bridge");
 	}
+	const nativeIdentityCredential =
+		input.native_identity_credential === undefined
+			? undefined
+			: requiredText(input.native_identity_credential, "Native identity credential", 43);
+	if (
+		nativeIdentityCredential !== undefined &&
+		(!/^[A-Za-z0-9_-]{43}$/.test(nativeIdentityCredential) || !nativeBridgeUrl)
+	)
+		throw new Error("A native identity credential is 32 base64url bytes for the native execution bridge");
 	return {
 		schema: CONFIG_SCHEMA,
 		baseUrl: requiredText(input.base_url, "Runner base URL", 2048),
@@ -307,6 +319,7 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 		...(nativeBridgeUrl ? { nativeBridgeUrl } : {}),
 		...(nativeBridgeBoundary ? { nativeBridgeBoundary } : {}),
 		...(nativeBridgeSharedGid !== undefined ? { nativeBridgeSharedGid } : {}),
+		...(nativeIdentityCredential !== undefined ? { nativeIdentityCredential } : {}),
 		...(assignmentHost !== undefined && assignmentPort !== undefined ? { assignmentHost, assignmentPort } : {}),
 		...(assignmentTrustedSource ? { assignmentTrustedSource } : {}),
 		...(maxAssignments !== undefined ? { maxAssignments } : {}),
@@ -453,6 +466,9 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 							signal,
 							executionBoundary: config.nativeBridgeBoundary,
 							publishableKey: config.publishableKey,
+							...(config.nativeIdentityCredential !== undefined
+								? { identityCredential: config.nativeIdentityCredential }
+								: {}),
 						},
 					),
 				}

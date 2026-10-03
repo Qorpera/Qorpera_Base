@@ -310,6 +310,8 @@ async function fixture(
 					capabilities: ["agent_turn"],
 				});
 			}
+			if (name === "qorpera_bind_native_identity_credential")
+				return Response.json({ allocationId: body.p_allocation_id, holderKind: body.p_holder_kind });
 			if (name === "qorpera_reserve_runtime_machine") {
 				if (state.reservation.state !== "reserved") return Response.json(state.reservation);
 				return Response.json({
@@ -421,12 +423,13 @@ describe("shared execution provider backend", () => {
 		expect(f.hostCalls).toEqual([
 			{ entry: "qorpera_execution_host_call", name: "qorpera_provision_execution_runner", ...host },
 			{ entry: "qorpera_execution_host_call", name: "qorpera_reserve_runtime_machine", ...host },
+			{ entry: "qorpera_execution_host_call", name: "qorpera_bind_native_identity_credential", ...host },
 			{ entry: "qorpera_execution_host_call", name: "qorpera_compute_identity_login_in_vault", ...host },
 			{ entry: "qorpera_execution_host_call_long", name: "qorpera_release_runtime_machine", ...host },
 		]);
 		// Every database call went through an entry point; an identity read names the run it is read for.
 		expect(f.rpc.map((call) => call.name)).toEqual(f.hostCalls.map((call) => call.name));
-		expect(f.rpc[2]?.body).toEqual({ p_compute_identity_id: computeIdentityId, p_run_id: runId });
+		expect(f.rpc[3]?.body).toEqual({ p_compute_identity_id: computeIdentityId, p_run_id: runId });
 	});
 
 	it("refuses an execution host credential that is not 32 base64url bytes (G2-3e)", async () => {
@@ -458,6 +461,8 @@ describe("shared execution provider backend", () => {
 		expect(f.rpc.map((call) => call.name)).toEqual([
 			"qorpera_provision_execution_runner",
 			"qorpera_reserve_runtime_machine",
+			// G2-3: this run's machine's identity credential, bound as an exec slot once the machine is reserved.
+			"qorpera_bind_native_identity_credential",
 			// The host's material asks whether the identity's login is in the vault.
 			"qorpera_compute_identity_login_in_vault",
 		]);
@@ -475,7 +480,9 @@ describe("shared execution provider backend", () => {
 			"qorpera-cloud-secret-runtime",
 			"qorpera-coding-command",
 			"qorpera-native-bridge",
+			"qorpera-native-identity",
 			"qorpera-native-identity-epoch",
+			"qorpera-native-identity-token",
 			"qorpera-native-object-token",
 			"qorpera-native-provider-master-key",
 			"qorpera-office-native",
@@ -484,6 +491,26 @@ describe("shared execution provider backend", () => {
 			"qorpera-supabase-service-key",
 		]);
 		for (const name of credentials) expect((await stat(join(slotRun, "credentials", name))).mode & 0o077).toBe(0);
+		// G2-3: the run's machine's identity credential, bound by its hash only, for the slot's native host.
+		const identityToken = (
+			await readFile(join(slotRun, "credentials", "qorpera-native-identity-token"), "utf-8")
+		).trim();
+		expect(identityToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(JSON.parse(await readFile(join(slotRun, "credentials", "qorpera-native-identity"), "utf-8"))).toEqual({
+			schema: "qorpera.native-identity-credential/v1",
+			compute_identity_id: computeIdentityId,
+			credential: identityToken,
+			publishable_key: "publishable-key",
+		});
+		expect(f.rpc[2]?.body).toEqual({
+			p_allocation_id: runId,
+			p_provider_adapter: "native26-test",
+			p_instance_sha256: (f.rpc[1]?.body as { p_instance_sha256: string }).p_instance_sha256,
+			p_holder_kind: "exec_slot",
+			p_credential_sha256: sha256(identityToken),
+		});
+		expect(JSON.stringify(f.rpc)).not.toContain(identityToken);
+		expect(await journal(f)).toMatchObject({ credentials: { nativeIdentitySha256: sha256(identityToken) } });
 		expect((await readFile(join(slotRun, "credentials", "qorpera-native-provider-master-key"), "utf-8")).trim()).toBe(
 			f.masterKey,
 		);
@@ -514,6 +541,7 @@ describe("shared execution provider backend", () => {
 			runner_id: runnerId,
 			native_bridge_url: "http://127.0.0.1:20000/",
 			native_bridge_boundary: "virtual_machine",
+			native_identity_credential: identityToken,
 			assignment_host: "127.0.0.1",
 			assignment_port: 20001,
 			max_assignments: 1,
@@ -1011,6 +1039,21 @@ describe("warm conversations", () => {
 			bridge,
 		);
 		expect(await readFile(kept, "utf-8")).toBe("kept");
+		// G2-3: the next run is a new machine with its own identity credential, bound to its allocation and handed to
+		// the parked host through the new runner's configuration (the host's systemd credentials are the first run's).
+		const credentials = join(f.runRoot, "slots", "0", "credentials");
+		const identityToken = (await readFile(join(credentials, "qorpera-native-identity-token"), "utf-8")).trim();
+		const binds = f.rpc.filter((call) => call.name === "qorpera_bind_native_identity_credential");
+		expect(binds.map((call) => call.body.p_allocation_id)).toEqual([runId, secondRun]);
+		expect(binds[0]?.body.p_credential_sha256).not.toBe(binds[1]?.body.p_credential_sha256);
+		expect(binds[1]?.body.p_credential_sha256).toBe(sha256(identityToken));
+		const runnerConfig = JSON.parse(
+			await readFile(join(f.stateRoot, "slots", "0", "runner", "config.json"), "utf-8"),
+		);
+		expect(runnerConfig.native_identity_credential).toBe(identityToken);
+		expect(JSON.parse(await readFile(join(credentials, "qorpera-native-identity"), "utf-8")).credential).toBe(
+			identityToken,
+		);
 	});
 
 	it("never gives a parked host to another conversation, and parks nothing for unattended work", async () => {

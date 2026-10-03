@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -205,6 +205,7 @@ function config(root: string): LxdNativeLoginGatewayConfig {
 		adapterId: "lxd",
 		supabaseUrl: "https://example.supabase.co",
 		supabaseServiceKey: "sb_secret_private",
+		supabasePublishableKey: "sb_publishable_login",
 		stateRoot: root,
 		project: "qorpera-runners",
 		loginProfile: "qorpera-login-v1",
@@ -258,6 +259,8 @@ function loginRequest(body = loginBody(), bearerCapability = capability): Reques
 function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" | "completed"> = [], id = loginId) {
 	const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
 	const control = {
+		/** G2-3: the identity credential binds the gateway sent. */
+		binds: [] as Record<string, unknown>[],
 		companyRefusal: null as string | null,
 		nodeRefusal: null as string | null,
 		nodeSequence: [] as Array<string | null>,
@@ -334,6 +337,14 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				state: "reserved",
 				allocationId: args.p_allocation_id,
 				instanceSha256: args.p_instance_sha256,
+			});
+		}
+		if (url.endsWith("qorpera_bind_native_identity_credential")) {
+			control.binds.push(args);
+			return Response.json({
+				allocationId: args.p_allocation_id,
+				computeIdentityId,
+				holderKind: args.p_holder_kind,
 			});
 		}
 		if (url.endsWith("qorpera_reserve_runtime_node_machine")) {
@@ -581,7 +592,7 @@ describe("LXD native login gateway", () => {
 		expect(second.status).toBe(200);
 		expect(await second.json()).toMatchObject({ status: "awaiting_member", user_code: "SLOW-CODE" });
 		expect(lxd.createCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(5);
+		expect(lxd.filePushes).toHaveLength(7);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("shares one pending route across authorized callers with independent response bodies", async () => {
@@ -630,7 +641,7 @@ describe("LXD native login gateway", () => {
 				user_code: "SHARED-CODE",
 			});
 		}
-		expect(lxd.filePushes).toHaveLength(5);
+		expect(lxd.filePushes).toHaveLength(7);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("restores an established identity on a fresh volume before the bootstrap (2026-09-17 amendment)", async () => {
@@ -708,7 +719,12 @@ describe("LXD native login gateway", () => {
 			lxd.restoreFailures = fault === "interrupted-restore" ? 1 : 0;
 			let approved = false;
 			const transport: typeof fetch = async (input, init) => {
-				if (String(input).endsWith("qorpera_identity_recovery_runtime_state") && approved) {
+				// Blocked from the approval until the restore re-pinned the login.
+				if (
+					String(input).endsWith("qorpera_identity_recovery_runtime_state") &&
+					approved &&
+					boundary.control.repins.length === 0
+				) {
 					return Response.json({ canInitialize: false, blocked: true, epoch: 2 });
 				}
 				const response = await boundary.fetchImplementation(input, init);
@@ -1347,13 +1363,46 @@ describe("LXD native login gateway", () => {
 		});
 		expect(JSON.stringify(lxd.createCalls[0])).not.toContain("sb_secret_private");
 		expect(lxd.filePushes.map((file) => file.path)).toEqual([
+			// G2-3: the identity's recovery state, read here because a login guest may not read it.
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity-state",
 			"/var/lib/qorpera-bootstrap/login-bootstrap.json",
 			"/var/lib/qorpera-bootstrap/native-provider.env",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
+		const pushed = (name: string) => lxd.filePushes.find((file) => file.path.endsWith(name))?.content ?? "";
+		expect(JSON.parse(pushed("qorpera-native-identity-state"))).toMatchObject({ computeIdentityId, blocked: false });
+		expect(pushed("native-provider.env")).toContain("QORPERA_NATIVE_LOGIN_GUEST=sign_in\n");
+		const bridgeFile = JSON.parse(await readFile(join(root, loginId, "bridge.json"), "utf-8")) as {
+			token: string;
+			identity: string;
+		};
+		expect(JSON.parse(pushed("qorpera-native-identity"))).toEqual({
+			schema: "qorpera.native-identity-credential/v1",
+			compute_identity_id: computeIdentityId,
+			credential: bridgeFile.identity,
+			publishable_key: "sb_publishable_login",
+		});
+		expect(bridgeFile.identity).not.toBe(bridgeFile.token);
+		// Bound by its hash to the sign-in's machine allocation as a login guest (the same bind again with each
+		// re-reservation); the plaintext never left the node.
+		expect(boundary.control.binds.length).toBeGreaterThan(0);
+		for (const bind of boundary.control.binds)
+			expect(bind).toEqual({
+				p_allocation_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				p_provider_adapter: "lxd",
+				p_instance_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+				p_holder_kind: "login_guest",
+				p_credential_sha256: createHash("sha256").update(bridgeFile.identity).digest("hex"),
+			});
+		expect(
+			new Set(boundary.control.binds.map((bind) => `${bind.p_allocation_id}/${bind.p_instance_sha256}`)).size,
+		).toBe(1);
+		expect(JSON.stringify(boundary.requests)).not.toContain(bridgeFile.identity);
+		expect(JSON.stringify(lxd.createCalls)).not.toContain(bridgeFile.identity);
 		expect(lxd.filePushes.find((file) => file.path.endsWith("qorpera-identity-recovery-ca"))?.content).toBe(
 			identityRecoveryCa,
 		);

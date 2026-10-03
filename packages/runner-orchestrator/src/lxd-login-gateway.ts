@@ -29,6 +29,7 @@ import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { LxdLoginJournal } from "./lxd-login-journal.ts";
 import { LOGIN_UUID, type LxdLoginBinding, lxdLoginNodePolicy, lxdLoginPlan } from "./lxd-login-plan.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
+import { nativeIdentityCredentialFile } from "./provider-shared.ts";
 import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
@@ -181,6 +182,8 @@ export interface LxdNativeLoginGatewayConfig {
 	adapterId: string;
 	supabaseUrl: string;
 	supabaseServiceKey: string;
+	/** G2-3: the project's publishable key, which the login guest's native host sends with its identity credential. */
+	supabasePublishableKey: string;
 	stateRoot: string;
 	project: string;
 	loginProfile: string;
@@ -546,6 +549,9 @@ function validateConfig(config: LxdNativeLoginGatewayConfig): void {
 		url.hash ||
 		!config.supabaseServiceKey.trim() ||
 		/[\0\r\n]/.test(config.supabaseServiceKey) ||
+		!config.supabasePublishableKey.trim() ||
+		/[\0\r\n]/.test(config.supabasePublishableKey) ||
+		config.supabasePublishableKey === config.supabaseServiceKey ||
 		!config.codexPath.startsWith("/") ||
 		!config.claudePath.startsWith("/")
 	) {
@@ -757,7 +763,7 @@ export class LxdNativeLoginGateway {
 			)
 				throw new Error("LOGIN_LEGACY_INSTANCE_UNRECONCILED");
 			const host = await readRuntimeNodeHost(signal);
-			const bridge = await this.#bridgeToken(login.loginId);
+			const tokens = await this.#loginTokens(login.loginId);
 			journal = await LxdLoginJournal.open(this.#config.stateRoot, login.loginId, this.#lxd, {
 				...(login.purpose ? { purpose: login.purpose } : {}),
 				schema: "qorpera.lxd-login-allocation/v1",
@@ -766,7 +772,7 @@ export class LxdNativeLoginGateway {
 				profileId: authority.profileId,
 				computeIdentityId: login.computeIdentityId,
 				capabilitySha256: sha256(login.capability),
-				bootstrapSha256: bootstrapSha256(this.#bootstrapFiles(login.computeIdentityId, bridge)),
+				bootstrapSha256: bootstrapSha256(this.#bootstrapFiles(login.computeIdentityId, tokens, login.purpose)),
 				policy: lxdLoginNodePolicy(this.#config, host.machineIdSha256).policy,
 			});
 		}
@@ -785,8 +791,8 @@ export class LxdNativeLoginGateway {
 			if (authority.status === "completed") return this.#completed(login.loginId);
 			throw new Error("LOGIN_ALLOCATION_CLOSED");
 		}
-		const bridge = await this.#bridgeToken(login.loginId, true);
-		const files = this.#bootstrapFiles(login.computeIdentityId, bridge);
+		const tokens = await this.#loginTokens(login.loginId, true);
+		const files = this.#bootstrapFiles(login.computeIdentityId, tokens, binding.purpose);
 		if (bootstrapSha256(files) !== binding.bootstrapSha256) throw new Error("LOGIN_BOOTSTRAP_CHANGED");
 		// This route holds the identity's lock, so the reconcile loop cannot delete a
 		// replaced sign-in's machine on this node meanwhile: do it here, first.
@@ -823,6 +829,9 @@ export class LxdNativeLoginGateway {
 		// volume is restored before the login bootstrap runs (no operator).
 		await this.#recoveryFor(journal, binding, plan.request.name);
 		signal.throwIfAborted();
+		// G2-3: the identity's recovery state as of now, read here (a login guest may not read it itself); pushed apart
+		// from the bootstrap files, whose digest the binding pins, since a recovery may change it.
+		await this.#pushIdentityState(plan.request.name, binding, signal);
 		await this.#installBootstrap(plan.request.name, files, signal);
 		const address = await this.#waitReady(instance, signal);
 		const result = await this.#forward(address, login, signal);
@@ -903,6 +912,18 @@ export class LxdNativeLoginGateway {
 			})
 		)
 			throw new Error("LOGIN_COMPANY_ADMISSION_REFUSED");
+		// G2-3: the login guest's identity credential is bound to this allocation before its machine starts
+		// (idempotent on a re-reservation); only its hash leaves the node host.
+		const tokens = await this.#loginTokens(binding.loginId, true);
+		await this.#rpc(
+			"qorpera_bind_native_identity_credential",
+			{
+				...this.#machineIdentity(binding),
+				p_holder_kind: "login_guest",
+				p_credential_sha256: createHash("sha256").update(tokens.identity).digest("hex"),
+			},
+			signal,
+		);
 		const admission = await reserveRuntimeNodeMachine(
 			{
 				allocationId: binding.allocationId,
@@ -1383,7 +1404,11 @@ export class LxdNativeLoginGateway {
 			throw new Error("LOGIN_INSTANCE_AUTHORITY_CHANGED");
 	}
 
-	#bootstrapFiles(computeIdentityId: string, bridgeToken: string): LoginBootstrapFile[] {
+	#bootstrapFiles(
+		computeIdentityId: string,
+		tokens: { bridge: string; identity: string },
+		purpose: LxdLoginBinding["purpose"],
+	): LoginBootstrapFile[] {
 		const bootstrap = JSON.stringify(
 			{
 				schema: "qorpera.lxd-native-login-bootstrap/v1",
@@ -1409,6 +1434,7 @@ export class LxdNativeLoginGateway {
 			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",
 			`QORPERA_CODEX_PATH=${this.#config.codexPath}`,
 			`QORPERA_CLAUDE_PATH=${this.#config.claudePath}`,
+			`QORPERA_NATIVE_LOGIN_GUEST=${purpose === "account_refresh" ? "account_refresh" : "sign_in"}`,
 			"",
 		].join("\n");
 		return [
@@ -1420,7 +1446,12 @@ export class LxdNativeLoginGateway {
 			},
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
-				content: `${bridgeToken}\n`,
+				content: `${tokens.bridge}\n`,
+			},
+			{
+				// G2-3: the login guest's identity credential, bound to its machine as a login guest.
+				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
+				content: `${nativeIdentityCredentialFile(computeIdentityId, tokens.identity, this.#config.supabasePublishableKey)}\n`,
 			},
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
@@ -1832,7 +1863,8 @@ export class LxdNativeLoginGateway {
 		return value;
 	}
 
-	async #bridgeToken(loginId: string, existing = false): Promise<string> {
+	/** The login's bridge token and its machine's identity credential (G2-3), minted once with the journal. */
+	async #loginTokens(loginId: string, existing = false): Promise<{ bridge: string; identity: string }> {
 		const root = join(this.#config.stateRoot, loginId);
 		if (!existing) {
 			try {
@@ -1847,13 +1879,46 @@ export class LxdNativeLoginGateway {
 			await publish(
 				root,
 				"bridge.json",
-				Buffer.from(`${JSON.stringify({ token: randomBytes(32).toString("base64url") })}\n`),
+				Buffer.from(
+					`${JSON.stringify({
+						token: randomBytes(32).toString("base64url"),
+						identity: randomBytes(32).toString("base64url"),
+					})}\n`,
+				),
 			);
 		const { value } = await readRecord(join(root, "bridge.json"));
 		const input = record(value, "Login bridge token");
-		if (Object.keys(input).join() !== "token" || typeof input.token !== "string" || !TOKEN_PATTERN.test(input.token))
+		if (
+			Object.keys(input).sort().join() !== "identity,token" ||
+			typeof input.token !== "string" ||
+			!TOKEN_PATTERN.test(input.token) ||
+			typeof input.identity !== "string" ||
+			!TOKEN_PATTERN.test(input.identity) ||
+			input.identity === input.token
+		)
 			throw new Error("LOGIN_BRIDGE_UNCONFIRMED");
-		return input.token;
+		return { bridge: input.token, identity: input.identity };
+	}
+
+	/** The identity's recovery state as the guest reads it (the database's answer, checked), pushed for its bootstrap
+	 * and native host (G2-3). */
+	async #pushIdentityState(instanceName: string, binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {
+		const state = await this.#rpc(
+			"qorpera_identity_recovery_runtime_state",
+			{ p_compute_identity_id: binding.computeIdentityId },
+			signal,
+		);
+		recoveryRuntimeState(state);
+		if (record(state, "Identity recovery state").computeIdentityId !== binding.computeIdentityId)
+			throw new Error("LOGIN_IDENTITY_STATE_INVALID");
+		await this.#lxd.pushInstanceFile(
+			this.#config.project,
+			instanceName,
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity-state",
+			`${JSON.stringify(state)}\n`,
+			0o600,
+			signal,
+		);
 	}
 
 	/** Identity recoveries run under the service lifetime, not the member's

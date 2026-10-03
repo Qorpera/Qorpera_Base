@@ -3,11 +3,7 @@ import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import {
-	readBoundedCloudResponse,
-	supabaseServiceHeaders,
-	withCloudDeadline,
-} from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
@@ -31,7 +27,8 @@ import { createHttpCloudMachineCommandGateway } from "./cloud-machine-command-ht
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
-import { NativeHostDispatch, nativeHostDispatchMode } from "./cloud-native-host-dispatch.ts";
+import { NativeHostDispatch } from "./cloud-native-host-dispatch.ts";
+import { parseNativeIdentityCredential, parseNativeIdentityState } from "./cloud-native-identity-credential.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeModelLoginClient,
@@ -218,18 +215,19 @@ export function nativeFolderSearchConfiguration(environment: NodeJS.ProcessEnv):
 	return { socketPath };
 }
 
-/** Whether this identity's login is kept by the vault (Stateless Compute step 1). */
+/** Whether this identity's login is kept by the vault (Stateless Compute step 1), asked through the host's identity
+ * credential (`fetcher` is its dispatch). */
 async function fetchIdentityLoginInVault(
 	baseUrl: string,
-	serviceKey: string,
 	computeIdentityId: string,
+	fetcher: typeof fetch,
 ): Promise<boolean> {
 	return withCloudDeadline(async (deadline) => {
-		const response = await fetch(new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", baseUrl), {
+		const response = await fetcher(new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", baseUrl), {
 			method: "POST",
 			redirect: "error",
 			signal: deadline,
-			headers: { ...supabaseServiceHeaders(serviceKey), "content-type": "application/json" },
+			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
 		});
 		if (!response.ok) {
@@ -242,6 +240,15 @@ async function fetchIdentityLoginInVault(
 		if (typeof answer !== "boolean") throw new Error("Native identity custody is invalid");
 		return answer;
 	}, 10_000);
+}
+
+/** A login guest's purpose (G2-3): the login gateway names it; a host without it serves runs. */
+export function nativeLoginGuestPurpose(environment: NodeJS.ProcessEnv): "sign_in" | "account_refresh" | undefined {
+	const purpose = environment.QORPERA_NATIVE_LOGIN_GUEST;
+	if (purpose === undefined) return undefined;
+	if (purpose !== "sign_in" && purpose !== "account_refresh")
+		throw new Error("QORPERA_NATIVE_LOGIN_GUEST must be sign_in or account_refresh");
+	return purpose;
 }
 
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -283,9 +290,26 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if ((masterKey !== undefined && !TOKEN_PATTERN.test(masterKey)) || !TOKEN_PATTERN.test(bridgeToken)) {
 		throw new Error("Native provider credentials must contain 32 base64url bytes");
 	}
-	const state = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
+	// G2-3: the host's database calls go through its credentials, never the service key: a call inside a job through
+	// qorpera_native_host_call with that job's lease token, a call between jobs through qorpera_native_identity_call
+	// with this machine's identity credential. Storage and Realtime keep the key until G2-4.
+	const identity = parseNativeIdentityCredential(
+		await systemdCredential(environment, "qorpera-native-identity"),
+		computeIdentityId,
+	);
+	if (identity.credential === bridgeToken || identity.credential === masterKey)
+		throw new Error("The native identity credential must be independent");
+	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, serviceKey, identity });
+	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
+	const loginGuest = nativeLoginGuestPurpose(environment);
+	const state = loginGuest
+		? parseNativeIdentityState(
+				await systemdCredential(environment, "qorpera-native-identity-state"),
+				computeIdentityId,
+			)
+		: await fetchIdentityRecoveryRuntimeState(baseUrl, computeIdentityId, dispatch.fetch);
 	if (masterKey === undefined) {
-		if (state.blocked || !(await fetchIdentityLoginInVault(baseUrl, serviceKey, computeIdentityId)))
+		if (loginGuest || state.blocked || !(await fetchIdentityLoginInVault(baseUrl, computeIdentityId, dispatch.fetch)))
 			throw new Error("Native identity login is not kept by the vault");
 	} else {
 		const epochCredential =
@@ -314,13 +338,6 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		)
 			throw new Error("Native identity volume does not match current cloud recovery authority");
 	}
-	// G2-2: a call the host makes inside a job goes through qorpera_native_host_call with that job's lease token
-	// when the switch is on; everything else stays on the service key until G2-3 and G2-4.
-	const dispatch = new NativeHostDispatch({
-		supabaseUrl: baseUrl,
-		serviceKey,
-		mode: nativeHostDispatchMode(environment.QORPERA_NATIVE_HOST_DISPATCH),
-	});
 	const controlPlane = new SupabaseNativeProviderControlPlane(
 		baseUrl,
 		serviceKey,
@@ -528,22 +545,25 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			? {}
 			: {
 					masterKey,
+					// The recovery state this host started with (a login guest's from its gateway). A recovery started
+					// since puts the identity in recovery, which refuses its identity calls, and moves its epoch, which
+					// the sign-in's completion (p_recovery_epoch) then refuses.
 					backupIdentityKey: async (request: NativeProviderLoginRequest) => {
-						const current = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
-						if (current.epoch !== state.epoch || !current.recoveryConfiguration)
+						if (!state.recoveryConfiguration)
 							throw new Error("Native login requires the current cloud recovery authority");
 						await backupNativeIdentityKey({
-							state: current,
+							state,
 							masterKey,
 							loginId: request.loginId,
 							loginCapability: request.capability,
-							transport: new HttpIdentityRecoveryGuestTransport(current.recoveryConfiguration.serviceOrigin),
+							transport: new HttpIdentityRecoveryGuestTransport(state.recoveryConfiguration.serviceOrigin),
 							signal: AbortSignal.timeout(60_000),
 						});
 					},
 				}),
 		...(cloudRuntime ? { cloudRuntime } : {}),
 		...(warmIdleMs !== undefined ? { warmIdleMs } : {}),
+		...(loginGuest === "sign_in" ? { accountMetadata: false } : {}),
 		...(environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT
 			? { temporaryRoot: environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT }
 			: {}),
