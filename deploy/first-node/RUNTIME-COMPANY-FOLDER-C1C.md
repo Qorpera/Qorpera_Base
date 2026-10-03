@@ -895,20 +895,22 @@ Decisions:
   - `delete_hosted_profile` still takes the company row `FOR UPDATE` (through `request_company_deletion`'s gc fence);
     3g owns deletion. A join serializes with it at rank 0 meanwhile.
   - A job queued for the member's connection after the prelude's read still reaches the connection trigger's job
-    lock late; 3d gives the triggers `NOWAIT` modes that refuse retryably. No job creator serves `folder-v2` before
-    C3/C4. Account deletion cannot end the member's own runs: `runner_jobs.created_by_user_id` is `ON DELETE
-    RESTRICT`, and a member's login pays only for work that member started.
+    lock late; 3d gives the triggers `NOWAIT` modes that refuse retryably (built in 3d-1, §6.6). No job creator
+    serves `folder-v2` before C3/C4. Account deletion cannot end the member's own runs:
+    `runner_jobs.created_by_user_id` is `ON DELETE RESTRICT`, and a member's login pays only for work that member
+    started.
   - Pre-existing, for 3d: capture completion and secret rotation take vault rows before the creator's member row
     (`FOR SHARE`), against a removal's rank order; a joiner misses an agent thread created at the same moment (on
-    master too). For 3g: the last member's leave during the purge can meet `finish_company_deletion` once (40P01,
-    which heals: finish retries and the leave refuses). Likewise 3f's sweep of stopped task machines (§6.5): while it
-    waits at a `folder-v2` company's row it holds that company's fence `KEY SHARE`, and the purge's cascade wants the
-    fence `FOR UPDATE` while it holds the row. Both must land within milliseconds of one admission pass (a deletion
-    request committed after the sweep's cursor opened, then a finisher tick), and it heals: the pass retries next pass,
-    or the finisher's 40P01 or 5 s lock timeout retries next minute. 3g's deletion drain takes the fence `FOR UPDATE`
-    before rank 0, so the sweep's fence `NOWAIT` then skips the company.
+    master too; still open after 3d-1, §6.6). For 3g: the last member's leave during the purge can meet
+    `finish_company_deletion` once (40P01, which heals: finish retries and the leave refuses). Likewise 3f's sweep of
+    stopped task machines (§6.5): while it waits at a `folder-v2` company's row it holds that company's fence `KEY
+    SHARE`, and the purge's cascade wants the fence `FOR UPDATE` while it holds the row. Both must land within
+    milliseconds of one admission pass (a deletion request committed after the sweep's cursor opened, then a finisher
+    tick), and it heals: the pass retries next pass, or the finisher's 40P01 or 5 s lock timeout retries next minute.
+    3g's deletion drain takes the fence `FOR UPDATE` before rank 0, so the sweep's fence `NOWAIT` then skips the
+    company.
   - The founding lobby's own functions (`lock_company_founding`, `remove_company_founder`, `respond_company_founding`)
-    go with 3d.
+    go with 3d (built in 3d-1, §6.6).
 
 ### 6.5 C1c-3f as built (migration 20260930002000, test 824)
 
@@ -959,6 +961,79 @@ Decisions:
   - a run's own machine reservation and model logins (§6.1's other sites: C3 at the latest);
   - `stop_company_work`'s machine stop, under deletion's gc fence (3g).
   - `record_company_machine_error` updates one machine row and takes no company lock, on either core.
+
+### 6.6 C1c-3d-1 as built (migration 20260930002650, tests 817 and 818)
+
+- **Joining by invitation** (#581 N1). The join's prelude runs only for the invitee of a live invitation: its email and
+  expiry are in the prelude's `WHERE`, as in the select that follows, so a caller the join refuses (P0002) takes no
+  fence (818 A, 817 §2). The `join` mode now also takes the joiner's member row if it exists `FOR NO KEY UPDATE`
+  (rank 1: an existing member accepting an invitation updates it), then every agent thread room `FOR UPDATE` (rank 4)
+  and their conversations `FOR UPDATE` (rank 11), in id order, before the invitation, so the thread trigger finds them
+  held. A join beside a post waits at the room, holding no invitation, and lands (818 B); an existing member's join
+  waits at its own member row before any room (818 E3: a thread's model change holds the member row `FOR SHARE` and
+  then the room). 657 E2 now runs the real join.
+- **The founding lobby.**
+  - `lock_company_founding` on `folder-v2` takes the folder fence `FOR NO KEY UPDATE` (a seat taken or given up is a
+    member change), the company row `FOR NO KEY UPDATE`, then the founding row, as before. The table's name is the
+    company's, which `update_company_founding` writes, so a weaker mode would be strengthened there; effects' `KEY
+    SHARE` does not wait for it (818 F i). The plain seated check stays first. `open_company_founding` takes the fence
+    and the company row the same way.
+  - `remove_company_founder` takes the removed founder's jobs first, before the fence (core §3 step 2), through the
+    prelude's new `jobs` mode. It does so only for a caller the checks under the lock let through, read first without a
+    lock, so a founder the table refuses never waits at the job (818 F iv). If that read is stale (the seat was taken
+    just then), the removal's own prelude takes the jobs after the fence instead: a wait holding the fence, not a cycle
+    (a run holding its job asks only for `KEY SHARE` rows here).
+  - `respond_company_founding` takes the thread rooms and conversations as a join does, before its member row: a seat
+    taken beside a post waits at the room (818 F iii) and behind a member change at the fence (818 F ii).
+    `start_company_founding` takes the member rows its role changes write (and the starter's) `FOR NO KEY UPDATE` in
+    key order, then the rooms and conversations the same way, before its role changes (not raced: C2's seed is still a
+    stub).
+  - The order on `folder-v2`: the jobs (a removal only), the fence, the company row, the founding row, the seat, then
+    the member change's ranks (existing member rows, then rooms, then conversations; a new member's row is an insert
+    after them).
+  - An invited seat holder passes the plain seated check, so `update_`, `invite_`, `set_founder_role`,
+    `set_founder_ready` and `start_` take the fence before refusing it (42501). Accepted: the caller is a founder's
+    invited friend, and before this the same call took the company row `FOR UPDATE`.
+- **Trigger modes**, for rows no prelude took: an account deletion (`auth.users` cascades into member rows with no
+  prelude), or a row that appeared after the prelude's read.
+  - The connection cascade (`cascade_provider_connection_unavailability`) takes the jobs it ends `FOR UPDATE NOWAIT`
+    in id order on `folder-v2` when the login's owner is no longer a member: its departure, earlier in the same
+    transaction. (An account deletion of a login's owner or creator refuses with 23503 before the cascade:
+    `owner_user_id` and `created_by_user_id` are `ON DELETE RESTRICT`.) A job queued for the member's login after the
+    removal read its jobs, and held by a tool call of its run, refuses the removal; the retry lands (818 D). Any other
+    status change (a member's Disconnect, an authorizer's disable, the node-login switch-off, which catches its own
+    `lock_not_available`) waits for the job as before (818 D, and 818 G for the company's own login, which has no
+    owner); its order against a tool call is 3d-2's.
+  - The thread trigger's locks (`folder_lock_agent_threads`, `folder-v2` only) take the rooms and conversations
+    `NOWAIT`. An account deletion beside a post refuses (818 E), and so does a member row written with no prelude
+    (657 E2).
+  - A refusal is `PGRST` with `QRC01` and HTTP 409, retryable (never 40001: test 361). A row a prelude holds is taken
+    again at once, so member functions, joins and seats meet it only for a room a hire created between the prelude and
+    the trigger that a post into the new thread holds.
+  - The private conversations' trigger keeps its waits: an account deletion of a member with a private conversation
+    refuses with 23503 anyway (`qorpera_shared_sessions.audience_user_id` is `ON DELETE RESTRICT`).
+  - Existing member rows come before rooms (rank 1, then 4) in joins and Start, as in removals; a new member's row
+    (a join's or a seat's) is an insert after them. Review r2 found the order the other way round (rooms first) met a
+    thread's model change (`qorpera_session_model_writer`: the member row `FOR SHARE`, then the room) in a cycle
+    (40P01).
+- **The thread refresh** (`ensure_agent_thread_internal`) skips the conversation update on `folder-v2` when the title
+  and the status stay. Joins and role changes then write no conversation state operation and take no operation clock
+  for the threads (817 §2); a changed title is still written (817 §3).
+- **#581 N2:** an answer to a card and a member change meet at the thread room, in both orders (818 C).
+- Snapshot-v1 keeps every path: each patched body with its patch reversed is the definition before (817 §1; 664 §1 now
+  strips the join's new prelude text).
+- Not in 3d-1:
+  - A joiner still misses an agent thread created at the same moment (on master too). The hire is an effect (the fence
+    and the member rows `KEY SHARE`) and the joiner's member row does not exist yet, so nothing both lock conflicts. It
+    heals at the next member change or agent save that refreshes the thread. Closing it needs a conflict point in the
+    hook, for example the company's open invitations and seats named at rank 1.
+  - The vault order (capture completion, rotation and seal against a member change; Disconnect, grant and share against
+    a `folder-v2` tool call) is 3d-2.
+  - Deletion's last-member check and its fence drain are 3g.
+  - Account deletion stays an operator action without a prelude. In a busy company it can refuse repeatedly: any open
+    transaction that writes into a thread holds its conversation `KEY SHARE`. Many members cannot be deleted at all
+    (23503): a login's owner or creator, a private conversation's member, anyone who ran, posted or connected. An
+    account close function that runs the prelude per company, one company per transaction, is the fix.
 
 ## 7. Traps for C1c-2 and C1c-3
 
