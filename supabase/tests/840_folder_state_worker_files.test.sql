@@ -412,7 +412,7 @@ begin
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0001', jsonb_build_array(jsonb_build_object('op','delete',
 		'path',f || '/brief.md','expectedVersion',pg_temp.f2_version(f || '/brief.md')))), 1, 'go with its folder');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0002', jsonb_build_array(jsonb_build_object('op','move',
-		'from',f,'to','agents/ada/todos/call-the-bank/renamed','asOfSeq',(select last_seq from public.qorpera_folder_clocks
+		'from',f,'to','agents/ada/todos/call-the-bank/renamed','expectedVersion',pg_temp.f2_version(f),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'moves only with its agent''s folder');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0003', jsonb_build_array(jsonb_build_object('op','mkdir',
 		'path','agents/ada/todos/plan-the-trip'), jsonb_build_object('op','mkdir','path','agents/ada/todos/plan-the-trip/sneaky'))),
@@ -443,12 +443,12 @@ begin
 		raise exception 'The restored row: %', to_jsonb(pg_temp.worker_row(f)); end if;
 	-- An agent's folder with a worker at work does not move; once none is, its workers follow it.
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0011', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada','to','agents/adele','asOfSeq',(select last_seq from public.qorpera_folder_clocks
+		'from','agents/ada','to','agents/adele','expectedVersion',pg_temp.f2_version('agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'still at work');
 	perform public.qorpera_folder_cancel_agent_worker(current_setting('qorpera_test.ada')::jsonb -> 'binding',
 		jsonb_build_object('folder', 'agents/ada/todos/call-the-bank/extra', 'operationKey', 'f2b-cancel-0003'));
 	r := pg_temp.commit(m, 'f2b-guard-0012', jsonb_build_array(jsonb_build_object('op','move',
-		'from','agents/ada','to','agents/adele','asOfSeq',(select last_seq from public.qorpera_folder_clocks
+		'from','agents/ada','to','agents/adele','expectedVersion',pg_temp.f2_version('agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	if (pg_temp.worker_row('agents/adele/todos/call-the-bank/reader')).id is distinct from w.id
