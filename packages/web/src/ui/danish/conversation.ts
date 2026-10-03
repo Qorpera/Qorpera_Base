@@ -91,6 +91,7 @@ export const CONVERSATION: Record<string, string> = {
 		"Ingen fremgang i {minutes} minutter. Tryk på Stop, hvis det ser ud til at sidde fast.",
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke gjort fremskridt i {minutes} minutter.",
 	"An agent": "En agent",
+	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)
 	"The agent": "Agenten",
