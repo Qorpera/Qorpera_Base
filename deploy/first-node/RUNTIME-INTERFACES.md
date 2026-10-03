@@ -443,6 +443,109 @@ early. The database decides against the definition as it is at commit.
 A table that loses a column a page still uses is not refused. That page's block shows which column is gone, and the
 agent that keeps the page is told.
 
+### 6.1 The save check, as the folder hook runs it (P16)
+
+Built by F2 in the folder core's hook (C2), with this session's TS side. SQL never reads TOML or CSV.
+
+**What arrives.** The committing client (a runtime tool, the web, the creation worker) calls
+`parseInterfaceStateFile(path, text)` (packages/cloud-client `interfaces.ts`). That is the result of
+`parseCompanyStateFile`'s shape for the four kinds, and null for every other path. A refused result never leaves the
+client. An accepted one is sent with its unit as `{path, kind, text, parse, parserVersion}`.
+- **The parse per kind** is the TS type: `InterfaceFile` (`interface`), `InterfaceOrderFile` (`interface-order`),
+  `TableFile` (`table`) and `TableRowsFile` (`table-rows`: the header and each row's raw fields with its line, before
+  any definition).
+- **Fixtures:** `test/fixtures/interface-state.json` holds the exact answer for one valid file of each kind and one
+  file per parser code; `test/interface-state.test.ts` keeps it equal to the parser.
+- **The kind comes from the path's shape:**
+  - `interfaces/order.md`;
+  - `interfaces/*/interface.toml`;
+  - `tables/*/table.toml`;
+  - `tables/*/rows.csv`.
+
+  A badly named folder is still that kind, and its name is a parse problem, so no interface or table file is ever
+  saved unchecked.
+
+**The database checks, in this order.** Each refusal is `{line, key, code, message}`: `structured_invalid` with the
+parser's codes for (1), `structured_rule` with these codes for the rest.
+
+1. **The parse's shape**, in `qorpera_company_state_parse_problems`: closed key sets, types and bounds as the TS types
+   and fixtures give them, and the text hashing to the staged file.
+2. **Placement** (`placement`), for every unit under `interfaces/` or `tables/`:
+   - **Allowed paths:**
+     - `interfaces/`, `interfaces/order.md`, `interfaces/<name>/`, `interfaces/<name>/interface.toml` and
+       `interfaces/<name>/README.md`;
+     - `tables/`, `tables/<name>/`, `tables/<name>/table.toml`, `tables/<name>/rows.csv` and
+       `tables/<name>/README.md`.
+   - **Names:** `<name>` matches `^[a-z0-9]+(-[a-z0-9]+)*$`, is at most 64 characters, and is written as its key.
+   - **Never deleted or moved:** `interfaces/`, `interfaces/order.md`, the main interface's folder and its
+     `interface.toml`, `tables/`, and `tables/areas/` with its files.
+   - **Tables move whole:** `table.toml` or `rows.csv` is deleted or moved only with its folder. A `rows.csv` needs a
+     `table.toml` in its folder at commit.
+3. **One main interface** (`main`): after the change set, exactly one `interfaces/*/interface.toml` has
+   `main = true`.
+4. **Owners-only interfaces** (`owners`): an interface whose stored parse has `access.edit = "owners"` is changed,
+   moved or deleted only by an owner or admin. The platform may too. An agent never may.
+5. **Who writes rows** (`write`): a save of `rows.csv` by a member passes only under the stored table parse's
+   `write.members`:
+   - `all`;
+   - `owners` (owners and admins only);
+   - `none` (nobody).
+
+   A save by an agent passes only under `write.agents`: `all`, `none`, or a list holding its staff id. The platform
+   always passes (seeding, and clearing a leaving member's cells).
+6. **The rows against the definition at commit** (`row`, `duplicate`): the port of `parseTableRows`.
+   - **Header:** each name is a column of the stored table parse, and every column without `optional` is named.
+   - **Fields:** a column the header leaves out reads as empty.
+   - **Each field** (raw text from `TableRowsFile.rows[i].fields` at the header's position) by its column:
+     - **empty:** only in an `optional` column, and its value is null;
+     - **`text`:** at most `max` code points (default 500), with no U+0000–U+0008, U+000B, U+000C or U+000E–U+001F and
+       no lone surrogate;
+     - **`number`, `money`, `percent`:** at most 30 characters, matching `^-?(?:0|[1-9][0-9]{0,14})(?:\.[0-9]{1,8})?$`;
+       the value is the number;
+     - **`time`:** at most 25 characters, matching `^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?Z$`, a real
+       calendar date, hour at most 23, minute and second at most 59. The value is the text with `:00` added when
+       seconds are left out, so two spellings of one time are one key;
+     - **`date`:** exactly 10 characters, `YYYY-MM-DD`, a real calendar date;
+     - **`choice`:** exactly one of `choices`;
+     - **`yes-no`:** `yes` (true) or `no` (false);
+     - **`member`, `agent`, `id`:** `^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`;
+     - **`agents`:** split on single spaces into 1–50 such ids, with no repeats;
+     - **`link`:** at most 200 characters, with no U+0000–U+001F, U+007F–U+009F, U+2028 or U+2029.
+   - **A row that doesn't fit** is `row`, with its line.
+   - **The key** is the JSON array of the `key` columns' values, in `key` order, with null for empty. Strings compare
+     case-sensitively, numbers as numbers, and times in their canonical text. Two rows with one key are `duplicate`.
+7. **A definition change** (a `table.toml` save while its folder holds rows):
+   - the stored rows at commit must still fit the new definition, by rule 6 (`row`);
+   - a `needs_yes` column may lose `needs_yes`, be renamed or be removed only while no row holds a value in it
+     (`claim`);
+   - a column may gain `needs_yes` only while it is empty in every row (`claim`).
+
+   This is `tableDefinitionProblems`.
+8. **The claim rule** (`claim`), on a `rows.csv` save: the port of `tableClaimProblems`.
+   - **Columns checked:** every `needs_yes` column, and, for an agent, `tables/areas/`'s `owner`, `supervisor` and
+     `agents` whatever their flags.
+   - **Rows compared:** the stored rows against the new ones, by key. A row that's gone clears its cells.
+   - **For each cell that changes:**
+     - an agent changing an areas member-only column is refused;
+     - *self* is the member, or for an agent its supervisor: the `supervisor` of the area whose `agents` holds it.
+       Until supervision is built (I9b), an agent has none, so it changes no claimed cell;
+     - no *self*: refused;
+     - otherwise the change passes only as one of:
+       - **take:** it was empty and is now *self*;
+       - **release:** it was *self* and is now empty;
+       - **accept:** a member putting *self* where an open offer names that row key, that column and *self*; the
+         offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
+
+       Offers are request cards the platform keeps. Until they exist, accept never passes.
+9. **`tables/areas/`** (`areas`):
+   - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
+     (`agents`), each `optional`, by name and type;
+   - after a rows save, no agent id is in more than one row's `agents` (one area per agent);
+   - the supervisor's yes for adding agents waits for consent records (I9b).
+
+**Index effects:** none until I7. Decide reads the stored parses on the path versions: the main interface, a table's
+definition and its rows. The review recorder (C2 R1, F2's) gains `save_interface`, classified as §7 says.
+
 ## 7. Who changes what, and review
 
 - **Members** change interfaces and tables like any file, and their changes are never reviewed. `edit = "owners"`

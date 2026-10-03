@@ -134,7 +134,14 @@ export type InterfaceProblemCode =
 	| "unknown_target"
 	| "outside_value"
 	| "row"
-	| "claim";
+	| "claim"
+	/** The save check's own codes (RUNTIME-INTERFACES.md §6.1): a file the format doesn't place or keep; no main
+	 * interface or two; an owners-only interface changed by someone else; `[write]`; `tables/areas/`'s rules. */
+	| "placement"
+	| "main"
+	| "owners"
+	| "write"
+	| "areas";
 
 /** One reason a file can't be saved, or a row can't be read. Lines count from 1 over the whole file; `key` is
  * the dotted place in the file, `view[1].block[0].from`. */
@@ -1850,6 +1857,127 @@ export function writeTableRows(table: TableFile, rows: readonly TableRow[]): str
 	const lines = [table.columns.map((c) => c.name).join(",")];
 	for (const row of rows) lines.push(table.columns.map((c) => csvField(row[c.name] ?? null)).join(","));
 	return `${lines.join("\n")}\n`;
+}
+
+/* ---------------- the folder hook's entry point (P16) ---------------- */
+
+/** A rows file as the folder hook stores its parse: the header and each row's raw fields, before any definition. The
+ * save check types them against the table's definition as it is at commit (RUNTIME-INTERFACES.md §6.1). */
+export interface TableRowsFile {
+	readonly kind: "table-rows";
+	/** The column names the first line gives, in its order. */
+	readonly header: readonly string[];
+	/** Each row's fields as written, in the header's order, with the line the row starts on. Blank lines are left out. */
+	readonly rows: readonly { readonly line: number; readonly fields: readonly string[] }[];
+}
+
+export type InterfaceStateFile = InterfaceFile | InterfaceOrderFile | TableFile | TableRowsFile;
+
+/** Where an interface file sits, in the shape of the state files' `CompanyStatePath`. */
+export interface InterfaceStateFilePath {
+	readonly kind: InterfaceStatePathKind;
+	readonly agent: null;
+	readonly group: null;
+	/** The interface's folder name or the table's name, as its key; null for `interfaces/order.md`. */
+	readonly name: string | null;
+	readonly todo: null;
+	readonly worker: null;
+}
+
+export type InterfaceStateFileResult =
+	| { readonly ok: true; readonly path: InterfaceStateFilePath; readonly file: InterfaceStateFile }
+	| { readonly ok: false; readonly path: InterfaceStateFilePath; readonly problems: readonly InterfaceProblem[] };
+
+/** The column names a rows file's first line may give: the definition's own rule. */
+const TABLE_ROWS_MAX_COLUMNS = 40;
+
+/** Reads a rows file without its definition: the size, the encoding, the CSV, a header of unique column names, and
+ * rows of the header's width. What the values mean is the save check's, against the definition at commit. */
+export function parseTableRowsText(text: string): InterfaceParseResult<TableRowsFile> {
+	const refused = (problems: InterfaceProblem[]) => ({ ok: false as const, file: null, problems: withMore(problems) });
+	if (encoder.encode(text).length > TABLE_ROWS_MAX_BYTES)
+		return refused([
+			problem(null, null, "too_large", "The rows are larger than 64 KiB; a bigger table waits for the table store."),
+		]);
+	const body = text.startsWith("\ufeff") ? text.slice(1) : text;
+	if (LONE_SURROGATE.test(body) || body.includes("\u0000"))
+		return refused([problem(null, null, "encoding", "The rows must be UTF-8 text.")]);
+	const { records, error } = splitCsv(body);
+	if (error) return refused([problem(error.line, null, "row", error.message)]);
+	const header = records[0]?.fields ?? [];
+	if (header.length === 0 || (header.length === 1 && header[0] === ""))
+		return refused([problem(1, null, "row", "The first line names the columns.")]);
+	if (header.length > TABLE_ROWS_MAX_COLUMNS)
+		return refused([
+			problem(1, null, "too_large", `The first line names more than ${TABLE_ROWS_MAX_COLUMNS} columns.`),
+		]);
+	const seen = new Set<string>();
+	for (const name of header) {
+		if (!COLUMN.test(name) || name.length > 40)
+			return refused([
+				problem(1, null, "row", `The first line names "${shown(name)}", which is not a column name.`),
+			]);
+		if (seen.has(name)) return refused([problem(1, null, "row", `The first line names "${shown(name)}" twice.`)]);
+		seen.add(name);
+	}
+	const problems: InterfaceProblem[] = [];
+	const rows: { line: number; fields: string[] }[] = [];
+	for (const record of records.slice(1)) {
+		if (record.fields.length === 1 && record.fields[0] === "") continue;
+		if (record.fields.length !== header.length) {
+			problems.push(
+				problem(record.line, null, "row", `This row has ${record.fields.length} fields, not ${header.length}.`),
+			);
+			continue;
+		}
+		rows.push({ line: record.line, fields: record.fields });
+	}
+	if (problems.length) return refused(problems);
+	return { ok: true, file: { kind: "table-rows", header, rows }, problems: [] };
+}
+
+/** An interface file's kind, decided on the path's shape like the state files: a badly named folder is still this
+ * kind, and its name is one of the parse's problems, so no interface or table file is ever saved unchecked. */
+function interfaceStateShape(path: string): InterfaceStateFilePath | null {
+	const parts = companyPathKey(path).split("/");
+	const at = (kind: InterfaceStatePathKind, name: string | null): InterfaceStateFilePath => ({
+		kind,
+		agent: null,
+		group: null,
+		name,
+		todo: null,
+		worker: null,
+	});
+	if (parts.length === 2 && parts[0] === "interfaces" && parts[1] === "order.md") return at("interface-order", null);
+	if (parts.length !== 3) return null;
+	const name = parts[1] ?? "";
+	if (parts[0] === "interfaces" && parts[2] === "interface.toml") return at("interface", name);
+	if (parts[0] === "tables" && parts[2] === "table.toml") return at("table", name);
+	if (parts[0] === "tables" && parts[2] === "rows.csv") return at("table-rows", name);
+	return null;
+}
+
+/**
+ * The folder hook's one call for interface files (RUNTIME-INTERFACES.md §2, §6; F2's P16): the result of
+ * `parseCompanyStateFile`'s shape for `interfaces/order.md`, `interfaces/<name>/interface.toml`,
+ * `tables/<name>/table.toml` and `tables/<name>/rows.csv`, and null for every other path. The parse is what the
+ * client sends with its unit; the database checks its shape and the rules that need other files (§6.1).
+ */
+export function parseInterfaceStateFile(path: string, text: string): InterfaceStateFileResult | null {
+	const where = interfaceStateShape(path);
+	if (!where) return null;
+	const parsed: InterfaceParseResult<InterfaceStateFile> =
+		where.kind === "interface"
+			? parseInterfaceFile(text)
+			: where.kind === "interface-order"
+				? parseInterfaceOrderFile(text)
+				: where.kind === "table"
+					? parseTableFile(text)
+					: parseTableRowsText(text);
+	// A badly named folder is one of the path's problems (`interfacePathProblems` places only good names).
+	const problems = [...interfacePathProblems(path), ...parsed.problems];
+	if (problems.length || !parsed.ok) return { ok: false, path: where, problems: withMore(problems) };
+	return { ok: true, path: where, file: parsed.file };
 }
 
 /* ---------------- the claim rule ---------------- */
