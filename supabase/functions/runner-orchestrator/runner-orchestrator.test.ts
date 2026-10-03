@@ -161,6 +161,45 @@ describe("runner orchestrator boundary", () => {
 		}
 	});
 
+	it("parses the folder-v2 dynamic routines' list and per-routine restore", () => {
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_dynamic_routines", orchestratorId, limit: 250 }),
+			{ action: "folder_dynamic_routines", orchestratorId, limit: 250 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "folder_dynamic_routines",
+				orchestratorId,
+				afterRoutineId: routineId,
+				limit: 1,
+			}),
+			{ action: "folder_dynamic_routines", orchestratorId, afterRoutineId: routineId, limit: 1 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "restore_dynamic_routine",
+				orchestratorId,
+				routineId,
+				expectedVersion: 4,
+			}),
+			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 4 },
+		);
+		for (const limit of [0, 501, 1.5, "10"]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_dynamic_routines", orchestratorId, limit }));
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_dynamic_routines", orchestratorId, afterRoutineId: "x", limit: 1 }),
+		);
+		for (const expectedVersion of [0, 1_000_001, undefined]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion }),
+			);
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "restore_dynamic_routine", orchestratorId, routineId: "x", expectedVersion: 1 }),
+		);
+	});
+
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {
 		assert.throws(() => parseRunnerOrchestratorBearer(`Bearer ${token}secret`), /authorization/);
 		assert.throws(() =>
