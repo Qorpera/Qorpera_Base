@@ -123,7 +123,7 @@ function storedJob(job: CloudRunnerJob): JsonValue {
 		profile_id: job.profileId,
 		environment_id: job.environmentId,
 		session_id: job.sessionId ?? null,
-		substrate_version_id: job.substrateVersionId,
+		substrate_version_id: job.substrateVersionId ?? null,
 		client_job_id: job.clientJobId,
 		required_capability: job.requiredCapability,
 		job_type: job.jobType,
