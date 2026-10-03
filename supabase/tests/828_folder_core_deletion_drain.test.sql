@@ -193,9 +193,11 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930002500)\n',
 		E'\tif found then\n'),
 	('qorpera_finish_company_deletion(uuid)', 'fda2fcdc37c906ef5da78a48de7db15b',
-		E'\t\t\t-- C1c-3g (20260930002500): on folder-v2 the folder pause''s second phase, for deletion.\n'
+		E'\t\t\t-- C1c-3g (20260930002500): on folder-v2 the folder pause''s second phase, for deletion, then the company row\n'
+		|| E'\t\t\t-- FOR UPDATE as the purge takes it, before the stop''s and the revocations'' rows (jobs, secrets, grants).\n'
 		|| E'\t\t\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\t\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
+		|| E'\t\t\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 		|| E'\t\t\telse\n'
 		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\t\t\tend if;\n',

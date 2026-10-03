@@ -11,7 +11,9 @@
 --   after the fence and refuses. Its stop's job pass skips the jobs effects hold, as before; the finisher ends them.
 -- * The finisher (qorpera_finish_company_deletion) runs the folder pause's second phase for deletion,
 --   qorpera_folder_deletion_drain: the fence FOR UPDATE (it waits out every effect in flight) and its revision bump,
---   then the stop again, the holdings and the revocations, as before.
+--   then the company row FOR UPDATE as the purge takes it, before the stop again, the holdings and the revocations
+--   (jobs, secrets, grants, connections): a holder of the row KEY SHARE that waits for one of those (a broker seal)
+--   meets the finisher at the row, not in a cycle.
 -- * The purge takes the same drain and then the company row FOR UPDATE: the one folder-v2 path that may, since it
 --   deletes the row; it comes after the fence, so no effect holds the row while it waits, and before the cascade's
 --   children (members, sessions, secrets …), which the remaining legacy holders of the row (sign-ins, retirements,
@@ -102,9 +104,11 @@ begin
 	perform pg_temp.c1c3g_replace('public.qorpera_finish_company_deletion(uuid)',
 		E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\t\t\tperform public.qorpera_stop_company_work(p_profile_id);\n',
-		E'\t\t\t-- C1c-3g (20260930002500): on folder-v2 the folder pause''s second phase, for deletion.\n'
+		E'\t\t\t-- C1c-3g (20260930002500): on folder-v2 the folder pause''s second phase, for deletion, then the company row\n'
+		|| E'\t\t\t-- FOR UPDATE as the purge takes it, before the stop''s and the revocations'' rows (jobs, secrets, grants).\n'
 		|| E'\t\t\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\t\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
+		|| E'\t\t\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 		|| E'\t\t\telse\n'
 		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\t\t\tend if;\n'
