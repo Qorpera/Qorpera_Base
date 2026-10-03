@@ -128,7 +128,8 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
 - **Colours:** the `colour` names of `agent.md` (charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink,
   gray).
 - **`main`:** exactly one interface is the main one, drawn as the big card on top of the Interfaces tab. The seeded
-  Pulse is main. The save check (§6) refuses a change that would leave no main interface, or two.
+  Pulse is main. The save check refuses a change that would leave two main interfaces. Between the two steps of a
+  switch there may be none, which the web shows (§6.1 rule 3).
 - **`needs`:** the rail lists the interface only when every condition holds. The conditions are:
   - `mail`: the company has a live mailbox;
   - `team`: the company has two or more members;
@@ -425,7 +426,7 @@ files (STATE-FILES §3).
 
 **The save check** (the database's `decide`, as `structured_rule` in the state files) refuses what needs other
 files or state:
-- no main interface, or two;
+- two main interfaces, decided one change at a time (§6.1 rule 3);
 - `edit = "owners"` for anyone else;
 - the rows against their definition: the header, each row (`row`, also for CSV that doesn't split into fields), two
   rows with one key (`duplicate`);
@@ -495,11 +496,19 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
      `interface.toml`, `tables/`, and `tables/areas/` with its files.
    - **Tables move whole:** `table.toml` or `rows.csv` is deleted or moved only with its folder. A `rows.csv` needs a
      `table.toml` in its folder at commit.
+   - **Ids** (`duplicate`): one live interface per `[interface] id`, and one live table per `[table] id`. A table's
+     folder keeps its id when it moves.
+   - **Coding sessions** create, move or delete nothing under `interfaces/`, and no `table.toml`, so no table folder
+     either (contract 5.6). They may write a `rows.csv` under rule 5, as an agent.
 3. **One main interface** (`main`). Decide sees one unit at a time, and a change set isn't atomic, so this is a
    per-unit rule:
    - a unit that would leave two interfaces with `main = true` is refused;
    - zero is allowed in between, and the web shows that state (§10, I7);
    - the main interface's folder can't be deleted or moved while it is main.
+
+   It reads the stored mains without a lock (the core takes no new company-wide lock). So two promotions at the same
+   moment, from a state with none, can both pass and leave two. The web shows that state, and the next save of
+   either is refused until one is set to `false`.
 
    A switch is two units, in this order: the old main set to `false`, then the new one set to `true`.
    `save_interface` and the web send them so. In the other order the new main's unit is refused (it would leave two),
@@ -518,6 +527,10 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    A save by an agent passes only under `write.agents`: `all`, `none`, or a list holding its staff id. The platform
    always passes (seeding, and clearing a leaving member's cells). `[write]` governs `rows.csv` only. Changing
    `table.toml` or deleting the table's folder is any member's, and an agent's under review (§7).
+
+   A new table's first rows, in the same unit as its `table.toml` (one new folder), are its maker's: no `[write]`
+   check. They are checked against that unit's definition (rule 6), and each claimed cell they set must be a take
+   (rule 8).
 6. **The rows against the definition at commit** (`row`, `duplicate`): the port of `parseTableRows`.
    - **Header:** each name is a column of the stored table parse, and every column without `optional` is named. A
      header that fails refuses the whole file with that one problem (line 1), and no row is read.
@@ -558,6 +571,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
 8. **The claim rule** (`claim`), on a `rows.csv` save: the port of `tableClaimProblems`.
    - **Columns checked:** every `needs_yes` column, and, for an agent, `tables/areas/`'s `owner`, `supervisor` and
      `agents` whatever their flags.
+   - **The platform** passes only when it clears cells: a leaving member's (contract 5.6).
    - **Rows compared:** the stored rows against the new ones, by key. A row that's gone clears its cells. A cell
      changes when its value's JSON text differs (so reordering the ids in `agents` is a change).
    - **For each cell that changes:**
@@ -580,7 +594,11 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    - the supervisor's yes for adding agents waits for consent records (I9b).
 
 **Index effects:** none until I7. Decide reads the stored parses on the path versions: the main interface, a table's
-definition and its rows. The review recorder (C2 R1, F2's) gains `save_interface`, classified as §7 says.
+definition and its rows. F2's per-table index row (keyed by the table's id) is the lock a rows save and a definition
+change take, so each sees the other's commit. A file with no stored parse reads as not main and open to anyone, or,
+for a `table.toml`, as no definition; none exists, since the folder core starts empty. The review recorder (C2 R1,
+F2's) gains `save_interface`, classified as §7 says, for a call whose units are all at or under `interfaces/` or
+`tables/`.
 
 ## 7. Who changes what, and review
 
