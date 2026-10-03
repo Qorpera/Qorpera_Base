@@ -1989,6 +1989,81 @@ only; races of dispatch against `done`, two saves of one todo, the drain against
 subtree delete, and an agent folder move against a dispatch; a mutant run, as H1b and H2b; and the legacy
 worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new columns.
 
+**Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
+step I6, with Interfaces; design, 3 October). The rules are RUNTIME-INTERFACES.md §2, §5, §6 and §6.1 (its nine
+checks), and §7 for review. Interfaces' TS side is #751: `parseInterfaceStateFile`, the parse types, the fixtures
+`interface-state.json`, and `interfaceLibraryFiles`. This plan says how the hook runs them.
+
+*The kinds.* `qorpera_structured_path_kind` names four new kinds by the path's shape alone, whatever the name:
+`interfaces/order.md` (`interface-order`), `interfaces/*/interface.toml` (`interface`), `tables/*/table.toml`
+(`table`) and `tables/*/rows.csv` (`table-rows`). So a badly named folder's file is still checked, and refused.
+`parseCompanyStateFile` dispatches these paths to `parseInterfaceStateFile`, so every writer (the runtime's tools, the
+web, the creation worker) sends them as structured entries unchanged.
+
+*(1) The parse's shape* (`qorpera_company_state_parse_problems`; agreed with Interfaces, 3 October):
+- **Full** for `table` (format, the table block, 1–40 columns with their types and extra keys, key, holder, time,
+  write), `table-rows` (the header as 1–40 names; each row's line and its raw fields as strings, within the file's
+  64 KiB) and `interface-order` (the ids).
+- **Shallow** for `interface`: closed top-level keys, and typed `format`, `id`, `name`, `main` and `access.edit`,
+  the fields the database reads. Views, buttons, sources, needs and template are checked by JSON type and size only.
+  SQL cannot prove a parse came from its text, and nothing reads the blocks from the database before I7. Three
+  conditions keep this safe (Interfaces):
+  - readers (I7's web, I8's `interface_read`) parse the text themselves and never trust the stored parse, so the
+    parser-only refusals (`outside_value` included) hold even against a client that lies;
+  - `main` from the parse is rule 3's only input, and the web handles zero or two mains in the texts it reads;
+  - a later slice that indexes or reads a field adds that field's full check.
+
+*(2)–(9) The save check* runs in decide, in §6.1's order, against the stored parses at commit (`structured_rule`
+with §6.1's codes: `placement`, `main`, `owners`, `write`, `row`, `duplicate`, `claim`, `areas`):
+- **Placement:** the allowed paths and names of §6.1 rule 2. `interfaces/`, `interfaces/order.md`, `tables/`
+  and `tables/areas/` with its files join the seeded paths (never deleted or moved). So do the main interface's
+  folder and `interface.toml`, read from the stored parses. A table's two files go or move only with their folder,
+  and a `rows.csv` needs a `table.toml` in its folder when its unit is decided.
+- **Main:** a unit that would leave two interfaces with `main = true` is refused. This differs from §6.1's "exactly
+  one after the change set": a change set is not atomic, and a refusal is per unit. A switch is two units: the old
+  main set to false, then the new one set to true. A change set that stops between them leaves none, which the web
+  shows (condition 2), and the main interface's folder cannot be deleted while it is main.
+- **Owners, write, rows, definition change, claim and areas:** as §6.1 rules 4–9. Rows are a SQL port of
+  `parseTableRows`: the header against the definition, each field by its column type with §6.1's regular
+  expressions, and the key as a JSON array compared by value. The claim rule compares the stored rows with the new
+  ones by key. *Self* is the member. An agent has no self until I9b, so it changes no claimed cell, and accept never
+  passes until offers exist.
+
+*The index and the locks.* No index is read before I7, but the rules read a table's definition when its rows change,
+and its rows when its definition changes. The two saves must therefore wait for each other, and the core locks only
+a unit's own paths. So P16 adds one index row per table, `qorpera_folder_table_index`: the environment, the table's
+folder key and path, the definition's and the rows' versions, the commit, and retired. It is the index of the two
+files and the lock both saves take at rank 5 (FOR NO KEY UPDATE). A rule 3 change (a unit that sets `main = true`,
+or writes, moves or deletes the main interface) takes the company's `qorpera_folder_company_index` row at rank 5.
+These are rows the hook already owns: there is no new company-wide lock. Apply writes the table row (new on the
+first `table.toml`, versions after each save, repointed by a move, retired by a delete), and verify checks every row
+the commit wrote.
+
+*Review* (§7). `qorpera_folder_structured_review_class` returns `delegation` for an agent's change that:
+- creates an interface;
+- adds or changes a button (the `buttons` table, or the button names the blocks list, read from the parse with
+  jsonpath);
+- changes `access`;
+- creates a table, or changes its columns or `write`.
+
+Anything else is plain. The review recorder (C2 R1) gains `save_interface`. A delegation-class change through the
+mount or a shell has no review, so the commit denies it, as §7 says.
+
+*The seed.* `companyStateSeedTree` adds `interfaceLibraryFiles(newId)`: `interfaces/` with Pulse, Mailbox, Members
+and `order.md`, and `tables/` with `numbers`, `areas` and `cards` (header-only rows). The SQL seeded list and
+`COMPANY_STATE_SEEDED_PATHS` gain the protected paths. The creation worker's `creationUnits` (P14b) makes each
+interface folder and each table folder one `new_folder` unit, with media types by extension (`text/plain` for
+`.toml` and `.csv`).
+
+*PRs, in this order:*
+- **P16a, the database** (migration 20260930016000; SQL tests 864: the kinds, the shapes, placement, main, owners
+  and review; 865: write, rows, definition changes, claim and areas; 866: a rows save against a definition change,
+  and two main changes, raced).
+- **P16b, the TS:** the dispatch in `parseCompanyStateFile`, the seed tree and seeded paths, and `creationUnits`,
+  after P16a and #751. A creation before P16a would send kinds the hook refuses.
+
+Folder-v2 only (the founder decision of 3 October): no snapshot-v1 branches and no pins of old function text.
+
 ## 9. The seeded tree
 
 `companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new
