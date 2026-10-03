@@ -461,6 +461,29 @@ describe("a folder-v2 company's Company File", () => {
 });
 
 describe("the Company File page", () => {
+	it("offers to try again when the folder can't be opened, and opens it then", async () => {
+		const fake = folderFake();
+		fake.client.list.mockRejectedValueOnce(new Error("offline"));
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+		const f = fixture(),
+			stop = new AbortController();
+		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
+		const view = new LiveCompanyFileView(company, stop, "key", people);
+		disposers.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		await settle();
+		const retry = [...view.el.querySelectorAll("button")].find((button) =>
+			button.textContent?.includes("Retry opening Company File"),
+		);
+		expect(retry).toBeDefined();
+		retry!.click();
+		await settle();
+		await settle();
+		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+	});
+
 	it("is the company's folder, with no other File page to choose", async () => {
 		const fake = folderFake();
 		const mode = vi.spyOn(WebCompanyFiles.prototype, "mode");
