@@ -298,7 +298,7 @@ begin
 		'a permission under a deleted root');
 	update public.qorpera_company_path_resources set revoked_at = clock_timestamp() where id = v_resource;
 	r := pg_temp.erase(array['docs/r'], 'erase-r-3');
-	perform pg_temp.is(pg_temp.drain((r ->> 'erasureId')::uuid).state, 'done', 'erased once revoked');
+	perform pg_temp.is((pg_temp.drain((r ->> 'erasureId')::uuid)).state, 'done', 'erased once revoked');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-l-1', jsonb_build_array(pg_temp.put('docs/l.md', 'l one'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-l-2', jsonb_build_array(pg_temp.del('docs/l.md'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-l-3', jsonb_build_array(pg_temp.put('docs/l.md', 'l two'))), 1, 'saved');
@@ -328,7 +328,7 @@ begin
 	if pg_temp.versions_at('docs/k.md') <> 2 or (select phase from public.qorpera_folder_erasures where id = v_id) <> 1 then
 		raise exception 'The drain leaves a company being deleted'; end if;
 	delete from public.qorpera_company_deletions where profile_id = '70700000-0000-4000-8000-000000000010';
-	perform pg_temp.is(pg_temp.drain(v_id).state, 'done', 'drained once the deletion is gone');
+	perform pg_temp.is((pg_temp.drain(v_id)).state, 'done', 'drained once the deletion is gone');
 	perform pg_temp.is(pg_temp.versions_at('docs/k.md')::text, '0', 'its versions are gone');
 
 	-- A copy: another file with the erased bytes is named in the reply, not followed.
