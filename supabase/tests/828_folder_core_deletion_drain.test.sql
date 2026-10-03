@@ -106,47 +106,51 @@ begin
 	perform dblink_exec('fence_two', 'rollback');
 end $$;
 
--- D. The deletion, committed. The finisher's drain waits out a folder effect in flight at the fence, holding no company
--- row, then bumps the fence revision; it ends as a pass does (purged, waiting for the nodes, or a recorded error).
+-- D. The deletion, committed. The purge (rolled back, so the company stays for E): the drain first, then the company row
+-- FOR UPDATE, so behind a holder of the row KEY SHARE alone it waits at the row while it holds the fence.
 select * from dblink('fence_three', pg_temp.sql_request()) as t(r text);
 do $$
-declare v_before bigint := pg_temp.fence_revision(); v_state text;
+declare v_state text;
 begin
 	if not public.qorpera_company_deleting('64800000-0000-4000-8000-000000000010') then raise exception 'D: the deletion did not commit'; end if;
+	perform pg_temp.hold('row');
+	perform dblink_exec('fence_two', 'begin');
+	perform dblink_send_query('fence_two', $q$select public.qorpera_purge_company('64800000-0000-4000-8000-000000000010')::text$q$);
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_profiles') then
+		perform pg_temp.release();
+		raise exception 'D: the purge must wait at the company row'; end if;
+	if pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$, 'key share') then
+		perform pg_temp.release();
+		raise exception 'D: the purge must hold the fence FOR UPDATE before the company row'; end if;
+	perform pg_temp.release();
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'rollback');
+	if v_state <> 'ok' and v_state not like '55000 %' then raise exception 'D: the purge ended with %', v_state; end if;
+	if not exists (select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010') then
+		raise exception 'D: the purge was rolled back'; end if;
+end $$;
+
+-- E. The finisher's drain waits out a folder effect in flight at the fence, holding no company
+-- row; then the pass stops the work and, since the nodes hold nothing of the company, purges it.
+do $$
+declare v_state text;
+begin
+	if not public.qorpera_company_deleting('64800000-0000-4000-8000-000000000010') then raise exception 'E: the deletion did not commit'; end if;
 	perform pg_temp.hold('effect');
 	perform dblink_send_query('fence_two', $q$select public.qorpera_finish_company_deletion('64800000-0000-4000-8000-000000000010')::text$q$);
 	if not pg_temp.waits_at('fence_two', 'public.qorpera_folder_fences') then
 		perform pg_temp.release();
-		raise exception 'D: the finisher must wait for the effect at the fence'; end if;
+		raise exception 'E: the finisher must wait for the effect at the fence'; end if;
 	if not pg_temp.row_free($q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'$q$, 'no key update') then
 		perform pg_temp.release();
-		raise exception 'D: the finisher held the company row before the fence'; end if;
+		raise exception 'E: the finisher held the company row before the fence'; end if;
 	perform pg_temp.release();
 	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' then raise exception 'D: the finisher pass failed: %', v_state; end if;
+	if v_state <> 'ok' then raise exception 'E: the finisher pass failed: %', v_state; end if;
+	-- The nodes hold nothing of the company, so the pass purges it (its fence row with it).
 	if exists (select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010')
-		and pg_temp.fence_revision() <= v_before then
-		raise exception 'D: the drain must bump the fence revision'; end if;
-end $$;
-
--- E. The purge (while the company is still there): the drain first, then the company row FOR UPDATE, so behind a holder
--- of the row KEY SHARE alone it waits at the row while it holds the fence; it then purges or refuses for the nodes.
-do $$
-declare v_state text;
-begin
-	if not exists (select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010') then
-		raise notice 'E: the finisher purged the company in D'; return; end if;
-	perform pg_temp.hold('row');
-	perform dblink_send_query('fence_two', $q$select public.qorpera_purge_company('64800000-0000-4000-8000-000000000010')::text$q$);
-	if not pg_temp.waits_at('fence_two', 'public.qorpera_profiles') then
-		perform pg_temp.release();
-		raise exception 'E: the purge must wait at the company row'; end if;
-	if pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$, 'key share') then
-		perform pg_temp.release();
-		raise exception 'E: the purge must hold the fence FOR UPDATE before the company row'; end if;
-	perform pg_temp.release();
-	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' and v_state not like '55000 %' then raise exception 'E: the purge ended with %', v_state; end if;
+		or (select purged_at from public.qorpera_company_deletions where profile_id = '64800000-0000-4000-8000-000000000010') is null then
+		raise exception 'E: the pass must purge the company: %', v_state; end if;
 end $$;
 
 -- F. The drain refuses a company that is not being deleted, and the two helpers are postgres-only.
@@ -166,10 +170,10 @@ begin
 end $$;
 
 -- G. Snapshot-v1 keeps its text: each patched body with its folder-v2 branches reversed is byte for byte the definition
--- before this migration (master digests from a node 2 run).
+-- before this migration (master digests from a test VM run of the reversal).
 create temporary table c1c3g_patches(n serial, fn text, digest text, patched text, original text) on commit preserve rows;
 insert into c1c3g_patches(fn, digest, patched, original) values
-	('qorpera_delete_hosted_profile(uuid)', 'MASTER_DELETE_MD5',
+	('qorpera_delete_hosted_profile(uuid)', 'd188e9c028cfd4cf9184d816eee2896a',
 		E'\t-- C1c-3g (20260930002500): on folder-v2 the fence FOR NO KEY UPDATE (a leave, removal or join waits) and rank 0.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
@@ -177,7 +181,7 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		|| E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 		|| E'\tend if;\n',
 		E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'),
-	('qorpera_request_company_deletion(uuid,uuid)', 'MASTER_REQUEST_MD5',
+	('qorpera_request_company_deletion(uuid,uuid)', 'ad8fa4b2297dc20950e8e17389f6a951',
 		E'\t-- C1c-3g (20260930002500): on folder-v2 the fence FOR NO KEY UPDATE and rank 0; the finisher drains the fence.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
@@ -185,13 +189,13 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\tend if;\n',
 		E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
-	('qorpera_request_company_deletion(uuid,uuid)', 'MASTER_REQUEST_MD5',
+	('qorpera_request_company_deletion(uuid,uuid)', 'ad8fa4b2297dc20950e8e17389f6a951',
 		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930002500)\n',
 		E'\tif found then\n'),
-	('qorpera_stop_company_work(uuid)', 'MASTER_STOP_MD5',
+	('qorpera_stop_company_work(uuid)', '9485f077055b7b316ced0c28ef47d0fb',
 		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930002500)\n',
 		E'\tif found then\n'),
-	('qorpera_finish_company_deletion(uuid)', 'MASTER_FINISH_MD5',
+	('qorpera_finish_company_deletion(uuid)', 'fda2fcdc37c906ef5da78a48de7db15b',
 		E'\t\t\t-- C1c-3g (20260930002500): on folder-v2 the folder pause''s second phase, for deletion.\n'
 		|| E'\t\t\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\t\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
@@ -199,7 +203,7 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\t\t\tend if;\n',
 		E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
-	('qorpera_purge_company(uuid)', 'MASTER_PURGE_MD5',
+	('qorpera_purge_company(uuid)', '39f2ce9270860ed6ae60c12e44a61f11',
 		E'\t-- C1c-3g (20260930002500): on folder-v2 the drain, then the company row FOR UPDATE (the one folder-v2 path that\n'
 		|| E'\t-- may: it deletes the row), after the fence and before the cascade''s children.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
@@ -209,7 +213,7 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\tend if;\n',
 		E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
-	('qorpera_finish_company_deletions(integer)', 'MASTER_BATCH_MD5',
+	('qorpera_finish_company_deletions(integer)', 'ec4dc838385b2873aee4a315056f7976',
 		E'\t\t-- C1c-3g (20260930002500): finished in company id order, as the node update drains and the executor give-up\n'
 		|| E'\t\t-- take their companies, so two batches of locks never cross.\n'
 		|| E'\t\tselect sample.profile_id from (select deletion.profile_id from public.qorpera_company_deletions as deletion\n'
