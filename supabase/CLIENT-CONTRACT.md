@@ -767,6 +767,34 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
   work while away".
 
+### The company folder for members (20260930013000_folder_core_member_reads)
+
+Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call
+answers 42501 "Company folder is unavailable" for a caller who is not a member of a folder-v2 company with that
+environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
+looks absent in every answer. Reads only: member writes come with P31.
+
+- `qorpera_member_folder_read(environment, path)`: `qorpera.folder-read/v1`, `{asOfSeq, found, entry}`; an entry has
+  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`.
+- `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
+  folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
+  for the next page, null on the last.
+- `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
+  `before`.
+- `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
+  first (1 to 50 examined a page), each `{seq, at, by, paths, more}`: at most 20 readable paths (`path`, `op`, `kind`,
+  `version`), `more` when there are others. `next` is a seq to pass as `before`.
+- `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
+  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  again from the top.
+- `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
+- `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
+  chunk) of a file the member may read, now or in a version they may read. Clients fetch bytes from the gateway
+  (P27b), not with this call.
+
 ## 3. Realtime
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
