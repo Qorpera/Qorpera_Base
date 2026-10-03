@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderEntry,
@@ -44,7 +44,6 @@ const MAX_WRITE_BYTES = 32 * 1024;
 const MAX_LIST = 50;
 /** The model's operation key, as the legacy tools take it. */
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TOOL_VERSION = "folder-v2/1";
 const TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -98,7 +97,7 @@ function operationKey(value: JsonValue | undefined): string {
 
 function version(value: JsonValue | undefined, nullable: boolean): string | null {
 	if (value === null && nullable) return null;
-	if (typeof value !== "string" || !UUID.test(value))
+	if (typeof value !== "string" || !UUID_PATTERN.test(value))
 		throw new CloudToolArgumentRefusal(
 			nullable
 				? "expectedVersion must be the version company_read reported, or null for a path that does not exist"
@@ -199,7 +198,7 @@ export function cloudFolderFileTools(options: {
 }): CloudNativeTool[] {
 	const { folder, operations, identity } = options;
 	const pathSchema = { type: "string", maxLength: 4096 };
-	const nullableVersion = { type: ["string", "null"], pattern: UUID.source };
+	const nullableVersion = { type: ["string", "null"], pattern: UUID_PATTERN.source };
 
 	const read = async (path: string, what: string, signal: AbortSignal): Promise<CloudCompanyFolderEntry | null> => {
 		try {
@@ -509,7 +508,7 @@ export function cloudFolderFileTools(options: {
 				properties: {
 					path: pathSchema,
 					operationKey: { type: "string", pattern: OPERATION_KEY.source },
-					expectedVersion: { type: "string", pattern: UUID.source },
+					expectedVersion: { type: "string", pattern: UUID_PATTERN.source },
 				},
 			},
 			parseArguments(value) {
