@@ -1121,7 +1121,8 @@ For `folder-v2` companies:
   `qorpera_folder_drain_worker_wakes(environment, limit)`, for each company
   that `qorpera_folder_worker_wakes_due()` lists, in its own transaction,
   before it materializes that company's wakes (RUNTIME-COMPANY-STATE-FILES.md,
-  "Plan (F2-5b)" §6).
+  "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
+  returns".
 - The members' and clients' hint (the feed itself is C1f).
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,

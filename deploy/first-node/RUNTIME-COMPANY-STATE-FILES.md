@@ -529,8 +529,9 @@ Not reviewed. Dispatching a worker is reviewed.
 - body: the summary, then `## Needs` exactly when blocked, then `## Files` (`- <path>` items, the
   files it made).
 
-Only the worker tools write these two files, as the run that dispatches or reports (§8 "Plan
-(F2-5b)", contract 13):
+Only the worker tools write these two files, as the run that dispatches, follows up, reports or
+decides; a restore of a deleted agent brings them back as they were (§8 "Plan (F2-5b)", contract
+13):
 - the brief at dispatch and at each follow-up;
 - the results at report and at the decision.
 

@@ -6,6 +6,10 @@
 
 - `NativeSubscriptionControl.approveSessionTurnSponsorship` and its input type: a member can no longer ask another member to pay for a turn. `requestSessionTurn` refuses the `sponsorship_request` mode before any call; turn provenance still reads it on older requests.
 
+### Changed
+
+- The worker brief and results parses (`WorkerBriefFile`, `WorkerResultsFile`) give their body's sections (F2-5b-1) in place of the whole body: `brief` and `report` are gone. Nothing wrote or read them yet.
+
 ### Added
 
 - Worker briefs and results with sections (F2's F2-5b-1, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §8 "Plan (F2-5b)"): a `brief.md` body is `## Goal`, `## Done when`, `## Context`, `## Sources` (`- <path>` items), the platform's `## Authority`, `## Output`, `## Cancellation` and `## Completion`, and `## Follow-up` (the latest), with the new settings `follow_ups` and `followed_up_at`; a `results.md` body is the summary, `## Needs` exactly when blocked, and `## Files`. Their parses give each section (`goal`, `doneWhen`, `context`, `sources`, …, `followUp`; `summary`, `needs`, `files`) in place of the whole body, within today's tool bounds. `writeWorkerBriefFile` and `writeWorkerResultsFile` write them and refuse model text that would start a section (`workerTextHeading`); `appendWorkerFollowUp` adds a follow-up; `workerStandingTexts` gives the platform's texts; `workerKeyProblem` holds a worker key to the folder naming rule. Nothing writes worker files yet.

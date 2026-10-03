@@ -842,7 +842,7 @@ describe("connections, rules, todos and worker files", () => {
 			});
 			expect(
 				refused(PATH, `${front("follow_ups: 0")}${sections().replace("## Done when\nD\n", "")}`)[0]?.message,
-			).toBe("write the done when under ## Done when");
+			).toBe("write what done is under ## Done when");
 			expect(refused(PATH, `${front("follow_ups: 0")}Hello\n${sections()}`)[0]?.message).toBe(
 				"the brief starts with ## Goal",
 			);
@@ -932,25 +932,96 @@ describe("connections, rules, todos and worker files", () => {
 			expect(ok(RESULTS, writeWorkerResultsFile(file))).toEqual({ kind: "worker-results", ...file });
 		});
 
-		it("refuses model text that would start a section", () => {
-			expect(workerTextHeading("Plan:\n## Files\n- a")).toBe("## Files");
-			expect(workerTextHeading("## Goal ##")).toBe("## Goal");
-			expect(workerTextHeading("### Goal\n## Notes\n#Goal")).toBeNull();
+		it("refuses model text that would start a section, CRLF included, per file", () => {
+			expect(workerTextHeading("Plan:\n## Files\n- a", "worker-results")).toBe("## Files");
+			expect(workerTextHeading("Plan:\n## Files\n- a", "worker-brief")).toBeNull();
+			expect(workerTextHeading("## Goal ##", "worker-brief")).toBe("## Goal");
+			expect(workerTextHeading("Done.\r\n## Files\r\n- out/a.md", "worker-results")).toBe("## Files");
+			expect(workerTextHeading("### Goal\n## Notes\n#Goal", "worker-brief")).toBeNull();
 			expect(() => writeWorkerBriefFile({ ...brief, goal: "x\n## Sources\n- y" })).toThrow(
 				'The goal has a line "## Sources"',
 			);
-			expect(() =>
-				writeWorkerResultsFile({
-					outcome: "succeeded",
-					reportedAt: "2026-10-03T11:00:00Z",
-					decision: null,
-					note: null,
-					summary: "a\n## Needs",
-					needs: null,
-					files: [],
-				}),
-			).toThrow('The summary has a line "## Needs"');
+			expect(() => writeWorkerBriefFile({ ...brief, doneWhen: "x\r\n## Context\r\ny" })).toThrow(
+				'What done is has a line "## Context"',
+			);
+			const report = {
+				outcome: "succeeded" as const,
+				reportedAt: "2026-10-03T11:00:00Z",
+				decision: null,
+				note: null,
+				summary: "a",
+				needs: null,
+				files: [] as string[],
+			};
+			expect(() => writeWorkerResultsFile({ ...report, summary: "Done.\r\n## Files\r\n- out/a.md" })).toThrow(
+				'The summary has a line "## Files"',
+			);
+			// A results summary may hold the brief's headings: results split only on Needs and Files.
+			const sourced = writeWorkerResultsFile({ ...report, summary: "Done.\r\n## Sources\r\n- a.md" });
+			expect(ok(RESULTS, sourced)).toMatchObject({ summary: "Done.\n## Sources\n- a.md", files: [] });
+			expect(() => writeWorkerResultsFile({ ...report, files: [" a.md"] })).toThrow("## Files:");
+			expect(() => writeWorkerResultsFile({ ...report, files: ["a.md\n- b.md"] })).toThrow("## Files:");
+			expect(() => writeWorkerResultsFile({ ...report, files: [`${"f".repeat(254)}.md`] })).toThrow(
+				"longer than 256 bytes",
+			);
+			expect(() => writeWorkerBriefFile({ ...brief, sources: ["../x"] })).toThrow("## Sources:");
 			expect(WORKER_BRIEF_SECTIONS.at(-1)).toBe("Follow-up");
+		});
+
+		it("names the line of a bad item, and refuses empty, repeated and long sections", () => {
+			const text = `${front("follow_ups: 0")}## Goal\nG\n## Done when\nD\n## Sources\n\n\n- ok.md\n- ../x\n## Authority\nA\n## Output\nO\n## Cancellation\nC\n## Completion\nX\n`;
+			const problems = refused(PATH, text);
+			expect(problems[0]?.message).toContain('each line under ## Sources is "- "');
+			// The front matter is 9 lines; the body starts at 10, ## Sources at 14, the bad item at 18.
+			expect(problems[0]?.line).toBe(18);
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("## Done when\nD", "## Done when\n")}`)[0]
+					?.message,
+			).toBe("write what done is under ## Done when");
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 0")}${sections().replace("## Authority", "## Context\n\n## Authority")}`,
+				)[0]?.message,
+			).toBe("write the context under ## Context");
+			expect(refused(PATH, `${front("follow_ups: 0")}${sections()}## Goal\nAgain\n`)[0]?.message).toContain(
+				"sections come once each",
+			);
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("D\n", `${"d".repeat(2001)}\n`)}`)[0]?.message,
+			).toBe("## Done when is longer than 2000 bytes");
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 1\nfollowed_up_at: 2026-10-03T09:00:00Z")}${sections(`## Follow-up\n${"f".repeat(4001)}\n`)}`,
+				)[0]?.message,
+			).toBe("## Follow-up is longer than 4000 bytes");
+			const crlf = writeWorkerBriefFile(brief).replace(/\n/g, "\r\n");
+			expect(ok(PATH, crlf)).toEqual({ kind: "worker-brief", ...brief });
+			expect(() => appendWorkerFollowUp(RESULTS, writeWorkerBriefFile(brief), "x", "2026-10-03T10:00:00Z")).toThrow(
+				"does not parse",
+			);
+		});
+
+		it("holds a report's needs and files to their rules", () => {
+			const report = (lines: string, body: string) =>
+				`---\noutcome: ${lines}\nreported_at: 2026-10-03T11:00:00Z\n---\n${body}`;
+			expect(refused(RESULTS, report("blocked", "Stuck.\n## Needs\n"))[0]?.message).toBe(
+				"write what it needs under ## Needs",
+			);
+			expect(refused(RESULTS, report("blocked", `Stuck.\n## Needs\n${"n".repeat(1001)}`))[0]?.message).toBe(
+				"## Needs is longer than 1000 bytes",
+			);
+			expect(refused(RESULTS, report("failed", "Nope.\n## Files\n- a.md\n- A.md"))[0]?.message).toContain(
+				"is listed twice",
+			);
+			expect(refused(RESULTS, report("failed", "Nope.\n## Files\n- a.md\nb.md"))[0]?.line).toBe(8);
+			expect(refused(RESULTS, report("failed", `Nope.\n## Files\n- ${"f".repeat(254)}.md`))[0]?.message).toContain(
+				"each line under ## Files",
+			);
+			expect(refused(RESULTS, report("failed", "Nope.\n## Files\n- a.md\n## Needs\nx"))[0]?.message).toContain(
+				"sections come once each, in this order: ## Needs, ## Files",
+			);
 		});
 
 		it("gives today's standing texts and the folder key rule", () => {
@@ -965,7 +1036,18 @@ describe("connections, rules, todos and worker files", () => {
 			expect(workerStandingTexts({ species: "in-house", access: "write", revival: "each" }).completion).toBe(
 				"The parent is revived as soon as you report.",
 			);
+			expect(workerStandingTexts({ species: "in-house", access: "write", revival: "batch" }).authority).toBe(
+				"Read what this agent may read. Write only inside outputFolder, or where this agent already holds a write grant.",
+			);
+			expect(workerStandingTexts({ species: "coding", access: "read", revival: "batch" })).toMatchObject({
+				authority:
+					"Work only in the repository and branch the cloud selected. Company File sources are read-only context. Publication is a draft PR through the trusted path.",
+				output:
+					"Finish through coding_finish with the commit to publish, or ask the owner through coding_ask when a decision is theirs.",
+			});
 			expect(workerKeyProblem("price-check-2")).toBeNull();
+			expect(workerKeyProblem("con")).toContain("cannot name a worker's folder");
+			expect(workerKeyProblem("lpt1")).not.toBeNull();
 			expect(workerKeyProblem("price.check")).toContain("cannot name a worker's folder");
 			expect(workerKeyProblem("a--b")).not.toBeNull();
 			expect(workerKeyProblem("a".repeat(65))).not.toBeNull();
