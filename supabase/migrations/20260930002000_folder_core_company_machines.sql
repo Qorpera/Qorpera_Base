@@ -18,9 +18,11 @@
 --   write access read again, before the advisory lock and the machine. The gc fence was taken before the machine was
 --   even looked up, so any member who can write could hold a folder-v2 company's row FOR UPDATE.
 -- * Admission's sweep of stopped task machines takes a folder-v2 company's fence KEY SHARE NOWAIT (a company being stopped
---   is swept on a later pass), then its row KEY SHARE, never the row FOR UPDATE NOWAIT. It skips a company whose machine
---   lock the same pass's disk give-up holds: until C1c-3g, deletion holds the company row FOR UPDATE and then wants that
---   lock and those machines, so waiting for the row there would close a cycle.
+--   is swept on a later pass), then its row KEY SHARE, never the row FOR UPDATE NOWAIT. That row waits only for a holder
+--   of it stronger, which may want locks the pass holds: until C1c-3g, deletion's gc fence, which wants the company's
+--   machine lock and machines next; a node update drain, which locks several companies' rows in id order. So the sweep
+--   waits for a folder-v2 company's row only while the pass has given up no disk (its machine locks) and holds no other
+--   company's row (from an earlier sweep); otherwise that company waits a pass.
 -- * Giving up a disabled executor takes each folder-v2 company's folder fence in place of the gc fence, in id order.
 -- * An agent's machine_start serves folder-v2: its authority check is the folder tool run (the run mutex, the job, the
 --   fence, rank 0), then the receipt, the advisory lock, the machine and the rows admission takes.
@@ -110,38 +112,40 @@ begin
 		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\tend if;\n', 1);
 
-	-- Admission: the companies whose machine lock the disk give-up holds to the end of the pass (declared first, since the
-	-- patches below use it).
+	-- Admission: the companies whose machine locks the disk give-up holds, and whose rows the sweep holds, to the end of
+	-- the pass (declared first, since the patches below use them).
 	perform pg_temp.c1c3f_replace('public.qorpera_admit_executor_machines(text,text,integer)',
 		E'\tv_busy uuid[] := ''{}'';\n',
 		E'\tv_busy uuid[] := ''{}'';\n'
-		|| E'\tv_gave_up uuid[] := ''{}''; -- C1c-3f (20260930002000)\n', 1);
+		|| E'\tv_gave_up uuid[] := ''{}''; v_swept uuid[] := ''{}''; -- C1c-3f (20260930002000)\n', 1);
 
 	-- Admission's sweep of stopped task machines: never the company row FOR UPDATE NOWAIT on folder-v2.
 	perform pg_temp.c1c3f_replace('public.qorpera_admit_executor_machines(text,text,integer)',
 		E'\t\t\tperform 1 from public.qorpera_profiles where id = v_machine.profile_id for update nowait;\n'
 		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);\n',
 		E'\t\t\t-- C1c-3f (20260930002000): on folder-v2 the fence KEY SHARE without waiting (a company being stopped is swept\n'
-		|| E'\t\t\t-- on a later pass), then the company row KEY SHARE, which waits only for a holder of the row stronger (until\n'
-		|| E'\t\t\t-- C1c-3g, deletion''s gc fence). A company whose machine lock this pass''s disk give-up holds is swept later:\n'
-		|| E'\t\t\t-- that deletion wants the lock and the machines next.\n'
+		|| E'\t\t\t-- on a later pass), then the company row KEY SHARE, which waits only for a holder of the row stronger. Until\n'
+		|| E'\t\t\t-- C1c-3g that holder may be deletion (it wants the machine locks a disk give-up holds) or a node update drain (it\n'
+		|| E'\t\t\t-- wants the other rows the sweep holds): with either held, the company waits a pass.\n'
 		|| E'\t\t\tif public.qorpera_company_is_folder_v2(v_machine.profile_id) then\n'
-		|| E'\t\t\t\tif v_machine.profile_id = any (v_gave_up) then raise sqlstate ''P0F04''; end if;\n'
+		|| E'\t\t\t\tif cardinality(v_gave_up) > 0 or exists (select 1 from unnest(v_swept) as held(profile_id)\n'
+		|| E'\t\t\t\t\twhere held.profile_id <> v_machine.profile_id) then raise sqlstate ''P0F04''; end if;\n'
 		|| E'\t\t\t\tperform 1 from public.qorpera_folder_fences where profile_id = v_machine.profile_id for key share nowait;\n'
 		|| E'\t\t\t\tif not found then raise sqlstate ''P0F04''; end if;\n'
 		|| E'\t\t\t\tperform 1 from public.qorpera_profiles where id = v_machine.profile_id for key share;\n'
 		|| E'\t\t\telse\n'
 		|| E'\t\t\tperform 1 from public.qorpera_profiles where id = v_machine.profile_id for update nowait;\n'
 		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);\n'
-		|| E'\t\t\tend if;\n', 1);
+		|| E'\t\t\tend if;\n'
+		|| E'\t\t\tv_swept := v_swept || v_machine.profile_id; -- C1c-3f (20260930002000)\n', 1);
 
-	-- The disk give-up records those companies, for the sweep above.
+	-- The disk give-up records the companies whose machine lock it holds, for the sweep above.
 	perform pg_temp.c1c3f_replace('public.qorpera_admit_executor_machines(text,text,integer)',
 		E'\t\t\t\t\tperform 1 from public.qorpera_company_machines where id = v_asleep.machine_id and desired_state = ''stopped'' for update nowait;\n'
 		|| E'\t\t\t\t\tif not found then raise sqlstate ''P0F04''; end if;\n',
 		E'\t\t\t\t\tperform 1 from public.qorpera_company_machines where id = v_asleep.machine_id and desired_state = ''stopped'' for update nowait;\n'
 		|| E'\t\t\t\t\tif not found then raise sqlstate ''P0F04''; end if;\n'
-		|| E'\t\t\t\t\t-- C1c-3f (20260930002000): held to the end of the pass; the sweep skips this company.\n'
+		|| E'\t\t\t\t\t-- C1c-3f (20260930002000): held to the end of the pass.\n'
 		|| E'\t\t\t\t\tv_gave_up := v_gave_up || v_asleep.profile_id;\n', 1);
 
 	-- Giving up a disabled executor: each folder-v2 company's folder fence, in the same id order.

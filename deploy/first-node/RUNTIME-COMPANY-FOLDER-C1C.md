@@ -890,11 +890,13 @@ Decisions:
   start wait at the member row, and then refuse (824 G).
 - **The sweep of stopped task machines** (admission's last loop) takes a `folder-v2` company's fence `KEY SHARE NOWAIT`: a
   company being stopped is swept on a later pass. It then takes the company row `KEY SHARE`, never `FOR UPDATE NOWAIT`.
-  - That wait is only behind a holder of the row stronger (824 E3). Until 3g that is deletion's gc fence, which then wants
-    the company's machine lock and machines.
-  - So the sweep skips a company whose machine lock the same pass's disk give-up already holds (824 E4). That give-up takes
-    no fence, keeps the advisory lock and the machine row to the end of the pass, and waiting there would close a cycle.
-    Every other lock the pass holds belongs to companies that such a deletion does not touch.
+  - That wait is only behind a holder of the row stronger (824 E3), which until 3g may want locks the pass holds.
+    Deletion's gc fence wants the company's machine lock and machines next, and the pass's disk give-up holds such
+    locks: it takes no fence and keeps them to the end of the pass. A node update drain locks several companies' rows in
+    id order (`authorize_node_update_drain`, `node_update_locked`), and deletion's finisher handles several companies in
+    one transaction; an earlier sweep in the pass holds other companies' rows.
+  - So the sweep waits for a `folder-v2` company's row only while the pass has given up no disk and holds no other
+    company's row. Otherwise that company waits a pass (824 E4, E5); a pass that waits holds nothing such a holder wants.
   - A pass can still wait behind another old gc-fence holder of the row (a sign-in, until §6.1's other sites move).
   - It inserts no wake, so core §3 step 10's one-company rule does not apply.
 - **Giving up a disabled executor** takes each `folder-v2` company's fence in place of the gc fence, in the same id order.
