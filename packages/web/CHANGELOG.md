@@ -4,6 +4,7 @@
 
 ### Added
 
+- Say when an agent's run has made no progress for 15 minutes (session-buildup audit gap 4, migration `20260930002600`). The run goes on and nothing stops it. In the agent's thread, "No progress for 15 minutes." stands above the composer while `qorpera_list_staff_execution_activity` names the stall (`no_progress_since`), with "If it looks stuck, press Stop." where Stop is offered. The Working now rows say "No progress" since the last progress. The company notices line says "{agent} has made no progress for 15 minutes." for a `run_no_progress` notice (subject `qorpera.member-notification.run-no-progress/v1`), dismissed like any line; the cloud closes it itself once the run makes progress or ends. Until the cloud has the migration, nothing shows.
 - Interface pages draw more of the fixed blocks (Interfaces step I3a; `deploy/first-node/RUNTIME-INTERFACES.md` §3):
   - **Views** are tabs under the page's head. A view built from another (`from_view`) shows that view's blocks narrowed by its own `where`: rows must match both. A block narrowed by a column its source doesn't have, and a view left with nothing to draw, are left out.
   - **`table`** sorts by its headings (an agent column by the name shown) and filters by its text. The filter keeps focus and the caret while the table redraws, and a letter being composed isn't cut off.

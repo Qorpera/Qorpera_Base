@@ -63,9 +63,16 @@ function offerable(
 /** What a notice tells the member, in plain words; undefined when it gets no line.
  * A reached usage limit is told by the failed run's card in the thread. A changed
  * sponsor asks nothing of the member. */
-function sentence(item: MemberNotification): string | undefined {
+function sentence(
+	item: MemberNotification,
+	agentName?: (staffAgentId: string) => string | undefined,
+): string | undefined {
 	const subject = item.subject;
 	switch (subject.schema) {
+		case "qorpera.member-notification.run-no-progress/v1":
+			return t("{agent} has made no progress for 15 minutes.", {
+				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
+			});
 		case "qorpera.member-notification.provider-usage-limit/v1":
 		case "qorpera.member-notification.sponsor-handoff/v1":
 			return undefined;
@@ -92,6 +99,7 @@ export class ExecutionNotices {
 	readonly #lifetime = new AbortController();
 	readonly #restoreFocus: (() => void) | undefined;
 	readonly #plan: PlanOffer | undefined;
+	readonly #agentName: ((staffAgentId: string) => string | undefined) | undefined;
 	#items: readonly MemberNotification[] = [];
 	#offer: Offer | undefined;
 	/** Plans whose card this window showed (and recorded): it stays until answered here. */
@@ -112,10 +120,17 @@ export class ExecutionNotices {
 	#acking = false;
 	#drawn = "";
 
-	constructor(client: Client, signal: AbortSignal, restoreFocus?: () => void, plan?: PlanOffer) {
+	constructor(
+		client: Client,
+		signal: AbortSignal,
+		restoreFocus?: () => void,
+		plan?: PlanOffer,
+		agentName?: (staffAgentId: string) => string | undefined,
+	) {
 		this.#client = client;
 		this.#restoreFocus = restoreFocus;
 		this.#plan = plan;
+		this.#agentName = agentName;
 		if (signal.aborted) {
 			this.dispose();
 			return;
@@ -324,7 +339,7 @@ export class ExecutionNotices {
 			return;
 		}
 		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
-		const text = item && sentence(item);
+		const text = item && sentence(item, this.#agentName);
 		const key = JSON.stringify([item?.notificationId, text, this.#acking]);
 		if (key === this.#drawn) return;
 		const focused = this.el.contains(document.activeElement);

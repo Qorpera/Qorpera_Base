@@ -263,6 +263,40 @@ describe("company notices", () => {
 		await settle();
 		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
+
+	it("names the agent whose run made no progress for 15 minutes, and dismisses it like any line", async () => {
+		const stalled: MemberNotification = {
+			...item(78),
+			kind: "run_no_progress",
+			subject: {
+				schema: "qorpera.member-notification.run-no-progress/v1",
+				runId: id(80),
+				staffAgentId: id(83),
+				sessionId: null,
+				since: timestamp,
+			},
+		};
+		const client = {
+			listNotifications: vi.fn(async () => [stalled]),
+			acknowledgeNotification: vi.fn(async () => ({ ...stalled, acknowledgedAt: timestamp })),
+		};
+		const lifetime = new AbortController();
+		const named = new ExecutionNotices(client, lifetime.signal, undefined, undefined, (staffAgentId) =>
+			staffAgentId === id(83) ? "Nova" : undefined,
+		);
+		document.body.append(named.el);
+		cleanup.push(() => named.dispose());
+		await settle();
+		expect(named.el.querySelector("p")?.textContent).toBe("Nova has made no progress for 15 minutes.");
+		action("dismiss-notification").click();
+		await settle();
+		expect(client.acknowledgeNotification).toHaveBeenCalledWith(id(78), expect.any(AbortSignal));
+		expect(named.el.hidden).toBe(true);
+		// Without the agent's name (another window's staff list), the line still says what happened.
+		const unnamed = setup([stalled]);
+		await settle();
+		expect(unnamed.view.el.querySelector("p")?.textContent).toBe("An agent has made no progress for 15 minutes.");
+	});
 });
 
 it("reads notices for the company workspace without any popup, also across an account change", async () => {

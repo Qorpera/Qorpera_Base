@@ -2249,6 +2249,9 @@ export class ConversationView {
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
 		this.#renderRunNotification(session);
+		// The agent's run has made no progress for 15 minutes: said, never acted on.
+		const stalled = !this.#isRoom && this.#company.noProgressSince(session?.staffAgentId) !== undefined;
+		const stoppable = this.#run?.stoppable === true;
 		// Rebuilt only when something shown changes, so a focused button survives polling.
 		const key = JSON.stringify([
 			conversation.error,
@@ -2262,6 +2265,8 @@ export class ConversationView {
 			company.team?.role,
 			company.team?.capabilities,
 			company.waitingForHours,
+			stalled,
+			stoppable,
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
@@ -2283,6 +2288,15 @@ export class ConversationView {
 		if (company.waitingForHours && session?.status !== "closed")
 			children.push(
 				notice("neutral", t("Out of computer hours. New work waits and starts by itself once hours are added.")),
+			);
+		if (stalled)
+			children.push(
+				notice(
+					"neutral",
+					stoppable
+						? t("No progress for 15 minutes. If it looks stuck, press Stop.")
+						: t("No progress for 15 minutes."),
+				),
 			);
 		if (!canWrite && session?.status === "closed")
 			children.push(notice("neutral", t("This conversation is archived.")));

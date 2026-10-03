@@ -87,14 +87,33 @@ describe("company notices member read", () => {
 					at: timestamp,
 				},
 			},
+			{
+				kind: "run_no_progress",
+				subject: {
+					schema: "qorpera.member-notification.run-no-progress/v1",
+					runId: id(11),
+					staffAgentId: id(15),
+					sessionId: null,
+					since: timestamp,
+					private: "hidden",
+				},
+			},
 		];
 		f.fetch.mockResolvedValueOnce(
 			Response.json(subjects.map((v, i) => ({ ...full, ...v, notification_id: id(100 + i) }))),
 		);
 		const result = await f.client.listNotifications();
-		expect(result).toHaveLength(3);
+		expect(result).toHaveLength(4);
 		expect(result[0]!.subject).not.toHaveProperty("private");
 		expect(result[1]!.subject).toMatchObject({ dimension: "machines", used: 2, ceiling: 2 });
+		// A run with no progress for 15 minutes (gap 4): its run, agent, thread (none for a worker) and last progress.
+		expect(result[3]!.subject).toEqual({
+			schema: "qorpera.member-notification.run-no-progress/v1",
+			runId: id(11),
+			staffAgentId: id(15),
+			sessionId: null,
+			since: timestamp,
+		});
 	});
 	it("skips notices of the removed company limits and pause instead of failing the read", async () => {
 		const f = setup();

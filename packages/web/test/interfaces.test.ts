@@ -85,6 +85,14 @@ describe("which interfaces a company lists", () => {
 		expect(companyInterfaces(company([], { members: 3 }).controller).map((entry) => entry.name)).toEqual(["pulse"]);
 	});
 
+	it("says a working run has made no progress, since its last progress (gap 4)", () => {
+		const { controller } = company([run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00Z" }), run(bo.id, 2, {})]);
+		expect(interfaceRows(controller, "working")?.map(({ row }) => row)).toEqual([
+			{ agent: ada.id, what: "No progress", since: "2026-10-02T09:20:00Z" },
+			{ agent: bo.id, what: "Working", since: "2026-10-02T09:44:00Z" },
+		]);
+	});
+
 	it("reads who is working and what waits for the member from the company's live state", () => {
 		const { controller } = company(
 			[

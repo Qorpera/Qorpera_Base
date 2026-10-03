@@ -25,6 +25,14 @@ export type MemberNotificationSubject =
 			at: string;
 	  }
 	| {
+			/** A run with no progress for 15 minutes (session-buildup audit gap 4, migration 20260930002600). */
+			schema: "qorpera.member-notification.run-no-progress/v1";
+			runId: string;
+			staffAgentId: string;
+			sessionId: string | null;
+			since: string;
+	  }
+	| {
 			/** The kernel writes this subject without a schema (20260920000000); the web names it. */
 			schema: "routine-needs-model-account";
 			staffAgentId: string;
@@ -34,7 +42,12 @@ export type MemberNotificationSubject =
 export interface MemberNotification {
 	notificationId: string;
 	profileId: string;
-	kind: "provider_usage_limit" | "company_ceiling_tripped" | "sponsor_handoff" | "routine_needs_model_account";
+	kind:
+		| "provider_usage_limit"
+		| "company_ceiling_tripped"
+		| "sponsor_handoff"
+		| "routine_needs_model_account"
+		| "run_no_progress";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -135,6 +148,14 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			staffAgentId: uuid(s.staffAgentId),
 			routineId: uuid(s.routineId),
 			title: s.title,
+		};
+	} else if (kind === "run_no_progress" && s.schema === "qorpera.member-notification.run-no-progress/v1") {
+		subject = {
+			schema: s.schema,
+			runId: uuid(s.runId),
+			staffAgentId: uuid(s.staffAgentId),
+			sessionId: s.sessionId === null ? null : uuid(s.sessionId),
+			since: date(s.since),
 		};
 	} else if (kind === "sponsor_handoff" && s.schema === "qorpera.member-notification.sponsor-handoff/v1") {
 		if (s.reason !== "usage_limit") throw invalid();

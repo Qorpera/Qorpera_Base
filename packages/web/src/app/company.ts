@@ -1190,6 +1190,12 @@ export class CompanyController {
 			: "failed";
 	}
 
+	/** When a working agent's running run last made progress, if that was 15 minutes ago or more (gap 4). */
+	noProgressSince(staffAgentId: string | undefined): string | undefined {
+		const row = this.activityFor(staffAgentId);
+		return row?.activity === "working" && row.jobStatus === "leased" ? row.noProgressSince : undefined;
+	}
+
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
 		const row = this.activityFor(staffAgentId);
 		if (!row || !isFailedRun(row)) return undefined;
