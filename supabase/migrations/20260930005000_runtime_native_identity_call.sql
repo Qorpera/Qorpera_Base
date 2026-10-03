@@ -22,7 +22,8 @@
 --    is that list and record), never the identity's recovery state or vault custody. Whatever the call,
 --    p_compute_identity_id and p_recovery_epoch must be the identity's, p_login_id the allocation's sign-in and
 --    p_request_id its account refresh; a sign-in or refresh call's capability must be that sign-in's or refresh's, and
---    a sign-in's capsule reference the native host's own (native-capsule/<capsule id>).
+--    a sign-in's capsule reference the native host's own (native-capsule/<capsule id>, the id in lower-case canonical
+--    form, as the host's account list reads it back).
 -- 4. It calls the one public function of that name as G2-1's entry point does (qorpera_native_host_invoke: named plain
 --    inputs, values through USING, as the platform's service caller on the function's own RPC path, no handler), with
 --    authenticator's 8 s statement and lock budgets.
@@ -206,7 +207,8 @@ begin
 				where login.id = v_allocation.login_session_id and login.compute_identity_id = p_compute_identity_id
 					and login.capability_sha256 = p_args ->> 'p_capability_sha256')
 				and (p_name <> 'qorpera_complete_native_provider_login'
-					or p_args ->> 'p_encrypted_capsule_reference' = 'native-capsule/' || (p_args ->> 'p_capsule_id'))
+					or (p_args ->> 'p_capsule_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+						and p_args ->> 'p_encrypted_capsule_reference' = 'native-capsule/' || (p_args ->> 'p_capsule_id')))
 			when 'account_refresh' then p_args ? 'p_request_id' and exists (
 				select 1 from public.qorpera_native_account_refresh_requests as request
 				where request.id = v_allocation.account_refresh_request_id and request.compute_identity_id = p_compute_identity_id

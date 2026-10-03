@@ -293,6 +293,14 @@ begin
 		'refused', 'a sign-in completed with another capsule''s reference');
 	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
 		v_args - 'p_encrypted_capsule_reference'), 'refused', 'a sign-in completed with no capsule reference');
+	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
+		v_args || jsonb_build_object('p_capsule_id', '86000000-0000-4000-8000-0000000000AB',
+			'p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-0000000000AB')),
+		'refused', 'a sign-in completed with an upper-case capsule id');
+	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
+		v_args || jsonb_build_object('p_capsule_id', '00000000-0000-0000-0000-000000000000',
+			'p_encrypted_capsule_reference', 'native-capsule/00000000-0000-0000-0000-000000000000')),
+		'refused', 'a sign-in completed with the nil capsule id');
 	v_outcome := pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login', v_args);
 	if v_direct is null or v_outcome not like 'ok:%' or (substr(v_outcome, 4)::jsonb - 'connection_id') <> (v_direct - 'connection_id') then
 		raise exception 'a sign-in completed through the entry point differs: % vs %', v_outcome, v_direct; end if;
