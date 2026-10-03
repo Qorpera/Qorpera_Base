@@ -71,12 +71,25 @@ end $$;
 select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'f2b-race-todos', jsonb_build_array(
 	pg_temp.todo('agents/ada/todos/race-one.md', 'open'), pg_temp.todo('agents/ada/todos/race-two.md', 'open'))), 2, 'saved') \g /dev/null
 
+-- Each race's staged files, its done and its recorded review, committed before the block that drives the fences: a
+-- row this session wrote and has not committed would make the other sessions wait on it while it waits on them.
+select set_config('qorpera_test.b1', pg_temp.brief('84100000-0000-4000-8000-000000000101')::text, false) \g /dev/null
+select set_config('qorpera_test.u1', pg_temp.dispatch('agents/ada/todos/race-one/worker', current_setting('qorpera_test.b1')::jsonb)::text,
+	false) \g /dev/null
+select set_config('qorpera_test.r1', pg_temp.reviewed('f2b-race-call-1', current_setting('qorpera_test.u1')::jsonb)::text, false) \g /dev/null
+select set_config('qorpera_test.d1', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-one.md', 'done'))::text, false) \g /dev/null
+select set_config('qorpera_test.b2', pg_temp.brief('84100000-0000-4000-8000-000000000102')::text, false) \g /dev/null
+select set_config('qorpera_test.u2', pg_temp.dispatch('agents/ada/todos/race-two/worker', current_setting('qorpera_test.b2')::jsonb)::text,
+	false) \g /dev/null
+select set_config('qorpera_test.r2', pg_temp.reviewed('f2b-race-call-2', current_setting('qorpera_test.u2')::jsonb)::text, false) \g /dev/null
+select set_config('qorpera_test.d2', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-two.md', 'done'))::text, false) \g /dev/null
+
 -- A. A done holds the todo; a dispatch on it waits at the todo's row, then meets a closed todo -------------------------
 do $$
 declare
-	f text := 'agents/ada/todos/race-one/worker'; b jsonb := pg_temp.brief('84100000-0000-4000-8000-000000000101');
-	u jsonb := pg_temp.dispatch(f, b); v_review uuid := pg_temp.reviewed('f2b-race-call-1', u);
-	d jsonb := jsonb_build_array(pg_temp.todo('agents/ada/todos/race-one.md', 'done')); r jsonb;
+	f text := 'agents/ada/todos/race-one/worker'; b jsonb := current_setting('qorpera_test.b1')::jsonb;
+	u jsonb := current_setting('qorpera_test.u1')::jsonb; v_review uuid := current_setting('qorpera_test.r1')::uuid;
+	d jsonb := current_setting('qorpera_test.d1')::jsonb; r jsonb;
 begin
 	perform dblink_exec('fence_one', 'begin');
 	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_done('f2b-race-done-1', d)) as t(x text));
@@ -87,7 +100,7 @@ begin
 		raise exception 'The dispatch must queue on the todo, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
-	if r -> 'units' -> 1 ->> 'outcome' <> 'refused' or r -> 'units' -> 1 -> 'problems' -> 0 ->> 'message' not like 'the todo is closed%' then
+	if r -> 'units' -> 1 ->> 'outcome' is distinct from 'refused' or r -> 'units' -> 1 -> 'problems' -> 0 ->> 'message' not like 'the todo is closed%' then
 		raise exception 'A dispatch behind a done: %', r; end if;
 	if exists (select 1 from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000101') then
 		raise exception 'A done todo has a worker'; end if;
@@ -96,9 +109,9 @@ end $$;
 -- B. A dispatch holds the todo; a done of it waits, then meets the worker at work ----------------------------------------
 do $$
 declare
-	f text := 'agents/ada/todos/race-two/worker'; b jsonb := pg_temp.brief('84100000-0000-4000-8000-000000000102');
-	u jsonb := pg_temp.dispatch(f, b); v_review uuid := pg_temp.reviewed('f2b-race-call-2', u);
-	d jsonb := jsonb_build_array(pg_temp.todo('agents/ada/todos/race-two.md', 'done')); r jsonb;
+	f text := 'agents/ada/todos/race-two/worker'; b jsonb := current_setting('qorpera_test.b2')::jsonb;
+	u jsonb := current_setting('qorpera_test.u2')::jsonb; v_review uuid := current_setting('qorpera_test.r2')::uuid;
+	d jsonb := current_setting('qorpera_test.d2')::jsonb; r jsonb;
 begin
 	perform dblink_exec('fence_one', 'begin');
 	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_dispatch('f2b-race-dispatch-2', f, b, u, v_review)) as t(x text));
@@ -109,10 +122,10 @@ begin
 		raise exception 'The done must queue on the todo, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
-	if r -> 'units' -> 0 ->> 'outcome' <> 'refused' or r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like 'a worker is still at work%' then
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'refused' or r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like 'a worker is still at work%' then
 		raise exception 'A done behind a dispatch: %', r; end if;
-	if (select state from public.qorpera_runtime_agent_todos where id = md5('agents/ada/todos/race-two.md')::uuid) <> 'open'
-		or (select state from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000102') <> 'active' then
+	if (select state from public.qorpera_runtime_agent_todos where id = md5('agents/ada/todos/race-two.md')::uuid) is distinct from 'open'
+		or (select state from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000102') is distinct from 'active' then
 		raise exception 'The todo stays open with its worker at work'; end if;
 end $$;
 
