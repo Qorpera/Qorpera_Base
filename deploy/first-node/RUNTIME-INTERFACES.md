@@ -281,7 +281,7 @@ id = "<uuid>"                       # required
 name = "Areas"                      # required; 1–60 characters
 about = "…"                         # optional; at most 280 characters
 rows = "file"                       # required; "file" (v0); "store" is refused until the table store exists
-key = ["area"]                      # required; 1–3 columns that make a row unique
+key = ["area"]                      # required; 1–3 columns that make a row unique; never optional, never a number
 holder = "owner"                    # optional; a needs_yes member column; the board's lanes
 time = "at"                         # optional; the column `since` and charts use
 
@@ -479,7 +479,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
      - at most 32,768 rows, and at most 65,536 bytes of fields in all.
 
      A file within 64 KiB never exceeds these, so the client and the database answer the same bytes the same way;
-   - **`interface`**, shallow (agreed with F2, 3 October): closed top-level keys, with `format`, `id`, `name`, `main`
+   - **`interface`**, shallow (agreed with F2, 3 October): closed top-level keys, with `kind`, `id`, `name`, `main`
      and `access.edit` typed, and the rest by JSON type and size. SQL can't prove a parse came from its text, so the
      readers never trust the stored parse (§10, I7 and I8), and a later slice that reads or indexes a field adds its
      full check.
@@ -502,7 +502,8 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    - the main interface's folder can't be deleted or moved while it is main.
 
    A switch is two units, in this order: the old main set to `false`, then the new one set to `true`.
-   `save_interface` and the web send them so; the other order refuses the second unit and leaves none. The seed has
+   `save_interface` and the web send them so. In the other order the new main's unit is refused (it would leave two),
+   the old main's unit lands, and none is left. The seed has
    exactly one main (Pulse).
 4. **Owners-only interfaces** (`owners`): while an interface's stored parse has `access.edit = "owners"`, only an owner
    or admin (or the platform) changes, moves or deletes anything in its folder: `interface.toml`, `README.md` and the
