@@ -710,6 +710,14 @@ agent set it up) or an owner or admin. With several runs live, the Stop names
 one the member may stop, the working one first. Before this amendment the Stop
 only reached a member's turns in a plain conversation.
 
+2026-10-03 amendment (session-buildup audit gap 4b): a worker's own run can be
+stopped too, though it has no conversation. Owners and admins may stop it, and
+so may the member whose work dispatched the worker (the run's creator), by the
+same rule and the same stop, which records who stopped it. The member is told
+when a run makes no progress for 15 minutes; nothing stops a run by itself. The
+parent hears that a member stopped the work. A Company Computer start is still
+not stopped here.
+
 ### 7.4 Ceilings and brake
 
 Intelligence is not deterministic, so the kernel bounds the damage a loop can

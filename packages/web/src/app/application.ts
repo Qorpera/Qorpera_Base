@@ -846,6 +846,7 @@ export function mountApplication(
 				() => main.focus({ preventScroll: true }),
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
+				api,
 			);
 			executionNotices.append(notices.el);
 		}
