@@ -484,8 +484,9 @@ they answer 42501 "native host call is refused".
 ### Founding lobby (20260928248200_company_founding_lobby)
 
 A founding team starts one company together. The table is a company row with
-its members; nothing else exists until Start (no Company File, Co-Founder or
-wake), so no agent runs and nothing is charged before it.
+its members and an empty company folder (no seeded files); nothing else exists
+until Start (no Co-Founder or first run), so no agent runs and nothing is
+charged before it (20260930010000).
 
 - `qorpera_company_founding_available()` → boolean. False until new companies
   are created on the company folder; until then the hub keeps
@@ -500,7 +501,11 @@ wake), so no agent runs and nothing is charged before it.
   `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
   `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
   (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
-  `startedByUserId`, `revision`, `clientStartId`, `companyReady`) once started.
+  `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
+  `companySetup`) once started. `companySetup` is `pending` while the company
+  is set up, `ready` once it is (then `companyReady` is true), or `failed` when
+  setup stopped and waits for Qorpera, or the company was deleted before it was
+  set up; a failed setup keeps the company hidden.
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and
@@ -530,10 +535,17 @@ wake), so no agent runs and nothing is charged before it.
   the table becomes `owner`, unanswered invitations are withdrawn, and the
   description and roles become the company's first files (`vision/vision.md`
   and the Co-Founder's first todo). The first run is paid by the caller's own
-  account.
+  account, read again when the company is set up: with no usable account then,
+  the Co-Founder's first run waits until its starter starts it
+  (`qorpera_start_agent_first_run`).
 - While a table is open, members join only through a seat, email invitations
   are refused and roles do not change; `qorpera_list_hosted_profiles` leaves it
-  out.
+  out, and after Start until `companySetup` is `ready`. The founder who pressed
+  Start cannot leave or step down while setup is `pending` (`42501`, as for any
+  company being set up); a `failed` setup holds nobody.
+- A company name is one line: opening a table, or starting one, with a name
+  that holds a control character or a line separator is refused (`22023`);
+  rename the table, then start it.
 
 ### Mentions (20260928010000_runtime_room_mentions)
 
