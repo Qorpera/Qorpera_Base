@@ -21,6 +21,9 @@
 --    and its worker FOR NO KEY UPDATE. No company-wide lock.
 -- Every patched body carries the marker 20260930003000 for the deploy guard.
 
+-- The worker table is read and written by every run: never queue its readers behind this migration.
+set local lock_timeout = '3s';
+
 -- A second run stops here, before anything changes.
 do $$ begin
 	if exists (select 1 from pg_catalog.pg_attribute where attrelid = 'public.qorpera_runtime_workers'::regclass
