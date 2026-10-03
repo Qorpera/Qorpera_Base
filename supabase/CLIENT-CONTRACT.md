@@ -421,10 +421,11 @@ they answer 42501 "native host call is refused".
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
-### Execution, sponsors, runners, computers (29)
+### Execution, sponsors, runners, computers (31)
 
 - `qorpera_begin_operation_receipt`
 - `qorpera_cancel_runner_job`
+- `qorpera_cancel_worker_run(p_run_id)` — a member's Stop of an in-house worker's own run (no conversation), by run id: the job's creator (the member whose work dispatched the worker) or an owner or admin, through `qorpera_cancel_runner_job`; returns the control below (20260930002800)
 - `qorpera_complete_operation_receipt`
 - `qorpera_configure_runner_model_policy`
 - `qorpera_create_execution_sponsor_binding`
@@ -433,6 +434,7 @@ they answer 42501 "native host call is refused".
 - `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
+- `qorpera_get_worker_run_control(p_run_id)` — `{run_id, status, can_cancel}` of an in-house worker's own run, for any member who can read the company; `can_cancel` is the Stop's rule (20260930002800). A `run_no_progress` member notice names such a run with `worker: true`
 - `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is: `run.requested_by_user_id`, whom a plan-paid run always serves; 20260928379930)
 - `qorpera_list_compute_identities`
 - `qorpera_list_execution_run_recoveries`
@@ -550,6 +552,24 @@ wake), so no agent runs and nothing is charged before it.
   `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
   caller's mentions in a conversation seen. The author is never told about
   their own post.
+
+### Quotes in a member's message (20260930000100_member_message_quotes)
+
+Contract: the 2026-10-02 amendment "quoted outside content in a member's message" (step I5d, part 1).
+
+- A `qorpera.session-prompt/v1` body may carry `quotes`, a list of 1 to 16 spans `{start, end, source, ref}` of its
+  `text`, both for `qorpera_append_session_input` (and the turn requests that call it) and for
+  `qorpera_post_company_room_message`.
+  - `start` and `end` are whole numbers counting characters (Unicode code points) from 0, with `end` excluded.
+  - Each span sits just inside « and »; spans are in order, apart, and 1 to 2,000 characters long.
+  - `source` is `mail`, and `ref` is a thread id that `qorpera_member_mail_thread` shows the member, never account
+    mail.
+  - A body with `quotes` carries no `displayText`. Leave `quotes` out when there are none: an empty list is refused.
+- Every refusal is 22023, after the membership and write checks and before any lock. An unknown, foreign or
+  account-mail `ref` reads the same way, whether or not it exists.
+- The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
+- A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
+  quoted message waits: only a cloud run fences one.
 
 ### Computer hours (20260928248000_runtime_computer_hours_meter)
 
