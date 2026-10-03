@@ -212,3 +212,45 @@ do $$ begin
 		"requester_id":"63000000-0000-4000-8000-000000000002"}')), '{"kind":"agent","staffAgentId":"63000000-0000-4000-8000-0000000000a1"}',
 		'an agent''s commit');
 end $$;
+
+-- The shapes a member client parses with closed key sets (P27b): each answer's keys on the real functions.
+create function pg_temp.shape(p jsonb, p_keys text, p_what text) returns void language plpgsql as $$
+begin
+	if jsonb_typeof(p) is distinct from 'object'
+		or array(select k collate "C" from jsonb_object_keys(p) k order by 1)
+			is distinct from array(select k collate "C" from unnest(string_to_array(p_keys, ',')) k order by 1) then
+		raise exception 'The client reads % as {%}; SQL returned %', p_what, p_keys, p;
+	end if;
+end $$;
+select pg_temp.as_member(2);
+do $$
+declare v jsonb; v_item jsonb;
+begin
+	v := pg_temp.path_history('notes/log.txt');
+	perform pg_temp.shape(v, 'asOfSeq,items,next,schema', 'a path history page');
+	perform pg_temp.shape(v -> 'items' -> 0,
+		'at,by,bytes,executable,fileSha256,kind,manifestSha256,mediaType,op,path,seq,version', 'a file version');
+	perform pg_temp.shape(pg_temp.path_history('notes/secret.txt') -> 'items' -> 0,
+		'at,by,bytes,executable,fileSha256,from,kind,manifestSha256,mediaType,op,path,seq,version', 'a move in');
+	perform pg_temp.shape(pg_temp.path_history('locked/secret.txt') -> 'items' -> 0,
+		'at,by,bytes,executable,fileSha256,kind,manifestSha256,mediaType,op,path,seq,to,version', 'a move out');
+	perform pg_temp.shape(pg_temp.path_history('papers/a.txt') -> 'items' -> 0, 'at,by,kind,op,path,seq,version',
+		'a delete');
+	perform pg_temp.shape(pg_temp.path_history('notes') -> 'items' -> 0, 'at,by,kind,op,path,seq,version', 'a mkdir');
+	v := pg_temp.history(null, 3);
+	perform pg_temp.shape(v, 'asOfSeq,items,next,schema', 'a history page');
+	perform pg_temp.shape(v -> 'items' -> 0, 'at,by,more,paths,seq', 'a change set');
+	perform pg_temp.shape(v -> 'items' -> 0 -> 'paths' -> 0, 'kind,op,path,version', 'a change set''s path');
+	perform pg_temp.shape(v -> 'items' -> 0 -> 'by', 'kind', 'the platform');
+	perform pg_temp.shape(pg_temp.history(11, 1) -> 'items' -> 0 -> 'by', 'kind,userId', 'a member');
+	v := public.qorpera_member_folder_changes('63000000-0000-4000-8000-000000000020', 6, 2);
+	perform pg_temp.shape(v, 'asOfSeq,events,more,next,resync,schema', 'a feed page');
+	perform pg_temp.shape(v -> 'next', 'afterSeq,cursor', 'a feed position');
+	for v_item in select e.value from jsonb_array_elements(v -> 'events') e loop
+		if v_item ->> 'kind' = 'authority' then perform pg_temp.shape(v_item, 'kind,seq', 'an authority event');
+		else perform pg_temp.shape(v_item, 'at,by,changes,commitId,kind,seq', 'a change set event'); end if;
+	end loop;
+	perform pg_temp.same((select count(*) from jsonb_array_elements(v -> 'events') e where e.value ->> 'kind' = 'authority')::text,
+		'1', 'the page holds the authority row');
+end $$;
+select pg_temp.claims('service_role');
