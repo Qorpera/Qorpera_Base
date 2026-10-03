@@ -4,6 +4,8 @@ import {
 	buildContainerName,
 	expandTestFixture,
 	POSTGRES_IMAGE,
+	parseArguments,
+	selectTests,
 	sortMigrationNames,
 } from "./test-hosted-db.mjs";
 import {
@@ -122,4 +124,20 @@ test("a script attaches only to a hosted-db container with valid snapshot names"
 	assert.throws(attach({ container: "production-db", snapshots: [] }), /Invalid hosted database container/);
 	assert.throws(attach({ container: "qorpera-hosted-db-42-0123abcd", snapshots: [{ applied: 1, database: "x;y" }] }), /Invalid hosted database name/);
 	assert.throws(attach({ container: "qorpera-hosted-db-42-0123abcd", snapshots: [{ applied: -1, database: "x" }] }), /Invalid hosted database snapshot/);
+});
+
+test("--only keeps the named tests in order and refuses a value that matches none", () => {
+	assert.deepEqual(parseArguments([]), { withScripts: false, only: null });
+	assert.deepEqual(parseArguments(["--scripts", "--only", "811,818"]), { withScripts: true, only: ["811", "818"] });
+	assert.deepEqual(parseArguments(["--only=811_folder_company_search"]), {
+		withScripts: false,
+		only: ["811_folder_company_search"],
+	});
+	for (const bad of [["--only"], ["--only", ""], ["--only", "811", "--only", "818"], ["--only", "../x"], ["--quick"]])
+		assert.throws(() => parseArguments(bad), /Usage/);
+	const tests = ["001_a.test.sql", "811_search.test.sql", "818_race.test.sql", "8180_other.test.sql"];
+	assert.equal(selectTests(tests, null), tests);
+	assert.deepEqual(selectTests(tests, ["818_", "001"]), ["001_a.test.sql", "818_race.test.sql"]);
+	assert.deepEqual(selectTests(tests, ["818"]), ["818_race.test.sql", "8180_other.test.sql"]);
+	assert.throws(() => selectTests(tests, ["811", "999"]), /No hosted database test starts with: 999/);
 });

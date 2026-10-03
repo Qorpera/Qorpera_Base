@@ -12,7 +12,12 @@ SQL and PostgreSQL script tests run on the operator test machine, not on a Mac
 ```sh
 node scripts/run-on-node.mjs hosted-db                       # migrations + SQL tests
 node scripts/run-on-node.mjs --install hosted-db -- --scripts  # also the PostgreSQL scripts (what `changed` runs)
+node scripts/run-on-node.mjs hosted-db -- --only 811,818       # every migration, then only the tests starting 811 or 818
 ```
+
+`--only` is for trying your own tests while you work. It still replays every migration, but skips the other
+tests, and a narrowed run never posts the suite's status on the commit. A hand-off still needs `changed`.
+Never run PostgreSQL, Docker or the tests on a Mac.
 
 One run starts one PostgreSQL and replays the migrations once, in one `psql` process that opens a fresh
 session for every file. It keeps a copy of the database at the points the scripts start from (the scripts
