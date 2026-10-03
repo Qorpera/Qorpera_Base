@@ -313,7 +313,6 @@ describe(
 		// br_netfilter is loaded on our nodes, so bridged traffic between two guests reaches the guard there.
 		// The test machine does not load it; QORPERA_GUEST_GUARD_TEST_BR_NETFILTER=1 loads it for this run.
 		let brNetfilter = false;
-		let loadedBrNetfilter = false;
 		let dhcpSeen = [];
 		let nodeNfsPort = 0;
 		const sh = (cmd) => {
@@ -543,9 +542,10 @@ except Exception:
 		};
 
 		before(async () => {
+			// Loaded for good, never unloaded: `modprobe -r br_netfilter` also unloads the `bridge` module when nothing
+			// else holds it, and that destroys every bridge in every namespace of the machine (docker0 included).
 			if (process.env.QORPERA_GUEST_GUARD_TEST_BR_NETFILTER === "1" && !existsSync("/proc/sys/net/bridge")) {
 				sh("modprobe br_netfilter");
-				loadedBrNetfilter = true;
 			}
 			for (const name of Object.values(ns)) sh(`ip netns add ${name} && ip -n ${name} link set lo up`);
 			const { node, guest, guest2, coding, lan, tail } = ns;
@@ -636,7 +636,6 @@ except Exception:
 				child.kill("SIGKILL");
 			}
 			for (const name of Object.values(ns)) spawnSync("ip", ["netns", "del", name]);
-			if (loadedBrNetfilter) spawnSync("modprobe", ["-r", "br_netfilter"]);
 			rmSync(state, { recursive: true, force: true });
 		});
 

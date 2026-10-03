@@ -218,7 +218,9 @@ root part. Run it on the test machine with:
 node scripts/run-on-node.mjs --sudo --no-install --env QORPERA_GUEST_GUARD_TEST_BR_NETFILTER=1 -- node --test deploy/guest-guard/qorpera-guest-guard.test.mjs
 ```
 
-The variable loads br_netfilter for the run (the test machine does not load it) and unloads it afterwards.
+The variable loads br_netfilter for the run (the test machine does not load it) and leaves it loaded: unloading it with
+`modprobe -r` also unloads the `bridge` module when nothing else holds it, which destroys every bridge on the machine
+(docker0 included; it happened on 3 October).
 
 ## The NAS (for Jonas, in DSM)
 

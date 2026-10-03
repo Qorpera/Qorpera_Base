@@ -23,6 +23,7 @@ shopt -s inherit_errexit
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 exit_rules=${QORPERA_AGENT_EXIT_RULES:-$here/qorpera-agent-exit.nft}
 host_rules=${QORPERA_AGENT_EXIT_HOST_RULES:-$here/qorpera-agent-exit-host.nft}
+bridge_rules=${QORPERA_AGENT_EXIT_BRIDGE_RULES:-$here/qorpera-agent-exit-bridge.nft}
 logger=${QORPERA_AGENT_EXIT_LOGGER:-$here/qorpera-agent-exit-log.py}
 plug_tool=${QORPERA_AGENT_EXIT_PLUG:-$here/qorpera-agent-plug.py}
 upstreams=${QORPERA_AGENT_EXIT_UPSTREAMS:-9.9.9.9 1.1.1.1}
@@ -38,6 +39,7 @@ UP_NODE=10.209.255.1
 UP_EXIT=10.209.255.2
 EXIT_TABLE="inet qorpera_agent_exit"
 HOST_TABLE="inet qorpera_agent_exit_host"
+BRIDGE_TABLE="bridge qorpera_agent_exit_bridge"
 # Leases are short so an address the agent plug quarantines (15 minutes) is free again before it is reused.
 LEASE=10m
 # Machine creators in this group may plug machines in (qorpera-agent-plug.py plug); everyone else only reads.
@@ -68,14 +70,27 @@ table_batch() {
 	cat -- "$file" || die "cannot read $file"
 }
 
+# The bridge rules come with their sets filled from the client map, in the same transaction: a reload never leaves
+# a plugged machine without its address for a moment.
+bridge_batch() {
+	local elements
+	elements=$(python3 "$plug_tool" elements --state-dir "$state_dir" --run-dir "$run_dir" --log-dir "$log_dir") ||
+		die "cannot read the client map"
+	table_batch "$BRIDGE_TABLE" "$bridge_rules"
+	[[ -z $elements ]] || printf '%s\n' "$elements"
+}
+
 load_tables() {
-	local exit_text host_text
+	local exit_text host_text bridge_text
 	exit_text=$(table_batch "$EXIT_TABLE" "$exit_rules")
 	host_text=$(table_batch "$HOST_TABLE" "$host_rules")
+	bridge_text=$(bridge_batch)
 	in_exit nft -c -f /dev/stdin <<<"$exit_text"
 	nft -c -f /dev/stdin <<<"$host_text"
+	nft -c -f /dev/stdin <<<"$bridge_text"
 	in_exit nft -f /dev/stdin <<<"$exit_text"
 	nft -f /dev/stdin <<<"$host_text"
+	nft -f /dev/stdin <<<"$bridge_text"
 }
 
 # The node never routes into or out of the agents' bridge, never answers ARP there, and has no IPv6 on the exit's
@@ -89,7 +104,8 @@ host_link_settings() {
 # The client map and the leases: creators in the plug group add files (setgid keeps the group, the sticky bit keeps
 # one creator from removing another's); only the reconciler, as root, removes them. dnsmasq reads the leases.
 state_dirs() {
-	install -d -m 0755 "$run_dir" "$state_dir" "$state_dir/quarantine" "$state_dir/seen" "$run_dir/plug-stopped"
+	install -d -m 0755 "$run_dir" "$state_dir" "$state_dir/quarantine" "$state_dir/seen" "$state_dir/verified" \
+		"$run_dir/plug-stopped" "$run_dir/plug-missing" "$run_dir/plug-unflushed" "$run_dir/plug-noted"
 	install -d -m 0750 "$log_dir"
 	local dir
 	for dir in "$state_dir/clients" "$state_dir/dhcp-hosts"; do
@@ -186,9 +202,16 @@ down() {
 		for pid in $(ip netns pids "$NS"); do kill -9 "$pid" 2>/dev/null || true; done
 	fi
 	if has_ns; then ip netns del "$NS"; fi
-	for link in qx-br qx-up "$BRIDGE"; do if has_link "$link"; then ip link del "$link"; fi; done
+	# The veths go with the namespace, a moment after it: wait for them, and never stop half way on one that vanished
+	# between the check and the delete (the bridge and the node's rules would stay).
+	for link in qx-br qx-up; do
+		for _ in $(seq 1 25); do has_link "$link" || break; sleep 0.2; done
+		if has_link "$link"; then ip link del "$link" 2>/dev/null || ! has_link "$link" || die "cannot remove $link"; fi
+	done
+	if has_link "$BRIDGE"; then ip link del "$BRIDGE"; fi
 	# The node's rules go last, after the links they guard.
 	if nft list table $HOST_TABLE >/dev/null 2>&1; then nft delete table $HOST_TABLE; fi
+	if nft list table $BRIDGE_TABLE >/dev/null 2>&1; then nft delete table $BRIDGE_TABLE; fi
 	echo "qorpera-agent-exit: down"
 }
 
@@ -243,6 +266,7 @@ verify() {
 			problems+=("the name service runs in an old namespace")
 	fi
 	nft list table $HOST_TABLE >/dev/null 2>&1 || problems+=("node rules not loaded")
+	nft list table $BRIDGE_TABLE >/dev/null 2>&1 || problems+=("bridge rules not loaded")
 	heartbeat="$run_dir/logger.heartbeat"
 	if [[ -e $heartbeat ]]; then
 		age=$(($(date +%s) - $(stat -c %Y "$heartbeat")))
@@ -307,6 +331,7 @@ case "${1:-}" in
 check)
 	table_batch "$EXIT_TABLE" "$exit_rules" | nft -c -f /dev/stdin
 	table_batch "$HOST_TABLE" "$host_rules" | nft -c -f /dev/stdin
+	table_batch "$BRIDGE_TABLE" "$bridge_rules" | nft -c -f /dev/stdin
 	python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$logger" "$plug_tool" ||
 		die "the logger or the plug tool does not parse"
 	for tool in dnsmasq conntrack python3; do command -v "$tool" >/dev/null || die "missing $tool (packages: dnsmasq-base, conntrack, python3)"; done

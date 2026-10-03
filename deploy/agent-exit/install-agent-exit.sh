@@ -5,14 +5,15 @@
 # has the switch-on steps.
 set -euo pipefail
 
-EXPECTED_TOOL_SHA256="45b004889525a1aa13226f323c7059796c7d7d0499065ad3d480f8e8efd14f4a"
+EXPECTED_TOOL_SHA256="b1a1bcc778beb5b372cbe28669a4de5413925925047c9c62bf51174c88d4878d"
 EXPECTED_EXIT_RULES_SHA256="6b634832005cc66180575879bdbdc3b4d5ef7c5041bc8162132b023b2f0dcabc"
 EXPECTED_HOST_RULES_SHA256="dfed89e5a20df13c3d78149e5b11a73bcda1adda850b7bb2049e6f0d1dd36afd"
+EXPECTED_BRIDGE_RULES_SHA256="97a3ad0fd1ab14b527a9d4ebd9caedd6b469c3a67246e735c9e2fa0dbe177569"
 EXPECTED_LOGGER_SHA256="4e3928069027f2dfe0ffc2703414c63e58ce9814bb5a7592b86f23b2f9f67bde"
 EXPECTED_UNIT_SHA256="636aac78c4cb5a50f45b24ca1d1b008762839b8e12830459c4a609afc837dbb3"
 EXPECTED_DNS_UNIT_SHA256="e8c58a5da2586633159592358546caf7abd1462ddec069ddb0d72baa458b37c5"
 EXPECTED_LOG_UNIT_SHA256="53f75dfda39d62df68f2c48c1ebe17a6f2cd6bf90094e57670b00458a9ce7b63"
-EXPECTED_PLUG_SHA256="ae7a9053b83d62038dfd17ff87de38e950df42d26933fec309f4633df986435d"
+EXPECTED_PLUG_SHA256="5dbec95d533823200091df825a597db0f32afb1d4771bdb71828f5ea0442e8e8"
 EXPECTED_PLUG_UNIT_SHA256="4abfe51bb6ec5723815dbd3384f16abe849ed404d6be0b1858b202f51accbf89"
 EXPECTED_HEALTH_UNIT_SHA256="a048a3a71baa7afbc477df027e7109926ddcb33fea5f391ea3164aa1659a4f09"
 EXPECTED_HEALTH_TIMER_SHA256="6abd734ac5e7bcc9f0370bdf1bcdf722fc3123ffdd6fc8bd4f808c9001ab27b3"
@@ -39,6 +40,7 @@ pin() {
 pin qorpera-agent-exit.sh "$EXPECTED_TOOL_SHA256"
 pin qorpera-agent-exit.nft "$EXPECTED_EXIT_RULES_SHA256"
 pin qorpera-agent-exit-host.nft "$EXPECTED_HOST_RULES_SHA256"
+pin qorpera-agent-exit-bridge.nft "$EXPECTED_BRIDGE_RULES_SHA256"
 pin qorpera-agent-exit-log.py "$EXPECTED_LOGGER_SHA256"
 pin qorpera-agent-exit.service "$EXPECTED_UNIT_SHA256"
 pin qorpera-agent-exit-dns.service "$EXPECTED_DNS_UNIT_SHA256"
@@ -52,6 +54,7 @@ install -d -m 0755 "$INSTALL_ROOT"
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit.sh" "$INSTALL_ROOT/qorpera-agent-exit.sh"
 install -m 0644 "$SOURCE_ROOT/qorpera-agent-exit.nft" "$INSTALL_ROOT/qorpera-agent-exit.nft"
 install -m 0644 "$SOURCE_ROOT/qorpera-agent-exit-host.nft" "$INSTALL_ROOT/qorpera-agent-exit-host.nft"
+install -m 0644 "$SOURCE_ROOT/qorpera-agent-exit-bridge.nft" "$INSTALL_ROOT/qorpera-agent-exit-bridge.nft"
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit-log.py" "$INSTALL_ROOT/qorpera-agent-exit-log.py"
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-plug.py" "$INSTALL_ROOT/qorpera-agent-plug.py"
 for unit in qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \

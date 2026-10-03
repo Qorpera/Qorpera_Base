@@ -1,0 +1,43 @@
+# Qorpera agent exit (E2): the agents' bridge's own rules (bridge family, on the node). LXD's MAC filter keeps each
+# machine's port to its own MAC, its IPv6 filter drops all of a machine's IPv6, and port isolation keeps machines
+# apart. These rules tie each MAC to its address: from a machine's port a frame passes only as ARP or IPv4 from a MAC
+# and address pair in the client map, or as a DHCP request from a client map MAC. LXD's own IPv4 filter cannot do it
+# here: its forward chain has no DHCP exception, so on a bridge LXD does not manage it drops every DHCP request on its
+# way to the exit. The node takes nothing from the bridge (it has no address there).
+#
+# Load it with qorpera-agent-exit.sh, which fills the sets from the client map in the same transaction; the plug's
+# reconciler keeps them equal to it (qorpera-agent-plug.py). The same file runs on every node.
+
+table bridge qorpera_agent_exit_bridge {
+	set clients {
+		type ether_addr . ipv4_addr
+		size 65536
+	}
+
+	set client_macs {
+		type ether_addr
+		size 65536
+	}
+
+	counter dropped_unbound {
+	}
+
+	counter dropped_to_node {
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 5; policy accept;
+		meta ibrname != "qagent0" accept
+		# The exit's own port.
+		iifname "qx-br" accept
+		ether type arp ether saddr . arp saddr ip @clients accept
+		ether type ip ether saddr . ip saddr @clients accept
+		ether type ip ip saddr 0.0.0.0 ip daddr 255.255.255.255 udp sport 68 udp dport 67 ether saddr @client_macs accept
+		counter name "dropped_unbound" drop
+	}
+
+	chain input {
+		type filter hook input priority filter - 5; policy accept;
+		meta ibrname "qagent0" counter name "dropped_to_node" drop
+	}
+}

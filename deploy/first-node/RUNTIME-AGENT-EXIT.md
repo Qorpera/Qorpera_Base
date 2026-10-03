@@ -38,7 +38,7 @@ when they act for an agent.
 | Company Computer shells, terminal, desktop | agent | #411's per-screen namespaces route out of the agent plug (§6) |
 | Agents' own machines | agent | their only network card is an agent plug |
 | Coding machines: git, registries, websites | agent | their only network card is an agent plug |
-| Coding machines: AI sign-in and model traffic | platform | the provider door (§5) |
+| Coding turns: AI sign-in and model traffic | platform | the model program runs on the execution host: the existing model relay (§5) |
 | Chat turns on execution hosts (light threads) | platform | no commands; the existing model relay |
 | Vault, official connections, sign-in helper, coding pushes, mail | platform | node host and mail provider |
 | Database, object gateway, Tailscale | platform | as today |
@@ -112,11 +112,12 @@ lines (§7). When the kernel drops events under load, conntrack says so, and the
   plug's reconciler, §4, after LXD), wanted by it and ordered after it, but not bound to it.
 - `qorpera-agent-exit-health.timer` runs `verify` every 10 seconds and writes its answer for the node observer.
 - The coordinator installs them with `deploy/agent-exit/install-agent-exit.sh`, and they stay disabled until a node
-  is switched on. With a machine plugged in, stopping the exit's unit fails and changes nothing: the name and log
-  services are not bound to it and keep running. The unit is then marked failed; `systemctl start` brings it back
-  in place. The undo, with nothing plugged in: disable and stop the exit's unit (its stop also stops the name and log
-  services), then disable those two. They are never stopped by name while a machine is plugged in, because traffic
-  would then flow without names and without the log.
+  is switched on. With a machine plugged in (in the client map, running or asleep), stopping the exit's unit fails
+  and changes nothing: the name, log and plug services are not bound to it and keep running. The unit is then marked
+  failed; `systemctl start` brings it back in place. The undo, with nothing plugged in: disable and stop the health
+  timer and the exit's unit (its stop also stops the name, log and plug services), then disable those three. They
+  are never stopped by name while a machine is plugged in, because traffic would then flow without names and without
+  the log, and nothing would flush or unplug machines.
 - Packages: `dnsmasq-base`, `conntrack` and `python3` (no services of their own).
 
 **Boot.** The exit's unit is ordered before LXD, so the bridge exists before LXD starts a machine that plugs into
@@ -141,10 +142,17 @@ healthy exit (E2).
 ## 4. The agent plug (E2)
 
 - An LXD NIC with `nictype: bridged` and `parent: qagent0`. It has `security.mac_filtering`,
-  `security.ipv4_filtering`, `security.ipv6_filtering` and `security.port_isolation`, `ipv6.address: none`, a
-  static `ipv4.address` from the node's pool in `10.210.0.0/16`, and a `hwaddr` made from that address
-  (`0e:51:` and the address's four bytes, a locally administered MAC). LXD needs the fixed address to filter IPv4
-  on a bridge it does not manage, so the address is part of the machine's config for its whole life.
+  `security.ipv6_filtering` and `security.port_isolation`, `ipv6.address: none`, the machine's `ipv4.address` from
+  the node's pool in `10.210.0.0/16` (outside `10.210.0.0/24`, kept for the exit's own services), and a `hwaddr`
+  made from that address (`0e:51:` and the address's four bytes, a locally administered MAC). The address and MAC
+  are part of the machine's config for its whole life.
+- Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge LXD
+  does not manage it drops every DHCP request on its way to the exit (seen on LXD 6.9 in a test machine, 3 October,
+  and in LXD's rule template). The exit's own bridge rules (`qorpera-agent-exit-bridge.nft`, bridge family, on the
+  node) take its place: from a machine's port a frame passes only as ARP or IPv4 from a MAC and address pair in the
+  client map, or as a DHCP request from a client map MAC; a card outside the map gets no address and nothing
+  through. With LXD's MAC filter (each port keeps its own MAC) that ties each machine to its address. The node takes
+  nothing from the bridge.
 - The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact
   devices: `lxd-office-guest.ts`, `coding-machine.ts` and `company-machine.ts` each compare the NIC set they expect.
   The node inventory also pins a machine's devices when it first sees the machine, and a card changed later makes
@@ -160,13 +168,21 @@ healthy exit (E2).
 - The rest is the reconciler's, a root unit that reads LXD every 5 seconds. A creator makes no other call: sleeping,
   waking and deleting need no hook, and a crash cannot leak an address. It checks every entry against its machine's
   LXD config (the card, the company, the machine, the member), that a running machine's card is a port of
-  `qagent0`, and that every machine on `qagent0` has an entry; anything else makes the exit unhealthy. It writes a
-  plugged and an unplugged line for each entry to `clients-YYYY-MM-DD.jsonl` beside the flow log, so E3's lookup
-  ties an address to its company and machine also after the machine is gone.
+  `qagent0`, and that every machine on `qagent0` has an entry; anything else makes the exit unhealthy. It keeps the
+  bridge rules' sets equal to the client map.
+- Creators write the entries, so an entry is a claim until the reconciler matches it with LXD. The client history,
+  `clients-YYYY-MM-DD.jsonl` beside the flow log, ties an address to a company only for a matched entry
+  (`plugged`, from the entry's time, then `unplugged`). An entry LXD does not back gets a `mismatch` line (the claim,
+  what LXD says, the problems) and is never attributed; one that goes without ever matching is `dropped`; a machine
+  on the bridge without an entry is `unattributed`. E3's lookup reads these lines, so a forged entry can never put
+  another company's name on traffic, and an address stays tied to its company also after the machine is gone.
 - A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
-  never hold its connection bound. When a machine goes away (deleted, or never created within an hour of its plug),
-  its address is quarantined first, then its lease is removed (dnsmasq reloads), its connections are flushed and its
-  entry is removed. The address stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so late log
+  never hold its connection bound. When a machine goes away (missing from two reads of LXD in a row after it was
+  seen, or never created within an hour of its plug), the reconciler unplugs it under the plug lock: its address is
+  quarantined first, then its lease is removed (dnsmasq reloads), its connections and the exit's per-machine counts
+  and refused flows are cleared, and its entry is removed. A machine made again under the same name gets its entry
+  back from `plug` with a new time, and is not unplugged in between. A flush that fails is tried again every pass,
+  and its address is not given out until it succeeds. The address stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so late log
   lines are never given to the wrong company and the address is free again before it is reused.
 - A flush ends the address's connections in the exit's table and their masqueraded twins in the node's (phase 1),
   found through the exit's masqueraded port. Twins of other protocols than TCP, UDP and ICMP have no port to find
@@ -175,26 +191,22 @@ healthy exit (E2).
   client map, not only the bridge's ports (a sleeping machine has no port).
 - Machines move one kind at a time, each behind its own switch. A running machine moves the next time it starts.
 - Today agents' machines and coding machines have LXD ACLs on `machine-net` and `coding-net` as their second line.
-  On `qagent0` the exit's and the host's rules take that place, with the NIC filters and port isolation.
+  On `qagent0` the exit's, the bridge's and the host's rules take that place, with LXD's MAC and IPv6 filters and
+  port isolation.
 
-## 5. The provider door (E5)
+## 5. The provider door (dropped for now)
 
-A coding machine runs its model program itself. Its sign-in and model traffic must leave from the platform address and
-never enter the exit.
+The first version of this design assumed that a coding machine runs its model program itself. It does not: a coding
+turn's harness (Codex or Claude Code) runs on the execution host like any other run, and its sign-in and model traffic
+leave through that host's model relay (`packages/runtime/src/cloud-native-egress.ts`). The coding machine only runs
+the turn's commands (`deploy/coding-worker/README.md`, "Execution path"). So that traffic never reaches the exit, and
+no door is built (corrected 3 October in step E2a, accepted by the runtime coordinator).
 
-- **A new node service (proposed).** It runs in a namespace of its own, `qdoor`, with an address on `qagent0` (for
-  example `10.210.0.2`) and its own uplink to the host. Like the exit, it is never a host service on `qagent0`.
-- It reuses the server-name check of `packages/runtime/src/cloud-native-egress.ts`, but not that relay's per-run
-  shape: that relay is a Unix-socket CONNECT proxy with lifetime caps. The door is a plain TLS pass-through. It reads
-  the server name in the handshake, passes the connection only for a provider name, connects out from the node's
-  platform address, and reads nothing else.
-- It accepts only coding machines' addresses, taken from the client map.
-- Provider names: OpenAI and ChatGPT as today, plus the Anthropic names Claude Code needs.
-- A coding machine reaches the door through name entries its creator writes at start: the provider names point to
-  the door, so every connection to a provider name from a coding machine goes through it, an agent's own included.
-  No other agent road machine is pointed there, and the exit's own DNS answers provider names normally.
-- The door's uplink to the host gets host rules like the exit's: public addresses only, nothing on the node.
-- Traffic an agent sends to a provider by address goes through the exit like any other.
+If one of our model programs ever runs inside an agent road machine, a door for it is designed and built before that
+machine moves to the exit. The first proposal stands as a starting point: a pass-through in a namespace of its own
+with an address on `qagent0`, reading only the TLS server name, passing only the providers' names and connecting out
+from the platform address, with the machine's provider names pointed at it. Until then an agent's own calls to an AI
+service, from any agent road machine, are agent traffic like any other.
 
 ## 6. The Company Computer (E6)
 
@@ -283,7 +295,7 @@ allow = []             # used when mode is "only-listed"
 - **"Only listed":** strict. A machine reaches only TCP port 443, only on addresses the exit's own lookups gave for
   a listed name (a per-company set filled as names resolve), and only when the TLS server name is listed too, so an
   unlisted site that shares a listed site's address is refused. E8 adds that check as a pass-through that reads only
-  the server name, like the provider door. Everything else is refused in this mode: plain HTTP, other ports and
+  the server name, like the model relay's check. Everything else is refused in this mode: plain HTTP, other ports and
   protocols, UDP (QUIC) and SSH included. The exit never decrypts, so domain fronting (a listed TLS name carrying
   another site inside) is not caught.
 
@@ -336,7 +348,7 @@ allow = []             # used when mode is "only-listed"
 | E2 | The agent plug in each machine creator's plan, the client map, exit health in placement | none (switched off) |
 | E3 | Log shipping to the NAS, 90-day cleanup, the "who used this address" lookup | none |
 | E4 | Agents' machines use the agent plug | they start there |
-| E5 | Coding machines use the agent plug, with the provider door | they move |
+| E5 | Coding machines use the agent plug (made again with it) | they move |
 | E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | it moves |
 | E7 | Line guard: counting, then the brake at the levels the founder decides | after his decision |
 | E8 | Company rules | rules work |
@@ -346,7 +358,7 @@ allow = []             # used when mode is "only-listed"
 Each step is a small PR with an exact-head independent review and a `run-on-node.mjs changed` run on the node 2 test
 machine. The coordinator merges and installs.
 
-E2 lands in four PRs: E2a, the node's side (the plug tool and its reconciler, `notrack` for the bridged leg, the
-health file); E2b, the proof on LXD inside a test machine (the NIC filters, port isolation, the floods and the
+E2 lands in four PRs: E2a, the node's side (the plug tool and its reconciler, the bridge rules that tie each MAC
+to its address, `notrack` for the bridged leg, the health file); E2b, the proof on LXD inside a test machine (the NIC filters, port isolation, the floods and the
 tables); E2c, the plug in the three creators' plans; E2d, exit health in placement, with one switch per machine
 kind, all off until E4–E6.
