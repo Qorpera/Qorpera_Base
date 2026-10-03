@@ -829,7 +829,9 @@ const RESERVING_RETIREMENT_MS = 10 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
-/** A settled journal whose recovery volume cannot be retired yet is named in the log at most this often. */
+/** A settled journal whose recovery volume cannot be retired yet is tried again at most this often, and named in the
+ * log at most once an hour (company delete D4's identity retirement keeps the same minute). */
+const RECOVERY_RETIREMENT_RETRY_MS = 60_000;
 const RECOVERY_RETIREMENT_REPORT_MS = 60 * 60_000;
 /** Journals one reconcile pass works on side by side. */
 const RECONCILE_CONCURRENCY = 8;
@@ -882,7 +884,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
 	readonly #settled = new Map<string, number>();
-	/** When each settled journal whose recovery volume could not be retired was last named in the log. */
+	/** When each settled journal whose recovery volume could not be retired was last tried, and last named in the log. */
+	readonly #retirementTried = new Map<string, number>();
 	readonly #retirementReported = new Map<string, number>();
 	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
@@ -974,12 +977,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const settledAt = this.#settled.get(acquisitionId);
 		if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) return;
 		// Housekeeping never fails the pass (a failed pass stops the node's claims): a volume that is in use or drifted
-		// keeps its journal for an operator, named in the log at most once an hour, and is tried again each pass.
+		// keeps its journal for an operator, named in the log at most once an hour, and is tried again each minute.
+		const triedAt = this.#retirementTried.get(acquisitionId);
+		if (triedAt !== undefined && Date.now() - triedAt < RECOVERY_RETIREMENT_RETRY_MS) return;
 		let retired: boolean;
 		try {
 			retired = await this.#retireRecoveryVolume(acquisitionId, signal);
 		} catch (error) {
 			if (signal?.aborted) throw error;
+			this.#retirementTried.set(acquisitionId, Date.now());
 			const reportedAt = this.#retirementReported.get(acquisitionId);
 			if (reportedAt === undefined || Date.now() - reportedAt >= RECOVERY_RETIREMENT_REPORT_MS) {
 				this.#retirementReported.set(acquisitionId, Date.now());
@@ -991,6 +997,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 		if (retired) {
 			await this.#archive(acquisitionId);
+			this.#retirementTried.delete(acquisitionId);
 			this.#retirementReported.delete(acquisitionId);
 		}
 	}
