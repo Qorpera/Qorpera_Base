@@ -87,8 +87,10 @@ in its own transaction. It is service_role only, like the materializer's RPCs. I
    - its activation seq is below the change's seq;
    - it has neither expired (`expires_at`) nor reached its occurrence limit, as the restore of a dynamic routine run
      checks (20260930009500), so the lifecycle trigger's 55000 does not fail the step.
-   A routine that fails is passed over for those changes. Each insert also runs in a subtransaction that catches 55000
-   and skips that wake, in case the trigger refuses for a reason the re-check missed.
+   A routine that fails is passed over for those changes. Each insert also runs in a subtransaction that catches only
+   the lifecycle trigger's two refusals, by message ('Routine has expired', the occurrence limit), and skips that wake,
+   in case a race got past the re-check. Any other error, such as the pin trigger's 'Folder wake admission is
+   required', is a bug signal and fails the step.
 5. **Sessions:** each matched routine's public session KEY SHARE (`qorpera_folder_wake_public_session`), as routine
    firing takes it before admission.
 6. **Admission:** `qorpera_folder_admit_wakes(profile)`.
@@ -102,8 +104,11 @@ does today, and the cursor moves on, so a resume does not replay a pause's worth
 **Bounds:**
 - at most `p_limit` seqs a step;
 - at most 21 matched versions per (listener, change), read through an index (below);
-- at most 32 listeners matched per step. The rest wait for the next step, and the cursor stops before the first seq
-  left unfinished.
+- at most 32 listeners matched per step;
+- at most 48 subtransactions that write per step (wake inserts, hook calls and hook retries together). Past 64 in one
+  transaction, PostgreSQL's subtransaction cache overflows, which slows every concurrent reader (core §3 step 7; Q1).
+
+What a bound leaves waits for the next step, and the cursor stops before the first seq left unfinished.
 
 ## 5. Matching
 
