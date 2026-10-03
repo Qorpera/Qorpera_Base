@@ -1,7 +1,7 @@
 # Qorpera agent exit (E1): the rules inside the exit's own network namespace, qexit. Agent road machines on the
 # bridge qagent0 reach the exit's br0 (10.210.0.1/16); the exit sends their traffic out of up0 from its own address.
 # It refuses our own networks and TCP port 25 at once, drops IPv6, foreign sources and invalid packets, bounds each
-# machine to 16,384 connections and the exit to 98,304 (proposed, pending Jonas), counts new connections and
+# machine to 16,384 connections and the exit to 98,304 (decided 3 October), counts new connections and
 # refusals per machine, keeps each refused flow an hour
 # for the log, and answers names and DHCP itself (dnsmasq on 10.210.0.1). Plain DNS a machine sends elsewhere is
 # redirected to it.
@@ -34,7 +34,7 @@ table inet qorpera_agent_exit {
 		size 65536
 	}
 
-	# Per machine: open connections, bounded at 16,384 (contract item 4, pending Jonas; it protects the node).
+	# Per machine: open connections, bounded at 16,384 (contract item 4; an infrastructure guard for the node).
 	set open_by_client {
 		type ipv4_addr
 		flags dynamic

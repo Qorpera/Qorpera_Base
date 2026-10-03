@@ -25,7 +25,7 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (proposed, pending Jonas; per address until E2's NIC filtering pins each machine to one); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address until E2's NIC filtering pins each machine to one); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `verify`, `status` |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content |
@@ -99,7 +99,7 @@ guest guard, LXD and Tailscale on a real node. Those come with E2's switch-on pr
   unprivileged user cannot create a file in the 0750 log directory, so a reopen would fail and logging would stop.
 - E2: the per-machine connection bound counts per address; E2's NIC filtering pins each machine to its address. A
   reload of the rules starts both counts again from zero. The total is one shared list in the kernel: E2's switch-on
-  proof on a node measures its cost under load before Jonas decides the numbers.
+  proof on a node measures its cost under load before the node is switched on.
 - E2: with br_netfilter the node itself tracks the bridged leg of every agent packet, refused and dropped ones
   included, for the kernel's timeouts (10 s for a refused TCP attempt, 30 s for UDP, 120 s for a SYN the exit drops
   silently, 600 s for other protocols), and the exit's bounds do not count these. The node's table holds 262,144
