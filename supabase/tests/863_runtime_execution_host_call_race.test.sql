@@ -1,9 +1,10 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- G2-3e (20260930011000): the execution host's entry points check its credential per call and with no lock, so a
--- refused call never waits for a transaction that holds the host's principal, the claim, its orchestrator, the run,
--- the runner or the run machine; a listed call's checks take no lock either; a rebind (a rebuild) or a revocation
--- takes effect on the next call. Test 300's fixture gives a run claimed by orchestrator 092 (adapter 'process') and
--- its runner; this binds an execution host of that adapter and adds the run's machine allocation.
+-- refused call never waits for a transaction that holds the host's principal, the claim, its orchestrator, the job,
+-- the assignment, the run, the runner or the run machine; a listed call's checks take no lock either; a rebind (a
+-- rebuild) or a revocation takes effect on the next call. Test 300's fixture gives a run claimed by orchestrator 092
+-- (adapter 'process') and its runner; this binds an execution host to 092, another to an orchestrator of another
+-- adapter, and adds the run's machine allocation.
 reset role;
 create function pg_temp.sha(p_value text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_value, 'utf8'), 'sha256'), 'hex')
@@ -12,13 +13,20 @@ select set_config('qorpera_test.run', current_setting('qorpera_test.wake_binding
 select set_config('qorpera_test.runner', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId', false);
 select set_config('qorpera_test.host_credential', 'H' || repeat('h', 42), false);
 select set_config('qorpera_test.rebuilt_credential', 'N' || repeat('n', 42), false);
+select set_config('qorpera_test.other_credential', 'O' || repeat('o', 42), false);
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, runner_id, provider_adapter, instance_sha256)
 values ('86300000-0000-4000-8000-000000000071', '30000000-0000-4000-8000-000000000010',
 	current_setting('qorpera_test.run')::uuid, current_setting('qorpera_test.runner')::uuid, 'process', repeat('7', 64));
 select set_config('qorpera_test.host_hash', pg_temp.sha(current_setting('qorpera_test.host_credential')), false);
+select set_config('qorpera_test.other_hash', pg_temp.sha(current_setting('qorpera_test.other_credential')), false);
 select pg_temp.path_claims('service_role');
 set local role service_role;
-select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', current_setting('qorpera_test.host_hash'));
+select public.qorpera_register_runner_orchestrator('86300000-0000-4000-8000-0000000000b1', 'Another node', 'other-adapter',
+	repeat('5', 64), 3600);
+select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '30000000-0000-4000-8000-000000000092',
+	current_setting('qorpera_test.host_hash'));
+select public.qorpera_bind_execution_host_credential('qorpera-exec-other', 'other-adapter', '86300000-0000-4000-8000-0000000000b1',
+	current_setting('qorpera_test.other_hash'));
 reset role;
 
 -- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
@@ -150,16 +158,20 @@ begin
 end $$;
 -- A call through the standard entry point as SQL: the adapter's ended runners (no lock of its own: the function is
 -- stable).
-create function pg_temp.r863_call_sql(p_credential text, p_host text default 'qorpera-exec-test') returns text language sql as $$
-	select format($q$select public.qorpera_execution_host_call(%L, %L, 'qorpera_runtime_ended_runners', %L)$q$,
-		p_host, p_credential, jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))::text)
+create function pg_temp.r863_call_sql(p_credential text, p_host text default 'qorpera-exec-test',
+	p_name text default 'qorpera_runtime_ended_runners', p_args jsonb default null,
+	p_entry text default 'qorpera_execution_host_call') returns text language sql as $$
+	select format($q$select public.%I(%L, %L, %L, %L)$q$, p_entry, p_host, p_credential, p_name,
+		coalesce(p_args, jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner'))))::text)
 $$;
 -- A call from the caller connection in its own transaction; it must not wait for the holder.
-create function pg_temp.r863_at_once(p_credential text, p_host text default 'qorpera-exec-test') returns jsonb language plpgsql as $$
+create function pg_temp.r863_at_once(p_credential text, p_host text default 'qorpera-exec-test',
+	p_name text default 'qorpera_runtime_ended_runners', p_args jsonb default null,
+	p_entry text default 'qorpera_execution_host_call') returns jsonb language plpgsql as $$
 declare v_outcome jsonb;
 begin
 	perform pg_temp.r863_begin('caller', 'anon');
-	perform dblink_send_query('r863_caller', pg_temp.r863_call_sql(p_credential, p_host));
+	perform dblink_send_query('r863_caller', pg_temp.r863_call_sql(p_credential, p_host, p_name, p_args, p_entry));
 	if pg_temp.r863_waited_for('caller', pg_temp.r863_pid('holder')) then
 		perform dblink_exec('r863_holder', 'rollback');
 		v_outcome := pg_temp.r863_collect('r863_caller');
@@ -173,10 +185,11 @@ create function pg_temp.r863_refused(p_outcome jsonb) returns boolean language s
 	select coalesce(p_outcome ->> 'state' = '42501' and p_outcome ->> 'error' = 'execution host call is refused', false)
 $$;
 
--- 1. Another transaction holds the host's principal, the run's claim, its orchestrator, the run, the runner and the
---    run machine (as a rebuild, a claim change, an orchestrator's heartbeat, the run's progress and a reservation
---    would). A wrong credential and another host's name are refused at once; a listed call's checks take no lock, so
---    it runs at once too.
+-- 1. Another transaction holds the host's principal, the run's claim, its orchestrator, the job, the assignment, the
+--    run, the runner and the run machine (as a rebuild, a claim change, an orchestrator's heartbeat, the run's
+--    progress and a reservation would). A wrong credential, another host's name and another host's release of the run
+--    machine are refused at once; the host's listed calls' checks take no lock, so its ended runners and its run's
+--    identity answer at once too (the identity's own function locks only the identity row).
 do $$
 declare v_outcome jsonb; v_row record;
 begin
@@ -184,6 +197,8 @@ begin
 	for v_row in select * from (values
 		('qorpera_execution_host_principals', 'host_id', 'qorpera-exec-test'),
 		('qorpera_runner_job_claims', 'run_id', current_setting('qorpera_test.run')),
+		('qorpera_runner_jobs', 'id', current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId'),
+		('qorpera_runner_assignments', 'id', current_setting('qorpera_test.wake_binding')::jsonb ->> 'assignmentId'),
 		('qorpera_runner_orchestrators', 'id', '30000000-0000-4000-8000-000000000092'),
 		('qorpera_execution_runs', 'id', current_setting('qorpera_test.run')),
 		('qorpera_runners', 'id', current_setting('qorpera_test.runner')),
@@ -199,6 +214,18 @@ begin
 	if not pg_temp.r863_refused(v_outcome) then
 		perform dblink_exec('r863_holder', 'rollback');
 		raise exception 'Another host''s name was not refused: %', v_outcome; end if;
+	v_outcome := pg_temp.r863_at_once(current_setting('qorpera_test.other_credential'), 'qorpera-exec-other',
+		'qorpera_release_runtime_machine', jsonb_build_object('p_allocation_id', '86300000-0000-4000-8000-000000000071',
+			'p_provider_adapter', 'other-adapter', 'p_instance_sha256', repeat('7', 64)), 'qorpera_execution_host_call_long');
+	if not pg_temp.r863_refused(v_outcome) then
+		perform dblink_exec('r863_holder', 'rollback');
+		raise exception 'Another host''s release was not refused: %', v_outcome; end if;
+	v_outcome := pg_temp.r863_at_once(current_setting('qorpera_test.host_credential'), 'qorpera-exec-test',
+		'qorpera_identity_recovery_runtime_state', jsonb_build_object('p_compute_identity_id',
+			current_setting('qorpera_test.wake_binding')::jsonb ->> 'computeIdentityId', 'p_run_id', current_setting('qorpera_test.run')));
+	if v_outcome ? 'error' then
+		perform dblink_exec('r863_holder', 'rollback');
+		raise exception 'The host''s identity call was refused: %', v_outcome; end if;
 	v_outcome := pg_temp.r863_at_once(current_setting('qorpera_test.host_credential'));
 	perform dblink_exec('r863_holder', 'rollback');
 	if v_outcome ? 'error' then raise exception 'The host''s listed call was refused: %', v_outcome; end if;
@@ -210,7 +237,7 @@ do $$
 declare v_outcome jsonb;
 begin
 	perform pg_temp.r863_begin('holder', 'service_role');
-	perform * from dblink('r863_holder', format($q$select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', %L)$q$,
+	perform * from dblink('r863_holder', format($q$select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '30000000-0000-4000-8000-000000000092', %L)$q$,
 		pg_temp.sha(current_setting('qorpera_test.rebuilt_credential')))) as bound(result jsonb);
 	v_outcome := pg_temp.r863_at_once(current_setting('qorpera_test.host_credential'));
 	if v_outcome ? 'error' then

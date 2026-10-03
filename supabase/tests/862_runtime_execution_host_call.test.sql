@@ -1,26 +1,29 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- G2-3e (20260930011000): the shared execution host's own service calls the database with the publishable key and
 -- one credential per execution host, through qorpera_execution_host_call (8 s) and _long (25 s). Test 300's fixture
--- gives a run whose job orchestrator 092 (provider adapter 'process') claimed, and the run's runner of that adapter.
--- This binds an execution host of that adapter and one of another adapter.
+-- gives a run whose job orchestrator 092 (provider adapter 'process') claimed and whose runner holds the lease. This
+-- registers two more orchestrators (one of another adapter, one more of 'process') and binds an execution host to 092
+-- and one to the other adapter's.
 reset role;
 select set_config('qorpera_test.run', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId', false);
 select set_config('qorpera_test.runner', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId', false);
 select set_config('qorpera_test.identity', current_setting('qorpera_test.wake_binding')::jsonb ->> 'computeIdentityId', false);
 select set_config('qorpera_test.host_credential', 'H' || repeat('h', 42), false);
 select set_config('qorpera_test.other_credential', 'O' || repeat('o', 42), false);
+select set_config('qorpera_test.sibling_credential', 'S' || repeat('i', 42), false);
 create function pg_temp.sha(p_value text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_value, 'utf8'), 'sha256'), 'hex')
 $$;
 
 -- Bind as the node host does: 'ok:<adapter>' or '<sqlstate>'.
-create function pg_temp.bind_host(p_host text, p_adapter text, p_credential text) returns text language plpgsql as $$
+create function pg_temp.bind_host(p_host text, p_adapter text, p_credential text,
+	p_orchestrator uuid default '30000000-0000-4000-8000-000000000092') returns text language plpgsql as $$
 declare v_result jsonb; v_hash text := case when p_credential is null then null else pg_temp.sha(p_credential) end;
 begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	execute 'set local role service_role';
 	begin
-		v_result := public.qorpera_bind_execution_host_credential(p_host, p_adapter, v_hash);
+		v_result := public.qorpera_bind_execution_host_credential(p_host, p_adapter, p_orchestrator, v_hash);
 	exception when others then
 		execute 'reset role';
 		return sqlstate;
@@ -56,15 +59,25 @@ begin
 			and not (p_expected = 'ok' and p_actual like 'ok:%')) then
 		raise exception '%: expected %, got %', p_label, p_expected, p_actual; end if;
 end $$;
+create function pg_temp.identity_args() returns jsonb language sql as $$
+	select jsonb_build_object('p_compute_identity_id', current_setting('qorpera_test.identity'), 'p_run_id', current_setting('qorpera_test.run'))
+$$;
 create function pg_temp.reserve_args(p_allocation uuid) returns jsonb language sql as $$
 	select jsonb_build_object('p_allocation_id', p_allocation, 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64),
 		'p_run_id', current_setting('qorpera_test.run'), 'p_runner_id', current_setting('qorpera_test.runner'))
 $$;
 
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select public.qorpera_register_runner_orchestrator('86200000-0000-4000-8000-0000000000b1', 'Another node', 'other-adapter',
+	repeat('5', 64), 3600);
+select public.qorpera_register_runner_orchestrator('86200000-0000-4000-8000-0000000000b2', 'Another fresh-VM path', 'process',
+	repeat('6', 64), 3600);
+reset role;
 select pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'process', current_setting('qorpera_test.host_credential')),
 	'ok:process', 'the execution host binds');
-select pg_temp.expect(pg_temp.bind_host('qorpera-exec-other', 'other-adapter', current_setting('qorpera_test.other_credential')),
-	'ok:other-adapter', 'another adapter''s execution host binds');
+select pg_temp.expect(pg_temp.bind_host('qorpera-exec-other', 'other-adapter', current_setting('qorpera_test.other_credential'),
+	'86200000-0000-4000-8000-0000000000b1'), 'ok:other-adapter', 'another adapter''s execution host binds');
 
 -- 1. Who may call what: the entry points are the publishable key's alone; their body and helpers no role's; the
 --    binding and revocation the node host's; both tables are closed to every API role. Every listed function exists
@@ -79,8 +92,9 @@ begin
 		('public.qorpera_execution_host_call_long(text,text,text,jsonb)', array['anon']),
 		('public.qorpera_execution_host_dispatch(text,text,text,jsonb,text)', array[]::text[]),
 		('public.qorpera_execution_host_uuid(jsonb,text)', array[]::text[]),
-		('public.qorpera_execution_host_claims_run(text,uuid)', array[]::text[]),
-		('public.qorpera_bind_execution_host_credential(text,text,text)', array['service_role']),
+		('public.qorpera_execution_host_claims_run(uuid,text,uuid)', array[]::text[]),
+		('public.qorpera_execution_host_run_machine(uuid,text,uuid)', array[]::text[]),
+		('public.qorpera_bind_execution_host_credential(text,text,uuid,text)', array['service_role']),
 		('public.qorpera_revoke_execution_host_credential(text)', array['service_role'])) as entry(signature, roles),
 		(values ('anon'), ('authenticated'), ('service_role'), ('qorpera_secret_broker')) as r(rolname)
 	where has_function_privilege(r.rolname, entry.signature, 'execute') is distinct from (r.rolname = any(entry.roles));
@@ -133,23 +147,33 @@ begin
 		'ok:process', 'binding again is idempotent');
 	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'other-adapter', 'X' || repeat('x', 42)), '42501',
 		'another adapter for a bound host');
-	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-new', 'process', current_setting('qorpera_test.other_credential')),
-		'23505', 'a hash bound twice');
+	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-new', 'process', current_setting('qorpera_test.other_credential'),
+		'86200000-0000-4000-8000-0000000000b2'), '23505', 'a hash bound twice');
+	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-new', 'process', 'X' || repeat('x', 42)), '23505',
+		'an orchestrator bound to another host');
+	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'process', 'X' || repeat('x', 42),
+		'86200000-0000-4000-8000-0000000000b2'), '42501', 'another orchestrator for a bound host');
+	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-new', 'process', 'X' || repeat('x', 42),
+		'86200000-0000-4000-8000-0000000000b1'), '42501', 'an orchestrator of another adapter');
+	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-new', 'process', 'X' || repeat('x', 42),
+		'86200000-0000-4000-8000-0000000000ff'), '42501', 'an unknown orchestrator');
+	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-new', 'process', 'X' || repeat('x', 42), null), '22023',
+		'no orchestrator');
 	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'process', null), '22023', 'no hash');
 	perform pg_temp.expect(pg_temp.bind_host('Qorpera Exec', 'process', 'X' || repeat('x', 42)), '22023', 'a malformed host id');
 	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'Process!', 'X' || repeat('x', 42)), '22023', 'a malformed adapter');
 	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'process', 'N' || repeat('n', 42)), 'ok:process', 'a rebuild');
-	perform pg_temp.expect(pg_temp.own('qorpera_runtime_ended_runners',
-		jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))), 'refused',
+	perform pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', pg_temp.identity_args()), 'refused',
 		'the credential before the rebuild');
-	perform pg_temp.expect(pg_temp.host_call('qorpera-exec-test', 'N' || repeat('n', 42), 'qorpera_runtime_ended_runners',
-		jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))), 'ok', 'the rebuilt credential');
+	perform pg_temp.expect(pg_temp.host_call('qorpera-exec-test', 'N' || repeat('n', 42), 'qorpera_identity_recovery_runtime_state',
+		pg_temp.identity_args()), 'ok', 'the rebuilt credential');
 	perform pg_temp.expect(pg_temp.bind_host('qorpera-exec-test', 'process', current_setting('qorpera_test.host_credential')),
 		'ok:process', 'back to the first credential');
 	-- The bodies' own checks: a caller with a member's claims is refused even where it may execute the function.
 	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
 	begin
-		perform public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', pg_temp.sha('X' || repeat('x', 42)));
+		perform public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '30000000-0000-4000-8000-000000000092',
+			pg_temp.sha('X' || repeat('x', 42)));
 		raise exception 'a bind with a member''s claims was accepted';
 	exception when insufficient_privilege then null;
 	end;
@@ -160,12 +184,14 @@ begin
 	end;
 	perform set_config('request.jwt.claims', '', true);
 end $$;
+-- A sibling host of the same adapter, bound to its other orchestrator (b2).
+select pg_temp.expect(pg_temp.bind_host('qorpera-exec-sibling', 'process', current_setting('qorpera_test.sibling_credential'),
+	'86200000-0000-4000-8000-0000000000b2'), 'ok:process', 'a sibling host of the same adapter binds');
 savepoint revoked_host;
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 select pg_temp.expect(public.qorpera_revoke_execution_host_credential('qorpera-exec-test')::text, 'true', 'the node host revokes');
 select set_config('request.jwt.claims', '', true);
-select pg_temp.expect(pg_temp.own('qorpera_runtime_ended_runners',
-	jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))), 'refused', 'a revoked host');
+select pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', pg_temp.identity_args()), 'refused', 'a revoked host');
 rollback to savepoint revoked_host;
 
 -- 3. Each listed call through the host's entry point answers as the service caller's (a direct call first, rolled
@@ -187,12 +213,6 @@ begin
 	perform pg_temp.expect(pg_temp.own('qorpera_compute_identity_login_in_vault',
 		v_identity_args || jsonb_build_object('p_run_id', current_setting('qorpera_test.run'))), 'ok:' || v_direct::text,
 		'the run''s identity vault custody');
-	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	v_direct := public.qorpera_runtime_ended_runners(array[current_setting('qorpera_test.runner')::uuid]);
-	perform set_config('request.jwt.claims', '', true);
-	perform pg_temp.expect(pg_temp.own('qorpera_runtime_ended_runners',
-		jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))), 'ok:' || v_direct::text,
-		'the adapter''s ended runners');
 	-- The fixture's job is leased, so a runner row for its run is the function's own refusal, past the entry point.
 	perform pg_temp.expect(pg_temp.own('qorpera_provision_execution_runner', jsonb_build_object('p_run_id', current_setting('qorpera_test.run'),
 		'p_client_runner_id', extensions.gen_random_uuid(), 'p_provider_adapter', 'process', 'p_activation_token_sha256', repeat('1', 64))),
@@ -210,6 +230,13 @@ begin
 		'the run''s machine reservation');
 	if not exists (select 1 from public.qorpera_runtime_machine_allocations where id = v_allocation and released_at is null) then
 		raise exception 'the reservation left no allocation: %', v_direct; end if;
+	-- Ended runners, once the runner has its run machine.
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	v_direct := public.qorpera_runtime_ended_runners(array[current_setting('qorpera_test.runner')::uuid]);
+	perform set_config('request.jwt.claims', '', true);
+	perform pg_temp.expect(pg_temp.own('qorpera_runtime_ended_runners',
+		jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))), 'ok:' || v_direct::text,
+		'the adapter''s ended runners');
 	perform pg_temp.expect(pg_temp.own('qorpera_bind_native_identity_credential', jsonb_build_object('p_allocation_id', v_allocation,
 		'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64), 'p_holder_kind', 'exec_slot',
 		'p_credential_sha256', pg_temp.sha('S' || repeat('s', 42)))), 'ok', 'an exec slot''s credential bind');
@@ -302,6 +329,87 @@ begin
 	perform pg_temp.expect(pg_temp.own('qorpera_release_runtime_machine', jsonb_build_object('p_allocation_id',
 		'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64))),
 		'refused', 'the release through the standard entry point');
+end $$;
+-- The sibling host (the same adapter, another orchestrator): none of this run, its runner or its machine is its.
+do $$
+declare v_sibling text := current_setting('qorpera_test.sibling_credential');
+begin
+	perform pg_temp.expect(pg_temp.host_call('qorpera-exec-sibling', v_sibling, 'qorpera_runtime_ended_runners',
+		jsonb_build_object('p_runner_ids', jsonb_build_array(current_setting('qorpera_test.runner')))), 'refused',
+		'a sibling host''s ended runners');
+	perform pg_temp.expect(pg_temp.host_call('qorpera-exec-sibling', v_sibling, 'qorpera_release_runtime_machine',
+		jsonb_build_object('p_allocation_id', '30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process',
+			'p_instance_sha256', repeat('7', 64)), 'qorpera_execution_host_call_long'), 'refused', 'a sibling host''s release');
+	perform pg_temp.expect(pg_temp.host_call('qorpera-exec-sibling', v_sibling, 'qorpera_identity_recovery_runtime_state',
+		pg_temp.identity_args()), 'refused', 'a sibling host''s identity');
+	perform pg_temp.expect(pg_temp.host_call('qorpera-exec-sibling', v_sibling, 'qorpera_bind_native_identity_credential',
+		jsonb_build_object('p_allocation_id', '30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process',
+			'p_instance_sha256', repeat('7', 64), 'p_holder_kind', 'exec_slot', 'p_credential_sha256', pg_temp.sha('U' || repeat('u', 42)))),
+		'refused', 'a sibling host''s bind');
+end $$;
+-- A claim still marked assigned while the job is leased is not current: only the accepted claim of the leasing runner is.
+savepoint stale_assigned;
+set local session_replication_role = replica;
+update public.qorpera_runner_job_claims set status = 'assigned' where run_id = current_setting('qorpera_test.run')::uuid;
+set local session_replication_role = origin;
+select pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', pg_temp.identity_args()), 'refused',
+	'an assigned claim of a leased job');
+rollback to savepoint stale_assigned;
+-- A run machine without a runner (a sign-in's machine of the same adapter) is never the host's to release or bind.
+savepoint login_machine;
+insert into public.qorpera_runtime_machine_allocations(id, profile_id, login_session_id, login_compute_identity_id,
+	provider_adapter, instance_sha256)
+values ('86200000-0000-4000-8000-000000000075', '30000000-0000-4000-8000-000000000010',
+	(current_setting('qorpera_test.wake_login')::jsonb ->> 'login_id')::uuid, current_setting('qorpera_test.identity')::uuid,
+	'process', repeat('5', 64));
+select pg_temp.expect(pg_temp.own('qorpera_release_runtime_machine', jsonb_build_object('p_allocation_id',
+	'86200000-0000-4000-8000-000000000075', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('5', 64)),
+	'qorpera_execution_host_call_long'), 'refused', 'a sign-in machine''s release');
+select pg_temp.expect(pg_temp.own('qorpera_bind_native_identity_credential', jsonb_build_object('p_allocation_id',
+	'86200000-0000-4000-8000-000000000075', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('5', 64),
+	'p_holder_kind', 'exec_slot', 'p_credential_sha256', pg_temp.sha('T' || repeat('t', 42)))), 'refused', 'a sign-in machine''s bind');
+rollback to savepoint login_machine;
+-- A run whose job ended keeps its accepted claim, but is no longer the host's; its machine's release still is.
+savepoint ended_run;
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,
+	'failed', 'Runner lease expired before durable completion', false);
+reset role;
+select pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', jsonb_build_object('p_compute_identity_id',
+	current_setting('qorpera_test.identity'), 'p_run_id', current_setting('qorpera_test.run'))), 'refused', 'an ended run''s identity');
+select pg_temp.expect(pg_temp.own('qorpera_release_runtime_machine', jsonb_build_object('p_allocation_id',
+	'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64)),
+	'qorpera_execution_host_call_long'), 'not refused', 'an ended run machine''s release');
+select pg_temp.expect(pg_temp.own('qorpera_bind_native_identity_credential', jsonb_build_object('p_allocation_id',
+	'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64),
+	'p_holder_kind', 'exec_slot', 'p_credential_sha256', pg_temp.sha('V' || repeat('v', 42)))), 'refused', 'an ended run''s bind');
+rollback to savepoint ended_run;
+-- A run retried and claimed by another orchestrator, of another adapter or of the same one, is no longer the host's.
+do $$
+declare v_orchestrator uuid; v_state text;
+begin
+	foreach v_orchestrator in array array['86200000-0000-4000-8000-0000000000b1', '86200000-0000-4000-8000-0000000000b2']::uuid[] loop
+		begin
+			perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+			perform public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,
+				'failed', 'Runner lease expired before durable completion', true);
+			if public.qorpera_claim_runner_job_for_orchestrator(v_orchestrator, extensions.gen_random_uuid(), 120) #>> '{work,run_id}'
+				is distinct from current_setting('qorpera_test.run') then
+				raise exception 'the retried run was not claimed by %', v_orchestrator; end if;
+			perform set_config('request.jwt.claims', '', true);
+			perform pg_temp.expect(pg_temp.own('qorpera_provision_execution_runner', jsonb_build_object('p_run_id',
+				current_setting('qorpera_test.run'), 'p_client_runner_id', extensions.gen_random_uuid(), 'p_provider_adapter', 'process',
+				'p_activation_token_sha256', repeat('1', 64))), 'refused', 'a runner row for a run another orchestrator claimed');
+			perform pg_temp.expect(pg_temp.own('qorpera_reserve_runtime_machine',
+				pg_temp.reserve_args('86200000-0000-4000-8000-000000000076')), 'refused', 'a machine for a run another orchestrator claimed');
+			perform pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', jsonb_build_object('p_compute_identity_id',
+				current_setting('qorpera_test.identity'), 'p_run_id', current_setting('qorpera_test.run'))), 'refused',
+				'the identity of a run another orchestrator claimed');
+			raise exception using errcode = 'QG23E', message = 'roll the retry back';
+		exception when sqlstate 'QG23E' then null;
+		end;
+	end loop;
 end $$;
 -- A run whose claim was released is no longer the adapter's.
 savepoint released_claim;

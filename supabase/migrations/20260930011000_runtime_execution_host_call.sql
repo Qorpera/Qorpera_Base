@@ -10,32 +10,40 @@
 --   qorpera_execution_host_call(p_host_id, p_credential, p_name, p_args)        8 s
 --   qorpera_execution_host_call_long(p_host_id, p_credential, p_name, p_args)   25 s (the release, which sets 25 s)
 -- 1. The node host mints the credential when it creates or rebuilds the execution host and binds its sha256 with
---    qorpera_bind_execution_host_credential(host, adapter, sha256); only the hash is stored, and a bind again (a
---    rebuild) replaces it, so the old credential fails at once. qorpera_revoke_execution_host_credential ends it.
+--    qorpera_bind_execution_host_credential(host, adapter, orchestrator, sha256): the host's provider adapter and its
+--    co-located orchestrator, which the node host registers. Only the hash is stored, and a bind again (a rebuild)
+--    replaces it, so the old credential fails at once; the adapter and orchestrator never change.
+--    qorpera_revoke_execution_host_credential ends it.
 -- 2. The entry points check the credential first, by its hash and with no lock. Every refusal is one 42501
 --    "execution host call is refused".
 -- 3. They allow only the calls listed in qorpera_execution_host_calls (changed by migrations only; no API role reads
---    or writes it), each through the entry point of its budget, each held to the host's own provider adapter:
---    - a runner row only for a run its adapter's orchestrator holds a live claim on;
---    - a reservation only of a run machine, for such a run and a runner of its adapter;
---    - a release only of its adapter's run machine allocation;
---    - the ended-runner query only for runners of its adapter;
+--    or writes it), each through the entry point of its budget, each held to the host's own orchestrator and adapter.
+--    A run is the host's while its orchestrator holds the run's current claim: claimed or assigned while the job is
+--    queued, or accepted while the job is leased by the runner assigned through that claim (an accepted claim is
+--    never released, so it counts only while its runner holds the job). A run its orchestrator ever claimed stays
+--    the host's for the release.
+--    - a runner row only for such a current run;
+--    - a reservation only of a run machine, for such a current run and a runner of its adapter;
+--    - a release only of its adapter's run machine of a run its orchestrator claimed;
+--    - the ended-runner query only for its adapter's runners on run machines of runs its orchestrator claimed;
 --    - an identity's recovery state and vault custody only with the run it is read for (p_run_id, which the entry
---      point checks and removes): such a claimed run whose identity it is;
---    - a slot credential bind only as an exec slot, for its adapter's run machine allocation.
+--      point checks and removes): such a current run whose identity it is;
+--    - a slot credential bind only as an exec slot, for its adapter's run machine of such a current run.
 --    Whatever the call, p_provider_adapter must be the host's.
 -- 4. They call the target as G2-3a's entry point does (qorpera_native_host_invoke).
 -- Also: qorpera_provision_execution_runner loses the anon and authenticated EXECUTE the default privileges left it.
 --
--- Locks: none added on the call path. The checks read the principal (by its hash), claims (by run), orchestrators,
--- runners, runs and allocations (by primary key) without locks, before the called function takes its own. Binding
--- writes only the principal row.
+-- Locks: none added on the call path. The checks read the principal (by its hash), claims (by run, indexed), jobs,
+-- assignments (by claim), orchestrators, runners, runs and allocations (by key) without locks, before the called
+-- function takes its own. Binding writes only the principal row; its foreign key takes KEY SHARE on the orchestrator
+-- row, which no heartbeat or claim conflicts with.
 
 set local lock_timeout = '3s';
 
 create table public.qorpera_execution_host_principals (
 	host_id text primary key check (host_id ~ '^[a-z][a-z0-9-]{0,62}$'),
 	provider_adapter text not null check (provider_adapter ~ '^[a-z][a-z0-9_-]{0,63}$'),
+	orchestrator_id uuid not null unique references public.qorpera_runner_orchestrators(id) on delete cascade,
 	credential_sha256 text not null unique check (credential_sha256 ~ '^[0-9a-f]{64}$'),
 	bound_at timestamptz not null default clock_timestamp()
 );
@@ -58,9 +66,10 @@ insert into public.qorpera_execution_host_calls(name, scope, budget) values
 	('qorpera_compute_identity_login_in_vault', 'identity', 'standard'),
 	('qorpera_bind_native_identity_credential', 'bind', 'standard');
 
--- The node host binds an execution host's credential when it creates or rebuilds the host.
+-- The node host binds an execution host's credential when it creates or rebuilds the host, after it registered the
+-- host's orchestrator.
 create function public.qorpera_bind_execution_host_credential(p_host_id text, p_provider_adapter text,
-	p_credential_sha256 text)
+	p_orchestrator_id uuid, p_credential_sha256 text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_count integer;
 begin
@@ -68,23 +77,29 @@ begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Execution host credentials are bound by the node host' using errcode = '42501'; end if;
 	if p_host_id is null or p_host_id !~ '^[a-z][a-z0-9-]{0,62}$'
-		or p_provider_adapter is null or p_provider_adapter !~ '^[a-z][a-z0-9_-]{0,63}$'
+		or p_provider_adapter is null or p_provider_adapter !~ '^[a-z][a-z0-9_-]{0,63}$' or p_orchestrator_id is null
 		or p_credential_sha256 is null or p_credential_sha256 !~ '^[0-9a-f]{64}$' then
 		raise exception 'Execution host credential binding is invalid' using errcode = '22023'; end if;
-	-- A bind again (a rebuild) replaces the hash; the host's adapter stays.
-	insert into public.qorpera_execution_host_principals(host_id, provider_adapter, credential_sha256)
-	values (p_host_id, p_provider_adapter, p_credential_sha256)
+	-- The host's orchestrator, of its adapter (read with no lock; the foreign key below takes KEY SHARE).
+	if not exists (select 1 from public.qorpera_runner_orchestrators as orchestrator
+		where orchestrator.id = p_orchestrator_id and orchestrator.provider_adapter = p_provider_adapter
+			and orchestrator.status <> 'revoked') then
+		raise exception 'Execution host orchestrator is unavailable' using errcode = '42501'; end if;
+	-- A bind again (a rebuild) replaces the hash; the host's adapter and orchestrator stay.
+	insert into public.qorpera_execution_host_principals(host_id, provider_adapter, orchestrator_id, credential_sha256)
+	values (p_host_id, p_provider_adapter, p_orchestrator_id, p_credential_sha256)
 	on conflict (host_id) do update set credential_sha256 = excluded.credential_sha256, bound_at = clock_timestamp()
-	where qorpera_execution_host_principals.provider_adapter = excluded.provider_adapter;
+	where qorpera_execution_host_principals.provider_adapter = excluded.provider_adapter
+		and qorpera_execution_host_principals.orchestrator_id = excluded.orchestrator_id;
 	get diagnostics v_count = row_count;
 	if v_count <> 1 then
-		raise exception 'Execution host is bound to another provider adapter' using errcode = '42501'; end if;
-	return jsonb_build_object('hostId', p_host_id, 'providerAdapter', p_provider_adapter);
+		raise exception 'Execution host is bound to another provider adapter or orchestrator' using errcode = '42501'; end if;
+	return jsonb_build_object('hostId', p_host_id, 'providerAdapter', p_provider_adapter, 'orchestratorId', p_orchestrator_id);
 end
 $$;
-revoke all on function public.qorpera_bind_execution_host_credential(text, text, text)
+revoke all on function public.qorpera_bind_execution_host_credential(text, text, uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_bind_execution_host_credential(text, text, text) to service_role;
+grant execute on function public.qorpera_bind_execution_host_credential(text, text, uuid, text) to service_role;
 
 create function public.qorpera_revoke_execution_host_credential(p_host_id text)
 returns boolean language plpgsql volatile security definer set search_path = '' as $$
@@ -111,23 +126,44 @@ $$;
 revoke all on function public.qorpera_execution_host_uuid(jsonb, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- Whether the host's adapter holds a live claim on the run: one of its orchestrators claimed the run's job and has
--- not released it.
-create function public.qorpera_execution_host_claims_run(p_provider_adapter text, p_run_id uuid)
+-- Whether the run is the host's now: its orchestrator (of its adapter, not revoked) holds the run's current claim,
+-- claimed or assigned while the job is queued (one such claim per job), or accepted while the job is leased by the
+-- runner assigned through that claim.
+create function public.qorpera_execution_host_claims_run(p_orchestrator_id uuid, p_provider_adapter text, p_run_id uuid)
 returns boolean language sql stable set search_path = '' as $$
 	select exists (select 1 from public.qorpera_runner_job_claims as claim
 		join public.qorpera_runner_orchestrators as orchestrator on orchestrator.id = claim.orchestrator_id
-		where claim.run_id = p_run_id and claim.status in ('claimed', 'assigned', 'accepted')
-			and orchestrator.provider_adapter = p_provider_adapter and orchestrator.status <> 'revoked')
+		join public.qorpera_runner_jobs as job on job.id = claim.job_id
+		where claim.run_id = p_run_id and claim.orchestrator_id = p_orchestrator_id
+			and orchestrator.provider_adapter = p_provider_adapter and orchestrator.status <> 'revoked'
+			and ((claim.status in ('claimed', 'assigned') and job.status = 'queued')
+				or (claim.status = 'accepted' and job.status = 'leased' and exists (
+					select 1 from public.qorpera_runner_assignments as assignment
+					where assignment.claim_id = claim.id and assignment.status = 'accepted'
+						and assignment.runner_id = job.runner_id))))
 $$;
-revoke all on function public.qorpera_execution_host_claims_run(text, uuid)
+revoke all on function public.qorpera_execution_host_claims_run(uuid, text, uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- Whether the allocation is a run machine of the host's adapter for a run its orchestrator ever claimed (a release
+-- or an ended-runner check comes after the run, when its claim is no longer current).
+create function public.qorpera_execution_host_run_machine(p_orchestrator_id uuid, p_provider_adapter text,
+	p_allocation_id uuid)
+returns boolean language sql stable set search_path = '' as $$
+	select exists (select 1 from public.qorpera_runtime_machine_allocations as allocation
+		where allocation.id = p_allocation_id and allocation.provider_adapter = p_provider_adapter
+			and allocation.runner_id is not null and allocation.run_id is not null
+			and exists (select 1 from public.qorpera_runner_job_claims as claim
+				where claim.run_id = allocation.run_id and claim.orchestrator_id = p_orchestrator_id))
+$$;
+revoke all on function public.qorpera_execution_host_run_machine(uuid, text, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 create function public.qorpera_execution_host_dispatch(p_host_id text, p_credential text, p_name text, p_args jsonb,
 	p_budget text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_host public.qorpera_execution_host_principals%rowtype; v_scope text; v_budget text; v_adapter text;
-	v_run uuid; v_runner uuid; v_allocation uuid; v_identity uuid;
+	v_orchestrator uuid; v_run uuid; v_runner uuid; v_allocation uuid; v_identity uuid;
 begin
 	-- 20260930011000: the credential first, by its hash and with no lock; NULL-safe throughout.
 	if p_host_id is null or p_host_id !~ '^[a-z][a-z0-9-]{0,62}$'
@@ -139,6 +175,7 @@ begin
 	if not found or v_host.host_id is distinct from p_host_id then
 		raise exception 'execution host call is refused' using errcode = '42501'; end if;
 	v_adapter := v_host.provider_adapter;
+	v_orchestrator := v_host.orchestrator_id;
 
 	-- A call listed for this entry point's budget, its adapter the host's.
 	select calls.scope, calls.budget into v_scope, v_budget from public.qorpera_execution_host_calls as calls
@@ -150,38 +187,39 @@ begin
 	if v_scope is null or v_budget is distinct from p_budget
 		or (p_args ? 'p_provider_adapter' and p_args ->> 'p_provider_adapter' is distinct from v_adapter)
 		or (case v_scope
-			-- A runner row for a run its adapter holds a live claim on.
+			-- A runner row for the host's current run.
 			when 'run' then p_args ? 'p_provider_adapter' and v_run is not null
-				and public.qorpera_execution_host_claims_run(v_adapter, v_run)
-			-- A run machine for such a run and a runner of its adapter; never an office or a computer.
+				and public.qorpera_execution_host_claims_run(v_orchestrator, v_adapter, v_run)
+			-- A run machine for the host's current run and a runner of its adapter; never an office or a computer.
 			when 'reserve' then p_args ? 'p_provider_adapter' and v_run is not null and v_runner is not null
 				and p_args ->> 'p_office_id' is null and p_args ->> 'p_computer_generation' is null
-				and public.qorpera_execution_host_claims_run(v_adapter, v_run)
+				and public.qorpera_execution_host_claims_run(v_orchestrator, v_adapter, v_run)
 				and exists (select 1 from public.qorpera_runners as runner
 					where runner.id = v_runner and runner.provider_adapter = v_adapter)
-			-- The release of its adapter's run machine.
+			-- The release of its adapter's run machine of a run its orchestrator claimed.
 			when 'release' then p_args ? 'p_provider_adapter' and v_allocation is not null
-				and exists (select 1 from public.qorpera_runtime_machine_allocations as allocation
-					where allocation.id = v_allocation and allocation.provider_adapter = v_adapter
-						and allocation.runner_id is not null)
-			-- Ended runners among runners of its adapter only.
+				and public.qorpera_execution_host_run_machine(v_orchestrator, v_adapter, v_allocation)
+			-- Ended runners among its adapter's runners on such run machines only.
 			when 'runners' then jsonb_typeof(p_args -> 'p_runner_ids') = 'array'
 				and jsonb_array_length(p_args -> 'p_runner_ids') between 1 and 512
 				and not exists (select 1 from jsonb_array_elements(p_args -> 'p_runner_ids') as asked(value)
 					where not exists (select 1 from public.qorpera_runners as runner
+						join public.qorpera_runtime_machine_allocations as allocation on allocation.runner_id = runner.id
 						where runner.provider_adapter = v_adapter
-							and runner.id = public.qorpera_execution_host_uuid(jsonb_build_object('id', asked.value), 'id')))
-			-- The identity of the run it is read for, a run its adapter holds a live claim on.
+							and runner.id = public.qorpera_execution_host_uuid(jsonb_build_object('id', asked.value), 'id')
+							and public.qorpera_execution_host_run_machine(v_orchestrator, v_adapter, allocation.id)))
+			-- The identity of the run it is read for, the host's current run.
 			when 'identity' then v_identity is not null and v_run is not null
 				and exists (select 1 from public.qorpera_execution_runs as run
 					where run.id = v_run and run.compute_identity_id = v_identity)
-				and public.qorpera_execution_host_claims_run(v_adapter, v_run)
-			-- A slot's credential, as an exec slot, for its adapter's run machine.
+				and public.qorpera_execution_host_claims_run(v_orchestrator, v_adapter, v_run)
+			-- A slot's credential, as an exec slot, for its adapter's run machine of the host's current run.
 			when 'bind' then p_args ? 'p_provider_adapter' and v_allocation is not null
 				and p_args ->> 'p_holder_kind' = 'exec_slot'
 				and exists (select 1 from public.qorpera_runtime_machine_allocations as allocation
 					where allocation.id = v_allocation and allocation.provider_adapter = v_adapter
-						and allocation.runner_id is not null)
+						and allocation.runner_id is not null
+						and public.qorpera_execution_host_claims_run(v_orchestrator, v_adapter, allocation.run_id))
 			else false end) is not true then
 		raise exception 'execution host call is refused' using errcode = '42501'; end if;
 	-- The run an identity is read for is the entry point's, not the call's.
@@ -198,6 +236,7 @@ create function public.qorpera_execution_host_call(p_host_id text, p_credential 
 returns jsonb language plpgsql volatile security definer set search_path = ''
 	set statement_timeout = '8s' set lock_timeout = '8s' as $$
 begin
+	-- 20260930011000: the standard budget.
 	return public.qorpera_execution_host_dispatch(p_host_id, p_credential, p_name, p_args, 'standard');
 end
 $$;
@@ -205,6 +244,7 @@ create function public.qorpera_execution_host_call_long(p_host_id text, p_creden
 returns jsonb language plpgsql volatile security definer set search_path = ''
 	set statement_timeout = '25s' set lock_timeout = '25s' as $$
 begin
+	-- 20260930011000: the long budget.
 	return public.qorpera_execution_host_dispatch(p_host_id, p_credential, p_name, p_args, 'long');
 end
 $$;
