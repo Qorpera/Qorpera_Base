@@ -132,6 +132,22 @@ describe("the connection logger", () => {
 	});
 });
 
+test("the logger names refusals with the same private ranges the exit refuses", () => {
+	const nft = readFileSync(join(here, "qorpera-agent-exit.nft"), "utf8");
+	const set = /set internal4 \{[\s\S]*?elements = \{([\s\S]*?)\}/.exec(nft)[1];
+	const exitRanges = set
+		.split(",")
+		.map((part) => part.trim())
+		.filter(Boolean)
+		.map((range) => (range.includes("/") ? range : `${range}/32`))
+		.sort();
+	const py = readFileSync(logger, "utf8");
+	const loggerRanges = [...py.slice(py.indexOf("INTERNAL = ["), py.indexOf("]\n", py.indexOf("INTERNAL = ["))).matchAll(/"([0-9./]+)"/g)]
+		.map((m) => m[1])
+		.sort();
+	assert.deepEqual(loggerRanges, exitRanges);
+});
+
 const DOCKERFILE = `FROM ubuntu:26.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
 	nftables iproute2 dnsmasq-base conntrack python3 busybox procps && rm -rf /var/lib/apt/lists/*

@@ -96,6 +96,7 @@ up() {
 	# A qx-br whose peer is not this namespace's br0 (left from an earlier namespace) is replaced.
 	if has_link qx-br && ! in_exit ip link show br0 >/dev/null 2>&1; then ip link del qx-br; fi
 	has_link qx-br || ip link add qx-br type veth peer name br0 netns "$NS"
+	if has_link qx-up && ! in_exit ip link show up0 >/dev/null 2>&1; then ip link del qx-up; fi
 	has_link qx-up || ip link add qx-up type veth peer name up0 netns "$NS"
 	host_link_settings
 	ip link set qx-br master "$BRIDGE"
@@ -163,10 +164,12 @@ verify() {
 	has_ns || problems+=("no namespace $NS")
 	has_link "$BRIDGE" || problems+=("no bridge $BRIDGE")
 	if has_link "$BRIDGE"; then
-		for setting in forwarding=0 rp_filter=1 arp_ignore=8; do
+		for setting in forwarding=0 arp_ignore=8; do
 			[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/${setting%=*}") == "${setting#*=}" ]] ||
 				problems+=("$BRIDGE ${setting%=*} is not ${setting#*=}")
 		done
+		# Ubuntu's sysctl.d sets rp_filter=2 on every interface (and on "all", which wins); either filter is fine.
+		[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/rp_filter") != 0 ]] || problems+=("$BRIDGE rp_filter is off")
 	fi
 	if has_ns; then
 		in_exit ip -o -4 addr show dev br0 2>/dev/null | grep -q " $GATEWAY/16 " || problems+=("br0 lacks $GATEWAY/16")

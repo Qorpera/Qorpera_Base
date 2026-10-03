@@ -145,6 +145,13 @@ while True:
     with open(sys.argv[1], "a") as f:
         f.write("%s %s\n" % (peer[0], data.decode()))
 EOF
+cat >"$work/burst.py" <<'EOF'
+import socket, sys
+# UDP to argv[1] on argv[3] different ports from argv[2]: as many new refused flows.
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for port in range(int(sys.argv[2]), int(sys.argv[2]) + int(sys.argv[3])):
+    s.sendto(b"x", (sys.argv[1], port))
+EOF
 cat >"$work/udhcpc.sh" <<'EOF'
 #!/bin/sh
 [ "$1" = bound ] && echo "ip=$ip router=$router dns=$dns" > "$LEASE_FILE"
@@ -311,6 +318,12 @@ logger: $(cat "$work/log.out")
 set: $(ip netns exec qexit nft -j list set inet qorpera_agent_exit refused_flows 2>&1)
 log: $(cat "$log_file")"
 pass "the log has each connection's end with bytes, and the refused flows, for agent machines only"
+# Past a machine's share (a burst of 100 new refused flows), refusals are counted as unlogged and become a gap line.
+ip netns exec agent python3 "$work/burst.py" 192.168.1.40 20000 150
+for _ in $(seq 1 50); do grep -q '"event":"gap".*unlogged flows' "$log_file" && break; sleep 0.2; done
+grep -q '"event":"gap".*unlogged flows' "$log_file" || fail "no gap line for unlogged refusals: $(tail -5 "$log_file")"
+grep -q 'cannot read' "$log_file" && fail "the logger failed to read the exit's sets: $(grep 'cannot read' "$log_file")"
+pass "refusals past a machine's share show as a gap, and the logger read every set"
 
 # --- Fail closed -------------------------------------------------------------------------------------------------
 if bash "$tool" down 2>"$work/down.err"; then fail "down went ahead with a machine plugged in"; fi

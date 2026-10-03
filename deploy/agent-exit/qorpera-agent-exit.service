@@ -9,6 +9,8 @@ Wants=qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# LXD waits for this unit at boot; a hung start must not hold it for long.
+TimeoutStartSec=60
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
 # A restart (stop, then start) stops the name and log services in `down`; start them again.
 ExecStartPost=/bin/systemctl start --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service

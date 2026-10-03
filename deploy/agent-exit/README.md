@@ -25,7 +25,7 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 196,608 in all (proposed, pending Jonas; per address until E2's NIC filtering pins each machine to one); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (proposed, pending Jonas; per address until E2's NIC filtering pins each machine to one); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `verify`, `status` |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content |
@@ -58,7 +58,7 @@ when it stops or moves.
 ufw is installed on the nodes but switched off (`ENABLED=no`). If it is ever switched on, its default forward policy
 (DROP) would refuse the bridged traffic between agent road machines and the exit, and LXD's guests' traffic too.
 
-The guest guard (`deploy/guest-guard/`) must never list `qagent0`: with br_netfilter, traffic between an agent machine
+The guest guard (`deploy/guest-guard/`) must never list `qagent0`: with br_netfilter, traffic between an agent road machine
 and the exit is bridged and would be refused as a private destination.
 
 ## Health and failure
@@ -73,7 +73,7 @@ agent road machines off a node whose exit is not healthy.
 
 `qorpera-agent-exit.test.mjs` checks the pins and the logger's parsers, and on Linux with Docker runs `test/proof.sh`
 in a privileged container with no network of its own (`ubuntu:26.04` with the packages above, built once and cached).
-The proof plays a node: an agent machine plugged into `qagent0` with a static lease, the office network (router,
+The proof plays a node: an agent road machine plugged into `qagent0` with a static lease, the office network (router,
 NAS, node 1), a small internet (a site, a resolver, our public address) and node 1 on the tailnet. It checks:
 - DHCP, names, the DNS redirect and the query log;
 - that a site sees the node's own address;
@@ -98,7 +98,11 @@ guest guard, LXD and Tailscale on a real node. Those come with E2's switch-on pr
 - E3 (log shipping): rotate `dns.log` by copying and truncating it, not by renaming it and sending SIGUSR2. dnsmasq's
   unprivileged user cannot create a file in the 0750 log directory, so a reopen would fail and logging would stop.
 - E2: the per-machine connection bound counts per address; E2's NIC filtering pins each machine to its address. A
-  reload of the rules starts the per-machine counts again from zero.
+  reload of the rules starts both counts again from zero. The total is one shared list in the kernel: E2's switch-on
+  proof on a node measures its cost under load before Jonas decides the numbers.
+- E2: with br_netfilter the node itself tracks the bridged leg of every agent packet, refused ones included (a few
+  seconds each). E2 proves the node's own connection table keeps room under a flood of refused connections, or
+  stops the node tracking bridged `qagent0` traffic.
 - The refused-flow log: a flow is logged when it is first refused and again each time it is added back after its hour
   runs out. Refusals the exit could not keep (a machine's share spent, or a set full) are counted in
   `refused_unlogged`, and the logger writes a gap line for them.

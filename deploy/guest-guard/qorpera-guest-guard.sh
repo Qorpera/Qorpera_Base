@@ -110,16 +110,16 @@ compare_bridges() {
 		echo "MISMATCH cannot read guest_bridges, bridge_subnets or bridge_gateways from $rules"
 		return 1
 	}
+	# The agent exit's bridge must never be a guest bridge, whether or not it exists on this node yet.
+	if [[ -n ${guarded[qagent0]:-} ]]; then
+		echo "MISMATCH bridge qagent0 is listed in the rules; it is the agent exit's bridge and must never be"
+		status=1
+	fi
 	for bridge in $(ip -o link show type bridge | awk -F': ' '{print $2}' | cut -d@ -f1); do
 		if [[ $bridge == qagent0 ]]; then
 			# The agent exit's bridge (deploy/agent-exit): its machines reach only the exit, which guards them. Listing
 			# it here would refuse their bridged traffic to the exit.
-			if [[ -n ${guarded[$bridge]:-} ]]; then
-				echo "MISMATCH bridge qagent0 is listed in the rules; it is the agent exit's bridge and must never be"
-				status=1
-			else
-				echo "bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here"
-			fi
+			[[ -n ${guarded[$bridge]:-} ]] || echo "bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here"
 			continue
 		fi
 		if [[ -z ${guarded[$bridge]:-} ]]; then

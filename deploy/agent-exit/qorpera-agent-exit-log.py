@@ -106,7 +106,7 @@ def new_refusals(previous, current):
     for key, expires in current.items():
         if key not in previous:
             fresh.append(key)
-        elif expires is not None and previous[key] is not None and expires > previous[key]:
+        elif expires is not None and (previous[key] is None or expires > previous[key]):
             fresh.append(key)
     return sorted(fresh, key=lambda k: tuple(str(part) for part in k))
 
@@ -201,8 +201,10 @@ def poll_refused(netns, writer, interval):
             seen = current
             # Refusals the exit could not add to its sets (a machine's share spent, or a set full) are a gap.
             count = unlogged_count(nft_json(netns, "counter", "inet", "qorpera_agent_exit", "refused_unlogged"))
-            if unlogged is not None and count > unlogged:
-                writer.gap(f"{count - unlogged} refused packets of unlogged flows")
+            # A rules reload starts the counter again from zero; then everything it holds is new.
+            new = count - unlogged if unlogged is not None and count >= unlogged else count if unlogged is not None else 0
+            if new > 0:
+                writer.gap(f"{new} refused packets of unlogged flows")
             unlogged = count
             failing = False
         except Exception as error:  # noqa: BLE001 - a failed read is a gap, never the end of the logger
