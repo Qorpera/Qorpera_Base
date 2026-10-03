@@ -273,13 +273,6 @@ export function fixture() {
 		meteredUntil: "2026-09-28T18:00:00Z",
 		waitingForHours: false,
 	});
-	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
-	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);
-	vi.spyOn(api, "usesPathGateway").mockResolvedValue(false);
-	vi.spyOn(api, "listProposals").mockResolvedValue({ items: [proposal], hasMore: false });
-	vi.spyOn(api, "getProposal").mockResolvedValue(proposal);
-	vi.spyOn(api, "getSnapshot").mockResolvedValue(snapshot);
-	vi.spyOn(api, "listProposalComments").mockResolvedValue({ items: [], hasMore: false });
 	return {
 		api,
 		cloud,

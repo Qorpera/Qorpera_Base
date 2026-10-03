@@ -192,7 +192,7 @@ describe("account and route ownership", () => {
 
 		// Leave the accepted send waiting for its transcript and start another
 		// compose for the same session, so session identity cannot distinguish them.
-		location.hash = `#/c/${profileA.profileId}/file/history`;
+		location.hash = `#/c/${profileA.profileId}/file`;
 		await draw();
 		location.hash = `#/c/${profileA.profileId}/new`;
 		await draw();
@@ -592,15 +592,6 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe("#/account");
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
 		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
-	});
-
-	it("initializes Company File once while its response is delayed", async () => {
-		const f = mounted(`#/c/${profileA.profileId}/file/history`);
-		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
-		vi.mocked(f.api.getCompanyFile).mockReturnValue(loading.promise);
-		await draw();
-		await vi.advanceTimersByTimeAsync(180);
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
 	});
 
 	it("toggles and closes company navigation without replacing the composer", async () => {
