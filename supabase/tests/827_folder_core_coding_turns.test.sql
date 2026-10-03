@@ -226,6 +226,106 @@ begin
 		raise exception 'F: the next call claims the queued session, got %', v_claim; end if;
 end $$;
 
+-- The entry held open on fence_two, as the completion and the answer hold it; a holder on fence_one.
+create function pg_temp.enter_open() returns void language plpgsql as $$
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select (public.qorpera_lock_coding_worker('82700000-0000-4000-8000-0000000000c1')).id::text$q$)
+		as t(r text);
+end $$;
+
+-- H. Rank 5 (602's races 1-3 and 6, on folder-v2). Two entries on one worker (the owner's answer against the executor's
+-- completion or begin) take turns: the second waits at the todo, holding neither the worker nor the session. An agent's
+-- worker tool (F2's cancel holds the todo FOR SHARE and the worker FOR NO KEY UPDATE) makes the entry wait at the todo.
+do $$
+declare v_state text;
+begin
+	perform pg_temp.enter_open();
+	perform dblink_send_query('fence_three', $q$select (public.qorpera_lock_coding_worker('82700000-0000-4000-8000-0000000000c1')).id::text$q$);
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_runtime_agent_todos') then
+		perform dblink_exec('fence_two', 'rollback'); raise exception 'H: a second entry must wait at the todo'; end if;
+	perform dblink_exec('fence_two', 'rollback');
+	v_state := pg_temp.outcome('fence_three');
+	if v_state <> 'ok' then raise exception 'H: the second entry after the first, got %', v_state; end if;
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+		for key share$q$) as t(x integer);
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_runtime_agent_todos where id = '82700000-0000-4000-8000-0000000000a0'
+		for share$q$) as t(x integer);
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c1'
+		for no key update$q$) as t(x integer);
+	perform dblink_send_query('fence_two', $q$select (public.qorpera_lock_coding_worker('82700000-0000-4000-8000-0000000000c1')).id::text$q$);
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_runtime_agent_todos') then
+		perform pg_temp.release(); raise exception 'H: the entry must wait at the todo behind an agent''s worker tool'; end if;
+	if not pg_temp.row_free($q$select 1 from public.qorpera_coding_sessions where worker_id = '82700000-0000-4000-8000-0000000000c1'$q$) then
+		perform pg_temp.release(); perform pg_temp.outcome('fence_two');
+		raise exception 'H: the waiting entry holds no session'; end if;
+	perform pg_temp.release();
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'H: the entry after the worker tool, got %', v_state; end if;
+end $$;
+
+-- I. A coding machine's admission (602's race 4; 3h's order: the machine fence, then the worker FOR UPDATE, then the
+-- session) and the entry: the entry waits at the worker, holding no session, so the admission gets its session.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+		for key share$q$) as t(x integer);
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c1'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('fence_two', $q$select (public.qorpera_lock_coding_worker('82700000-0000-4000-8000-0000000000c1')).id::text$q$);
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_runtime_workers') then
+		perform pg_temp.release(); raise exception 'I: the entry must wait at the worker behind an admission'; end if;
+	-- The admission takes its session next: nothing the entry holds is in its way.
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_coding_sessions where worker_id = '82700000-0000-4000-8000-0000000000c1'
+		for update nowait$q$) as t(x integer);
+	perform pg_temp.release();
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'I: the entry after the admission, got %', v_state; end if;
+end $$;
+
+-- J. Someone who does not own the session locks nothing (602's race 8): a member's answer is refused at once while the
+-- worker is held, before the entry.
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c1'
+		for update$q$) as t(x integer);
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select set_config('request.jwt.claims',
+		'{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}', true)$q$) as t(r text);
+	perform dblink_exec('fence_two', 'set local role authenticated');
+	perform dblink_send_query('fence_two', $q$select public.qorpera_answer_coding_session('82700000-0000-4000-8000-0000000000c1',
+		'Both together.', '82700000-0000-4000-8000-0000000000f7')::text$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
+		perform pg_temp.release(); perform dblink_exec('fence_two', 'rollback');
+		raise exception 'J: a non-owner''s answer must not wait'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'rollback');
+	perform pg_temp.release();
+	if v_state not like '42501 Only the owner of this coding session can talk to it%' then
+		raise exception 'J: a non-owner''s answer is refused, got %', v_state; end if;
+end $$;
+
+-- K. A stop's second phase waits for the entry, as for the completion and the answer that hold it.
+do $$
+begin
+	perform pg_temp.enter_open();
+	perform * from dblink('fence_three', $q$select public.qorpera_folder_pause('64800000-0000-4000-8000-000000000010',
+		'64800000-0000-4000-8000-000000000001', 'test 827 K')::text$q$) as t(r text);
+	perform dblink_send_query('fence_three', $q$select public.qorpera_folder_pause_drain('64800000-0000-4000-8000-000000000010')::text$q$);
+	if not pg_temp.waits_for('fence_three', 'fence_two') then
+		perform dblink_exec('fence_two', 'rollback');
+		raise exception 'K: a stop''s second phase must wait for the entry (%)', pg_temp.outcome('fence_three'); end if;
+	perform dblink_exec('fence_two', 'rollback');
+	if pg_temp.outcome('fence_three') <> 'ok' then raise exception 'K: the stop''s second phase'; end if;
+	perform * from dblink('fence_three', $q$select public.qorpera_folder_resume('64800000-0000-4000-8000-000000000010')::text$q$)
+		as t(r text);
+end $$;
+
 -- G. The entry is internal, and every patched body carries the marker.
 do $$
 begin

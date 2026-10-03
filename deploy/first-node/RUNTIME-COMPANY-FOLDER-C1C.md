@@ -1323,8 +1323,11 @@ is now the company's entry (core §3):
 - rank 5 the todo and then the worker, `FOR NO KEY UPDATE` (F2's table order; the completion and the answer write the
   todo).
 
-The coding session comes after, at the sessions step (core §3, amended: coding sessions go with the sessions after rank
-10, `FOR UPDATE` in id order). A worker of a company that is not `folder-v2` is refused with 0A000.
+The coding session comes after, at the sessions step (core §3, amended: one sessions step after rank 10, `FOR UPDATE`
+in id order: the conversations, then the coding sessions, then the turn inputs, as C4's materializer takes them).
+Nothing takes a conversation and a coding session together today: the completion settles the worker and its session,
+and its parent hears it from the worker drain in a later transaction. A worker of a company that is not `folder-v2` is
+refused with 0A000.
 
 **The begin.** It reads the pause again after the fence, since it inserts a wake. It admits on the folder admission row
 (step 10) last, before its wake. There is no NOWAIT and no 55P03, so the executor's busy retry no longer fires.
@@ -1348,7 +1351,13 @@ materializes its wake.
   - C: a paused company refuses;
   - D: the entry and an agent's worker change take turns at the worker, and a snapshot-v1 worker is refused;
   - E: the claim skips the snapshot-v1 candidate without keeping its rows;
-  - F: failing an expired lease ends the call.
+  - F: failing an expired lease ends the call;
+  - H: two entries on one worker, and an agent's worker tool against the entry, take turns at the todo (602's races
+    1-3 and 6);
+  - I: a coding machine's admission (worker, then session) and the entry: the entry waits at the worker, holding no
+    session (602's race 4);
+  - J: a non-owner's answer is refused at once while the worker is held (602's race 8);
+  - K: a stop's second phase waits for the entry, as for the completion and the answer.
 - The snapshot-v1 coding tests are deleted:
   - 395, 399, 600, 601, 602 (fleet), 603, 604, 606, 627, 655, 676, 719, 737, 739, 775 and 782;
   - also the coding-claim section of 640.
@@ -1356,11 +1365,14 @@ materializes its wake.
 - The snapshot load scripts and the coding backfill script went with them. Run-on-node's `folder-core-load` step
   replaces `company-fence-load`.
 
-**Release guard (release-owned).** v170's activation pins these markers, and the generator's template carries them:
+**Release guard (release-owned).** v170's activation (20260928459990:39-52) pins these markers, and the generator's
+template carries them:
 - `v_worker := public.qorpera_lock_coding_worker(p_worker_id);` in the begin and the completion (both kept);
-- `for update;` in `qorpera_lock_coding_worker` (gone).
+- `v_worker := public.qorpera_lock_coding_worker(v_worker.id);` in the answer (kept);
+- `for update;` in `qorpera_lock_coding_worker` (gone);
+- `where id = v_worker.id for update;` in the delegation (gone: it calls the entry).
 
-The next cut must drop or replace the second marker.
+The next cut must replace the two that are gone, for example with the body marker 20260930026000.
 
 **Not in 3i-a (3i-b, migration 20260930026500):**
 - the `folder-v2` machine-event drain and the quiet coding check-ins, as per-company loops;

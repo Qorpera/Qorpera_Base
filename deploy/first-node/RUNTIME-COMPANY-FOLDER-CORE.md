@@ -331,8 +331,9 @@ is never upgraded. The steps:
    9. unique-key claims, by kind then key.
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
-   every session the transaction will write, `FOR UPDATE` in id order (coding sessions with them, C1c-3i); and the
-   company's operation clock, which the
+   every session the transaction will write, `FOR UPDATE` in id order: the conversations, then the coding sessions
+   (C1c-3i), then the turn inputs, as C4's materializer takes them (20260930018000); and the company's operation
+   clock, which the
    first session write takes (an insert, a title or status change, or an event). Admission and the folder clock stay last.
 
    These numbers are the lock ranks, and all nine come before paths (step 5),
