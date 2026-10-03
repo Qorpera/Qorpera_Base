@@ -1060,8 +1060,10 @@ finding 1, and r4, finding 1, both reproduced).
 
 Renewal takes the view `FOR NO KEY UPDATE`, which never waits for a commit's
 `KEY SHARE`. Closing and superseding take it `FOR UPDATE`, which waits out
-the view's commit in flight. The folder service keeps one commit in flight
-per view.
+the view's commit in flight. A renewal that finds the view no longer valid
+closes it, so it takes the view `FOR UPDATE` first (20260930001000; before
+that it closed under `FOR NO KEY UPDATE`). The folder service keeps one
+commit in flight per view.
 
 ### 5. Open, renew and close
 

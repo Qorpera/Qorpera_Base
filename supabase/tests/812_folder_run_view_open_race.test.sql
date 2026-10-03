@@ -1,8 +1,9 @@
 -- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
 -- F3, the run view open (20260928439970) under concurrency: two first opens in one job at once, two opens with a view
--- open, an open beside a save in flight through the view, an open beside the run's completion, and a refused actor
--- beside a held job. The order is the run completion's (job, then the job's run views, then the view open's run
--- entry), so nothing deadlocks, a refused call never waits, and the last opener's view wins.
+-- open, an open beside a save in flight through the view, an open beside the run's completion, a refused actor beside
+-- a held job, and a renewal beside a save in flight (20260930001000). The order is the run completion's (job, then the
+-- job's run views, then the view open's run entry), so nothing deadlocks, a refused call never waits, the last
+-- opener's view wins, and a renewal waits for a save only when it closes the view.
 create function pg_temp.human() returns jsonb language plpgsql as $$
 declare p jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
 begin
@@ -233,6 +234,51 @@ begin
 	perform dblink_exec('r812_a', 'rollback');
 	if v_outcome ->> 'state' is distinct from '42501' or v_outcome ->> 'error' is distinct from 'Folder run is not current' then
 		raise exception 'A refused open: %', v_outcome; end if;
+end $$;
+
+-- 6. Renewal beside a save in flight through the view (the view row KEY SHARE): renewing it never waits; closing a
+--    view that no longer matches its anchor (here the job's lease has ended) waits the save out first, so nothing
+--    lands through a closed view (C1B §4; 20260930001000).
+do $$
+declare v_view jsonb; v_outcome jsonb; q text := current_setting('qorpera_test.r812_q');
+	c_renew constant text := 'select public.qorpera_folder_view_renew(%L, %L)';
+begin
+	perform pg_temp.r812_begin('b');
+	select result into v_view from dblink('r812_b', pg_temp.r812_open_sql(q)) as opened(result jsonb);
+	perform dblink_exec('r812_b', 'commit');
+	-- A renewal beside the save: answered at once, still open.
+	perform pg_temp.r812_begin('a');
+	perform * from dblink('r812_a', format('select 1 from public.qorpera_folder_views where id = %L for key share',
+		v_view ->> 'viewId')) as held(one integer);
+	perform pg_temp.r812_begin('b');
+	perform dblink_send_query('r812_b', format(c_renew, v_view ->> 'viewId', v_view ->> 'pass'));
+	if pg_temp.r812_waited('b', 'a') then
+		perform dblink_exec('r812_a', 'rollback');
+		raise exception 'A renewal waited for a save in flight: %', pg_temp.r812_collect('r812_b'); end if;
+	v_outcome := pg_temp.r812_collect('r812_b');
+	perform dblink_exec('r812_b', 'commit');
+	perform dblink_exec('r812_a', 'rollback');
+	if v_outcome -> 'result' ->> 'state' is distinct from 'open' then raise exception 'A renewal beside a save: %', v_outcome; end if;
+	-- The job's lease ends, so the view no longer matches its anchor; a save is in flight through it.
+	perform pg_temp.r812_begin('a');
+	perform dblink_exec('r812_a', format($q$update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval '1 second'
+		where id = %L$q$, q::jsonb ->> 'jobId'));
+	perform dblink_exec('r812_a', 'commit');
+	perform pg_temp.r812_begin('a');
+	perform * from dblink('r812_a', format('select 1 from public.qorpera_folder_views where id = %L for key share',
+		v_view ->> 'viewId')) as held(one integer);
+	perform pg_temp.r812_begin('b');
+	perform dblink_send_query('r812_b', format(c_renew, v_view ->> 'viewId', v_view ->> 'pass'));
+	if not pg_temp.r812_waited('b', 'a') then
+		perform dblink_exec('r812_a', 'rollback');
+		raise exception 'Closing a view did not wait for its save in flight: %', pg_temp.r812_collect('r812_b'); end if;
+	if pg_temp.r812_view_state(v_view) <> 'open' then raise exception 'The view closed before its save ended'; end if;
+	perform dblink_exec('r812_a', 'commit');
+	v_outcome := pg_temp.r812_collect('r812_b');
+	perform dblink_exec('r812_b', 'commit');
+	if v_outcome -> 'result' ->> 'state' is distinct from 'closed' or v_outcome -> 'result' ->> 'reason' is distinct from 'ended'
+		or pg_temp.r812_view_state(v_view) <> 'closed/ended' then
+		raise exception 'Closing a view after its save: % (%)', v_outcome, pg_temp.r812_view_state(v_view); end if;
 end $$;
 
 select pg_temp.r812_cleanup();
