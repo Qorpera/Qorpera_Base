@@ -775,11 +775,11 @@ subscriptions, which self-limit.
 > - 50,000 Company File entries per company (the tree's storage bound). The
 >   standing counts (32 routines, 64 open todos and 4 active workers per agent,
 >   40 sidebar sections) went in bundle v95;
-> - no stall detection: a run whose harness hangs without crashing keeps its
->   run until Stop, as in Codex CLI and Claude Code. It no longer keeps its
->   machine awake: a run with no progress for 15 minutes is waiting (changed
->   in place, by the 2026-10-03 amendment "one idle rule for every
->   machine");
+> - no stall detection: a run whose harness hangs without crashing runs until
+>   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
+>   coding or agent's machine awake: a run with no progress for 15 minutes is
+>   idle (changed in place, by the 2026-10-03 amendment "one idle rule for
+>   every machine");
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
@@ -3528,14 +3528,14 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      node, and why (no node has set it up yet, or no room).
    - A computer is a seat. Besides being in use, a seat can be held by an
      agent waiting for its machine, or woken and still running ("No waiting
-     for a seat" above). It is in use only while it has a live lease or a
-     live viewer, is being taken over or drained, still has resources the
-     agent started there that have not drained, has a busy command in its
-     shell (changed in place, by the 2026-10-03 amendment "one idle rule for
-     every machine"), or was opened less than about two minutes ago. A
-     desktop left open
-     with none of these does not keep the seat. The two-minute window may be
-     tuned without a new founder decision.
+     for a seat" above). It is in use only while it has a live lease of a
+     run that counts or a live viewer, is being taken over or drained, still
+     has resources the agent started there that have not drained, has a busy
+     command in its shell, or was opened less than about two minutes ago
+     (changed in place, by the 2026-10-03 amendment "one idle rule for every
+     machine"). A live lease of an idle run still holds the seat but is not
+     use. A desktop left open with none of these does not keep the seat. The
+     two-minute window may be tuned without a new founder decision.
    - Before a seat changes hands, its desktop and shell are closed. Unsaved
      application state on it is lost, and the agent and any viewer are told
      what was closed.
@@ -3617,7 +3617,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      including a non-HTTP connection, while the NAS, the node, cloud metadata
      and the other computers stay unreachable; a later turn reads its output;
      the machine stays awake meanwhile. A command that only waits lets the
-     machine sleep, and the next run is told it stopped (changed in place).
+     machine sleep, and the next run is told it stopped (changed in place, by
+     the 2026-10-03 amendment "one idle rule for every machine").
 3. **Coding sessions stand by between turns.** A coding session behaves like
    a session on a member's own laptop: the end of a turn is not the end of
    the session. The first build detached the session at the end of every turn
@@ -3639,14 +3640,13 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      or task limit of its own, though an agent may set a deadline. A member's
      sessions share the machine by equal weights, and the machine keeps a
      memory reserve for its own control.
-   - A coding machine sleeps after 10 minutes with no turn and no command
-     using the processor. A program that only waits, such as a dev server,
-     does not keep it awake, as on every machine (changed in place, by the
-     2026-10-03 amendment "one idle rule for every machine"). Sleep powers
-     the machine off: the
-     session's files stay, programs stop, and the next turn is told what
-     stopped. A machine that wakes may start on another node; only its
-     scratch is rebuilt.
+   - A coding machine sleeps after 10 minutes with no turn making progress
+     and no command using the processor. A program that only waits, such as
+     a dev server, does not keep it awake, as on every machine (changed in
+     place, by the 2026-10-03 amendment "one idle rule for every machine").
+     Sleep powers the machine off: the session's files stay, programs stop,
+     and the next turn is told what stopped. A machine that wakes may start
+     on another node; only its scratch is rebuilt.
    - Archiving a session stops its programs and detaches it from the machine.
      Its files stay, and a new turn reopens it. The session's owner or the
      agent can archive it.
@@ -4534,36 +4534,46 @@ amendment governs. In-place edits are marked "(changed in place)".
   machine awake"), item 3 (coding sleep and check-ins) and item 4 (task and
   always-on machines).
 
-1. **What keeps a machine awake.** This rule replaces two old terms, "a
-   running command" and "a run placed on it". Everything else that keeps a
-   machine awake today stays: a live viewer, a takeover or a drain, resources
-   not yet drained, runs and requests waiting for the machine, a wake that
-   starts it, and the two minutes after a computer opens.
+1. **What keeps a machine awake.** This rule replaces three old terms: "a
+   running command", "a run placed on it" and a computer's live lease.
+   Everything else that keeps a machine awake today stays: a live viewer, a
+   takeover or a drain, resources not yet drained, runs and requests waiting
+   for the machine to start, a wake that starts it, and the two minutes after
+   a computer opens.
    - **A run** counts while it makes progress or has a model request in
-     flight.
-     - Its progress clock is the newest of its last recorded step, its last
-       native context view (recorded before every model request, by the
-       2026-09-29 amendment "one call before a model request") and its job
-       start. Lease renewals never count.
+     flight. So does its lease on a computer.
+     - Its progress clock is the newest of its last recorded step (a runtime
+       observation of a tool call or a model request), its last native context
+       view (recorded before every model request, by the 2026-09-29 amendment
+       "one call before a model request") and its job start. Lease renewals
+       never count.
      - A model request is in flight from its recorded context view until the
-       run records its next step. So a long single request is never waiting.
+       run records its next step. So a long single request never makes a run
+       idle; a harness that hangs inside a request keeps the machine awake
+       until its run ends.
      - A run with neither progress nor a model request for 15 minutes is
-       waiting. The same clock drives the run's "no progress for 15 minutes"
+       idle. The same clock drives the run's "no progress for 15 minutes"
        notice.
      - A coding turn is a run.
    - **A program** counts while it is busy: while it uses more than about 5%
      of one processor core.
      - That is measured for each command, coding session or computer's shell.
      - On an agent's machine, programs outside its commands, such as
-       containers it started, count by the machine's whole processor share
-       (about 2%), as today.
+       containers, count by the processor share of the whole machine beyond
+       its commands' own use (about 2% of the machine), as today. That share
+       belongs to the agent that started the machine.
      - A program that only waits (a dev server, an idle database, `sleep`, a
        watcher with nothing to do) is not busy.
 2. **Seats follow the same test.** A computer's seat is in use under the same
-   terms (item 1 of "compute for agents", changed in place). A program that
-   only waits does not hold the seat. If another agent needs that seat, the
-   shell closes before the seat changes hands, its programs stop, and the
-   agent is told, as at sleep.
+   terms (item 1 of "compute for agents", changed in place). Decided 3 October
+   2026 (the coordinator, carrying out the founder decision):
+   - A program that only waits does not hold the seat. If another agent needs
+     that seat, the shell closes before the seat changes hands, its programs
+     stop, and the agent is told, as at sleep.
+   - An idle run's lease still holds its seat, so its desktop is not handed
+     to another agent while it waits, but it does not keep the machine awake.
+     If the machine sleeps, the run goes on without computer tools until it
+     opens its computer again.
 3. **Sleep.** A machine sleeps after its quiet window with nothing keeping it
    awake: a company machine after 5 minutes, a coding machine after 10
    minutes, an agent's task machine after an hour. These stay per-node or
@@ -4576,14 +4586,18 @@ amendment governs. In-place edits are marked "(changed in place)".
        dispatched the worker.
 4. **Busy work keeps running.** A busy program keeps its machine awake for as
    long as it stays busy. The platform never stops a program for running
-   long. Other stops stay: an agent's or a member's stop, zero computer hours
-   and its finish window, the memory guard, the operator pause, a lost
+   long. Every other stop stays as before, for example an agent's or a
+   member's stop, the computer closing or its authority ending, a takeover, a
+   seat changing hands (item 2), archiving a coding session, zero computer
+   hours and its finish window, the memory guard, the operator pause, a lost
    attachment, and a deleted company.
 5. **Check-ins for busy programs.** When an agent's program has kept a machine
    busy since that agent last worked with it, the agent is asked whether it
    still needs it.
    - It is asked in the conversation of the run that started the program. For
      a worker's program, that is the conversation that dispatched the worker.
+     For busy work outside an agent's machine's commands, it is the agent that
+     started the machine, in the conversation of the run that started it.
    - The count starts at the later of the program's start and the agent's
      last work with it.
      - Working with it means starting a command on that machine, typing into
@@ -4609,10 +4623,17 @@ amendment governs. In-place edits are marked "(changed in place)".
      stopped.
    - A busy job keeps the machine awake and brings check-ins at 1 and 3 hours.
      Reading its output in between does not restart the count.
-   - A run that stops making progress lets its company machine sleep about 20
-     minutes later (15 minutes waiting, then the 5-minute window).
+   - A run that stops making progress, while holding a computer's lease, lets
+     its company machine sleep about 20 minutes later (15 minutes until it is
+     idle, then the 5-minute window).
    - A model request lasting more than 20 minutes, by a run that holds a
-     Company Computer with its browser open, keeps the machine awake.
+     computer on a company machine with its browser open, keeps the machine
+     awake.
+   - When another agent needs the seat of a computer whose shell only runs a
+     waiting server, the shell closes, the seat changes hands, and the first
+     agent's next run is told what stopped.
+   - A busy container on an agent's task machine keeps it awake and brings
+     check-ins to the agent that started the machine.
    - An always-on machine brings its weekly check-in.
 
 ## 20. Enforcement matrix
