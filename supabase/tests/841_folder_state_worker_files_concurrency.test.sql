@@ -67,6 +67,12 @@ begin
 	return v_text;
 end $$;
 
+-- The company's login pays for unattended work (as 818's fixture sets it), so a dispatch finds its payer.
+set session_replication_role = replica;
+update public.qorpera_provider_connection_versions set allow_autonomous = true where connection_id = '64800000-0000-4000-8000-0000000000b3';
+update public.qorpera_execution_sponsor_versions set allow_autonomous = true where binding_id = '64800000-0000-4000-8000-0000000000b1';
+set session_replication_role = origin;
+
 -- Two open todos of Ada's, committed.
 select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'f2b-race-todos', jsonb_build_array(
 	pg_temp.todo('agents/ada/todos/race-one.md', 'open'), pg_temp.todo('agents/ada/todos/race-two.md', 'open'))), 2, 'saved') \g /dev/null
