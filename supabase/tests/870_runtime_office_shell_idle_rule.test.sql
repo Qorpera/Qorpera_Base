@@ -261,6 +261,16 @@ update public.qorpera_runtime_office_shell_commands set computer_generation=comp
 select pg_temp.shells(false);
 select pg_temp.wake_assert((pg_temp.command_row(1)).end_reason='lost','A command of an earlier generation nobody ended is lost');
 rollback to other_stops;
+-- An end the office let go of: the screen's whole lists no longer name the command. It ends as unknown, never told.
+select pg_temp.telling(true);
+select pg_temp.shells(false);
+select pg_temp.wake_assert((pg_temp.command_row(1)).end_reason='unknown' and not pg_temp.open_work() ? 'computerStopped',
+	'A command the office no longer lists ends as unknown, and nobody is told it stopped');
+rollback to other_stops;
+-- A list cut at 64 says nothing about what it leaves out.
+select pg_temp.shells(false,(select jsonb_agg(pg_temp.open_item(100+n,'not started here','1 minute','1 minute')) from generate_series(1,64) n));
+select pg_temp.wake_assert((pg_temp.command_row(1)).ended_at is null,'A full list ends nothing it leaves out');
+rollback to other_stops;
 select pg_temp.wake_assert(pg_get_functiondef('public.qorpera_begin_runtime_office_lifecycle(jsonb)'::regprocedure)
 	like '%update public.qorpera_runtime_office_shell_commands set ended_at=clock_timestamp(),end_reason=''closed''%'
 	and pg_get_functiondef('public.qorpera_reconcile_runtime_office_idle(jsonb,bigint,uuid,text,integer)'::regprocedure)
@@ -358,7 +368,8 @@ select pg_temp.wake_assert(not pg_temp.asked_again(),'Nobody is asked about a sh
 rollback to asked;
 -- However many long commands run, the question stays within its bound.
 select pg_temp.started(n) from generate_series(11,18) n;
-select pg_temp.shells(true,(select jsonb_agg(pg_temp.open_item(n,repeat('漢',300),'5 hours','5 hours')) from generate_series(11,18) n));
+select pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(5,'python crawl.py','4 hours','5 hours'))
+	||(select jsonb_agg(pg_temp.open_item(n,repeat('漢',300),'5 hours','5 hours')) from generate_series(11,18) n));
 update public.qorpera_runtime_office_shell_commands set worked_at=clock_timestamp()-interval '5 hours' where id=pg_temp.command(5);
 select pg_temp.wake_assert(pg_temp.asked_again(),'Long commands are still asked about');
 select pg_temp.wake_assert((select octet_length(body::text)<=4096 and jsonb_array_length(body->'running') between 1 and 4

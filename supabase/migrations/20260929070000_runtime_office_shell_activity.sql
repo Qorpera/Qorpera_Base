@@ -35,7 +35,8 @@ revoke all on public.qorpera_runtime_office_shell_activity from public,anon,auth
 
 -- One row per command, from the office's reports. Ended by the office
 -- (exited, stopped by the agent, the memory guard, the pause, the shell
--- closing with its screen) or by the platform (slept, closed, paused, lost).
+-- closing with its screen) or by the platform (slept, closed, paused, lost,
+-- unknown).
 create table public.qorpera_runtime_office_shell_commands (
 	id uuid primary key,
 	office_id uuid not null references public.qorpera_runtime_offices(id) on delete cascade,
@@ -54,7 +55,8 @@ create table public.qorpera_runtime_office_shell_commands (
 	worked_at timestamptz not null,
 	recorded_at timestamptz not null default clock_timestamp(),
 	ended_at timestamptz,
-	end_reason text check (end_reason in ('exited','stopped','pressure','paused','closed','slept','lost')),
+	-- unknown: the office no longer lists it, and never reported its end (it let that go). Never told.
+	end_reason text check (end_reason in ('exited','stopped','pressure','paused','closed','slept','lost','unknown')),
 	told_run_id uuid,
 	told_at timestamptz,
 	check ((ended_at is null) = (end_reason is null))
@@ -145,6 +147,14 @@ begin
 		from public.qorpera_runtime_office_screens screen
 		where command.office_id=v_office.id and command.ended_at is null and screen.id=command.screen_id
 			and screen.staff_agent_id is distinct from command.staff_agent_id;
+	-- A screen whose lists are whole names every command it still has: one it neither lists open nor reports
+	-- ended was let go of by the office (its end never arrived), so nobody is told a stop that did not happen.
+	for v_screen in select value from jsonb_array_elements(p_report->'screens')
+		where jsonb_array_length(value->'open')<64 and jsonb_array_length(value->'ended')<64 loop
+		update public.qorpera_runtime_office_shell_commands set ended_at=v_at,end_reason='unknown'
+			where office_id=v_office.id and screen_id=(v_screen->>'screenId')::uuid and ended_at is null
+				and id<>all(array(select (item->>'id')::uuid from jsonb_array_elements(v_screen->'open') item));
+	end loop;
 	if public.qorpera_company_execution_paused(v_office.profile_id) then
 		delete from public.qorpera_runtime_office_shell_activity where office_id=v_office.id;
 		update public.qorpera_runtime_office_shell_commands set ended_at=v_at,end_reason='paused'
