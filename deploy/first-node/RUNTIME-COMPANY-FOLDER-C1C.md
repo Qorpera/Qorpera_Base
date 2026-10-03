@@ -864,7 +864,9 @@ Decisions:
   - room members: every other locker takes the room first, in a mode that conflicts with the room `FOR UPDATE`;
   - the operation clock: taken at the first conversation write, after rank 11, as everywhere;
   - access state, browser revocations, presence devices and execution bindings: no other writer holds them across a
-    lock the change needs (access state's other writer, `stop_company_work`, takes the company row first);
+    lock the change needs (access state's other writer, `stop_company_work`, takes the company row first; on `folder-v2`
+    since 3g, the fence `FOR NO KEY UPDATE` and rank 0 in the request, the drain and the row `FOR UPDATE` in the
+    finisher, §6.10);
   - a removed member's run-owned rows (assignment, reservation, native lease, inputs, wakes): behind its job, which
     the prelude holds first.
   The steps the tests do not pin are defensive: rank 11, the other founders' `KEY SHARE`, the founding row, the vault
@@ -893,7 +895,7 @@ Decisions:
   commit takes the member row at rank 1.
 - Not in 3c:
   - `delete_hosted_profile` still takes the company row `FOR UPDATE` (through `request_company_deletion`'s gc fence);
-    3g owns deletion. A join serializes with it at rank 0 meanwhile.
+    3g owns deletion. A join serializes with it at rank 0 meanwhile. (Done in 3g, §6.10: the fence `FOR NO KEY UPDATE`.)
   - A job queued for the member's connection after the prelude's read still reaches the connection trigger's job
     lock late; 3d gives the triggers `NOWAIT` modes that refuse retryably (built in 3d-1, §6.6). No job creator
     serves `folder-v2` before C3/C4. Account deletion cannot end the member's own runs:
@@ -1247,6 +1249,52 @@ folder-v2 branch, and the statement that was there before stays untouched in its
   - the view-anchor tests.
 
   C1c-3l: an agent's own start and the wake drain.
+
+### 6.10 C1c-3g as built: deletion drains the folder fence (migration 20260930015000, test 828)
+
+- **The request** (`delete_hosted_profile`, `request_company_deletion`): on `folder-v2` the fence `FOR NO KEY UPDATE`,
+  member management's lock (3c), then the company row `KEY SHARE`, where they took the company row `FOR UPDATE` (the gc
+  fence). A leave, a removal or a join in flight serializes with the last member's deletion at the fence (665 H: a join
+  queued first joins, and the deletion then sees another member and refuses). A folder effect in flight (the fence `KEY
+  SHARE`) is not waited for (828 A); once the request commits, every effect re-reads the deletion after the fence and
+  refuses, but one already past its re-read can still commit for a few seconds after the request returns; the
+  finisher's drain waits it out. No legacy wake-admission bump (folder effects never read it), in the request or in
+  its stop. The stop's job pass still skips the jobs effects hold; the finisher ends them.
+  - The request's stop now runs beside folder effects, where the row `FOR UPDATE` kept them apart. Its locks after
+    rank 0 (jobs `SKIP LOCKED`, never waited for, and their termination: run events, wake occurrences, inputs; no
+    conversation write or operation clock; then bootstrap jobs (none on `folder-v2`) and the folder creations not yet
+    made, `SKIP LOCKED` (P14a); then coding todos, workers and sessions, the machine advisory lock and machines,
+    invitations, seats, access state) come in the order every folder path takes them (3f's machines, 3h's coding calls,
+    3d-2's vault, 3c's member management); no cycle found (review r2 traced the job end's triggers).
+  - The old `FOR UPDATE` also waited for a transaction that had just inserted a row pointing at the company (a job
+    enqueued just before). The request no longer does; the finisher's stop runs again after its drain.
+- **The finisher** (`finish_company_deletion`) runs the folder pause's second phase for deletion,
+  `qorpera_folder_deletion_drain`: the fence `FOR UPDATE`, which waits out every effect in flight (828 E), and its revision
+  bump; then the company row `FOR UPDATE` as the purge takes it (review r1: the stop and the revocations hold jobs,
+  secrets, grants and connections, and a broker seal holds the row `KEY SHARE` and waits for a secret); then the stop,
+  the holdings and the revocations as before. The drain refuses a company with no deletion row, and accepts one with
+  no pause row (a requester whose account is gone). So on `folder-v2` the purge, too, refuses a company with no
+  deletion row: C5's reset must request deletion first.
+- **The purge** takes the same drain, then the company row `FOR UPDATE`: the one `folder-v2` path that may, since it
+  deletes the row. It comes after the fence, so no effect holds the row while it waits, and before the cascade's
+  children, which the remaining legacy holders of the row (sign-ins, node update drains) take after it (828 D: behind
+  a holder of the row `KEY SHARE` alone, it waits at the row while it holds the fence). Since 3j a Company Computer's
+  retirement takes the folder fence first on `folder-v2`, so it waits at the fence behind the finisher, not in a cycle. The finisher and
+  the purge are the `folder-v2` exception to core §9's rule on the profile row (CORE §3 step 3 and §9 say so).
+- **The batch** finishes its random sample in company id order, as the node update drains and the executor give-up take
+  their companies, so two batches of locks never cross.
+- **One window left (information):** a job or a folder creation (P14a) whose worker holds its row and read "not paused"
+  just before the deletion committed can ask for the fence right after the finisher's drain took it. If that pass
+  purges, the cascade locks that row `FOR UPDATE` (not `SKIP LOCKED`) while the worker waits at the fence: a 40P01 at
+  practically impossible timing. It heals: either side retries, and the next pass blocks the row.
+- **Closed:** the 40P01 windows §6.4 records for 3g (the last member's leave during the purge now waits at the fence) and
+  for 3f's sweep (its fence `NOWAIT` skips a company whose purge holds the fence), and 3h's coding calls (§6.8).
+- **Snapshot-v1** keeps each statement in its `else` branch, untested since the founder decision of 3 Oct (folder-v2 only,
+  production wiped): 828 G checks only that each folder-v2 branch is there.
+- `revoke_company_connector_secrets` (the finisher's only caller) still locks secrets before grants, against 3d-2's
+  grants-before-secrets order, but a broker seal takes the company row `KEY SHARE` first (#660), and the finisher now
+  holds the row `FOR UPDATE` before it revokes (the gc fence on snapshot-v1), so the two meet at the row, not in a
+  40P01. Account deletion stays an operator action (§6.6).
 
 ## 7. Traps for C1c-2 and C1c-3
 

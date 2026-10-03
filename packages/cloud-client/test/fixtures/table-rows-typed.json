@@ -1,0 +1,407 @@
+[
+	{
+		"name": "valid, every type",
+		"result": {
+			"rows": [
+				{
+					"name": "full",
+					"at": "2026-10-02T09:44:10Z",
+					"day": "2026-02-28",
+					"count": -12.5,
+					"price": 1200,
+					"share": 0.25,
+					"state": "done",
+					"ok": true,
+					"owner": "11111111-1111-4111-8111-000000000001",
+					"kept_by": "11111111-1111-4111-8111-000000000002",
+					"team": [
+						"11111111-1111-4111-8111-000000000001",
+						"11111111-1111-4111-8111-000000000002"
+					],
+					"ref": "11111111-1111-4111-8111-000000000001",
+					"link_to": "Ada, the first"
+				},
+				{
+					"name": "empty optionals",
+					"at": "2026-10-02T09:44:00Z",
+					"day": null,
+					"count": null,
+					"price": null,
+					"share": null,
+					"state": null,
+					"ok": null,
+					"owner": null,
+					"kept_by": null,
+					"team": null,
+					"ref": null,
+					"link_to": null
+				}
+			],
+			"problems": [],
+			"readable": true
+		}
+	},
+	{
+		"name": "valid, numbers table, a time without seconds and an optional column left out",
+		"result": {
+			"rows": [
+				{
+					"number": "Revenue",
+					"at": "2026-10-02T09:44:00Z",
+					"value": 1200.5,
+					"unit": "€",
+					"target": null,
+					"kept_by": "11111111-1111-4111-8111-000000000030"
+				}
+			],
+			"problems": [],
+			"readable": true
+		}
+	},
+	{
+		"name": "text too long",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: name is longer than 20 characters."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "text with a control character",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: name holds a control character."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "required empty",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: name is empty."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "number",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: count is not a number."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "number with a leading zero",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: count is not a number."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "money",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: price is not a number."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "percent",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: share is not a number."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "time",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: at is not a time like 2026-10-02T09:44Z."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "time out of range",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: at is not a time like 2026-10-02T09:44Z."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "date",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: day is not a date like 2026-10-02."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "date before year 100",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: day is not a date like 2026-10-02."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "choice",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: state is not one of its choices."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "yes-no",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: ok is yes or no."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "member in capitals",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: owner is not an id."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "agents repeated",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: team is not a list of agent ids."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "agents two spaces",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: team is not a list of agent ids."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "id",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: ref is not an id."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "link too long",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: link_to is not a row key."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "link with a line break",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row doesn't fit: link_to is not a row key."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "duplicate key, one time spelled two ways",
+		"result": {
+			"rows": [
+				{
+					"name": "same",
+					"at": "2026-10-02T09:44:00Z",
+					"day": null,
+					"count": null,
+					"price": null,
+					"share": null,
+					"state": null,
+					"ok": null,
+					"owner": null,
+					"kept_by": null,
+					"team": null,
+					"ref": null,
+					"link_to": null
+				}
+			],
+			"problems": [
+				{
+					"line": 3,
+					"key": null,
+					"code": "duplicate",
+					"message": "Another row has the same key."
+				}
+			],
+			"readable": true
+		}
+	},
+	{
+		"name": "header leaves out a required column",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 1,
+					"key": null,
+					"code": "row",
+					"message": "The first line leaves out at, which every row needs."
+				}
+			],
+			"readable": false
+		}
+	},
+	{
+		"name": "header names an unknown column",
+		"result": {
+			"rows": [],
+			"problems": [
+				{
+					"line": 1,
+					"key": null,
+					"code": "row",
+					"message": "The first line names \"extra\", which is not a column of this table."
+				}
+			],
+			"readable": false
+		}
+	}
+]

@@ -155,6 +155,7 @@ describe("member Company File intent and display client", () => {
 			environmentId,
 			mode: "governed",
 		});
+		expect(parseCloudMemberCompanyMode({ companyId, environmentId, mode: "folder" }, companyId).mode).toBe("folder");
 		for (const value of [
 			null,
 			{},
