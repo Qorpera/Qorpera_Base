@@ -1,6 +1,6 @@
 # Company folder core: file-change wakes (slice P29)
 
-Status: design v2.1, decided (§14), after reviews r1 and r2 (`~/work/qorpera-folder-core-tools/reports/P29-design-review-r1.md`) and the
+Status: design, decided (§14); review r3 APPROVE at 1e03c01ff (`~/work/qorpera-folder-core-tools/reports/P29-design-review-r1.md`) and the
 coordinator's decisions of 4 October 2026 (§14). Owner: the folder GC and erasure session (P29 moved from Q1 on
 4 October).
 
@@ -255,15 +255,16 @@ functions with no-op bodies, and P31 replaces them (`create or replace`, its own
 
 **Rules for P31:**
 - After admission, the commit hook takes no lock except a foreign key's KEY SHARE on rows its targets named, and the
-  rows of its own tables that nothing else locks (H2c's markers).
+  rows of its own tables (H2c's markers). This holds only if H2c's own timed scan also takes its marker rows after its
+  admission, never before, or the scan and the drain could wait on each other; P31 says so.
 - When `paused` is true, H2c inserts no wake and leaves its marker unset; its own scan wakes the agent after the resume
   (F2).
 - Each call runs in a subtransaction and counts toward the 48.
 - A lock timeout or deadlock is never caught: it fails the step, which is tried again.
 - Any other failure never fails the step, never holds the cursor and never blocks another company, but it is not
   dropped either (decision 6).
-  - It is recorded in `qorpera_folder_listener_hook_failures(environment_id, commit_id, seq, error, attempts,
-    last_attempt_at)`.
+  - It is recorded in `qorpera_folder_listener_hook_failures(environment_id, commit_id, seq, sqlstate, constraint_name,
+    attempts, last_attempt_at)`.
   - Each later step first calls the hook again for the environment's recorded failures, oldest seq first and a few a
     step, with their own targets and the current `paused` flag, and deletes a row once its call succeeds. H2c dedupes,
     so calling it again is safe (F2). A retried change set reaches H2c after newer ones, so H2c acts on a task's current
