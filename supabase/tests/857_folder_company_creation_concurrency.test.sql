@@ -2,8 +2,9 @@
 -- §2, §3, §4): two founders pressing Start at once make one creation; a create call retried while the first is in
 -- flight waits at the creation row and replays it (one kickoff, one first-run row); a join and a creation meet at the
 -- folder fence in either order and the joiner ends in the Co-Founder's thread; a leave meets a creation at the fence;
--- a company delete beside a creation in flight ends with the creation made and the company hidden (before P08, the
--- deletion path is the gc fence and the pause, not the folder fence). The fixture is committed and removed at the end.
+-- a company delete waits for a creation in flight and ends with the creation made and the company hidden (before P08,
+-- the deletion path is the gc fence and the pause, not the folder fence); a delete skips a creation row a worker holds,
+-- and the finisher's next pass blocks it. The fixture is committed and removed at the end.
 
 insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values
 	('85700000-0000-4000-8000-000000000001','race-anna@example.test',clock_timestamp(),'{"display_name":"Anna"}'),
@@ -174,6 +175,7 @@ select pg_temp.prepare('joinafter', 2); select pg_temp.claim_for('joinafter', 2)
 select pg_temp.prepare('joinbefore', 3); select pg_temp.claim_for('joinbefore', 3);
 select pg_temp.prepare('leave', 4); select pg_temp.claim_for('leave', 4);
 select pg_temp.prepare('deleted', 5); select pg_temp.claim_for('deleted', 5);
+select pg_temp.prepare('skipped', 6); select pg_temp.claim_for('skipped', 6);
 -- Invitations for the joiners, and Bo as a member of 'leave'.
 insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, created_at, expires_at) values
 	('85700000-0000-4000-8000-0000000000e1', current_setting('qorpera_test.profile_joinafter')::uuid, 'race-dee@example.test',
@@ -248,8 +250,8 @@ begin
 	if not pg_temp.waits_for('make_two', 'make_one') then raise exception 'A second Start must wait for the first'; end if;
 	perform dblink_exec('make_one', 'commit');
 	v_second := pg_temp.result('make_two');
-	if v_second like 'error%' or v_second::jsonb ->> 'phase' <> 'started' then raise exception 'The second Start: %', v_second; end if;
-	if (select count(*) from public.qorpera_folder_company_creations where profile_id = current_setting('qorpera_test.table')::uuid) <> 1 then
+	if v_second like 'error%' or v_second::jsonb ->> 'phase' is distinct from 'started' then raise exception 'The second Start: %', v_second; end if;
+	if (select count(*) from public.qorpera_folder_company_creations where profile_id = current_setting('qorpera_test.table')::uuid) is distinct from 1 then
 		raise exception 'Two Starts made more than one creation'; end if;
 	perform dblink_exec(name, 'reset request.jwt.claims') from unnest(array['make_one','make_two']) name;
 end $$;
@@ -258,6 +260,22 @@ returns boolean language sql stable security definer set search_path = '' as $$
 	select false
 $$;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['make_one','make_two']) name;
+-- The one creation the two Starts made: one first run and one kickoff, paid by Anna (who pressed Start first).
+do $$
+declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_claim jsonb; v_result jsonb;
+begin
+	perform pg_temp.as_service();
+	v_claim := public.qorpera_folder_company_creation_claim('85700000-0000-4000-8000-0000000000f9', 900);
+	if v_claim ->> 'profileId' is distinct from v_profile::text then raise exception 'The table''s claim: %', v_claim; end if;
+	v_result := public.qorpera_folder_company_create('85700000-0000-4000-8000-0000000000f9', (v_claim ->> 'creationId')::uuid,
+		(v_claim ->> 'generation')::bigint, pg_temp.seed_units(v_claim));
+	if v_result ->> 'state' is distinct from 'completed'
+		or (select count(*) from public.qorpera_agent_first_runs where profile_id = v_profile) is distinct from 1
+		or (select count(*) from public.qorpera_session_inputs input join public.qorpera_company_rooms room on room.session_id = input.session_id
+			where room.profile_id = v_profile and input.kind = 'kickoff') is distinct from 1
+		or (select count(*) from public.qorpera_session_turn_requests where profile_id = v_profile) is distinct from 1 then
+		raise exception 'Two Starts did not make exactly one first run: %', v_result; end if;
+end $$;
 
 -- B. A create call retried while the first is in flight: it waits at the creation row, then replays the result.
 do $$
@@ -269,11 +287,11 @@ begin
 	if not pg_temp.waits_for('make_two', 'make_one') then raise exception 'A retried create must wait at the creation row'; end if;
 	perform dblink_exec('make_one', 'commit');
 	v_second := pg_temp.result('make_two');
-	if v_first::jsonb ->> 'state' <> 'completed' or v_second like 'error%' or v_second::jsonb ->> 'state' <> 'completed'
-		or not (v_second::jsonb ->> 'replay')::boolean
-		or (select count(*) from public.qorpera_agent_first_runs where profile_id = v_profile) <> 1
+	if v_first::jsonb ->> 'state' is distinct from 'completed' or v_second like 'error%' or v_second::jsonb ->> 'state' is distinct from 'completed'
+		or (v_second::jsonb ->> 'replay')::boolean is not true
+		or (select count(*) from public.qorpera_agent_first_runs where profile_id = v_profile) is distinct from 1
 		or (select count(*) from public.qorpera_session_inputs input join public.qorpera_company_rooms room on room.session_id = input.session_id
-			where room.profile_id = v_profile and input.kind = 'kickoff') <> 1 then
+			where room.profile_id = v_profile and input.kind = 'kickoff') is distinct from 1 then
 		raise exception 'A retried create made a second first run: % %', v_first, v_second; end if;
 end $$;
 
@@ -289,7 +307,7 @@ begin
 	perform dblink_exec('make_one', 'commit');
 	v_join := pg_temp.result('make_two');
 	if v_join like 'error%' then raise exception 'The join after a creation: %', v_join; end if;
-	if (select state from public.qorpera_folder_company_creations where profile_id = v_profile) <> 'completed'
+	if (select state from public.qorpera_folder_company_creations where profile_id = v_profile) is distinct from 'completed'
 		or not pg_temp.in_thread(v_profile, '85700000-0000-4000-8000-000000000004') then
 		raise exception 'The joiner is not in the Co-Founder''s thread after the creation'; end if;
 	perform dblink_exec('make_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
@@ -306,7 +324,7 @@ begin
 	if not pg_temp.waits_for('make_one', 'make_two') then raise exception 'A creation must wait for a join at the fence'; end if;
 	perform dblink_exec('make_two', 'commit');
 	v_create := pg_temp.result('make_one');
-	if v_create like 'error%' or v_create::jsonb ->> 'state' <> 'completed'
+	if v_create like 'error%' or v_create::jsonb ->> 'state' is distinct from 'completed'
 		or not pg_temp.in_thread(v_profile, '85700000-0000-4000-8000-000000000005')
 		or not pg_temp.in_thread(v_profile, '85700000-0000-4000-8000-000000000003') then
 		raise exception 'A creation after a join misses a member in the thread: %', v_create; end if;
@@ -325,7 +343,7 @@ begin
 	perform dblink_exec('make_one', 'commit');
 	v_leave := pg_temp.result('make_two');
 	if v_leave like 'error%' then raise exception 'The leave after a creation: %', v_leave; end if;
-	if (select state from public.qorpera_folder_company_creations where profile_id = v_profile) <> 'completed'
+	if (select state from public.qorpera_folder_company_creations where profile_id = v_profile) is distinct from 'completed'
 		or pg_temp.in_thread(v_profile, '85700000-0000-4000-8000-000000000002')
 		or exists (select 1 from public.qorpera_profile_members where profile_id = v_profile
 			and user_id = '85700000-0000-4000-8000-000000000002') then
@@ -342,11 +360,12 @@ begin
 	perform * from dblink('make_one', current_setting('qorpera_test.create_deleted') || '::text') as t(r text);
 	perform dblink_send_query('make_two', format($q$select public.qorpera_request_company_deletion(%L, '85700000-0000-4000-8000-000000000003')::text$q$,
 		v_profile));
-	perform pg_sleep(0.2);
+	-- The delete's gc fence (the company row FOR UPDATE) waits for the commit's rank-0 KEY SHARE.
+	if not pg_temp.waits_for('make_two', 'make_one') then raise exception 'A delete must wait for a creation in flight'; end if;
 	perform dblink_exec('make_one', 'commit');
 	v_delete := pg_temp.result('make_two');
 	if v_delete like 'error%' then raise exception 'The delete beside a creation: %', v_delete; end if;
-	if (select state from public.qorpera_folder_company_creations where profile_id = v_profile) <> 'completed'
+	if (select state from public.qorpera_folder_company_creations where profile_id = v_profile) is distinct from 'completed'
 		or not exists (select 1 from public.qorpera_company_deletions where profile_id = v_profile) then
 		raise exception 'The creation and the delete did not both land'; end if;
 	perform pg_temp.as_user('85700000-0000-4000-8000-000000000003');
@@ -354,6 +373,37 @@ begin
 		where company ->> 'profile_id' = v_profile::text) then
 		raise exception 'A company being deleted is listed'; end if;
 	perform set_config('request.jwt.claims', '', true);
+end $$;
+
+-- F. A delete beside a creation row a worker holds before its fence (the create waits elsewhere): the delete does not
+-- wait for that row (SKIP LOCKED) and leaves it leased; the finisher's next pass blocks it, and the create is stale.
+do $$
+declare v_profile uuid := current_setting('qorpera_test.profile_skipped')::uuid; v_until timestamptz;
+	v_delete text; v_creation public.qorpera_folder_company_creations;
+begin
+	perform dblink_exec('make_one', 'begin');
+	perform * from dblink('make_one', format('select id::text from public.qorpera_folder_company_creations where profile_id = %L for update',
+		v_profile)) as t(r text);
+	perform dblink_send_query('make_two', format($q$select public.qorpera_request_company_deletion(%L, '85700000-0000-4000-8000-000000000003')::text$q$,
+		v_profile));
+	v_until := clock_timestamp() + interval '60 seconds';
+	while dblink_is_busy('make_two') = 1 loop
+		if current_setting('qorpera_test.pid_make_one')::integer = any (pg_blocking_pids(current_setting('qorpera_test.pid_make_two')::integer)) then
+			raise exception 'A delete waited for a creation row a worker holds'; end if;
+		if clock_timestamp() > v_until then raise exception 'The delete did not finish'; end if;
+		perform pg_sleep(0.02);
+	end loop;
+	v_delete := pg_temp.result('make_two');
+	if v_delete like 'error%' then raise exception 'The delete beside a held creation row: %', v_delete; end if;
+	select * into v_creation from public.qorpera_folder_company_creations where profile_id = v_profile;
+	if v_creation.state is distinct from 'leased' then raise exception 'The delete took a held creation row: %', to_jsonb(v_creation); end if;
+	perform dblink_exec('make_one', 'rollback');
+	perform public.qorpera_stop_company_work(v_profile);
+	select * into v_creation from public.qorpera_folder_company_creations where profile_id = v_profile;
+	if v_creation.state is distinct from 'blocked' or v_creation.input is not null then
+		raise exception 'The finisher''s next pass did not block it: %', to_jsonb(v_creation); end if;
+	select r into v_delete from dblink('make_two', current_setting('qorpera_test.create_skipped') || '::text') as t(r text);
+	if v_delete::jsonb ->> 'state' is distinct from 'stale' then raise exception 'A create of a blocked creation: %', v_delete; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['make_one','make_two']) name;
@@ -397,7 +447,7 @@ delete from public.qorpera_provider_execution_policies
 where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli';
 insert into public.qorpera_provider_execution_policies
 select (jsonb_populate_record(null::public.qorpera_provider_execution_policies, current_setting('qorpera_test.policy')::jsonb)).*
-where current_setting('qorpera_test.policy') <> '';
+where current_setting('qorpera_test.policy') is distinct from '';
 set session_replication_role = origin;
 select set_config('request.jwt.claims', '', false);
 delete from auth.users where id::text like '85700000-%';

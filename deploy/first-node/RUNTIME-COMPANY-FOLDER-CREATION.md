@@ -92,8 +92,10 @@ In short:
      `qorpera_folder_company_create` once (§3).
    - The create function sorts its own refusals (§3, "Every unit saved, or nothing"). Any error the worker gets back
      releases the lease with a back-off; a paused or deleting company (`55000`) is a back-off, not a failure.
-   - The worker's own failures: a seed tree the parser refuses (`RangeError` from `companyStateSeedTree`) or a
-     staging refusal (`stage_invalid`) is final, `qorpera_folder_company_creation_fail(creation, token, code)`;
+   - The worker's own failures: any throw from `companyStateSeedTree` (a `RangeError` for a file the parser refuses,
+     or a plain `Error` from a writer) or a staging refusal (`stage_invalid`) is final,
+     `qorpera_folder_company_creation_fail(creation, token, code)`. Open and seed refuse a company name with a control
+     character or a line separator (`22023`), so a name the seed tree cannot write never reaches the worker;
      `stage_incomplete` and any code not listed are retried with a growing back-off (to an hour between tries), and
      the attempts are counted on the row for the operator. There is no attempt limit.
 4. **Ready** (`qorpera_folder_company_ready(profile)`) is `state = 'completed'`: a plain `stable` read.
@@ -249,11 +251,13 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   - `qorpera_folder_company_create` refuses a company with a bootstrap job or a Co-Founder;
   - Open never runs the old chain.
 - **Other platform writers** (P22's connection files) skip a company whose creation is not `completed`. Otherwise
-  the creation's `mkdir connections` meets a `conflict`. P14a owns the skip (agreed with A1) and lands after #727:
-  it patches P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000) by an exact
-  anchor, the candidate select's `lease_until` and `not_before` lines, appending `and not exists (…creation of
-  work.profile_id whose state is not 'completed')` with the body marker. Work rows the claim inserts for such a
-  company stay due until the skip lifts; nothing else changes. A `folder-v2` company with no creation row passes the
+  the creation's `mkdir connections` meets a `conflict`, and the creation then fails on every requeue. The skip goes
+  into P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000), after the candidate
+  select's `lease_until` and `not_before` lines: `and not exists (…creation of work.profile_id whose state is not
+  'completed')`. **Whichever of P14a and #727 lands second carries it** (the coordinator, 3 October; A1 agreed): P14a
+  by an exact anchor with its body marker, or #727 in its next push. Work rows the claim inserts for such a company
+  stay due until the skip lifts; nothing else changes. **Gate:** the P22 writer is not switched on, and P38/P39 do
+  not run, until the skip is on master. A `folder-v2` company with no creation row passes the
   skip, while the hub list hides it: deliberately, since such companies exist only in tests (#727's own among them),
   and the writer serves them there.
 - **The rollout packet:** `templates/sql-packet.mjs:92`'s bootstrap gate belongs to Company41's frozen packet, which
@@ -305,7 +309,8 @@ ready, the proof company appears in the owner's hub.
 
 - **Open:** what profile creation takes today, plus the file row it switches and the new folder rows it inserts. No
   fence exists yet, so none is taken.
-- **Seed:** one insert, inside Start's locks.
+- **Seed:** one insert, inside Start's locks. Its foreign key to the kickoff member's account takes that
+  `auth.users` row `KEY SHARE`, which only an account deletion of that member waits for.
 - **Create:** the creation row; the pause, then the fence `FOR NO KEY UPDATE`, then the pause again; then the
   commit's own order:
   - the operation key;
@@ -333,8 +338,7 @@ reversal test (as #705's 817 §1):
 - `qorpera_folder_enable` (a role check around the new `qorpera_folder_enable_internal`, with the bootstrap-job
   refusal);
 - `qorpera_company_founding_json` (`start.companySetup`);
-- `qorpera_claim_connection_file(uuid,integer)` (the creation skip; #727's `20260930006000`, the `lease_until` and
-  `not_before` lines), whose reversal test compares against #727's body;
+- `qorpera_claim_connection_file(uuid,integer)` (the creation skip), only if #727 is on master first (§4);
 - the three stubs (`create or replace`; still revoked from every API role).
 
 **PRs:**
@@ -359,8 +363,8 @@ reversal test (as #705's 817 §1):
       thread); a leave against a creation (they meet at the fence); a company delete during a creation, with the
       deletion path named: before P08 the creation may still finish on a company being deleted (harmless: it stays
       hidden and is purged); after P08 the fence drain stops it.
-  - P14a lands after #727 (P22a), which brings #715 (P03) and #705 (P02) with it: Start's real-seed tests need
-    #705's prelude, and the skip patches #727's claim.
+  - P14a builds on #705 (P02) and #715 (P03), both on master: Start's real-seed tests need #705's prelude. With
+    #727 it is whichever lands second (§4).
 - **P14b, the worker** (TS, object gateway), on A1's P22b module (#730), after P14a and #730.
 - **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
   P16 lands before the proof company (P38), so no `folder-v2` company exists without them; the coordinator records

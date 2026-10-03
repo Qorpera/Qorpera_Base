@@ -38,7 +38,8 @@ create table public.qorpera_folder_company_creations (
 	state text not null default 'queued' check (state in ('queued','leased','completed','failed','blocked')),
 	input jsonb check (input is null or (jsonb_typeof(input) = 'object' and pg_column_size(input) <= 65536)),
 	-- The member who pressed Start: the kickoff's author and the first run's requester. Departure is refused while
-	-- the creation is queued or leased; an account deleted later leaves the completed row without it.
+	-- the creation is queued or leased; an account deleted anyway (a company being deleted lets members go) leaves it
+	-- null, and the create then answers failed (kickoff_member_left).
 	kickoff_user_id uuid references auth.users(id) on delete set null,
 	-- The seed tree's ids, made once here so every attempt builds the same tree.
 	cofounder_id uuid not null,
@@ -50,7 +51,7 @@ create table public.qorpera_folder_company_creations (
 	not_before timestamptz,
 	last_problem text check (last_problem is null or last_problem ~ '^[a-z][a-z0-9_]{0,63}$'),
 	-- A failed creation's commit outcomes, or the worker's code, for the operator.
-	failure jsonb check (failure is null or (jsonb_typeof(failure) = 'object' and pg_column_size(failure) <= 65536)),
+	failure jsonb check (failure is null or jsonb_typeof(failure) = 'object'),
 	commit_id uuid,
 	result jsonb check (result is null or jsonb_typeof(result) = 'object'),
 	operator_reason text check (operator_reason is null or char_length(btrim(operator_reason)) between 1 and 500),
@@ -60,7 +61,7 @@ create table public.qorpera_folder_company_creations (
 	foreign key (profile_id, environment_id)
 		references public.qorpera_company_files(profile_id, environment_id) on delete cascade,
 	check ((state = 'leased') = (lease_owner is not null and lease_until is not null)),
-	check (state not in ('queued','leased') or (input is not null and kickoff_user_id is not null)),
+	check (state not in ('queued','leased') or input is not null),
 	check ((state = 'completed') = (completed_at is not null and commit_id is not null and result is not null)),
 	check (state <> 'completed' or input is null),
 	check ((state = 'failed') = (failure is not null))
@@ -127,7 +128,9 @@ declare v_name text := btrim(p_name); v_request public.qorpera_company_creation_
 	v_account auth.users%rowtype; v_email text; v_profile uuid; v_environment uuid;
 begin
 	-- 20260930010000 (P14a): C2's open.
-	if p_user_id is null or p_client_creation_id is null or v_name is null or char_length(v_name) not between 1 and 120 then
+	-- A name is one heading line (the seed tree's vision.md refuses controls and line separators).
+	if p_user_id is null or p_client_creation_id is null or v_name is null or char_length(v_name) not between 1 and 120
+		or v_name ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]' then
 		raise exception 'Company details are invalid' using errcode = '22023'; end if;
 	insert into public.qorpera_company_creation_requests(created_by_user_id, client_creation_id, profile_name, contract_version)
 	values (p_user_id, p_client_creation_id, v_name, 2)
@@ -185,6 +188,7 @@ begin
 		or jsonb_typeof(p_input -> 'companyName') is distinct from 'string'
 		or char_length(btrim(p_input ->> 'companyName')) not between 1 and 120
 		or p_input ->> 'companyName' is distinct from (select name from public.qorpera_profiles where id = p_profile_id)
+		or (p_input ->> 'companyName') ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]'
 		or jsonb_typeof(p_input -> 'vision') is distinct from 'string' or octet_length(p_input ->> 'vision') > 16384
 		or coalesce(p_input ->> 'kickoffRequestedBy', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 		or jsonb_typeof(p_input -> 'founders') is distinct from 'array'
@@ -222,10 +226,12 @@ revoke all on function public.qorpera_folder_company_open(uuid,uuid,text),
 	public.qorpera_folder_company_seed(uuid,jsonb), public.qorpera_folder_company_ready(uuid)
 	from public, anon, authenticated, service_role;
 
--- What the founders' table shows while their company is set up: pending, ready or failed.
+-- What the founders' table shows while their company is set up: pending, ready or failed (also for a company being
+-- deleted before its creation was made).
 create function public.qorpera_folder_company_setup(p_profile_id uuid)
 returns text language sql stable security definer set search_path = '' as $$
-	select case creation.state when 'completed' then 'ready' when 'failed' then 'failed' else 'pending' end
+	select case creation.state when 'completed' then 'ready' when 'failed' then 'failed' when 'blocked' then 'failed'
+		else 'pending' end
 	from public.qorpera_folder_company_creations as creation where creation.profile_id = p_profile_id
 $$;
 revoke all on function public.qorpera_folder_company_setup(uuid) from public, anon, authenticated, service_role;
@@ -248,6 +254,8 @@ begin
 		or not exists (select 1 from public.qorpera_folder_commits where id = p_commit_id
 			and environment_id = p_environment_id and operation_key = v_request ->> 'operationKey') then
 		raise exception 'Company creation does not match its commit' using errcode = 'XX000'; end if;
+	-- Only the create function sets the setting, after it took this row FOR UPDATE with its lease checked, and clears
+	-- it on every answer; so a leased row here is the one this transaction holds.
 	select * into v_creation from public.qorpera_folder_company_creations
 	where id = (v_request ->> 'creationId')::uuid and environment_id = p_environment_id and state = 'leased';
 	if not found then raise exception 'Company creation does not match its commit' using errcode = 'XX000'; end if;
@@ -431,14 +439,15 @@ begin
 			v_units := v_result -> 'units';
 			if v_result ->> 'seq' is null or coalesce((v_result ->> 'replay')::boolean, false)
 				or jsonb_array_length(v_units) <> jsonb_array_length(p_units)
-				or exists (select 1 from jsonb_array_elements(v_units) u where u ->> 'outcome' <> 'saved') then
+				or exists (select 1 from jsonb_array_elements(v_units) u where u ->> 'outcome' is distinct from 'saved') then
 				v_problem := case when not exists (select 1 from jsonb_array_elements(v_units) u
-						where u ->> 'outcome' <> 'saved' and u ->> 'reason' is distinct from 'bytes_unverified')
-					and exists (select 1 from jsonb_array_elements(v_units) u where u ->> 'outcome' <> 'saved')
+						where u ->> 'outcome' is distinct from 'saved' and u ->> 'reason' is distinct from 'bytes_unverified')
+					and exists (select 1 from jsonb_array_elements(v_units) u where u ->> 'outcome' is distinct from 'saved')
 					then 'bytes_unverified' else 'refused' end;
 				raise exception 'Company creation did not save every unit' using errcode = 'QFC01';
 			end if;
-			-- The Co-Founder the commit recorded is the row's, with exactly one first run and one kickoff.
+			-- The Co-Founder the commit recorded is the row's, with exactly one first run and one kickoff, and its first
+			-- todo is indexed.
 			select * into v_first from public.qorpera_agent_first_runs
 			where profile_id = v_creation.profile_id and staff_agent_id = v_creation.cofounder_id;
 			if not exists (select 1 from public.qorpera_company_cofounders where profile_id = v_creation.profile_id
@@ -446,7 +455,9 @@ begin
 				or v_first.input_id is null
 				or (select count(*) from public.qorpera_agent_first_runs where profile_id = v_creation.profile_id) <> 1
 				or (select count(*) from public.qorpera_session_inputs where session_id = v_first.session_id
-					and kind = 'kickoff') <> 1 then
+					and kind = 'kickoff') <> 1
+				or not exists (select 1 from public.qorpera_runtime_agent_todos where profile_id = v_creation.profile_id
+					and id = v_creation.first_todo_id and staff_agent_id = v_creation.cofounder_id) then
 				v_problem := 'cofounder_mismatch';
 				raise exception 'Company creation did not record its Co-Founder and first run' using errcode = 'QFC01';
 			end if;
@@ -464,7 +475,9 @@ begin
 	elsif v_problem is not null then
 		update public.qorpera_folder_company_creations
 		set state = 'failed', lease_owner = null, lease_until = null, last_problem = v_problem,
-			failure = jsonb_strip_nulls(jsonb_build_object('code', v_problem, 'by', 'create', 'units', v_units)),
+			failure = jsonb_strip_nulls(jsonb_build_object('code', v_problem, 'by', 'create', 'units',
+				(select jsonb_agg(u order by (u ->> 'unit')::integer) from jsonb_array_elements(v_units) u
+					where u ->> 'outcome' is distinct from 'saved'))),
 			updated_at = clock_timestamp()
 		where id = v_creation.id;
 		return jsonb_build_object('schema', 'qorpera.company-creation/v1', 'creationId', v_creation.id, 'state', 'failed',
@@ -530,6 +543,12 @@ begin
 	select * into v_member from public.qorpera_profile_members where profile_id = p_profile_id and user_id = v_owner;
 	if v_member.user_id is null or v_member.role <> 'owner' then
 		raise exception 'The company''s owner must still own it' using errcode = '55000'; end if;
+	-- A creation already recorded is answered as it is (its row is never locked here: create takes it before the fence).
+	select id into v_creation from public.qorpera_folder_company_creations where profile_id = p_profile_id;
+	if v_creation is not null then
+		return jsonb_build_object('schema', 'qorpera.company-operator-start/v1', 'profileId', p_profile_id,
+			'creationId', v_creation);
+	end if;
 	v_sponsor := public.qorpera_member_first_run_sponsor(p_profile_id, v_owner);
 	if v_sponsor is null or not public.qorpera_sponsor_serves_requester(p_profile_id,
 		(v_sponsor ->> 'sponsorBindingId')::uuid, (v_sponsor ->> 'sponsorVersion')::bigint, v_owner) then
@@ -540,8 +559,8 @@ begin
 		'vision', p_vision, 'kickoffRequestedBy', v_owner,
 		'founders', jsonb_build_array(jsonb_build_object('userId', v_owner, 'displayName', v_member.display_name,
 			'role', ''))));
-	update public.qorpera_folder_company_creations set operator_reason = btrim(p_reason)
-	where id = v_creation and operator_reason is null;
+	-- The row seed inserted just now, in this transaction.
+	update public.qorpera_folder_company_creations set operator_reason = btrim(p_reason) where id = v_creation;
 	return jsonb_build_object('schema', 'qorpera.company-operator-start/v1', 'profileId', p_profile_id,
 		'creationId', v_creation);
 end $$;
@@ -617,7 +636,8 @@ $n$	where profile_id = p_profile_id and state in ('queued', 'leased');
 	-- the fence) is skipped: it refuses after its fence (the pause covers a deletion) or completes, and the finisher's next
 	-- pass marks it. A release never turns blocked back into queued.
 	update public.qorpera_folder_company_creations
-	set state = 'blocked', lease_owner = null, lease_until = null, last_problem = 'company_deleted', updated_at = clock_timestamp()
+	set state = 'blocked', lease_owner = null, lease_until = null, input = null, last_problem = 'company_deleted',
+		updated_at = clock_timestamp()
 	where id in (select creation.id from public.qorpera_folder_company_creations as creation
 		where creation.profile_id = p_profile_id and creation.state in ('queued', 'leased') for update skip locked);
 
@@ -647,8 +667,7 @@ $n$'companyReady',public.qorpera_folder_company_ready(p_profile_id),
 do $$
 declare v_definition text := pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure);
 begin
-	if position('qorpera_event_hooks where environment_id = p_environment_id and status <> ''removed''' in v_definition) = 0
-		or position('2026093' in v_definition) > 0 then
+	if md5(v_definition) <> '996d0e2f633aec92788d1a1fe796d447' then
 		raise exception 'qorpera_folder_enable differs from 20260928259260'; end if;
 end $$;
 create or replace function public.qorpera_folder_enable(p_environment_id uuid)

@@ -540,8 +540,11 @@ charged before it (20260930010000).
 - While a table is open, members join only through a seat, email invitations
   are refused and roles do not change; `qorpera_list_hosted_profiles` leaves it
   out, and after Start until `companySetup` is `ready`. The founder who pressed
-  Start cannot leave or step down until then (`42501`, as for any company
-  being set up).
+  Start cannot leave or step down while setup is `pending` (`42501`, as for any
+  company being set up); a `failed` setup holds nobody.
+- A company name is one line: opening a table, or starting one, with a name
+  that holds a control character or a line separator is refused (`22023`);
+  rename the table, then start it.
 
 ### Mentions (20260928010000_runtime_room_mentions)
 

@@ -29,7 +29,7 @@ begin
 	execute p_sql;
 	raise exception 'expected SQLSTATE % from: %', p_state, p_sql;
 exception when others then
-	if sqlstate <> p_state then raise exception 'expected SQLSTATE %, got % (%) from: %', p_state, sqlstate, sqlerrm, p_sql; end if;
+	if sqlstate is distinct from p_state then raise exception 'expected SQLSTATE %, got % (%) from: %', p_state, sqlstate, sqlerrm, p_sql; end if;
 end $$;
 
 -- 0. Who may call what -------------------------------------------------------------------------------------------------
@@ -157,7 +157,7 @@ declare v_env uuid := (p_claim ->> 'environmentId')::uuid; v_input jsonb := p_cl
 	v_sections constant text := E'# Sections\n';
 begin
 	v_vision := E'# ' || v_name || E'\n\n' || btrim(v_input ->> 'vision') || E'\n\n## What we build\n\n## For whom\n\n## Why\n\n## How we work\n'
-		|| (select string_agg('- ' || (f ->> 'displayName') || case when f ->> 'role' <> '' then ': ' || (f ->> 'role') else '' end, E'\n')
+		|| (select string_agg('- ' || (f ->> 'displayName') || case when f ->> 'role' is distinct from '' then ': ' || (f ->> 'role') else '' end, E'\n')
 			from jsonb_array_elements(v_input -> 'founders') f) || E'\n';
 	v_agent := format(E'---\nid: %s\nname: Co-Founder\nrole: Co-Founder\nkind: co-founder\nstatus: active\ncolour: blue\nfigure: crown\n---\nFound the company.\n',
 		v_agent_id);
@@ -197,6 +197,20 @@ end $$;
 
 create function pg_temp.creation(p_profile uuid) returns public.qorpera_folder_company_creations language sql as $$
 	select * from public.qorpera_folder_company_creations where profile_id = p_profile
+$$;
+-- Nothing of a creation commit is left: no staff, files, commit, operation key, index row, Co-Founder, first run,
+-- kickoff or turn request.
+create function pg_temp.nothing_left(p_profile uuid, p_env uuid) returns boolean language sql as $$
+	select not (exists (select 1 from public.qorpera_profile_staff where profile_id = p_profile)
+		or exists (select 1 from public.qorpera_folder_entries where environment_id = p_env)
+		or exists (select 1 from public.qorpera_folder_commits where environment_id = p_env)
+		or exists (select 1 from public.qorpera_folder_operation_keys where environment_id = p_env)
+		or exists (select 1 from public.qorpera_folder_company_index where environment_id = p_env)
+		or exists (select 1 from public.qorpera_company_cofounders where profile_id = p_profile)
+		or exists (select 1 from public.qorpera_agent_first_runs where profile_id = p_profile)
+		or exists (select 1 from public.qorpera_session_inputs input join public.qorpera_company_rooms room on room.session_id = input.session_id
+			where room.profile_id = p_profile)
+		or exists (select 1 from public.qorpera_session_turn_requests where profile_id = p_profile))
 $$;
 create function pg_temp.claim(p_worker uuid) returns jsonb language plpgsql as $$
 begin
@@ -240,7 +254,7 @@ declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_table j
 begin
 	-- A repeat gives the same table (open reads the creation request first, so the owner row is not inserted again).
 	v_table := public.qorpera_open_company_founding('85600000-0000-4000-8000-000000000100','Nordlys Kaffe');
-	if (v_table ->> 'profileId')::uuid <> v_profile then raise exception 'Open is not repeat-safe: %', v_table; end if;
+	if (v_table ->> 'profileId')::uuid is distinct from v_profile then raise exception 'Open is not repeat-safe: %', v_table; end if;
 end $$;
 -- The same creation id with another name is refused.
 select pg_temp.refused($$select public.qorpera_open_company_founding('85600000-0000-4000-8000-000000000100','Other')$$,'23505');
@@ -252,17 +266,17 @@ begin
 	select * into strict v_environment from public.qorpera_company_environments where profile_id = v_profile;
 	select * into strict v_file from public.qorpera_company_files where profile_id = v_profile;
 	select * into strict v_member from public.qorpera_profile_members where profile_id = v_profile;
-	if v_environment.name <> 'Nordlys Kaffe' or v_environment.contract_version <> 2 or v_file.core <> 'folder-v2'
-		or v_file.state <> 'ready' or v_file.head_snapshot_id is not null or v_file.environment_id <> v_environment.id then
+	if v_environment.name is distinct from 'Nordlys Kaffe' or v_environment.contract_version is distinct from 2 or v_file.core is distinct from 'folder-v2'
+		or v_file.state is distinct from 'ready' or v_file.head_snapshot_id is not null or v_file.environment_id is distinct from v_environment.id then
 		raise exception 'Open did not make a folder-v2 company: % %', to_jsonb(v_environment), to_jsonb(v_file); end if;
-	if v_member.user_id <> '85600000-0000-4000-8000-000000000001' or v_member.role <> 'owner'
-		or v_member.email <> 'anna@example.test' or v_member.display_name <> 'Anna' then
+	if v_member.user_id is distinct from '85600000-0000-4000-8000-000000000001' or v_member.role is distinct from 'owner'
+		or v_member.email is distinct from 'anna@example.test' or v_member.display_name is distinct from 'Anna' then
 		raise exception 'Open did not make the owner from the account: %', to_jsonb(v_member); end if;
 	if not exists (select 1 from public.qorpera_folder_fences where profile_id = v_profile)
 		or not exists (select 1 from public.qorpera_folder_admissions where profile_id = v_profile)
 		or not exists (select 1 from public.qorpera_folder_clocks where environment_id = v_environment.id and last_seq = 0)
 		or (select count(*) from public.qorpera_company_path_resources where environment_id = v_environment.id
-			and path in ('','rules')) <> 2 then
+			and path in ('','rules')) is distinct from 2 then
 		raise exception 'Open did not switch the folder core on'; end if;
 	if exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile)
 		or exists (select 1 from public.qorpera_company_bootstrap_jobs where profile_id = v_profile)
@@ -308,7 +322,7 @@ do $$
 declare v_table jsonb := public.qorpera_start_company_founding(current_setting('qorpera_test.table')::uuid,4,
 	'85600000-0000-4000-8000-000000000200');
 begin
-	if v_table -> 'start' ->> 'companySetup' is distinct from 'pending' or (v_table -> 'start' ->> 'companyReady')::boolean then
+	if v_table -> 'start' ->> 'companySetup' is distinct from 'pending' or (v_table -> 'start' ->> 'companyReady')::boolean is not false then
 		raise exception 'A started table shows its company being set up: %', v_table -> 'start'; end if;
 	-- A second press changes nothing.
 	v_table := public.qorpera_start_company_founding(current_setting('qorpera_test.table')::uuid,4,
@@ -317,7 +331,7 @@ begin
 	if exists (select 1 from jsonb_array_elements(public.qorpera_list_hosted_profiles()) company
 		where company ->> 'profile_id' = current_setting('qorpera_test.table')) then
 		raise exception 'A company being set up is listed'; end if;
-	if jsonb_array_length(public.qorpera_list_company_foundings()) <> 1 then
+	if jsonb_array_length(public.qorpera_list_company_foundings()) is distinct from 1 then
 		raise exception 'The starting table is not listed for its founder'; end if;
 end $$;
 reset role;
@@ -325,14 +339,14 @@ do $$
 declare v_profile uuid := current_setting('qorpera_test.table')::uuid;
 	v_creation public.qorpera_folder_company_creations := pg_temp.creation(current_setting('qorpera_test.table')::uuid);
 begin
-	if (select count(*) from public.qorpera_folder_company_creations where profile_id = v_profile) <> 1
-		or v_creation.state <> 'queued' or v_creation.kickoff_user_id <> '85600000-0000-4000-8000-000000000001'
-		or v_creation.environment_id <> (select environment_id from public.qorpera_company_files where profile_id = v_profile)
-		or v_creation.input ->> 'schema' <> 'qorpera.company-seed-input/v1' or v_creation.input ->> 'companyName' <> 'Nordlys Kaffe'
-		or v_creation.input ->> 'vision' <> 'Specialty coffee, and wholesale to cafés in Aarhus.'
-		or v_creation.input -> 'founders' <> '[{"userId":"85600000-0000-4000-8000-000000000001","displayName":"Anna","role":""},
+	if (select count(*) from public.qorpera_folder_company_creations where profile_id = v_profile) is distinct from 1
+		or v_creation.state is distinct from 'queued' or v_creation.kickoff_user_id is distinct from '85600000-0000-4000-8000-000000000001'
+		or v_creation.environment_id is distinct from (select environment_id from public.qorpera_company_files where profile_id = v_profile)
+		or v_creation.input ->> 'schema' is distinct from 'qorpera.company-seed-input/v1' or v_creation.input ->> 'companyName' is distinct from 'Nordlys Kaffe'
+		or v_creation.input ->> 'vision' is distinct from 'Specialty coffee, and wholesale to cafés in Aarhus.'
+		or v_creation.input -> 'founders' is distinct from '[{"userId":"85600000-0000-4000-8000-000000000001","displayName":"Anna","role":""},
 			{"userId":"85600000-0000-4000-8000-000000000002","displayName":"Bo","role":"Wholesale."}]'::jsonb
-		or v_creation.generation <> 0 or v_creation.attempts <> 0 then
+		or v_creation.generation is distinct from 0 or v_creation.attempts is distinct from 0 then
 		raise exception 'Start did not record one creation: %', to_jsonb(v_creation); end if;
 	-- Version-4 ids, made once (every client checks the version and variant digits).
 	if v_creation.cofounder_id::text !~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
@@ -340,7 +354,7 @@ begin
 		or v_creation.cofounder_id = v_creation.first_todo_id then
 		raise exception 'The seed ids are not version-4 UUIDs: %', to_jsonb(v_creation); end if;
 	-- Seed again: the same row (the safety net).
-	if public.qorpera_folder_company_seed(v_profile, v_creation.input) <> v_creation.id then
+	if public.qorpera_folder_company_seed(v_profile, v_creation.input) is distinct from v_creation.id then
 		raise exception 'A second seed made another creation'; end if;
 	if public.qorpera_folder_company_ready(v_profile) then raise exception 'A queued creation is ready'; end if;
 end $$;
@@ -393,25 +407,25 @@ declare v_claim jsonb; v_other jsonb; v_creation public.qorpera_folder_company_c
 begin
 	v_claim := pg_temp.claim('85600000-0000-4000-8000-0000000000f1');
 	v_creation := pg_temp.creation(v_profile);
-	if v_claim ->> 'creationId' <> v_creation.id::text or v_claim ->> 'operationKey' <> 'company-create:' || v_creation.id
-		or (v_claim ->> 'generation')::bigint <> 1 or (v_claim ->> 'attempt')::integer <> 1
-		or v_claim ->> 'cofounderId' <> v_creation.cofounder_id::text or v_claim ->> 'firstTodoId' <> v_creation.first_todo_id::text
-		or v_claim ->> 'kickoffRequestedBy' <> '85600000-0000-4000-8000-000000000001' or v_claim -> 'input' <> v_creation.input
-		or v_creation.state <> 'leased' or v_creation.lease_owner <> '85600000-0000-4000-8000-0000000000f1' then
+	if v_claim ->> 'creationId' is distinct from v_creation.id::text or v_claim ->> 'operationKey' is distinct from 'company-create:' || v_creation.id
+		or (v_claim ->> 'generation')::bigint is distinct from 1 or (v_claim ->> 'attempt')::integer is distinct from 1
+		or v_claim ->> 'cofounderId' is distinct from v_creation.cofounder_id::text or v_claim ->> 'firstTodoId' is distinct from v_creation.first_todo_id::text
+		or v_claim ->> 'kickoffRequestedBy' is distinct from '85600000-0000-4000-8000-000000000001' or v_claim -> 'input' is distinct from v_creation.input
+		or v_creation.state is distinct from 'leased' or v_creation.lease_owner is distinct from '85600000-0000-4000-8000-0000000000f1' then
 		raise exception 'The claim does not carry the creation: % %', v_claim, to_jsonb(v_creation); end if;
 	-- The next claim takes the other company (oldest first); then nothing is due.
 	v_other := pg_temp.claim('85600000-0000-4000-8000-0000000000f2');
-	if v_other ->> 'profileId' <> current_setting('qorpera_test.second') then raise exception 'Claim order: %', v_other; end if;
+	if v_other ->> 'profileId' is distinct from current_setting('qorpera_test.second') then raise exception 'Claim order: %', v_other; end if;
 	if pg_temp.claim('85600000-0000-4000-8000-0000000000f2') is not null then raise exception 'A leased creation was claimed'; end if;
 	perform set_config('qorpera_test.claim', v_claim::text, true);
 	perform set_config('qorpera_test.claim2', v_other::text, true);
 	-- Another worker, or an old generation, is stale: nothing changes.
 	v_result := public.qorpera_folder_company_create('85600000-0000-4000-8000-0000000000f2', v_creation.id, 1, '[{}]');
-	if v_result ->> 'state' <> 'stale' then raise exception 'Another worker''s create: %', v_result; end if;
+	if v_result ->> 'state' is distinct from 'stale' then raise exception 'Another worker''s create: %', v_result; end if;
 	v_result := public.qorpera_folder_company_create('85600000-0000-4000-8000-0000000000f1', v_creation.id, 7, '[{}]');
-	if v_result ->> 'state' <> 'stale' then raise exception 'An old generation''s create: %', v_result; end if;
+	if v_result ->> 'state' is distinct from 'stale' then raise exception 'An old generation''s create: %', v_result; end if;
 	if (public.qorpera_folder_company_creation_release('85600000-0000-4000-8000-0000000000f2', v_creation.id, 1, 'x')
-		->> 'released')::boolean then raise exception 'Another worker released the lease'; end if;
+		->> 'released')::boolean is not false then raise exception 'Another worker released the lease'; end if;
 end $$;
 
 -- A unit whose bytes are not stored: retry, and nothing of the commit stays.
@@ -421,16 +435,12 @@ declare v_claim jsonb := current_setting('qorpera_test.claim')::jsonb; v_result 
 begin
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f1', v_claim, pg_temp.seed_units(v_claim, 'unstored'));
 	v_creation := pg_temp.creation((v_claim ->> 'profileId')::uuid);
-	if v_result ->> 'state' <> 'retry' or v_result ->> 'problem' <> 'bytes_unverified' or v_creation.state <> 'leased'
-		or v_creation.last_problem <> 'bytes_unverified' then
+	if v_result ->> 'state' is distinct from 'retry' or v_result ->> 'problem' is distinct from 'bytes_unverified' or v_creation.state is distinct from 'leased'
+		or v_creation.last_problem is distinct from 'bytes_unverified' then
 		raise exception 'Unstored bytes do not answer retry: % %', v_result, to_jsonb(v_creation); end if;
-	if exists (select 1 from public.qorpera_profile_staff where profile_id = v_creation.profile_id)
-		or exists (select 1 from public.qorpera_folder_entries where environment_id = v_creation.environment_id)
-		or exists (select 1 from public.qorpera_folder_commits where environment_id = v_creation.environment_id)
-		or exists (select 1 from public.qorpera_session_inputs input join public.qorpera_company_rooms room on room.session_id = input.session_id
-			where room.profile_id = v_creation.profile_id) then
+	if not pg_temp.nothing_left(v_creation.profile_id, v_creation.environment_id) then
 		raise exception 'A retried creation left something behind'; end if;
-	if coalesce(current_setting('qorpera.folder_company_create', true), '') <> '' then
+	if coalesce(current_setting('qorpera.folder_company_create', true), '') is distinct from '' then
 		raise exception 'The creation setting outlived its answer'; end if;
 end $$;
 
@@ -444,21 +454,21 @@ declare v_claim jsonb := current_setting('qorpera_test.claim')::jsonb; v_result 
 begin
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f1', v_claim, pg_temp.seed_units(v_claim));
 	v_creation := pg_temp.creation(v_profile);
-	if v_result ->> 'state' <> 'completed' or v_creation.state <> 'completed' or v_creation.input is not null
-		or v_creation.commit_id::text <> v_result ->> 'commitId' or v_creation.lease_owner is not null
-		or v_creation.result <> v_result or (v_result ->> 'replay')::boolean
+	if v_result ->> 'state' is distinct from 'completed' or v_creation.state is distinct from 'completed' or v_creation.input is not null
+		or v_creation.commit_id::text is distinct from v_result ->> 'commitId' or v_creation.lease_owner is not null
+		or v_creation.result is distinct from v_result or (v_result ->> 'replay')::boolean is not false
 		or not exists (select 1 from public.qorpera_folder_commits where id = v_creation.commit_id and actor_kind = 'platform'
 			and operation_key = 'company-create:' || v_creation.id and seq is not null) then
 		raise exception 'The creation did not complete: % %', v_result, to_jsonb(v_creation); end if;
-	if coalesce(current_setting('qorpera.folder_company_create', true), '') <> '' then
+	if coalesce(current_setting('qorpera.folder_company_create', true), '') is distinct from '' then
 		raise exception 'The creation setting outlived its answer'; end if;
 	-- The files: the vision indexed and seeded, the Co-Founder, its first todo.
-	if (select name from public.qorpera_folder_company_index where environment_id = v_env) <> 'Nordlys Kaffe'
+	if (select name from public.qorpera_folder_company_index where environment_id = v_env) is distinct from 'Nordlys Kaffe'
 		or not (select vision_seeded from public.qorpera_folder_company_index where environment_id = v_env) then
 		raise exception 'The vision is not indexed as seeded'; end if;
 	select * into v_staff from public.qorpera_profile_staff where profile_id = v_profile and staff_agent_id = v_cofounder;
 	if v_staff.template_id is distinct from 'co-founder' or v_staff.folder_path is distinct from 'agents/co-founder/agent.md'
-		or (select count(*) from public.qorpera_profile_staff where profile_id = v_profile) <> 1
+		or (select count(*) from public.qorpera_profile_staff where profile_id = v_profile) is distinct from 1
 		or not exists (select 1 from public.qorpera_company_cofounders where profile_id = v_profile and staff_agent_id = v_cofounder
 			and formation_id is null) then
 		raise exception 'The creation did not record its Co-Founder: %', to_jsonb(v_staff); end if;
@@ -469,38 +479,38 @@ begin
 	select room.session_id into v_thread from public.qorpera_company_rooms as room
 	where room.profile_id = v_profile and room.bound_staff_agent_id = v_cofounder and room.status = 'active';
 	if v_thread is null or (select count(*) from public.qorpera_company_room_members m join public.qorpera_company_rooms r on r.id = m.room_id
-		where r.session_id = v_thread and m.principal_kind = 'member' and m.status = 'active') <> 2 then
+		where r.session_id = v_thread and m.principal_kind = 'member' and m.status = 'active') is distinct from 2 then
 		raise exception 'The Co-Founder''s thread is missing or lacks a founder'; end if;
 	-- The kickoff: the seam C4 (P28) builds on.
 	select * into strict v_first from public.qorpera_agent_first_runs where profile_id = v_profile and staff_agent_id = v_cofounder;
 	select * into strict v_input from public.qorpera_session_inputs where id = v_first.input_id;
-	if v_input.session_id <> v_thread or v_input.kind <> 'kickoff' or v_input.actor_kind <> 'control_plane'
-		or v_input.author_user_id <> '85600000-0000-4000-8000-000000000001'
-		or v_input.client_input_id <> md5('qorpera.folder-company-create/kickoff:' || v_creation.id)::uuid
-		or v_input.body <> jsonb_build_object('schema','qorpera.company-first-run/v1','assignment',jsonb_build_object(
+	if v_input.session_id is distinct from v_thread or v_input.kind is distinct from 'kickoff' or v_input.actor_kind is distinct from 'control_plane'
+		or v_input.author_user_id is distinct from '85600000-0000-4000-8000-000000000001'
+		or v_input.client_input_id is distinct from md5('qorpera.folder-company-create/kickoff:' || v_creation.id)::uuid
+		or v_input.body is distinct from jsonb_build_object('schema','qorpera.company-first-run/v1','assignment',jsonb_build_object(
 			'kind','company_founding','companyId',v_profile,'creationId',v_creation.id,'cofounderStaffAgentId',v_cofounder,
 			'firstTodo','agents/co-founder/todos/start-with-the-founders.md'))
 		or v_input.completed_at is not null or v_input.execution_run_id is not null then
 		raise exception 'The kickoff is not the agreed shape: %', to_jsonb(v_input); end if;
-	if v_first.session_id <> v_thread or v_first.environment_id <> v_env or v_first.startup_assignment <> v_input.body
-		or v_first.source_path_version <> (select version from public.qorpera_folder_entries where environment_id = v_env
+	if v_first.session_id is distinct from v_thread or v_first.environment_id is distinct from v_env or v_first.startup_assignment is distinct from v_input.body
+		or v_first.source_path_version is distinct from (select version from public.qorpera_folder_entries where environment_id = v_env
 			and key_text = 'agents/co-founder/agent.md') then
 		raise exception 'The first-run row does not match: %', to_jsonb(v_first); end if;
-	if (select count(*) from public.qorpera_session_inputs where session_id = v_thread) <> 1 then
+	if (select count(*) from public.qorpera_session_inputs where session_id = v_thread) is distinct from 1 then
 		raise exception 'More than the kickoff in the thread'; end if;
 	-- Anna's login pays: the turn request is queued on it.
 	select * into strict v_request from public.qorpera_session_turn_requests where input_id = v_input.id;
-	if v_request.status <> 'queued' or v_request.requested_by_user_id <> '85600000-0000-4000-8000-000000000001'
-		or v_request.sponsored_by_user_id <> '85600000-0000-4000-8000-000000000001'
-		or v_request.sponsor_mode <> 'member_connection'
-		or v_request.initial_execution_selection ->> 'reason' <> 'agent_first_run' then
+	if v_request.status is distinct from 'queued' or v_request.requested_by_user_id is distinct from '85600000-0000-4000-8000-000000000001'
+		or v_request.sponsored_by_user_id is distinct from '85600000-0000-4000-8000-000000000001'
+		or v_request.sponsor_mode is distinct from 'member_connection'
+		or v_request.initial_execution_selection ->> 'reason' is distinct from 'agent_first_run' then
 		raise exception 'The first run''s turn request is not Anna''s: %', to_jsonb(v_request); end if;
 	-- No wake at creation: C4 (P28) materializes it.
 	if exists (select 1 from public.qorpera_wake_occurrences where profile_id = v_profile) then
 		raise exception 'The creation wrote a wake'; end if;
 	-- A replay answers the stored result and writes nothing.
 	v_replay := pg_temp.create('85600000-0000-4000-8000-0000000000f1', v_claim, pg_temp.seed_units(v_claim));
-	if v_replay <> v_result || '{"replay":true}' or (select count(*) from public.qorpera_session_inputs where session_id = v_thread) <> 1 then
+	if v_replay is distinct from v_result || '{"replay":true}' or (select count(*) from public.qorpera_session_inputs where session_id = v_thread) is distinct from 1 then
 		raise exception 'A replay is not the stored result: %', v_replay; end if;
 end $$;
 
@@ -510,7 +520,7 @@ declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_table j
 begin
 	if not public.qorpera_folder_company_ready(v_profile) then raise exception 'A completed creation is not ready'; end if;
 	v_table := pg_temp.table_json('85600000-0000-4000-8000-000000000002', v_profile);
-	if v_table -> 'start' ->> 'companySetup' <> 'ready' or not (v_table -> 'start' ->> 'companyReady')::boolean then
+	if v_table -> 'start' ->> 'companySetup' is distinct from 'ready' or (v_table -> 'start' ->> 'companyReady')::boolean is not true then
 		raise exception 'The table does not show the company ready: %', v_table -> 'start'; end if;
 	if not pg_temp.listed('85600000-0000-4000-8000-000000000001', v_profile)
 		or not pg_temp.listed('85600000-0000-4000-8000-000000000002', v_profile) then
@@ -524,9 +534,9 @@ declare v_claim jsonb := current_setting('qorpera_test.claim2')::jsonb; v_result
 begin
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f2', v_claim, pg_temp.seed_units(v_claim));
 	select * into strict v_first from public.qorpera_agent_first_runs where profile_id = (v_claim ->> 'profileId')::uuid;
-	if v_result ->> 'state' <> 'completed'
+	if v_result ->> 'state' is distinct from 'completed'
 		or exists (select 1 from public.qorpera_session_turn_requests where input_id = v_first.input_id)
-		or (select author_user_id from public.qorpera_session_inputs where id = v_first.input_id) <> '85600000-0000-4000-8000-000000000003' then
+		or (select author_user_id from public.qorpera_session_inputs where id = v_first.input_id) is distinct from '85600000-0000-4000-8000-000000000003' then
 		raise exception 'Without a usable login the kickoff stays pending: %', v_result; end if;
 	-- A company opened outside the lobby is listed for its owner once ready.
 	if not pg_temp.listed('85600000-0000-4000-8000-000000000003', (v_claim ->> 'profileId')::uuid) then
@@ -550,23 +560,27 @@ begin
 	-- A parse the hook refuses: failed, with the outcomes kept and nothing of the commit.
 	v_profile := pg_temp.open_seeded(10, 'Refused');
 	v_claim := pg_temp.claim('85600000-0000-4000-8000-0000000000f3');
-	if (v_claim ->> 'profileId')::uuid <> v_profile then raise exception 'Claim order: %', v_claim; end if;
+	if (v_claim ->> 'profileId')::uuid is distinct from v_profile then raise exception 'Claim order: %', v_claim; end if;
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f3', v_claim, pg_temp.seed_units(v_claim, 'vision_name'));
 	v_creation := pg_temp.creation(v_profile);
-	if v_result ->> 'state' <> 'failed' or v_result ->> 'problem' <> 'refused' or v_creation.state <> 'failed'
-		or v_creation.failure ->> 'code' <> 'refused' or v_creation.failure -> 'units' -> 1 ->> 'reason' <> 'structured_invalid'
+	if v_result ->> 'state' is distinct from 'failed' or v_result ->> 'problem' is distinct from 'refused' or v_creation.state is distinct from 'failed'
+		or v_creation.failure ->> 'code' is distinct from 'refused'
+		or jsonb_array_length(v_creation.failure -> 'units') is distinct from 1
+		or v_creation.failure -> 'units' -> 0 ->> 'unit' is distinct from '2'
+		or v_creation.failure -> 'units' -> 0 ->> 'reason' is distinct from 'structured_invalid'
 		or v_creation.input is null or v_creation.lease_owner is not null
-		or exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile)
-		or exists (select 1 from public.qorpera_folder_entries where environment_id = v_creation.environment_id) then
+		or not pg_temp.nothing_left(v_profile, v_creation.environment_id) then
 		raise exception 'A refused unit does not fail the creation: % %', v_result, to_jsonb(v_creation); end if;
-	if public.qorpera_folder_company_setup(v_profile) <> 'failed' or public.qorpera_folder_company_ready(v_profile)
+	if coalesce(current_setting('qorpera.folder_company_create', true), '') is distinct from '' then
+		raise exception 'The creation setting outlived a failed answer'; end if;
+	if public.qorpera_folder_company_setup(v_profile) is distinct from 'failed' or public.qorpera_folder_company_ready(v_profile)
 		or pg_temp.listed('85600000-0000-4000-8000-000000000003', v_profile) then
 		raise exception 'A failed creation is not shown failed and hidden'; end if;
 	-- Requeued by the operator after the cause is fixed: due again at once, the reason kept.
 	perform public.qorpera_folder_company_creation_requeue(v_creation.id, 'Parser fixed');
 	v_creation := pg_temp.creation(v_profile);
-	if v_creation.state <> 'queued' or v_creation.failure is not null or v_creation.operator_reason <> 'Parser fixed'
-		or v_creation.attempts <> 0 then
+	if v_creation.state is distinct from 'queued' or v_creation.failure is not null or v_creation.operator_reason is distinct from 'Parser fixed'
+		or v_creation.attempts is distinct from 0 then
 		raise exception 'The requeue did not queue it: %', to_jsonb(v_creation); end if;
 	begin
 		perform public.qorpera_folder_company_creation_requeue(v_creation.id, 'Again');
@@ -574,18 +588,17 @@ begin
 	exception when sqlstate '55000' then null;
 	end;
 	v_claim := pg_temp.claim('85600000-0000-4000-8000-0000000000f3');
-	if (v_claim ->> 'generation')::bigint <> 2 then raise exception 'The requeued creation is not claimed again: %', v_claim; end if;
+	if (v_claim ->> 'generation')::bigint is distinct from 2 then raise exception 'The requeued creation is not claimed again: %', v_claim; end if;
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f3', v_claim, pg_temp.seed_units(v_claim));
-	if v_result ->> 'state' <> 'completed' then raise exception 'A requeued creation did not complete: %', v_result; end if;
+	if v_result ->> 'state' is distinct from 'completed' then raise exception 'A requeued creation did not complete: %', v_result; end if;
 
 	-- An agent.md that is not the row's Co-Founder: every unit saves, but no first run, so failed and rolled back.
 	v_profile := pg_temp.open_seeded(11, 'Mismatch');
 	v_claim := pg_temp.claim('85600000-0000-4000-8000-0000000000f4');
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f4', v_claim, pg_temp.seed_units(v_claim, 'agent_id'));
 	v_creation := pg_temp.creation(v_profile);
-	if v_result ->> 'state' <> 'failed' or v_creation.failure ->> 'code' <> 'cofounder_mismatch'
-		or exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile)
-		or exists (select 1 from public.qorpera_agent_first_runs where profile_id = v_profile) then
+	if v_result ->> 'state' is distinct from 'failed' or v_creation.failure ->> 'code' is distinct from 'cofounder_mismatch'
+		or not pg_temp.nothing_left(v_profile, v_creation.environment_id) then
 		raise exception 'Another Co-Founder id does not fail the creation: % %', v_result, to_jsonb(v_creation); end if;
 
 	-- The worker's own final failure, and its back-off release.
@@ -594,7 +607,7 @@ begin
 	v_result := public.qorpera_folder_company_creation_release('85600000-0000-4000-8000-0000000000f5',
 		(v_claim ->> 'creationId')::uuid, 1, 'stage_incomplete');
 	v_creation := pg_temp.creation(v_profile);
-	if not (v_result ->> 'released')::boolean or v_creation.state <> 'queued' or v_creation.last_problem <> 'stage_incomplete'
+	if (v_result ->> 'released')::boolean is not true or v_creation.state is distinct from 'queued' or v_creation.last_problem is distinct from 'stage_incomplete'
 		or v_creation.not_before <= clock_timestamp() or v_creation.not_before > clock_timestamp() + interval '3 seconds' then
 		raise exception 'The release does not back off: %', to_jsonb(v_creation); end if;
 	if pg_temp.claim('85600000-0000-4000-8000-0000000000f5') is not null then raise exception 'A creation in back-off was claimed'; end if;
@@ -603,9 +616,66 @@ begin
 	v_result := public.qorpera_folder_company_creation_fail('85600000-0000-4000-8000-0000000000f5',
 		(v_claim ->> 'creationId')::uuid, 2, 'stage_invalid');
 	v_creation := pg_temp.creation(v_profile);
-	if not (v_result ->> 'failed')::boolean or v_creation.state <> 'failed'
-		or v_creation.failure <> '{"code":"stage_invalid","by":"worker"}' or v_creation.attempts <> 2 then
+	if (v_result ->> 'failed')::boolean is not true or v_creation.state is distinct from 'failed'
+		or v_creation.failure is distinct from '{"code":"stage_invalid","by":"worker"}' or v_creation.attempts is distinct from 2 then
 		raise exception 'The worker''s failure is not kept: %', to_jsonb(v_creation); end if;
+end $$;
+
+-- A paused company: the create raises 55000 (the worker backs off) and the row stays leased; resumed, it completes.
+do $$
+declare v_profile uuid := pg_temp.open_seeded(15, 'Paused'); v_claim jsonb; v_creation public.qorpera_folder_company_creations;
+	v_units jsonb; v_result jsonb;
+begin
+	v_claim := pg_temp.claim('85600000-0000-4000-8000-0000000000f7');
+	v_units := pg_temp.seed_units(v_claim);
+	insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason)
+	values (v_profile, '85600000-0000-4000-8000-000000000003', 'Fixture pause');
+	begin
+		perform pg_temp.create('85600000-0000-4000-8000-0000000000f7', v_claim, v_units);
+		raise exception 'A paused company was created' using errcode = 'QTF01';
+	exception when sqlstate '55000' then null;
+	end;
+	v_creation := pg_temp.creation(v_profile);
+	if v_creation.state is distinct from 'leased' or not pg_temp.nothing_left(v_profile, v_creation.environment_id) then
+		raise exception 'A paused creation changed: %', to_jsonb(v_creation); end if;
+	delete from public.qorpera_company_execution_pauses where profile_id = v_profile;
+	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f7', v_claim, v_units);
+	if v_result ->> 'state' is distinct from 'completed' then raise exception 'A resumed creation: %', v_result; end if;
+end $$;
+
+-- The answers before the commit: the old chain, a Co-Founder already recorded, the kickoff member gone. Each is final,
+-- nothing is committed, and the setting is clear. (Rows made by hand, triggers off: none of these can arise through
+-- the API since seed and the bootstrap refuse them.)
+do $$
+declare v_case text; v_n integer := 16; v_profile uuid; v_claim jsonb; v_result jsonb; v_creation public.qorpera_folder_company_creations;
+	v_env uuid;
+begin
+	foreach v_case in array array['old_chain', 'cofounder_exists', 'kickoff_member_left'] loop
+		v_profile := pg_temp.open_seeded(v_n, 'Before ' || v_n);
+		v_claim := pg_temp.claim(('85600000-0000-4000-8000-0000000000' || v_n)::uuid);
+		v_env := (v_claim ->> 'environmentId')::uuid;
+		set local session_replication_role = replica;
+		if v_case = 'old_chain' then
+			insert into public.qorpera_company_bootstrap_jobs(profile_id, environment_id, created_by_user_id, cofounder_staff_agent_id,
+				formation_id, member_session_id, formation_document, cofounder_agent_document, hidden_until_ready, first_run_required)
+			values (v_profile, v_env, '85600000-0000-4000-8000-000000000003', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+				extensions.gen_random_uuid(), '{}', '{}', true, true);
+		elsif v_case = 'cofounder_exists' then
+			insert into public.qorpera_company_cofounders(profile_id, environment_id, staff_agent_id, formation_id, created_by_user_id)
+			values (v_profile, v_env, extensions.gen_random_uuid(), null, '85600000-0000-4000-8000-000000000003');
+		else
+			delete from public.qorpera_profile_members where profile_id = v_profile;
+		end if;
+		set local session_replication_role = origin;
+		v_result := pg_temp.create(('85600000-0000-4000-8000-0000000000' || v_n)::uuid, v_claim, pg_temp.seed_units(v_claim));
+		v_creation := pg_temp.creation(v_profile);
+		if v_result ->> 'state' is distinct from 'failed' or v_result ->> 'problem' is distinct from v_case
+			or v_creation.failure ->> 'code' is distinct from v_case
+			or exists (select 1 from public.qorpera_folder_commits where environment_id = v_env)
+			or coalesce(current_setting('qorpera.folder_company_create', true), '') is distinct from '' then
+			raise exception 'The % answer: % %', v_case, v_result, to_jsonb(v_creation); end if;
+		v_n := v_n + 1;
+	end loop;
 end $$;
 
 -- 6. The guards -----------------------------------------------------------------------------------------------------------
@@ -630,10 +700,10 @@ begin
 	exception when sqlstate '42501' then null;
 	end;
 	perform pg_temp.as_user('85600000-0000-4000-8000-000000000003');
-	if (public.qorpera_profile_team_info(v_profile) -> 'capabilities' ->> 'leave')::boolean then
+	if (public.qorpera_profile_team_info(v_profile) -> 'capabilities' ->> 'leave')::boolean is not false then
 		raise exception 'The team page offers leave to the kickoff member during the creation'; end if;
 	perform pg_temp.as_user('85600000-0000-4000-8000-000000000002');
-	if not (public.qorpera_profile_team_info(v_profile) -> 'capabilities' ->> 'leave')::boolean then
+	if (public.qorpera_profile_team_info(v_profile) -> 'capabilities' ->> 'leave')::boolean is not true then
 		raise exception 'The team page refuses leave to another owner'; end if;
 	delete from public.qorpera_profile_members where profile_id = v_profile and user_id = '85600000-0000-4000-8000-000000000002';
 	-- A failed creation holds nobody.
@@ -665,11 +735,11 @@ declare v_profile uuid := pg_temp.open_seeded(14, 'Deleted'); v_creation public.
 begin
 	perform public.qorpera_request_company_deletion(v_profile, '85600000-0000-4000-8000-000000000003');
 	v_creation := pg_temp.creation(v_profile);
-	if v_creation.state <> 'blocked' then raise exception 'Delete did not block the creation: %', to_jsonb(v_creation); end if;
+	if v_creation.state is distinct from 'blocked' then raise exception 'Delete did not block the creation: %', to_jsonb(v_creation); end if;
 	if pg_temp.claim('85600000-0000-4000-8000-0000000000f6') ->> 'profileId' = v_profile::text then
 		raise exception 'A blocked creation was claimed'; end if;
 	v_result := public.qorpera_folder_company_create('85600000-0000-4000-8000-0000000000f6', v_creation.id, 1, '[{}]');
-	if v_result ->> 'state' <> 'stale' then raise exception 'A blocked creation was made: %', v_result; end if;
+	if v_result ->> 'state' is distinct from 'stale' then raise exception 'A blocked creation was made: %', v_result; end if;
 	begin
 		perform public.qorpera_folder_company_creation_requeue(v_creation.id, 'Retry');
 		raise exception 'A blocked creation was requeued' using errcode = 'QTF01';
@@ -741,7 +811,8 @@ $o$,
 	-- the fence) is skipped: it refuses after its fence (the pause covers a deletion) or completes, and the finisher's next
 	-- pass marks it. A release never turns blocked back into queued.
 	update public.qorpera_folder_company_creations
-	set state = 'blocked', lease_owner = null, lease_until = null, last_problem = 'company_deleted', updated_at = clock_timestamp()
+	set state = 'blocked', lease_owner = null, lease_until = null, input = null, last_problem = 'company_deleted',
+		updated_at = clock_timestamp()
 	where id in (select creation.id from public.qorpera_folder_company_creations as creation
 		where creation.profile_id = p_profile_id and creation.state in ('queued', 'leased') for update skip locked);
 

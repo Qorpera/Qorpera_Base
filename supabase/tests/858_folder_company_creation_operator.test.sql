@@ -24,7 +24,7 @@ begin
 	execute p_sql;
 	raise exception 'expected SQLSTATE % from: %', p_state, p_sql;
 exception when others then
-	if sqlstate <> p_state then raise exception 'expected SQLSTATE %, got % (%) from: %', p_state, sqlstate, sqlerrm, p_sql; end if;
+	if sqlstate is distinct from p_state then raise exception 'expected SQLSTATE %, got % (%) from: %', p_state, sqlstate, sqlerrm, p_sql; end if;
 end $$;
 
 -- Every API role is refused, with or without a JWT.
@@ -58,11 +58,11 @@ declare v_profile uuid := current_setting('qorpera_test.proof')::uuid; v_again j
 begin
 	v_again := public.qorpera_folder_company_operator_open('85800000-0000-4000-8000-000000000001',
 		'85800000-0000-4000-8000-000000000100','Proof Company');
-	if (v_again ->> 'profile_id')::uuid <> v_profile then raise exception 'Operator open is not repeat-safe: %', v_again; end if;
+	if (v_again ->> 'profile_id')::uuid is distinct from v_profile then raise exception 'Operator open is not repeat-safe: %', v_again; end if;
 	if not public.qorpera_company_is_folder_v2(v_profile)
 		or (select role from public.qorpera_profile_members where profile_id = v_profile
 			and user_id = '85800000-0000-4000-8000-000000000001') is distinct from 'owner'
-		or (select display_name from public.qorpera_profile_members where profile_id = v_profile) <> 'Proof Owner' then
+		or (select display_name from public.qorpera_profile_members where profile_id = v_profile) is distinct from 'Proof Owner' then
 		raise exception 'Operator open did not make the folder-v2 company with its owner'; end if;
 end $$;
 
@@ -116,19 +116,19 @@ declare v_profile uuid := current_setting('qorpera_test.proof')::uuid; v_start j
 begin
 	v_start := public.qorpera_folder_company_operator_start(v_profile, 'Prove the folder core.', '  Proof company P38 ');
 	select * into strict v_creation from public.qorpera_folder_company_creations where profile_id = v_profile;
-	if (v_start ->> 'creationId')::uuid <> v_creation.id or v_creation.state <> 'queued'
-		or v_creation.kickoff_user_id <> '85800000-0000-4000-8000-000000000001'
-		or v_creation.operator_reason <> 'Proof company P38'
-		or v_creation.input <> jsonb_build_object('schema','qorpera.company-seed-input/v1','companyName','Proof Company',
+	if (v_start ->> 'creationId')::uuid is distinct from v_creation.id or v_creation.state is distinct from 'queued'
+		or v_creation.kickoff_user_id is distinct from '85800000-0000-4000-8000-000000000001'
+		or v_creation.operator_reason is distinct from 'Proof company P38'
+		or v_creation.input is distinct from jsonb_build_object('schema','qorpera.company-seed-input/v1','companyName','Proof Company',
 			'vision','Prove the folder core.','kickoffRequestedBy','85800000-0000-4000-8000-000000000001',
 			'founders',jsonb_build_array(jsonb_build_object('userId','85800000-0000-4000-8000-000000000001',
 				'displayName','Proof Owner','role',''))) then
 		raise exception 'Operator start did not record the creation: % %', v_start, to_jsonb(v_creation); end if;
 	-- Again: the same creation, and the first reason stays.
 	v_start := public.qorpera_folder_company_operator_start(v_profile, 'Prove the folder core.', 'Second');
-	if (v_start ->> 'creationId')::uuid <> v_creation.id
-		or (select operator_reason from public.qorpera_folder_company_creations where id = v_creation.id) <> 'Proof company P38'
-		or (select count(*) from public.qorpera_folder_company_creations where profile_id = v_profile) <> 1 then
+	if (v_start ->> 'creationId')::uuid is distinct from v_creation.id
+		or (select operator_reason from public.qorpera_folder_company_creations where id = v_creation.id) is distinct from 'Proof company P38'
+		or (select count(*) from public.qorpera_folder_company_creations where profile_id = v_profile) is distinct from 1 then
 		raise exception 'A second operator start changed the creation'; end if;
 	-- The worker finds it.
 	perform pg_temp.as_service();
