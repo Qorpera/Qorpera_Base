@@ -35,6 +35,8 @@ begin
 		raise exception '1: the folder-v2 description: %', d; end if;
 	if (select substrate_version_id from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) is null then
 		raise exception '1: before P28 the job row still names a substrate'; end if;
+	-- A human wake owes its final message before completion (as in 658).
+	perform pg_temp.send(b, 'final', 'Done.', 'final');
 	r := pg_temp.complete(b);
 	if (pg_temp.outcome(b ->> 'runId')).company_disposition is distinct from 'unchanged'
 		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) <> 'completed' then
@@ -50,7 +52,7 @@ begin
 	perform pg_temp.refuses(format('select public.qorpera_runner_broker_list_artifacts(%L, %L, %L, %L, 0, 10)', b ->> 'runnerId', repeat('f', 64),
 		b ->> 'jobId', repeat('a', 64)), '0A000', 'This Company File path does not serve folder-v2 companies');
 	set local session_replication_role = replica;
-	update public.qorpera_execution_runs set source_kind = 'proposal_review' where id = (b ->> 'runId')::uuid;
+	update public.qorpera_execution_runs set source_kind = 'proposal_review', input_ids = '{}' where id = (b ->> 'runId')::uuid;
 	set local session_replication_role = origin;
 	perform pg_temp.refuses(format('select pg_temp.describe(%L)', b), '0A000', 'This Company File path does not serve folder-v2 companies');
 end $$;
