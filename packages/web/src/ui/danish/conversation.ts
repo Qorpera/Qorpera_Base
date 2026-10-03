@@ -84,6 +84,13 @@ export const CONVERSATION: Record<string, string> = {
 	"A run did not finish": "En kørsel blev ikke færdig",
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",
+	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
+	"No progress": "Ingen fremgang",
+	"No progress for {minutes} minutes.": "Ingen fremgang i {minutes} minutter.",
+	"No progress for {minutes} minutes. If it looks stuck, press Stop.":
+		"Ingen fremgang i {minutes} minutter. Tryk på Stop, hvis det ser ud til at sidde fast.",
+	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
+	"An agent": "En agent",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)
 	"The agent": "Agenten",
