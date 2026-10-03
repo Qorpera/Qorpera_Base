@@ -209,11 +209,11 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 			const now = company.agentState(agent.id);
 			if (now !== "working" && now !== "writing") return [];
 			// A run with no progress for 15 minutes says so, since its last progress.
-			const stalled = company.noProgressSince(agent.id);
+			const stalled = company.noProgress(agent.id);
 			const what = stalled ? t("No progress") : now === "writing" ? t("Writing") : t("Working");
 			return [
 				{
-					row: { agent: agent.id, what, since: stalled ?? since(agent.id) },
+					row: { agent: agent.id, what, since: stalled?.since ?? since(agent.id) },
 					href: agentHref(agent.id),
 					live: true,
 					key: `working:${agent.id}`,

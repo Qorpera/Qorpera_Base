@@ -15,18 +15,67 @@
 -- Observations are best effort: an export outage, or one model request that thinks for more than 15 minutes, can show
 -- a working run as stalled. The notice says what it saw and changes nothing.
 --
--- * qorpera_run_no_progress_since(run, job start): the last progress, when it is at least 15 minutes old.
--- * qorpera_list_staff_execution_activity: a working run carries 'no_progress_since' (absent otherwise).
--- * Member notice 'run_no_progress' (subject qorpera.member-notification.run-no-progress/v1). It goes to the run's
---   member for a member-private run, to the member whose message started a turn, and otherwise (a worker, a routine, a
---   coworker's message) to the company's owners and admins. One per member and stall: the dedupe key names the run and
---   its last progress, so a dismissed notice is not sent again for the same stall, and a run that stalls again after
---   progress is told again. A notice closes itself (acknowledged) once its run made progress or ended.
--- * qorpera_notify_runs_without_progress(): one pass over leased jobs (a new partial index), run by pg_cron every
---   minute as 'qorpera-run-progress-notices'. It locks no run, job or company row; it only writes notices.
+-- One place for the signal, for this notice and later for gap 1's machine rule (only waiting never keeps a machine
+-- awake), which reads the same clock:
+-- * qorpera_run_stall_minutes(): 15. The web reads it from the rows below, never its own number.
+-- * qorpera_run_last_progress_at(run, job start): the clock above.
+-- * qorpera_run_waiting_on_tool(run): its newest observation is a tool call's start.
+-- * qorpera_run_no_progress_since(run, job start): the last progress, when it is at least that many minutes old and
+--   the run is not waiting on a tool; else null.
+-- Readers:
+-- * qorpera_list_staff_execution_activity: a working run carries 'no_progress_since' and 'no_progress_minutes'.
+-- * Member notice 'run_no_progress' (subject qorpera.member-notification.run-no-progress/v1, with the minutes). It
+--   goes to the run's member for a member-private run, to the member whose message started a turn, and otherwise (a
+--   worker, a routine, a coworker's message) to the company's owners and admins. One per member and run (the dedupe
+--   key is the run id; a dismissed notice is not sent again). It closes itself (acknowledged) once its run makes
+--   progress or ends.
+-- * qorpera_notify_runs_without_progress(): one pass over leased jobs, run by pg_cron every minute as
+--   'qorpera-run-progress-notices'. It finds them through the existing partial index qorpera_runner_jobs_queue
+--   (status in ('queued','leased')), so no index is added. It locks no run, job or company row; it only writes
+--   notices.
 set local lock_timeout = '3s';
 
-create index qorpera_runner_jobs_leased_started on public.qorpera_runner_jobs(started_at) where status = 'leased';
+create function public.qorpera_run_stall_minutes()
+returns integer
+language sql
+immutable
+set search_path = ''
+as $$
+	select 15 -- gap 4 (20260930002600)
+$$;
+
+create function public.qorpera_run_last_progress_at(p_run_id uuid, p_started_at timestamptz)
+returns timestamptz
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	-- Gap 4 (20260930002600): what the harness last did. Never the lease.
+	select greatest(p_started_at,
+		(select observation.ingested_at from public.qorpera_runtime_observations as observation
+			where observation.run_id = p_run_id order by observation.id desc limit 1),
+		(select view.created_at from public.qorpera_native_context_views as view
+			where view.run_id = p_run_id order by view.ordinal desc limit 1),
+		(select assignment.created_at from public.qorpera_runner_assignments as assignment
+			where assignment.run_id = p_run_id order by assignment.created_at desc, assignment.id desc limit 1))
+$$;
+
+create function public.qorpera_run_waiting_on_tool(p_run_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	-- Gap 4 (20260930002600): the newest observation is a tool call's start, so the run waits on that tool (a long
+	-- build is work). A model request, a turn, writing and the runtime's own checks are not tools.
+	select coalesce((select observation.phase = 'start' and observation.operation not in ('model_turn',
+			'model_request', 'message_composition', 'native_result_fence', 'company_context', 'run_authority',
+			'context_authority', 'diagnostic_export', 'action_review')
+		from public.qorpera_runtime_observations as observation
+		where observation.run_id = p_run_id order by observation.id desc limit 1), false)
+$$;
 
 create function public.qorpera_run_no_progress_since(p_run_id uuid, p_started_at timestamptz)
 returns timestamptz
@@ -35,25 +84,14 @@ stable
 security definer
 set search_path = ''
 as $$
-	-- Gap 4 (20260930002600): the run's last progress when it is at least 15 minutes old, else null.
-	with newest as (
-		select observation.operation, observation.phase, observation.ingested_at
-		from public.qorpera_runtime_observations as observation
-		where observation.run_id = p_run_id order by observation.id desc limit 1
-	), progress as (
-		select greatest(p_started_at, (select newest.ingested_at from newest),
-			(select view.created_at from public.qorpera_native_context_views as view
-				where view.run_id = p_run_id order by view.ordinal desc limit 1),
-			(select assignment.created_at from public.qorpera_runner_assignments as assignment
-				where assignment.run_id = p_run_id order by assignment.created_at desc, assignment.id desc limit 1)) as at
-	)
-	select progress.at from progress
-	where progress.at <= statement_timestamp() - interval '15 minutes'
-		and not exists (select 1 from newest where newest.phase = 'start' and newest.operation not in ('model_turn',
-			'model_request', 'message_composition', 'native_result_fence', 'company_context', 'run_authority',
-			'context_authority', 'diagnostic_export', 'action_review'))
+	-- Gap 4 (20260930002600): the run's last progress when it is at least qorpera_run_stall_minutes() old, else null.
+	select progress.at
+	from (select public.qorpera_run_last_progress_at(p_run_id, p_started_at) as at) as progress
+	where progress.at <= statement_timestamp() - make_interval(mins => public.qorpera_run_stall_minutes())
+		and not public.qorpera_run_waiting_on_tool(p_run_id)
 $$;
-revoke all on function public.qorpera_run_no_progress_since(uuid, timestamptz)
+revoke all on function public.qorpera_run_stall_minutes(), public.qorpera_run_last_progress_at(uuid, timestamptz),
+	public.qorpera_run_waiting_on_tool(uuid), public.qorpera_run_no_progress_since(uuid, timestamptz)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- The activity row of a working run names its stall.
@@ -67,8 +105,10 @@ declare
 	v_old_working text := $old$			) then 'writing' else 'working' end
 		) else '{}'::jsonb end order by activity.staff_agent_id)$old$;
 	v_new_working text := $new$			) then 'writing' else 'working' end
-		) || jsonb_strip_nulls(jsonb_build_object('no_progress_since', -- gap 4 (20260930002600)
-			public.qorpera_run_no_progress_since(activity.run_id, activity.started_at)))
+		) || coalesce((select jsonb_build_object('no_progress_since', stall.since, -- gap 4 (20260930002600)
+				'no_progress_minutes', public.qorpera_run_stall_minutes())
+			from (select public.qorpera_run_no_progress_since(activity.run_id, activity.started_at) as since) as stall
+			where stall.since is not null), '{}'::jsonb)
 		else '{}'::jsonb end order by activity.staff_agent_id)$new$;
 begin
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1
@@ -100,7 +140,7 @@ begin
 		select 1 from public.qorpera_execution_runs as run
 		join public.qorpera_runner_jobs as job on job.id = run.job_id
 		where run.id = (notice.subject ->> 'runId')::uuid and job.status = 'leased'
-			and public.qorpera_run_no_progress_since(run.id, job.started_at) = (notice.subject ->> 'since')::timestamptz);
+			and public.qorpera_run_no_progress_since(run.id, job.started_at) is not null);
 	get diagnostics v_closed = row_count;
 	with stalled as (
 		select run.id as run_id, run.profile_id, run.staff_agent_id, run.session_id, run.source_kind,
@@ -108,10 +148,10 @@ begin
 			public.qorpera_run_no_progress_since(run.id, job.started_at) as since
 		from public.qorpera_runner_jobs as job
 		join public.qorpera_execution_runs as run on run.job_id = job.id
-		where job.status = 'leased' and job.started_at <= statement_timestamp() - interval '15 minutes'
+		where job.status = 'leased'
+			and job.started_at <= statement_timestamp() - make_interval(mins => public.qorpera_run_stall_minutes())
 	), told as (
-		select stalled.*, member.user_id,
-			stalled.run_id::text || ':' || extract(epoch from stalled.since)::text as dedupe_key
+		select stalled.*, member.user_id, stalled.run_id::text as dedupe_key
 		from stalled
 		join public.qorpera_profile_members as member on member.profile_id = stalled.profile_id
 		where stalled.since is not null and case
@@ -124,10 +164,11 @@ begin
 	insert into public.qorpera_member_notifications(profile_id, user_id, kind, subject, dedupe_key)
 	select told.profile_id, told.user_id, 'run_no_progress', jsonb_build_object(
 			'schema', 'qorpera.member-notification.run-no-progress/v1', 'runId', told.run_id,
-			'staffAgentId', told.staff_agent_id, 'sessionId', told.session_id, 'since', told.since),
+			'staffAgentId', told.staff_agent_id, 'sessionId', told.session_id, 'since', told.since,
+			'minutes', public.qorpera_run_stall_minutes()),
 		told.dedupe_key
 	from told
-	-- Once per member and stall, a dismissed notice included.
+	-- Once per member and run, a dismissed or closed notice included.
 	where not exists (select 1 from public.qorpera_member_notifications as earlier
 		where earlier.user_id = told.user_id and earlier.profile_id = told.profile_id
 			and earlier.kind = 'run_no_progress' and earlier.dedupe_key = told.dedupe_key)

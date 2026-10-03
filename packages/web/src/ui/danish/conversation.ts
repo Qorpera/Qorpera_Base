@@ -86,10 +86,10 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} is writing": "{name} skriver",
 	// A run with no progress for 15 minutes (conversation.ts, interfaces.ts, views/execution-notices.ts)
 	"No progress": "Ingen fremgang",
-	"No progress for 15 minutes.": "Ingen fremgang i 15 minutter.",
-	"No progress for 15 minutes. If it looks stuck, press Stop.":
-		"Ingen fremgang i 15 minutter. Tryk på Stop, hvis det ser ud til at sidde fast.",
-	"{agent} has made no progress for 15 minutes.": "{agent} har ikke gjort fremskridt i 15 minutter.",
+	"No progress for {minutes} minutes.": "Ingen fremgang i {minutes} minutter.",
+	"No progress for {minutes} minutes. If it looks stuck, press Stop.":
+		"Ingen fremgang i {minutes} minutter. Tryk på Stop, hvis det ser ud til at sidde fast.",
+	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke gjort fremskridt i {minutes} minutter.",
 	"An agent": "En agent",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)

@@ -70,8 +70,9 @@ function sentence(
 	const subject = item.subject;
 	switch (subject.schema) {
 		case "qorpera.member-notification.run-no-progress/v1":
-			return t("{agent} has made no progress for 15 minutes.", {
+			return t("{agent} has made no progress for {minutes} minutes.", {
 				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
+				minutes: subject.minutes,
 			});
 		case "qorpera.member-notification.provider-usage-limit/v1":
 		case "qorpera.member-notification.sponsor-handoff/v1":

@@ -95,6 +95,7 @@ describe("company notices member read", () => {
 					staffAgentId: id(15),
 					sessionId: null,
 					since: timestamp,
+					minutes: 15,
 					private: "hidden",
 				},
 			},
@@ -113,6 +114,7 @@ describe("company notices member read", () => {
 			staffAgentId: id(15),
 			sessionId: null,
 			since: timestamp,
+			minutes: 15,
 		});
 	});
 	it("skips notices of the removed company limits and pause instead of failing the read", async () => {

@@ -86,7 +86,10 @@ describe("which interfaces a company lists", () => {
 	});
 
 	it("says a working run has made no progress, since its last progress (gap 4)", () => {
-		const { controller } = company([run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00Z" }), run(bo.id, 2, {})]);
+		const { controller } = company([
+			run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00Z", noProgressMinutes: 15 }),
+			run(bo.id, 2, {}),
+		]);
 		expect(interfaceRows(controller, "working")?.map(({ row }) => row)).toEqual([
 			{ agent: ada.id, what: "No progress", since: "2026-10-02T09:20:00Z" },
 			{ agent: bo.id, what: "Working", since: "2026-10-02T09:44:00Z" },

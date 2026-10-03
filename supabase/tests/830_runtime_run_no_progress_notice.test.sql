@@ -1,8 +1,8 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- A run that makes no progress for 15 minutes (session-buildup audit gap 4, migration 20260930002600): the agent's
--- activity row names the stall, and a member is told once per stall; nothing stops the run. Progress is the run's
--- newest observation, context view or assignment, or its job's start; never the lease. A tool call still in flight is
--- waiting, not stalled. Clocks are moved back by hand (the replica role skips the rows' guards).
+-- activity row names the stall and its minutes, and a member is told once per run; nothing stops the run. Progress is
+-- the run's newest observation, context view or assignment, or its job's start; never the lease. A tool call still in
+-- flight is waiting, not stalled. Clocks are moved back by hand (the replica role skips the rows' guards).
 
 -- Bob's own thread, reopened as in 586: his routine runs there.
 select pg_temp.path_claims('service_role');
@@ -99,8 +99,9 @@ begin
 	select greatest(job.started_at, (select max(assignment.created_at) from public.qorpera_runner_assignments as assignment
 		where assignment.run_id = pg_temp.run())) into v_since
 	from public.qorpera_runner_jobs as job where job.id = (select job_id from public.qorpera_execution_runs where id = pg_temp.run());
-	if v_row ->> 'activity' <> 'working' or (v_row ->> 'no_progress_since')::timestamptz is distinct from v_since then
-		raise exception 'B: the stall is named from the last progress %: %', v_since, v_row; end if;
+	if v_row ->> 'activity' <> 'working' or (v_row ->> 'no_progress_since')::timestamptz is distinct from v_since
+		or v_row -> 'no_progress_minutes' <> '15' or public.qorpera_run_stall_minutes() <> 15 then
+		raise exception 'B: the stall is named from the last progress %, with its minutes: %', v_since, v_row; end if;
 	v_sweep := pg_temp.sweep();
 	if v_sweep ->> 'opened' <> '1' or pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000001": 1}' then
 		raise exception 'B: the owner is told, and only the owner: % %', v_sweep, pg_temp.open_notices(); end if;
@@ -108,15 +109,16 @@ begin
 	where kind = 'run_no_progress' and subject ->> 'runId' = pg_temp.run()::text;
 	if v_notice.subject ->> 'schema' <> 'qorpera.member-notification.run-no-progress/v1'
 		or v_notice.subject ->> 'staffAgentId' <> '30000000-0000-4000-8000-000000000031'
-		or (v_notice.subject ->> 'since')::timestamptz <> v_since or v_notice.subject ->> 'sessionId' is null then
+		or (v_notice.subject ->> 'since')::timestamptz <> v_since or v_notice.subject ->> 'sessionId' is null
+		or v_notice.subject -> 'minutes' <> '15' or v_notice.dedupe_key <> pg_temp.run()::text then
 		raise exception 'B: the notice names the run, the agent, the thread and the stall: %', v_notice.subject; end if;
-	-- Again: the same stall is not told twice, and the job's lease is untouched.
+	-- Again: the same run is not told twice.
 	if pg_temp.sweep() ->> 'opened' <> '0' or pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000001": 1}' then
 		raise exception 'B: a stall is told once'; end if;
 end
 $$;
 
--- C. A dismissed notice is not sent again for the same stall.
+-- C. A dismissed notice is not sent again for the same run.
 do $$
 declare v_id uuid;
 begin
@@ -130,11 +132,10 @@ begin
 end
 $$;
 
--- D. Progress: a model request's result fence now ends the stall. Later, with that the newest progress and 16 minutes
--- old, it is a new stall, told anew, and that notice closes itself once the run makes progress again.
+-- D. Progress: a model request's result fence now ends the stall. When the run stalls again (its newest progress 16
+-- minutes old), the row names the new stall, but the run's member was told once already: no second notice.
 select pg_temp.observe('native_result_fence', 'finish', 0);
 do $$
-declare v_sweep jsonb;
 begin
 	if pg_temp.bob() ? 'no_progress_since' then raise exception 'D: fresh progress is no stall'; end if;
 	if pg_temp.sweep() ->> 'opened' <> '0' then raise exception 'D: nobody is told while the run progresses'; end if;
@@ -143,13 +144,8 @@ begin
 	if (pg_temp.bob() ->> 'no_progress_since')::timestamptz is distinct from (select max(ingested_at)
 		from public.qorpera_runtime_observations where run_id = pg_temp.run()) then
 		raise exception 'D: the stall runs from the newest observation: %', pg_temp.bob(); end if;
-	v_sweep := pg_temp.sweep();
-	if v_sweep ->> 'opened' <> '1' or pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000001": 1}' then
-		raise exception 'D: a new stall is told anew: %', v_sweep; end if;
-	perform pg_temp.observe('company_read', 'finish', 0);
-	v_sweep := pg_temp.sweep();
-	if v_sweep ->> 'closed' <> '1' or v_sweep ->> 'opened' <> '0' or pg_temp.open_notices() <> '{}' then
-		raise exception 'D: the notice closes itself on progress: %', v_sweep; end if;
+	if pg_temp.sweep() ->> 'opened' <> '0' or pg_temp.open_notices() <> '{}' then
+		raise exception 'D: one notice per member and run'; end if;
 end
 $$;
 
@@ -157,7 +153,7 @@ $$;
 -- stall counts. A model request in flight is no tool call: it stalls.
 do $$
 begin
-	perform pg_temp.forget();
+	perform pg_temp.forget(true);
 	perform pg_temp.observe('computer_shell', 'start', 18);
 	if pg_temp.bob() ? 'no_progress_since' or pg_temp.sweep() ->> 'opened' <> '0' then
 		raise exception 'E: a tool call in flight is no stall: %', pg_temp.bob(); end if;
@@ -172,32 +168,31 @@ end
 $$;
 
 -- F. Who is told: a member-private run's member; a turn's sender in a company thread; otherwise owners and admins
--- (a contributor and a viewer were not told of a routine run, B).
+-- (a contributor and a viewer were not told of a routine run, B). A notice closes itself once the run progresses.
 do $$
 declare v_sweep jsonb;
 begin
-	perform pg_temp.sweep();
-	update public.qorpera_member_notifications set acknowledged_at = clock_timestamp()
-	where kind = 'run_no_progress' and acknowledged_at is null;
-	-- With no observation left, the stall runs from the assignment (30 minutes ago): a stall nobody was told of.
 	perform pg_temp.forget(true);
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set audience_kind = 'member_private',
 		audience_user_id = '30000000-0000-4000-8000-000000000002' where id = pg_temp.run();
 	set local session_replication_role = origin;
 	v_sweep := pg_temp.sweep();
-	if pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000002": 1}' then
+	if v_sweep ->> 'opened' <> '1' or pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000002": 1}' then
 		raise exception 'F: a member-private run tells its member only: % %', v_sweep, pg_temp.open_notices(); end if;
+	perform pg_temp.observe('company_read', 'finish', 0);
+	v_sweep := pg_temp.sweep();
+	if v_sweep ->> 'closed' <> '1' or v_sweep ->> 'opened' <> '0' or pg_temp.open_notices() <> '{}' then
+		raise exception 'F: the notice closes itself on progress: %', v_sweep; end if;
+	perform pg_temp.forget(true);
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set audience_kind = 'company', audience_user_id = null,
 		source_kind = 'session_turn', input_ids = array[extensions.gen_random_uuid()],
 		created_by_user_id = '30000000-0000-4000-8000-000000000003' where id = pg_temp.run();
 	set local session_replication_role = origin;
-	perform pg_temp.observe('company_list', 'finish', 16);
 	v_sweep := pg_temp.sweep();
-	if pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000003": 1}' then
-		raise exception 'F: a turn tells its sender (a viewer here), and the moved stall closed the old notice: % %',
-			v_sweep, pg_temp.open_notices(); end if;
+	if v_sweep ->> 'opened' <> '1' or pg_temp.open_notices() <> '{"30000000-0000-4000-8000-000000000003": 1}' then
+		raise exception 'F: a turn tells its sender (a viewer here): % %', v_sweep, pg_temp.open_notices(); end if;
 end
 $$;
 
@@ -229,12 +224,17 @@ begin
 		or has_function_privilege('anon', 'public.qorpera_notify_runs_without_progress()', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_run_no_progress_since(uuid,timestamptz)', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_run_no_progress_since(uuid,timestamptz)', 'execute')
-		or has_function_privilege('service_role', 'public.qorpera_schedule_run_progress_notices()', 'execute') then
+		or has_function_privilege('service_role', 'public.qorpera_schedule_run_progress_notices()', 'execute')
+		or has_function_privilege('authenticated', 'public.qorpera_run_last_progress_at(uuid,timestamptz)', 'execute')
+		or has_function_privilege('authenticated', 'public.qorpera_run_waiting_on_tool(uuid)', 'execute')
+		or has_function_privilege('anon', 'public.qorpera_run_stall_minutes()', 'execute') then
 		raise exception 'H: the gap 4 functions are postgres-only'; end if;
 	v_text := replace(replace(pg_get_functiondef('public.qorpera_list_staff_execution_activity(uuid)'::regprocedure),
 		E'job.lease_expires_at, job.started_at, -- gap 4 (20260930002600)\n', E'job.lease_expires_at,\n'),
-		E'\t\t) || jsonb_strip_nulls(jsonb_build_object(''no_progress_since'', -- gap 4 (20260930002600)\n'
-		|| E'\t\t\tpublic.qorpera_run_no_progress_since(activity.run_id, activity.started_at)))\n'
+		E'\t\t) || coalesce((select jsonb_build_object(''no_progress_since'', stall.since, -- gap 4 (20260930002600)\n'
+		|| E'\t\t\t\t''no_progress_minutes'', public.qorpera_run_stall_minutes())\n'
+		|| E'\t\t\tfrom (select public.qorpera_run_no_progress_since(activity.run_id, activity.started_at) as since) as stall\n'
+		|| E'\t\t\twhere stall.since is not null), ''{}''::jsonb)\n'
 		|| E'\t\telse ''{}''::jsonb end', E'\t\t) else ''{}''::jsonb end');
 	if md5(v_text) <> 'MASTER_ACTIVITY_MD5' then
 		raise exception 'H: qorpera_list_staff_execution_activity''s text changed: %', md5(v_text); end if;

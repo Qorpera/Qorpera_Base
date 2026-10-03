@@ -274,6 +274,7 @@ describe("company notices", () => {
 				staffAgentId: id(83),
 				sessionId: null,
 				since: timestamp,
+				minutes: 15,
 			},
 		};
 		const client = {

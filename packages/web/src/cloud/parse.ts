@@ -436,7 +436,10 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 			...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
 			...(activity.no_progress_since === undefined || activity.no_progress_since === null
 				? {}
-				: { noProgressSince: timestamp(activity.no_progress_since, "activity stall time") }),
+				: {
+						noProgressSince: timestamp(activity.no_progress_since, "activity stall time"),
+						noProgressMinutes: boundedInteger(activity.no_progress_minutes, "activity stall minutes", 1, 1440),
+					}),
 			updatedAt: timestamp(activity.updated_at, "activity time"),
 		};
 	});

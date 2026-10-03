@@ -31,6 +31,7 @@ export type MemberNotificationSubject =
 			staffAgentId: string;
 			sessionId: string | null;
 			since: string;
+			minutes: number;
 	  }
 	| {
 			/** The kernel writes this subject without a schema (20260920000000); the web names it. */
@@ -156,6 +157,7 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			staffAgentId: uuid(s.staffAgentId),
 			sessionId: s.sessionId === null ? null : uuid(s.sessionId),
 			since: date(s.since),
+			minutes: integer(s.minutes, 1, 1440),
 		};
 	} else if (kind === "sponsor_handoff" && s.schema === "qorpera.member-notification.sponsor-handoff/v1") {
 		if (s.reason !== "usage_limit") throw invalid();
