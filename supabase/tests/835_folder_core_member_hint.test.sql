@@ -80,6 +80,34 @@ do $$ begin
 	perform pg_temp.same(pg_temp.hints(), '1,2,3', 'and sends a hint');
 end $$;
 
+-- An update that does not move the clock forward sends nothing, and a rolled-back commit leaves no hint.
+do $$ begin
+	update public.qorpera_folder_clocks set last_seq = last_seq where environment_id = '63000000-0000-4000-8000-000000000020';
+	perform pg_temp.same(pg_temp.hints(), '1,2,3', 'an update that does not move the clock');
+end $$;
+savepoint hint_rolled_back;
+do $$ begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'hint-key-rolled-back', '[{"op":"mkdir","path":"gone"}]'), 1,
+		'saved');
+	perform pg_temp.same(pg_temp.hints(), '1,2,3,4', 'the hint inside the transaction');
+end $$;
+rollback to savepoint hint_rolled_back;
+do $$ begin
+	perform pg_temp.same(pg_temp.hints(), '1,2,3', 'a rolled-back commit leaves no hint');
+end $$;
+
+-- A Realtime that raises never fails a commit either.
+savepoint hint_raising_realtime;
+create or replace function realtime.send(payload jsonb, event text, topic text, private boolean default true)
+returns void language plpgsql as $$ begin raise exception 'Realtime is down (test 835)'; end $$;
+do $$ begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'hint-key-raising', '[{"op":"mkdir","path":"raising"}]'), 1,
+		'saved');
+	perform pg_temp.same(pg_temp.seq()::text, '4', 'the commit saved');
+	perform pg_temp.same(pg_temp.hints(), '1,2,3', 'without a hint');
+end $$;
+rollback to savepoint hint_raising_realtime;
+
 -- A missing Realtime never fails a commit: the commit saves, and no hint is sent for it.
 savepoint hint_no_realtime;
 alter function realtime.send(jsonb, text, text, boolean) rename to send_moved_by_test_835;
@@ -92,7 +120,8 @@ do $$ begin
 end $$;
 rollback to savepoint hint_no_realtime;
 
--- Members receive the topic; a non-member, another topic and anon do not; nobody publishes on it.
+-- Members receive the topic; a non-member, a snapshot-v1 company, a company being deleted and anon do not; nobody
+-- publishes on it.
 do $$
 declare v_user integer;
 begin
@@ -101,8 +130,10 @@ begin
 		perform pg_temp.same(public.qorpera_folder_hint_member('qorpera-folder-63000000-0000-4000-8000-000000000020')::text,
 			'true', 'a member may receive the topic');
 	end loop;
+	-- User 1 is a member of the snapshot-v1 company too: its environment is refused for being snapshot-v1.
+	perform pg_temp.as_user(1);
 	perform pg_temp.same(public.qorpera_folder_hint_member('qorpera-folder-63000000-0000-4000-8000-000000000021')::text,
-		'false', 'a snapshot-v1 company has no hint');
+		'false', 'a snapshot-v1 company has no hint, even for its member');
 	perform pg_temp.same(public.qorpera_folder_hint_member('qorpera-folder-63000000-0000-4000-8000-00000000002x')::text,
 		'false', 'a malformed topic');
 	perform pg_temp.as_user(5);
@@ -112,6 +143,15 @@ begin
 	perform pg_temp.same(public.qorpera_folder_hint_member('qorpera-folder-63000000-0000-4000-8000-000000000020')::text,
 		'false', 'anon');
 end $$;
+savepoint hint_deleting;
+insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
+values ('63000000-0000-4000-8000-000000000010', '63000000-0000-4000-8000-000000000001');
+select pg_temp.as_user(3);
+do $$ begin
+	perform pg_temp.same(public.qorpera_folder_hint_member('qorpera-folder-63000000-0000-4000-8000-000000000020')::text,
+		'false', 'a company being deleted serves no hints');
+end $$;
+rollback to savepoint hint_deleting;
 
 select pg_temp.as_user(3);
 select set_config('realtime.topic', 'qorpera-folder-63000000-0000-4000-8000-000000000020', true);
@@ -133,7 +173,7 @@ set local role authenticated;
 do $$ begin
 	perform pg_temp.same((select count(*) from realtime.messages
 		where topic = 'qorpera-folder-63000000-0000-4000-8000-000000000020')::text, '0',
-		'a client joined to another topic reads none of the folder''s hints');
+		'a client joined to a room drafts topic reads none of the folder''s hints through this policy');
 end $$;
 reset role;
 select pg_temp.as_user(5);

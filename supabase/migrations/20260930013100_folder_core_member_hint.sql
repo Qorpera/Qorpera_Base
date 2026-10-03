@@ -41,7 +41,8 @@ $$;
 revoke all on function public.qorpera_folder_hint_environment(text) from public, anon;
 grant execute on function public.qorpera_folder_hint_environment(text) to authenticated;
 
--- Whether the caller may receive a topic's hints: a member of the folder-v2 company with that environment.
+-- Whether the caller may receive a topic's hints: a member of the folder-v2 company with that environment, while the
+-- company is not being deleted (a company being deleted serves its folder to no one, folder core P01).
 create function public.qorpera_folder_hint_member(p_topic text)
 returns boolean language sql stable security definer set search_path = '' as $$
 	-- C4 P30 (20260930013100)
@@ -49,7 +50,9 @@ returns boolean language sql stable security definer set search_path = '' as $$
 		select 1 from public.qorpera_company_files as file
 		join public.qorpera_profile_members as member on member.profile_id = file.profile_id
 		where file.environment_id = public.qorpera_folder_hint_environment(p_topic) and file.core = 'folder-v2'
-			and member.user_id = auth.uid())
+			and member.user_id = auth.uid()
+			and not exists (select 1 from public.qorpera_company_deletions as deletion
+				where deletion.profile_id = file.profile_id))
 $$;
 revoke all on function public.qorpera_folder_hint_member(text) from public, anon, service_role;
 grant execute on function public.qorpera_folder_hint_member(text) to authenticated;
