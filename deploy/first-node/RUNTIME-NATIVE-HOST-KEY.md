@@ -97,21 +97,26 @@ switch, G2-3d and G2-4 are on; G2-5 removes that copy, and only then does the VM
   - `qorpera_execution_host_call(p_host_id, p_credential, p_name, p_args)` (8 s) and `_long` (25 s, the release,
     which sets 25 s itself), the publishable key's alone, check the host's credential first, by its hash and with no
     lock; every refusal is 42501 "execution host call is refused".
-  - `qorpera_execution_host_calls` lists the seven calls and their budgets. Each is held to the host's provider
-    adapter: a runner row and a reservation only for a run whose job one of its adapter's orchestrators holds a live
-    claim on (claimed, assigned or accepted; the orchestrator not revoked); a reservation only of a run machine with a
-    runner of its adapter; a release only of its adapter's run machine; ended runners only among its adapter's runners
-    (1 to 512); an identity's recovery state and vault custody only with the claimed run it is read for (`p_run_id`,
-    checked and removed before the call); a slot bind only as `exec_slot`, for its adapter's run machine.
-  - `qorpera_bind_execution_host_credential(host, adapter, sha256)` (service role): the node host binds; a bind again
-    (a rebuild) replaces the hash, so the old credential fails at once; the host's adapter never changes; a hash is
-    bound once. `qorpera_revoke_execution_host_credential(host)` ends it.
+  - `qorpera_execution_host_calls` lists the seven calls and their budgets. Each is held to the host's own
+    co-located orchestrator and provider adapter, not the whole node's adapter (a node's fresh-VM orchestrator may
+    share it). A run is the host's while its orchestrator holds the run's current claim: claimed or assigned while the
+    job is queued, or accepted while the job is leased by the runner assigned through that claim (an accepted claim is
+    never released, so an ended or retried run is no longer the host's). A runner row, a reservation (of a run
+    machine, with a runner of its adapter), an identity's recovery state and vault custody (only with `p_run_id`, the
+    run it is read for, checked and removed before the call) and a slot bind (only as `exec_slot`) need such a
+    current run. A release and the ended-runner query need its adapter's run machine of a run its orchestrator ever
+    claimed (they come after the run); ended runners 1 to 512.
+  - `qorpera_bind_execution_host_credential(host, adapter, orchestrator, sha256)` (service role): the node host binds,
+    after it registered the host's orchestrator; a bind again (a rebuild) replaces the hash, so the old credential
+    fails at once; the host's adapter and orchestrator never change; a hash and an orchestrator are bound once.
+    `qorpera_revoke_execution_host_credential(host)` ends it. Removing a host revokes it; moving a host to another
+    adapter or orchestrator is a revocation, then a new bind.
 - **Package and scripts:** with a non-empty `qorpera-execution-host` systemd credential the service sends its own
   calls through the entry points (`shared-execution-host-call.ts`) with the publishable key, and refuses any other
   database request of its own; identity reads name the run they are read for. The unit always loads the file (the
   installer creates it empty). `rebuild-exec-host.sh` (and `create-exec-host.sh`, which runs it) with
   `EXEC_HOST_CREDENTIAL=1`, on the node host, which keeps the key: mints the credential (32 random bytes) in a private
-  temporary directory, binds its sha256 with the staged key and pushes it straight into the VM's credentials directory
+  temporary directory, binds its sha256 to the host's adapter and co-located orchestrator with the staged key and pushes it straight into the VM's credentials directory
   (root, 0600), never into staging, onto a command line or into its output; every rebuild mints a new one. Without the
   switch the file is empty and nothing changes. The orchestrator's registration and the bundle declaration stay on the
   node host with its key. Minting the provider token and copying the node-level tokens from the node host's own files
