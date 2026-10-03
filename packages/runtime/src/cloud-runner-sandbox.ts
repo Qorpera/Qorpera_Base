@@ -502,8 +502,9 @@ async function writeOperationJournal(
 
 /** Whether a transcript event is a member's message that quotes outside content (it keeps `qorperaQuotes`). */
 function quotesOutsideContent(event: CloudRunnerCanonicalTranscriptEvent): boolean {
-	const body = event.body as { entry?: { qorperaQuotes?: unknown } } | null | undefined;
-	return typeof body === "object" && body !== null && body.entry !== undefined && body.entry.qorperaQuotes !== undefined;
+	const body = event.body as { entry?: { qorperaQuotes?: unknown } | null } | null | undefined;
+	const entry = typeof body === "object" && body !== null ? body.entry : undefined;
+	return typeof entry === "object" && entry !== null && entry.qorperaQuotes !== undefined;
 }
 
 async function writeCanonicalTranscript(
