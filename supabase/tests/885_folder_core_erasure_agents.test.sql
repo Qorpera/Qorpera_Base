@@ -103,11 +103,12 @@ begin
 		insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body)
 		values ('88500000-0000-4000-8000-0000000000c2', 1, 'dispatched', %1$L, '{"goal":"Ask Maria about the audit"}')$q$,
 		current_setting('qorpera_test.worker_run')));
-	-- A second office (the other environment's) with Nora's access, and her pair conversation with Otto.
+	-- A second computer of the environment with Nora's access (the company-wide office trigger copies a state change to it),
+	-- and her pair conversation with Otto.
 	perform pg_temp.fx($q$
-		insert into public.qorpera_runtime_offices(id, profile_id, environment_id, logical_computer_id, client_computer_id, image_sha256,
-			bootstrap_sha256, state, max_screens, created_by_user_id)
-		values ('88500000-0000-4000-8000-0000000000f7', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000022',
+		insert into public.qorpera_runtime_offices(id, profile_id, environment_id, computer_number, logical_computer_id, client_computer_id,
+			image_sha256, bootstrap_sha256, state, max_screens, created_by_user_id)
+		values ('88500000-0000-4000-8000-0000000000f7', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000020', 2,
 			'88500000-0000-4000-8000-0000000000f8', '88500000-0000-4000-8000-0000000000f9', repeat('1', 64), repeat('2', 64), 'active', 1,
 			'70700000-0000-4000-8000-000000000001');
 		insert into public.qorpera_runtime_office_access(office_id, staff_agent_id, profile_id, state, capabilities, configured_by_user_id)

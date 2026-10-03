@@ -117,8 +117,8 @@ web's "Erase" is the Interfaces session's). In order:
    check run now, under the locks; the resource check applies to deleted roots only (a live root's resource governs
    its current file).
 7. **Connection rows**, where the commit's apply takes them (after its paths; the connection index is no lock target,
-   20260928249140:15-17): selected again now, under the three conditions, and locked `FOR UPDATE`. P18b's todos and rules go
-   here too.
+   20260928249140:15-17): selected again now, under the three conditions, and locked `FOR UPDATE`. P18b's rules, workers'
+   events and routine versions go here too (its todos and workers are locked at rank 5, §11).
 8. **Writes.** The erasure row and its needles (§4.1); §5's index rows; the claims step 5 inserted are deleted. No
    clock lock, no journal row, no fence (member commits take none; core §9 "reads and GC never").
 
@@ -240,7 +240,7 @@ authorities and connector grants are deleted, its office and browser grants revo
 them), the path grants revoked through the authority journal
 (`qorpera_folder_authority_journal`, so live runs' rechecks see them go: grants at rank 7 and the clock last, so P18b,
 unlike P18a, writes a journal row). P18b's per-move-unit check of §2.3 and its
-lock placement (todos and rules after the paths, step 7) follow this design. P18b states each of these as a decision
+lock placement (rules after the paths, step 7; todos and workers at rank 5 since F2-5b, §11) follow this design. P18b states each of these as a decision
 for the coordinator.
 
 Worker rows (`folder_brief_version`, `folder_results_version`, F2-5b) joined in P18b (§11); when P17 lands, conflict copies
@@ -392,14 +392,15 @@ What it does:
   - rank 2: the retired agents under the roots, NO KEY UPDATE (`qorpera_folder_structured_lock`);
   - rank 3: their execution authorities, FOR UPDATE (`qorpera_folder_lock_commit_rank`);
   - rank 4: the retired group chats and the agents' threads;
-  - rank 5: the retired routines, FOR UPDATE (their tombstone key changes);
+  - rank 5: the retired routines, todos and workers, FOR UPDATE (their tombstone keys change);
   - then P18a's task and contact rows;
   - ranks 6 and 7: the resources of the agents' live path grants, and the grants;
   - rank 8: their connector grants;
   - rank 11: the chats' sessions;
   - the paths;
-  - after the paths, as the commit's apply takes them: the retired todos and rules, and the routines' versions.
-- **Which rows:** a row is erased when its retire commit lies at or before its root's cutoff, as P18a's index rows are.
+  - after the paths, as the commit's apply takes them: the retired rules, the workers' events and the routines' versions.
+- **Which rows:** a row is erased when it lies before its root's cutoff (`qorpera_folder_erasure_row_before`, below), as
+  P18a's index rows are.
   A row that retired under a root between the first plain read and its lock answers QRC01.
 - **Placeholders:**
   - agent: `Erased agent` / `Erased` / `Erased.`, version bumped;
@@ -458,7 +459,7 @@ What it does:
 - **Not tested yet, before C4 wires the member route:**
   - P18b's request against a concurrent commit that restores or edits an agent, a chat or a routine under a root, or
     that revokes its grants;
-  - its QRC01 re-read for agents, chats and routines;
+  - its QRC01 re-read for agents, chats, routines, todos and workers;
   - phase 6 over several steps;
   - the hourly wait while an office row is in use;
   - a member-made routine's erasure;

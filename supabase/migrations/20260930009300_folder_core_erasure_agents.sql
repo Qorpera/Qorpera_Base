@@ -9,12 +9,13 @@
 -- gains phase 6 (the operations log, then office and browser grants); phase 7 is the old phase 6.
 --
 -- Lock order (core §3 step 4), as the commit's: rank 0 company KEY SHARE, 1 member, 2 agents NO KEY UPDATE, 3 their
--- execution authorities, 4 group chats and the agents' threads, 5 routines (FOR UPDATE: the tombstone key changes), then
--- P18a's task and contact rows, 6 the agents' grant resources, 7 the grants (each folder-v2 environment of the company,
--- in environment order), 8 their connector grants, 11 the chats', threads' and agent pairs' sessions, then paths; todos,
--- rules and routine versions after the paths, where the commit's apply takes them; the writes (the sessions' rename takes
--- the operation clock); the authority journal last, one per environment in environment order (the folder clocks). Inert
--- until the member route (C4) calls the request.
+-- execution authorities, 4 group chats and the agents' threads, 5 routines, todos and workers (FOR UPDATE: their
+-- tombstone keys change; the commit locks todos and workers there since F2-5b), then P18a's task and contact rows, 6 the
+-- agents' grant resources, 7 the grants (each folder-v2 environment of the company, in environment order), 8 their
+-- connector grants, 11 the chats', threads' and agent pairs' sessions, then paths; workers' events, rules and routine
+-- versions after the paths, where the commit's apply takes them; the writes (the sessions' rename takes the operation
+-- clock); the authority journal last, one per environment in environment order (the folder clocks). Inert until the
+-- member route (C4) calls the request.
 
 set local lock_timeout = '3s';
 
@@ -529,7 +530,9 @@ begin
 	v_workers := array(select w.id from public.qorpera_runtime_workers w
 		join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', w.folder_key)
 		where w.id = any(v_workers) and w.folder_retired_at is not null
-			and public.qorpera_folder_erasure_row_before(r, w.folder_commit_id, w.folder_brief_version) order by w.id);
+			and public.qorpera_folder_erasure_row_before(r, w.folder_commit_id, w.folder_brief_version)
+			and (w.folder_results_version is null
+				or public.qorpera_folder_erasure_row_before(r, w.folder_commit_id, w.folder_results_version)) order by w.id);
 	perform 1 from public.qorpera_runtime_worker_events where worker_id = any(v_workers) order by id for update;
 	v_rules := array(select u.id from jsonb_array_elements(v_roots) r
 		join public.qorpera_review_rules u on u.folder_environment_id = p_environment_id and u.folder_path is not null
