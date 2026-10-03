@@ -485,7 +485,13 @@ function folderDescriptionRecord(): Record<string, unknown> {
 		...description,
 		company_runtime: "company-path-v1",
 		job: { ...(description.job as Record<string, unknown>), substrate_version_id: null },
-		run: { ...(description.run as Record<string, unknown>), substrate_version_id: null, company_snapshot_id: null },
+		// The folder clock's pin (folder core C4, P28: qorpera_folder_runner_broker_describe sends it).
+		run: {
+			...(description.run as Record<string, unknown>),
+			substrate_version_id: null,
+			company_snapshot_id: null,
+			company_seq: 7,
+		},
 		version: null,
 		snapshot: null,
 		proposal_snapshot: null,
@@ -1099,7 +1105,24 @@ describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 		expect(description.job).not.toHaveProperty("substrateVersionId");
 		expect(description.run).not.toHaveProperty("substrateVersionId");
 		expect(description.run).not.toHaveProperty("companySnapshotId");
+		expect(description.run.companySeq).toBe(7);
 		expect(description.run.runId).toBe(runId);
+	});
+
+	it("carries a folder-v2 run's companySeq, never beside a snapshot (P28)", async () => {
+		const folder = folderDescriptionRecord();
+		const run = folder.run as Record<string, unknown>;
+		// A description from before P28 has no pin at all.
+		const unsequenced = await folderBroker({ ...folder, run: { ...run, company_seq: null } }).broker.describe();
+		expect(unsequenced.run).not.toHaveProperty("companySeq");
+		for (const companySeq of [-1, 1.5, "7"]) {
+			await expect(folderBroker({ ...folder, run: { ...run, company_seq: companySeq } }).broker.describe()).rejects.toThrow();
+		}
+		const transport = new MemoryBrokerTransport();
+		Object.assign(transport.description, {
+			run: { ...(transport.description.run as Record<string, unknown>), company_seq: 7 },
+		});
+		await expect(broker(transport).broker.describe()).rejects.toThrow("both a snapshot and a folder sequence");
 	});
 
 	it("refuses everything that needs a Company File substrate, and names the job's company", async () => {
