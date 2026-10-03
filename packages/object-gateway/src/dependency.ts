@@ -63,6 +63,14 @@ export function unavailableStateFailure(code: unknown): ObjectDependencyError {
 
 /** PostgREST's error `code`, read from at most 16 KiB of body within 250 ms; undefined when it has none. */
 export async function postgrestErrorCode(response: Response, signal: AbortSignal): Promise<unknown> {
+	return (await postgrestError(response, signal)).code;
+}
+
+/** PostgREST's error `code` and `message`, read as `postgrestErrorCode` reads the code; each undefined when absent. */
+export async function postgrestError(
+	response: Response,
+	signal: AbortSignal,
+): Promise<{ code: unknown; message: unknown }> {
 	const errorBody = new AbortController();
 	try {
 		const body: unknown = JSON.parse(
@@ -73,9 +81,14 @@ export async function postgrestErrorCode(response: Response, signal: AbortSignal
 				),
 			),
 		);
-		return body && typeof body === "object" && "code" in body ? body.code : undefined;
+		return body && typeof body === "object"
+			? {
+					code: "code" in body ? body.code : undefined,
+					message: "message" in body ? body.message : undefined,
+				}
+			: { code: undefined, message: undefined };
 	} catch {
-		return undefined;
+		return { code: undefined, message: undefined };
 	} finally {
 		errorBody.abort();
 	}

@@ -1,5 +1,6 @@
 export * from "./company-bootstrap.ts";
 export * from "./dependency.ts";
+export * from "./folder-gc.ts";
 export * from "./journal.ts";
 export * from "./member-company-authority.ts";
 export * from "./member-company-file.ts";

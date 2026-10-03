@@ -161,6 +161,8 @@ All tables are keyed by company environment.
     step: find entries and resources whose stored key differs from
     `qorpera_folder_key(path)`, and recompute them (`update ... set path =
     path`, which regenerates the keys) before the folder is served again.
+    The same step reindexes the expression indexes on the folder key (the
+    resources', and the path versions' that erasure uses, P18).
     `snapshot-v1`'s keys share the exposure.
   - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
     rows hold at most 2,704 bytes. A unit that would store a longer key, or
@@ -852,10 +854,12 @@ company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 Permanent erasure (contract 5.6) is an owner or admin operation on a deleted
 path: a deleted agent's folder, or any other deleted path, such as a contact's
 file (contract, the 2026-10-02 amendment "work for people", item 3). It
-removes that path's versions and the conflict copies of its paths, clears the
-retired index rows' pointers to them, and marks the commits' units erased,
-keeping their attribution. The bytes then lose their roots, and GC collects
-them.
+removes that path's versions and the conflict copies of its paths, removes or
+clears the retired index rows built from them, and blanks the path names (and
+problem texts that quote them) in the commits' units, keeping the commits'
+attribution. A file's history that runs through moves is erased whole or not
+at all. The bytes then lose their roots, and GC collects them. Design:
+RUNTIME-COMPANY-FOLDER-ERASURE.md (slice P18).
 
 ### Tests
 
@@ -1041,7 +1045,9 @@ identical nodes, and the Interfaces session.
   agent starting the computer), S3 (the compute fence; deletion; coding
   machines) and F3 (the activation checks).
 - **C1d-2b and C1d-2c** (the gateway's GC lane, the worker's folder phase,
-  bytes with no catalog row, a deleted company's leftovers) are F2's.
+  bytes with no catalog row, a deleted company's leftovers) were F2's; from
+  3 October 2026 they, and erasure (C2), are the folder GC session's
+  (slices P11, P12 and P18).
 - **C5 early** (C1D, "C5 early"): F3 moves the SQL test fixtures to version-2
   staging and makes `qorpera_verify_company_path_file` refuse `folder-v2`. F3
   also makes the read actor refuse a company being deleted for members and
