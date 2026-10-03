@@ -174,12 +174,14 @@ One transaction, numbered with the core's steps (core §3):
 so the create function sorts the outcome itself and answers `completed`, `failed` or `retry`:
 - The commit runs inside one exception block (one subtransaction; the creation row and the fence are taken before it
   and stay held). The commit returns normally even when it saves nothing (`seq` null), so the block checks for a
-  `seq`, one outcome per unit sent and every outcome `saved`; otherwise it raises `QFC01`, which the block catches.
-  Everything the commit wrote rolls back: no half-seeded company.
+  `seq`, one outcome per unit sent and every outcome `saved`. It then checks that the recorded Co-Founder is the
+  row's `cofounder_id`, with exactly one `qorpera_agent_first_runs` row and one kickoff for it (a mismatch can only
+  come from a worker defect, and must not complete without the first run contract 14.1 requires). Otherwise it raises
+  `QFC01`, which the block catches. Everything the commit wrote rolls back: no half-seeded company.
 - **Retryable** (`retry`: the row stays `leased` until the worker releases it, and the next attempt restages): a
   `bytes_unverified` outcome (a deleting object: "the writer redoes its call once GC has finished", core §8 G3).
-- **Final** (`failed`: the row keeps the outcomes and the input): a parse, schema or 5.6 refusal, and an unexpected
-  `conflict`.
+- **Final** (`failed`: the row keeps the outcomes and the input): a parse, schema or 5.6 refusal, an unexpected
+  `conflict`, and a Co-Founder or first run that does not match the row.
 - Errors the block does not catch (`QRC01`, `55000`, `55P03`, `40P01`, and defects such as `22023` or `XX000`) roll the
   whole transaction back; the worker backs off and tries again, and a defect then shows in the attempt count.
 
@@ -246,7 +248,9 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   it patches P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000) by an exact
   anchor, the candidate select's `lease_until` and `not_before` lines, appending `and not exists (…creation of
   work.profile_id whose state is not 'completed')` with the body marker. Work rows the claim inserts for such a
-  company stay due until the skip lifts; nothing else changes.
+  company stay due until the skip lifts; nothing else changes. A `folder-v2` company with no creation row passes the
+  skip, while the hub list hides it: deliberately, since such companies exist only in tests (#727's own among them),
+  and the writer serves them there.
 - **The rollout packet** blocks a cut while bootstrap jobs are queued or leased (`sql-packet.mjs:92`). P14a adds
   creations to that check.
 
@@ -323,6 +327,8 @@ reversal test (as #705's 817 §1):
 - `qorpera_folder_enable` (a role check around the new `qorpera_folder_enable_internal`, with the bootstrap-job
   refusal);
 - `qorpera_company_founding_json` (`start.companySetup`);
+- `qorpera_claim_connection_file(uuid,integer)` (the creation skip; #727's `20260930006000`, the `lease_until` and
+  `not_before` lines), whose reversal test compares against #727's body;
 - the three stubs (`create or replace`; still revoked from every API role).
 
 **PRs:**
@@ -338,7 +344,7 @@ reversal test (as #705's 817 §1):
     - create (the units, the Co-Founder, the kickoff's exact shape, the first-run row, the turn request with and
       without a usable login, a replay, a stale token, all-or-nothing with the three answers (a `retry` on
       `bytes_unverified`, a final refusal kept on the row, `completed`), the setting cleared after each, an `agent.md`
-      whose id is not the row's `cofounder_id` getting no first run, the worker's failure classes);
+      whose id is not the row's `cofounder_id` answering `failed`, the worker's failure classes);
     - hiding and ready; the guards; the operator functions (member and anon callers refused, the reason kept, a
       company with a founding row refused, an owner who left refused).
     - **Exactly one under a creation retry and under two racing Starts:** one creation row, one
@@ -347,7 +353,8 @@ reversal test (as #705's 817 §1):
       thread); a leave against a creation (they meet at the fence); a company delete during a creation, with the
       deletion path named: before P08 the creation may still finish on a company being deleted (harmless: it stays
       hidden and is purged); after P08 the fence drain stops it.
-  - P14a waits for #705 (P02): Start's real-seed tests need its prelude.
+  - P14a lands after #727 (P22a), which brings #715 (P03) and #705 (P02) with it: Start's real-seed tests need
+    #705's prelude, and the skip patches #727's claim.
 - **P14b, the worker** (TS, object gateway), on A1's P22b module (#730), after P14a and #730.
 - **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
   P16 lands before the proof company (P38), so no `folder-v2` company exists without them; the coordinator records
