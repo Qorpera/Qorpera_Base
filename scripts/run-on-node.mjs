@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { describePlan, planChanged, planScript } from "./run-on-node-plan.mjs";
 import {
 	commitPushed,
+	machineLabel,
 	postStatus,
 	repoSlug,
 	statusContext,
@@ -15,11 +16,12 @@ import {
 	statusState,
 } from "./run-on-node-status.mjs";
 
-/** Runs one test suite on the operator test machine on node 2 instead of Docker on a
- * developer Mac (contract 24.1). The working tree git would see (tracked plus untracked,
- * not ignored, uncommitted changes included) is copied to a fresh per-run directory;
- * only changed files cross the network. Output streams back and the exit code is the
- * suite's. A record of host, versions, source and elapsed time is printed at the end (24.4). */
+/** Runs one test suite on one of the operator test machines (one VM per node) instead of
+ * Docker on a developer Mac (contract 24.1). The run takes the machine with the most free
+ * slots. The working tree git would see (tracked plus untracked, not ignored, uncommitted
+ * changes included) is copied to a fresh per-run directory there; only changed files cross
+ * the network. Output streams back and the exit code is the suite's. A record of machine,
+ * host, versions, source and elapsed time is printed at the end (24.4). */
 
 const USAGE = `Usage: node scripts/run-on-node.mjs [options] <suite> [-- args]
        node scripts/run-on-node.mjs [options] -- <command...>
@@ -38,18 +40,50 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --record FILE              also write the run record as JSON to FILE
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
+         --machine NAME             run on this machine only (node02, node01)
          --no-status                do not post the result as a GitHub status on the commit
-         --dry-run                  print what would run, change nothing
+         --dry-run                  print what would run and where, change nothing
+
+Machines: node02 (tester@10.201.0.2 via company41-node-02), node01 (tester@10.201.0.3 via company41-node-01).
+A run asks each how many runs it holds and takes the one with the most free slots (ties: this order). If that
+machine fails before the suite starts (unreachable, copy failed), the run moves to the next one.
 
 A named suite run on a clean, pushed commit posts its result as the commit status qorpera-ci/<suite>
 (pending while it runs), so the PR shows it as a check. Uncommitted changes or ad-hoc commands post none.
 
-Target (environment): QORPERA_TEST_MACHINE      default tester@10.201.0.2
-                      QORPERA_TEST_MACHINE_JUMP default company41-node-02 (empty: connect directly)
+Target (environment): QORPERA_TEST_MACHINE      one other machine instead of the list (default tester@10.201.0.2)
+                      QORPERA_TEST_MACHINE_JUMP its jump host (default company41-node-02; empty: connect directly)
                       QORPERA_TEST_MACHINE_KEY  default ~/.ssh/id_ed25519_qorpera_testvm`;
 
+/** The operator test machines, one VM per node (deploy/test-machine/README.md), each reached through its node's
+ * own SSH login. Both nodes' bridges are 10.201.0.0/24; each VM has its own address there, so each has its own
+ * line in the known-hosts file. On a tie the earlier machine wins. */
+export const MACHINES = [
+	{ name: "node02", host: "tester@10.201.0.2", jump: "company41-node-02" },
+	{ name: "node01", host: "tester@10.201.0.3", jump: "company41-node-01" },
+];
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HOME = "/home/tester";
+const LOCKS = "/run/lock";
+/** A marker per run from its first SSH call until it takes a queue ticket, so probes count runs that are still
+ * being copied (seconds, a minute for a first copy) and a burst of starts does not all choose one machine. */
+const ARRIVING = `${HOME}/arriving`;
+/** Inside a machine, CLOSED takes it out of the automatic choice (maintenance, removal); --machine still reaches
+ * it. It survives a reboot. Runs already queued there still run. A machine without SET_UP, which guest-setup.sh
+ * writes last, counts as closed too: its runner users may not exist yet. */
+export const CLOSED = "/etc/qorpera-test-machine-closed";
+export const SET_UP = "/etc/qorpera-test-machine-versions";
+/** A probe answers in about a second (0.6-0.9 s measured to node 2). Its connection, the jump's included, must
+ * reach the machine's SSH banner within PROBE_CONNECT_S: a jump that cannot reach its machine either fails at
+ * once ("Network is unreachable") or hangs, and a hang must not hold every run for the jump's own 15 s. Once one
+ * machine has answered with a free slot, the others get PROBE_GRACE_MS more; a machine that is down then costs a
+ * run about that. PROBE_TIMEOUT_MS ends every probe. */
+const PROBE_CONNECT_S = 6;
+export const PROBE_GRACE_MS = 2_000;
+export const PROBE_TIMEOUT_MS = 12_000;
+/** Before a run moves to another machine or starts its suite, the event loop gets this long to act on a signal
+ * that arrived during a synchronous copy: an interrupted run must stop, not start a suite somewhere. */
+const SIGNAL_TURN_MS = 100;
 /** Runner users on the test machine (guest-setup.sh creates them). Each run takes one for its whole
  * duration, so per-user kernel limits count that run alone: the coding Git sandbox caps RLIMIT_NPROC
  * at 512 tasks, which every concurrent run under one shared user exhausted together. */
@@ -74,6 +108,7 @@ export function parseArgs(argv) {
 		noStatus: false,
 		dryRun: false,
 		base: "origin/master",
+		machine: null,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -87,11 +122,15 @@ export function parseArgs(argv) {
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
-		else if (flag === "--env" || flag === "--record" || flag === "--base") {
+		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
-			else if (flag === "--base") {
+			else if (flag === "--machine") {
+				if (!MACHINES.some((machine) => machine.name === value))
+					throw new Error(`Unknown machine ${value} (${MACHINES.map((machine) => machine.name).join(", ")})`);
+				options.machine = value;
+			} else if (flag === "--base") {
 				if (!/^[A-Za-z0-9._/@^~][A-Za-z0-9._/@^~-]*$/.test(value)) throw new Error(`Invalid --base ${value}`);
 				options.base = value;
 			}
@@ -224,6 +263,7 @@ export function pruneScript() {
 		`mkdir -p ${HOME}/runs ${HOME}/trees`,
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
+		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +14 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
@@ -264,11 +304,14 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
 		// free slot. The slot lock stays on fd 9 until this session ends.
 		`mkdir -p ${queue}`,
-		`ticket=${queue}/$(date +%s%N)-$$; exec 7>"$ticket"; flock -n 7; trap 'rm -f "$ticket"' EXIT`,
+		// Only a probe or another run's cleanup can hold this new ticket, and only for an instant: wait it out.
+		`ticket=${queue}/$(date +%s%N)-$$; exec 7>"$ticket"; flock 7; trap 'rm -f "$ticket"' EXIT`,
+		// Queued now: probes count the ticket instead of the copy marker.
+		`rm -f ${ARRIVING}/${run}`,
 		'slot=""; queued=$(date +%s); shown=""',
 		'while [ -z "$slot" ]; do',
 		`\tfor t in ${queue}/*; do [ "$t" != "$ticket" ] && [ -e "$t" ] && flock -n "$t" true 2>/dev/null && rm -f "$t"; done`,
-		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock -n 7; }',
+		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock 7; }',
 		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
 		'\tif [ "$position" = 1 ]; then',
 		`\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
@@ -318,11 +361,134 @@ export function parseStatus(text) {
 	return status;
 }
 
-function target() {
-	const host = process.env.QORPERA_TEST_MACHINE || "tester@10.201.0.2";
-	const jump = process.env.QORPERA_TEST_MACHINE_JUMP ?? "company41-node-02";
-	const key = process.env.QORPERA_TEST_MACHINE_KEY || join(homedir(), ".ssh", "id_ed25519_qorpera_testvm");
-	const ssh = [
+/** Whether QORPERA_TEST_MACHINE* points the run at one other machine instead of the list. */
+export function customTarget(env) {
+	return Boolean(env.QORPERA_TEST_MACHINE) || env.QORPERA_TEST_MACHINE_JUMP !== undefined;
+}
+
+/** The machines a run may use, in tie-break order: --machine's, the one QORPERA_TEST_MACHINE* names, or all. */
+export function candidateMachines(machine, env) {
+	if (customTarget(env)) {
+		if (machine) throw new Error("--machine and QORPERA_TEST_MACHINE* both choose the machine; use one");
+		return [
+			{
+				name: "custom",
+				host: env.QORPERA_TEST_MACHINE || MACHINES[0].host,
+				jump: env.QORPERA_TEST_MACHINE_JUMP ?? MACHINES[0].jump,
+			},
+		];
+	}
+	return machine ? MACHINES.filter((candidate) => candidate.name === machine) : MACHINES;
+}
+
+/** Read-only: how many of the machine's CPU slots runs hold, how many runs wait in its queue for one, how many
+ * are still being copied there, and whether it is closed. A lock is opened for reading (never created) and tried
+ * once: a held one counts, a free one is held for an instant only (a run taking a slot right then tries the next
+ * and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that died. A copy marker
+ * counts for 10 minutes; a killed copy's marker ages out. */
+export function probeScript({ locks, closed, setUp, arriving }) {
+	return [
+		`busy=0; waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
+		`for i in $(seq 1 ${CPU_SLOTS}); do { flock -n 5 || busy=$((busy + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/qorpera-test-machine-slot`)}"$i.lock"; done`,
+		`for t in ${shellQuote(`${locks}/qorpera-test-machine-queue`)}/*; do { flock -n 5 || waiting=$((waiting + 1)); } 2>/dev/null 5<"$t"; done`,
+		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
+		'echo "busy=$busy waiting=$waiting arriving=$arriving closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+	].join("\n");
+}
+
+/** Free slots after running, queued and arriving runs; negative when runs wait. */
+function free(probe) {
+	return CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
+}
+
+/** Open to the automatic choice: answered, not closed by an operator, and set up. */
+function open(probe) {
+	return probe.unreachable === undefined && !probe.closed && probe.setUp;
+}
+
+/** Machines that answered their probe, best first: the most free slots, then list order. Unreachable machines
+ * are left out, and closed ones unless the run named its machine. */
+export function rankMachines(probes, pinned) {
+	return probes
+		.map((probe, index) => ({ probe, index }))
+		.filter(({ probe }) => probe.unreachable === undefined && (pinned || open(probe)))
+		.sort((a, b) => free(b.probe) - free(a.probe) || a.index - b.index)
+		.map(({ probe }) => probe);
+}
+
+/** The order a run tries machines in: those that answered, best first. Only when none of them can take the run
+ * are the machines that did not answer tried, in list order (a probe has a short budget; the copy's own
+ * connection may still get through). A closed machine is never tried unless the run named it. */
+export function runOrder(probes, pinned) {
+	const answered = rankMachines(probes, pinned).map((probe) => probe.name);
+	return answered.length ? answered : probes.filter((probe) => probe.unreachable !== undefined).map((probe) => probe.name);
+}
+
+/** Asks every machine at once with `ask(machine, signal)`, which settles when asked to stop. Once one machine has
+ * answered with a free slot the others get `graceMs` more; `timeoutMs` ends every probe. */
+export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
+	const stop = new AbortController();
+	const timeout = setTimeout(() => stop.abort(new Error(`no answer in ${timeoutMs / 1000} s`)), timeoutMs);
+	let grace = null;
+	try {
+		return await Promise.all(
+			machines.map((machine) =>
+				ask(machine, stop.signal).then((answer) => {
+					if (!grace && open(answer) && free(answer) > 0)
+						grace = setTimeout(
+							() => stop.abort(new Error(`no answer within ${graceMs / 1000} s of ${answer.name}'s`)),
+							graceMs,
+						);
+					return answer;
+				}),
+			),
+		);
+	} finally {
+		clearTimeout(timeout);
+		clearTimeout(grace);
+	}
+}
+
+/** One machine per run: the first of `ranked` that takes the copy. A machine that fails before the suite starts
+ * (unreachable, copy refused) costs only time, so the run moves to the next and `passOver` reports it; the last
+ * failure, and a copy a signal ended (`final`), are thrown. The event loop gets a turn first, so an interrupt
+ * stops the run rather than moving it. A suite that has started is never repeated elsewhere. */
+export async function firstTaking(ranked, copy, passOver) {
+	const earlier = [];
+	for (const [index, machine] of ranked.entries()) {
+		try {
+			copy(machine);
+			return machine;
+		} catch (error) {
+			if (index === ranked.length - 1 || error.final) {
+				if (earlier.length) error.message = `${error.message} (before: ${earlier.join("; ")})`;
+				throw error;
+			}
+			earlier.push(`${machine.name}: ${error.message}`);
+			await signalTurn();
+			passOver(machine, error, ranked[index + 1]);
+		}
+	}
+	throw new Error("No test machine to run on");
+}
+
+function signalTurn() {
+	return new Promise((resolveTurn) => setTimeout(resolveTurn, SIGNAL_TURN_MS));
+}
+
+/** One line for the log: each machine's slots and queue, or why it did not answer. */
+export function describeProbes(probes) {
+	return probes
+		.map((probe) =>
+			probe.unreachable === undefined
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.arriving ? `, ${probe.arriving} arriving` : ""}`
+				: `${probe.name} unreachable (${probe.unreachable})`,
+		)
+		.join("; ");
+}
+
+function sshArgs(machine, key) {
+	return [
 		"-o",
 		"BatchMode=yes",
 		"-o",
@@ -333,12 +499,75 @@ function target() {
 		`UserKnownHostsFile=${join(homedir(), ".ssh", "known_hosts_qorpera_test_machines")}`,
 		"-o",
 		"ServerAliveInterval=30",
+		// A machine that cannot be reached fails in seconds rather than at the kernel's connect timeout.
+		"-o",
+		"ConnectTimeout=15",
 		"-i",
 		key,
 		// -J would not pass BatchMode to the jump host; a non-interactive session must never prompt there.
-		...(jump ? ["-o", `ProxyCommand=ssh -o BatchMode=yes -o ConnectTimeout=15 -W %h:%p ${jump}`] : []),
+		...(machine.jump ? ["-o", `ProxyCommand=ssh -o BatchMode=yes -o ConnectTimeout=15 -W %h:%p ${machine.jump}`] : []),
 	];
-	return { host, jump, ssh, key };
+}
+
+/** One probe over SSH. Its own process group, so that stopping it also ends the jump's ssh, which shares its
+ * stderr and would otherwise keep the probe from closing. */
+function probeOverSsh(machine, key, signal) {
+	return new Promise((resolvePromise) => {
+		const script = probeScript({ locks: LOCKS, closed: CLOSED, setUp: SET_UP, arriving: ARRIVING });
+		const child = spawn(
+			"ssh",
+			// ssh keeps the first value given for an option: the probe's shorter connect time goes first.
+			["-o", `ConnectTimeout=${PROBE_CONNECT_S}`, ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(script)],
+			{ stdio: ["ignore", "pipe", "pipe"], detached: true },
+		);
+		let out = "";
+		let err = "";
+		let settled = false;
+		const settle = (answer) => {
+			if (settled) return;
+			settled = true;
+			signal.removeEventListener("abort", stop);
+			resolvePromise(answer);
+		};
+		const unreachable = (reason) => settle({ name: machine.name, unreachable: reason.slice(0, 200) });
+		const stop = () => {
+			try {
+				process.kill(-child.pid, "SIGKILL");
+			} catch {
+				// Already gone, or never started.
+			}
+			child.stdout.destroy();
+			child.stderr.destroy();
+			unreachable(String(signal.reason?.message ?? signal.reason));
+		};
+		if (signal.aborted) stop();
+		else signal.addEventListener("abort", stop, { once: true });
+		child.stdout.on("data", (chunk) => {
+			out += chunk;
+		});
+		child.stderr.on("data", (chunk) => {
+			err += chunk;
+		});
+		child.on("error", (error) => unreachable(error.message));
+		child.on("close", (code) => {
+			const answer = parseStatus(out);
+			const counts = ["busy", "waiting", "arriving"].map((name) => answer[name] ?? "");
+			if (code === 0 && counts.every((count) => /^\d+$/.test(count)))
+				settle({
+					name: machine.name,
+					busy: Number(answer.busy),
+					waiting: Number(answer.waiting),
+					arriving: Number(answer.arriving),
+					closed: answer.closed === "1",
+					setUp: answer.setup === "1",
+					cpus: Number(answer.cpus) || null,
+					load: Number(answer.load) || 0,
+				});
+			else if (code === 0) unreachable(`unexpected answer: ${out.trim().slice(0, 120)}`);
+			// The jump's own line ("open failed: connect failed: ...") comes before ssh's "Connection closed".
+			else unreachable(err.split("\n").map((line) => line.trim()).filter(Boolean).join(" / ") || `exit ${code}`);
+		});
+	});
 }
 
 function sshRun(t, remoteScript) {
@@ -349,9 +578,17 @@ function sshRun(t, remoteScript) {
 	});
 }
 
+/** A child that a signal ended: by the signal itself, or ssh's own exit after one ("Killed by signal N."). */
+function endedBySignal(result) {
+	return Boolean(result.signal) || /Killed by signal/.test(String(result.stderr ?? ""));
+}
+
 function sshCapture(t, remoteScript) {
 	const result = spawnSync("ssh", [...t.ssh, t.host, "bash", "-c", shellQuote(remoteScript)], { encoding: "utf8" });
-	if (result.status !== 0) throw new Error(`Test machine unreachable or refused: ${(result.stderr || "").trim()}`);
+	if (result.status !== 0)
+		throw Object.assign(new Error(`Test machine unreachable or refused: ${(result.stderr || "").trim()}`), {
+			final: endedBySignal(result),
+		});
 	return result.stdout;
 }
 
@@ -375,7 +612,8 @@ export function changedFiles(root, base, untracked) {
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	const root = git(process.cwd(), ["rev-parse", "--show-toplevel"]).toString().trim();
-	const t = target();
+	const machines = candidateMachines(options.machine, process.env);
+	const key = process.env.QORPERA_TEST_MACHINE_KEY || join(homedir(), ".ssh", "id_ed25519_qorpera_testvm");
 	const { files, untracked } = workingTreeFiles(root);
 	const secrets = secretLooking(untracked);
 	if (secrets.length && !options.allowSecrets)
@@ -413,52 +651,107 @@ async function main() {
 	const runCommand = options.sudo
 		? `sudo -n env VITEST_MAX_WORKERS="$VITEST_MAX_WORKERS" ${env} PATH="$PATH" ${command}`
 		: `${env ? `env ${env} ` : ""}${command}`;
+	if (!options.dryRun && !existsSync(key)) throw new Error(`Missing test machine key ${key}`);
+	// Before any machine is tried: a name rsync cannot copy is this tree's fault, not a machine's.
+	const rulesText = `${includeRules(files).join("\n")}\n+ */\n- *\n`;
+	// Every probe is read-only, so a dry run asks too and shows where the run would go. A run that names its
+	// machine (--machine, QORPERA_TEST_MACHINE*) goes there even when it is closed.
+	const probeStarted = Date.now();
+	const probes = await probeAll(machines, (machine, signal) => probeOverSsh(machine, key, signal), {
+		graceMs: PROBE_GRACE_MS,
+		timeoutMs: PROBE_TIMEOUT_MS,
+	});
+	const probeSeconds = (Date.now() - probeStarted) / 1000;
+	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env)).map((name) => {
+		const machine = machines.find((candidate) => candidate.name === name);
+		return { ...machine, ssh: sshArgs(machine, key) };
+	});
 	if (options.dryRun) {
 		console.log(
 			JSON.stringify(
-				{ target: t.host, via: t.jump || null, runDir, treeDir, install: options.install, runCommand, source, githubStatus: github.plan },
+				{
+					machine: ranked[0]?.name ?? null,
+					target: ranked[0]?.host ?? null,
+					via: ranked[0]?.jump || null,
+					machines: probes,
+					probeSeconds,
+					runDir,
+					treeDir,
+					install: options.install,
+					runCommand,
+					source,
+					githubStatus: github.plan,
+				},
 				null,
 				2,
 			),
 		);
 		return 0;
 	}
-	if (!existsSync(t.key)) throw new Error(`Missing test machine key ${t.key}`);
 	if (untracked.length) console.error(`== run-on-node: copying ${untracked.length} untracked file(s) too`);
+	console.error(`== run-on-node: ${describeProbes(probes)}`);
+	const pending = (machine) => `running on ${machineLabel(machine.name)} (waits while ${CPU_SLOTS} runs are busy)`;
+	let copyStarted = Date.now();
 
-	github.post("pending", "running on node 2 (waits while 3 runs are busy)");
 	try {
+		if (!ranked.length) throw new Error(`No open test machine: ${describeProbes(probes)}`);
+		github.post("pending", pending(ranked[0]));
 		return await execute();
 	} catch (error) {
 		github.post("error", `harness error: ${String(error.message).slice(0, 110)}`);
 		throw error;
 	}
 
+	/** Prune, make the run directory, mark the run as arriving and copy the tree to one machine; throws when the
+	 * machine refuses, with `final` when a signal ended the copy. */
+	function copyTree(t) {
+		copyStarted = Date.now();
+		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${run}\n${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
+		const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
+		const rules = join(rulesDir, "rules");
+		writeFileSync(rules, rulesText);
+		const rsync = spawnSync(
+			"rsync",
+			[
+				"-a",
+				"--prune-empty-dirs",
+				`--filter=merge ${rules}`,
+				`--copy-dest=${treeDir}/`,
+				// The base copy is read under a shared lock; its refresh below takes the exclusive one.
+				`--rsync-path=flock -s ${treeDir}.lock rsync`,
+				"-e",
+				["ssh", ...t.ssh].map(shellQuote).join(" "),
+				`${root}/`,
+				`${t.host}:${runDir}/`,
+			],
+			{ stdio: ["ignore", "inherit", "inherit"] },
+		);
+		rmSync(rulesDir, { recursive: true, force: true });
+		if (rsync.status !== 0) {
+			try {
+				sshCapture(t, `rm -f ${ARRIVING}/${run}`);
+			} catch {
+				// Ages out of the probe's count in 10 minutes.
+			}
+			// A signal (or rsync's exit 20 for one) ends the run; files that vanished or could not be read during the
+			// copy (23, 24) are this tree's problem and would fail on every machine.
+			throw Object.assign(new Error(`Copying the working tree failed (rsync ${rsync.signal ?? `exit ${rsync.status}`})`), {
+				final: Boolean(rsync.signal) || [20, 23, 24].includes(rsync.status),
+			});
+		}
+	}
+
 	async function execute() {
 	const started = Date.now();
-	sshCapture(t, `${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
-	const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
-	const rules = join(rulesDir, "rules");
-	writeFileSync(rules, `${includeRules(files).join("\n")}\n+ */\n- *\n`);
-	const rsync = spawnSync(
-		"rsync",
-		[
-			"-a",
-			"--prune-empty-dirs",
-			`--filter=merge ${rules}`,
-			`--copy-dest=${treeDir}/`,
-			// The base copy is read under a shared lock; its refresh below takes the exclusive one.
-			`--rsync-path=flock -s ${treeDir}.lock rsync`,
-			"-e",
-			["ssh", ...t.ssh].map(shellQuote).join(" "),
-			`${root}/`,
-			`${t.host}:${runDir}/`,
-		],
-		{ stdio: ["ignore", "inherit", "inherit"] },
-	);
-	rmSync(rulesDir, { recursive: true, force: true });
-	if (rsync.status !== 0) throw new Error(`Copying the working tree failed (rsync exit ${rsync.status})`);
+	const passedOver = [];
+	const t = await firstTaking(ranked, copyTree, (machine, error, next) => {
+		passedOver.push(machine.name);
+		console.error(`== run-on-node: ${machine.name} failed before the suite started (${error.message}); trying ${next.name}`);
+		github.post("pending", pending(next));
+	});
 	const synced = Date.now();
+	// A signal that arrived during the synchronous copy ends the run here, before a suite starts.
+	await signalTurn();
 	// A shared worktree can change between the check and the copy: then the copy is not the commit.
 	if (
 		github.plan.posted &&
@@ -474,7 +767,7 @@ async function main() {
 			runDir,
 			treeDir,
 			files: files.length,
-			copySeconds: (synced - started) / 1000,
+			copySeconds: (synced - copyStarted) / 1000,
 			install: options.install,
 			build: options.build,
 			runCommand,
@@ -503,8 +796,12 @@ async function main() {
 	}
 	const record = {
 		schema: "qorpera.run-on-node/v1",
+		machine: t.name,
 		host: t.host,
 		via: t.jump || null,
+		machines: probes,
+		probeSeconds,
+		...(passedOver.length ? { passedOver } : {}),
 		environment,
 		source,
 		command: options.command,
@@ -520,7 +817,7 @@ async function main() {
 		uncappedTestProcesses: status.uncapped ? Number(status.uncapped) : null,
 		...(changedPlan ? { changed: changedPlan } : {}),
 		startedAt: new Date(started).toISOString(),
-		copySeconds: (synced - started) / 1000,
+		copySeconds: (synced - copyStarted) / 1000,
 		prepareSeconds: status.prepare_ms ? Number(status.prepare_ms) / 1000 : null,
 		suiteSeconds: status.suite_ms ? Number(status.suite_ms) / 1000 : null,
 		elapsedSeconds: (finished - started) / 1000,
@@ -567,8 +864,8 @@ function githubStatus(root, options, source) {
 		plain: options.plain,
 		base: options.base,
 	});
-	// The status says "on node 2": a run pointed at another machine does not speak for it.
-	if (decision.post && (process.env.QORPERA_TEST_MACHINE || process.env.QORPERA_TEST_MACHINE_JUMP !== undefined))
+	// The status names one of the listed machines: a run pointed at another machine does not speak for the suite.
+	if (decision.post && customTarget(process.env))
 		decision = { post: false, reason: "QORPERA_TEST_MACHINE* points the run at another machine" };
 	if (decision.post) {
 		const pushed = commitPushed(slug, source.head);
