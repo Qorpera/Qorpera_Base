@@ -57,9 +57,15 @@ begin
 			raise exception 'A: the renewal failed: %', v_state; end if;
 	end loop;
 	perform dblink_exec('fence_one', 'commit');
-	if (select lease_expires_at from public.qorpera_runner_jobs where id = '64800000-0000-4000-8000-0000000000f2') <= v_job
-		or (select expires_at from public.qorpera_native_provider_connection_leases where id = '64800000-0000-4000-8000-0000000000f6') <= v_lease then
-		raise exception 'A: both leases must have moved'; end if;
+	-- Each renewal sets its lease to a fixed span from now (the job 6 minutes, the native lease 120 s), replacing the
+	-- fixture's hour.
+	if (select lease_expires_at from public.qorpera_runner_jobs where id = '64800000-0000-4000-8000-0000000000f2') = v_job
+		or abs(extract(epoch from (select lease_expires_at - clock_timestamp() from public.qorpera_runner_jobs
+			where id = '64800000-0000-4000-8000-0000000000f2')) - 360) > 60
+		or (select expires_at from public.qorpera_native_provider_connection_leases where id = '64800000-0000-4000-8000-0000000000f6') = v_lease
+		or abs(extract(epoch from (select expires_at - clock_timestamp() from public.qorpera_native_provider_connection_leases
+			where id = '64800000-0000-4000-8000-0000000000f6')) - 120) > 60 then
+		raise exception 'A: both leases must have been renewed'; end if;
 end $$;
 
 -- B. Behind a change that ends the lease (the job FOR UPDATE, as completion takes it), both renewals wait at the job, and
