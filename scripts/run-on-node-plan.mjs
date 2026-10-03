@@ -200,7 +200,7 @@ export const STEPS = [
 			/^supabase\/(?!functions\/)/,
 			/^scripts\/test-hosted-db/,
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
-			/^scripts\/fixtures\/(coding-turn-pre-continuity|email-draft-e2e)/,
+			/^scripts\/fixtures\/email-draft-e2e/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
 			// The production review and wake bus scripts check SQL output with these parsers.
 			/^packages\/runtime\/src\/cloud-(native-company-context|native-tool-authority|wake-bus)\.ts$/,
@@ -223,15 +223,17 @@ export const STEPS = [
 	},
 	{
 		// v133 (2026-09-27): a lock change on a hot path ships only with a load test at realistic concurrency.
-		// Any migration can change what one company's calls lock, so every migration runs it (about 1.5 min).
-		name: "company-fence-load",
-		why: "one company under pooled load with the production role timeouts: its agents' reads, writes, GC and foreign-key inserts; fails on a deadlock or a statement timeout",
+		// Any migration can change what one company's calls lock, so every migration runs it. Since C1c-3i
+		// (folder-v2 only) it is the folder core's load test (C1e), short: 16 runs for 30 s and a run whose read set
+		// holds 5,000 paths (about 2.5 min with its setup).
+		name: "folder-core-load",
+		why: "one folder-v2 company under pooled load with the production role timeouts on a real disk: its runs' fences, reads, writes, releases and subtree deletes, a stop, narrowing, wakes, GC and rank-0 writers; fails on a deadlock, a leak, a lost parent or bytes, an unexpected failure or a call over the result fence",
 		paths: [
 			/^supabase\/migrations\//,
-			/^supabase\/tests\/(300_runtime_wake_bus|396_runtime_coding_executor|602_runtime_coding_lock_order)\.test\.sql$/,
-			/^scripts\/load-company-fence-pool\./,
+			/^supabase\/tests\/648_folder_core_run_fence_concurrency\.test\.sql$/,
+			/^scripts\/load-folder-core\./,
 		],
-		commands: ["node scripts/load-company-fence-pool.mjs --check"],
+		commands: ["node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check"],
 	},
 ];
 

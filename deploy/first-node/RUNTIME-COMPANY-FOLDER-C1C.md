@@ -1305,6 +1305,69 @@ folder-v2 branch, and the statement that was there before stays untouched in its
 
   C1c-3l: an agent's own start and the wake drain.
 
+### 6.12 C1c-3i part a as built: coding sessions on the folder fence (migration 20260930026000, test 827)
+
+Folder-v2 only (founder decision, 3 October 2026: production is wiped and the snapshot-v1 path is dropped), so no
+snapshot-v1 branch is kept.
+
+**Before.** A coding turn's begin, its completion, the owner's answer and a delegation locked the todo and then the
+worker `FOR UPDATE`, with no company lock. A stop's drain did not wait for any of them. The begin's wake admission took
+the company row `FOR UPDATE NOWAIT`, which is the 55P03 the executor retries. On `folder-v2` the begin could not run at
+all, because its wake had no folder admission. The executor's claim locked candidates of several companies in one
+transaction.
+
+**The coding worker's entry.** `qorpera_lock_coding_worker`, which the begin, the completion and the answer call first,
+is now the company's entry (core §3):
+- the folder fence `KEY SHARE`, and rank 0;
+- rank 1 the worker's owner, rank 2 the agent, rank 3 its execution authority, all `KEY SHARE`;
+- rank 5 the todo and then the worker, `FOR NO KEY UPDATE` (F2's table order; the completion and the answer write the
+  todo).
+
+The coding session comes after, at the sessions step (core §3, amended: coding sessions go with the sessions after rank
+10, `FOR UPDATE` in id order). A worker of a company that is not `folder-v2` is refused with 0A000.
+
+**The begin.** It reads the pause again after the fence, since it inserts a wake. It admits on the folder admission row
+(step 10) last, before its wake. There is no NOWAIT and no 55P03, so the executor's busy retry no longer fires.
+
+**The claim.** It takes one company per call:
+- a candidate it does not take (an inactive worker, a live lease) raises QSK01, so its subtransaction, and every lock it
+  took, rolls back;
+- a candidate of a company that is not `folder-v2` is skipped the same way (0A000);
+- failing an expired lease ends the call, and the next call takes the next candidate.
+
+**A delegation** locks the worker through the same entry.
+
+**Inert** until C3 lets a `folder-v2` coding session exist (F2's worker commit refuses coding dispatch) and C4
+materializes its wake.
+
+**Tests:**
+- 827:
+  - A: the begin holds the fence, rank 0, the todo and the worker, a stop's second phase waits for it, and its wake is
+    queued and admitted;
+  - B: behind a stop's second phase it waits at the fence holding no coding row;
+  - C: a paused company refuses;
+  - D: the entry and an agent's worker change take turns at the worker, and a snapshot-v1 worker is refused;
+  - E: the claim skips the snapshot-v1 candidate without keeping its rows;
+  - F: failing an expired lease ends the call.
+- The snapshot-v1 coding tests are deleted:
+  - 395, 399, 600, 601, 602 (fleet), 603, 604, 606, 627, 655, 676, 719, 737, 739, 775 and 782;
+  - also the coding-claim section of 640.
+- 396 keeps its dispatch, and 602 keeps its committed fixture (608, 745, 754, 797 and 800 cut at its end marker).
+- The snapshot load scripts and the coding backfill script went with them. Run-on-node's `folder-core-load` step
+  replaces `company-fence-load`.
+
+**Release guard (release-owned).** v170's activation pins these markers, and the generator's template carries them:
+- `v_worker := public.qorpera_lock_coding_worker(p_worker_id);` in the begin and the completion (both kept);
+- `for update;` in `qorpera_lock_coding_worker` (gone).
+
+The next cut must drop or replace the second marker.
+
+**Not in 3i-a (3i-b, migration 20260930026500):**
+- the `folder-v2` machine-event drain and the quiet coding check-ins, as per-company loops;
+- lifting the machine-event refusals (the pin trigger, `folder_wake_authorized`, `folder_run_resolve`).
+
+The progress, heartbeat and describe calls lock only the session and change no company state.
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.

@@ -91,18 +91,18 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.equal(STEPS.find((step) => step.name === "hosted-db").build, true);
 });
 
-test("a migration, the load harness or its fixture's tests put one company's fence under load", () => {
+test("a migration, the folder load test or its fixture puts one folder-v2 company under load", () => {
 	for (const file of [
 		"supabase/migrations/20260928339380_company_fence_shared_readers.sql",
-		"scripts/load-company-fence-pool.mjs",
-		"scripts/load-company-fence-pool.sql",
-		"supabase/tests/602_runtime_coding_lock_order.test.sql",
+		"scripts/load-folder-core.mjs",
+		"scripts/load-folder-core.sql",
+		"supabase/tests/648_folder_core_run_fence_concurrency.test.sql",
 	])
-		assert.ok(names([file]).includes("company-fence-load"), file);
-	assert.ok(!names(["supabase/tests/745_company_fence_shared_readers.test.sql"]).includes("company-fence-load"));
-	assert.ok(!names(["packages/runtime/src/cloud-company-path-control.ts"]).includes("company-fence-load"));
-	const load = STEPS.find((step) => step.name === "company-fence-load").commands.join(" ");
-	assert.equal(load, "node scripts/load-company-fence-pool.mjs --check");
+		assert.ok(names([file]).includes("folder-core-load"), file);
+	assert.ok(!names(["supabase/tests/745_company_fence_shared_readers.test.sql"]).includes("folder-core-load"));
+	assert.ok(!names(["packages/runtime/src/cloud-company-path-control.ts"]).includes("folder-core-load"));
+	const load = STEPS.find((step) => step.name === "folder-core-load").commands.join(" ");
+	assert.equal(load, "node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check");
 });
 
 test("shared configuration and unknown paths run every step", () => {
