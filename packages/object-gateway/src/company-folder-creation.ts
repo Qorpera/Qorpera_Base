@@ -49,9 +49,10 @@ const ANSWERS = new Set(["completed", "failed", "retry", "stale"]);
 const MEDIA_TYPE = "text/markdown";
 /** A claim, a release and a fail get their own short deadline, so a drain that ran out of time still closes a claim. */
 const CALL_MS = 15_000;
-/** The worker's own failures that no retry can fix: a seed tree the parser refuses, or bytes the platform cannot
- * stage. Any other problem is retried after a back-off. */
-const FINAL = new Set(["seed_invalid", "claim_invalid", "stage_invalid", "file_too_large"]);
+/** The worker's own failures that no retry can fix (design §2 step 3): a seed tree the parser or a writer refuses,
+ * or a staging refusal. Any other problem is retried after a back-off, an unreadable claim included: it can only mean
+ * the gateway and the database disagree (a release between their deploys), which the next deploy mends. */
+const FINAL = new Set(["seed_invalid", "stage_invalid"]);
 
 export interface CompanyCreationClaim {
 	readonly creationId: string;

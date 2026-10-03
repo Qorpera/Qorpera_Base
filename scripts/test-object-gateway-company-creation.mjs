@@ -65,7 +65,7 @@ async function main() {
 				contents: [
 					'export {CompanyFolderCreator} from "./packages/object-gateway/src/company-folder-creation.ts";',
 					'export {FileSystemObjectStore} from "./packages/object-gateway/src/object-store.ts";',
-					'export {parseCompanyStateFile} from "./packages/cloud-client/src/company-state-files.ts";',
+					'export {parseCompanyStateFile, companyStateSeedTree} from "./packages/cloud-client/src/company-state-files.ts";',
 				].join("\n"),
 			},
 			platform: "node",
@@ -92,12 +92,54 @@ async function main() {
 			replication,
 		});
 
+		const creation = () => JSON.parse(query(`select to_jsonb(c) from public.qorpera_folder_company_creations c
+			where c.profile_id = '${profileId}'`));
+		const due = () => query(`update public.qorpera_folder_company_creations set not_before = null where profile_id = '${profileId}'`);
+		const nothingMade = () =>
+			assert.equal(query(`select count(*) from public.qorpera_folder_entries where environment_id = '${environmentId}'`), "0");
+
+		// 0a. A paused company: the create refuses (55000), the worker releases the claim with a back-off, nothing is made.
+		query(`insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason)
+			values ('${profileId}', '${owner}', 'Creation script pause')`);
+		assert.equal(await creator.createDue(5), 1);
+		assert.equal(creation().state, "queued");
+		assert(creation().not_before, "a paused creation backs off");
+		nothingMade();
+		query(`delete from public.qorpera_company_execution_pauses where profile_id = '${profileId}'`);
+		due();
+
+		// 0b. A crash between staging and the create: the files are staged, the create never arrives. The claim is released
+		// and, once due again, the next attempt stages the same files again and makes the company (below).
+		let crashed = false;
+		const crashing = new code.CompanyFolderCreator({
+			workerId: "87700000-0000-4000-8000-00000000000b",
+			authority: {
+				publisher: async (method, args) => {
+					if (method === "qorpera_folder_company_create" && !crashed) {
+						crashed = true;
+						throw new Error("the gateway stopped");
+					}
+					return rpc(method, args);
+				},
+			},
+			store,
+			replication,
+		});
+		assert.equal(await crashing.createDue(5), 1);
+		assert(crashed);
+		assert.equal(creation().state, "queued");
+		assert.equal(creation().last_problem, "writer_failed");
+		assert(Number(query(`select count(*) from public.qorpera_folder_upload_intents where environment_id = '${environmentId}'
+			and state = 'sealed'`)) >= 5, "the files were staged before the crash");
+		nothingMade();
+		due();
+
 		// 1. One creation is due, and the worker makes the company.
 		assert.equal(await creator.createDue(5), 1);
-		const creation = JSON.parse(query(`select to_jsonb(c) from public.qorpera_folder_company_creations c
-			where c.profile_id = '${profileId}'`));
-		assert.equal(creation.state, "completed", JSON.stringify(creation));
-		assert.equal(creation.input, null);
+		const made = creation();
+		assert.equal(made.attempts, 3, "the third attempt made it");
+		assert.equal(made.state, "completed", JSON.stringify(made));
+		assert.equal(made.input, null);
 		assert.equal(query(`select public.qorpera_folder_company_ready('${profileId}')`), "t");
 		assert.equal(await creator.createDue(5), 0);
 
@@ -114,17 +156,34 @@ async function main() {
 			assert.equal(entries[path]?.kind, "file", `${path} is a file`);
 		const text = async (key) =>
 			new TextDecoder().decode(await store.get(profileId, entries[key].sha, Number(entries[key].bytes)));
+		// Every file of the seed tree (built as the worker builds it, from the creation's input and ids) is stored as written,
+		// and every structured one reads back through the parser.
+		const tree = code.companyStateSeedTree({
+			companyName: "Nordlys Bryggeri",
+			cofounderId: made.cofounder_id,
+			vision: "Small-batch beer for the cafés of Aarhus.",
+			founders: [{ userId: owner, displayName: "Ida", role: "Brewing and the cafés." }],
+			firstTodo: { id: made.first_todo_id, requestedBy: owner },
+		});
+		for (const entry of tree) {
+			const key = entry.path.toLowerCase();
+			assert.equal(entries[key]?.kind, entry.kind, `${entry.path} is a ${entry.kind}`);
+			if (entry.kind !== "file") continue;
+			assert.equal(await text(key), entry.text, `${entry.path} holds the seed tree's text`);
+			const parsed = code.parseCompanyStateFile(entry.path, entry.text);
+			assert(parsed === null || parsed.ok, `${entry.path} parses`);
+		}
 		const vision = code.parseCompanyStateFile("vision/vision.md", await text("vision/vision.md"));
 		assert(vision?.ok && vision.file.name === "Nordlys Bryggeri", "the vision names the company");
 		const agent = code.parseCompanyStateFile("agents/co-founder/agent.md", await text("agents/co-founder/agent.md"));
-		assert(agent?.ok && agent.file.id === creation.cofounder_id && agent.file.agentKind === "co-founder");
+		assert(agent?.ok && agent.file.id === made.cofounder_id && agent.file.agentKind === "co-founder");
 		const todo = code.parseCompanyStateFile("agents/co-founder/todos/start-with-the-founders.md",
 			await text("agents/co-founder/todos/start-with-the-founders.md"));
-		assert(todo?.ok && todo.file.id === creation.first_todo_id && todo.file.requestedBy === owner);
+		assert(todo?.ok && todo.file.id === made.first_todo_id && todo.file.requestedBy === owner);
 
 		// 3. The Co-Founder, its thread and its silent first run; no turn request (no login) and no wake.
 		assert.equal(query(`select count(*) from public.qorpera_profile_staff where profile_id = '${profileId}'
-			and staff_agent_id = '${creation.cofounder_id}' and template_id = 'co-founder'`), "1");
+			and staff_agent_id = '${made.cofounder_id}' and template_id = 'co-founder'`), "1");
 		const kickoff = JSON.parse(query(`select to_jsonb(i) from public.qorpera_agent_first_runs f
 			join public.qorpera_session_inputs i on i.id = f.input_id where f.profile_id = '${profileId}'`));
 		assert.equal(kickoff.kind, "kickoff");
@@ -134,8 +193,8 @@ async function main() {
 			assignment: {
 				kind: "company_founding",
 				companyId: profileId,
-				creationId: creation.id,
-				cofounderStaffAgentId: creation.cofounder_id,
+				creationId: made.id,
+				cofounderStaffAgentId: made.cofounder_id,
 				firstTodo: "agents/co-founder/todos/start-with-the-founders.md",
 			},
 		});

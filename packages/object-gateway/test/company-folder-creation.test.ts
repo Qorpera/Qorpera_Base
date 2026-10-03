@@ -46,7 +46,13 @@ function claim(overrides: Record<string, unknown> = {}, input: Record<string, un
 
 /** The database and the store as the worker sees them: every call recorded; create answered from `answer`. */
 function database(
-	options: { claims?: unknown[]; answer?: unknown; createThrows?: Error; sealIncomplete?: boolean } = {},
+	options: {
+		claims?: unknown[];
+		answer?: unknown;
+		createThrows?: Error;
+		sealIncomplete?: boolean;
+		openInvalid?: boolean;
+	} = {},
 ) {
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const claims = [...(options.claims ?? [])];
@@ -66,6 +72,7 @@ function database(
 				case "qorpera_folder_company_creation_fail":
 					return { schema: "qorpera.company-creation-fail/v1", failed: true };
 				case "qorpera_folder_open_upload":
+					if (options.openInvalid) return { schema: "qorpera.folder-upload/v0" };
 					manifest = args.p_manifest as string;
 					return {
 						schema: "qorpera.folder-upload/v1",
@@ -314,10 +321,39 @@ describe("CompanyFolderCreator", () => {
 		expect(unwritable.named("qorpera_folder_open_upload")).toHaveLength(0);
 	});
 
-	it("fails a claim it cannot read that names its creation, and throws", async () => {
+	it("releases a claim it cannot read that names its creation, and throws; leaves any other to its lease", async () => {
 		const { creator, named } = database({ claims: [claim({ extra: true })] });
 		await expect(creator.createOne()).rejects.toThrow(PlatformFolderProblem);
-		expect(named("qorpera_folder_company_creation_fail")[0]?.args.p_code).toBe("claim_invalid");
+		expect(named("qorpera_folder_company_creation_release")[0]?.args.p_problem).toBe("claim_invalid");
+		expect(named("qorpera_folder_company_creation_fail")).toHaveLength(0);
+		const nameless = database({ claims: [{ schema: "qorpera.company-creation-claim/v1" }] });
+		await expect(nameless.creator.createOne()).rejects.toThrow(PlatformFolderProblem);
+		expect(nameless.named("qorpera_folder_company_creation_release")).toHaveLength(0);
+		expect(nameless.named("qorpera_folder_company_creation_fail")).toHaveLength(0);
+	});
+
+	it("fails a staging refusal", async () => {
+		const { creator, named } = database({ claims: [claim()], openInvalid: true });
+		expect(await creator.createOne()).toBe(true);
+		expect(named("qorpera_folder_company_creation_fail")[0]?.args.p_code).toBe("stage_invalid");
+		expect(named("qorpera_folder_company_create")).toHaveLength(0);
+	});
+
+	it("creates for a claim whose kickoff member is gone, and leaves a replay alone", async () => {
+		const gone = database({
+			claims: [claim({ kickoffRequestedBy: null })],
+			answer: { schema: "qorpera.company-creation/v1", creationId, state: "failed", problem: "kickoff_member_left" },
+		});
+		expect(await gone.creator.createOne()).toBe(true);
+		expect(gone.named("qorpera_folder_company_create")).toHaveLength(1);
+		expect(gone.named("qorpera_folder_company_creation_release")).toHaveLength(0);
+		const replay = database({
+			claims: [claim()],
+			answer: { schema: "qorpera.company-creation/v1", creationId, state: "completed", replay: true },
+		});
+		expect(await replay.creator.createOne()).toBe(true);
+		expect(replay.named("qorpera_folder_company_creation_release")).toHaveLength(0);
+		expect(replay.named("qorpera_folder_company_creation_fail")).toHaveLength(0);
 	});
 
 	it("drains due creations until none is left or the budget ends", async () => {

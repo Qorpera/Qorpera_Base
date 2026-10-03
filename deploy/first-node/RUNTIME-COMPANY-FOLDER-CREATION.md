@@ -257,19 +257,19 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   into P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000), after the candidate
   select's `lease_until` and `not_before` lines: `and not exists (…creation of work.profile_id whose state is not
   'completed')`. Whichever of P14a and #727 landed second was to carry it (the coordinator, 3 October; A1
-  agreed): #727 merged first, so P14a carries it, by an exact anchor with its body marker. Work rows the claim inserts for such a company
-  stay due until the skip lifts; nothing else changes. **Gate:** the P22 writer is not switched on, and P38/P39 do
-  not run, until the skip is on master. A `folder-v2` company with no creation row passes the
-  skip, while the hub list hides it: deliberately, since such companies exist only in tests (#727's own among them),
-  and the writer serves them there.
+  agreed): #727 merged first, so P14a carries it, by an exact anchor with its body marker. Work rows the claim
+  inserts for such a company stay due until the skip lifts; nothing else changes. **Gate:** the P22 writer is not
+  switched on, and P38/P39 do not run, until the skip is on master. A `folder-v2` company with no creation row
+  passes the skip, while the hub list hides it: deliberately, since such companies exist only in tests (#727's own
+  among them), and the writer serves them there.
 - **The rollout packet:** `templates/sql-packet.mjs:92`'s bootstrap gate belongs to Company41's frozen packet, which
   C5 rewrites (core §10); the live release train has no such gate, and a creation is one short transaction. P14a adds
   nothing there.
 
 ## 5. The worker (TS, `packages/object-gateway`, P14b)
 
-- **`CompanyFolderCreator`** runs from the gateway's maintenance loop like the bootstrap provisioner. It is built on
-  A1's P22b module:
+- **`CompanyFolderCreator`** runs in a loop of its own with its own database client (as P22b's connection-file
+  writer), not in the gateway's maintenance loop. It is built on A1's P22b module:
   - `drainPlatformClaims` with its own claim, release, fail and create calls;
   - `PlatformFolderWriter.stage()` for every seed file;
   - one `qorpera_folder_company_create` call per creation.
@@ -369,6 +369,10 @@ reversal test (as #705's 817 §1):
     prelude, and P14a carries the connection claim's skip (§4).
 - **P14b, the worker** (TS, object gateway), on A1's P22b module (#730), after P14a and #730.
 - **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
+  The worker's unit builder (`creationUnits`) then needs: their parse through `parseCompanyStateFile` once it
+  dispatches to `parseInterfaceStateFile`; each table as one `new_folder` unit (its `table.toml` and `rows.csv`
+  together, since rows are checked against their definition); and the media type by extension (`text/plain` for
+  `.toml` and `.csv`, as the runtime writes them).
   P16 lands before the proof company (P38), so no `folder-v2` company exists without them; the coordinator records
   that dependency in the audit. P16 also redeploys the gateway.
 

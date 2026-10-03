@@ -77,10 +77,13 @@ const companyCreation =
 	process.env.QORPERA_COMPANY_FOLDER_CREATOR === "1"
 		? new CompanyFolderCreator({
 				workerId: process.env.QORPERA_COMPANY_FOLDER_CREATOR_WORKER_ID?.trim() || randomUUID(),
+				// The creation commit is one larger transaction: a longer limit than a member's call, so a slow create
+				// does not open this client's circuit and refuse the release that follows.
 				authority: new SupabaseMemberCompanyAuthority({
 					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+					requestTimeoutMs: 30_000,
 				}),
 				store,
 				replication,
