@@ -500,6 +500,12 @@ async function writeOperationJournal(
 	return inputBytes;
 }
 
+/** Whether a transcript event is a member's message that quotes outside content (it keeps `qorperaQuotes`). */
+function quotesOutsideContent(event: CloudRunnerCanonicalTranscriptEvent): boolean {
+	const body = event.body as { entry?: { qorperaQuotes?: unknown } } | null | undefined;
+	return typeof body === "object" && body !== null && body.entry !== undefined && body.entry.qorperaQuotes !== undefined;
+}
+
 async function writeCanonicalTranscript(
 	path: string,
 	context: ResolvedCloudRunnerExecutionContext,
@@ -522,6 +528,10 @@ async function writeCanonicalTranscript(
 					event.sequence > context.run.transcriptStartSequence
 				) {
 					throw new Error("Runner canonical transcript is outside its immutable run prefix");
+				}
+				// An earlier quoted message is fenced only in a cloud run's context; this path would hand it on raw.
+				if (quotesOutsideContent(event)) {
+					throw new Error("Runner canonical transcript quotes outside content, which only a cloud run fences");
 				}
 				const line = `${JSON.stringify(event)}\n`;
 				const lineBytes = Buffer.byteLength(line);
