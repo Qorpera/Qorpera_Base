@@ -543,7 +543,8 @@ order go away.
 Every basis becomes an explicit resource or named basis, seeded when the
 company or member is created:
 - the root, with the default agent read/write grant (2026-09-26);
-- `members/<id>/private`, which today is an implicit rule;
+- on `snapshot-v1` only, `members/<id>/private`, which is an implicit rule
+  there. `folder-v2` has no `members/` folder (open question 3);
 - `rules/`: owners and admins write it, every member and agent reads it;
 - the code rules, each becoming a named basis that follows the agent's folder
   by `id`:
@@ -1062,6 +1063,10 @@ being deleted, F1's six follow-ups on #613, and the vault's lock order on
 `folder-v2` (#660's follow-up: grants and secrets against Disconnect and
 share, and capture, rotation and seal against a member change).
 
+Two decisions stay with Jonas: the reset's scope (C5 step 4), and the key of
+the artifact GC worker (step 6b of the mail go-live). Nothing else in this
+plan waits on him.
+
 ### C2. Structured files, seeding and erasure
 
 - The hook of §5: schemas, indexes, the refusals and the converging queue.
@@ -1082,9 +1087,8 @@ share, and capture, rotation and seal against a member change).
     `qorpera_folder_proposals`. Until it exists, agents make the interface
     and table changes that "interfaces" item 7 counts as delegation only with
     `save_interface`, which joins R1's tools.
-- Erasure. "Work for people" item 3, still pending the founder's approval,
-  would widen it from a deleted agent's folder to any deleted path (a
-  contact's file too).
+- Erasure. "Work for people" item 3 (approved 3 October 2026) widens it from
+  a deleted agent's folder to any deleted path (a contact's file too).
 
 ### C3. Runtime and writers
 
@@ -1097,8 +1101,9 @@ For `folder-v2` companies:
   - A turn writes with the one-file tools through the mutation gateway (the
     same item). On `folder-v2` each such write commits as a change set of one
     unit (§3).
-  - These tools stay for turns. Their retirement waits on that item's open
-    point: which write tools a turn has once machines publish change sets.
+  - These tools stay for turns (decided 3 October 2026, "light threads" item
+    2). Changes of several files, and changes a command makes, come from a
+    machine's change set.
 - The memory, skills, todo, routine and hiring writers write files. The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
@@ -1153,7 +1158,8 @@ For `folder-v2` companies:
   proof);
 - a same-path conflict keeps a conflict copy;
 - a move and a subtree delete work, and a subtree delete refuses a change it
-  did not see;
+  did not see (through the member route or a machine: a turn's tools write
+  one file at a time);
 - hiring, archiving, a routine file, a group chat and sections each update
   their index, and pass or skip review as 5.6 says;
 - a coding session cannot write `agents/`, and is never reviewed;
@@ -1190,9 +1196,12 @@ After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
 2. **The clock.** One short row lock per commit and per company. If it
    becomes hot, it can be replaced by a watermark on transaction ids. A long
    transaction would then stall the feed.
-3. **Member-private folders.** `members/<id>/private` exists in SQL but not in
-   contract 5.6. Proposed: keep it as an explicit resource, and add one line
-   to 5.6.
+3. **Member-private folders.** Decided 3 October 2026 (the coordinator, at
+   Jonas's request): `folder-v2` has no `members/` folder. The company comes
+   first (Jonas, 24 September 2026): a member's personal settings stay in the
+   database, and the implicit `members/<id>/private` rule is not carried into
+   `folder-v2`. The `folder-v2` resolver's branch for it (C1a, C1b) is unused,
+   and a later change removes it.
 4. **"Delete company" in the product.** Decided by the founder on
    28 September 2026: the C5 reset procedure becomes the product's delete for
    `folder-v2` companies. The old `qorpera_delete_hosted_profile`

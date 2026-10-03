@@ -4057,8 +4057,9 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 
 ### 2026-10-02 amendment: work for people
 
-Proposed 2 October 2026 (F2, step H1); pending founder approval, except item
-5's seeded folders, which Jonas approved on 2 October 2026. It writes
+Approved 3 October 2026 by the coordinator at Jonas's request (items 1–4
+write his decisions 4 and 5 of 29 September; item 5 he approved on 2 October
+2026). Proposed 2 October 2026 (F2, step H1). It writes
 into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
 on Qorpera", section 5) and widens 16.1's last step. The folder names
 `human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
@@ -4333,9 +4334,12 @@ amendment governs.
    - Search runs on the node's folder service, not on the execution host.
    - A turn writes through the mutation gateway with today's one-file Company
      File tools (27 September, item 4).
-   - Open: which write tools a turn has once machines publish change sets.
-     Until that is decided, 27 September item 2's retirement of the one-file
-     tools waits.
+   - Decided 3 October 2026 (the coordinator, at Jonas's request): a turn
+     keeps the one-file write tools, and each write is a change set of one
+     unit through the mutation gateway. Changes of several files, and changes
+     a command makes, come from a machine's change set. A subtree move or
+     delete goes through the member route or a machine. 27 September item
+     2's retirement of the one-file tools is cancelled.
 3. **Commands run on machines.** Scripts, spreadsheets, documents and
    conversions run on a machine the agent hands the work to:
    - the company machine, which wakes on demand (its cold start, about 17
