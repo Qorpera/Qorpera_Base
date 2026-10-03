@@ -25,6 +25,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
@@ -612,7 +613,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							captures: computer?.captures,
 							tools: [
 								...(computer?.tools ?? []),
-								...gateway.tools().filter(work.companyFile),
+								// A folder-v2 run's file tools act through the folder core with its own authority (P19).
+								...(folder
+									? cloudFolderFileTools({ folder: folder.client, operations, identity })
+									: gateway.tools()
+								).filter(work.companyFile),
 								...(folder && folderSearch
 									? [
 											cloudFolderSearchTool({
