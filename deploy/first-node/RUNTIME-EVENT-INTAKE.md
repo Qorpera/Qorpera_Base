@@ -47,7 +47,7 @@ review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachm
 | M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260928429984` |
 | M2c-2 | Threads and sent mail as files in the folder | registered when started |
 | I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260928439980` |
-| I5a+ | A waiting send names its card's conversation (`sessionId`) for a member who may answer it | `20260930002260` |
+| I5a+ | A waiting send names its card's conversation (`sessionId`) for a member who may answer it | `20260930002660` |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -632,7 +632,7 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     and the attached files. `waiting` lists the open send_mail cards that answer the thread, with their arguments;
     the Mailbox's Send answers the card through the existing review answer.
   - `qorpera_member_mail_waiting(environment)`: every open send_mail card, a new email without a thread too.
-  - In both, a card the member may answer carries `sessionId` (20260930002260): its conversation
+  - In both, a card the member may answer carries `sessionId` (20260930002660): its conversation
     (`qorpera_action_reviews.card_session_id`), where `qorpera_answer_action_review` answers it. It is given only when
     that call's checks of the member pass: the card waits for this member, or for owners and admins and the member is
     one, and the member can write the conversation (`qorpera_can_write_session`: not a viewer, never another member's
@@ -692,7 +692,7 @@ backfills the last 30 days' mail through the same rules as live mail (about 4 s 
 `qorpera_send_agent_mail` and `qorpera_claim_company_mail` by exact text (after M2c-1's patches). No runtime change. Deploy `mail-outbox` before or with the migration: it reads back Message-IDs through
 `qorpera_company_mail_message_ids_due`, and an older one simply leaves them unknown. Acceptance: a member opens the
 Mailbox and sees a received email, the agent's reply in its thread, a waiting send, and an account email without its
-code. The follow-up 20260930002260 (`sessionId` on waiting sends) is a migration alone, after I5a's.
+code. The follow-up 20260930002660 (`sessionId` on waiting sends) is a migration alone, after I5a's.
 
 ## Deploy (M2a)
 

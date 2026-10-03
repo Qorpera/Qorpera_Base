@@ -7,7 +7,7 @@
 -- answer can still be refused (a closed conversation, a paused company, a folder-v2 card outside an agent thread).
 -- Both lists, the thread's `waiting` (qorpera_member_mail_thread) and the `waiting` source's mail rows
 -- (qorpera_member_mail_waiting), read it by the card's id. Exact-text patches; each inserted text names this migration
--- (20260930002260), for deploy guards.
+-- (20260930002660), for deploy guards.
 
 create function pg_temp.mail_waiting_session_patch(p_target regprocedure, p_old text, p_new text) returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target);
@@ -22,7 +22,7 @@ begin
 	perform pg_temp.mail_waiting_session_patch('public.qorpera_member_mail_thread(uuid,text)',
 		E'\t\t\t''reviewId'', open_send.review_id,\n\t\t\t''staffAgent''',
 		E'\t\t\t''reviewId'', open_send.review_id,\n'
-		|| E'\t\t\t-- 20260930002260: the card''s conversation, where it is answered, for a member who may answer it.\n'
+		|| E'\t\t\t-- 20260930002660: the card''s conversation, where it is answered, for a member who may answer it.\n'
 		|| E'\t\t\t''sessionId'', (select review.card_session_id from public.qorpera_action_reviews as review\n'
 		|| E'\t\t\t\twhere review.id = open_send.review_id\n'
 		|| E'\t\t\t\t\tand ((review.approver_scope = ''member'' and review.approver_user_id = auth.uid())\n'
@@ -32,7 +32,7 @@ begin
 	perform pg_temp.mail_waiting_session_patch('public.qorpera_member_mail_waiting(uuid)',
 		E'\t\t\t''reviewId'', open_send.review_id, ''thread'', open_send.thread,\n',
 		E'\t\t\t''reviewId'', open_send.review_id, ''thread'', open_send.thread,\n'
-		|| E'\t\t\t-- 20260930002260: the card''s conversation, where it is answered, for a member who may answer it.\n'
+		|| E'\t\t\t-- 20260930002660: the card''s conversation, where it is answered, for a member who may answer it.\n'
 		|| E'\t\t\t''sessionId'', (select review.card_session_id from public.qorpera_action_reviews as review\n'
 		|| E'\t\t\t\twhere review.id = open_send.review_id\n'
 		|| E'\t\t\t\t\tand ((review.approver_scope = ''member'' and review.approver_user_id = auth.uid())\n'
