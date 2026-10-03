@@ -31,6 +31,7 @@ import { createHttpCloudMachineCommandGateway } from "./cloud-machine-command-ht
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
+import { NativeHostDispatch, nativeHostDispatchMode } from "./cloud-native-host-dispatch.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeModelLoginClient,
@@ -205,6 +206,18 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
 }
 
+/** The slot's relay to the node's folder search (F3, "Light threads"), which the shared execution service names while
+ * the search is on. */
+export function nativeFolderSearchConfiguration(environment: NodeJS.ProcessEnv): { socketPath: string } | undefined {
+	const socketPath = environment.QORPERA_FOLDER_SEARCH_SOCKET;
+	if (socketPath === undefined) return undefined;
+	if (!/^\/run\/qorpera-folder-relay\/[0-9]{1,2}\.sock$/.test(socketPath))
+		throw new Error("QORPERA_FOLDER_SEARCH_SOCKET must be a slot's socket under /run/qorpera-folder-relay");
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("The folder search requires the cloud-native runtime");
+	return { socketPath };
+}
+
 /** Whether this identity's login is kept by the vault (Stateless Compute step 1). */
 async function fetchIdentityLoginInVault(
 	baseUrl: string,
@@ -235,6 +248,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
 	const codingConfiguration = nativeCodingConfiguration(environment);
+	const folderSearch = nativeFolderSearchConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	const serviceKey = await credentialOrEnvironment(
 		environment,
@@ -300,10 +314,17 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		)
 			throw new Error("Native identity volume does not match current cloud recovery authority");
 	}
+	// G2-2: a call the host makes inside a job goes through qorpera_native_host_call with that job's lease token
+	// when the switch is on; everything else stays on the service key until G2-3 and G2-4.
+	const dispatch = new NativeHostDispatch({
+		supabaseUrl: baseUrl,
+		serviceKey,
+		mode: nativeHostDispatchMode(environment.QORPERA_NATIVE_HOST_DISPATCH),
+	});
 	const controlPlane = new SupabaseNativeProviderControlPlane(
 		baseUrl,
 		serviceKey,
-		fetch,
+		dispatch.fetch,
 		{ computeIdentityId, epoch: state.epoch },
 		{ connectionConcurrency: optionalConcurrency(environment.QORPERA_NATIVE_CONNECTION_CONCURRENCY) },
 	);
@@ -354,9 +375,13 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken, computerToken].includes(codingToken))
 		)
 			throw new Error("Coding command transport requires a distinct private systemd credential");
-		const pathControl = new HttpCloudCompanyPathControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey });
+		const pathControl = new HttpCloudCompanyPathControl({
+			supabaseUrl: baseUrl,
+			serviceRoleKey: serviceKey,
+			fetch: dispatch.fetch,
+		});
 		const codingControl = codingConfiguration
-			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey })
+			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey, fetch: dispatch.fetch })
 			: undefined;
 		const coding =
 			codingConfiguration && codingToken && codingControl
@@ -424,10 +449,22 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							registry: new HttpCloudCompanyComputerRegistry({
 								supabaseUrl: baseUrl,
 								serviceRoleKey: serviceKey,
+								fetch: dispatch.fetch,
 							}),
+							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3).
+							...(secretBrokerOrigin && secretBrokerToken
+								? {
+										accountFills: new HttpCloudSecretBrokerClient({
+											origin: secretBrokerOrigin,
+											runtimeToken: secretBrokerToken,
+											companyId: state.companyId,
+										}),
+									}
+								: {}),
 						}),
 					}
 				: {}),
+			...(folderSearch ? { folderSearch } : {}),
 			// A folder-v2 run's file bytes: the object gateway's folder route, on the same native credential.
 			folderBytes: (binding, identity) =>
 				new HttpCloudCompanyFolderBytes({
@@ -448,17 +485,19 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					}),
 				),
 			...(secretBrokerOrigin && secretBrokerToken
-				? {
+				? (() => {
 						// The company routes the request to this company's broker behind the
 						// shared origin. It is this host's compute identity's company, read from
 						// the recovery authority and matched against the identity volume above;
 						// the SQL placement only runs a company's work on its own identities.
-						secretBroker: new HttpCloudSecretBrokerClient({
+						const broker = new HttpCloudSecretBrokerClient({
 							origin: secretBrokerOrigin,
 							runtimeToken: secretBrokerToken,
 							companyId: state.companyId,
-						}),
-					}
+						});
+						// The same broker serves the company's website accounts (A1-4).
+						return { secretBroker: broker, companyAccounts: broker };
+					})()
 				: {}),
 		});
 		// A vault login comes from this company's broker, under the same runtime token. A host that
@@ -515,6 +554,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		environment.QORPERA_NATIVE_PROVIDER_HOST ?? "127.0.0.1",
 		optionalPort(environment.QORPERA_NATIVE_PROVIDER_PORT),
 		environment.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,
+		dispatch,
 	);
 	const shutdown = new AbortController();
 	const stop = (): void => shutdown.abort();

@@ -1,14 +1,21 @@
-import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CloudNativeToolBoundary,
+	type CloudToolResult,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const DELIVERY = "73100000-0000-4000-8000-00000000000a";
 const HOOK = "73100000-0000-4000-8000-0000000000b1";
 
-async function fixture(result?: (method: string, args: Record<string, unknown>, runId: string) => unknown) {
+async function fixture(
+	result?: (method: string, args: Record<string, unknown>, runId: string) => unknown,
+	gateway?: Pick<CloudCompanyPathGateway, "mutate">,
+) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		binding,
@@ -30,6 +37,7 @@ async function fixture(result?: (method: string, args: Record<string, unknown>, 
 			deliveryId: request.deliveryId,
 			hook: { id: HOOK, name: "forms" },
 			type: "contact.submitted",
+			headers: { "content-type": "application/json" },
 			encoding: "utf8",
 			offset: request.offset ?? 0,
 			text: '{"name":"Ada"}',
@@ -41,7 +49,7 @@ async function fixture(result?: (method: string, args: Record<string, unknown>, 
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudEventTools(binding, run.identity, { call }),
+		tools: cloudEventTools(binding, run.identity, { call }, gateway as CloudCompanyPathGateway | undefined),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -112,37 +120,266 @@ describe("agent event tools", () => {
 		}
 	});
 
-	it("passes a next piece's offset on and refuses one that does not move forward", async () => {
-		const receipt = (next: unknown) => (_method: string, args: Record<string, unknown>, runId: string) => ({
-			schema: "qorpera.agent-event/v1",
-			runId,
-			deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
-			encoding: "utf8",
-			offset: (args.p_request as { offset?: number }).offset ?? 0,
-			text: "x",
-			total: 20000,
-			done: false,
-			next,
-		});
-		const moving = await fixture(receipt(9000));
+	it("accepts what the database gives past the end, after the body is cleared, and a padded last piece", async () => {
+		for (const [callId, offset, piece] of [
+			["a1", 10, { encoding: "utf8", offset: 10, text: "", total: 10, done: true }],
+			["a2", 0, { bodyCleared: true, done: true }],
+			["a3", 10, { bodyCleared: true, done: true }],
+			["a4", 24576, { encoding: "base64", offset: 24576, data: "/w==", total: 24577, done: true }],
+			["a5", 24576, { encoding: "base64", offset: 24576, data: "AA==", total: 24600, done: false, next: 24577 }],
+			["a6", 99999, { encoding: "base64", offset: 99999, data: "", total: 24577, done: true }],
+		] as const) {
+			const f = await fixture((_method, args, runId) => ({
+				schema: "qorpera.agent-event/v1",
+				runId,
+				deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
+				hook: { id: HOOK, name: "forms" },
+				headers: {},
+				bytes: 0,
+				...piece,
+			}));
+			try {
+				const read = await f.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset });
+				expect(read.success, callId).toBe(true);
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
+	it("passes a next piece's offset on, and refuses one that skips, stands still or contradicts done", async () => {
+		const receipt =
+			(piece: Record<string, unknown>) => (_method: string, args: Record<string, unknown>, runId: string) => ({
+				schema: "qorpera.agent-event/v1",
+				runId,
+				deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
+				headers: {},
+				encoding: "utf8",
+				offset: (args.p_request as { offset?: number }).offset ?? 0,
+				text: "x\u{1F600}",
+				total: 20000,
+				done: false,
+				...piece,
+			});
+		const moving = await fixture(receipt({ next: 12 }));
 		try {
 			const piece = await moving.boundary.invoke("n1", "qorpera", "read_event", {
 				deliveryId: DELIVERY,
 				offset: 10,
 			});
 			expect(piece.success, JSON.stringify(piece)).toBe(true);
-			expect(piece.contentItems[0].text).toContain('\\"next\\":9000');
+			expect(piece.contentItems[0].text).toContain('\\"next\\":12');
 		} finally {
 			moving.run.close();
 		}
-		const stuck = await fixture(receipt(10));
-		try {
-			expect(
-				(await stuck.boundary.invoke("n2", "qorpera", "read_event", { deliveryId: DELIVERY, offset: 10 })).success,
-			).toBe(false);
-		} finally {
-			stuck.run.close();
+		for (const [callId, piece] of [
+			["n2", { next: 9000 }],
+			["n3", { next: 10 }],
+			["n4", { next: 13 }],
+			["n5", { text: "", next: 10 }],
+			["n6", {}],
+			["n7", { done: true, next: 12 }],
+			["n8", { encoding: "base64", data: "AAAA", next: 12 }],
+			["n9", { encoding: "base64", data: "AAA", next: 12 }],
+			["n10", { offset: 0, next: 12 }],
+			["n11", { headers: { "content-type": 1 }, next: 12 }],
+			["n12", { encoding: "base64", data: "AA==", next: 13 }],
+		] as const) {
+			const other = await fixture(receipt(piece));
+			try {
+				expect(
+					(await other.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset: 10 }))
+						.success,
+					callId,
+				).toBe(false);
+			} finally {
+				other.run.close();
+			}
 		}
+	});
+
+	describe("reading a long body piece by piece", () => {
+		/** qorpera_read_agent_event's piece as the database cuts it (20260928269290): text when the body is UTF-8, up
+		 * to 16,000 characters whose JSON string fits 32 KiB, offsets in characters; else base64 of 24 KiB, offsets in
+		 * bytes. */
+		const databasePiece = (body: Buffer, offset: number): Record<string, unknown> => {
+			const text = body.toString("utf8");
+			if (Buffer.from(text, "utf8").equals(body)) {
+				const rest = [...text].slice(offset);
+				let chars = Math.min(rest.length, 16000);
+				for (;;) {
+					const size = Buffer.byteLength(JSON.stringify(rest.slice(0, chars).join("")));
+					if (size <= 32768 || chars === 0) break;
+					chars = Math.max(0, Math.min(chars - 1, Math.floor((chars * 32768) / size)));
+				}
+				return {
+					encoding: "utf8",
+					offset,
+					text: rest.slice(0, chars).join(""),
+					total: offset + rest.length,
+					done: chars >= rest.length,
+					...(chars < rest.length ? { next: offset + chars } : {}),
+				};
+			}
+			return {
+				encoding: "base64",
+				offset,
+				data: body.subarray(offset, offset + 24576).toString("base64"),
+				total: body.length,
+				done: offset + 24576 >= body.length,
+				...(offset + 24576 < body.length ? { next: offset + 24576 } : {}),
+			};
+		};
+		const delivery = (body: Buffer, headers: Record<string, string>) =>
+			fixture((_method, args, runId) => {
+				const request = args.p_request as { deliveryId: string; offset?: number };
+				return {
+					schema: "qorpera.agent-event/v1",
+					runId,
+					deliveryId: request.deliveryId,
+					hook: { id: HOOK, name: "agents" },
+					type: "mail.received",
+					receivedAt: "2026-10-02T10:00:01.123456+00:00",
+					contentType: "application/json",
+					headers,
+					bytes: body.length,
+					...databasePiece(body, request.offset ?? 0),
+				};
+			});
+		/** Reads the whole event as the model sees it, from offset 0 to done, and returns each piece. */
+		const readAll = async (f: Awaited<ReturnType<typeof fixture>>) => {
+			const pieces: Record<string, unknown>[] = [];
+			let offset = 0;
+			for (;;) {
+				// The longest call id the boundary takes, so its provenance is as large as it gets.
+				const callId = `read-${String(pieces.length).padStart(4, "0")}-${"c".repeat(150)}`;
+				const reply = await f.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset });
+				expect(reply.success, JSON.stringify(reply)).toBe(true);
+				const wire = reply.contentItems[0].text;
+				expect(Buffer.byteLength(wire)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
+				const envelope = JSON.parse(wire) as CloudToolResult;
+				expect(envelope.content.truncated, `piece at ${offset}`).toBe(false);
+				const piece = JSON.parse(envelope.content.text) as Record<string, unknown>;
+				expect(piece.offset).toBe(offset);
+				pieces.push(piece);
+				if (piece.done) return pieces;
+				expect(piece.next).toBeGreaterThan(offset);
+				offset = piece.next as number;
+			}
+		};
+		// Every kind of character the two JSON layers and the fence escape, and multi-byte ones: a quote, a
+		// backslash, < > &, the two line separators, a control character, a tab and a new line, two-, three- and
+		// four-byte characters, and a combining mark.
+		const tricky = `"\\<>&\u2028\u2029\u0001\t\né漢😀e\u0301 `;
+		const mail = {
+			from: "Ada Lovelace <ada@example.test>",
+			to: ["agents@northwind.qorpera.mail"],
+			subject: 'Quarterly "numbers" & <notes>',
+			text: Array.from({ length: 1500 }, (_, n) => `Line ${n}: ${tricky}${"plain words ".repeat(n % 7)}`).join(""),
+			html: Array.from({ length: 400 }, (_, n) => `<p class="x">Para ${n} &amp; ${tricky}</p>`).join(""),
+			attachments: [{ filename: "notes.pdf", contentType: "application/pdf", size: 123456 }],
+		};
+		const mailHeaders = {
+			"delivered-to": "agents@northwind.qorpera.mail",
+			from: "Ada Lovelace <ada@example.test>",
+			subject: 'Quarterly "numbers" & <notes>',
+			"authentication-results": "spf=pass dkim=pass dmarc=pass",
+		};
+
+		it("cuts each text piece to fit one result, and next continues exactly where it stopped", async () => {
+			const body = Buffer.from(JSON.stringify(mail), "utf8");
+			const f = await delivery(body, mailHeaders);
+			try {
+				const pieces = await readAll(f);
+				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
+				const characters = [...body.toString("utf8")].length;
+				// The database alone would have given far fewer, larger pieces: the runtime cut every one but the last.
+				expect(pieces.length).toBeGreaterThan(Math.ceil(characters / 16000) * 2);
+				for (const [place, piece] of pieces.entries()) {
+					expect(piece.encoding).toBe("utf8");
+					expect(piece.total).toBe(characters);
+					// The headers come with the first piece only.
+					expect(piece.headers).toEqual(place === 0 ? mailHeaders : undefined);
+					expect(piece.headersCut).toBeUndefined();
+				}
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("cuts base64 pieces after whole bytes, so the bytes join up exactly", async () => {
+			const body = Buffer.from(Array.from({ length: 60001 }, (_, n) => (n * 151 + 7) % 256));
+			expect(Buffer.from(body.toString("utf8"), "utf8").equals(body)).toBe(false);
+			const f = await delivery(body, { "content-type": "application/octet-stream" });
+			try {
+				const pieces = await readAll(f);
+				expect(Buffer.concat(pieces.map((piece) => Buffer.from(piece.data as string, "base64"))).equals(body)).toBe(
+					true,
+				);
+				expect(pieces.length).toBeGreaterThan(Math.ceil(body.length / 24576) * 2);
+				for (const piece of pieces) {
+					expect(piece.encoding).toBe("base64");
+					expect(piece.total).toBe(body.length);
+				}
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("cuts headers too long to leave the body room, every value to one length, and still reads it all fast", async () => {
+			// As long as the intake keeps them: each value at most 2048 characters, all within 8 KiB of JSON.
+			const headers = {
+				"delivered-to": "agents@northwind.qorpera.mail",
+				from: '"<&>'.repeat(512),
+				subject: "&<\u2028\u2029".repeat(256),
+				"user-agent": "é".repeat(2048),
+			};
+			const body = Buffer.from(JSON.stringify({ ...mail, text: mail.text.slice(0, 20000), html: "" }), "utf8");
+			const f = await delivery(body, headers);
+			try {
+				const pieces = await readAll(f);
+				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
+				const [first, ...rest] = pieces;
+				expect(first.headersCut).toBe(true);
+				const kept = first.headers as Record<string, string>;
+				const most = Math.max(...Object.values(kept).map((value) => [...value].length));
+				for (const [name, value] of Object.entries(headers)) {
+					expect(value.startsWith(kept[name]), name).toBe(true);
+					expect([...kept[name]].length, name).toBe(Math.min([...value].length, most));
+				}
+				expect(kept["delivered-to"]).toBe(headers["delivered-to"]);
+				// The first piece keeps about a kilobyte of the result for the body.
+				expect(
+					Buffer.byteLength(JSON.stringify(JSON.stringify(first.text)).replace(/[<>&\u2028\u2029]/g, "\\u0000")),
+				).toBeGreaterThan(1000);
+				// The rest carry no headers, so a sender's long ones cannot make the body slow to read.
+				for (const piece of rest) {
+					expect(piece.headers).toBeUndefined();
+					expect(piece.headersCut).toBeUndefined();
+				}
+				const plain = await delivery(body, mailHeaders);
+				try {
+					expect(pieces.length).toBeLessThanOrEqual((await readAll(plain)).length + 1);
+				} finally {
+					plain.run.close();
+				}
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("passes a piece that already fits on unchanged", async () => {
+			const body = Buffer.from(JSON.stringify({ ...mail, text: "Short.", html: "" }), "utf8");
+			const f = await delivery(body, mailHeaders);
+			try {
+				const [piece, ...rest] = await readAll(f);
+				expect(rest).toEqual([]);
+				expect(piece).toMatchObject({ text: body.toString("utf8"), done: true, headers: mailHeaders });
+				expect(piece.next).toBeUndefined();
+			} finally {
+				f.run.close();
+			}
+		});
 	});
 
 	it("refuses a call made for another run than the one it was built for", async () => {
@@ -277,5 +514,337 @@ describe("agent event tools", () => {
 		} finally {
 			f.run.close();
 		}
+	});
+	const mail = {
+		deliveryId: DELIVERY,
+		mailbox: "agents@northwind.qorpera.mail",
+		deliveredTo: ["agents+stripe@northwind.qorpera.mail"],
+		from: "Stripe <notifications@stripe.com>",
+		subject: "Confirm your email",
+		receivedAt: "2026-10-02T10:00:01+00:00",
+	};
+	const search = (answers: unknown[][]) => (method: string, _args: Record<string, unknown>, runId: string) => {
+		if (method !== "qorpera_find_agent_mail") throw new Error(method);
+		const mails = answers.shift() ?? [];
+		return { schema: "qorpera.agent-mail-search/v1", runId, since: "2026-10-02T09:00:00+00:00", mails, more: false };
+	};
+
+	it("finds mail through the run binding, with addresses lowercased and no wait passed on", async () => {
+		const f = await fixture(search([[mail]]));
+		try {
+			const found = await f.boundary.invoke("f1", "qorpera", "find_mail", {
+				to: " Agents+Stripe@Northwind.Qorpera.Mail ",
+				from: "Stripe",
+				subject: "Confirm",
+				since: "2026-10-02T09:00:00+02:00",
+				before: "2026-10-02T12:00:00Z",
+				waitSeconds: 60,
+			});
+			// A match answers at once, whatever time is left to wait.
+			expect(found.success, JSON.stringify(found)).toBe(true);
+			expect(f.call.mock.calls.map((call) => call.slice(0, 2))).toEqual([
+				[
+					"qorpera_find_agent_mail",
+					{
+						p_binding: f.binding,
+						p_request: {
+							to: "agents+stripe@northwind.qorpera.mail",
+							from: "Stripe",
+							subject: "Confirm",
+							since: "2026-10-02T09:00:00+02:00",
+							before: "2026-10-02T12:00:00Z",
+						},
+					},
+				],
+			]);
+			expect(found.contentItems[0].text).toContain("Confirm your email");
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("waits for a matching email, and answers with none when the time is up", async () => {
+		const arriving = await fixture(search([[], [mail]]));
+		try {
+			const started = Date.now();
+			const found = await arriving.boundary.invoke("w1", "qorpera", "find_mail", {
+				mailbox: "agents@x.example",
+				waitSeconds: 1,
+			});
+			expect(found.success, JSON.stringify(found)).toBe(true);
+			expect(found.contentItems[0].text).toContain(DELIVERY);
+			expect(arriving.call).toHaveBeenCalledTimes(2);
+			expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+		} finally {
+			arriving.run.close();
+		}
+		const quiet = await fixture(search([]));
+		try {
+			const none = await quiet.boundary.invoke("w2", "qorpera", "find_mail", { waitSeconds: 1 });
+			expect(none.success, JSON.stringify(none)).toBe(true);
+			expect(none.contentItems[0].text).toContain('\\"mails\\":[]');
+			expect(quiet.call).toHaveBeenCalledTimes(2);
+		} finally {
+			quiet.run.close();
+		}
+		const now = await fixture(search([]));
+		try {
+			expect((await now.boundary.invoke("w3", "qorpera", "find_mail", {})).success).toBe(true);
+			expect(now.call).toHaveBeenCalledOnce();
+		} finally {
+			now.run.close();
+		}
+	});
+
+	it("stops waiting as soon as the run ends", async () => {
+		const f = await fixture(search([]));
+		const waiting = f.boundary.invoke("w4", "qorpera", "find_mail", { waitSeconds: 120 });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const closed = Date.now();
+		f.run.close();
+		const ended = await waiting;
+		expect(Date.now() - closed).toBeLessThan(1000);
+		expect(ended.success).toBe(false);
+		expect(f.call).toHaveBeenCalledOnce();
+	});
+
+	it("refuses a malformed search without calling the cloud, and an answer for another run", async () => {
+		const f = await fixture(search([]));
+		try {
+			for (const [callId, args] of [
+				["s1", { folder: "inbox" }],
+				["s2", { mailbox: "ab" }],
+				["s3", { from: "" }],
+				["s4", { subject: "s".repeat(201) }],
+				["s5", { since: "2026-10-02T09:00:00" }],
+				["s6", { since: "yesterday" }],
+				["s7", { waitSeconds: 121 }],
+				["s8", { waitSeconds: 1.5 }],
+				["s9", { from: "a\nb" }],
+				["s10", { to: 42 }],
+				["s15", { waitSeconds: null }],
+				["s16", { before: "yesterday" }],
+			] as const) {
+				const refused = await f.boundary.invoke(callId, "qorpera", "find_mail", args);
+				expect(refused.success, callId).toBe(false);
+			}
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+		for (const [callId, answer] of [
+			["s11", { runId: "73100000-0000-4000-8000-0000000000ff" }],
+			["s12", { schema: "qorpera.agent-mail/v1" }],
+			["s13", { mails: Array.from({ length: 11 }, () => mail) }],
+			["s14", { more: "no" }],
+		] as const) {
+			const other = await fixture((_method, _args, runId) =>
+				Object.assign({ schema: "qorpera.agent-mail-search/v1", runId, mails: [], more: false }, answer),
+			);
+			try {
+				expect((await other.boundary.invoke(callId, "qorpera", "find_mail", {})).success, callId).toBe(false);
+			} finally {
+				other.run.close();
+			}
+		}
+	});
+
+	it("attaches company files by their paths, each once, and refuses more than 10", async () => {
+		const f = await fixture((_method, args, runId) => ({
+			schema: "qorpera.agent-mail/v1",
+			runId,
+			mailId: "73300000-0000-4000-8000-0000000000a1",
+			status: "queued",
+			...(args.p_request as object),
+		}));
+		const email = { from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Invoice", text: "Attached." };
+		try {
+			const sent = await f.boundary.invoke("m3", "qorpera", "send_mail", {
+				...email,
+				attachments: ["finance/invoice-42.pdf", "finance/totals.csv"],
+			});
+			expect(sent.success, JSON.stringify(sent)).toBe(true);
+			expect((f.call.mock.calls[0][1] as { p_request: unknown }).p_request).toEqual({
+				...email,
+				attachments: ["finance/invoice-42.pdf", "finance/totals.csv"],
+			});
+			for (const [callId, attachments] of [
+				["mail_a1", ["finance/a.pdf", "finance/a.pdf"]],
+				["mail_a2", Array.from({ length: 11 }, (_, n) => `f${n}.pdf`)],
+				["mail_a3", ["../secrets.txt"]],
+				["mail_a4", "finance/a.pdf"],
+				["mail_a5", [42]],
+			] as const) {
+				const refused = await f.boundary.invoke(callId, "qorpera", "send_mail", { ...email, attachments });
+				expect(refused.success, callId).toBe(false);
+			}
+			expect(f.call).toHaveBeenCalledOnce();
+		} finally {
+			f.run.close();
+		}
+	});
+
+	describe("save_attachment", () => {
+		const CHUNK = "c".repeat(64);
+		const request = {
+			deliveryId: DELIVERY.toUpperCase(),
+			attachment: 2,
+			path: "finance/invoice-42.pdf",
+			operationKey: "save-invoice-42",
+			expectedVersion: null,
+		};
+		const receipt = (runId: string, extra: Record<string, unknown>) => ({
+			schema: "qorpera.agent-mail-attachment/v1",
+			runId,
+			deliveryId: DELIVERY,
+			attachment: 2,
+			filename: "invoice-42.pdf",
+			contentType: "application/pdf",
+			...extra,
+		});
+		const writer = () => ({
+			mutate: vi.fn<CloudCompanyPathGateway["mutate"]>(async (_operation, input) => ({
+				schema: "qorpera.company-path-result/v1",
+				state: "applied",
+				operationKey: input.operationKey,
+				path: input.path,
+				version: "73300000-0000-4000-8000-0000000000c3",
+				receiptId: "73300000-0000-4000-8000-0000000000c1",
+				snapshotId: "73300000-0000-4000-8000-0000000000c2",
+				proposalId: null,
+			})),
+		});
+
+		it("is offered only with the company folder's writer", async () => {
+			const f = await fixture();
+			try {
+				expect((await f.boundary.invoke("s0", "qorpera", "save_attachment", request)).success).toBe(false);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("waits while the platform fetches it, then writes its stored chunks as the file", async () => {
+			const gateway = writer();
+			const states = ["fetching", "stored"];
+			const f = await fixture(
+				(_method, _args, runId) =>
+					receipt(
+						runId,
+						states.shift() === "stored"
+							? {
+									state: "stored",
+									bytes: 12,
+									fileSha256: "f".repeat(64),
+									chunks: [{ sha256: CHUNK, bytes: 12 }],
+								}
+							: { state: "fetching" },
+					),
+				gateway,
+			);
+			try {
+				const saved = await f.boundary.invoke("s1", "qorpera", "save_attachment", request);
+				expect(saved.success, JSON.stringify(saved)).toBe(true);
+				expect(f.call.mock.calls.map(([method, args]) => [method, args])).toEqual([
+					[
+						"qorpera_native_mail_attachment",
+						{ p_binding: f.binding, p_request: { deliveryId: DELIVERY, attachment: 2 } },
+					],
+					[
+						"qorpera_native_mail_attachment",
+						{ p_binding: f.binding, p_request: { deliveryId: DELIVERY, attachment: 2 } },
+					],
+				]);
+				expect(gateway.mutate.mock.calls[0].slice(0, 2)).toEqual([
+					"write",
+					{
+						path: "finance/invoice-42.pdf",
+						operationKey: "save-invoice-42",
+						expectedVersion: null,
+						attachment: { fileSha256: "f".repeat(64), bytes: 12, chunks: [{ sha256: CHUNK, bytes: 12 }] },
+					},
+				]);
+				const text = saved.contentItems[0].text;
+				expect(text).toContain("invoice-42.pdf");
+				expect(text).toContain("applied");
+				expect(text).not.toContain(CHUNK);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("says why a fetch failed, writing nothing", async () => {
+			const gateway = writer();
+			const f = await fixture(
+				(_method, _args, runId) =>
+					receipt(runId, { state: "failed", error: "The mail provider no longer has this attachment" }),
+				gateway,
+			);
+			try {
+				const failed = await f.boundary.invoke("s2", "qorpera", "save_attachment", request);
+				expect(failed.success, JSON.stringify(failed)).toBe(true);
+				expect(failed.contentItems[0].text).toContain("no longer has this attachment");
+				expect(gateway.mutate).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("stops waiting as soon as the run ends", async () => {
+			const gateway = writer();
+			const f = await fixture((_method, _args, runId) => receipt(runId, { state: "fetching" }), gateway);
+			const waiting = f.boundary.invoke("s3", "qorpera", "save_attachment", request);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			const closed = Date.now();
+			f.run.close();
+			const ended = await waiting;
+			expect(Date.now() - closed).toBeLessThan(1000);
+			expect(ended.success).toBe(false);
+			expect(gateway.mutate).not.toHaveBeenCalled();
+		});
+
+		it("refuses a malformed request without calling the cloud, and a receipt for another run or attachment", async () => {
+			const gateway = writer();
+			const f = await fixture(undefined, gateway);
+			try {
+				for (const [callId, args] of [
+					["s4", { ...request, attachment: 0 }],
+					["s5", { ...request, attachment: 51 }],
+					["s6", { ...request, attachment: 1.5 }],
+					["s7", { ...request, deliveryId: "the invoice" }],
+					["s8", { ...request, path: "../outside.pdf" }],
+					["s9", { ...request, operationKey: "" }],
+					["s10", { ...request, expectedVersion: "latest" }],
+					["s11", { ...request, extra: true }],
+				] as const) {
+					expect((await f.boundary.invoke(callId, "qorpera", "save_attachment", args)).success, callId).toBe(
+						false,
+					);
+				}
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+			for (const [callId, answer] of [
+				["s12", { runId: "73100000-0000-4000-8000-0000000000ff" }],
+				["s13", { attachment: 3 }],
+				["s14", { state: "saved" }],
+				["s15", { state: "stored", bytes: 12, fileSha256: "f".repeat(64), chunks: "all" }],
+			] as const) {
+				const other = await fixture(
+					(_method, _args, runId) => Object.assign(receipt(runId, { state: "fetching" }), answer),
+					gateway,
+				);
+				try {
+					expect(
+						(await other.boundary.invoke(callId, "qorpera", "save_attachment", request)).success,
+						callId,
+					).toBe(false);
+				} finally {
+					other.run.close();
+				}
+			}
+			expect(gateway.mutate).not.toHaveBeenCalled();
+		});
 	});
 });

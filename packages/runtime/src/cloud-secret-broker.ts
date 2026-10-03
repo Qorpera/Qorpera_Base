@@ -5,7 +5,20 @@ import {
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
+import {
+	type CompanyAccountAnswer,
+	type CompanyAccountAuthority,
+	type CompanyAccountCall,
+	type CompanyAccountFillAnswer,
+	type CompanyAccountFillRequest,
+	type CompanyAccountOpening,
+	type CompanyAccountRefusal,
+	type CompanyAccountRequest,
+	type CompanyAccountState,
+	CompanyAccountVault,
+} from "./cloud-company-account-vault.ts";
 import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
+import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
@@ -142,6 +155,11 @@ export interface CloudSecretBrokerAuthority {
 	): Promise<unknown>;
 	authorizeOperation(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<unknown>;
 	authorizeRepositoryCredential(request: CodingRepositoryCredentialRequest, signal: AbortSignal): Promise<unknown>;
+	/** Company website accounts (A1); a broker whose database cannot serve them leaves these out. */
+	describeCompanyAccountOpen?: CompanyAccountAuthority["describeCompanyAccountOpen"];
+	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
+	setCompanyAccountState?: CompanyAccountAuthority["setCompanyAccountState"];
+	readCompanyAccountFill?: CompanyAccountAuthority["readCompanyAccountFill"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -504,6 +522,7 @@ export class CloudSecretBroker {
 	readonly #authority: CloudSecretBrokerAuthority;
 	readonly #keys: CloudSecretKeyring;
 	readonly #adapters = new Map<string, CloudSecretConnectorAdapter>();
+	readonly #companyAccounts: CompanyAccountVault | undefined;
 
 	constructor(options: {
 		authority: CloudSecretBrokerAuthority;
@@ -512,6 +531,20 @@ export class CloudSecretBroker {
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
+		const { describeCompanyAccountOpen, openCompanyAccount, setCompanyAccountState, readCompanyAccountFill } =
+			options.authority;
+		this.#companyAccounts =
+			describeCompanyAccountOpen && openCompanyAccount && setCompanyAccountState && readCompanyAccountFill
+				? new CompanyAccountVault({
+						authority: {
+							describeCompanyAccountOpen: describeCompanyAccountOpen.bind(options.authority),
+							openCompanyAccount: openCompanyAccount.bind(options.authority),
+							setCompanyAccountState: setCompanyAccountState.bind(options.authority),
+							readCompanyAccountFill: readCompanyAccountFill.bind(options.authority),
+						},
+						keys: options.keyring,
+					})
+				: undefined;
 		for (const adapter of options.adapters) {
 			if (
 				!IDENTIFIER.test(adapter.connectorId) ||
@@ -602,6 +635,21 @@ export class CloudSecretBroker {
 		} finally {
 			envelope.fill(0);
 		}
+	}
+
+	/** One company_account tool call of an agent's run (A1): an account's facts or the database's refusal, never a value. */
+	companyAccount(request: CompanyAccountRequest, signal: AbortSignal): Promise<CompanyAccountAnswer> {
+		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
+		return this.#companyAccounts.handle(request, signal);
+	}
+
+	/** One vault_fill of the Company Computer's browser (A1-3): the value sealed to that computer's boot key. */
+	companyAccountFill(
+		request: CompanyAccountFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
+		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
+		return this.#companyAccounts.fill(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -952,7 +1000,9 @@ export class PostgresCloudSecretBrokerAuthority
 		ModelLoginAuthority,
 		ModelLoginSignInAuthority,
 		ModelLoginUsageAuthority,
-		ConnectorTokenRevocationAuthority
+		ConnectorTokenRevocationAuthority,
+		EventVerificationAuthority,
+		CompanyAccountAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1019,6 +1069,86 @@ export class PostgresCloudSecretBrokerAuthority
 			],
 			signal,
 		);
+	}
+
+	describeCompanyAccountOpen(call: CompanyAccountCall, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_company_account_open($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			this.#companyAccountCall(call),
+			signal,
+		);
+	}
+
+	async openCompanyAccount(
+		call: CompanyAccountCall,
+		opening: CompanyAccountOpening,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		const envelope = Buffer.from(opening.encryptedEnvelope);
+		try {
+			return await this.#rpc(
+				"select public.qorpera_open_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::uuid,$9::uuid,$10::text,$11::text[],$12::text,$13::text,$14::uuid,$15::text,$16::bytea,$17::text) as result",
+				[
+					...this.#companyAccountCall(call),
+					opening.secretId,
+					opening.companyId,
+					opening.environmentId,
+					opening.site,
+					[...opening.signInHosts],
+					opening.login,
+					opening.purpose,
+					opening.todoId,
+					opening.keyId,
+					envelope,
+					opening.envelopeSha256,
+				],
+				signal,
+			);
+		} finally {
+			// A query still queued for a connection after the deadline is sent with zeros; the database's
+			// digest check refuses it (42501) before anything is written.
+			envelope.fill(0);
+		}
+	}
+
+	setCompanyAccountState(
+		call: CompanyAccountCall,
+		accountId: string,
+		status: CompanyAccountState,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_set_company_account_state($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text) as result",
+			[...this.#companyAccountCall(call), accountId, status],
+			signal,
+		);
+	}
+
+	readCompanyAccountFill(request: CompanyAccountFillRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_fill_company_account($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(request.binding),
+				request.receiptId,
+				request.envelope,
+				createHash("sha256").update(request.idempotencyKey).digest("hex"),
+			],
+			signal,
+		);
+	}
+
+	/** The broker and the tool call, as every company account function takes them first. */
+	#companyAccountCall(call: CompanyAccountCall): unknown[] {
+		return [
+			this.#brokerAuthorityId,
+			this.#brokerCapabilitySha256,
+			JSON.stringify(call.binding),
+			call.receiptId,
+			call.inputSha256,
+			createHash("sha256").update(call.idempotencyKey).digest("hex"),
+		];
 	}
 
 	authorizeOperation(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<unknown> {
@@ -1116,6 +1246,35 @@ export class PostgresCloudSecretBrokerAuthority
 		return this.#rpc(
 			"select public.qorpera_claim_connector_token_revocations($1::uuid,$2::text,$3::integer) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	/** Signed hooks W1b: the company's deliveries waiting for a signature check (20260929998000). */
+	claimEventVerifications(limit: number, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_event_verifications($1::uuid,$2::text,$3::integer) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	finishEventVerification(
+		answer: Parameters<EventVerificationAuthority["finishEventVerification"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_event_verification($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text,$7::text,$8::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				answer.deliveryId,
+				answer.claim,
+				answer.verdict,
+				answer.key,
+				answer.type,
+				answer.reason,
+			],
 			signal,
 		);
 	}
@@ -1395,6 +1554,16 @@ export class PostgresCloudSecretBrokerPrincipal {
 		return oneCloudSecretRpc(
 			this.#database,
 			"select public.qorpera_broker_principal_companies($1::uuid,$2::text) as result",
+			[this.#principalId, this.#capabilitySha256],
+			signal,
+		);
+	}
+
+	/** The served companies with signed deliveries due a check (W1b): one call a pass. */
+	eventVerificationsDue(signal: AbortSignal): Promise<unknown> {
+		return oneCloudSecretRpc(
+			this.#database,
+			"select public.qorpera_broker_principal_event_verifications_due($1::uuid,$2::text) as result",
 			[this.#principalId, this.#capabilitySha256],
 			signal,
 		);

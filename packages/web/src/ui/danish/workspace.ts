@@ -65,6 +65,41 @@ export const WORKSPACE: Record<string, string> = {
 	"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.":
 		"Denne samtale har en usendt kladde. Åbn den, og gør kladden færdig eller ryd den, før du sender en ny.",
 
+	// app/views/shell.ts: the Agents | Interfaces switch and the Interfaces tab
+	Interfaces: "Interfaces",
+	"Agents or interfaces": "Agenter eller interfaces",
+	"No matching interfaces.": "Ingen interfaces passer.",
+	"Search interfaces": "Søg i interfaces",
+	"Close search": "Luk søgning",
+	Views: "Visninger",
+	Kind: "Slags",
+	Due: "Frist",
+	What: "Hvad",
+	Since: "Siden",
+	"Unfinished run": "Ufærdig kørsel",
+	Mention: "Omtale",
+	Task: "Opgave",
+	Offer: "Tilbud",
+	Yes: "Ja",
+	No: "Nej",
+	Actions: "Handlinger",
+	Filter: "Filtrér",
+	"Filter {title}": "Filtrér {title}",
+	"No rows match.": "Ingen rækker passer.",
+	"Choose one to see it here.": "Vælg en for at se den her.",
+	"Text in «» is quoted from outside content, not written by me.":
+		"Tekst i «» er citeret fra udefrakommende indhold og ikke skrevet af mig.",
+	"The Co-Founder's thread can't be opened here.": "Co-Founderens tråd kan ikke åbnes her.",
+
+	// app/interfaces.ts and app/views/interface.ts
+	"{name} needs you": "{name} har brug for dig",
+	"{name} has a run that did not finish": "{name} har en kørsel, der ikke blev færdig",
+	"You were mentioned in {conversation}": "Du blev nævnt i {conversation}",
+	"This page isn't available here yet.": "Siden er ikke tilgængelig her endnu.",
+	"Back to the company": "Tilbage til virksomheden",
+	Live: "Live",
+	"Nothing here right now.": "Intet her lige nu.",
+
 	// app/views/shell.ts
 	"Profile: {name}": "Profil: {name}",
 	"← Companies": "← Virksomheder",

@@ -148,7 +148,7 @@ migration can go in any cut without a pause.
 3. Use (service role claims):
    - empty: `select public.qorpera_set_runtime_node_serving('<node>', false, <version>, '<reason>')`;
    - watch `qorpera_runtime_node_drain_status('<node>')` until `readyForUpdate`;
-   - clear parked warm hosts if the fast host is rebuilt;
+   - clear parked warm hosts if the fast host is rebuilt (`rebuild-exec-host.sh` with `EXEC_CLEAR_PARKED=1`);
    - return with `true`. The node is placeable at once: its version and inventory receipt did not
      change.
 
@@ -189,9 +189,16 @@ It sorts after change 4 because it reads its bundle declarations.
     start, or at once when the preferred node's orchestrator refused.
   - An overflow orchestrator claims when:
     - a fast host refused the run (`SANDBOX_CAPACITY_EXHAUSTED`, `SANDBOX_RETIRING`, or
-      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. It never does so
-      within 15 s of its own refusal of that run, read from its released claim, so two full
-      paths cannot trade a job back and forth;
+      `NODE_NOT_PREFERRED` from a fast host), even inside that refusal's wait. For a full or
+      retiring host, only once every fast host in the run's placement has refused it recently
+      (`20260928439975`, test 810): with a host on each node, the other node's host takes it first,
+      in about 2 s instead of a fresh VM's 17 s. A refusal wakes no orchestrator (wakes come with a
+      job's insert and status changes), so the other host and then the overflow act on their next
+      poll: about 0.5 s at 250 ms polling, up to the 10 s fallback with the realtime wake's 5 s
+      backstop. When both hosts are full, the fresh VM starts that much later than before. The
+      overflow never takes a run at once on a refusal within 15 s of its own refusal of that run,
+      read from its released claim, so two full paths cannot trade a job back and forth (its 10 s
+      fallback still applies);
     - no fast host may take the run;
     - or the run has waited 10 s.
   - Waits count from `queued_at`, so a retry or a sponsor handoff starts them again.
@@ -229,7 +236,10 @@ It sorts after change 4 because it reads its bundle declarations.
      select id, provider_adapter, last_heartbeat_at from public.qorpera_runner_orchestrators
      where status = 'active' and dispatch_role is null;
      ```
-3. **Set roles**, and don't use roles for member runs before every active login is in the vault:
+3. **Set roles**, and don't use roles for member runs while a login lives on node 1's disk: node 1's
+   host attaches no identity volume, so it would claim such a run and then hold it back
+   (`NODE_IDENTITY_ELSEWHERE`). As of 2 Oct none does: the two logins left on a disk (2742ef0f,
+   544fb8b7) live on node 2 and stay pinned to node 2's host, with or without roles.
    - node 2's exec host orchestrator: `fast`;
    - node 1's fresh-VM orchestrator: `overflow`;
    - node 1's fast host, once created: `fast`.
@@ -245,7 +255,9 @@ It sorts after change 4 because it reads its bundle declarations.
    - `qorpera_runtime_node_placements` rows read `CLAIM_TURN_*`;
    - member reply start is about 2 s.
 
-   To undo, set the roles to `null`.
+   To undo, set the roles to `null`. Once node 1 has its own fast host, stop that host's orchestrator
+   first (`deploy/shared-execution/README.md`, "Undo node 1's host"): with no roles, node 1's two
+   orchestrators would race on one adapter.
 
 ## Change 4: each run keeps its version (migration `20260928182000`)
 
@@ -376,3 +388,61 @@ Now:
 The migration is safe for the running bundle: providers keep calling the same RPCs, and the four-argument
 chooser still works. The exec host's new machine key ships with the next provider build; until then a retry
 on the same slot of node 2 can still collide, as today. No activation guard is needed.
+
+## Rolling step 1: the runs switch and placement by bundle (migration `20260928409960`)
+
+A node release restarts only the node's run provider and orchestrator (the node agent's roles), and the
+fast host rebuild touches only the fast host. Company computers, coding machines and agent machines run on
+their own services, which a release does not restart. Emptying a node for a release therefore needs only
+"no new runs and sign-ins there". Until now the one serving switch (change 1) stopped everything for the
+whole roll: a sleeping computer could not wake on that node, a coding turn of a member whose machine is
+there waited, and a sleeping agent machine moved to another node and lost its scratch disk.
+
+- **The runs switch.** `qorpera_set_runtime_node_runs(node, runs, expected version, reason)` sets
+  `qorpera_runtime_nodes.runs_enabled`, with the full switch's checks (except the signed-updater refusal,
+  which guards `enabled` only) and lock order, and a record
+  in `qorpera_runtime_node_serving_changes` (`scope = 'runs'`). It is not part of the node's policy, so a new
+  policy version keeps it. With runs off:
+  - the node's orchestrators claim nothing new (they still replay claims they hold);
+  - run and sign-in candidates leave the node out (`qorpera_runtime_node_placement_candidates` for
+    `native` and `login`); office and coding candidates keep it;
+  - the ledger refuses a new run or sign-in reservation there (`NODE_DISABLED`, as the full switch does); a
+    held reservation passes again;
+  - computers, coding machines and agent machines are admitted as before.
+
+  Every run path reads a node's serving state through `qorpera_runtime_orchestrator_nodes`: the claim, the
+  claim turn, run placement, roll status and drain status. That helper now reports a node as serving only
+  when both switches are on. The full switch stays for a host restart and for a release that changes the
+  office provider or the coding executor.
+- **Drain status** adds `runsServing` and `readyForNodeRelease`: runs off, and no run, run machine, sign-in
+  or other reservation left on the node, and no orchestrator of the node that still serves another node.
+  Coding turns and awake machines may continue. `readyForUpdate` and `readyForRestart` are unchanged. The
+  last change names its `scope`.
+- **Placement by bundle.** With dispatch roles unset (production today), the node chooser places a run, and
+  it did not look at the bundle declarations of change 4. During a roll it could prefer the node still
+  declared for the old bundle, whose orchestrators cannot claim the new bundle's runs, and refuse the node
+  that can (`NODE_NOT_PREFERRED`) until the old node emptied. Now a provider whose live orchestrators are all
+  declared for another bundle is no candidate for a run (`qorpera_runtime_adapter_takes_bundle`; such a
+  candidate is marked `"eligible": false, "otherBundle": true` in the placement record). The run reservation
+  passes the run's bundle to a six-argument chooser; the five- and four-argument forms pass none and decide
+  as before. A claimant that is itself marked so is refused (`NODE_NOT_PREFERRED`: it waits, no attempt is
+  counted). "Live" means the orchestrator's `active` status, not a fresh heartbeat (the claim needs none
+  either); a roll declares every orchestrator of a node, so no stale undeclared row is left to take a
+  bundle. The claim turn (runs with dispatch roles) already left such fast hosts out.
+- **`qorpera_declare_runtime_node_bundle(node, sha)`** declares every orchestrator of one node for a
+  registered bundle, or clears them with null, in id order. It refuses an unregistered bundle, and an
+  orchestrator of the node that also maps to another node (55000).
+- **Locks.** The runs switch takes the node's advisory lock and row, as the full switch does. Nothing else
+  takes a new lock. The migration adds a column to `qorpera_runtime_nodes` under `lock_timeout = '5s'`.
+
+### Rollout (coordinator)
+
+Safe for the running bundle: no RPC an N component calls changes shape (drain status only gains fields),
+and every runs switch starts on. Feature PR, no bundle slot. Apply at a quiet moment: the column add waits
+for its table lock for at most 5 s (`lock_timeout`), and claims and placement queue behind it meanwhile; on
+55P03 retry. Guards for the next activation (ABSENT live first), one body marker per patched function:
+`node.enabled and node.runs_enabled` in `qorpera_runtime_orchestrator_nodes(text)`; `or n.runs_enabled)` in
+`qorpera_runtime_node_placement_candidates(text)`; `p_provider_kind in ('native','login')))` in
+`qorpera_reserve_runtime_node_machine(...)`; `qorpera_runtime_adapter_takes_bundle` in
+`qorpera_runtime_node_placement_decide(uuid,text,text,uuid,uuid,text)`; `v_run.runtime_bundle_sha256);` in
+`qorpera_reserve_runtime_machine(...)`. The same markers are in `RUNTIME-ROLLING-UPDATE.md` step 2.

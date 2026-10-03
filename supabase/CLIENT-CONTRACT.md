@@ -68,6 +68,11 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   may step down. A cloud without several founders omits
   them; a client then falls back to "the owner deletes, others leave".
 
+Native host entry points (G2-1, migration 20260928409985): the publishable key's role (`anon`) may also call
+`qorpera_native_host_call` and `qorpera_native_host_call_long`. They are for the platform's native host inside a
+runner guest and work only with that runner job's current lease token. Clients never call them; without the token
+they answer 42501 "native host call is refused".
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 175 functions, grouped for navigation. Signatures: see the migration that defines each.
@@ -611,8 +616,8 @@ wake), so no agent runs and nothing is charged before it.
   p_per_minute default null)` → `qorpera.event-hook/v1`: `id`, `companyId`,
   `environmentId`, `name` (`^[a-z][a-z0-9-]{0,63}$`, unique among the
   live hooks of the company environment), `purpose` (one line), `proof`
-  (`address` in W1a; `stripe`, `github` and `hmac-sha256` refuse with 0A000
-  until W1b), `status` (`active`), `address` (43 characters), `path`
+  (`address`, or from W1b `stripe`, `github` and `hmac-sha256`; signed hooks
+  below), `status` (`active`), `address` (43 characters), `path`
   (`/functions/v1/event-intake/<address>`: the sender posts to the Supabase
   URL plus this path), `maxBodyBytes` (1024–262144, default 65536),
   `perMinute` (1–120, default 60), `createdAt`, `lastReceivedAt` (absent
@@ -632,6 +637,24 @@ wake), so no agent runs and nothing is charged before it.
   `verified`, `refused`, `duplicate`), `deliveryKey`, `eventType`,
   `contentType`, `bodyBytes`, `bodySha256`, `verifiedAt`, `reason`. No
   bodies. Owners and admins only.
+- Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
+  descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
+  also Svix's headers) hook carries `signingSecret` (`connectorId`
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). An owner
+  or admin saves the sender's signing secret with
+  `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
+  'event_hook', secretName, purpose)` and then
+  `POST <serviceOrigin>/v1/captures/<ticketId>?company=<profileId>` with
+  `{"schema": "qorpera.cloud-secret-capture-request/v1", "captureCapability":
+  <the ticket's captureCapability>, "fields": {"signing_secret": "<secret>"}}`
+  (exactly these keys); passing the existing secret id to the begin call
+  replaces it. An `hmac-sha256` secret is a Standard Webhooks one
+  (`whsec_<base64>`). Until `ready` is true the hook answers senders
+  `not_ready`. A signed delivery is listed `received` until the vault checks
+  it (seconds), then `verified` with `deliveryKey` (an id the signature
+  covers: Stripe's event id, `webhook-id`, or for GitHub `sig:<signature>`)
+  and `eventType`, `duplicate`, or `refused` with a fixed `reason` ("The
+  Stripe signature does not match"). Removing the hook revokes its secret.
 
 ### Company mailboxes (20260928299650_runtime_company_mailboxes)
 
@@ -650,6 +673,11 @@ wake), so no agent runs and nothing is charged before it.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
+- Plus addresses (20260928429982_runtime_company_mail_find_and_tags): `<local part>+<tag>@<mail domain>` reaches the
+  mailbox, for a tag of lowercase letters, digits, dots, hyphens and underscores (the whole local part at most 64
+  characters); mailboxes show only their own `email`. A received mail's delivery keeps `delivered-to`, `from`,
+  `subject` and `authentication-results` headers. Agents find received mail with the runtime tool `find_mail`; there
+  is no client surface.
 - Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
   tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
@@ -659,6 +687,20 @@ wake), so no agent runs and nothing is charged before it.
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents save a received email's
+  attachment into the company folder with the runtime tool `save_attachment`, and attach company files to
+  `send_mail`; there is no client surface. A saved attachment is an ordinary company file, written through the path
+  gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
+  Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
+  allowance.
+- Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
+  `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
+  (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
+  `qorpera_member_mail_thread(p_environment_id, p_thread)` (`{thread, address, messages, more?, waiting}`),
+  `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
+  Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
+  thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
+  answered through `qorpera_answer_action_review` with its `reviewId`.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 

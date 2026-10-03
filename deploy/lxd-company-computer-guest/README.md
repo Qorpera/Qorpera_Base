@@ -505,6 +505,15 @@ Do not restore the older `qorpera-chrome` ambient per-display profile launcher.
 Member browser startup and sign-in need the same profile broker and typed
 privacy handoff. Revocation must close control channels and suspend affected
 viewers before secret input; masking password fields alone is insufficient.
+An agent's browser snapshot is Playwright's aria snapshot, which copies every
+input's value. While a private box (`COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR`:
+password, one-time code, card, or a text box named for one) holds a value, the guest
+shows every typed value as `[hidden]` and hides the private values wherever the
+page repeats them; browser screenshots mask the same boxes in every frame. A
+desktop screenshot cannot mask, so it is refused while a shown tab of the
+screen's browser window holds such a value in any frame, or cannot answer
+(checked before and after the capture). Shell commands still reach the screen's
+X socket; that is closed separately.
 
 `createCompanyComputerLinuxBrowserLaunch` runs Chromium in a separate checked
 Bubblewrap namespace. Package Chromium at `/usr/lib/qorpera-chromium/chrome`,

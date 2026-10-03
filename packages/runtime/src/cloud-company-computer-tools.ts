@@ -17,7 +17,7 @@ import {
 	parseCompanyComputerFileExport,
 	parseCompanyComputerFileImport,
 } from "@qorpera/cloud-client/cloud-file-transfer";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, normalizeUuid } from "@qorpera/contracts";
 import {
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
@@ -37,6 +37,14 @@ export type CompanyComputerAction =
 	| { kind: "browser"; action: "click"; role: CompanyComputerBrowserRole; name: string }
 	| { kind: "browser"; action: "fill"; role: "textbox" | "combobox"; name: string; text: string }
 	| { kind: "browser"; action: "press"; key: string }
+	| {
+			kind: "browser";
+			action: "vault_fill";
+			role: "textbox" | "spinbutton";
+			name: string;
+			account: string;
+			field: "login" | "password" | "code";
+	  }
 	| { kind: "screenshot"; surface: "browser" | "desktop" }
 	| { kind: "desktop"; action: "click"; x: number; y: number; button: "left" | "middle" | "right" }
 	| { kind: "desktop"; action: "move"; x: number; y: number }
@@ -172,6 +180,23 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 			keys(input, ["kind", "action", "key"]);
 			if (typeof input.key !== "string" || !KEY.test(input.key)) throw new Error("INVALID_COMPUTER_ARGUMENTS");
 			return { kind: "browser", action: "press", key: input.key };
+		}
+		if (input.action === "vault_fill") {
+			// A company account's value the vault types into one box (A1-3); the action never holds the value.
+			keys(input, ["kind", "action", "role", "name", "account", "field"]);
+			if (input.role !== "textbox" && input.role !== "spinbutton") throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			const account = normalizeUuid(input.account);
+			if (account === null) throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			if (input.field !== "login" && input.field !== "password" && input.field !== "code")
+				throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			return {
+				kind: "browser",
+				action: "vault_fill",
+				role: input.role,
+				name: text(input.name, 512),
+				account,
+				field: input.field,
+			};
 		}
 	}
 	if (input.kind === "screenshot") {
@@ -395,6 +420,13 @@ const actionSchemas = {
 			text: { type: "string", maxLength: 16384 },
 		}),
 		actionSchema("browser", "press", { key: keySchema }),
+		// A company account's login, password or authenticator code, typed by the vault (A1-3); never a value here.
+		actionSchema("browser", "vault_fill", {
+			role: { enum: ["textbox", "spinbutton"] },
+			name: { type: "string", maxLength: 512 },
+			account: { type: "string", pattern: COMPANY_COMPUTER_UUID.source },
+			field: { enum: ["login", "password", "code"] },
+		}),
 	],
 	desktop: [
 		actionSchema("desktop", "click", { ...coordinates, button: { enum: ["left", "middle", "right"] } }),
@@ -467,7 +499,7 @@ export function createCompanyComputerTools(options: {
 					`${COMPANY_COMPUTER_TOOL_VERSION}. ${kind} on the cloud Company Computer and this agent's assigned screen only. ` +
 					"Use an authorized connector before the browser, and page actions before pixels. Requires live run, screen and resource/profile grants. " +
 					"Company website sign-ins are shared across agents; an assigned screen is not a private browser. Never sign personal accounts into the Company Computer. " +
-					"Access personal accounts only through a supported, authorized connector granted to the company. For company website sign-in, use a supported typed handoff; never request passwords or enter credential values through these tools. If the required connector or handoff is unavailable, report the blocker. " +
+					"Access personal accounts only through a supported, authorized connector granted to the company. For a company account's login, password or authenticator code, use browser vault_fill {role, name, account, field} on the account's own website: the vault types it into that box; never type or ask for a password yourself. A CAPTCHA, bot check, unusual activity warning or block page ends the attempt at once: never retry it; mark the account needs_person with company_account (a worker tells its agent). If the required connector or account is unavailable, report the blocker. " +
 					"One driver per screen; member takeover cancels agent control. Keep operationKey stable for the same logical work. " +
 					"Writes, navigation, input and shell are effect-checked with durable receipts; an uncertain result requires reconciliation, never a new key. " +
 					"Screen release gives up occupancy without deleting desktop/browser state; idle policy controls power. " +

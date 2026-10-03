@@ -222,7 +222,12 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 							},
 						};
 					}
-					return this.#automation.perform(action, lease, { identity, ...receipt, signal }, operation);
+					return this.#automation.perform(
+						action,
+						lease,
+						{ identity, ...receipt, signal, ...(context.fill ? { fill: context.fill } : {}) },
+						operation,
+					);
 				},
 			})
 			.catch(async (error: unknown) => {

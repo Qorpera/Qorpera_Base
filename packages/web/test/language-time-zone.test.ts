@@ -403,7 +403,7 @@ describe("changing the time zone with a conversation open", () => {
 			expect(document.activeElement).toBe(root.querySelector(".preference-picker-button"));
 			expect(root.querySelector(".rail")?.getAttribute("aria-label")).toBe("Virksomhedsnavigation");
 			// The rail keeps its search field across redraws; its words follow the language.
-			expect(root.querySelector<HTMLInputElement>(".rail-search input")?.placeholder).toBe("Søg");
+			expect(root.querySelector<HTMLInputElement>(".rail-search input")?.placeholder).toBe("Søg efter agenter");
 		} finally {
 			dispose();
 		}

@@ -3,6 +3,7 @@ import {
 	parseCompanyComputerStartupAuthority,
 	parseCompanyComputerStartupIdentity,
 } from "@qorpera/contracts";
+import { CompanyComputerFillKey } from "@qorpera/runtime/cloud-company-account-fill-box";
 import { CompanyComputerStartupControl } from "@qorpera/runtime/cloud-company-computer-startup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computerId, computerScope } from "./fixtures/company-computer.ts";
@@ -117,6 +118,25 @@ describe("provider-controlled startup wait", () => {
 			p_native_port: 9443,
 			p_viewer_port: 9444,
 		});
+	});
+	it("reports the service's fill key with every readiness report, and refuses a malformed one", async () => {
+		const key = new CompanyComputerFillKey().publicKey;
+		const call = vi.fn().mockResolvedValueOnce(response()).mockResolvedValueOnce(response("active"));
+		const control = new CompanyComputerStartupControl(identity(), { call }, { fillPublicKey: key });
+		await control.check(signal());
+		await control.waitForActivation({ nativePort: 9443, viewerPort: 9444 }, async () => {}, signal());
+		expect(call.mock.calls[1][1]).toEqual({
+			p_startup: identity(),
+			p_activation_id: computerId(72),
+			p_native_port: 9443,
+			p_viewer_port: 9444,
+			p_fill_public_key: key,
+		});
+		for (const bad of ["", "short", `${key}A`, `${key.slice(0, 42)}B`, key.replace(/[A-Za-z]/, "+")])
+			if (bad !== key)
+				expect(() => new CompanyComputerStartupControl(identity(), { call }, { fillPublicKey: bad }), bad).toThrow(
+					"OFFICE_FILL_KEY_MALFORMED",
+				);
 	});
 	it("does not report readiness before authorization or after failed physical preflight", async () => {
 		const call = vi.fn().mockResolvedValue(response()),

@@ -15,11 +15,29 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import type { BrowserContext, Page } from "playwright-core";
+import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
+import {
+	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
+	CompanyAccountFillRefusedError,
+	CompanyComputerFilledValues,
+	fillCompanyAccountBox,
+} from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
+import {
+	companyComputerPrivateFieldMasks,
+	readCompanyComputerPrivateValues,
+	redactCompanyComputerSnapshot,
+} from "./cloud-company-computer-private-fields.ts";
 import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
+import {
+	COMPANY_COMPUTER_SITE_STOP_CODES,
+	COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	CompanyComputerSiteStops,
+	readCompanyComputerSiteStop,
+} from "./cloud-company-computer-site-stops.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
@@ -363,6 +381,27 @@ function tabPreview(value: string, maxBytes: number): string {
 	return value.slice(0, end);
 }
 
+/** The answer to an action refused on a site the computer stopped on (A1-4c): nothing was done. */
+function companyComputerSiteRefusal(action: string, tabId: string | undefined): CompanyComputerToolContent {
+	return {
+		kind: "json",
+		value: {
+			action,
+			...(tabId ? { tabId } : {}),
+			completed: false,
+			refused: { code: "SITE_STOPPED", message: COMPANY_COMPUTER_SITE_STOP_MESSAGE },
+		},
+	};
+}
+
+/** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
+ * value holds whitespace itself; 0 when there is none. */
+export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
+	for (let at = Math.min(limit, text.length - 1); at >= 0; at--)
+		if (text[at] === "\n" || (!linesOnly && /\s/u.test(text[at]!))) return at;
+	return 0;
+}
+
 /** Low-level established automation, called only inside the authorized guest ScreenActionGate. */
 export class CompanyComputerGuestAutomation {
 	readonly #binding: CompanyComputerScreenBinding;
@@ -371,12 +410,18 @@ export class CompanyComputerGuestAutomation {
 	readonly #commands?: CompanyComputerGuestCommands;
 	readonly #shell?: CompanyComputerGuestShell;
 	readonly #browser?: CompanyComputerBrowserSession;
+	readonly #screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 	readonly #screenshots: CompanyComputerScreenshotPublisher;
 	readonly #fileImports: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter | undefined;
 	readonly #fileExports:
 		| import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher
 		| undefined;
 	readonly #tabIds = new Map<Page, string>();
+	/** This office service's boot key: it alone opens what the vault sealed for a vault_fill (A1-3). */
+	readonly #fillKey: CompanyComputerFillKey | undefined;
+	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
+	readonly #filled: CompanyComputerFilledValues;
+	readonly #siteStops: CompanyComputerSiteStops;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -387,9 +432,15 @@ export class CompanyComputerGuestAutomation {
 		commands?: CompanyComputerGuestCommands;
 		shell?: CompanyComputerGuestShell;
 		browser?: CompanyComputerBrowserSession;
+		/** The browser window open on this screen now, whether or not this run drives it; it never opens one. */
+		screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 		screenshots: CompanyComputerScreenshotPublisher;
 		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
+		fillKey?: CompanyComputerFillKey;
+		filled?: CompanyComputerFilledValues;
+		/** The sites this computer stopped on (A1-4c), shared by its screens. */
+		siteStops?: CompanyComputerSiteStops;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -400,9 +451,81 @@ export class CompanyComputerGuestAutomation {
 		this.#commands = options.commands;
 		this.#shell = options.shell;
 		this.#browser = options.browser;
+		this.#screenBrowser = options.screenBrowser;
 		this.#screenshots = options.screenshots;
 		this.#fileExports = options.fileExports;
 		this.#fileImports = options.fileImports;
+		this.#fillKey = options.fillKey;
+		this.#filled = options.filled ?? new CompanyComputerFilledValues();
+		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
+	}
+
+	/**
+	 * No picture while a page shows a secret the vault typed: as text, in its title or address, or in a box that is
+	 * not marked private (a "show password" that made a new box). The page is read; it is never told the value.
+	 */
+	async #assertFilledNotShown(page: Page): Promise<void> {
+		if (this.#filled.current().length === 0) return;
+		for (const frame of page.frames()) {
+			let shown: unknown;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				shown = await Promise.race([
+					frame.evaluate((attribute) => {
+						interface Node {
+							value?: unknown;
+							textContent?: string | null;
+							shadowRoot?: Root | null;
+							matches?(selector: string): boolean;
+						}
+						interface Root {
+							querySelectorAll(selector: string): Iterable<Node>;
+						}
+						const global = globalThis as unknown as {
+							document: Root & { title: string; documentElement: { innerText?: string } | null };
+							location: { href: string };
+						};
+						const document = global.document;
+						// Everything the page shows, or null past 4 MB of it (more than this check reads): then no picture.
+						const parts = [document.title, global.location.href, document.documentElement?.innerText ?? ""];
+						let size = parts.reduce((total, part) => total + part.length, 0);
+						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
+						const roots: Root[] = [document];
+						for (let index = 0; index < roots.length; index++) {
+							for (const node of roots[index]!.querySelectorAll("*")) {
+								let part: string | undefined;
+								if (node.shadowRoot) {
+									roots.push(node.shadowRoot);
+									part = (node.shadowRoot as unknown as Node).textContent ?? "";
+								}
+								if (
+									typeof node.value === "string" &&
+									node.matches?.("input, textarea") &&
+									!node.matches(`[${attribute}]`)
+								)
+									part = part === undefined ? node.value : `${part}\n${node.value}`;
+								if (part === undefined) continue;
+								size += part.length;
+								if (size > 4_000_000) return null;
+								parts.push(part);
+							}
+						}
+						return size > 4_000_000 ? null : parts.join("\n");
+					}, COMPANY_ACCOUNT_FILLED_ATTRIBUTE),
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(() => reject(new Error("timed out")), 5_000);
+					}),
+				]);
+			} catch (error) {
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			} finally {
+				clearTimeout(timer);
+			}
+			if (typeof shown !== "string")
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE"));
+			if (this.#filled.showsDecoded(shown))
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+		}
 	}
 
 	/**
@@ -419,6 +542,75 @@ export class CompanyComputerGuestAutomation {
 				throw error;
 			throw new CompanyComputerActionFailedError(error);
 		}
+	}
+
+	/**
+	 * A whole-screen capture shows the browser unmasked. It is refused while a shown
+	 * tab of the window on this screen holds a private value in any frame, and while
+	 * a tab cannot answer (crashed or hung): a member closes that tab, or the agent
+	 * uses a browser screenshot, which masks.
+	 */
+	async #assertNoPrivateValueShown(signal: AbortSignal): Promise<void> {
+		let pages: Page[];
+		try {
+			// A window still opening is waited for: it may show a box a moment later.
+			const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+			pages = context?.pages() ?? [];
+		} catch (error) {
+			signal.throwIfAborted();
+			throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+		}
+		signal.throwIfAborted();
+		for (const page of pages) {
+			if (page.isClosed()) continue;
+			let values: string[];
+			try {
+				values = await readCompanyComputerPrivateValues(page, { shownOnly: true, allFrames: true });
+			} catch (error) {
+				throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_TAB_UNREADABLE", { cause: error }));
+			}
+			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
+			await this.#assertFilledNotShown(page);
+		}
+	}
+
+	/**
+	 * Whether a shown tab of this screen's browser is on a site the computer stopped on, or shows such a check now
+	 * (A1-4c); its site is recorded. A tab whose visibility cannot be read counts as shown.
+	 */
+	async #siteStopShown(signal: AbortSignal): Promise<boolean> {
+		let pages: Page[];
+		try {
+			const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+			pages = context?.pages() ?? [];
+		} catch {
+			signal.throwIfAborted();
+			pages = this.#browser?.context.pages() ?? [];
+		}
+		for (const page of pages) {
+			if (page.isClosed()) continue;
+			let hidden = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				hidden = await Promise.race([
+					page.evaluate(() => (globalThis as unknown as { document: { hidden: boolean } }).document.hidden),
+					new Promise<boolean>((resolve) => {
+						timer = setTimeout(() => resolve(false), 1_000);
+					}),
+				]);
+			} catch {
+				hidden = false;
+			} finally {
+				clearTimeout(timer);
+			}
+			if (hidden === true) continue;
+			const stop = this.#siteStops.stoppedAt(page.url()) ?? (await readCompanyComputerSiteStop(page));
+			if (stop) {
+				this.#siteStops.add(page.url(), stop);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Cancellation closes the automation channel, not the persistent profile bytes. */
@@ -509,8 +701,8 @@ export class CompanyComputerGuestAutomation {
 					if (page.isClosed()) continue;
 					tabs.push({
 						tabId: this.#tabIds.get(page)!,
-						titlePreview: tabPreview(title, 128),
-						urlPreview: tabPreview(page.url(), 256),
+						titlePreview: tabPreview(this.#filled.hideText(title), 128),
+						urlPreview: tabPreview(this.#filled.hideAddress(page.url()), 256),
 					});
 				}
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
@@ -548,19 +740,32 @@ export class CompanyComputerGuestAutomation {
 			}
 			const page = this.#page;
 			if (action.kind === "screenshot") {
-				return this.#publish(
-					await this.#pageCall(() =>
-						page.screenshot({
-							type: "png",
-							timeout: 5_000,
-							mask: [page.locator('input[type="password"],input[autocomplete="one-time-code"]')],
-						}),
-					),
-					lease,
-					effect,
-					"browser",
-					operation,
+				// Before and after the picture: a value the page shows by then is never published.
+				await this.#assertFilledNotShown(page);
+				const png = await this.#pageCall(() =>
+					page.screenshot({
+						type: "png",
+						timeout: 5_000,
+						mask: companyComputerPrivateFieldMasks(page),
+					}),
 				);
+				await this.#assertFilledNotShown(page);
+				return this.#publish(png, lease, effect, "browser", operation);
+			}
+			// A site this computer stopped on is never acted on again (A1-4c): a person continues there. A page that
+			// shows such a check now stops it before anything is clicked or typed, whatever its address; going to
+			// another site stays open. The refusal is the call's answer, so the agent reads why and can go on to mark
+			// the account (an error would reach it only as an unconfirmed outcome).
+			const actedOn = page.url();
+			if (["navigate", "click", "fill", "press", "vault_fill"].includes(action.action)) {
+				const showing = await readCompanyComputerSiteStop(page);
+				if (showing) this.#siteStops.add(actedOn, showing);
+				if (
+					action.action === "navigate"
+						? this.#siteStops.stoppedAt(action.url)
+						: showing || this.#siteStops.stoppedAt(actedOn)
+				)
+					return companyComputerSiteRefusal(action.action, this.#tabIds.get(page));
 			}
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
@@ -590,11 +795,120 @@ export class CompanyComputerGuestAutomation {
 			} else if (action.action === "press") {
 				const key = action.key;
 				await this.#pageCall(() => page.keyboard.press(key));
+			} else if (action.action === "vault_fill") {
+				// Only this boot's key opens the box, and only for this call, account and field: the value then
+				// goes into the one box named, on the account's own website, and nowhere else.
+				const sealed = effect.fill;
+				const key = this.#fillKey;
+				if (!key || !sealed) throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNAVAILABLE");
+				let opened: ReturnType<CompanyComputerFillKey["open"]>;
+				try {
+					opened = key.open(sealed, {
+						companyId: this.#binding.companyId,
+						companyComputerId: this.#binding.companyComputerId,
+						computerGeneration: this.#binding.computerGeneration,
+						receiptId: effect.receiptId,
+						accountId: action.account,
+						field: action.field,
+					});
+				} catch (error) {
+					// A spent box (or computers' clocks far apart) is told apart from one for another call or key.
+					throw new CompanyComputerActionNotStartedError(
+						error instanceof Error && error.message === "Company account fill expired"
+							? "ACCOUNT_FILL_EXPIRED"
+							: "ACCOUNT_FILL_UNOPENED",
+					);
+				}
+				const box = page.getByRole(action.role, { name: action.name, exact: true });
+				if ((await this.#pageCall(() => box.count())) !== 1)
+					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
+				signal.throwIfAborted();
+				this.#filled.add(opened.value, opened.field);
+				try {
+					await fillCompanyAccountBox(page, box, opened);
+				} catch (error) {
+					// Typed where nothing can empty it: the tab goes, with the value in it. The agent's next action is told
+					// its tab closed (never moved to another tab), and the window keeps a tab, as at start.
+					let cause: unknown;
+					if (error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST") {
+						const context = this.#browser.context;
+						try {
+							if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
+							await page.close();
+						} catch (closeError) {
+							cause = closeError;
+						}
+					}
+					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
+					throw new CompanyComputerActionFailedError(
+						new Error(
+							error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED",
+							cause === undefined ? undefined : { cause },
+						),
+					);
+				}
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
+			// A page that now shows a CAPTCHA, a human check, an unusual activity warning or a block stops the agent
+			// at once, and the site is never acted on again while this computer runs; nothing tries to pass it.
+			// A link or a redirect that lands on a site stopped on earlier reports the stop too.
+			// What is recorded is the site that shows the check, nothing else: never the site a navigation or a link left
+			// (a search or mail page), nor an address the agent asked for that redirected elsewhere (a link tracker).
+			const stopAt = async () => {
+				const stop = (await readCompanyComputerSiteStop(page)) ?? this.#siteStops.stoppedAt(page.url());
+				if (stop) this.#siteStops.add(page.url(), stop);
+				return stop;
+			};
+			if (action.action !== "snapshot") {
+				// The action happened; what the page shows now stops the agent, in the call's answer.
+				const stop = await stopAt();
+				if (stop)
+					return {
+						kind: "json",
+						value: {
+							action: action.action,
+							tabId: this.#tabIds.get(page)!,
+							completed: true,
+							stop: COMPANY_COMPUTER_SITE_STOP_CODES[stop],
+							message: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+						},
+					};
+			}
 			if (action.action === "snapshot") {
-				const snapshot = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				// The aria snapshot copies every box's value; read the private ones on both sides of it.
+				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				// A snapshot of such a page still shows it, and says the agent stops here.
+				const stop = await stopAt();
+				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
+				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
+				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
+				const hidden = [...before, ...after, ...this.#filled.current()];
+				const cut =
+					full.length <= 20_480 || hidden.length === 0
+						? 20_480
+						: companyComputerSnapshotCut(
+								full,
+								20_480,
+								hidden.some((value) => /\s/u.test(value)),
+							);
+				// Too little before a word's end (a minified page): secrets are hidden across the whole snapshot, as before
+				// the cut, and its first 16 KB is returned.
+				const aria = cut < 16_384 ? full : full.slice(0, cut);
+				const snapshot = await this.#pageCall(async () => {
+					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
+						filled: this.#filled.current(),
+					}).replace(
+						/(\/url: )([^\n]*)/g,
+						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
+					);
+					// A secret the vault typed that survives in another spelling refuses the snapshot.
+					if (this.#filled.showsDecoded(redacted)) throw new Error("PRIVATE_FIELD_VISIBLE");
+					return redacted;
+				});
 				const title = await this.#pageCall(() => page.title());
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
@@ -602,10 +916,14 @@ export class CompanyComputerGuestAutomation {
 					kind: "json",
 					value: {
 						tabId: this.#tabIds.get(page)!,
-						url: page.url(),
-						title: title.slice(0, 1024),
+						url: this.#filled.hideAddress(page.url()),
+						title: this.#filled.hideText(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
-						truncated: snapshot.length > 16_384,
+						truncated: full.length > aria.length || snapshot.length > 16_384,
+						// The page asks for a person: the agent stops here (A1-4c).
+						...(stop
+							? { stop: COMPANY_COMPUTER_SITE_STOP_CODES[stop], message: COMPANY_COMPUTER_SITE_STOP_MESSAGE }
+							: {}),
 					},
 				};
 			}
@@ -649,14 +967,17 @@ export class CompanyComputerGuestAutomation {
 		}
 		if (!this.#commands) throw new Error("CONTAINED_COMPUTER_COMMANDS_UNAVAILABLE");
 		if (action.kind === "screenshot") {
-			return this.#publish(
-				await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 }),
-				lease,
-				effect,
-				"desktop",
-				operation,
-			);
+			// The whole screen shows the browser unmasked: no capture while a shown tab holds a private value,
+			// checked again after the capture for one typed meanwhile.
+			await this.#assertNoPrivateValueShown(signal);
+			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
+			await this.#assertNoPrivateValueShown(signal);
+			return this.#publish(png, lease, effect, "desktop", operation);
 		}
+		// Desktop input reaches the same browser window: none while a shown tab is on a site the computer stopped on, or
+		// shows such a check now (A1-4c). Moving the pointer only looks.
+		if (action.kind === "desktop" && action.action !== "move" && (await this.#siteStopShown(signal)))
+			return companyComputerSiteRefusal(action.action, undefined);
 		let args: string[];
 		if (action.kind === "shell") args = ["--noprofile", "--norc", "-c", action.command];
 		else if (action.action === "click" || action.action === "move")

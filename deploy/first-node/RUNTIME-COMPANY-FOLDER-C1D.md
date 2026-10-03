@@ -369,7 +369,7 @@ folder-v2 now (C5 early), rather than growing that path with chunk rows:
    helper's name and result shape: `pg_temp.stage(text[, actor])` returns `{manifestSha256, fileSha256, bytes,
    mediaType, executable}`. Unlike version 1, a version-2 file is held to possession, so a fixture whose run or
    member commits the file passes that actor (default: the platform). F2 provides it in C1d-2a.
-2. **The fixtures switch to it**, with no change in behaviour: F1 moves 630–665, F2 its own (700–709 and the rest).
+2. **The fixtures switch to it**, with no change in behaviour: F3 moves 630–665 (the coordinator's plan of 2 October 2026), F2 its own (700–709 and the rest).
    F2's 700–709 (and 750, on 707's fixture) keep their `pg_temp.stage(text[, profile])`: the platform stages, and the
    commit helpers first take possession for their actor (`pg_temp.possess`, which seals the same manifest as that
    actor). 763 is on F1's 634 fixture and moves with it.

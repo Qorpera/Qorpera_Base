@@ -27,6 +27,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",
 	"supabase/functions/mail-outbox/mail-outbox.test.ts",
+	"supabase/functions/mail-attachments/mail-attachments.test.ts",
 	"supabase/functions/runner-control/runner-control.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
@@ -179,7 +180,7 @@ export const STEPS = [
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
@@ -205,6 +206,8 @@ export const STEPS = [
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
+			// The rolling update rehearsal runs this generator's packets.
+			/^scripts\/runtime-roll\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
 		// Those two import the runtime's TypeScript, which imports built packages.

@@ -182,6 +182,8 @@ export function cloudActionEffect(
 	switch (tool.name) {
 		case "company_read":
 		case "company_list":
+		// The node's folder search (F3): reads the folder, with the run's own view.
+		case "company_search":
 		case "read_context":
 		case "recall_memory":
 		case "read_skill":
@@ -191,9 +193,12 @@ export function cloudActionEffect(
 		case "machine_list":
 		case "list_hooks":
 		case "read_event":
+		case "find_mail":
 			return "read";
 		case "company_write":
 		case "company_mkdir":
+		// A received attachment saved into the company folder, through the same governed gateway (M2c-1).
+		case "save_attachment":
 		case "update_memory":
 		// A skill is guidance in the Company File, written through the same governed gateway.
 		case "update_skill":
@@ -236,6 +241,16 @@ export function cloudActionEffect(
 			return "external";
 		case "computer_browser":
 			return ["snapshot", "list_tabs", "select_tab"].includes(action.action as string) ? "read" : "external";
+		// A company account (A1-4): finding one is a read; opening one acts on a website; recording the website's
+		// answer is the company's bookkeeping; closing one deletes its password and authenticator for good.
+		case "company_account":
+			return args.action === "find"
+				? "read"
+				: args.action === "open"
+					? "external"
+					: args.status === "closed"
+						? "destructive"
+						: "internal";
 		case "computer_desktop":
 			return ["move", "scroll"].includes(action.action as string) ? "read" : "external";
 		case "hire_agent":
@@ -441,12 +456,17 @@ export function describeCloudAction(
 				? "Open a web page"
 				: verb === "fill"
 					? "Type into a web page"
-					: verb === "press"
-						? "Press a key in the browser"
-						: "Click in the browser";
+					: verb === "vault_fill"
+						? "Type a company account's sign-in into a web page"
+						: verb === "press"
+							? "Press a key in the browser"
+							: "Click in the browser";
 		target = text(action.url) || (action.name ? `${text(action.role)} "${text(action.name, 200)}"` : null);
 		quote("text", action.text);
 		add("key", action.key);
+		// The vault types the value; the card names the account and which of its values, never the value.
+		add("account", action.account);
+		add("field", action.field);
 	} else if (tool.name === "computer_desktop") {
 		const verb = text(action.action);
 		title =
@@ -474,6 +494,27 @@ export function describeCloudAction(
 		add("subject", args.subject);
 		quote("text", args.text, CONTENT_BYTES);
 		if (typeof args.inReplyTo === "string") add("thread", "A reply to an email the company received");
+		// The company files that leave with it.
+		add("attachments", addresses(args.attachments));
+	} else if (tool.name === "company_account") {
+		title =
+			args.action === "open"
+				? "Open a company account on a website"
+				: args.status === "closed"
+					? "Close a company account"
+					: args.status === "needs_person"
+						? "Mark a company account as needing a person"
+						: "Mark a company account as working";
+		target = text(args.site) || text(args.account) || null;
+		add("purpose", args.purpose);
+		add("todo", args.todo);
+		if (args.action === "open")
+			add("effect", "Signs the company up with its own address and a password only the vault knows");
+		if (args.status === "closed")
+			add(
+				"effect",
+				"Deletes the company's password and authenticator for this account at once; afterwards only the website's own account recovery gets back in",
+			);
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;

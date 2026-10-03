@@ -414,6 +414,7 @@ export class EphemeralCloudRunnerWorker {
 											job,
 											authority,
 											bridge: this.#options.nativeProviderBridge,
+											leaseToken: this.#options.runner.nativeHostLeaseToken(job.jobId),
 											...(this.#options.limits ? { limits: this.#options.limits } : {}),
 											signal: executionAbort.signal,
 										})

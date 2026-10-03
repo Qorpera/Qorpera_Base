@@ -399,6 +399,12 @@ not design intent and MUST NOT be presented as product limits.
 
 ### 5.6 Company folder layout
 
+> **Amended 2026-10-02.** The tree gains `interfaces/` and `tables/`, both
+> seeded and kept; their files join the structured files, and the automatic
+> review gains the interface changes. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)
+> in section 19, item 12.
+
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
 section 19).
@@ -448,11 +454,19 @@ agents/
     <group-name>/group.md    one folder per group chat
 connections/
   <connection>.md            one file per connected account
+human-tasks/
+  <task>.md                  work an agent hands to a member or a contact
+  <task>/                    what the person sends back: proof/ and note.md
+contacts/
+  <contact>.md               one file per outside person or firm
 skills/
   <skill>/SKILL.md           company skills
 rules/
   <rule>.md                  company review rules
 ```
+
+`human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
+the 2026-10-02 amendment "work for people", item 5).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
@@ -509,9 +523,11 @@ An agent leaves in one of three ways:
   fenced, its conversations stay, and its files can be restored from the
   version history. The Co-Founder cannot be deleted. Deleting an `agent.md`
   on its own is refused; the folder is deleted instead.
-- **Permanent erasure:** purging a deleted agent's files and their stored
-  versions from the folder. This is a separate operation that only owners and
-  admins perform (14.1). Receipts and audit records keep their attribution.
+- **Permanent erasure:** purging a deleted path's files and their stored
+  versions from the folder: a deleted agent's folder, or any other deleted
+  path, such as a contact's file (the 2026-10-02 amendment "work for people",
+  item 3). This is a separate operation that only owners and admins perform
+  (14.1). Receipts and audit records keep their attribution.
 
 **`agents/sections.md`.** The sidebar's sections in order, each with its agents
 in order, listed by `id` (a name beside an id is only for reading). A section
@@ -556,7 +572,8 @@ works for when that member asks (2026-09-25 amendment, item 1).
   unassisted, and its hire waits for a member.
 - Seeded folders and files cannot be deleted or moved: `vision/`,
   `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `skills/` and `rules/`. The Co-Founder's folder and its
+  `connections/`, `human-tasks/`, `contacts/`, `skills/` and `rules/`
+  (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The Co-Founder's folder and its
   `agent.md` cannot be deleted; the folder is only renamed within `agents/`
   when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
@@ -586,10 +603,11 @@ The automatic review (2026-09-25 amendment) is unchanged:
   version history.
 
 **Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
-files, `group.md`, connection files and rule files have a fixed format. A save
-updates the file's index in the same step. A save the platform cannot read
-correctly is refused for that file, with the reason. A human, an agent's shell
-and a tool all save through this same path.
+files, `group.md`, connection files, rule files, human task files and contact
+files have a fixed format (the last two: the 2026-10-02 amendment "work for
+people"). A save updates the file's index in the same step. A save the
+platform cannot read correctly is refused for that file, with the reason. A
+human, an agent's shell and a tool all save through this same path.
 
 ## 6. Mouth and visibility contract
 
@@ -876,6 +894,9 @@ adapter MUST wrap it in an authenticated runtime envelope and keep it out of
 the canonical human transcript. It MUST NOT falsely attribute runtime prose to
 a member.
 
+> **Amended 2026-10-02 (not built yet).** A quote of outside content inside a member's message is outside
+> content, fenced like a tool result. See the [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -953,6 +974,9 @@ authority merely because it appears inside a result.
 The runtime MUST include an adversarial test that places “ignore previous
 instructions” and a plausible destructive request inside a tool result and
 proves the agent does not obey it.
+
+> **Amended 2026-10-02 (not built yet).** A quote of outside content inside a member's message is fenced the same
+> way. See the [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
 
 ### 11.2 Outbound effect check
 
@@ -1462,6 +1486,11 @@ a permanent hire when the responsibility ends with the project.
 
 ### 14.5 Attention and product projection
 
+> **Amended 2026-10-02.** The rail has two tabs: Agents, the hierarchy below,
+> and Interfaces, the company's pages with the main interface on top. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder),
+> item 8.
+
 > **Amended 2026-09-27.** The hierarchy is built from the company folder: the
 > Co-Founder, then the sections of `agents/sections.md` with their agents,
 > then group chats (5.6).
@@ -1710,13 +1739,19 @@ The constitution expresses this default judgment order:
 3. public web;
 4. office browser;
 5. office desktop;
-6. a typed request to the relevant member.
+6. a typed request to the relevant member, or, for work only a person can do,
+   a human task for a member or a contact (5.6; the 2026-10-02 amendment "work
+   for people", item 2).
 
 The kernel makes each step real through tool availability, grants, and typed
 handoffs. A broken connector is reported or repaired; it does not silently
 authorize browser session use.
 
 ### 16.2 Interaction surfaces
+
+> **Amended 2026-10-02.** The list gains offers to a member: of a card, an area, the supervision of an area's
+> agents, or an agent joining a supervised area. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 9.
 
 Qorpera MUST use distinct state machines for:
 
@@ -1953,6 +1988,10 @@ distinguish quota exhaustion (switch) from transient rate limiting (retry)
 and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
+
+Amended 2026-10-02: for a supervised agent's work that no member started, the supervisor gets the cards and their
+own login pays where the rules below let it; see the
+[interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 10.
 
 2026-09-28 amendment: the member who started the work pays. A member's own
 model login pays only for work that member started: their turns and room
@@ -2491,7 +2530,10 @@ removal; until it is removed it MUST NOT be reachable from any member client.
 - **No member-private conversations.** Member-private sessions and the
   member-private Co-Founder conversation are withdrawn. Members MAY hold
   member-private facts in the Company File; an agent uses them only to think
-  and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
+  and MUST NOT repeat them into a shared thread. On the company folder
+  (`folder-v2`) there is no `members/` folder, so no member-private files
+  (decided 3 October 2026, the coordinator at Jonas's request): personal
+  settings stay in the database. §14.2's separate one-to-one
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did. Team rooms (group chats) accept the same since 2026-09-27
@@ -2622,7 +2664,10 @@ placements that depended on them.
    document keeps its `grants.responsibilities` key, ignored, so no stored
    document becomes invalid, and the organization read model still answers an
    empty `responsibilities` list so every client keeps parsing.
-7. **Tools are the intended replacement for live measurement.** The part of
+7. **Superseded 2026-10-02 by the
+   [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder):
+   pages are files drawn from fixed building blocks, and no page code runs.**
+   **Tools are the intended replacement for live measurement.** The part of
    the old model worth keeping is that people can see how the things they care
    about are going. The planned form is a second kind of item beside agents:
    **tools**, internal apps and dashboards hosted in the Company File, possibly
@@ -2918,6 +2963,11 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    personal rules of the member the run works for), never the agent's own
    words or any tool result, and answers allow, ask or deny. A review that cannot
    run is never an approval: the call does not run.
+   Amended 2026-10-02 (not built yet): a quote of outside content inside a
+   member's message is not what the member asked for, and the reviewer never
+   reads the quoted words. See the [quote provenance
+   amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
+   item 5.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -4012,6 +4062,439 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    recorded for a request that never left.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
+
+### 2026-10-02 amendment: work for people
+
+Proposed 2 October 2026 (F2, step H1). Approved 3 October 2026 by the
+coordinator at Jonas's request; Jonas approved item 5 on 2 October. Items 1–4
+write into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page
+"Qorpera on Qorpera", section 5) and widen 16.1's last step. The folder names
+`human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
+and can still be renamed. Formats:
+`deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2.
+
+1. **Physical work is a file.** Work only a person can do (signing, paying,
+   posting letters, fitting hardware, a step a website demands of a person) is
+   a human task: `human-tasks/<task>.md`, with instructions a stranger could
+   follow, a checklist, a due date and the proof that counts as done. What the
+   person sends back lands beside it in `human-tasks/<task>/`. The task names
+   its person (a member, or a contact) and the agent that asked.
+2. **16.1's last step widens.** Step 6 reads: "a typed request to the
+   relevant member, or, for work only a person can do, a human task for a
+   member or a contact (5.6)". Cards stay for quick answers.
+3. **Outside people are contacts, never accounts.** `contacts/<contact>.md`
+   holds one person or firm the company deals with: name, organization, how to
+   reach them and what they may be asked to do. A contact reaches a task only
+   through a link to that one task, sent through a reviewed outside action. A
+   contact's proof and notes are outside content (11.1). A contact who asks to
+   be forgotten is erased with the folder core's erasure, widened from a
+   deleted agent's folder to any deleted path (core §8) before any link is
+   sent; free text that names the contact elsewhere is removed by a member.
+4. **No secret or delivery state in the folder.** A code a person enters goes
+   to the vault, bound to the task. A task link's token is kept only as a hash,
+   and an email's delivery is runtime state (5.6's list of what the database
+   holds).
+5. **5.6 changes with this amendment** (the tree and the seeded folders were
+   written into 5.6 on 2 October 2026, the rest into 5.6 and 16.1 on
+   3 October):
+   - the tree gains
+
+     ```
+     human-tasks/
+       <task>.md                work an agent hands to a member or a contact
+       <task>/                  what the person sends back: proof/ and note.md
+     contacts/
+       <contact>.md             one file per outside person or firm
+     ```
+
+   - "Structured files" gains task and contact files: a fixed format, with
+     their index once the folder core keeps it (H2);
+   - the platform seeds both folders when a company is created, and they join
+     the seeded folders that cannot be deleted or moved (Jonas, 2 October
+     2026; written into 5.6's tree and its list of seeded folders).
+6. **16.2 is unchanged here.** Turning the office sign-in handoff into a human
+   task (A1, company accounts) is for A1's own amendment.
+
+### 2026-10-02 amendment: interfaces project company state from the company folder
+
+Ratified 2 October 2026 (Jonas). He named Interfaces and set their direction:
+- the rail splits into Agents and Interfaces;
+- the first interfaces are Mailbox, Company Pulse and Members;
+- interfaces are pages built from TOML files in the company folder;
+- a marketplace comes later.
+
+The same day he approved the design page (https://claude.ai/artifact/PXouSQFWVSHTc6Vko3Gm7G) and its four decisions.
+
+This amendment:
+- extends 5.6, 14.5 and 16.2, section 17's payer rules, and the 2026-09-24 and 2026-09-25 amendments;
+- supersedes item 7 of the 2026-09-20 amendment.
+
+Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
+
+1. **An interface is a page the company keeps as a file.** `interfaces/<interface>/interface.toml` says what the page
+   shows, where each part reads from, which buttons it has and who sees it.
+   - The client draws it from a fixed set of building blocks that ship with the client.
+   - An interface holds no code: no script, style, markup or network request from a file runs in a member's browser
+     or on any Qorpera origin.
+   - Text a page shows from a file or an email is drawn without HTML and loads nothing from outside the company
+     folder.
+2. **An interface shows company state and decides nothing.** Like an index, it is read from files and says nothing the
+   files don't. It grants nothing:
+   - every part reads with the viewer's own authority (4.3), so a page shows a member or an agent only what they could
+     open themselves;
+   - `access` only narrows who sees a page;
+   - a part whose source does not exist is not drawn (the client contract's rule against rendering missing machinery,
+     `supabase/CLIENT-CONTRACT.md`).
+3. **Sources are a closed list.**
+   - From the folder: `vision`, a file, the indexes of structured files, and tables.
+   - From runtime state, through calls the member already has: members, agents working now, activity, and what waits
+     for the viewer.
+   - Mail:
+     - received mail is saved in the folder under `hooks/<hook>/` once the core's writer lands (2026-09-29 amendment,
+       items 6 and 9);
+     - sent mail is kept as files beside it (founder decision, 2 October 2026), where Q1's M2c puts it;
+     - until both are files, mail is read through a member read.
+   - Outside content (11.1), such as an email, stays marked as outside content wherever an interface shows it or a
+     button carries it.
+   - Mail the platform marks as sign-up or sign-in mail for a company account shows who used it, never its text.
+4. **Tables are company state.**
+   - A table is a folder, `tables/<table>/`, so creating, moving or deleting a table is one unit:
+     - `table.toml` defines it: its columns, its key and who writes it;
+     - `rows.csv` holds its rows: a structured file checked at every save against the definition (founder decision,
+       2 October 2026: rows in a file first), within the folder core's current bound for a checked file, which is
+       the core's and not a product limit (5.5).
+   - Deleting or moving `table.toml` or `rows.csv` on its own is refused; deleting the folder deletes the table.
+   - The rows name their columns in their first line, in any order, and may leave out optional ones.
+   - A definition change lands only if the rows it finds still fit. To add a required column, add it as optional,
+     fill the rows, then make it required. To remove one, make it optional, drop it from the rows, then remove it.
+     Each step is its own save, so the folder core's unit-by-unit commit never splits a change.
+   - The database holds rows only as the folder's index of those files (5.6).
+   - A table that outgrows a file waits for the company's table store. The store has its own amendment, which says
+     where it runs. Its rows belong to the company like the folder: they never go to the database, the folder gets a
+     snapshot at least daily, and deleting or erasing the company removes them.
+5. **Buttons are actions that already exist.**
+   - A button names one verb: open, message, add, set, take, offer, release or answer.
+   - Each verb is something the viewer can already do: post a message, save a file, or answer a card through its
+     existing state machine (16.2).
+   - A button runs as the viewer, under the same review as doing it by hand, and does no more than its verb. A
+     message button posts only after the viewer sends the prefilled text, and a value it fills in from outside content
+     travels as a marked quote, never as the viewer's own words. How it travels: the [quote provenance
+     amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
+   - The platform draws every confirmation. Money, sending and other outside effects keep their own review.
+6. **Nobody assigns anybody.** A member column marked `needs_yes` holds who has something: who holds a card, who owns
+   or supervises an area.
+   - **Take:** a member may put their own id in an empty cell.
+   - **Release:** a member may clear a cell that names them.
+   - **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member. The offer is a
+     request card (item 9) and changes nothing in the file. When the member says yes, the platform saves the change as
+     that member, and the save is allowed because the open offer names them.
+   - **Agents** act for their supervisor (item 10):
+     - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
+       what is empty;
+     - an agent never changes an area's owner, supervisor or agents.
+   - **Leaving:** when a member leaves the company, the platform clears the cells that name them, and the owners are
+     told.
+   - The save check refuses any other change to such a column, whoever makes it and however.
+7. **Agents use interfaces as members do.**
+   - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`).
+   - They create and change interfaces and tables with `save_interface`.
+   - The automatic review (2026-09-25 amendment) counts these as delegation:
+     - creating an interface;
+     - adding or changing a button, including a verb a block lists;
+     - changing `access`;
+     - creating a table, or changing its columns or writers.
+
+     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026). `save_interface` joins
+     the tools the review recorder (C2) records, and the review gate and the database classify each call by what it
+     changes. Until the review of changes no tool carried exists (C2's R2), an agent makes these changes only with
+     `save_interface`.
+   - Layout, wording, order and sources apply at once, whatever carries them. The agent's thread shows the change with
+     Undo, and it can be restored from the version history.
+   - Members' own changes are not reviewed.
+   - Coding sessions see `interfaces/` and table definitions read-only.
+8. **The rail has two tabs (amends 14.5).**
+   - Agents is the hierarchy 14.5 describes.
+   - Interfaces lists the company's active interfaces: the main interface on top, then the others in the order of
+     `interfaces/order.md`.
+   - An interface whose `needs` are not met is not listed.
+   - Pins and hiding are each member's own (2026-09-24 amendment, item 3).
+9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains an offer to a member of:
+   - a card;
+   - an area;
+   - the supervision of an area's agents;
+   - an agent joining a supervised area.
+
+   An offer waits durably for that member. Dismissal or no answer is never a yes (16.2).
+10. **Supervision (founder decision, 2 October 2026; amends section 17).**
+    - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
+      `tables/areas/rows.csv`, the seeded table the platform reads supervision from.
+    - **Work alone** is the agents' work that no member started: routines an agent set up for itself, event and
+      file-change wakes, and the wakes those runs start. Work a member started stays theirs (section 17).
+    - **What follows from it.** For the agents' work alone:
+      - their questions, and the review cards that go to the requester today, go to the supervisor;
+      - the supervisor's personal rules apply;
+      - the supervisor's own login pays, where section 17 lets it.
+
+      The recorded requester stays whoever caused the work (4.2). The supervisor is recorded as the payer and as the
+      one who gets the cards. Cards that go to owners and admins (company rules and built-in checks; 2026-09-25
+      amendment, item 5) still go to them.
+    - **What it changes in section 17.** For supervised agents it changes section 17's "An agent's standing execution
+      authority names a company account only; it never pays with a member's login." Every other rule of section 17
+      still decides which login may pay:
+      - a ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it
+        (2026-10-01 amendment), so it never pays for work alone. On a plan login, supervision brings the cards and
+        the personal rules; the payment follows today's rule;
+      - a Claude login never pays for agent work;
+      - work stops at a usage limit.
+
+      Where the supervisor's login may not pay, today's rule applies. A member's own messages still run on that
+      member's own account.
+    - **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings
+      in the database.
+      - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
+        `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to
+        the taker on the same screen.
+      - It can be withdrawn at any time. It ends when they release the area, when the area's row is deleted or its
+        key changes, or when they leave the company; the owners are told.
+      - A cell that names a member without a live consent record decides nothing.
+    - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
+      supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the
+      supervisor says yes. Agents never change `agents` (item 6).
+    - **One area per agent.** An agent sits in at most one area's `agents`, and the save check refuses a second.
+    - **What areas are not.** Areas grant nothing and are not the retired responsibility objects (2026-09-20
+      amendment, item 1).
+    - **Until it is built** (step I9b), today's rules apply.
+11. **Seeded interfaces and the library.**
+    - At founding the platform seeds `interfaces/` and `tables/` with:
+      - Pulse, the main interface, and its numbers table;
+      - Mailbox;
+      - Members, with its areas and cards tables.
+    - Each is copied from Qorpera's library and marked with where it came from.
+    - The main interface can be changed but not deleted.
+    - Adding a library interface later copies its files the same way, and the copy is the company's.
+    - A newer library version is offered, never applied by itself. A line both sides changed becomes a choice.
+    - The library holds only files of this format.
+12. **5.6 changes with this amendment.**
+    - The tree gains:
+
+      ```
+      interfaces/
+        order.md                 the order of the Interfaces tab
+        <interface>/
+          interface.toml         one page
+          README.md              what it is for (optional)
+      tables/
+        <table>/
+          table.toml             a table's columns, key and writers
+          rows.csv               its rows
+      ```
+
+    - "It holds all company state" gains one exception: rows in the table store (item 4).
+    - The database's list gains:
+      - each member's pins and hidden interfaces;
+      - their supervision consent records;
+      - open offers, as runtime state.
+    - "Structured files" gains interface files, `interfaces/order.md`, table definitions and table rows.
+    - The seeded folders that can't be deleted or moved gain:
+      - `interfaces/`, `interfaces/order.md`, and the main interface's folder and file;
+      - `tables/`, and the `tables/areas/` folder with its two files.
+    - The automatic review's list gains item 7's changes.
+    - Coding sessions see `interfaces/` and table definitions read-only, beside `agents/` and `rules/`.
+    - Until F2 writes these into 5.6's text with the save-hook step (I6), the note at the top of 5.6 points here.
+
+### 2026-10-02 amendment: light threads
+
+Founder decisions of 2 October 2026, and item 2's write tools on 3 October
+(the coordinator, at Jonas's request). First "light threads": a chat turn has
+no shell. Then, the same day: folders shared with only some agents are worked
+on from the agent's own machine (item 4); folder work runs offline (item 5); a
+company machine's reads go to the run (item 6); and the company machine's
+wake time is accepted (item 3).
+
+They amend these texts. Where older text conflicts with this amendment, this
+amendment governs.
+- The 2026-09-25 amendment, item 2: the computer shell as an outside effect.
+- The 2026-09-27 amendment "every machine works in the company folder", items
+  1, 2, 5 and 7.
+- The 2026-09-27 amendment "the company folder layout": item 2 and its
+  "Tools" paragraph.
+- The 2026-09-28 amendment "how machines reach the company folder", item 2.
+- The 2026-09-28 amendment "compute for agents":
+  - in item 2, the review of every computer shell command, its shared
+    localhost, and "the run box does not change";
+  - in item 4, "narrower folders are never mounted on a machine", and the
+    review of every command on a machine with the folder.
+
+1. **A chat turn has no shell.** A conversation turn runs on an execution
+   host with the model's harness and the runtime's tools only.
+   - No command box, shell or toolbox runs beside it.
+   - The run box keeps the meaning that "computer hours" and 7.4 give it:
+     where one run executes. It has no shell and no folder mount. This
+     replaces 27 September item 1's "agent run machines" that mount the
+     folder: the machines that mount it are those of item 3.
+   - An execution host grows only to hold more conversations at once.
+2. **The folder through the server.** In a turn, an agent lists, reads and
+   searches the company folder with server-side tools (`company_list`,
+   `company_read`, `company_search`).
+   - These tools act with the run's own folder view. A folder shared with only
+     some agents is there for those agents' runs (4.3).
+   - Each answer is an authorized read in the run's read set (27 September,
+     item 3). It is bound to the exact text the model is shown, as 9.1 fences
+     output, before the model sees it.
+   - Search runs on the node's folder service, not on the execution host.
+   - A turn writes through the mutation gateway with today's one-file Company
+     File tools (27 September, item 4).
+   - Decided 3 October 2026 (the coordinator, at Jonas's request): a turn
+     keeps the one-file write tools, and each write is a change set of one
+     unit through the mutation gateway. Changes of several files, and changes
+     a command makes, come from a machine's change set. A subtree move or
+     delete goes through the member route or a machine. 27 September item
+     2's retirement of the one-file tools is cancelled.
+3. **Commands run on machines.** Scripts, spreadsheets, documents and
+   conversions run on a machine the agent hands the work to:
+   - the company machine, which wakes on demand (its cold start, about 17
+     seconds, is accepted: founder, 2 October);
+   - a coding machine;
+   - or the agent's own machine (compute item 4).
+
+   Each machine shows the folder through its own folder program (28
+   September, item 1). The shell of 27 September item 2 is the machine's
+   shell. It holds no credentials (compute items 2 and 4), as 27 September
+   item 5 asked of the run box.
+4. **Folders shared with only some agents are worked on from the agent's own
+   machine.**
+   - An agent's own machine may mount the folder with the view of the run
+     working in it, so such a folder can be worked on there.
+   - This replaces compute item 4's "narrower folders are never mounted on a
+     machine", and 28 September item 2's "worked on from the agent's own run
+     box".
+   - The company machine stays company-wide (28 September, item 2: its
+     computers are not walls between agents).
+   - Open, to be settled before such a mount is built: who else may use a
+     machine while it carries such a view, and what members see of its
+     commands. Today compute item 4 lets any agent of the company use any
+     running machine.
+5. **Folder work runs offline.**
+   - On a machine that carries the company folder, a command that works in
+     the folder runs without network, in a network namespace of its own. It
+     has a loopback of its own.
+   - Such a command is not an outside effect. It runs at once, without the
+     review of outside effects. Its saves still pass the gateway, and its
+     deletes and moves pass the review as 27 September item 6 says.
+   - On such a machine, a command that needs the network is an outside effect
+     and passes the company's review rules (2026-09-25 amendment, item 2).
+   - This replaces:
+     - 27 September item 7 (no internet in the agent's shell, and the later
+       decision it left open);
+     - the 2026-09-25 amendment item 2's "the computer shell" as an outside
+       effect, which now holds only for a command that needs the network;
+     - compute item 2's review of every computer shell command, and its "the
+       run box does not change";
+     - compute item 4's review of every command on a machine with the folder.
+   - Open, to be settled before the folder is mounted on agents' own
+     machines: how the rule holds there, where commands run as root (compute
+     item 4) and a namespace alone does not hold them.
+   - Until the folder is on a machine, its commands keep today's rules: a
+     company machine's shell commands keep compute item 2's review, and
+     agents' own machines keep compute item 4's unreviewed commands. Coding
+     sessions keep their open network and stay unreviewed (27 September,
+     item 9).
+6. **Reads on the company machine go to the run.** A company machine gives
+   each shell command a folder mount of its own, owned by the run that
+   started it, beside the mount of the computer's desktop (the 28 September
+   design).
+   - A command's reads go to its run's read set (27 September, item 3).
+   - Its saves are attributed to its run (28 September, item 2).
+7. **Words.** In the folder texts this amends, a "run box" or "run machine"
+   that works on the folder means the agent's own machine (item 4 above).
+   Elsewhere, "run box" and "run machine" keep their meaning (item 1).
+
+### 2026-10-02 amendment: quoted outside content in a member's message
+
+Accepted by the runtime coordinator on 2 October 2026, to carry out the [interfaces
+amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)'s item 5: a value a
+message button fills in from outside content travels as a marked quote, never as the member's own words. Marks a
+person can see are not enough against instructions hidden in an email. So the message carries where each quote is,
+and the platform fences those words like a tool result. Not built yet. Until it is built, a message button fills in
+no value from outside content.
+
+It amends these texts. Where older text conflicts with this amendment, this amendment governs.
+- 9.2 (trust labels) and 11.1 (the inbound result fence): a quote inside a member's message is outside content.
+- The 2026-09-25 amendment, item 3: what the reviewer reads as "what the member asked for".
+- The 2026-10-02 interfaces amendment, item 5: how the marked quote travels.
+
+1. **A quote is a span of the member's text.** A member's message may carry `quotes`: a list of 1 to 16 spans,
+   each with exactly the keys `{start, end, source, ref}`.
+   - Both kinds of input take `quotes`: a conversation input and a room message, whose bodies are both
+     `qorpera.session-prompt/v1`.
+   - A message with no quotes leaves `quotes` out. An empty list is refused, since a repeated call compares bodies
+     exactly.
+   - `start` and `end` are whole numbers that count characters (Unicode code points) of `text`, from 0, with `end`
+     excluded and at most the text's length.
+   - The spans are in order and don't overlap. Each is 1 to 2,000 characters.
+   - Each span sits inside a pair of marks: the character before `start` is «, and the character at `end` is ».
+     The span covers the words inside the marks.
+   - `source` says where the words came from, from a closed list. Today that list is only `mail`.
+   - `ref` names the record. For `mail` it is the thread's id. It must be a thread that `qorpera_member_mail_thread`
+     shows this member, in the conversation's company and environment, with mail switched on.
+     - A thread that `qorpera_mail_thread_account` marks as account mail is refused like an unknown one: its text is
+       never shown (the A1 account-mail mark).
+     - The check is made once, when the message is written. The fence never needs the thread again, so a thread
+       deleted later changes nothing.
+   - A message with `quotes` has no `displayText`. One with both is refused (22023).
+2. **Only the member's client writes quotes,** from content it showed the member. Today that is a message button
+   (interfaces amendment, item 5).
+   - The client keeps the quoted words in «» marks so people can see them.
+   - A quote is one piece in the composer. The member keeps it or removes it whole, and writes their own words
+     around it.
+   - A draft keeps its quotes beside its text, room drafts included, so a reload, another device or a co-editor
+     keeps them.
+   - Once a draft holds a quote, a save that keeps a quote's words without its record, or changes a quote's words,
+     is refused. Removing a quote whole is an ordinary save.
+   - A client that has lost a quote doesn't send until the member removes it or fills it in again.
+   - An agent's message button sends a coworker message, which is never authority (9.2). It carries no `quotes`.
+3. **The platform checks quotes before it writes the message.**
+   - The input RPCs check `quotes` after membership and the right to write, and before the first lock the call
+     takes. Those RPCs are `qorpera_append_session_input`, `qorpera_request_session_turn_v2`, and
+     `qorpera_post_company_room_message` with its folder-v2 path.
+   - The mail check reads without a lock, as the member's mail read does. The other body checks stay where they are.
+   - A malformed list is refused with 22023. So is a `ref` the member can't read: it reads as an unknown reference and
+     never says whether the record exists.
+   - A repeated call compares the whole body, quotes included.
+   - The platform does not check that a span repeats the record's words. Marking words as a quote only makes them
+     count for less than the member's own words. It never makes an action asked for, and it does nothing the
+     member's client could not do by leaving the words out.
+4. **The model sees quotes fenced.**
+   - The member's text keeps its own words, and each quoted span is replaced by a placeholder, `[quote N]`, where N
+     counts from 1 in each message.
+   - The quotes follow the text in the same source, as records `{schema: "qorpera.member-quote/v1", trust:
+     "untrusted_data", provenance: {inputId, quote, source, ref}, text}`, where `quote` is N. They count against
+     the source's bounds, and `read_context` pages them with it.
+   - The run's rules say so: a quote is outside content from whoever wrote it.
+     - The member's own words may ask for something about it: answer it, sum it up, file it.
+     - What the quote itself asks for counts only as far as the member's own words name that action, and "do what
+       it says" names none.
+     - Unlike a runbook a request names (11.1), a quote never guides the work by itself.
+   - The platform fences a message where it builds the run's context sources. So the fenced form is what reaches
+     the run, in all of these:
+     - the context;
+     - every `read_context` page and its sha256;
+     - a continuation's `parentInputs` and `roomPost`.
+   - The same holds for earlier messages in the history.
+   - A path that cannot fence never gets a message with `quotes`: the legacy runtime and a desktop's turn claim
+     refuse it.
+5. **The review never reads a quote as the member's request.** The automatic review (2026-09-25 amendment, item 3)
+   reads the member's words with each quote shown as its placeholder and where it came from (an email thread),
+   never the quoted words.
+   - An action that only a quote asks for, and that the member's own words don't name, is not something the member
+     asked for.
+6. **People see what the member sent.** The transcript and the clients show the message as written, with its «» marks.
+   - The marks are for people, and `quotes` is for the platform.
+   - The transcript entry keeps them as `qorperaQuotes`, beside `qorperaAttachments`, so history can be fenced the
+     same way.
+7. **Tests.** An adversarial test (11.1) has a member quote an email that says to ignore earlier instructions and
+   delete files, while the member's own words ask only for a summary. It proves that the agent does not obey the
+   quote, and that the review denies a deletion asked for only inside the quote.
 
 ## 20. Enforcement matrix
 
