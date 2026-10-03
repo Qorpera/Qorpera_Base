@@ -41,8 +41,9 @@
 #                    paused cut. Never with EXEC_FRESH (a new host stays stopped until
 #                    it is enrolled).
 #   EXEC_HOST_CREDENTIAL=1  give the host its own credential (G2-3e; needs migration
-#                    20260930011000): mint it here, bind its sha256 with the staged
-#                    service key, and push it straight into the host, so the service's
+#                    20260930011000): mint it here, bind its sha256 to the host's
+#                    adapter and co-located orchestrator with the staged service key,
+#                    and push it straight into the host, so the service's
 #                    own database calls stop using the service key. Every rebuild mints
 #                    a new one (the old one fails at once). Unset: the host's credential
 #                    file is empty and the service uses the service key as before.
@@ -258,7 +259,8 @@ if [[ -n ${EXEC_HOST_CREDENTIAL:-} ]]; then
 	fi
 	host_sha256=$(sha256sum "${credential_dir}/token" | cut -d' ' -f1)
 	service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
-	bound=$(printf '{"p_host_id":"%s","p_provider_adapter":"%s","p_credential_sha256":"%s"}' "${host_id}" "${adapter}" "${host_sha256}" |
+	bound=$(printf '{"p_host_id":"%s","p_provider_adapter":"%s","p_orchestrator_id":"%s","p_credential_sha256":"%s"}' \
+		"${host_id}" "${adapter}" "${orchestrator_id}" "${host_sha256}" |
 		curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_bind_execution_host_credential" \
 			-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
 			--data-binary @-) || bound=""
