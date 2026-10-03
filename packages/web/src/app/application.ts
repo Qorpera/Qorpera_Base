@@ -31,7 +31,6 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
-import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
@@ -151,7 +150,6 @@ export function mountApplication(
 	let navigationFocus: "rail" | "toggle" | undefined;
 	/** Why the app could not start, when reading the cloud session failed. */
 	let startError: HTMLElement | undefined;
-	let unsubscribeFile: (() => void) | undefined;
 	let pendingCompany:
 		| { profileId: string; revision: number; promise: Promise<CompanyController | undefined> }
 		| undefined;
@@ -214,7 +212,6 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
-	let companyFile: CompanyFileController | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
@@ -351,10 +348,8 @@ export function mountApplication(
 		notices = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
-		unsubscribeFile?.();
 		conversation?.dispose();
 		newConversation?.dispose();
-		companyFile?.dispose();
 		liveFile?.dispose();
 		liveFile = undefined;
 		company?.stop();
@@ -362,7 +357,6 @@ export function mountApplication(
 		company = undefined;
 		computer = undefined;
 		computerPanels = undefined;
-		companyFile = undefined;
 		conversation = undefined;
 		newConversation = undefined;
 		homeReason = undefined;
@@ -476,9 +470,7 @@ export function mountApplication(
 			});
 			// Open computers outlive the thread they were opened in; leaving the company ends them.
 			computerPanels = new ComputerPanels(computer, controller.signal);
-			companyFile = new CompanyFileController(api, controller);
 			unsubscribeCompany = controller.store.subscribe(() => render());
-			unsubscribeFile = companyFile.store.subscribe(() => render());
 			void controller.start();
 			return controller;
 		})();
@@ -773,7 +765,6 @@ export function mountApplication(
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
-			companyFile?.dispose();
 			conversation?.dispose();
 			newConversation?.dispose();
 			// Revoked access ends every retained screen connection, not only the shown one.
@@ -1125,12 +1116,6 @@ export function mountApplication(
 				return;
 			}
 			case "file": {
-				if (route.id === "history") {
-					if (!companyFile) return;
-					companyFile.start();
-					renderCompanyFile(companyFile, controller, main, {});
-					return;
-				}
 				if (state.loading) {
 					replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening Company File"))));
 					return;
@@ -1183,24 +1168,19 @@ export function mountApplication(
 						},
 						state.team.capabilities.write,
 					);
-					liveFile = new LiveCompanyFileView(files, stop, controller.profile.profileId, authorityKey, () => {
-						if (stop.signal.aborted) return;
-						liveFile?.dispose();
-						liveFile = undefined;
-						render();
-					});
+					liveFile = new LiveCompanyFileView(
+						files,
+						stop,
+						authorityKey,
+						// The folder's changes name their members and agents.
+						() => ({
+							me: controller.userId,
+							members: controller.store.get().team?.members ?? [],
+							staff: controller.store.get().staff,
+						}),
+					);
 				}
 				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
-				return;
-			}
-			case "snapshot":
-			case "proposal": {
-				if (!companyFile) return;
-				companyFile.start();
-				renderCompanyFile(companyFile, controller, main, {
-					...(route.section === "snapshot" ? { snapshotId: route.id } : {}),
-					...(route.section === "proposal" ? { proposalId: route.id } : {}),
-				});
 				return;
 			}
 			case "meet":

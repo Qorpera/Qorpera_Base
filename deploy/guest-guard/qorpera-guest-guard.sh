@@ -174,14 +174,23 @@ summarize() {
 		}' | sort | uniq -c | sort -rn
 }
 
+# True when the rules list the agent exit's bridge (deploy/agent-exit) as a guest bridge. It must never be listed:
+# with br_netfilter, its machines' bridged traffic to the exit would be refused as a private destination. check and
+# verify say so; loading (boot, enforce) never stops on it, so a hand-edited rules file cannot leave a node without
+# the guard at boot.
+lists_agent_bridge() {
+	local names
+	names=$(set_elements guest_bridges | awk '{print $1}')
+	grep -qx qagent0 <<<"$names"
+}
+
 check() {
 	local status=0
 	batch enforce | nft -c -f /dev/stdin
 	echo "rules parse (both modes); current mode: $(current_mode); mode file: $(wanted_mode)"
 	compare_bridges || status=$?
-	# The agent exit's bridge must never be a guest bridge, whether or not it exists on this node yet. Only check
-	# says so: loading never stops on it, so a hand-edited rules file cannot leave a node without the guard at boot.
-	if grep -q '"qagent0"' "$rules"; then
+	# Whether or not the agent exit's bridge exists on this node yet.
+	if lists_agent_bridge; then
 		echo "MISMATCH bridge qagent0 is listed in the rules; it is the agent exit's bridge and must never be"
 		status=1
 	fi
@@ -231,6 +240,9 @@ verify)
 	echo "qorpera-guest-guard: loaded $actual, wanted $wanted; br_netfilter $netfilter"
 	[[ $actual == "$wanted" ]]
 	[[ $actual == "not loaded" || $netfilter == 1 ]]
+	if [[ $actual != "not loaded" ]] && lists_agent_bridge; then
+		die "bridge qagent0 is listed in the rules; it is the agent exit's bridge and must never be"
+	fi
 	# The comparison cannot run at boot (LXD creates the bridges later), so verify repeats it.
 	if [[ $actual == enforce ]]; then
 		compare_bridges >/dev/null || [[ $? -eq 2 ]] || {
