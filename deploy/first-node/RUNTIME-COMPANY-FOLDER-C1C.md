@@ -1080,6 +1080,39 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   against a vault change that now locks by id it can meet in the opposite order. A follow-up locks the agent's active
   grants by id first on `folder-v2`.
 
+### 6.8 C1c-3h as built: coding machines (migration 20260930002300, test 826)
+
+- **The company first, on the folder fence.** Every coding machine call that needs the company took the gc fence first
+  (runtime v123, 20260925123000), which locks the company row `FOR UPDATE`. On `folder-v2` these calls take 3f's
+  `qorpera_folder_machine_fence` in the same place: the folder fence `KEY SHARE`, then the company row `KEY SHARE`.
+  - A turn's admission to its machine (`authorize_coding_machine_run`) and a plan (`plan_coding_machine`) take it
+    before the worker and the session.
+  - A plan takes it again before it inserts a member's new machine. The gc fence did that so two new members could not
+    both upgrade a key share; `KEY SHARE` is never upgraded here.
+  - Sleep (`suspend_coding_machine`) and release (`release_coding_machine`) take it before the machine.
+- **The node reservation** (`reserve_runtime_node_machine`): 3f's folder branch now serves the coding kind as well as the
+  machine kind. Its callers above hold the folder fence already, so it never waits. Offices keep the gc fence (3j).
+- **What it means:** a folder effect (the fence and the company row `KEY SHARE`) never makes these calls wait (826 A).
+  A stop's second phase (the fence `FOR UPDATE`) makes them wait at the fence before any coding row or the company row
+  (826 B).
+- **The pause is not read before the fence**, as in 3f's machine paths. Under the gc fence a new caller queued behind a
+  waiting stop; under the fence `KEY SHARE` an admission or a plan that arrives after the pause is let in and makes the
+  stop's second phase wait until the reservation reads the pause and refuses. Core §9 and the inventory (§11) ask for
+  a pause check first: left for the load test (C1e), with 3f's paths.
+- **Until 3g:** a coding call holding the fence `KEY SHARE` can wait at the company row behind the deletion finisher,
+  whose purge wants the fence row (it deletes it by cascade): a 40P01 that heals on retry, as §6.4 notes for 3f. 3g's
+  drain takes the fence `FOR UPDATE` before the company row and closes it.
+- **Snapshot-v1** keeps each statement in its `else` branch, so the activation markers of 20260925123000 stay in each
+  body. Each body reversed is master's text (826 D; the digests came from a test VM run of the reversal), and the
+  snapshot-v1 company still waits for a
+  holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
+  row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
+- **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
+  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event and worker drains.
+- **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
+  turn admission.
+- Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
+  lock and need no change; the secret broker's coding credential takes the company row `KEY SHARE` already (v123).
 ### 6.9 C1c-3g as built: deletion drains the folder fence (migration 20260930002500, test 828)
 
 - **The request** (`delete_hosted_profile`, `request_company_deletion`): on `folder-v2` the fence `FOR NO KEY UPDATE`,

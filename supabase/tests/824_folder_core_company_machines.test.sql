@@ -223,8 +223,9 @@ begin
 		current_setting('qorpera_test.envelope_sha'), v_result);
 end $$;
 
--- B2. The reservation's folder branch serves the machine kind only: a coding reservation for the folder-v2 company still
--- takes the gc fence (C1c-3h), so it waits for a holder of the company row KEY SHARE, and then refuses for its own reasons.
+-- B2. Since C1c-3h (20260930002300) the reservation's folder branch serves the coding kind too: a coding reservation for
+-- the folder-v2 company takes the folder fence and the company row KEY SHARE, so it does not wait for a holder of the row
+-- KEY SHARE, and refuses for its own reasons: a machine's placement is no coding allocation, so no reservation is had.
 do $$
 declare v_state text;
 begin
@@ -233,10 +234,13 @@ begin
 		(select placement.id from public.qorpera_company_machine_placements placement
 			where placement.machine_id = (pg_temp.machine('c-agent')).id and placement.removed_at is null),
 		'coding', 'machine-824', repeat('f', 64), repeat('0', 64), repeat('8', 64), 1000, 1073741824));
-	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'B2: a folder-v2 coding reservation keeps the gc fence'; end if;
-	perform pg_temp.release();
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
+		perform pg_temp.release();
+		raise exception 'B2: a folder-v2 coding reservation must not wait for the company row KEY SHARE'; end if;
 	v_state := pg_temp.outcome('fence_two');
-	if v_state not like '42501 %' then raise exception 'B2: the coding reservation refuses after the fence: %', v_state; end if;
+	perform pg_temp.release();
+	if v_state not like '42501 Company machine reservation unavailable%' then
+		raise exception 'B2: the coding reservation refuses after the fence: %', v_state; end if;
 end $$;
 
 -- C. Custody beside a folder effect: running, commands and the executor's authorization to run, none waiting. Suspend
@@ -566,6 +570,13 @@ insert into c1c3f_patches(fn, digest, patched, original) values
 			|| E'\t\tperform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);\n'
 			|| E'\t\tend if;\n',
 			E'\t\tperform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);\n'),
+		-- C1c-3h (20260930002300) widened the reservation's folder branch to the coding kind: reversed first.
+		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
+			E' -- every caller. C1c-3h (20260930002300): the coding kind takes it too; office (C1c-3j) reservations still come\n'
+			|| E' -- with the gc fence.\n'
+			|| E' if p_provider_kind in (''machine'', ''coding'') and public.qorpera_company_is_folder_v2(v_profile) then\n',
+			E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
+			|| E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n'),
 		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
 			E' -- C1c-3f (20260930002000): a folder-v2 machine takes the folder fence and the company row KEY SHARE, held by\n'
 			|| E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
