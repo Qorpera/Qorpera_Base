@@ -92,7 +92,8 @@ declare v_routine uuid := pg_temp.routine('agent'); v_wake uuid;
 begin
 	perform pg_temp.path_claims('service_role');
 	v_wake := (pg_temp.restore(v_routine) ->> 'occurrence_id')::uuid;
-	perform pg_temp.fx(format('update public.qorpera_runner_jobs set status = %L, cancelled_by_user_id = %L where id = %L',
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set status = %L, cancelled_at = clock_timestamp(),
+		cancelled_by_user_id = %L, lease_token_sha256 = null, lease_expires_at = null where id = %L',
 		'cancelled', '63400000-0000-4000-8000-000000000002', w ->> 'jobId'));
 	perform pg_temp.fx(format('update public.qorpera_wake_occurrences set status = %L, run_id = %L where id = %L',
 		'failed', w ->> 'runId', v_wake));
