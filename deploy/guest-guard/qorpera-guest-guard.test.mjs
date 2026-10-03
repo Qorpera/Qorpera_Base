@@ -140,6 +140,19 @@ esac
 		const wronglyListed = run(["check"], { QORPERA_GUEST_GUARD_RULES: listed });
 		assert.equal(wronglyListed.status, 1);
 		assert.match(wronglyListed.stdout, /MISMATCH bridge qagent0 is listed in the rules/);
+		// Loading never stops on it (a node keeps its guard at boot); verify says so while the guard is loaded.
+		mode("enforce");
+		assert.equal(run(["enforce"], { QORPERA_GUEST_GUARD_RULES: listed }).status, 0, "enforce loads with qagent0 listed");
+		assert.equal(run(["boot"], { QORPERA_GUEST_GUARD_RULES: listed }).status, 0, "boot loads with qagent0 listed");
+		const listedVerify = run(["verify"], { QORPERA_GUEST_GUARD_RULES: listed });
+		assert.equal(listedVerify.status, 1);
+		assert.match(listedVerify.stderr, /bridge qagent0 is listed in the rules/);
+		assert.equal(run(["verify"]).status, 0, "the shipped rules do not list it");
+		const named = join(dir, "named.nft");
+		writeFileSync(named, rules.replace("table inet", '# "qagent0" is the agent exit\'s bridge.\ntable inet'));
+		assert.equal(run(["check"], { QORPERA_GUEST_GUARD_RULES: named }).status, 0, "a mention outside guest_bridges is fine");
+		mode(undefined);
+		run(["remove"]);
 
 		bridges({ qorpera0: { route: QORPERA0 }, docker0: {} });
 		const unguarded = run(["check"]);

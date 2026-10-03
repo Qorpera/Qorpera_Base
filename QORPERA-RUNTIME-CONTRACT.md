@@ -820,10 +820,10 @@ subscriptions, which self-limit.
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
 > leaves through the agent exit", section 19, item 9). It also holds the
-> exit's connection bounds, decided on 3 October: at most 16,384 open
-> connections per machine through the exit and 98,304 per node, an
-> infrastructure guard for the node's connection table, not a limit on the
-> work (item 4).
+> exit's connection bounds (decided by the runtime coordinator on 3 October;
+> Jonas may change them): at most 16,384 open connections per machine through
+> the exit and 98,304 per node, an infrastructure guard for the node's
+> connection table, not a limit on the work (item 4).
 
 ## 8. Wake bus
 

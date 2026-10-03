@@ -5,7 +5,10 @@
 # the exit a public address of its own and drops that rule.
 #
 # Load it with qorpera-agent-exit.sh. The same file runs on every node. Bridged traffic on qagent0 (an agent road
-# machine and the exit's br0) has qagent0 as both input and output interface and is never matched here.
+# machine and the exit's br0) has qagent0 as both input and output interface and is never matched by the forward
+# chain. The node does not track it either: the exit tracks every agent connection in its own namespace (and bounds
+# them there), and with br_netfilter the node's own table would otherwise hold a second entry for each one, and for
+# every attempt the exit refuses or drops, outside the exit's bounds.
 
 table inet qorpera_agent_exit_host {
 	set internal4 {
@@ -15,6 +18,11 @@ table inet qorpera_agent_exit_host {
 			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
 			192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 93.164.62.162
 		}
+	}
+
+	chain raw_prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		iifname "qagent0" notrack
 	}
 
 	chain forward {
@@ -33,6 +41,7 @@ table inet qorpera_agent_exit_host {
 
 	chain input {
 		type filter hook input priority filter - 5; policy accept;
+		# Untracked (everything from qagent0) is neither established nor related: dropped.
 		iifname { "qx-up", "qagent0" } ct state != { established, related } drop
 		ip saddr 10.209.255.0/30 iifname != "qx-up" drop
 	}

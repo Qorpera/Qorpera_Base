@@ -73,24 +73,28 @@ agent road machine only ever uses the exit of the node it runs on.
 - Every new connection is counted per client address, and each refused flow is kept an hour for the log (added once
   per hour, not refreshed on every hit; only a new flow spends a machine's share of the log, so repeats cannot hide
   other refusals).
-- Decided on 3 October (contract item 4): each client holds at most 16,384 open connections through the exit at once, and
-  the exit at most 98,304 in all; the per-machine bound is checked first. In phase 1 each agent connection takes two
-  entries in the node's connection table (262,144, read on both nodes on 2 October). The total bounds open
-  connections only: closed connections (120 seconds by default) and refused attempts (10 seconds for TCP, 30 for
-  UDP, 600 for other protocols) stay in the tables for a while. When one company reaches the total, every other
-  company's new connections on that node are refused until connections close. A Company Computer machine's
-  computers share one 16,384. A reload of the rules starts both counts from zero, and connections already open
-  are never counted (their packets pass before the bounds are checked). E2's proof on a node measures the tables
-  under such floods and the cost of the shared total, and if needed stops the node tracking bridged `qagent0`
-  traffic.
+- Decided by the runtime coordinator on 3 October (contract item 4; Jonas may change them): each client holds at
+  most 16,384 open connections through the exit at once, and the exit at most 98,304 in all; the per-machine bound
+  is checked first. In phase 1 each agent connection takes one entry in the exit's connection table and one, the
+  masqueraded leg, in the node's (262,144, read on both nodes on 2 October); the node does not track the bridged
+  leg (see the host's rules below). The total bounds open connections only: closed connections (120 seconds by
+  default) and refused attempts (10 seconds for TCP, 30 for UDP, 600 for other protocols) stay in the tables for a
+  while. When one company reaches the total, every other company's new connections on that node are refused until
+  connections close. A Company Computer machine's computers share one 16,384. A reload of the rules starts both
+  counts from zero, and connections already open are never counted (their packets pass before the bounds are
+  checked). E2's proof on LXD measures the tables under such floods and the cost of the shared total.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
 **Rules on the host (nftables, `inet qorpera_agent_exit_host`).** A second line: the host forwards from `qx-up`
 only to public addresses and never delivers anything from `qx-up` or `qagent0` to itself; nothing starts a connection
-into `qx-up`. It masquerades `10.209.255.2` out of the node's uplink (phase 1 only). No host rule matches bridged
-traffic on `qagent0`. With br_netfilter (on our nodes), traffic between an agent road machine and the exit's `br0`
-is bridged and passes the host's forward hook. That is why the guest guard must never list `qagent0`.
+into `qx-up`. It masquerades `10.209.255.2` out of the node's uplink (phase 1 only). With br_netfilter (on our
+nodes), traffic between an agent road machine and the exit's `br0` is bridged and passes the host's hooks. No host
+rule refuses it, and the host does not track it (`notrack` for everything that enters from `qagent0`, E2): the exit
+tracks and bounds each agent connection in its own namespace, and the node's table would otherwise hold a second
+entry for each one, and for every attempt the exit refuses or drops, outside the exit's bounds. Untracked packets
+are neither established nor related, so the host's own input still drops everything from `qagent0`. The guest
+guard must never list `qagent0`: it would refuse that bridged traffic as a private destination.
 
 **Name lookups and addresses (dnsmasq).** `dnsmasq-base` runs in `qexit` on `10.210.0.1`:
 - DHCP with static leases only, from a hosts directory the agent plug writes (§4);
@@ -104,8 +108,9 @@ lines (§7). When the kernel drops events under load, conntrack says so, and the
 **Units (proposed).**
 - `qorpera-agent-exit.service` (oneshot). Start builds or repairs the namespace, bridge, veths, addresses and rules.
   Reload does the same in place. Stop removes the exit and is refused while a machine is plugged in.
-- `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, wanted by it and ordered after it, but not
-  bound to it.
+- `qorpera-agent-exit-dns.service`, `qorpera-agent-exit-log.service` and `qorpera-agent-plug.service` (the agent
+  plug's reconciler, §4, after LXD), wanted by it and ordered after it, but not bound to it.
+- `qorpera-agent-exit-health.timer` runs `verify` every 10 seconds and writes its answer for the node observer.
 - The coordinator installs them with `deploy/agent-exit/install-agent-exit.sh`, and they stay disabled until a node
   is switched on. With a machine plugged in, stopping the exit's unit fails and changes nothing: the name and log
   services are not bound to it and keep running. The unit is then marked failed; `systemctl start` brings it back
@@ -126,24 +131,46 @@ bridge back to no forwarding.
 Running machines keep their links through it, so no company is paused. A change that would have to rebuild the
 namespace is not made while a machine is plugged in; the tool refuses it and has no override.
 
-**Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, both rule tables, dnsmasq and the
-logger's heartbeat. The node observer reports it, and placement gives agent road machines only to nodes with a
+**Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, both rule tables, dnsmasq (in the
+exit's current namespace), the logger's heartbeat and the agent plug's reconciler (alive, and the client map true to
+LXD, §4). The logger leaves by itself when its reader watches a namespace the exit replaced. The health timer writes
+`verify`'s answer to `/run/qorpera-agent-exit/health.json`, because the node observer has no capabilities and
+cannot run `verify` itself. The observer reports it, and placement gives agent road machines only to nodes with a
 healthy exit (E2).
 
 ## 4. The agent plug (E2)
 
 - An LXD NIC with `nictype: bridged` and `parent: qagent0`. It has `security.mac_filtering`,
-  `security.ipv4_filtering` and `security.port_isolation`, IPv6 off, and a static `ipv4.address` from the node's
-  pool in `10.210.0.0/16`.
+  `security.ipv4_filtering`, `security.ipv6_filtering` and `security.port_isolation`, `ipv6.address: none`, a
+  static `ipv4.address` from the node's pool in `10.210.0.0/16`, and a `hwaddr` made from that address
+  (`0e:51:` and the address's four bytes, a locally administered MAC). LXD needs the fixed address to filter IPv4
+  on a bridge it does not manage, so the address is part of the machine's config for its whole life.
 - The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact
   devices: `lxd-office-guest.ts`, `coding-machine.ts` and `company-machine.ts` each compare the NIC set they expect.
-  Legacy `coding-vm.ts` machines are retired, not moved.
-- One shared helper allocates the address and writes the DHCP lease and the client map entry (address → company,
-  machine, kind, member for coding machines, since).
+  The node inventory also pins a machine's devices when it first sees the machine, and a card changed later makes
+  the node unavailable; so E5 and E6 settle how coding machines and Company Computers that already exist are made
+  again with the plug. Legacy `coding-vm.ts` machines are retired, not moved. The Company Computer keeps its first
+  card, `network` on `qorpera0`, for its own services (the passthrough finds it by that name); the plug is its
+  second card.
+- One shared helper, `deploy/agent-exit/qorpera-agent-plug.py plug`, run by the creators (members of the group
+  `qorpera-agent-plug`) before they create a machine: it takes the lowest free address that is not in quarantine
+  (each entry is created exclusively, so two creators never share one), and writes the client map entry (address,
+  MAC, kind, company, machine, member for coding machines, LXD project and instance, since) and the DHCP lease,
+  which dnsmasq reads by itself. Asked again for the same instance, it gives the same answer.
+- The rest is the reconciler's, a root unit that reads LXD every 5 seconds. A creator makes no other call: sleeping,
+  waking and deleting need no hook, and a crash cannot leak an address. It checks every entry against its machine's
+  LXD config (the card, the company, the machine, the member), that a running machine's card is a port of
+  `qagent0`, and that every machine on `qagent0` has an entry; anything else makes the exit unhealthy. It writes a
+  plugged and an unplugged line for each entry to `clients-YYYY-MM-DD.jsonl` beside the flow log, so E3's lookup
+  ties an address to its company and machine also after the machine is gone.
 - A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
-  never hold its connection bound. When a machine goes away, its entry and lease are removed, its address's
-  connections are flushed, and the address stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so
-  late log lines are never given to the wrong company and the address is free again before it is reused.
+  never hold its connection bound. When a machine goes away (deleted, or never created within an hour of its plug),
+  its address is quarantined first, then its lease is removed (dnsmasq reloads), its connections are flushed and its
+  entry is removed. The address stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so late log
+  lines are never given to the wrong company and the address is free again before it is reused.
+- A flush ends the address's connections in the exit's table and their masqueraded twins in the node's (phase 1),
+  found through the exit's masqueraded port. Twins of other protocols than TCP, UDP and ICMP have no port to find
+  them by and end with their timeout.
 - "Plugged in" means any machine in the client map, running or asleep. E2's guard on removing the exit reads the
   client map, not only the bridge's ports (a sleeping machine has no port).
 - Machines move one kind at a time, each behind its own switch. A running machine moves the next time it starts.
@@ -289,9 +316,10 @@ allow = []             # used when mode is "only-listed"
     machine's network card is on the bridge. If repair fails, the operator moves the node's work as for any node
     fault.
 - **Uplink down.** The same as the exit being down.
-- **Log down (decided on 3 October).** Traffic continues, the exit's refusals stay in force, the time is a gap in
-  the log, and `verify` fails, with the consequences above (no new machines, a report to the operator). A short gap
-  in the log is preferred over cutting running work; the contract's item 10 says so, and Jonas may change it. The gap record written when the logger
+- **Log down (decided by the runtime coordinator on 3 October).** Traffic continues, the exit's refusals stay in
+  force, the time is a gap in the log, and `verify` fails, with the consequences above (no new machines, a report to
+  the operator). A short gap in the log is preferred over cutting running work; the contract's item 10 says so, and
+  Jonas may change it. The gap record written when the logger
   starts again carries `since` (its last heartbeat), so a lookup marks the whole outage as unknown; after a reboot
   there is no heartbeat, and the outage runs from the last line written. Other gap records (lost events, unlogged
   refusals) mark a moment; E3 reads them as unknown back to the line before.
@@ -317,3 +345,8 @@ allow = []             # used when mode is "only-listed"
 
 Each step is a small PR with an exact-head independent review and a `run-on-node.mjs changed` run on the node 2 test
 machine. The coordinator merges and installs.
+
+E2 lands in four PRs: E2a, the node's side (the plug tool and its reconciler, `notrack` for the bridged leg, the
+health file); E2b, the proof on LXD inside a test machine (the NIC filters, port isolation, the floods and the
+tables); E2c, the plug in the three creators' plans; E2d, exit health in placement, with one switch per machine
+kind, all off until E4–E6.

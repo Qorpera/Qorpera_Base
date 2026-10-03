@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Qorpera agent exit (E1): builds, checks or removes the exit on one node. Run as root.
+# Qorpera agent exit (E1, E2): builds, checks or removes the exit on one node. Run as root.
 #
 #   qorpera-agent-exit.sh check     parse both rule files against the kernel; change nothing
 #   qorpera-agent-exit.sh up        create or repair, in place: rules first, then namespace links, addresses, routes
 #   qorpera-agent-exit.sh down      remove all of it; refused while an agent road machine is plugged in (no override)
 #   qorpera-agent-exit.sh dns       run dnsmasq in the exit, in the foreground (the dns unit)
 #   qorpera-agent-exit.sh log       run the connection logger in the foreground (the log unit)
-#   qorpera-agent-exit.sh verify    exit 0 only when every part is up and the logger is alive
+#   qorpera-agent-exit.sh plug      run the agent plug's reconciler in the foreground (the plug unit)
+#   qorpera-agent-exit.sh verify    exit 0 only when every part is up, the logger is alive and the client map is true
+#   qorpera-agent-exit.sh health    write verify's answer to <run-dir>/health.json for the node observer
 #   qorpera-agent-exit.sh status    addresses, plugged-in machines and counters
 #
 # Layout (README.md): namespace qexit; bridge qagent0 on the node with no address; veth qx-br (node, a port of
@@ -22,6 +24,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 exit_rules=${QORPERA_AGENT_EXIT_RULES:-$here/qorpera-agent-exit.nft}
 host_rules=${QORPERA_AGENT_EXIT_HOST_RULES:-$here/qorpera-agent-exit-host.nft}
 logger=${QORPERA_AGENT_EXIT_LOGGER:-$here/qorpera-agent-exit-log.py}
+plug_tool=${QORPERA_AGENT_EXIT_PLUG:-$here/qorpera-agent-plug.py}
 upstreams=${QORPERA_AGENT_EXIT_UPSTREAMS:-9.9.9.9 1.1.1.1}
 run_dir=${QORPERA_AGENT_EXIT_RUN_DIR:-/run/qorpera-agent-exit}
 state_dir=${QORPERA_AGENT_EXIT_STATE_DIR:-/var/lib/qorpera-agent-exit}
@@ -35,11 +38,13 @@ UP_NODE=10.209.255.1
 UP_EXIT=10.209.255.2
 EXIT_TABLE="inet qorpera_agent_exit"
 HOST_TABLE="inet qorpera_agent_exit_host"
-# Leases are short so an address E2 quarantines (15 minutes) is free again before it is reused.
+# Leases are short so an address the agent plug quarantines (15 minutes) is free again before it is reused.
 LEASE=10m
+# Machine creators in this group may plug machines in (qorpera-agent-plug.py plug); everyone else only reads.
+PLUG_GROUP=qorpera-agent-plug
 
 usage() {
-	sed -n '4,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+	sed -n '4,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit 64
 }
 
@@ -81,9 +86,36 @@ host_link_settings() {
 		net.ipv6.conf.qx-br.disable_ipv6=1 net.ipv6.conf.qx-up.disable_ipv6=1 net.ipv4.conf.qx-up.rp_filter=1
 }
 
-up() {
-	install -d -m 0755 "$run_dir" "$state_dir" "$state_dir/dhcp-hosts"
+# The client map and the leases: creators in the plug group add files (setgid keeps the group, the sticky bit keeps
+# one creator from removing another's); only the reconciler, as root, removes them. dnsmasq reads the leases.
+state_dirs() {
+	install -d -m 0755 "$run_dir" "$state_dir" "$state_dir/quarantine" "$state_dir/seen" "$run_dir/plug-stopped"
 	install -d -m 0750 "$log_dir"
+	local dir
+	for dir in "$state_dir/clients" "$state_dir/dhcp-hosts"; do
+		if getent group "$PLUG_GROUP" >/dev/null; then
+			install -d -m 3775 -g "$PLUG_GROUP" "$dir"
+		else
+			install -d -m 0755 "$dir"
+		fi
+	done
+	[[ -e $state_dir/plug.lock ]] || install -m 0644 /dev/null "$state_dir/plug.lock"
+}
+
+# Client map entries: every machine plugged in, running or asleep (a sleeping machine has no port on the bridge).
+clients() {
+	find "$state_dir/clients" -maxdepth 1 -name '*.json' -printf '%f\n' 2>/dev/null | sed 's/\.json$//' | sort -V || true
+}
+
+# The network namespace of a running unit's main process, or nothing.
+unit_netns() {
+	local pid
+	pid=$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)
+	[[ -n $pid && $pid != 0 ]] && stat -L -c %i "/proc/$pid/ns/net" 2>/dev/null || true
+}
+
+up() {
+	state_dirs
 	# The exit starts before LXD, which would otherwise turn forwarding on. Turning it on resets every interface's own
 	# forwarding to 1, so the agents' bridge is set back to 0 below, after it.
 	[[ $(cat /proc/sys/net/ipv4/ip_forward) == 1 ]] || sysctl -qw net.ipv4.ip_forward=1
@@ -118,8 +150,17 @@ up() {
 	in_exit ip link set br0 up
 	in_exit ip link set up0 up
 	in_exit ip route replace default via "$UP_NODE" dev up0
-	if ((rebuilt)) && command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
-		systemctl try-restart --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service || true
+	if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+		# The name service lives in the namespace it started in. If that is not this one (a rebuild now, or one an
+		# earlier, interrupted up made), it restarts into this one. The logger checks its own reader (it exits when
+		# its reader watches an old namespace, and its unit restarts it).
+		local ns dns_ns
+		ns=$(stat -L -c %i "/run/netns/$NS")
+		dns_ns=$(unit_netns qorpera-agent-exit-dns.service)
+		if ((rebuilt)) || [[ -n $dns_ns && $dns_ns != "$ns" ]]; then
+			systemctl try-restart --no-block qorpera-agent-exit-dns.service || true
+		fi
+		((rebuilt)) && { systemctl try-restart --no-block qorpera-agent-exit-log.service || true; }
 	fi
 	echo "qorpera-agent-exit: up"
 }
@@ -128,12 +169,16 @@ plugged() { ip -o link show master "$BRIDGE" 2>/dev/null | awk -F': ' '{print $2
 
 down() {
 	local machines pid
+	machines=$(clients)
+	[[ -z $machines ]] ||
+		die "agent road machines are plugged in, running or asleep (client map: $(echo "$machines" | tr '\n' ' ')); the exit stays up"
 	if has_link "$BRIDGE"; then
 		machines=$(plugged)
 		[[ -z $machines ]] || die "agent road machines are plugged in ($(echo "$machines" | tr '\n' ' ')); the exit stays up"
 	fi
 	if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
-		systemctl stop --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service 2>/dev/null || true
+		systemctl stop --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service \
+			2>/dev/null || true
 	fi
 	if has_ns; then
 		for pid in $(ip netns pids "$NS"); do kill "$pid" 2>/dev/null || true; done
@@ -170,8 +215,13 @@ log() {
 	exec python3 "$logger" --netns "$NS" --log-dir "$log_dir" --heartbeat "$run_dir/logger.heartbeat"
 }
 
+plug() {
+	state_dirs
+	exec python3 "$plug_tool" reconcile --netns "$NS" --state-dir "$state_dir" --run-dir "$run_dir" --log-dir "$log_dir"
+}
+
 verify() {
-	local problems=() heartbeat age setting
+	local problems=() heartbeat age setting ns
 	has_ns || problems+=("no namespace $NS")
 	has_link "$BRIDGE" || problems+=("no bridge $BRIDGE")
 	if has_link "$BRIDGE"; then
@@ -188,6 +238,9 @@ verify() {
 		in_exit ip route show default 2>/dev/null | grep -q "via $UP_NODE" || problems+=("no default route via $UP_NODE")
 		in_exit nft list table $EXIT_TABLE >/dev/null 2>&1 || problems+=("exit rules not loaded")
 		in_exit ss -lnu 2>/dev/null | grep -q "$GATEWAY:53 " || problems+=("no DNS on $GATEWAY:53")
+		ns=$(stat -L -c %i "/run/netns/$NS")
+		[[ -z $(unit_netns qorpera-agent-exit-dns.service) || $(unit_netns qorpera-agent-exit-dns.service) == "$ns" ]] ||
+			problems+=("the name service runs in an old namespace")
 	fi
 	nft list table $HOST_TABLE >/dev/null 2>&1 || problems+=("node rules not loaded")
 	heartbeat="$run_dir/logger.heartbeat"
@@ -197,11 +250,44 @@ verify() {
 	else
 		problems+=("logger not running")
 	fi
+	# The agent plug's reconciler: alive, and the client map true to LXD (qorpera-agent-plug.py).
+	local plug_status="$run_dir/plug.json" problem
+	if [[ -e $plug_status ]]; then
+		age=$(($(date +%s) - $(stat -c %Y "$plug_status")))
+		((age < 30)) || problems+=("the agent plug's reconciler silent for ${age}s")
+		while IFS= read -r problem; do
+			[[ -z $problem ]] || problems+=("$problem")
+		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
+			"$plug_status" 2>/dev/null || echo "cannot read $plug_status")
+	else
+		problems+=("the agent plug's reconciler not running")
+	fi
 	if ((${#problems[@]} > 0)); then
 		printf 'qorpera-agent-exit: not healthy: %s\n' "${problems[@]}" >&2
 		return 1
 	fi
 	echo "qorpera-agent-exit: healthy"
+}
+
+# verify's answer as JSON for the node observer, which has no capabilities and cannot run verify itself.
+health() {
+	local report healthy=true
+	report=$(verify 2>&1) || healthy=false
+	install -d -m 0755 "$run_dir"
+	HEALTH_REPORT=$report python3 -c '
+import json, os, sys, time
+problems = [line.removeprefix("qorpera-agent-exit: not healthy: ") for line in os.environ["HEALTH_REPORT"].splitlines()
+            if line.startswith("qorpera-agent-exit: not healthy: ")]
+record = {"schema": "qorpera.agent-exit-health/v1", "healthy": sys.argv[2] == "true",
+          "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "problems": problems}
+tmp = sys.argv[1] + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(record, f, sort_keys=True)
+    f.write("\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, sys.argv[1])
+' "$run_dir/health.json" "$healthy"
+	[[ $healthy == true ]]
 }
 
 status() {
@@ -210,7 +296,8 @@ status() {
 		return
 	fi
 	in_exit ip -o -4 addr show | awk '{print $2, $4}'
-	echo "plugged in: $(plugged | tr '\n' ' ')"
+	echo "ports on $BRIDGE: $(plugged | tr '\n' ' ')"
+	echo "client map (running or asleep): $(clients | tr '\n' ' ')"
 	in_exit nft list counters table $EXIT_TABLE
 	in_exit nft list set $EXIT_TABLE new_by_client
 	in_exit nft list set $EXIT_TABLE refused_by_client
@@ -220,6 +307,8 @@ case "${1:-}" in
 check)
 	table_batch "$EXIT_TABLE" "$exit_rules" | nft -c -f /dev/stdin
 	table_batch "$HOST_TABLE" "$host_rules" | nft -c -f /dev/stdin
+	python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$logger" "$plug_tool" ||
+		die "the logger or the plug tool does not parse"
 	for tool in dnsmasq conntrack python3; do command -v "$tool" >/dev/null || die "missing $tool (packages: dnsmasq-base, conntrack, python3)"; done
 	echo "qorpera-agent-exit: rules parse; tools present; $(has_ns && echo up || echo down)"
 	;;
@@ -227,7 +316,9 @@ up) up ;;
 down) down ;;
 dns) dns ;;
 log) log ;;
+plug) plug ;;
 verify) verify ;;
+health) health ;;
 status) status ;;
 *) usage ;;
 esac
