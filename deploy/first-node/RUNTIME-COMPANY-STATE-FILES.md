@@ -323,15 +323,20 @@ closes the conversation; a restore reopens both, with the same conversation.
 - **Authority:** the vault and the operation grants stay in charge (contract 5.6). Every tool that acts on an account
   (open, fill, find, use, Disconnect) reads the vault, never this file: the file describes the account and may trail
   the vault by seconds.
-- **How it is written (P22, 3 October 2026):** a vault change on a company-owned connection of a folder-v2 environment
-  inserts a due mark in its own transaction (`qorpera_folder_connection_file_marks`, migration `20260930006000`): a
+- **How it is written (P22, 3 October 2026):** only the catalog's connectors (Gmail, Drive, GitHub …) and website
+  accounts have a file; a hook's signing secret and a secret card do not (the event intake describes hooks itself). A
+  vault change on such a company-owned connection of a folder-v2 environment inserts a due mark in its own transaction (`qorpera_folder_connection_file_marks`, migration `20260930006000`): a
   secret written or revoked, its account name changed, an operation grant on it given or withdrawn, a website
   account's status, login, site, two-step method or todo changed. The object gateway's writer claims a due connection
   (`qorpera_claim_connection_file`), gets what the file should say, built from an allow-list of the vault's fields only
   (never a secret, an envelope, a key or the vault's own purpose text), commits one unit as the platform with the
   operation key `connection-file:<secret>:<generation>` and the version it read (keeping the company's text below the
   settings; a member's edit meanwhile makes it read again), and finishes the claim
-  (`qorpera_finish_connection_file`). A revoked secret or a closed account means its file is deleted. A new file is
+  (`qorpera_finish_connection_file`); a claim never waits, and a writer makes one per transaction. A revoked secret or
+  a closed account means its file is deleted. `actions` lists the operations with an active, unexpired grant; an expiry
+  marks nothing, so the file shows an expired grant until the connection's next change.
+  `qorpera_mark_connection_files(environment)` marks every connection due at once, for a company whose vault held
+  connections before it became folder-v2. A new file is
   named after the site, or the connector (and the vault's name unless it is `primary`), in the name rule, with `-2`,
   `-3` … when the name is taken.
 - **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this

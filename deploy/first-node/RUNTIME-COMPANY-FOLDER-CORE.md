@@ -356,7 +356,8 @@ is never upgraded. The steps:
      insert-only mark), and the object gateway's writer commits the file as
      the platform afterwards, converging it to the vault's current rows (as
      "After the commit" below). So no vault change waits for, or fails on, a
-     file, and no vault row is locked in a commit.
+     file. (A commit can still write vault rows itself: hiring or archiving
+     an agent grants or revokes its operations.)
    - The commit then re-resolves every unit's covering resource and
      authorization after these locks. The check before the transaction was
      only advisory.
