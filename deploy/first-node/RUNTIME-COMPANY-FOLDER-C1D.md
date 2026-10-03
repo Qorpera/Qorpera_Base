@@ -254,10 +254,10 @@ runtime adapter, with no migration.
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
 - **Quota before the NAS write: done** (20260928309710). `_authorize_object_upload` checks the soft quota for an
   object the catalog lacks, so a company at its limit is refused before the gateway writes, and the confirm no longer
-  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop or a lock
+  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Settled by C1d-2c part 1 (below): a stop or a lock
   timeout at confirm (423 or 409, after the write) leaves the NAS file outside the catalog and the gateway's journal
-  entry `blocked` (it reports degraded), as on the native route; the gateway should drop that entry when confirm
-  refuses.
+  entry `blocked` (it reports degraded), as on the native route; the entry is kept, so the bytes stay tracked, and goes
+  after the grace window.
 - **Lock waits inside the deadlines: done** (20260928339780). The seven byte functions set `lock_timeout = '2s'`,
   below the PostgREST role's 8 s:
   - authorize, confirm and the download check, which the gateway calls with a 5 s deadline: a long wait ends as 55P03,
@@ -655,3 +655,30 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   racing the rename, the scan against a live lane, two lanes on one object, a re-upload while the replica is removed,
   the reconciler during quarantine, no NAS file, a deletion starting mid-lane, abandon on a lane error); the worker's
   folder phase; runtime QRC01; SQL 880 (the switch).
+
+**Built (C1d-2c part 1, migration 20260930009100, test 881; slice P12): bytes with no catalog row.**
+- `qorpera_folder_gc_catalog_state(profile, sha256)` (service role, plain reads, the 2 s budget) answers `catalogued`,
+  `other` (a company folder GC does not serve: snapshot-v1, mixed, being deleted, or purged), `listed` (no row, but an
+  upload intent that is open or ended less than the grace window ago lists it: the same window in which the intent
+  roots its objects) or `missing`.
+- The gateway's scan, after the quarantine, reads up to 500 journal entries per pass from a cursor and checks up to 50
+  `blocked` ones, each under the object's lock (an upload holds it from its put to its confirm), re-read there. A
+  `missing` object's entry first records `missingSince` (the gateway's clock; `folder_object_uncatalogued_found` in the
+  audit log); once it has been `missing` at every check, 10 minutes apart (or as soon after as the scan comes back to
+  it, which with thousands of blocked entries can take longer; an intent stays `listed` far longer still), for 24
+  hours, its NAS file and any Storage replica are removed and the entry dropped (`folder_object_uncatalogued_removed`).
+  Any other answer forgets `missingSince` (`folder_object_uncatalogued_cleared`), so the wait starts over; a stored
+  time more than 5 minutes ahead of the gateway's clock is marked again. `catalogued`, `other` and `listed` leave the
+  entry otherwise as it is. An upload that puts the object again rewrites the entry (`unconfirmed`, then `replicate`),
+  which ends the wait. An entry is asked about again only when due, 10 minutes after its last check (or at the end of
+  its 24 hours, if sooner), or at once when its `missingSince` changed meanwhile; the gateway keeps these times in
+  memory only for entries checked within the last 10 minutes (at most 10,000).
+- A deleted or purged company's blocked entries answer `other`, and the gateway reports them degraded, until part 2
+  (a deleted company's leftovers) takes them.
+- Rollout: unlike P11's lane, this pass runs from the gateway's first deploy with no switch (it is safe without one:
+  nothing committed points at bytes with no catalog row). The migration goes in before the gateway, or the scan reports
+  degraded while the function is missing.
+- This also settles C1d-1b's open follow-up (a stop or a lock timeout at confirm leaves the NAS file outside the catalog
+  and the entry `blocked`): the entry is kept, so the bytes are never untracked, and goes after the grace window.
+- Pending entries of objects the lane collected are dropped by the lane itself (`forgetLocked`); one that a crash left
+  behind becomes `blocked` at its next reconcile (the row is gone) and goes the same way.
