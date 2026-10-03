@@ -81,7 +81,7 @@ begin
 		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tif current_setting(''qorpera.folder_wake_admission'', true) is distinct from new.profile_id::text then\n'
 		|| E'\t\t\traise exception ''Folder wake admission is required'' using errcode = ''55000''; end if;\n'
-		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'') then\n'
+		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'', ''machine-checkin'') then\n'
 		|| E'\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n'
 		|| E'\telse\n'
 		|| E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'
