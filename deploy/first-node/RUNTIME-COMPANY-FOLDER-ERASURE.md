@@ -1,6 +1,6 @@
 # Company folder core: erasure (slice P18)
 
-Status: design, for review (round 2). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
+Status: design, for review (round 5). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
 F2 on 3 October 2026). Rules: contract 5.6 ("Permanent erasure"), 14.1 (an agent's permanent deletion), the
 2026-10-02 amendment "work for people" item 3, core §8 ("Erasure"), C1D §9.4 (when a root ends). Evidence:
 `~/work/qorpera-folder-core-tools/reports/P18-erasure-inventory.md` (every column, reader and lock erasure meets) and
@@ -72,7 +72,7 @@ the root's cutoff, and its partner: the row of the other move op with the same `
 prior_version)`. A partner is **open** when it is not under a root before that root's cutoff:
 - a `move_in`'s open partner: the file's earlier life is at that source path;
 - a `move_out`'s open partner: its later life is at that target path. When that target key is live and its current
-  life's start (found as in §2.1) is this very `move_in`, or comes before it, the file was moved, not deleted: "this
+  life's start (found as in §2.1) is this very `move_in`, the file was moved, not deleted: "this
   file was moved to X, which is live; delete it first". Otherwise the target holds a past life the member can add.
 
 A partner already erased by an earlier erasure (no row) is closed. Subtree moves give each descendant its own pair;
@@ -82,7 +82,8 @@ the topmost paths to add (up to 20) and any live continuation. The member asks a
 renamed-then-deleted contact is erased whole, and the old name of a renamed live agent is refused. A chain through
 `agents/` cannot close until P18b. A copy (`copy`, prior null) starts its own history and is not followed: the request
 answers a warning with the live paths whose versions share an erased manifest (by the manifest index), so the member
-can erase copies too (the empty file's manifest is left out; deleted copies are found by adding their paths).
+can erase copies too (the empty file's manifest is left out). The same manifest query lists deleted copies, as paths
+the member may add.
 
 ### 2.4 Refused roots
 - under `agents/`, `rules/` or `tables/` until P18b (their index rows need §5's second table);
@@ -121,7 +122,7 @@ web's "Erase" is the Interfaces session's). In order:
 8. **Writes.** The erasure row and its needles (§4.1); §5's index rows; the claims step 5 inserted are deleted. No
    clock lock, no journal row, no fence (member commits take none; core §9 "reads and GC never").
 
-It returns `{erasureId, asOfSeq, roots: [{path, cutoffSeq, versions}], copies: [path]}`: the per-root count of versions
+It returns `{erasureId, asOfSeq, roots: [{path, cutoffSeq, cutoffUnit, versions}], copies: [path]}`: the per-root count of versions
 to erase, so a mistyped root shows as zero rather than completing silently (a root named only by refused saves has
 zero versions and still has its units scrubbed), and §2.3's copy warning.
 
@@ -129,11 +130,11 @@ zero versions and still has its units scrubbed), and §2.3's copy warning.
 
 ### 4.1 Tables and indexes (P18a's migration)
 - `qorpera_folder_erasures(id, environment_id → folder clock cascade, profile_id → profiles cascade, operation_key,
-  request_sha256, requested_by_user_id, requested_at, as_of_seq, as_of_at, roots jsonb ({key, cutoffSeq, cutoffAt}),
+  request_sha256, requested_by_user_id, requested_at, as_of_seq, as_of_at, roots jsonb ({key, cutoffSeq, cutoffUnit, cutoffAt}),
   state, counters, cursors, bytes_pending boolean, done_at)`; unique (environment_id, operation_key).
 - `qorpera_folder_erasure_needles(erasure_id → cascade, needle, cutoff_seq, cutoff_unit, cutoff_at)`: each root's and
-  each erased version's written path, and its first 100 characters, with the root's cutoff (phases 2 and 3).
-- `qorpera_folder_erasure_runs(erasure_id → cascade, run_id, state)`: the runs phase 3 scrubs, kept while a run is
+  each erased version's written path, and its first 100 characters, with the root's cutoff (phases 2 and 4).
+- `qorpera_folder_erasure_runs(erasure_id → cascade, run_id, state)`: the runs phase 4 scrubs, kept while a run is
   live or a card open.
 - `qorpera_folder_erasure_hashes(erasure_id → cascade, sha256)`: manifests and chunks whose roots the erasure ended,
   waiting for phase 5 (§4.3).
@@ -156,8 +157,8 @@ step, which is harmless). pg_cron runs it every 5 seconds (`'5 seconds'`, one `s
 public.qorpera_folder_erasure_step(1000, 1000, 2000)` per tick; no procedure, since one that commits can be neither
 security definer nor carry `set`). Like the repo's other cron functions it checks no JWT role and is revoked from
 `public, anon, authenticated, service_role` (20260930002600:141-197). Seconds schedules need pg_cron 1.5 or later
-(checked in production before the cut), and about 17,000 `cron.job_run_details` rows a day join the existing cleanup
-of that table (or the job runs with run logging off). A large agent folder (50,000 versions, 1,000 per
+(checked in production before the cut). It writes about 17,000 `cron.job_run_details` rows a day; P18a's migration
+schedules their cleanup (a daily delete of this job's rows older than a day), since `cron.log_run` is cluster-wide. A large agent folder (50,000 versions, 1,000 per
 step) takes about four minutes; the commit scan of a large environment takes longer (§4.3), and status shows it.
 
 `qorpera_folder_erasure_status(p_environment_id, p_actor, p_erasure_id)` (service role, through the member route, for
@@ -170,7 +171,8 @@ through the side rows' foreign key; phase 4's rows are run-owned and taken `SKIP
 step works on the first unfinished one:
 1. **Versions.** Up to `p_versions` rows under each root before its cutoff, by the key index; their manifests and
    chunks (by the new chunk index) go to the erasure's hash table; their written paths go to the needles; the run ids
-   of their commits are noted for phase 3; the rows are deleted.
+   of their commits are noted for phase 4; the first erased version's time is kept on the erasure row (phase 3's lower
+   bound); the rows are deleted.
 2. **Commits.** All of the environment's commits before each root's cutoff, with no lower bound: saved ones by
    `(environment_id, seq)` (the cutoff's own commit only in units before its unit), unsaved ones by the new partial
    index created before the cutoff's commit (`as_of_at` for a deleted root); `p_commits` per step, by cursor. In each
@@ -180,28 +182,32 @@ step works on the first unfinished one:
    - in any other unit, a problem message containing a needle is blanked (`""`). Needles are paths only: every written
      spelling of an erased path and its first 100 characters (the rules quote `left(path, 100)`). A bare file stem
      would blank unrelated text, so it is not one.
-   A commit whose units were scrubbed or blanked has its run noted for phase 3.
+   A commit whose units were scrubbed or blanked has its run noted for phase 4.
    The unit keeps `unit`, `op`, `outcome`, `reason` and `version`: the runtime's strict parser accepts it on replay
    (`cloud-company-folder-client.ts:474-497`), and run completion reads `outcome` (20260928279600:170).
 3. **Runs that read.** The read records of the environment, by the new `(environment_id, created_at)` index from the
-   first erased version's time to the cutoff's time, `p_commits` per step: a run is noted when one of its reads names
-   an erased version.
-4. **Outside the folder tables** (§6), over the noted runs only.
+   first erased version's time to the cutoff's time, `p_commits` per step and at most 4 MiB of read records: a run is
+   noted when one of its reads names an erased version.
+4. **Outside the folder tables** (§6), over the noted runs only. One pass over them; a run still live, or with a card
+   still open, stays `pending` in the runs table and does not hold the phases after it.
 5. **Bytes (C1D §9.4).** When the company is one folder GC serves, up to `p_hashes` of the hash table, in
    `sha256 collate "C"` order, in a statement after the deletes: upsert `qorpera_folder_object_gc(profile, hash,
    now())` with `greatest`, where a catalog row exists and `qorpera_folder_object_rooted` is false; the hash rows go.
    When it is not (a mixed company; folder GC switched off), the hashes stay and the erasure ends with `bytes_pending`;
    the drain revisits such erasures once an hour and enqueues them once folder GC serves the company.
    The shared helper also serves the git-object exception (core §2), the other pruner of versions.
-6. **Done**, once no noted run is still pending (§6). The roots, the needles and the request digest are dropped from
-   the row; the counts stay. A replay of
+6. **Done**, once no noted run is pending and no byte is pending. Until then the erasure is revisited once an hour
+   (pending runs and pending bytes alike), so one erasure waiting for a card nobody answers never holds up the
+   others. The roots, the needles and the request digest are dropped from the row; the counts stay. A replay of
    the key after `done` answers the stored outcome without comparing paths.
 
 ## 5. Index rows
 
 The request (§3 steps 4, 7 and 8) handles every retired or archived index row that meets all three: its folder key is at or
 under a root; it is still retired; its retire commit (`folder_commit_id` or `commit_id`, which the retire writes,
-20260928259310:1274, :1295) is before the root's cutoff. A live root's current row is never a candidate. So no restore by id slips in between the request and the drain,
+20260928259310:1274, :1295) has seq at most the root's cutoff seq (an index row records the retiring commit, not its
+unit; a retired row is never the current life's, so the cutoff's own commit counts). A live root's current row is
+never a candidate. So no restore by id slips in between the request and the drain,
 and a later life's row is never touched.
 
 **P18a** (contacts, human tasks, connections):
@@ -237,7 +243,7 @@ listener's file-change wakes join before they hold paths.
 
 Rows are run-owned: phase 4 takes them `FOR NO KEY UPDATE SKIP LOCKED` and leaves a locked one for a later step. Each
 step reads at most 4 MiB of results. A noted run still live, or with a card still open, stays `pending` in the
-erasure's run table and is revisited; status shows them, and the erasure is `done` only when none is left.
+erasure's run table and is revisited hourly; status shows them, and the erasure is `done` only when none is left.
 
 | Copy | Proposal |
 | --- | --- |
@@ -264,9 +270,8 @@ delete is refused in practice by older links the structured-file hook writes (20
 
 ## 9. Tests (P18a)
 
-- Request: owner and admin only; a member's own private path; a live root with no past life refused; a root inside
-  another refused;
-  `agents/`, `rules/` and `tables/` refused; a live root with no past life refused; an unrevoked resource at or under a
+- Request: owner and admin only; a member's own private path; a root inside another refused; `agents/`, `rules/`
+  and `tables/` refused; a live root with no past life refused; an unrevoked resource at or under a
   deleted root refused (the environment's root resource never refuses; a live root's own resource never refuses);
   replay (also after `done`) and
   a key reused with other paths; the claims gone afterwards; a company being deleted refused; a concurrent create
