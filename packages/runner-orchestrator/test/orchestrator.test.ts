@@ -6,6 +6,7 @@ import {
 	CloudRunnerOrchestrator,
 	type CloudRunnerOrchestratorControlPlane,
 	CloudRunnerOrchestratorRequestError,
+	type CloudRunnerWork,
 	LocalCloudRunnerProviderAdapter,
 	SupabaseCloudRunnerOrchestratorControlPlane,
 	validateCloudRunnerWork,
@@ -71,6 +72,68 @@ function claim(): CloudRunnerOrchestrationClaim {
 			attempt: 1,
 		},
 	};
+}
+
+// The control plane's raw answer for a claim, with the work's columns overridden.
+function claimResponse(expected: CloudRunnerOrchestrationClaim = claim(), work: Record<string, unknown> = {}) {
+	const value = {
+		claim_id: expected.claimId,
+		orchestrator_id: expected.orchestratorId,
+		status: expected.status,
+		lease_expires_at: expected.leaseExpiresAt,
+		work: {
+			run_id: expected.work.runId,
+			job_id: expected.work.jobId,
+			profile_id: expected.work.profileId,
+			environment_id: expected.work.environmentId,
+			source_kind: expected.work.sourceKind,
+			source_id: expected.work.sourceId,
+			session_id: expected.work.sessionId,
+			substrate_version_id: expected.work.substrateVersionId,
+			company_snapshot_id: expected.work.companySnapshotId,
+			staff_agent_id: expected.work.staffAgentId,
+			staff_version: expected.work.staffVersion,
+			input_ids: expected.work.inputIds,
+			transcript_start_sequence: expected.work.transcriptStartSequence,
+			deadline_at: expected.work.deadlineAt,
+			required_capability: expected.work.requiredCapability,
+			job_type: expected.work.jobType,
+			payload: expected.work.payload,
+			publication_mode: expected.work.publicationMode,
+			review_policy_key: null,
+			reviewer_staff_ids: expected.work.reviewerStaffIds,
+			logical_computer_id: expected.work.logicalComputerId,
+			compute_identity_id: null,
+			worker_class: expected.work.workerClass,
+			requested_by_user_id: expected.work.requestedByUserId,
+			sponsored_by_user_id: null,
+			attempt: expected.work.attempt,
+			sponsor: {
+				binding_id: expected.work.sponsor.bindingId,
+				version: expected.work.sponsor.version,
+				kind: expected.work.sponsor.kind,
+				provider_connection_id: expected.work.sponsor.providerConnectionId,
+				provider_connection_version: expected.work.sponsor.providerConnectionVersion,
+				provider: expected.work.sponsor.provider,
+				authentication_mode: expected.work.sponsor.authenticationMode,
+				native_harness: expected.work.sponsor.nativeHarness,
+				allow_autonomous: expected.work.sponsor.allowAutonomous,
+			},
+			model_policy: {
+				allowed_models: [
+					{
+						provider: expected.work.modelPolicy.provider,
+						model: expected.work.modelPolicy.model,
+					},
+				],
+				max_calls: expected.work.modelPolicy.maxCalls,
+				max_input_tokens: expected.work.modelPolicy.maxInputTokens,
+				max_output_tokens: expected.work.modelPolicy.maxOutputTokens,
+				max_cost_microusd: expected.work.modelPolicy.maxCostMicrousd,
+			},
+		},
+	};
+	return { value: { ...value, work: { ...value.work, ...work } } };
 }
 
 function controlPlane(claimed: CloudRunnerOrchestrationClaim | undefined = claim()) {
@@ -1289,66 +1352,7 @@ describe("cloud runner orchestrator", () => {
 		const calls: Array<{ url: string; init?: RequestInit }> = [];
 		const fakeFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 			calls.push({ url: String(url), init });
-			const expected = claim();
-			return Response.json({
-				value: {
-					claim_id: expected.claimId,
-					orchestrator_id: expected.orchestratorId,
-					status: expected.status,
-					lease_expires_at: expected.leaseExpiresAt,
-					work: {
-						run_id: expected.work.runId,
-						job_id: expected.work.jobId,
-						profile_id: expected.work.profileId,
-						environment_id: expected.work.environmentId,
-						source_kind: expected.work.sourceKind,
-						source_id: expected.work.sourceId,
-						session_id: expected.work.sessionId,
-						substrate_version_id: expected.work.substrateVersionId,
-						company_snapshot_id: expected.work.companySnapshotId,
-						staff_agent_id: expected.work.staffAgentId,
-						staff_version: expected.work.staffVersion,
-						input_ids: expected.work.inputIds,
-						transcript_start_sequence: expected.work.transcriptStartSequence,
-						deadline_at: expected.work.deadlineAt,
-						required_capability: expected.work.requiredCapability,
-						job_type: expected.work.jobType,
-						payload: expected.work.payload,
-						publication_mode: expected.work.publicationMode,
-						review_policy_key: null,
-						reviewer_staff_ids: expected.work.reviewerStaffIds,
-						logical_computer_id: expected.work.logicalComputerId,
-						compute_identity_id: null,
-						worker_class: expected.work.workerClass,
-						requested_by_user_id: expected.work.requestedByUserId,
-						sponsored_by_user_id: null,
-						attempt: expected.work.attempt,
-						sponsor: {
-							binding_id: expected.work.sponsor.bindingId,
-							version: expected.work.sponsor.version,
-							kind: expected.work.sponsor.kind,
-							provider_connection_id: expected.work.sponsor.providerConnectionId,
-							provider_connection_version: expected.work.sponsor.providerConnectionVersion,
-							provider: expected.work.sponsor.provider,
-							authentication_mode: expected.work.sponsor.authenticationMode,
-							native_harness: expected.work.sponsor.nativeHarness,
-							allow_autonomous: expected.work.sponsor.allowAutonomous,
-						},
-						model_policy: {
-							allowed_models: [
-								{
-									provider: expected.work.modelPolicy.provider,
-									model: expected.work.modelPolicy.model,
-								},
-							],
-							max_calls: expected.work.modelPolicy.maxCalls,
-							max_input_tokens: expected.work.modelPolicy.maxInputTokens,
-							max_output_tokens: expected.work.modelPolicy.maxOutputTokens,
-							max_cost_microusd: expected.work.modelPolicy.maxCostMicrousd,
-						},
-					},
-				},
-			});
+			return Response.json(claimResponse());
 		});
 		const controlToken = "c".repeat(43);
 		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
@@ -1366,6 +1370,34 @@ describe("cloud runner orchestrator", () => {
 			init: { headers: { apikey: "publishable-key", authorization: `Bearer ${controlToken}` } },
 		});
 		expect(calls[0]?.init?.body).not.toContain(controlToken);
+	});
+
+	it("parses a folder-v2 run without snapshot or substrate ids, and refuses one without the other", async () => {
+		const answer = (work: Record<string, unknown>) =>
+			new SupabaseCloudRunnerOrchestratorControlPlane(
+				"https://project.supabase.co",
+				"publishable-key",
+				orchestratorId,
+				"c".repeat(43),
+				vi.fn(async () => Response.json(claimResponse(claim(), work))) as typeof fetch,
+			).claimNext(orchestratorId, claimId, 120);
+		const folderWork = Object.fromEntries(
+			Object.entries(claim().work).filter(([key]) => key !== "substrateVersionId" && key !== "companySnapshotId"),
+		) as CloudRunnerWork;
+
+		await expect(answer({ substrate_version_id: null, company_snapshot_id: null })).resolves.toEqual({
+			...claim(),
+			work: folderWork,
+		});
+		expect(() => validateCloudRunnerWork(folderWork)).not.toThrow();
+		await expect(answer({ substrate_version_id: null })).rejects.toThrow("invalid substrate version id");
+		await expect(answer({ company_snapshot_id: null })).rejects.toThrow("invalid Company File snapshot id");
+		expect(() =>
+			validateCloudRunnerWork({ ...folderWork, substrateVersionId: claim().work.substrateVersionId }),
+		).toThrow("go together");
+		expect(() => validateCloudRunnerWork({ ...claim().work, companySnapshotId: "not-a-uuid" })).toThrow(
+			"Company snapshot id is invalid",
+		);
 	});
 
 	it("recovers a lost control-token rotation response without storing plaintext in Supabase", async () => {
