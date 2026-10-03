@@ -125,7 +125,7 @@ async function released(
 ): Promise<CloudToolContent> {
 	if (!fitsOneResult(text))
 		throw new CloudToolRefusal(
-			"COMPANY_FILE_ANSWER_TOO_LONG: the answer for this path does not fit one tool result (its path is too long to show); nothing was read",
+			"COMPANY_FILE_ANSWER_TOO_LONG: a path in this answer is too long to show in one tool result, so nothing was read; find names with company_search (names_only)",
 		);
 	context.observation?.update({ outputBytes: Buffer.byteLength(text) });
 	if (reads.length === 0) return { kind: "text", value: text };
