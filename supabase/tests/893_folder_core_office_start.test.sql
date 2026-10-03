@@ -465,13 +465,13 @@ insert into c1c3j_patches(fn, digest, patched, original) values
 		E'profile_id=v_profile and state=''ready''\n'
 			|| E'\t\t\t\t\tand (path_gateway_version=1 or core=''folder-v2'' /* C1c-3j 20260930012000 */))\n',
 		E'profile_id=v_profile and state=''ready'' and path_gateway_version=1)\n'),
-	('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', 'fd61162fa752ec860a9b936499a6e523',
-		E' -- C1c-3f (20260930002000) and C1c-3j (20260930012000): a folder-v2 machine or office takes the folder fence and\n'
-			|| E' -- the company row KEY SHARE, held by every caller; coding (C1c-3h) still comes with the gc fence.\n'
-			|| E' if p_provider_kind in (''machine'',''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n',
-		E' -- C1c-3f (20260930002000): a folder-v2 machine takes the folder fence and the company row KEY SHARE, held by\n'
-			|| E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
-			|| E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n'),
+	('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '217f50b5f10248728c2c6e9506c54d2b',
+		E' -- every caller. C1c-3h (20260930002300): the coding kind takes it too, and C1c-3j (20260930012000) the\n'
+			|| E' -- office kind.\n'
+			|| E' if p_provider_kind in (''machine'', ''coding'', ''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n',
+		E' -- every caller. C1c-3h (20260930002300): the coding kind takes it too; office (C1c-3j) reservations still come\n'
+			|| E' -- with the gc fence.\n'
+			|| E' if p_provider_kind in (''machine'', ''coding'') and public.qorpera_company_is_folder_v2(v_profile) then\n'),
 	('public.qorpera_request_runtime_office_start(jsonb,bigint,uuid)', '82050e4ef90b05627a204faf7a5cb8a0',
 		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
 			|| E'\t-- start-source check shares, before the office.\n'
