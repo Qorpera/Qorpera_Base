@@ -86,7 +86,7 @@ can erase copies too (the empty file's manifest is left out). The same manifest 
 the member may add.
 
 ### 2.4 Refused roots
-- under `agents/`, `rules/` or `tables/` until P18b (their index rows need §5's second table);
+- under `tables/` until I6 (P18a also refused `agents/` and `rules/`; P18b, §11, erases them);
 - `members/<id>/private/**`, except by that member: a private resource is its owner's alone (20260928249000:86-95);
 - an unrevoked path resource at or under a root (`qorpera_company_path_resources`): the member revokes it first;
 - a seeded folder itself (`contacts`, `human-tasks`, `connections`, …): it is never deleted.
@@ -201,7 +201,9 @@ step works on the first unfinished one:
    When it is not (a mixed company; folder GC switched off), the hashes stay and the erasure waits with `bytes_pending`;
    the drain revisits such erasures once an hour and enqueues them once folder GC serves the company.
    The shared helper also serves the git-object exception (core §2), the other pruner of versions.
-6. **Done**, once no noted run is pending and no byte is pending. Until then the erasure is revisited once an hour
+6. **Agents (P18b, §11).** The erased agents' office and browser grants are revoked, then the operations log's earlier
+   names, charters and conversation titles are scrubbed.
+7. **Done**, once no noted run is pending and no byte is pending. Until then the erasure is revisited once an hour
    (pending runs and pending bytes alike), so one erasure waiting for a card nobody answers never holds up the
    others. The roots, the needles and the request digest are dropped from the row; the counts stay. A replay of
    the key after `done` answers the stored outcome without comparing paths.
@@ -234,7 +236,8 @@ as the retire does, and its operations trigger takes the company's operation clo
 commit; `qorpera_company_operations`' earlier `staff_state` payloads of that agent (its charter history) are scrubbed
 to the placeholder, and their `content_sha256` recomputed. An erased id never comes back: the rules refuse it ("outside the company folder",
 20260928249020:468-469). Contract 14.1's dependent enforcement state goes with it: the agent's path grants, execution
-authorities and connector and office grants are deleted, the path grants through the authority journal
+authorities and connector grants are deleted, its office and browser grants revoked (decided 3 October: screens point at
+them), the path grants revoked through the authority journal
 (`qorpera_folder_authority_journal`, so live runs' rechecks see them go: grants at rank 7 and the clock last, so P18b,
 unlike P18a, writes a journal row). P18b's per-move-unit check of §2.3 and its
 lock placement (todos and rules after the paths, step 7) follow this design. P18b states each of these as a decision
@@ -412,12 +415,43 @@ What it does:
   `qorpera_folder_authority_journal`, as the folder clock is taken last, so live runs' rechecks see them go.
 - **The thread trigger** leaves an erased agent's thread to the erasure. Otherwise its own rename would re-add members
   and append a second title.
+- **Agent pairs' conversations** (review r1): a conversation between an erased agent and another is retitled as the
+  pair function titles it, with `Erased agent` for the erased side (`Erased agent & Otto`); its earlier titles are
+  scrubbed with the others.
+- **Indexed reads** (review r1): each kind's rows by folded path, with the range written out as P18a's versions are, and
+  an agent's connector grants by company and agent; 885 counts the ranges.
+- **Which rows, exactly:** `qorpera_folder_erasure_row_before`. A row's retire commit must come before the cutoff's
+  commit, or be that commit with the row's last written version before the cutoff position, so a row made and removed
+  inside the change set that starts a live root's current life stays with that life. P18a's index rows use it too.
+- **Path grants in every folder-v2 environment** of the company: locked per environment in environment order at ranks 6
+  and 7, revoked, and journalled per environment, with the folder clocks taken last in environment order. Grants on a
+  revoked resource are left as they are.
 - **The drain's phase 6:**
-  - It walks the company's operations log by sequence, 5,000 a step, up to where the log stood at the request, and
-    scrubs the earlier names, charters and chat titles.
-  - It then revokes the office access and browser grants, SKIP LOCKED. A row in use leaves the erasure waiting an hour.
+  - First it revokes the office access and browser grants, an agent at a time and only with every one of its rows in
+    hand (SKIP LOCKED). A row in use leaves that agent for the hourly revisit, and the company-wide office trigger finds
+    nothing left to change.
+  - Then it walks the company's operations log by sequence, up to 5,000 a step and within the step's 1 s / 4 MiB budget,
+    up to where the log stood at the request, and scrubs the earlier names, roles, charters and conversation titles.
   - Phase 7 is P18a's old phase 6.
+- **A restored agent keeps its earlier charters:** an agent deleted and restored with the same id is live, so it is no
+  candidate, and its `staff_state` history stays, though its file's past lives are erased (§5: a live root's current
+  row is never a candidate).
 - **P18a review r2 nits:** the card loop has its own cursor and budget check, a failing step raises a warning, and 883
   counts the key ranges in each function.
-- **Not tested yet:** P18b's request against a concurrent commit that restores or edits an agent, a chat or a routine
-  under a root, or that revokes its grants. As with P18a's §10 list, this comes before C4 wires the member route.
+- **Tests (885):**
+  - an erased agent, group chat, todo, routine and rule, with every placeholder and the versions' hashes;
+  - 14.1's deletes and revocations, with the narrowing journal row;
+  - the thread trigger staying out;
+  - the pair conversation retitled;
+  - a live agent-folder root, where Nova, now at Nora's path, keeps her row, her operations rows and her office access;
+  - all five kinds refused afterwards, with their messages;
+  - the operations-log scrub, with every row's hash matching its fields and Otto's and Nova's rows unchanged;
+  - two offices revoked;
+  - the key ranges.
+- **Not tested yet, before C4 wires the member route:**
+  - P18b's request against a concurrent commit that restores or edits an agent, a chat or a routine under a root, or
+    that revokes its grants;
+  - its QRC01 re-read for agents, chats and routines;
+  - phase 6 over several steps;
+  - the hourly wait while an office row is in use;
+  - a member-made routine's erasure.

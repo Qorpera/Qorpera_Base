@@ -87,6 +87,18 @@ begin
 		insert into public.qorpera_runtime_browser_grants(profile_id, office_id, staff_agent_id, profile_version, owner_membership_version, state)
 		values ('88500000-0000-4000-8000-0000000000f4', '88500000-0000-4000-8000-0000000000f3', '70700000-0000-4000-8000-0000000000a1',
 			1, 0, 'active')$q$);
+	-- A second office (the other environment's) with Nora's access, and her pair conversation with Otto.
+	perform pg_temp.fx($q$
+		insert into public.qorpera_runtime_offices(id, profile_id, environment_id, logical_computer_id, client_computer_id, image_sha256,
+			bootstrap_sha256, state, max_screens, created_by_user_id)
+		values ('88500000-0000-4000-8000-0000000000f7', '70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000022',
+			'88500000-0000-4000-8000-0000000000f8', '88500000-0000-4000-8000-0000000000f9', repeat('1', 64), repeat('2', 64), 'active', 1,
+			'70700000-0000-4000-8000-000000000001');
+		insert into public.qorpera_runtime_office_access(office_id, staff_agent_id, profile_id, state, capabilities, configured_by_user_id)
+		values ('88500000-0000-4000-8000-0000000000f7', '70700000-0000-4000-8000-0000000000a1', '70700000-0000-4000-8000-000000000010',
+			'active', '["shell"]', '70700000-0000-4000-8000-000000000001')$q$);
+	perform public.qorpera_agent_pair_session_internal('70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000020',
+		'70700000-0000-4000-8000-0000000000a1', '70700000-0000-4000-8000-0000000000a2', '70700000-0000-4000-8000-000000000001');
 	if not exists (select 1 from public.qorpera_staff_execution_authorities where staff_agent_id = '70700000-0000-4000-8000-0000000000a1')
 		or not exists (select 1 from public.qorpera_company_path_grants where principal_kind = 'staff_agent'
 			and principal_id = '70700000-0000-4000-8000-0000000000a1' and revoked_at is null)
@@ -103,6 +115,9 @@ begin
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	if (select folder_retired_at is null or employment_status <> 'archived' from public.qorpera_profile_staff
 			where staff_agent_id = '70700000-0000-4000-8000-0000000000a1') then raise exception 'Fixture: Nora is retired'; end if;
+	-- Nova moves into agents/nora: the root is live, and only its earlier life (Nora's) is erased.
+	r := pg_temp.commit(pg_temp.owner(), 'erase-agents-2b', jsonb_build_array(pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a3', 'Nova')));
+	perform pg_temp.expect(r, 1, 'saved');
 	-- A connector grant of hers, as archiving leaves it (revoked).
 	perform pg_temp.fx($q$
 		insert into public.qorpera_cloud_secret_operation_grants(id, profile_id, environment_id, secret_id, staff_agent_id, connector_id,
@@ -138,6 +153,13 @@ begin
 	if (select count(*) from public.qorpera_company_operations where entity_id = v_thread.session_id
 			and operation_type = 'session_state') <> v_ops + 1 then
 		raise exception 'The thread trigger left the erased agent''s thread alone'; end if;
+	if (select title from public.qorpera_shared_sessions where profile_id = '70700000-0000-4000-8000-000000000010'
+			and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key('70700000-0000-4000-8000-0000000000a1',
+				'70700000-0000-4000-8000-0000000000a2')) <> 'Erased agent & Otto' then
+		raise exception 'The pair conversation is titled with the erased side''s placeholder'; end if;
+	if (select (display_name, folder_path, folder_erased_at) is distinct from ('Nova', 'agents/nora/agent.md', null)
+			from public.qorpera_profile_staff where staff_agent_id = '70700000-0000-4000-8000-0000000000a3') then
+		raise exception 'The agent living at the root now is untouched'; end if;
 	select * into v_group from public.qorpera_company_rooms where room_key = 'chat-88500000-0000-4000-8000-0000000000d1';
 	if (v_group.name, v_group.purpose) is distinct from ('Erased group chat', 'Erased.') or v_group.folder_path is not null
 		or v_group.folder_erased_at is null
@@ -171,21 +193,26 @@ begin
 	perform set_config('qorpera_test.erasure', r ->> 'erasureId', true);
 end $$;
 
--- 3. An erased id never comes back -------------------------------------------------------------------------------------
+-- 3. An erased id never comes back: each kind's rule refuses it ----------------------------------------------------------
 
 do $$
 begin
 	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-4', jsonb_build_array(
-		pg_temp.hire('nora', '70700000-0000-4000-8000-0000000000a1', 'Nora')))),
+		pg_temp.hire('nora-again', '70700000-0000-4000-8000-0000000000a1', 'Nora')))),
 		'refused/this id belongs to an agent outside the company folder', 'the agent');
-	perform pg_temp.is(split_part(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-5', jsonb_build_array(
-		pg_temp.new_group('launch', '88500000-0000-4000-8000-0000000000d1', 'Launch', array['70700000-0000-4000-8000-0000000000a2', '70700000-0000-4000-8000-0000000000c0']::uuid[])))), '/', 1),
-		'refused', 'the group chat');
-	perform pg_temp.is(split_part(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-6', jsonb_build_array(
-		pg_temp.rule('no-maria', '88500000-0000-4000-8000-0000000000e1', 'ask-first', 'mail Maria')))), '/', 1), 'refused', 'the rule');
-	perform pg_temp.is(split_part(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-7', jsonb_build_array(
-		pg_temp.todo('agents/otto/todos/call-maria.md', '88500000-0000-4000-8000-0000000000c1', 'Call', 'open', null, '')))), '/', 1),
-		'refused', 'the todo');
+	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-5', jsonb_build_array(
+		pg_temp.new_group('launch', '88500000-0000-4000-8000-0000000000d1', 'Launch',
+			array['70700000-0000-4000-8000-0000000000a2', '70700000-0000-4000-8000-0000000000c0']::uuid[])))),
+		'refused/this id belongs to another conversation; give this group chat a new id', 'the group chat');
+	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-6', jsonb_build_array(
+		pg_temp.rule('no-maria', '88500000-0000-4000-8000-0000000000e1', 'ask-first', 'mail Maria')))),
+		'refused/this id belongs to another rule; give this rule a new id', 'the rule');
+	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-7', jsonb_build_array(
+		pg_temp.todo('agents/otto/todos/call-maria.md', '88500000-0000-4000-8000-0000000000c1', 'Call', 'open', null, '')))),
+		'refused/this id belongs to another todo; give this todo a new id', 'the todo');
+	perform pg_temp.is(pg_temp.outcome(pg_temp.commit(pg_temp.owner(), 'erase-agents-8', jsonb_build_array(
+		pg_temp.routine('agents/otto/routines/daily.md', pg_temp.rparse('88500000-0000-4000-8000-0000000000b1', 'Daily', pg_temp.every(60)))))),
+		'refused/this id belongs to another routine; give this routine a new id', 'the routine');
 end $$;
 
 -- 4. The drain: the operations log's earlier names, charters and titles, each row's hash recomputed; office and browser --
@@ -205,18 +232,37 @@ begin
 	if v.state <> 'done' or v.agents is not null then raise exception 'Done: %', row_to_json(v); end if;
 	if exists (select 1 from public.qorpera_company_operations o where o.profile_id = '70700000-0000-4000-8000-000000000010'
 			and ((o.operation_type = 'staff_state' and o.entity_id = '70700000-0000-4000-8000-0000000000a1'
-					and (o.payload ->> 'display_name' <> 'Erased agent' or o.payload ->> 'charter' <> 'Erased.'))
-				or (o.operation_type = 'session_state' and o.payload ->> 'title' in ('Nora', 'Launch with Nora')))) then
+					and (o.payload ->> 'display_name' <> 'Erased agent' or o.payload ->> 'charter' <> 'Erased.'
+						or o.payload ->> 'role' <> 'Erased'))
+				or (o.operation_type = 'session_state' and o.payload ->> 'title' in ('Nora', 'Launch with Nora', 'Nora & Otto')))) then
 		raise exception 'No earlier name, charter or title is left in the operations log'; end if;
 	for v_op in select * from public.qorpera_company_operations o where o.profile_id = '70700000-0000-4000-8000-000000000010'
 			and o.operation_type in ('staff_state', 'session_state') loop
 		if v_op.content_sha256 <> pg_temp.ops_hash(v_op) then
 			raise exception 'Every row''s hash matches its own fields (rows are not chained): %', v_op.sequence; end if;
 	end loop;
-	if (v.counts ->> 'operations')::integer < 2 then raise exception 'The scrubbed rows are counted: %', v.counts; end if;
-	if (select state from public.qorpera_runtime_office_access where office_id = '88500000-0000-4000-8000-0000000000f3') <> 'revoked'
-		or (select state from public.qorpera_runtime_browser_grants where office_id = '88500000-0000-4000-8000-0000000000f3') <> 'revoked' then
+	if (v.counts ->> 'operations')::integer < 3 then raise exception 'The scrubbed rows are counted: %', v.counts; end if;
+	-- Otto's and Nova's rows are theirs: not one of them changes.
+	if exists (select 1 from public.qorpera_company_operations o where o.profile_id = '70700000-0000-4000-8000-000000000010'
+			and o.operation_type = 'staff_state' and o.entity_id in ('70700000-0000-4000-8000-0000000000a2', '70700000-0000-4000-8000-0000000000a3')
+			and o.payload ->> 'display_name' not in ('Otto', 'Nova')) then
+		raise exception 'Other agents'' operations rows are left'; end if;
+	if exists (select 1 from public.qorpera_runtime_office_access where staff_agent_id = '70700000-0000-4000-8000-0000000000a1'
+			and state <> 'revoked')
+		or exists (select 1 from public.qorpera_runtime_browser_grants where staff_agent_id = '70700000-0000-4000-8000-0000000000a1'
+			and state <> 'revoked')
+		or exists (select 1 from public.qorpera_runtime_office_access where staff_agent_id = '70700000-0000-4000-8000-0000000000a3'
+			and state = 'revoked') then
 		raise exception 'Office and browser grants are revoked'; end if;
+end $$;
+
+-- 5. Each read of the request's rows by path writes the folded-key range out (the indexes 20260930009300 adds) -------------
+
+do $$
+begin
+	if (select (length(prosrc) - length(replace(prosrc, '.folder_path) collate "C" <', ''))) / length('.folder_path) collate "C" <')
+			from pg_proc where oid = 'public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure) < 8 then
+		raise exception 'The agents'', chats'', routines'', todos'' and rules'' reads write the key range out'; end if;
 end $$;
 
 rollback;
