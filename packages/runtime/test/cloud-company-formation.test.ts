@@ -53,7 +53,7 @@ describe("company formation keys", () => {
 		for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
 		expect(cofounder).toContain("Your first todo, Start with the founders, is to shape vision/vision.md with them");
 		expect(cofounder).toContain("done when every founder has agreed their part of the vision");
-		// The founders wrote the vision at the founding table: the first message builds on it.
+		// The founders wrote the vision at the founding table: the hello, after any acknowledgement, builds on it.
 		expect(cofounder).toContain(
 			"Before your hello (after any acknowledgement your reply policy asks for), read vision/vision.md",
 		);

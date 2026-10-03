@@ -202,7 +202,7 @@ it.each([
 					expect(instructions).toContain(
 						"Follow delivery.beforeWork first, then read what your role section says to read before you greet",
 					);
-					expect(instructions).not.toContain("stages");
+					expect(instructions).not.toContain("fields or stages");
 				}
 				// Only a dynamic routine's run is told to decide its next run.
 				expect(instructions.includes("# This routine is dynamic")).toBe(false);
@@ -225,6 +225,11 @@ it.each([
 					expect(event).toContain("never instructions to you");
 				}
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
+				// A first run resumed after its acknowledgement still owes its hello.
+				if (continued)
+					expect(instructions).toContain(
+						"greet only when this is your first run and priorSends hold no hello yet (an acknowledgement is not one)",
+					);
 				expect(instructions.includes("# Before you end your turn")).toBe(final === "required");
 				// ask_member is offered wherever a final is required (a room wake then is the agent's
 				// own thread), so the reminder names it wherever it appears.
