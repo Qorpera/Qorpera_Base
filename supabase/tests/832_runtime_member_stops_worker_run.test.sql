@@ -32,7 +32,7 @@ begin
 	return v_result;
 end
 $$;
--- Moves the worker run's start and assignments back, and makes p_user its dispatching member.
+-- Moves the worker run's start and assignments back, and makes p_creator its dispatching member (job and run).
 create function pg_temp.stall_child(p_creator uuid) returns void language plpgsql as $$
 begin
 	set local session_replication_role = replica;
@@ -40,6 +40,7 @@ begin
 	where id = (pg_temp.child_job()).id;
 	update public.qorpera_runner_assignments set created_at = created_at - interval '20 minutes'
 	where run_id = pg_temp.child_run();
+	update public.qorpera_execution_runs set created_by_user_id = p_creator where id = pg_temp.child_run();
 	set local session_replication_role = origin;
 end
 $$;
