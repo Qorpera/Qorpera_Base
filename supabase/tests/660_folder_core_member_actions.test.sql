@@ -38,16 +38,16 @@ begin
 	-- 20260928329660 checks the poster's membership before the fence; 20260930000100 checks a message's quotes after it.
 	perform pg_temp.guarded('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)',
 		'if public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_company_rooms where id = p_room_id)) then',
-		'9c1b2ea6418492cf3967e4a2489096ef');
+		'ab71465ab566ca5b259bc13a49d40e01');
 	-- 20260930000100 checks a message's quotes before the fence, in this input and in the second turn request.
 	perform pg_temp.guarded('public.qorpera_append_session_input(uuid,uuid,text,jsonb)',
-		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '8326a6f0fd448d01605014fe4a864790');
+		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '0e3fe4d2e8fc7e0b14643a7cc16d91e9');
 	-- 20260928319750 checks the caller's role before the session row lock in both turn requests; 20260928339820 checks the
 	-- private conversation's audience before it in the second.
 	perform pg_temp.guarded('public.qorpera_request_session_turn(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '3d34c736990ae3981be314a2f91f0865');
 	perform pg_temp.guarded('public.qorpera_request_session_turn_v2(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
-		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', 'e4a39a834261e4be9ee96aed358e7e77');
+		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', 'fc1bf9514b9ee54081c902dc2c58fbdd');
 	perform pg_temp.guarded('public.qorpera_begin_member_session_attachment_upload(uuid,uuid,text,bigint,text)',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', 'c0d997043587eef3b9aaf206ec40b426');
 	perform pg_temp.guarded('public.qorpera_stage_member_session_attachment(uuid,boolean)',

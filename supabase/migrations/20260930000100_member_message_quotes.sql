@@ -36,6 +36,7 @@ declare
 	v_previous_end bigint := -1;
 	v_thread public.qorpera_mail_threads%rowtype;
 begin
+	-- I5d-1 (20260930000100): the quote check, called before the first lock.
 	if jsonb_typeof(p_body) is distinct from 'object' or not p_body ? 'quotes' then return; end if;
 	v_quotes := p_body -> 'quotes';
 	if jsonb_typeof(v_quotes) is distinct from 'array' or jsonb_array_length(v_quotes) not between 1 and 16
@@ -96,6 +97,7 @@ declare
 	v_start integer;
 	v_end integer;
 begin
+	-- I5d-1 (20260930000100): the fenced form of a quoted message.
 	if jsonb_typeof(p_body) is distinct from 'object' or jsonb_typeof(p_body -> 'quotes') is distinct from 'array'
 		or jsonb_typeof(p_body -> 'text') is distinct from 'string' then return null; end if;
 	v_text := p_body ->> 'text';
@@ -134,6 +136,7 @@ select pg_temp.member_quotes_patch('public.qorpera_append_session_input(uuid,uui
 	perform public.qorpera_lock_profile_gc_fence(v_profile_id);
 $old$,
 	$new$	v_profile_id := public.qorpera_session_profile_for_write(p_session_id);
+	-- I5d-1 (20260930000100): a message's quotes, before the company fence.
 	perform public.qorpera_check_member_quotes(v_profile_id,
 		(select session.environment_id from public.qorpera_shared_sessions as session where session.id = p_session_id), p_body);
 	perform public.qorpera_lock_profile_gc_fence(v_profile_id);
@@ -152,7 +155,8 @@ select pg_temp.member_quotes_patch('public.qorpera_request_session_turn_v2(uuid,
 	where session.id = p_session_id
 	for update;
 $old$,
-	$new$	perform public.qorpera_check_member_quotes(
+	$new$	-- I5d-1 (20260930000100): a message's quotes, before the conversation's lock.
+	perform public.qorpera_check_member_quotes(
 		(select session.profile_id from public.qorpera_shared_sessions as session where session.id = p_session_id),
 		(select session.environment_id from public.qorpera_shared_sessions as session where session.id = p_session_id), p_body);
 	select session.* into v_session
@@ -165,7 +169,8 @@ $new$);
 select pg_temp.member_quotes_patch('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)',
 	$old$	perform public.qorpera_lock_profile_gc_fence((select profile_id from public.qorpera_company_rooms where id=p_room_id));
 $old$,
-	$new$	perform public.qorpera_check_member_quotes((select room.profile_id from public.qorpera_company_rooms as room where room.id = p_room_id),
+	$new$	-- I5d-1 (20260930000100): a message's quotes, before the company fence.
+	perform public.qorpera_check_member_quotes((select room.profile_id from public.qorpera_company_rooms as room where room.id = p_room_id),
 		(select room.environment_id from public.qorpera_company_rooms as room where room.id = p_room_id), p_body);
 	perform public.qorpera_lock_profile_gc_fence((select profile_id from public.qorpera_company_rooms where id=p_room_id));
 $new$);
@@ -184,7 +189,8 @@ $new$);
 select pg_temp.member_quotes_patch('public.qorpera_folder_post_room_message(uuid,uuid,jsonb,uuid,bigint)',
 	$old$	-- The room's agents, as the answering loop reads them.
 $old$,
-	$new$	perform public.qorpera_check_member_quotes(v_room.profile_id, v_room.environment_id, p_body);
+	$new$	-- I5d-1 (20260930000100): a message's quotes, before the folder's locks.
+	perform public.qorpera_check_member_quotes(v_room.profile_id, v_room.environment_id, p_body);
 	-- The room's agents, as the answering loop reads them.
 $new$);
 
@@ -195,7 +201,8 @@ select pg_temp.member_quotes_patch('public.qorpera_append_admitted_input_events(
 			);
 $old$,
 	$new$					'qorperaAttachments', v_images
-				) || case when jsonb_typeof(v_input.body -> 'quotes') = 'array'
+				) -- I5d-1 (20260930000100): the quotes beside the attachments.
+				|| case when jsonb_typeof(v_input.body -> 'quotes') = 'array'
 					then jsonb_build_object('qorperaQuotes', v_input.body -> 'quotes') else '{}'::jsonb end
 			);
 $new$);
@@ -204,14 +211,15 @@ $new$);
 select pg_temp.member_quotes_patch('public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)',
 	$old$		v_text := case when jsonb_typeof(v_input.body -> 'text') = 'string' then v_input.body ->> 'text' else v_input.body::text end;
 $old$,
-	$new$		v_text := coalesce(public.qorpera_member_message_fenced(v_input.id, v_input.body)::text,
+	$new$		-- I5d-1 (20260930000100): a quoted input in its fenced form.
+		v_text := coalesce(public.qorpera_member_message_fenced(v_input.id, v_input.body)::text,
 			case when jsonb_typeof(v_input.body -> 'text') = 'string' then v_input.body ->> 'text' else v_input.body::text end);
 $new$);
 select pg_temp.member_quotes_patch('public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)',
 	$old$		v_text := v_event.body::text;
 $old$,
 	$new$		v_text := v_event.body::text;
-		-- An earlier quoted message: its entry carries the member's words with placeholders and the quote records.
+		-- I5d-1 (20260930000100): an earlier quoted message: its entry carries the member's words with placeholders and the quote records.
 		if v_kind = 'historical_human_message' and public.qorpera_member_message_fenced(v_input.id, v_input.body) is not null then
 			v_text := jsonb_set(jsonb_set(v_event.body, '{entry,message,content}',
 					jsonb_build_array(jsonb_build_object('type', 'text',
@@ -223,7 +231,7 @@ $new$);
 -- A continuation carries the room post that woke it fenced as well.
 select pg_temp.member_quotes_patch(continuation_function,
 	$old$'roomPost',(select jsonb_build_object('kind','historical_room_input','id',id,'authorUserId',author_user_id,'body',body)$old$,
-	$new$'roomPost',(select jsonb_build_object('kind','historical_room_input','id',id,'authorUserId',author_user_id,'body',
+	$new$'roomPost',(select jsonb_build_object('kind','historical_room_input','id',id,'authorUserId',author_user_id,'body', /* I5d-1 (20260930000100) */
 		case when public.qorpera_member_message_fenced(id, body) is null then body
 			else body - 'text' - 'quotes' || public.qorpera_member_message_fenced(id, body) end)$new$)
 from unnest(array[
@@ -236,7 +244,8 @@ from unnest(array[
 select pg_temp.member_quotes_patch('public.qorpera_claim_session_turn(uuid,uuid,integer,uuid,bigint)',
 	$old$	with pending as (
 $old$,
-	$new$	if exists (select 1 from public.qorpera_session_inputs as input
+	$new$	-- I5d-1 (20260930000100): a desktop can't fence a quoted message.
+	if exists (select 1 from public.qorpera_session_inputs as input
 		where input.session_id = p_session_id and input.completed_at is null and input.failed_at is null
 			and input.body ? 'quotes') then
 		return jsonb_build_object('claimed', false, 'reason', 'quotes-need-a-cloud-run');
