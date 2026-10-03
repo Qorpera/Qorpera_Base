@@ -483,3 +483,21 @@ describe("connection file writer, review round 2", () => {
 		expect([handled, claims]).toEqual([1, 1]);
 	});
 });
+
+describe("connection file writer, review round 3", () => {
+	it("maps an unreadable reason on the delete path to refused", async () => {
+		const run = folder({ outcomes: [{ outcome: "refused", reason: "Gone? Maybe!" }] });
+		const current = run.existing("connections/gmail.md", writeConnectionFile({ ...gmailSettings, purpose: "" }));
+		run.queue(claim({ present: false, settings: null, path: null, current }));
+		await run.writer.writeOne();
+		expect(run.finishes()).toEqual(["refused"]);
+	});
+
+	it("takes no claim once the drain's deadline has passed", async () => {
+		const run = folder({ claims: [claim()] });
+		const controller = new AbortController();
+		controller.abort();
+		expect(await run.writer.writeDue(10, controller.signal)).toBe(0);
+		expect(run.calls).toHaveLength(0);
+	});
+});

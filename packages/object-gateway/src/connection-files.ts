@@ -64,7 +64,8 @@ const MEDIA_TYPE = "text/markdown";
 const MAX_FILE_BYTES = 64 * 1024;
 /** A taken name is numbered -2, -3 …, at most this many times. */
 const NAME_TRIES = 20;
-/** A finish gets its own short deadline, so a drain that ran out of time still closes its claim. */
+/** A claim and a finish get their own short deadline, so a drain that ran out of time still takes and closes a claim
+ * whole. */
 const FINISH_MS = 15_000;
 
 export type ConnectionSettings = Omit<ConnectionFile, "kind" | "purpose">;
@@ -279,10 +280,12 @@ export class ConnectionFileWriter {
 
 	/** Claims one due connection and brings its file to the claim; false when nothing is due. */
 	async writeOne(signal: AbortSignal = AbortSignal.timeout(60_000)): Promise<boolean> {
+		// The claim gets its own short deadline, as the finish does: a drain whose budget ends during the call would
+		// otherwise reject a claim the database may already have committed.
 		const answer = await this.#options.authority.publisher(
 			"qorpera_claim_connection_file",
 			{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
-			signal,
+			AbortSignal.timeout(FINISH_MS),
 		);
 		let claim: ConnectionFileClaim | null;
 		try {
