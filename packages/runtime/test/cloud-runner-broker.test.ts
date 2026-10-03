@@ -1116,7 +1116,9 @@ describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 		const unsequenced = await folderBroker({ ...folder, run: { ...run, company_seq: null } }).broker.describe();
 		expect(unsequenced.run).not.toHaveProperty("companySeq");
 		for (const companySeq of [-1, 1.5, "7"]) {
-			await expect(folderBroker({ ...folder, run: { ...run, company_seq: companySeq } }).broker.describe()).rejects.toThrow();
+			await expect(
+				folderBroker({ ...folder, run: { ...run, company_seq: companySeq } }).broker.describe(),
+			).rejects.toThrow();
 		}
 		const transport = new MemoryBrokerTransport();
 		Object.assign(transport.description, {

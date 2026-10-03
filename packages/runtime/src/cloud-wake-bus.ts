@@ -288,7 +288,9 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		pins.wakeSchema !== CLOUD_WAKE_SCHEMA ||
 		pins.runtimeBundleVersion !== null ||
 		(pins.companySeq !== undefined &&
-			(!Number.isSafeInteger(pins.companySeq) || (pins.companySeq as number) < 0 || pins.companySnapshotId !== null)) ||
+			(!Number.isSafeInteger(pins.companySeq) ||
+				(pins.companySeq as number) < 0 ||
+				pins.companySnapshotId !== null)) ||
 		typeof source.occurrenceKey !== "string" ||
 		!source.occurrenceKey ||
 		Buffer.byteLength(source.occurrenceKey) > 256 ||
