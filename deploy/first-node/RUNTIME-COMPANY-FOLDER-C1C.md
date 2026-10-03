@@ -1151,8 +1151,10 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   for 3f's sweep (its fence `NOWAIT` skips a company whose purge holds the fence), and 3h's coding calls (§6.8).
 - **Snapshot-v1** keeps each statement in its `else` branch (828 C waits for a holder of its company row; 828 G reverses
   each body to master's text).
-- Not in 3g: `revoke_company_connector_secrets` locks secrets before grants, against 3d-2's grants-before-secrets order;
-  a broker seal (no fence) can meet it in 40P01 on either core. Account deletion stays an operator action (§6.6).
+- `revoke_company_connector_secrets` (the finisher's only caller) still locks secrets before grants, against 3d-2's
+  grants-before-secrets order, but a broker seal takes the company row `KEY SHARE` first (#660), and the finisher now
+  holds the row `FOR UPDATE` before it revokes (the gc fence on snapshot-v1), so the two meet at the row, not in a
+  40P01. Account deletion stays an operator action (§6.6).
 
 ## 7. Traps for C1c-2 and C1c-3
 
