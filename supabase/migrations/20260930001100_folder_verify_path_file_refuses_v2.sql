@@ -7,7 +7,8 @@
 --
 -- The refusal comes first after the authority check, before the gc fence (the company row FOR UPDATE), so a refused
 -- call takes no lock. It reads one row (qorpera_company_is_folder_v2) and raises 0A000 as the C1c-1 guards do for raw
--- object paths. Snapshot-v1 companies are unchanged. The body carries the marker 20260930001100 for release guards.
+-- object paths. Snapshot-v1 companies are unchanged. The body carries the marker 20260930001100 for release guards, and
+-- the exact text 'folder-v2 refuses version 1', which the folder GC phase's switch (P11, 20260930009000) requires.
 
 set local lock_timeout = '3s';
 
@@ -16,7 +17,8 @@ declare
 	v_definition text := pg_get_functiondef('public.qorpera_verify_company_path_file(uuid,text)'::regprocedure);
 	c_anchor constant text := E'\t\traise exception ''Company File verifier authority is required'' using errcode = ''42501''; end if;\n';
 	c_refusal constant text :=
-		E'\t-- C5 early (folder core P10, 20260930001100): a folder-v2 company proves its files on the byte path only.\n'
+		E'\t-- C5 early (folder core P10, 20260930001100): folder-v2 refuses version 1; a folder-v2 company proves its files\n'
+		|| E'\t-- on the byte path only (the folder GC switch reads this text, 20260930009000).\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\traise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;\n';
 begin

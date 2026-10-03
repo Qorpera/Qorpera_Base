@@ -57,6 +57,8 @@ do $$
 declare v_definition text := pg_get_functiondef('public.qorpera_verify_company_path_file(uuid,text)'::regprocedure);
 begin
 	if position('20260930001100' in v_definition) = 0 then raise exception 'The verifier lacks the P10 marker'; end if;
+	-- The folder GC phase's switch (P11) is refused until the verifier carries this exact text.
+	if position('folder-v2 refuses version 1' in v_definition) = 0 then raise exception 'The verifier lacks P11''s text'; end if;
 	if position('qorpera_company_is_folder_v2(p_profile_id)' in v_definition) = 0
 		or position('qorpera_company_is_folder_v2(p_profile_id)' in v_definition)
 			> position('qorpera_lock_profile_gc_fence(p_profile_id)' in v_definition) then
