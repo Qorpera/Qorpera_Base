@@ -1132,8 +1132,8 @@ capacity work after it.
 > limit.
 >
 > **Amended 2026-10-03 (not built yet).** That network reaches the internet
-> through the agent exit, from the agent addresses ("agent traffic leaves
-> through the agent exit", section 19).
+> through the agent exit ("agent traffic leaves through the agent exit",
+> section 19).
 
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
@@ -2154,8 +2154,9 @@ requirement to build a separate analytics platform before the product works.
   physical NAS traffic, and resource reservations are not measured utilization.
 - The agent exit keeps a log of the connections agent road machines make:
   company, machine, times, destination name, address, port, protocol, bytes,
-  and refused flows, never content, for 90 days (amended 2026-10-03, not built
-  yet, "agent traffic leaves through the agent exit", item 7).
+  and refused flows, never content, for 90 days; a time it could not record is
+  a gap, which means unknown (amended 2026-10-03, not built yet, "agent traffic
+  leaves through the agent exit", item 7).
 - Computer and screen lifecycle transitions MUST retain identity, time and
   reason: requested, ready, suspended/resumed where supported, closing, closed
   or failed. Closing a client viewer is not closing its cloud computer. Retain
@@ -4526,7 +4527,7 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 - Section 23: network paths.
 
 1. **Two roads out.** The machines agents work on send their internet traffic through the agent exit:
-   - the Company Computer's browser and shells;
+   - the Company Computer's browser, shells, terminal and desktop;
    - agents' own machines (compute item 4);
    - coding machines (git, package registries, websites);
    - any other machine that gets a network later.
@@ -4547,8 +4548,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 3. **Its own addresses.** The exit leaves from a block of fixed addresses Qorpera holds from its line provider,
    separate from the platform address. Each node has one of them (choice 1: a block of 8, five usable). Until the
    block is delivered, the exit leaves from the platform address. Everything else in this amendment applies from the
-   exit's first day. Once the block is in use, each agent address carries a reverse name under qorpera.com and
-   points to a page that explains the traffic and gives an abuse contact.
+   exit's first day. A node's switch to its own address ends the connections open at that moment. Once the block is
+   in use, each agent address carries a reverse name under qorpera.com and points to a page that explains the
+   traffic and gives an abuse contact.
 4. **What the exit refuses.** The exit refuses:
    - our own networks: the NAS, the office network, the nodes, Tailscale, link-local and cloud metadata addresses,
      and our own public addresses;
@@ -4556,13 +4558,16 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - IPv6, for now.
 
    Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
-   (item 9). A refusal answers at once.
-5. **AI traffic never enters the exit.** The sign-ins and model traffic of our model programs (OpenAI, ChatGPT,
-   Anthropic, Claude) leave from the platform address, direct and undisguised.
+   (item 9). A refusal answers at once. Each machine holds at most 16,384 connections through the exit at once, the
+   same bound a computer has inside (compute item 2). It keeps one machine from filling the exit for every company on
+   the node; it protects the node and is not a limit on the work.
+5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
+   (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
    - On an execution host, the existing model relay carries them.
    - In a coding machine, a provider door carries them. It is a new node service for coding machines only. It
      passes a connection only when the server name in its TLS handshake is one of the providers' names. It reads
-     nothing else.
+     nothing else. In a coding machine every connection to a provider name goes through the door, an agent's own
+     included.
    - On every other agent road machine, a call to an AI service is agent traffic like any other.
 6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
    addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
@@ -4572,6 +4577,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - For each connection it passes, the log records the company, the machine, the start and the end, the
      destination name, the address, the port, the protocol and the bytes each way. The destination name comes from
      the exit's own name lookups, where the machine used them.
+   - A time the log could not record (item 10, or events lost under load) is recorded as a gap. For an abuse lookup
+     a gap means unknown, never "no one".
    - For each refused flow (machine, destination, protocol, port), the log records the first refusal in each hour
      and the rule that refused it. Every refusal is counted.
    - It never records content or full web addresses, and nothing is decrypted.
@@ -4588,13 +4595,16 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - Its format is checked when it is saved, and a save that fails the check is refused. A company without the file
      is open.
    - Every node's exit applies it, to that company's machines only.
-   - A block list works on names: the exit's name lookups refuse a blocked name. A machine that reaches a site by its
-     address, or through its own encrypted DNS, gets past a block list.
-   - The "only listed" mode is strict: the exit passes only connections whose TLS server name is listed.
+   - A block list works on names: the exit's name lookups refuse a blocked name for that company, and the refusal
+     is in the name-lookup record. A machine that reaches a site by its address, or through its own encrypted DNS,
+     gets past a block list.
+   - The "only listed" mode is strict. A machine reaches only addresses the exit's own name lookups gave for a
+     listed name, and on port 443 only when the TLS server name is listed too. Other protocols are refused in that
+     mode.
 9. **The line guard (choice 2).**
    - TCP port 25 is refused from the exit's first day.
-   - For two weeks the exit only counts, per company: new connections, refused ones, and bursts of new connections
-     to many addresses (the shape of a scan or a flood).
+   - For two weeks the exit only counts, per company: new connections, refused ones, bursts of new connections (a
+     flood), and failed connections to many addresses (a scan).
    - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
      Past them, that company's new connections are slowed for a while. The brake never stops normal work.
    - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
@@ -4603,14 +4613,14 @@ It amends these texts. Where older text conflicts with this amendment, this amen
     - An exit update reloads its rules in one transaction each and restarts its name and log services in place. The
       bridge and the machines' links stay up, and no company is paused.
     - The exit is never removed while a machine is plugged into it.
-    - If a node's exit or its log is not healthy:
-      - the node takes no new agent road machines;
-      - the node observer reports it to the runtime operator;
-      - an agent's commands on that node's machines see network errors.
-    - If the exit itself is down, that node's agent road machines have no internet until it is back. Agent traffic
-      never falls back to the platform road, a Company Computer's own network included.
-    - If only the log is down, traffic continues and the gap shows in the log: a short gap is preferred over cutting
-      running work.
+    - If a node's exit or its log is not healthy, the node takes no new agent road machines, and the node observer
+      reports it to the runtime operator.
+    - If the exit itself is down, that node's agent road machines have no internet until it is back, and agents'
+      commands there see network errors. Agent traffic never falls back to the platform road. On a Company Computer
+      this rests on the computer's own rules: agents' browser, shells, terminal and desktop reach only its agent
+      network card, and agents cannot change those rules (step E6 proves both).
+    - If only the log is down, traffic continues and the time is a gap in the log (item 7). This is the design's
+      proposal of 3 October, pending Jonas: a short gap in the log is preferred over cutting running work.
     - A company rule applies at once, without a restart.
 11. **Companies share the agent addresses.** The line guard and the log keep one company from spoiling them for
     the rest. Addresses per company (IPv6) are a later decision.
@@ -4634,7 +4644,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
   - "the browser keeps its own separate path" reads: its relay's connections leave through the agent exit.
 - Compute item 4: a machine reaches the internet through the agent exit.
 - Every-machine items 1 and 9, and light-threads item 5: coding sessions keep their open network, through the agent
-  exit, with their model traffic on the platform road.
+  exit, with item 4's refusals, the company's rules and the line guard, and with their model traffic on the platform
+  road.
 - The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
   `rules/network.toml`.
 - 5.6: `rules/` also holds `network.toml` (changed in place).

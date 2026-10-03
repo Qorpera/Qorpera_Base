@@ -26,8 +26,8 @@ rules, and the line guard.
 
 ## 2. Two roads
 
-The **agent road machines** are the Company Computer (its browser and shells), agents' own machines, coding
-machines, and any other machine that gets a network later. The platform's own services keep the platform road, even
+The **agent road machines** are the Company Computer (its browser, shells, terminal and desktop), agents' own
+machines, coding machines, and any other machine that gets a network later. The platform's own services keep the platform road, even
 when they act for an agent.
 
 | Traffic | Road | How |
@@ -68,7 +68,10 @@ agent road machine only ever uses the exit of the node it runs on.
   admin-prohibited).
 - To the exit itself from `br0`: DHCP, DNS and ping to `10.210.0.1` only.
 - From `up0`: replies only.
-- Every new connection is counted per client address, and each refused flow is kept an hour for the log.
+- Every new connection is counted per client address, and each refused flow is kept an hour for the log (added once
+  per hour, not refreshed on every hit).
+- Each client holds at most 16,384 connections through the exit at once (contract item 4), so one machine cannot fill
+  the exit's connection table for every company on the node.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
@@ -83,15 +86,18 @@ is bridged and passes the host's forward hook. That is why the guest guard must 
 - DNS forwarded to public resolvers (proposed: 9.9.9.9 and 1.1.1.1) through the uplink;
 - every query logged.
 
-**Connection log (conntrack).** `conntrack -E` in `qexit` (with connection accounting on) reports each connection's
-start and end with bytes each way. A logger writes them, and the refused flows, as JSON lines (§7).
+**Connection log (conntrack).** `conntrack -E` in `qexit` (with connection accounting on and a large event buffer)
+reports each connection's start and end with bytes each way. A logger writes them, and the refused flows, as JSON
+lines (§7). When the kernel drops events under load, conntrack says so, and the logger writes a gap record.
 
 **Units (proposed).**
 - `qorpera-agent-exit.service` (oneshot). Start builds or repairs the namespace, bridge, veths, addresses and rules.
   Reload does the same in place. Stop removes the exit and is refused while a machine is plugged in.
 - `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, both bound to it.
-- The node setup installs them, and they stay disabled until the coordinator switches a node on.
-- Packages: `dnsmasq-base` and `conntrack` (no services of their own).
+- The coordinator installs them with `deploy/agent-exit/install-agent-exit.sh`, and they stay disabled until a node
+  is switched on. A manual stop of the exit unit is refused (systemd `RefuseManualStop`), so stopping it cannot
+  leave traffic flowing without its name and log services.
+- Packages: `dnsmasq-base`, `conntrack` and `python3` (no services of their own).
 
 **Updates (contract item 10).** An exit update never stops a machine:
 - it reloads the rules in one transaction per table;
@@ -99,7 +105,7 @@ start and end with bytes each way. A logger writes them, and the refused flows, 
 - it keeps the bridge and the veths.
 
 Running machines keep their links through it, so no company is paused. A change that would have to rebuild the
-namespace is not made while a machine is plugged in; the tool refuses it.
+namespace is not made while a machine is plugged in; the tool refuses it and has no override.
 
 **Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, both rule tables, dnsmasq and the
 logger's heartbeat. The node observer reports it, and placement gives agent road machines only to nodes with a
@@ -111,8 +117,8 @@ healthy exit (E2).
   `security.ipv4_filtering` and `security.port_isolation`, IPv6 off, and a static `ipv4.address` from the node's
   pool in `10.210.0.0/16`.
 - The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact
-  devices: `lxd-office-guest.ts`, `coding-machine.ts`, `coding-vm.ts` and `company-machine.ts` each compare the NIC
-  set they expect.
+  devices: `lxd-office-guest.ts`, `coding-machine.ts` and `company-machine.ts` each compare the NIC set they expect.
+  Legacy `coding-vm.ts` machines are retired, not moved.
 - One shared helper allocates the address and writes the DHCP lease and the client map entry (address → company,
   machine, kind, member for coding machines, since).
 - When a machine goes away, its entry and lease are removed, its address's connections are flushed, and the address
@@ -135,8 +141,10 @@ never enter the exit.
 - It accepts only coding machines' addresses, taken from the client map.
 - Provider names: OpenAI and ChatGPT as today, plus the Anthropic names Claude Code needs.
 - A coding machine reaches the door through name entries its creator writes at start: the provider names point to
-  the door. No other agent road machine is pointed there, and the exit's own DNS answers provider names normally.
-- Traffic an agent sends to a provider any other way goes through the exit like any other.
+  the door, so every connection to a provider name from a coding machine goes through it, an agent's own included.
+  No other agent road machine is pointed there, and the exit's own DNS answers provider names normally.
+- The door's uplink to the host gets host rules like the exit's: public addresses only, nothing on the node.
+- Traffic an agent sends to a provider by address goes through the exit like any other.
 
 ## 6. The Company Computer (E6)
 
@@ -145,6 +153,8 @@ A computer gets a second network card, an agent plug, in the next office image (
 **Inside the computer.**
 - The browser relay's outbound connections and #411's per-screen namespaces route out of the agent plug.
 - A rule in the computer drops their traffic if it would leave by the first card, so a routing fault fails closed.
+  Agents cannot change these rules. E6 proves both, because the host's guest guard still lets the computer's first
+  card reach any public address for its own services.
 - The relay resolves names through the exit's DNS.
 - #411's in-guest filter blocks `10.0.0.0/8`, so it must allow the exit's DNS on `10.210.0.1`. #411's shells use that
   DNS instead of 1.1.1.1 and 8.8.8.8.
@@ -154,15 +164,17 @@ A computer gets a second network card, an agent plug, in the next office image (
 refuses ACL bridges, and fingerprints the network configuration (`lxd-office-node-base.ts`). It learns `qagent0`, an
 unmanaged bridge, in the same image and policy change.
 
-**The browser.** Its managed policy keeps encrypted ClientHello off, so TLS server names stay visible to our own
-log.
+**The browser.** E6 adds a managed browser policy that keeps encrypted ClientHello off, so TLS server names stay
+visible to the exit (they matter for the "only listed" mode, §10).
 
 ## 7. The log (E3, choice 3)
 
 - One JSON line per event (proposed):
   - a connection's start and its end, with bytes and packets each way: `{ts, event, node, company, machine, kind,
     src, dst, sport, dport, proto, name, bytes_out, bytes_in}`;
-  - a refused flow, the first time in an hour, with the rule that refused it.
+  - a refused flow, the first time in an hour, with the rule that refused it;
+  - a gap: a time the log could not record (the logger down, or events lost under load). For an abuse lookup a gap
+    means unknown, never "no one".
 - `name` comes from the exit's DNS log: the last name that resolved to `dst` for that client.
 - Never content, never full web addresses, never decrypted.
 - The log and the DNS record are kept 90 days on our storage (a platform folder on the NAS, per node and day), then
@@ -178,7 +190,8 @@ log.
 - For two weeks the exit only counts, per company:
   - new connections;
   - refused connections;
-  - bursts of new connections to many addresses (the shape of a scan or a flood).
+  - bursts of new connections (a flood);
+  - failed connections to many addresses (a scan).
 - The founder sees the numbers and decides the brake's levels, well above normal use.
 - Past those levels, that company's new connections are slowed for a while.
 - The brake never stops normal work and is not a count on a run's work (contract 7.4).
@@ -210,11 +223,15 @@ allow = []             # used when mode is "only-listed"
   E8 adds the file as its own checked kind. A save that fails the check is refused, and a company without the file
   is open.
 - The platform projects it to every node.
+- **Per-company names (proposed).** dnsmasq cannot hold a list per company. E8 puts a resolver with per-client policy
+  in front of or in place of dnsmasq's DNS (for example unbound views keyed by client address from the client map).
+  A changed list reloads without a restart, and a blocked name lands in the name-lookup record.
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
   DNS, gets past a block list.
-- **"Only listed":** strict. The exit passes only connections whose TLS server name is on the list. E8 adds a
-  server-name check on port 443 for such companies.
+- **"Only listed":** strict. A machine reaches only addresses the exit's own lookups gave for a listed name (a
+  per-company set filled as names resolve). On port 443 the TLS server name must be listed too, so a listed name sent
+  to another address does not pass. Other protocols, QUIC and SSH included, are refused in this mode.
 
 ## 11. The address block (E9, choice 1)
 
@@ -225,7 +242,8 @@ allow = []             # used when mode is "only-listed"
 - Jonas sends the Danish message on the design page. TDC's answer settles how the block reaches the router and who
   sets the router up.
 - Each node switches in place: `up0` becomes a macvlan with the node's address, and the host's masquerade for the
-  exit is removed. Connections open at that moment end, and new ones start from the new address.
+  exit is removed. Connections open at that moment end, and new ones start from the new address. Sites that tie a
+  sign-in to an address may ask an agent's session to sign in again.
 - Reverse names under qorpera.com, and the info page with the abuse contact.
 - TDC's terms say the line may not carry traffic for anyone but the customer. The TDC message asks TDC to confirm
   that a hosted service is fine.
@@ -237,12 +255,14 @@ allow = []             # used when mode is "only-listed"
   - The node observer reports the failed `verify` to the runtime operator, and placement gives that node no new
     agent road machines.
   - Agents' commands on that node see network errors.
-  - Recovery: `systemctl reload qorpera-agent-exit.service` repairs in place. If that fails, the operator moves the
-    node's work as for any node fault.
+  - Recovery: `systemctl reload qorpera-agent-exit.service` repairs the exit's own parts in place. If the bridge
+    itself was lost, plugged machines lose their links until they restart; E2's `verify` checks that every plugged
+    machine's network card is on the bridge. If repair fails, the operator moves the node's work as for any node
+    fault.
 - **Uplink down.** The same as the exit being down.
-- **Log down (proposed).** Traffic continues, the gap shows in the log, and `verify` fails, with the consequences
-  above (no new machines, a report to the operator). A short gap in the log is preferred over cutting running work;
-  the contract's item 10 says so, and the founder may change it.
+- **Log down (proposed, pending Jonas).** Traffic continues, the time is a gap in the log, and `verify` fails, with
+  the consequences above (no new machines, a report to the operator). A short gap in the log is preferred over
+  cutting running work; the contract's item 10 says so, and the founder may change it.
 - **Rule change.** Applies at once through set updates, without a restart.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
