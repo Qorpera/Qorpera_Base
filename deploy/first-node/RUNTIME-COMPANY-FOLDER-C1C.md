@@ -1109,24 +1109,23 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   they take the same prelude (review r1: before it, the startup check waited at the owner's member row while holding
   the office; harmless while only members start, a cycle once C1c-3l lets agents start).
 - **Test 893** (648's committed fixture; each "must not wait" call is sent while another session holds the company row
-  `FOR NO KEY UPDATE`, which lets `KEY SHARE` through and stops anything stronger):
+  `FOR NO KEY UPDATE`, which lets `KEY SHARE` through and stops anything stronger). Folder-v2 only: by the founder's
+  decision of 3 October (production's companies are wiped, snapshot-v1 compatibility is dropped) it has no snapshot-v1
+  case and no old-text digests.
   - A, A2, A3: registration; a second registration that waits at the owner's member row (a role change) holding no
     office, then returns the same computer; one that waits at the seat lock;
   - B: the catalog;
   - C, C2: the hire-vs-start deadlock above, through the provider's reserve wrapper; a member's start waiting at the
     member row holding no office;
   - D: status and cancel;
-  - E: a snapshot-v1 catalog still waiting for that hold (its gc fence), seen through `pg_blocking_pids`;
-  - F, F2: the provider's other calls (assertion, provider status and set, check wrapper, reserve body, placement,
-    offer, office and node reservations) and the member's withdrawal; the office reservation answers `reserved` and the
-    node reservation reaches its provider check, so both gates and the office kind's fence are open; the guest binding
-    passes its gate;
-  - G: a folder-v2 adoption with screens refuses at once under the hold;
-  - H: a first start end to end (request, reserve, prepare, ready); the startup check and the activation each wait at
-    the owner's member row holding no office, then land;
-  - I: the ordered office walk, and exactly 25 bodies naming the migration (24 patched functions and the prelude);
-  - J: snapshot-v1 keeps its text: each patched body with this migration's patches undone (last first) has the md5 of
-    the body before it, as 824 H does for 3f.
+  - E, E2: the provider's other calls (assertion, provider status and set, check wrapper, reserve body, placement,
+    offer, office and node reservations), the member's withdrawal and before-idle; the office reservation answers
+    `reserved` and the node reservation reaches its provider check, so both gates and the office kind's fence are open;
+    the guest binding passes its gate;
+  - F: a folder-v2 adoption with screens refuses at once under the hold;
+  - G: a first start end to end (request, reserve, prepare, ready); the preparation, the startup check and the
+    activation each wait at the owner's member row holding no office, then land;
+  - H: the ordered office walk, and exactly 25 bodies naming the migration (24 patched functions and the prelude).
 - **Until C1c-3g**, an office path waiting at rank 0 behind a company deletion's gc fence holds the folder fence
   `KEY SHARE` that the purge's cascade wants: one 40P01 that heals on retry, as for 3f's sweep (§6.4).
 - **Not in 3j:** screens and their events and observations, the shared surface and restart-surface gates, access

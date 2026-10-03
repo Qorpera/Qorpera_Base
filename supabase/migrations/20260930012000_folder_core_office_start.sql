@@ -35,7 +35,7 @@
 --
 -- Not in 3j: screens, the shared surface, access configuration, the adoption mapping and the other member-facing calls
 -- (C1c-3k); an agent's start and the activation-wake drain (C1c-3l). Each patched function names this migration
--- (20260930012000) in its body, for the deploy guard; test 893 J pins every snapshot-v1 body by its digest.
+-- (20260930012000) in its body, for the deploy guard.
 
 set local lock_timeout = '3s';
 
