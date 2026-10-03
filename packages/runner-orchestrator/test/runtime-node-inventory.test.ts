@@ -901,6 +901,68 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 		g.inventory.instances.push(builder("image-build", "1", "5GiB"));
 		expect(reconcileRuntimeNodeInventory(g.inventory, g.context).entries[4].reason).toBe("BUILD_SPACE_EXCEEDED");
 	});
+	it.each<[string, number]>([
+		["Stopped", 102],
+		["Running", 103],
+	])("accepts the company machine image's builder as LXD reported it, %s", (status, statusCode) => {
+		// The record nested LXD 6.9 gave for build-machine-image.sh's builder (node 2's test machine, 2026-10-02):
+		// one shape from creation to deletion, stopped and running.
+		const f = withSpace(),
+			config = {
+				"boot.autostart": "false",
+				"boot.mode": "uefi-secureboot",
+				"image.architecture": "amd64",
+				"image.description": "ubuntu 26.04 LTS (release)",
+				"image.label": "release",
+				"image.os": "ubuntu",
+				"image.release": "resolute",
+				"image.serial": "20260927",
+				"image.type": "disk1.img",
+				"image.version": "26.04",
+				"limits.cpu": "4",
+				"limits.memory": "8GiB",
+				"user.qorpera.image_builder": "true",
+				"user.qorpera.purpose": "machine-image",
+				"volatile.base_image": "f".repeat(64),
+				"volatile.cloud-init.instance-id": randomUUID(),
+				"volatile.eth0.hwaddr": "00:16:3e:d7:87:78",
+				"volatile.uuid": randomUUID(),
+			},
+			devices = {
+				eth0: {
+					name: "eth0",
+					network: "qorpera0",
+					"security.ipv4_filtering": "true",
+					"security.ipv6_filtering": "true",
+					"security.mac_filtering": "true",
+					"security.port_isolation": "true",
+					type: "nic",
+				},
+				root: { path: "/", pool: "qorpera-vm", size: "10GiB", type: "disk" },
+			};
+		f.inventory.instances.push({
+			name: "qorpera-machine-build-20261001231057",
+			project: space.project,
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices,
+			expandedDevices: devices,
+			profiles: [],
+			status,
+			statusCode,
+		});
+		f.context.policy = f.policy = {
+			...f.policy,
+			buildSpace: { ...space, cpuMillis: 4000, memoryBytes: 8 * 1024 ** 3 },
+		};
+		f.context.headroomCpuMillis = 5000;
+		f.context.headroomMemoryBytes = 9 * 1024 ** 3;
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "build", reason: null, cpuMillis: 4000 });
+		expect(result.state).toBe("ready");
+	});
 	it.each<[string, (i: TestInstance) => void]>([
 		[
 			"a container",

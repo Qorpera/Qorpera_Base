@@ -211,7 +211,7 @@ last week, parked warm hosts included. The fresh-VM path stays on every node as 
      both homes were node 2). Also check, read-only, that no queued run lacks a compute identity
      (`compute_identity_id is null`): the fast host fails such work with a counted error instead of
      refusing it, so with roles it would spend its attempts there.
-   - `20260929999997` is live: after one fast host refuses a run for capacity, the fresh-VM path leaves
+   - `20260928439975` is live: after one fast host refuses a run for capacity, the fresh-VM path leaves
      it to the other node's fast host.
    - `NODE-EXEC-HOST-BY-ROLE.md` rollout steps 0–3 are done for node 1, so the host is listed by its job
      from day one and a rebuild never needs a re-enrol (the release that pins its image is staged on

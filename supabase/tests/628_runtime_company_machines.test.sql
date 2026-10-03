@@ -308,6 +308,9 @@ begin
 		and public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'read','30000000-0000-4000-8000-000000000502') ->> 'executorOwner' = 'mx-a'
 		and public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'cancel','30000000-0000-4000-8000-000000000502') ->> 'executorOwner' = 'mx-a',
 		'The command is authorized, again idempotently, and readable: '||v_auth::text);
+	perform pg_temp.wake_assert((select requested_by_user_id from public.qorpera_company_machine_commands
+		where id = '30000000-0000-4000-8000-000000000502') = '30000000-0000-4000-8000-000000000001',
+		'The command records the member its run works for');
 	perform pg_temp.wake_error(format($sql$select public.qorpera_authorize_machine_command(%L,%L,'start','30000000-0000-4000-8000-000000000502',repeat('4',64),
 		'{"commandHead":"npm test","notify":false}')$sql$,pg_temp.binding(),v_scope),'42501');
 	-- The command on a machine of another company is refused (the scope names a machine, never a node).
@@ -680,9 +683,10 @@ begin
 	-- Eight test shards that ended together, each with 4000 bytes of output and a long command.
 	with shards as (
 		insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify, ended_at,
-			state, exit_code, output_tail)
+			state, exit_code, output_tail, requested_by_user_id)
 		select extensions.gen_random_uuid(), (pg_temp.machine('wide')).id, v_parent.id, v_parent.staff_agent_id,
-			(pg_temp.placement('wide')).id, 'shard ' || n || ' ' || repeat('é', 280), true, clock_timestamp(), 'succeeded', 0, repeat('é', 2000)
+			(pg_temp.placement('wide')).id, 'shard ' || n || ' ' || repeat('é', 280), true, clock_timestamp(), 'succeeded', 0, repeat('é', 2000),
+			v_parent.requested_by_user_id
 		from generate_series(1, 8) n returning id)
 	insert into public.qorpera_company_machine_events(machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind, command_id)
 	select (pg_temp.machine('wide')).id, v_parent.profile_id, v_parent.environment_id, v_parent.staff_agent_id, v_parent.id, 'command', id

@@ -9,6 +9,10 @@ import {
 	CompanyComputerGuestAutomation,
 	companyComputerSnapshotCut,
 } from "@qorpera/runtime/cloud-company-computer-guest";
+import {
+	COMPANY_COMPUTER_SITE_SAMPLE,
+	CompanyComputerSiteStops,
+} from "@qorpera/runtime/cloud-company-computer-site-stops";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +63,8 @@ function office(
 		url?: string;
 		key?: CompanyComputerFillKey | null;
 		filled?: CompanyComputerFilledValues;
+		/** The sites the computer stopped on, shared with another run's automation. */
+		siteStops?: CompanyComputerSiteStops;
 		/** A page script moves the focus somewhere with no value (an editable area) before the typing. */
 		lose?: boolean;
 		/** Meanwhile the page opens a second tab. */
@@ -81,6 +87,8 @@ function office(
 		link: "https://vercel.com/",
 		/** The whole aria snapshot, instead of the one built from the fields above. */
 		aria: undefined as string | undefined,
+		/** Frames inside the page, by address and whether shown (a CAPTCHA service's, A1-4c). */
+		frames: [] as Array<string | { url: string; visible: boolean | "never" }>,
 	};
 	const element = { tagName: "INPUT", type: "password", disabled: false, readOnly: false, value: "" };
 	const attributes = new Map<string, string>();
@@ -171,10 +179,35 @@ function office(
 		// The screen check's own function runs against the fake document; the private-box reader finds none.
 		evaluate: vi.fn(
 			async (fn: (arg: unknown) => unknown, arg?: unknown): Promise<unknown> =>
-				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE ? runScreenCheck(fn, arg) : [],
+				arg === COMPANY_ACCOUNT_FILLED_ATTRIBUTE
+					? runScreenCheck(fn, arg)
+					: arg === COMPANY_COMPUTER_SITE_SAMPLE
+						? { title: shown.title, text: shown.text, length: shown.text.length }
+						: [],
 		),
+		goto: vi.fn(async (url: string) => {
+			shown.url = url;
+		}),
 		screenshot: vi.fn(async () => pngHeader()),
-		frames: () => [page],
+		// The page is its own main frame here; check frames sit inside it.
+		parentFrame: () => null,
+		frames: () => [
+			page,
+			...shown.frames.map((frame) => {
+				const { url, visible } = typeof frame === "string" ? { url: frame, visible: true } : frame;
+				return {
+					parentFrame: () => page,
+					isDetached: () => false,
+					url: () => url,
+					evaluate: async () => "",
+					// "never": the frame's element does not answer.
+					frameElement: () =>
+						visible === "never"
+							? new Promise(() => undefined)
+							: Promise.resolve({ isVisible: async () => visible, dispose: async () => undefined }),
+				};
+			}),
+		],
 		isDetached: () => false,
 		locator: vi.fn(() => ({
 			ariaSnapshot: async () =>
@@ -240,6 +273,7 @@ function office(
 		screenshots: automationScreenshots,
 		...(key ? { fillKey: key } : {}),
 		...(options.filled ? { filled: options.filled } : {}),
+		...(options.siteStops ? { siteStops: options.siteStops } : {}),
 	});
 	return {
 		automation,
@@ -675,6 +709,239 @@ describe("vault_fill on the Company Computer", () => {
 		const error = (await perform(stuck, action(), sealed(stuck.key!)).catch((caught: unknown) => caught)) as Error;
 		expect(error.message).toBe("ACCOUNT_FILL_LOST");
 		expect((error.cause as Error).cause).toBe(failure);
+	});
+
+	it("stops at a page that asks for a person, and never acts on that site again while the computer runs", async () => {
+		const stops = new CompanyComputerSiteStops();
+		const f = office({ siteStops: stops });
+		const json = async (value: CompanyComputerAction, fill?: Record<string, string>) =>
+			((await perform(f, value, fill)) as unknown as { value: Record<string, unknown> }).value;
+		// The site answers a navigation with a human check: the action happened, and its answer says to stop.
+		f.page.goto.mockImplementationOnce(async (url: string) => {
+			f.shown.url = url;
+			f.shown.title = "Just a moment\u2026";
+		});
+		expect(await json({ kind: "browser", action: "navigate", url: "https://vercel.com/signup" })).toMatchObject({
+			action: "navigate",
+			completed: true,
+			stop: "SITE_STOP_HUMAN_CHECK",
+			message: expect.stringContaining("never retry"),
+		});
+		// Back on an ordinary page of the same site, or another run on this computer: refused before acting, as the
+		// call's answer, so the agent can go on to mark the account.
+		f.shown.title = "Sign up";
+		for (const run of [f, office({ siteStops: stops })]) {
+			run.shown.url = "https://vercel.com/login";
+			for (const value of [
+				{ kind: "browser", action: "navigate", url: "https://www.vercel.com/" },
+				{ kind: "browser", action: "navigate", url: "https://vercel.com./signup" },
+				{ kind: "browser", action: "click", role: "button", name: "Continue" },
+				{ kind: "browser", action: "fill", role: "textbox", name: "Email", text: "x" },
+			] as CompanyComputerAction[])
+				expect(
+					((await perform(run, value)) as unknown as { value: Record<string, unknown> }).value,
+					JSON.stringify(value),
+				).toMatchObject({ completed: false, refused: { code: "SITE_STOPPED" } });
+			expect(
+				((await perform(run, action(), sealed(run.key!))) as unknown as { value: Record<string, unknown> }).value,
+			).toMatchObject({ completed: false, refused: { code: "SITE_STOPPED" } });
+			expect(run.typed).toEqual([]);
+		}
+		expect(f.page.goto).toHaveBeenCalledOnce();
+		// Another site stays open; a link or redirect from it back to the stopped site reports the stop.
+		expect(await json({ kind: "browser", action: "navigate", url: "https://netlify.com/" })).toMatchObject({
+			completed: true,
+		});
+		f.page.goto.mockImplementationOnce(async () => {
+			f.shown.url = "https://vercel.com/signup";
+		});
+		expect(await json({ kind: "browser", action: "navigate", url: "https://netlify.com/to-vercel" })).toMatchObject({
+			completed: true,
+			stop: "SITE_STOP_HUMAN_CHECK",
+		});
+	});
+
+	it("types and clicks nothing on a page that already shows a check, whatever its address", async () => {
+		const answer = async (
+			f: ReturnType<typeof office>,
+			value: CompanyComputerAction,
+			fill?: Record<string, string>,
+		) => ((await perform(f, value, fill)) as unknown as { value: Record<string, unknown> }).value;
+		// A shown reCAPTCHA checkbox frame inside the page.
+		const f = office();
+		f.shown.frames = ["https://www.google.com/recaptcha/api2/anchor?k=x&size=normal"];
+		expect(await answer(f, action(), sealed(f.key!))).toMatchObject({ refused: { code: "SITE_STOPPED" } });
+		expect(f.typed).toEqual([]);
+		// A tab with no web address showing a check: nothing is recorded, still nothing is clicked.
+		const blank = office({ url: "about:blank" });
+		blank.shown.frames = ["https://newassets.hcaptcha.com/captcha/v1/x#frame=challenge"];
+		const click = vi.fn();
+		blank.page.getByRole.mockImplementation(() => ({ count: async () => 1, click }) as never);
+		expect(
+			await answer(blank, { kind: "browser", action: "click", role: "checkbox", name: "I am human" }),
+		).toMatchObject({ refused: { code: "SITE_STOPPED" } });
+		expect(click).not.toHaveBeenCalled();
+		// The invisible reCAPTCHA badge and a hidden challenge frame ask no one anything: the fill goes on.
+		const badge = office();
+		badge.shown.frames = [
+			"https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible",
+			{ url: "https://www.google.com/recaptcha/api2/bframe?k=x", visible: false },
+		];
+		expect(await answer(badge, action(), sealed(badge.key!))).toMatchObject({ completed: true });
+		// A check service's own website is the page itself, not a frame inside it: an ordinary page.
+		const vendor = office({ url: "https://www.hcaptcha.com/pricing" });
+		const vendorClick = vi.fn();
+		vendor.page.getByRole.mockImplementation(() => ({ count: async () => 1, click: vendorClick }) as never);
+		expect(await answer(vendor, { kind: "browser", action: "click", role: "link", name: "Pricing" })).toMatchObject({
+			completed: true,
+		});
+		expect(vendorClick).toHaveBeenCalledOnce();
+		// A page that does not answer still has its frames read.
+		const hung = office();
+		hung.shown.frames = ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x"];
+		hung.page.evaluate.mockImplementation(() => new Promise(() => undefined));
+		vi.useFakeTimers();
+		try {
+			const pending = answer(hung, { kind: "browser", action: "press", key: "Enter" });
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(await pending).toMatchObject({ refused: { code: "SITE_STOPPED" } });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("says stop in a snapshot of such a page, and none on an ordinary one", async () => {
+		const g = office();
+		g.shown.text = "We have detected unusual activity from your account. Please try again later.";
+		const result = (await perform(g, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { stop?: string; message?: string };
+		};
+		expect(result.value).toMatchObject({
+			stop: "SITE_STOP_UNUSUAL_ACTIVITY",
+			message: expect.stringContaining("needs_person"),
+		});
+		expect(
+			((await perform(g, { kind: "browser", action: "press", key: "Enter" })) as unknown as { value: object }).value,
+		).toMatchObject({ refused: { code: "SITE_STOPPED" } });
+		const h = office();
+		const plain = (await perform(h, { kind: "browser", action: "snapshot" })) as unknown as {
+			value: { stop?: string };
+		};
+		expect(plain.value.stop).toBeUndefined();
+	});
+
+	it("types and clicks nothing on the desktop while a shown tab is on a stopped site", async () => {
+		const stops = new CompanyComputerSiteStops();
+		const f = office({ siteStops: stops });
+		const desktop = (value: CompanyComputerAction) =>
+			f.automation.perform(value, computerLease(), computerEffect(), {
+				...computerOperation(),
+				tool: "computer_desktop",
+				arguments: value as never,
+			});
+		await desktop({ kind: "desktop", action: "click", x: 500, y: 300, button: "left" });
+		expect(f.commands.run).toHaveBeenCalledOnce();
+		stops.add("https://vercel.com/", "captcha");
+		for (const value of [
+			{ kind: "desktop", action: "click", x: 500, y: 300, button: "left" },
+			{ kind: "desktop", action: "type", text: "hello" },
+			{ kind: "desktop", action: "press", key: "Enter" },
+			{ kind: "desktop", action: "scroll", direction: "down", amount: 3 },
+		] as CompanyComputerAction[])
+			expect(((await desktop(value)) as unknown as { value: object }).value, JSON.stringify(value)).toMatchObject({
+				completed: false,
+				refused: { code: "SITE_STOPPED" },
+			});
+		// Moving the pointer only looks.
+		await desktop({ kind: "desktop", action: "move", x: 10, y: 10 });
+		expect(f.commands.run).toHaveBeenCalledTimes(2);
+	});
+
+	it("records the site that shows the check, never the site a navigation left", async () => {
+		const stops = new CompanyComputerSiteStops();
+		const f = office({ siteStops: stops, url: "https://duckduckgo.com/?q=vercel" });
+		f.page.goto.mockImplementationOnce(async (url: string) => {
+			f.shown.url = url;
+			f.shown.title = "Just a moment...";
+		});
+		await perform(f, { kind: "browser", action: "navigate", url: "https://vercel.com/signup" });
+		expect(stops.stoppedAt("https://vercel.com/")).toBe("human_check");
+		expect(stops.stoppedAt("https://duckduckgo.com/")).toBeUndefined();
+		f.shown.title = "Search";
+		expect(
+			(
+				(await perform(f, { kind: "browser", action: "navigate", url: "https://duckduckgo.com/" })) as unknown as {
+					value: object;
+				}
+			).value,
+		).toMatchObject({ completed: true });
+	});
+
+	it("records only the check's site after a link or a redirect, never the page left or the address asked for", async () => {
+		const stops = new CompanyComputerSiteStops();
+		// A link on a search page that opens a check page on another site.
+		const f = office({ siteStops: stops, url: "https://duckduckgo.com/?q=vercel" });
+		f.page.getByRole.mockImplementation(
+			() =>
+				({
+					count: async () => 1,
+					click: async () => {
+						f.shown.url = "https://vercel.com/signup";
+						f.shown.title = "Just a moment...";
+					},
+				}) as never,
+		);
+		expect(
+			(
+				(await perform(f, { kind: "browser", action: "click", role: "link", name: "Vercel" })) as unknown as {
+					value: object;
+				}
+			).value,
+		).toMatchObject({ completed: true, stop: "SITE_STOP_HUMAN_CHECK" });
+		expect(stops.stoppedAt("https://vercel.com/")).toBe("human_check");
+		expect(stops.stoppedAt("https://duckduckgo.com/")).toBeUndefined();
+		// A link tracker that redirects to a check page on another site: the tracker's site stays open.
+		const g = office({ siteStops: stops, url: "https://mail.google.com/mail/u/0/" });
+		g.page.goto.mockImplementationOnce(async () => {
+			g.shown.url = "https://netlify.com/login";
+			g.shown.title = "Just a moment...";
+		});
+		await perform(g, {
+			kind: "browser",
+			action: "navigate",
+			url: "https://www.google.com/url?q=https://netlify.com/login",
+		});
+		expect(stops.stoppedAt("https://netlify.com/")).toBe("human_check");
+		expect(stops.stoppedAt("https://www.google.com/")).toBeUndefined();
+		expect(stops.stoppedAt("https://mail.google.com/")).toBeUndefined();
+	});
+
+	it("counts a check frame whose visibility does not answer, and lets a hidden tab be", async () => {
+		const f = office();
+		f.shown.frames = [{ url: "https://challenges.cloudflare.com/cdn-cgi/x", visible: "never" }];
+		expect(((await perform(f, action(), sealed(f.key!))) as unknown as { value: object }).value).toMatchObject({
+			refused: { code: "SITE_STOPPED" },
+		});
+		expect(f.typed).toEqual([]);
+		// A tab the screen does not show (in the background) does not hold back desktop input.
+		const stops = new CompanyComputerSiteStops();
+		const g = office({ siteStops: stops });
+		stops.add("https://vercel.com/", "captcha");
+		const evaluate = g.page.evaluate.getMockImplementation()!;
+		g.page.evaluate.mockImplementation(async (fn: (arg: unknown) => unknown, arg?: unknown) =>
+			arg === undefined && String(fn).includes("hidden") ? true : evaluate(fn, arg),
+		);
+		await g.automation.perform(
+			{ kind: "desktop", action: "click", x: 1, y: 1, button: "left" },
+			computerLease(),
+			computerEffect(),
+			{
+				...computerOperation(),
+				tool: "computer_desktop",
+				arguments: { kind: "desktop", action: "click", x: 1, y: 1, button: "left" } as never,
+			},
+		);
+		expect(g.commands.run).toHaveBeenCalledOnce();
 	});
 
 	it("tells a spent box apart from one that is not for this call", async () => {

@@ -100,7 +100,7 @@ savepoint refused;
 select pg_temp.wake_assert(pg_temp.fp_claim('30000000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'After the preferred node refused, the other fast host takes the run');
 rollback to savepoint refused;
--- The fresh-VM path waits while the other node's fast host may still take it (20260929999997; test 810).
+-- The fresh-VM path waits while the other node's fast host may still take it (20260928439975; test 810).
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,
 	'After one fast host refused for capacity, the fresh-VM path waits for the other fast host');
 -- A fast host refuses work it does not serve (NODE_NOT_PREFERRED): the overflow takes it at once.
@@ -110,7 +110,7 @@ select pg_temp.fp_refuse('30000000-0000-4000-8000-000000000092',current_setting(
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') #>> '{work,run_id}' = current_setting('qorpera_test.fp_r0'),
 	'The fresh-VM path takes what a fast host does not serve');
 -- The overflow never skips its own wait: its node is full too, so everyone waits, the overflow included.
--- (Node A's fast host refuses first: before that the overflow leaves the run to it, 20260929999997.)
+-- (Node A's fast host refuses first: before that the overflow leaves the run to it, 20260928439975.)
 rollback to savepoint refused;
 select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('30000000-0000-4000-8000-000000000092')::text,true);
 select pg_temp.fp_refuse('30000000-0000-4000-8000-000000000092',current_setting('qorpera_test.fp_claim')::jsonb,'SANDBOX_CAPACITY_EXHAUSTED');

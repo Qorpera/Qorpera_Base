@@ -98,8 +98,9 @@ begin
 		repeat('4',64),'{"commandHead":"npm test","notify":false}');
 	perform public.qorpera_complete_native_tool_operation(pg_temp.child(),'30000000-0000-4000-8000-000000000601',repeat('4',64),v_auth);
 	perform pg_temp.wake_assert(v_auth ->> 'state' = 'authorized' and exists (select 1 from public.qorpera_company_machine_commands
-		where id = '30000000-0000-4000-8000-000000000601' and run_id = v_child_run and not notify),
-		'The command is the worker''s, without notify');
+		where id = '30000000-0000-4000-8000-000000000601' and run_id = v_child_run and not notify
+			and requested_by_user_id = '30000000-0000-4000-8000-000000000001'),
+		'The command is the worker''s, without notify, for the member its agent works for');
 	-- The worker waits by looking at the status here: the command runs until the executor records its end.
 	v_status := public.qorpera_native_machine_manage(pg_temp.child(),
 		'{"action":"status","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000601"}');

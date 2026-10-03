@@ -63,6 +63,7 @@ import type {
 import type { CompanyComputerScreenSessionHandle } from "./cloud-company-computer-screens.ts";
 import type { CompanyComputerServiceGuest } from "./cloud-company-computer-service.ts";
 import { CloudCompanyComputerSharedSurfaceControl } from "./cloud-company-computer-shared-surface-control.ts";
+import { CompanyComputerSiteStops } from "./cloud-company-computer-site-stops.ts";
 import type { RecoveryDirectoryMount } from "./cloud-identity-recovery-filesystems.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
@@ -174,6 +175,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #screens = new Map<number, SharedScreen>();
 	/** The secrets typed on each screen, kept while this service runs: a screen's tabs outlive its runs. */
 	readonly #filled = new Map<number, CompanyComputerFilledValues>();
+	/** The sites this computer stopped on (A1-4c), for all its screens while the service runs. */
+	readonly #siteStops = new CompanyComputerSiteStops();
 	readonly #sessions = new Set<NativeSession>();
 	/** The company's one set of website sign-ins, shared by every agent's browser. */
 	readonly #logins: CompanyComputerBrowserLogins;
@@ -744,6 +747,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						fileImports: this.#options.fileImports?.(input.run),
 						fillKey: this.#options.fillKey,
 						filled: this.#filledOn(binding.screenOrdinal),
+						siteStops: this.#siteStops,
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},
