@@ -436,7 +436,8 @@ files or state:
 - `[write]`;
 - the claim rule (§5), with `claim`;
 - `tables/areas/`: its fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
-  one area per agent.
+  one area per agent;
+- two live interfaces, or two live tables, with one id (`duplicate`), and a table's id changed in place.
 
 The parser's `parseTableRows` gives the same row results to a writer that has the definition, so a tool can refuse
 early. The database decides against the definition as it is at commit.
@@ -497,12 +498,13 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    - **Tables move whole:** `table.toml` or `rows.csv` is deleted or moved only with its folder. A `rows.csv` needs a
      `table.toml` in its folder at commit.
    - **Ids** (`duplicate`): one live interface per `[interface] id`, and one live table per `[table] id`. A table's
-     folder keeps its id when it moves.
-   - **Coding sessions** create, move or delete nothing under `interfaces/`, and no `table.toml`, so no table folder
-     either (contract 5.6). They may write a `rows.csv` under rule 5, as an agent.
+     id never changes: a `table.toml` save that changes it is refused, and its folder keeps it when it moves.
+   - **Coding sessions** change nothing under `interfaces/`, and no `table.toml`, so they make or remove no table
+     folder either (the 2026-10-02 interfaces amendment, items 7 and 12). They may write a `rows.csv` under rule 5,
+     as an agent.
 3. **One main interface** (`main`). Decide sees one unit at a time, and a change set isn't atomic, so this is a
    per-unit rule:
-   - a unit that would leave two interfaces with `main = true` is refused;
+   - a unit whose `interface.toml` has `main = true` is refused while another stored interface has `main = true`;
    - zero is allowed in between, and the web shows that state (§10, I7);
    - the main interface's folder can't be deleted or moved while it is main.
 
@@ -571,7 +573,8 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
 8. **The claim rule** (`claim`), on a `rows.csv` save: the port of `tableClaimProblems`.
    - **Columns checked:** every `needs_yes` column, and, for an agent, `tables/areas/`'s `owner`, `supervisor` and
      `agents` whatever their flags.
-   - **The platform** passes only when it clears cells: a leaving member's (contract 5.6).
+   - **The platform** passes only when it clears cells: a leaving member's (the 2026-10-02 interfaces amendment,
+     item 6, "Leaving").
    - **Rows compared:** the stored rows against the new ones, by key. A row that's gone clears its cells. A cell
      changes when its value's JSON text differs (so reordering the ids in `agents` is a change).
    - **For each cell that changes:**
