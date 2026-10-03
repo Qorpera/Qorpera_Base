@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberRequestObservationSpan } from "./member-observability.ts";
+import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 
 /** The folder core's byte check for a member (folder core C4, P27a: `qorpera_member_folder_object`). */
@@ -15,8 +16,6 @@ export interface MemberFolderObjectAuthority {
 	): Promise<{ profileId: string; bytes: number }>;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
  * A member's bytes of a folder-v2 company (deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §2):

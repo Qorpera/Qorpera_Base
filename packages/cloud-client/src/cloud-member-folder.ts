@@ -1,3 +1,4 @@
+import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
@@ -9,8 +10,7 @@ import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts"
  * Browser-safe. Reads only: member writes come with P31.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
+const SHA = SHA256_HEX_PATTERN;
 const MEDIA = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The manifest's bounds (C1D §2; `qorpera_folder_manifest`): at most 64 chunks of at most 4 MiB each, at most
  * 256 MiB in all, and a manifest of at most 32 KiB. */
@@ -54,8 +54,8 @@ function seq(value: unknown, what: string, minimum = 0): number {
 	return value as number;
 }
 
-function uuid(value: unknown, what: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) invalid(what);
+function idOf(value: unknown, what: string): string {
+	if (!isUuid(value)) invalid(what);
 	return value;
 }
 
@@ -129,7 +129,7 @@ export function parseCloudMemberFolderEntry(value: unknown): CloudMemberFolderEn
 	return {
 		path: text(entry.path, "entry"),
 		kind,
-		version: uuid(entry.version, "entry"),
+		version: idOf(entry.version, "entry"),
 		seq: seq(entry.seq, "entry", 1),
 		updatedAt: instant(entry.updatedAt, "entry"),
 		file: content,
@@ -179,9 +179,9 @@ export type CloudMemberFolderBy =
 export function parseCloudMemberFolderBy(value: unknown): CloudMemberFolderBy {
 	const by = closed(value, ["kind"], ["userId", "staffAgentId"], "author");
 	if (by.kind === "member" && Object.keys(by).length === 2)
-		return { kind: "member", userId: uuid(by.userId, "author") };
+		return { kind: "member", userId: idOf(by.userId, "author") };
 	if (by.kind === "agent" && Object.keys(by).length === 2)
-		return { kind: "agent", staffAgentId: uuid(by.staffAgentId, "author") };
+		return { kind: "agent", staffAgentId: idOf(by.staffAgentId, "author") };
 	if (by.kind === "platform" && Object.keys(by).length === 1) return { kind: "platform" };
 	invalid("author");
 }
@@ -228,7 +228,7 @@ export function parseCloudMemberFolderPathHistory(value: unknown, limit: number)
 		const content = file(item, false, "version");
 		if (kind === "folder" && content !== null) invalid("version");
 		return {
-			version: uuid(item.version, "version"),
+			version: idOf(item.version, "version"),
 			seq: seq(item.seq, "version", 1),
 			op,
 			kind,
@@ -240,7 +240,7 @@ export function parseCloudMemberFolderPathHistory(value: unknown, limit: number)
 			file: content,
 		};
 	});
-	const next = page.next === null ? null : uuid(page.next, "path history");
+	const next = page.next === null ? null : idOf(page.next, "path history");
 	if ((next !== null) !== (items.length === limit) || (next !== null && next !== items.at(-1)?.version))
 		invalid("path history");
 	return { asOfSeq: seq(page.asOfSeq, "path history"), items, next };
@@ -291,7 +291,7 @@ export function parseCloudMemberFolderHistory(value: unknown, limit = 50): Cloud
 					path: text(path.path, "change set"),
 					op: oneOf(path.op, OPS, "change set"),
 					kind: oneOf(path.kind, ["file", "folder"] as const, "change set"),
-					version: uuid(path.version, "change set"),
+					version: idOf(path.version, "change set"),
 				};
 			}),
 			more: item.more,
@@ -347,7 +347,7 @@ function position(value: unknown): CloudMemberFolderFeedPosition {
 	if (!Number.isSafeInteger(cursor.unitNo) || (cursor.unitNo as number) < 1) invalid("feed position");
 	return {
 		afterSeq: seq(next.afterSeq, "feed position"),
-		cursor: { unitNo: cursor.unitNo as number, version: uuid(cursor.version, "feed position") },
+		cursor: { unitNo: cursor.unitNo as number, version: idOf(cursor.version, "feed position") },
 	};
 }
 
@@ -374,7 +374,7 @@ export function parseCloudMemberFolderChanges(value: unknown): CloudMemberFolder
 		return {
 			kind: "change_set",
 			seq: seq(event.seq, "feed event", 1),
-			commitId: uuid(event.commitId, "feed event"),
+			commitId: idOf(event.commitId, "feed event"),
 			at: instant(event.at, "feed event"),
 			by: parseCloudMemberFolderBy(event.by),
 			changes: event.changes.map((changeInput): CloudMemberFolderChange => {
@@ -393,8 +393,8 @@ export function parseCloudMemberFolderChanges(value: unknown): CloudMemberFolder
 					op: oneOf(change.op, OPS, "feed change"),
 					kind,
 					path: text(change.path, "feed change"),
-					version: uuid(change.version, "feed change"),
-					priorVersion: "priorVersion" in change ? uuid(change.priorVersion, "feed change") : null,
+					version: idOf(change.version, "feed change"),
+					priorVersion: "priorVersion" in change ? idOf(change.priorVersion, "feed change") : null,
 					updatedAt: "updatedAt" in change ? instant(change.updatedAt, "feed change") : null,
 					file: content,
 				};
@@ -450,7 +450,7 @@ export class CloudMemberFolderClient {
 		timeoutMs?: number;
 	}) {
 		if (
-			!UUID.test(options.environmentId) ||
+			!isUuid(options.environmentId) ||
 			!options.publishableKey ||
 			options.publishableKey.length > 8192 ||
 			/[\0\r\n]/.test(options.publishableKey)
@@ -500,7 +500,7 @@ export class CloudMemberFolderClient {
 		limit: number,
 		signal: AbortSignal,
 	): Promise<CloudMemberFolderPathHistory> {
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (before !== null && !UUID.test(before)))
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (before !== null && !isUuid(before)))
 			throw new CloudMemberFolderError("Invalid company folder history request");
 		return this.#call(
 			"qorpera_member_folder_path_history",
