@@ -147,7 +147,10 @@ function plan(value: unknown): CloudCompanyPathPlan {
 
 export function parseCloudMemberCompanyMode(value: unknown, companyId: string): CloudMemberCompanyMode {
 	const input = record(value, ["companyId", "environmentId", "mode"]);
-	if (input.companyId !== companyId || (input.mode !== "governed" && input.mode !== "legacy" && input.mode !== "folder"))
+	if (
+		input.companyId !== companyId ||
+		(input.mode !== "governed" && input.mode !== "legacy" && input.mode !== "folder")
+	)
 		throw new Error("Company File mode is unavailable");
 	return { companyId: uuid(input.companyId), environmentId: uuid(input.environmentId), mode: input.mode };
 }

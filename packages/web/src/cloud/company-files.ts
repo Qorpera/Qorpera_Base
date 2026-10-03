@@ -4,8 +4,8 @@ import {
 	parseCloudMemberCompanyMode,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
 import { CloudMemberCompanyFileReader } from "@qorpera/cloud-client/cloud-member-company-file";
-import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-client/cloud-member-folder";
 import { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
+import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-client/cloud-member-folder";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
 import { createClient } from "@supabase/supabase-js";
@@ -133,8 +133,9 @@ export class WebCompanyFiles {
 			10000,
 			this.signal,
 		);
+		// Another environment's mode is no mode for this company.
 		if (mode.environmentId !== this.#options.environmentId)
-			throw new Error("Company File access could not be confirmed.");
+			throw new Error("This company does not have a governed File interface.");
 		return mode.mode;
 	}
 	async files(): Promise<CloudMemberCompanyFileClient> {
@@ -166,7 +167,12 @@ export class WebCompanyFiles {
 	}
 	presence(onChange: (view: CompanyPathPresenceView) => void): CloudMemberCompanyPresence {
 		this.current();
-		return new CloudMemberCompanyPresence({ ...this.#options, client: this.#realtime(), signal: this.signal, onChange });
+		return new CloudMemberCompanyPresence({
+			...this.#options,
+			client: this.#realtime(),
+			signal: this.signal,
+			onChange,
+		});
 	}
 	#realtime() {
 		return createClient(this.#options.supabaseUrl, this.#options.publishableKey, {

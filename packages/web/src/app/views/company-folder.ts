@@ -374,13 +374,14 @@ export class CompanyFolderBrowser {
 
 	/** Asks the feed what changed since the page was read, and redraws what it touched. */
 	async #sync(): Promise<void> {
-		if (!this.#position) return;
+		let position = this.#position;
+		if (!position) return;
 		let touchedFolder = false,
 			touchedFile = false;
 		for (let pages = 0; ; pages++) {
-			const page = await this.#client!.changes(this.#position, 500, this.#signal());
+			const page = await this.#client!.changes(position, 500, this.#signal());
 			this.#live();
-			if (page.resync || pages >= 5) {
+			if (page.resync || !page.next || pages >= 5) {
 				this.#position = null;
 				touchedFolder = true;
 				touchedFile = this.#opened !== null;
@@ -398,7 +399,8 @@ export class CompanyFolderBrowser {
 					if (change.path === this.#opened?.path) touchedFile = true;
 				}
 			}
-			this.#position = page.next;
+			position = page.next;
+			this.#position = position;
 			if (!page.more) break;
 		}
 		if (touchedFolder) await this.#load(this.#dir);
@@ -481,7 +483,10 @@ export class CompanyFolderBrowser {
 
 	#drawFile(): void {
 		const opened = this.#opened;
-		if (!opened) return this.#close();
+		if (!opened) {
+			this.#close();
+			return;
+		}
 		const name = baseName(opened.path);
 		for (const row of this.#list.querySelectorAll<HTMLElement>(".files-row"))
 			row.classList.toggle(
@@ -503,7 +508,10 @@ export class CompanyFolderBrowser {
 				h("small", null, fmtBytes(opened.file.bytes)),
 			);
 		const actions: HTMLElement[] = [
-			button([icon("download"), t("Download")], () => void this.#run(() => this.#download(opened.path, opened.file))),
+			button(
+				[icon("download"), t("Download")],
+				() => void this.#run(() => this.#download(opened.path, opened.file)),
+			),
 			button([icon("clock"), t("History")], () => void this.#run(() => this.#showHistory(opened.path))),
 		];
 		if (opened.version) {
@@ -573,7 +581,11 @@ export class CompanyFolderBrowser {
 	}
 
 	/** A file's versions, newest first, each with who and when; an older one opens in place of the latest. */
-	async #showHistory(path: string, before: string | null = null, shown: CloudMemberFolderVersion[] = []): Promise<void> {
+	async #showHistory(
+		path: string,
+		before: string | null = null,
+		shown: CloudMemberFolderVersion[] = [],
+	): Promise<void> {
 		const page = await this.#client!.pathHistory(path, before, HISTORY_PAGE, this.#signal());
 		this.#live();
 		const versions = [...shown, ...page.items];
@@ -588,10 +600,14 @@ export class CompanyFolderBrowser {
 					h("small", null, `${this.#who(version.by)} · ${this.#when.format(new Date(version.at))}`),
 				),
 				version.file
-					? button(t("View"), () => {
-							const file = version.file!;
-							void this.#run(() => this.#show({ path, file, version }));
-						}, { small: true })
+					? button(
+							t("View"),
+							() => {
+								const file = version.file!;
+								void this.#run(() => this.#show({ path, file, version }));
+							},
+							{ small: true },
+						)
 					: null,
 			),
 		);

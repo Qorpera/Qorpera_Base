@@ -59,7 +59,9 @@ function folderFake() {
 	let asOfSeq = 4;
 	const changes: CloudMemberFolderChangesPage[] = [];
 	const listed = (dir: string) => {
-		const kids = [...folders].filter((path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dir);
+		const kids = [...folders].filter(
+			(path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dir,
+		);
 		const files = [...contents.keys()].filter(
 			(path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "") === dir,
 		);
@@ -130,7 +132,13 @@ function folderFake() {
 		),
 		changes: vi.fn(
 			async (): Promise<CloudMemberFolderChangesPage> =>
-				changes.shift() ?? { asOfSeq, resync: false, events: [], next: { afterSeq: asOfSeq, cursor: null }, more: false },
+				changes.shift() ?? {
+					asOfSeq,
+					resync: false,
+					events: [],
+					next: { afterSeq: asOfSeq, cursor: null },
+					more: false,
+				},
 		),
 	};
 	return {
@@ -229,7 +237,7 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector<HTMLImageElement>(".files-image")?.src).toBe("blob:fixture-picture");
 		await click(row(host, "notes"));
 		await click(row(host, "plan.md"));
-		expect(host.querySelector(".files-doc h1")?.textContent).toBe("Plan");
+		expect(host.querySelector(".files-doc h2")?.textContent).toBe("Plan");
 		expect(visibleText(host.querySelector(".files-preview-actions"))).toContain("Download");
 	});
 
@@ -289,8 +297,26 @@ describe("a folder-v2 company's Company File", () => {
 					at,
 					by: { kind: "agent", staffAgentId: agent },
 					changes: [
-						{ unitNo: 1, op: "write", kind: "file", path: "readme.txt", version: id(105), priorVersion: null, updatedAt: at, file: file("Hello again.") },
-						{ unitNo: 2, op: "write", kind: "file", path: "new.txt", version: id(106), priorVersion: null, updatedAt: at, file: file("New.") },
+						{
+							unitNo: 1,
+							op: "write",
+							kind: "file",
+							path: "readme.txt",
+							version: id(105),
+							priorVersion: null,
+							updatedAt: at,
+							file: file("Hello again."),
+						},
+						{
+							unitNo: 2,
+							op: "write",
+							kind: "file",
+							path: "new.txt",
+							version: id(106),
+							priorVersion: null,
+							updatedAt: at,
+							file: file("New."),
+						},
 					],
 				},
 			],
