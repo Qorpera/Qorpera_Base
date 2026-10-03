@@ -95,8 +95,8 @@ lines (§7). When the kernel drops events under load, conntrack says so, and the
   Reload does the same in place. Stop removes the exit and is refused while a machine is plugged in.
 - `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, both bound to it.
 - The coordinator installs them with `deploy/agent-exit/install-agent-exit.sh`, and they stay disabled until a node
-  is switched on. A manual stop of the exit unit is refused (systemd `RefuseManualStop`), so stopping it cannot
-  leave traffic flowing without its name and log services.
+  is switched on. With a machine plugged in, stopping the exit's unit fails and changes nothing: the name and log
+  services are not bound to it and keep running, so traffic never flows without them.
 - Packages: `dnsmasq-base`, `conntrack` and `python3` (no services of their own).
 
 **Updates (contract item 10).** An exit update never stops a machine:
