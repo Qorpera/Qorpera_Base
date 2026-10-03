@@ -16,6 +16,7 @@ import {
 	drainPlatformClaims,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
+	type PlatformFolderWriterOptions,
 	platformFolderProblem,
 	platformFolderProblemCode,
 	record,
@@ -249,6 +250,8 @@ export interface ConnectionFileWriterOptions {
 	readonly authority: Pick<MemberCompanyAuthority, "publisher">;
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
+	/** Where a file this gateway's store lacks is read instead (PlatformFolderWriter's). */
+	readonly readFallback?: PlatformFolderWriterOptions["readFallback"];
 	readonly leaseSeconds?: number;
 }
 

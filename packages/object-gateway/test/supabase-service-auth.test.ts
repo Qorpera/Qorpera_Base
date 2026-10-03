@@ -104,7 +104,10 @@ describe.each(credentials)("$name gateway service authority", ({ secretKey, publ
 			publishableKey,
 			fetch: transport(requests),
 		});
-		await expect(authority.publisher(method, {}, new AbortController().signal)).resolves.toBe(true);
+		// The answer is the transport's for that path (a download authorization's shape, or true).
+		await expect(authority.publisher(method, {}, new AbortController().signal)).resolves.toEqual(
+			method.endsWith("_object_download") ? { backend: "nas-object-gateway", bytes: 7 } : true,
+		);
 		expect(requests).toHaveLength(1);
 		expect(requests[0]?.headers.get("apikey")).toBe(secretKey);
 		expect(requests[0]?.headers.get("authorization")).toBe(bearer);
