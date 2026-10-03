@@ -3,8 +3,9 @@
 -- for deletions under the run agent's own skills folder only. The skill is then deleted with its review; an
 -- update_skill delete anywhere else, an update_skill write, an internal update_skill and any other tool stay refused.
 
--- Agent A's folder, as an agent index entry leaves the staff row (the fixture's agents were inserted by hand).
-select pg_temp.fx(format($q$update public.qorpera_profile_staff set folder_path = 'agents/agent-a', folder_environment_id = %L,
+-- Agent A's folder, as an agent index entry leaves the staff row: folder_path is its agent.md's path (the fixture's
+-- agents were inserted by hand).
+select pg_temp.fx(format($q$update public.qorpera_profile_staff set folder_path = 'agents/agent-a/agent.md', folder_environment_id = %L,
 	folder_path_version = %L, folder_commit_id = %L where staff_agent_id = %L$q$, '63400000-0000-4000-8000-000000000020',
 	extensions.gen_random_uuid(), extensions.gen_random_uuid(), '63400000-0000-4000-8000-0000000000a1'));
 
