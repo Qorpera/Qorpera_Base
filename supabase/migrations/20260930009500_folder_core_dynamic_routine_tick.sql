@@ -1,5 +1,5 @@
 -- Company folder core, C1c-3e: a folder-v2 dynamic routine's next run (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md
--- §6.8).
+-- §6.9).
 --
 -- An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick. The tick
 -- (qorpera_restore_dynamic_routine_runs, inside the Company File drain) visits every company in one transaction, so

@@ -1,5 +1,5 @@
 -- @fixture 656_folder_core_run_wakes.test.sql until "-- 1. Snapshot-v1 keeps its text"
--- Company folder core, C1c-3e (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.8): a folder-v2 dynamic routine's
+-- Company folder core, C1c-3e (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.9): a folder-v2 dynamic routine's
 -- next run. The folder list names the folder-v2 dynamic routines missing their run; the per-routine restore inserts
 -- that run once (admitted, at its chosen instant), answers pending, changed, gone, not_folder and paused without one,
 -- pauses a routine whose latest run a member stopped, and suspends (and tells its member) a routine whose run the kernel

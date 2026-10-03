@@ -131,6 +131,16 @@ esac
 		assert.match(ok.stdout, /bridge qorpera0: matches \(10\.41\.0\.1\/24\)/);
 		assert.match(ok.stdout, /bridge coding-net: matches \(10\.200\.0\.1\/24\)/);
 
+		bridges({ qorpera0: { route: QORPERA0 }, qagent0: {} });
+		const exitBridge = run(["check"]);
+		assert.equal(exitBridge.status, 0, exitBridge.stdout + exitBridge.stderr);
+		assert.match(exitBridge.stdout, /bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here/);
+		const listed = join(dir, "listed.nft");
+		writeFileSync(listed, rules.replace('"machine-net" }', '"machine-net", "qagent0" }'));
+		const wronglyListed = run(["check"], { QORPERA_GUEST_GUARD_RULES: listed });
+		assert.equal(wronglyListed.status, 1);
+		assert.match(wronglyListed.stdout, /MISMATCH bridge qagent0 is listed in the rules/);
+
 		bridges({ qorpera0: { route: QORPERA0 }, docker0: {} });
 		const unguarded = run(["check"]);
 		assert.equal(unguarded.status, 2);

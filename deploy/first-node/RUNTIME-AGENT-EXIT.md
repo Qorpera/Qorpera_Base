@@ -8,8 +8,9 @@ the "2026-10-03 amendment: agent traffic leaves through the agent exit" in secti
 `QORPERA-RUNTIME-CONTRACT.md`. Where this document and the contract differ, the contract governs.
 
 Details the page did not show are marked **proposed**. They can change in review without a new founder decision, as
-long as they keep the page's rules. Two rules are different: the connection bounds (§3) and the log-outage rule
-(§12) are marked **pending Jonas**. They are the design session's proposals of 3 October and need his decision.
+long as they keep the page's rules. Two rules the page did not cover, the connection bounds (§3) and the
+log-outage rule (§12), were decided by the runtime coordinator on 3 October on Jonas's standing request that it settle
+his open questions; he may still change them.
 
 ## 1. Why
 
@@ -72,7 +73,7 @@ agent road machine only ever uses the exit of the node it runs on.
 - Every new connection is counted per client address, and each refused flow is kept an hour for the log (added once
   per hour, not refreshed on every hit; only a new flow spends a machine's share of the log, so repeats cannot hide
   other refusals).
-- Pending Jonas (contract item 4): each client holds at most 16,384 open connections through the exit at once, and
+- Decided on 3 October (contract item 4): each client holds at most 16,384 open connections through the exit at once, and
   the exit at most 98,304 in all; the per-machine bound is checked first. In phase 1 each agent connection takes two
   entries in the node's connection table (262,144, read on both nodes on 2 October). The total bounds open
   connections only: closed connections (120 seconds by default) and refused attempts (10 seconds for TCP, 30 for
@@ -288,9 +289,9 @@ allow = []             # used when mode is "only-listed"
     machine's network card is on the bridge. If repair fails, the operator moves the node's work as for any node
     fault.
 - **Uplink down.** The same as the exit being down.
-- **Log down (pending Jonas).** Traffic continues, the time is a gap in the log, and `verify` fails, with the
-  consequences above (no new machines, a report to the operator). A short gap in the log is preferred over cutting
-  running work; the contract's item 10 says so, and Jonas may change it. The gap record written when the logger
+- **Log down (decided on 3 October).** Traffic continues, the exit's refusals stay in force, the time is a gap in
+  the log, and `verify` fails, with the consequences above (no new machines, a report to the operator). A short gap
+  in the log is preferred over cutting running work; the contract's item 10 says so, and Jonas may change it. The gap record written when the logger
   starts again carries `since` (its last heartbeat), so a lookup marks the whole outage as unknown; after a reboot
   there is no heartbeat, and the outage runs from the last line written. Other gap records (lost events, unlogged
   refusals) mark a moment; E3 reads them as unknown back to the line before.
