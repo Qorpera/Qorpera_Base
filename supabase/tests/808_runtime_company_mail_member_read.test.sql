@@ -389,11 +389,18 @@ values ('30000000-0000-4000-8000-000000000010', (current_setting('qorpera_test.r
 	'call-card-3', '30000000-0000-4000-8000-000000000030', 'send_mail', 'external', repeat('a', 64),
 	'{"title":"Send an email","arguments":"{not json"}', 'ask', 'none', 'A person decides', 'reviewer-fixture',
 	'owners_admins');
+-- The conversation a card was raised in, where it is answered (20260930000400): the first card has one, the new email's
+-- card none.
+insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, audience_kind)
+values ('80800000-0000-4000-8000-0000000000c5', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000020',
+	'Agent', '30000000-0000-4000-8000-000000000001', 'company');
+update public.qorpera_action_reviews set card_session_id = '80800000-0000-4000-8000-0000000000c5'
+where id = current_setting('qorpera_test.card')::uuid;
 select pg_temp.member();
 select pg_temp.wake_assert(pg_temp.listed(current_setting('qorpera_test.quote_thread')) ->> 'state' = 'waiting',
 	'A thread with an open send is waiting');
 select pg_temp.wake_assert(detail -> 'waiting' = jsonb_build_array(jsonb_build_object('reviewId', current_setting('qorpera_test.card'),
-		'staffAgent', '{"staffAgentId":"30000000-0000-4000-8000-000000000030","name":"Agent"}'::jsonb,
+		'sessionId', '80800000-0000-4000-8000-0000000000c5', 'staffAgent', '{"staffAgentId":"30000000-0000-4000-8000-000000000030","name":"Agent"}'::jsonb,
 		'to', '["bob@acme.test"]'::jsonb, 'subject', 'Re: Your quote', 'text', 'Here it is.',
 		'createdAt', (select created_at from public.qorpera_action_reviews where id = current_setting('qorpera_test.card')::uuid))),
 	'The thread shows its waiting send: ' || (detail -> 'waiting')::text)
@@ -401,7 +408,8 @@ from (select pg_temp.thread(current_setting('qorpera_test.quote_thread')) as det
 select pg_temp.wake_assert(jsonb_array_length(waiting) = 2
 		and waiting #>> '{0,reviewId}' = current_setting('qorpera_test.card_new') and not waiting -> 0 ? 'thread'
 		and waiting #>> '{0,address}' = 'support@mail.example.test'
-		and waiting #>> '{1,thread}' = current_setting('qorpera_test.quote_thread'),
+		and waiting #>> '{1,thread}' = current_setting('qorpera_test.quote_thread')
+		and waiting #>> '{1,sessionId}' = '80800000-0000-4000-8000-0000000000c5' and not waiting -> 0 ? 'sessionId',
 	'Every open send, newest first, a new email without a thread: ' || waiting::text)
 from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
 -- Another environment of the company sees none of this one's mail.
