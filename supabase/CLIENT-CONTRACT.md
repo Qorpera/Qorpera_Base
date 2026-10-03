@@ -568,6 +568,15 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
 - A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
   quoted message waits: only a cloud run fences one.
+- A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
+  (`mentionFold`) folds each quote to its placeholder first.
+- Quotes are refused (22023) in a company whose runs can't fence them: one that is neither folder-v2 nor on the
+  company path (`20260930008000_member_draft_quotes`).
+- Room drafts keep their quotes: `qorpera_put_room_draft(p_room_id, p_owner_user_id, p_base_revision, p_body,
+  p_quotes?)` checks `p_quotes` as a message's quotes and stores them, and `qorpera.room-draft/v1` carries `quotes`
+  when the draft has any. Once a draft holds quotes, every «…» pair of a save must be a quote with its record (22023
+  otherwise); removing a quote whole is an ordinary save. A client that sends four arguments still reaches the
+  function, but a text-only save of a draft that holds quotes is refused.
 
 ### Computer hours (20260928248000_runtime_computer_hours_meter)
 
