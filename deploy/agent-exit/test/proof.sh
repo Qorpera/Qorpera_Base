@@ -202,6 +202,29 @@ for name in os.listdir(sys.argv[1]):
         json.dump(entry, f)
     os.replace(path + ".tmp", path)
 EOF
+cat >"$work/garp.py" <<'EOF'
+import socket, struct, sys
+# An ARP frame out of argv[1], always with the card's own MAC as Ethernet source: op argv[2] (1 request, 2 reply),
+# sender address argv[3], sender MAC argv[4] (default: the card's own).
+iface, op, ip = sys.argv[1], int(sys.argv[2]), socket.inet_aton(sys.argv[3])
+own = bytes.fromhex(open("/sys/class/net/%s/address" % iface).read().strip().replace(":", ""))
+sha = bytes.fromhex(sys.argv[4].replace(":", "")) if len(sys.argv) > 4 else own
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind((iface, 0))
+s.send(b"\xff" * 6 + own + b"\x08\x06" + struct.pack("!HHBBH", 1, 0x0800, 6, 4, op) + sha + ip + b"\xff" * 6 + ip)
+EOF
+cat >"$work/decline.py" <<'EOF'
+import socket, struct, sys
+# A DHCPDECLINE to the exit from this machine's own address argv[1], naming another machine: chaddr argv[2], the address
+# it declines argv[3].
+chaddr = bytes.fromhex(sys.argv[2].replace(":", ""))
+zero = b"\0" * 4
+bootp = struct.pack("!BBBBIHH4s4s4s4s", 1, 1, 6, 0, 0x5150, 0, 0, zero, zero, zero, zero) + chaddr + b"\0" * 202
+options = bytes([53, 1, 4, 50, 4]) + socket.inet_aton(sys.argv[3]) + bytes([54, 4]) + socket.inet_aton("10.210.0.1")
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1], 68))
+s.sendto(bootp + b"\x63\x82\x53\x63" + options + bytes([255]), ("10.210.0.1", 67))
+EOF
 cat >"$work/udhcpc.sh" <<'EOF'
 #!/bin/sh
 [ "$1" = bound ] && echo "ip=$ip router=$router dns=$dns" > "$LEASE_FILE"
@@ -504,6 +527,29 @@ wait_for "ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null | grep -q '
 for twin in "-p tcp --dport 8443" "-p udp --dport 9999" "-p icmp"; do
 	wait_for "conntrack -L -s 10.209.255.2 -d 1.1.1.1 $twin 2>/dev/null | grep -q 1.1.1.1"
 done
+# Spoofing from one plugged card (the agent machine, 10.210.1.1) against another (10.210.1.2), whose MAC the exit knows.
+wait_for "ip -n qexit neigh show 10.210.1.2 | grep -q 0e:51:0a:d2:01:02"
+dropped_before=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
+for op in 1 2; do ip netns exec agent python3 "$work/garp.py" eth0 "$op" 10.210.1.2; done
+ip netns exec agent python3 "$work/garp.py" eth0 2 10.210.1.1 0e:51:0a:d2:01:02
+ip netns exec agent python3 "$work/decline.py" 10.210.1.1 0e:51:0a:d2:01:02 10.210.1.2
+sleep 1
+ip -n qexit neigh show 10.210.1.2 | grep -q 0e:51:0a:d2:01:02 || fail "gratuitous ARP moved another machine's address: $(ip -n qexit neigh)"
+ip -n qexit neigh show 10.210.1.1 | grep -q 0e:51:0a:d2:01:02 && fail "an ARP sender MAC moved the agent's address: $(ip -n qexit neigh)"
+grep -q DHCPDECLINE "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log" && fail "a machine declined another's lease: $(grep DHCP "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log")"
+dropped_after=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
+((dropped_after >= dropped_before + 4)) || fail "the spoofs were not dropped at the bridge ($dropped_before, $dropped_after)"
+ip -n agent link set eth0 down
+ip -n agent link set eth0 address 0e:51:0a:d2:01:fd
+ip -n agent link set eth0 up
+ip -n agent route replace default via 10.210.0.1
+connects agent 1.1.1.1 443 && fail "the agent's address got out from another MAC"
+ip -n agent link set eth0 down
+ip -n agent link set eth0 address 0e:51:0a:d2:01:01
+ip -n agent link set eth0 up
+ip -n agent route replace default via 10.210.0.1
+wait_for "connects agent 1.1.1.1 443"
+pass "no gratuitous ARP for another's address, no ARP sender MAC, no DHCP naming another's MAC, no address from another MAC"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vm1:Stopped:10.210.1.2:c1:m1:u1:"
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/plug-stopped/10.210.1.2"
 ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null | grep -q 1.1.1.1 && fail "the exit kept a sleeping machine's connections"

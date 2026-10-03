@@ -463,13 +463,14 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 		rmSync(join(state, "dhcp-hosts", "10.210.1.97"));
 	});
 
-	test("the bridge rules' sets come from the client map", () => {
+	test("the bridge rules come from the client map: the pairs, and one DHCP rule per machine naming its own MAC", () => {
 		const fresh = plugged("--kind", "machine", "--company", "c5", "--machine", "m5", "--project", "qp", "--instance", "vm5");
 		const r = spawnSync("python3", [plugTool, "elements", ...dirs()], { encoding: "utf8" });
 		assert.equal(r.status, 0, r.stderr);
+		const hex = fresh.hwaddr.replaceAll(":", "");
 		assert.deepEqual(r.stdout.trim().split("\n"), [
 			`add element bridge qorpera_agent_exit_bridge clients { ${fresh.hwaddr} . ${fresh.address} }`,
-			`add element bridge qorpera_agent_exit_bridge client_macs { ${fresh.hwaddr} }`,
+			`insert rule bridge qorpera_agent_exit_bridge dhcp ether saddr ${fresh.hwaddr} ip saddr { 0.0.0.0, ${fresh.address} } @th,288,48 0x${hex} accept comment "${fresh.address}"`,
 		]);
 	});
 

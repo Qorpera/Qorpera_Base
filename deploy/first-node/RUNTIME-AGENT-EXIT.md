@@ -149,8 +149,11 @@ healthy exit (E2).
 - Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge LXD
   does not manage it drops every DHCP request on its way to the exit (seen on LXD 6.9 in a test machine, 3 October,
   and in LXD's rule template). The exit's own bridge rules (`qorpera-agent-exit-bridge.nft`, bridge family, on the
-  node) take its place: from a machine's port a frame passes only as ARP or IPv4 from a MAC and address pair in the
-  client map, or as a DHCP request from a client map MAC; a card outside the map gets no address and nothing
+  node) take its place: from a machine's port a frame passes only as ARP (its sender fields too) or IPv4 from a MAC
+  and address pair in the client map, and DHCP only through one rule per machine: its own MAC, from no address or
+  its own, naming its own MAC as the client (BOOTP chaddr). So no machine can take, release or decline another's
+  lease (dnsmasq holds back a static address for 10 minutes after a DHCPDECLINE that names it), and dnsmasq ignores
+  client ids, so a lease is the MAC's alone. A card outside the map, or not in it yet, gets no address and nothing
   through. With LXD's MAC filter (each port keeps its own MAC) that ties each machine to its address. The node takes
   nothing from the bridge.
 - The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact

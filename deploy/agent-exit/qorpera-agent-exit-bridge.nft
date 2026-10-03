@@ -1,9 +1,10 @@
 # Qorpera agent exit (E2): the agents' bridge's own rules (bridge family, on the node). LXD's MAC filter keeps each
 # machine's port to its own MAC, its IPv6 filter drops all of a machine's IPv6, and port isolation keeps machines
 # apart. These rules tie each MAC to its address: from a machine's port a frame passes only as ARP or IPv4 from a MAC
-# and address pair in the client map, or as a DHCP request from a client map MAC. LXD's own IPv4 filter cannot do it
-# here: its forward chain has no DHCP exception, so on a bridge LXD does not manage it drops every DHCP request on its
-# way to the exit. The node takes nothing from the bridge (it has no address there).
+# and address pair in the client map (ARP's own sender fields too), and DHCP only as the machine's own. Anything else
+# is dropped, so a card not yet in the map (or never) gets nothing through. LXD's own IPv4 filter cannot do this here:
+# its forward chain has no DHCP exception, so on a bridge LXD does not manage it drops every DHCP request on its way
+# to the exit. The node takes nothing from the bridge (it has no address there).
 #
 # Load it with qorpera-agent-exit.sh, which fills the sets from the client map in the same transaction; the plug's
 # reconciler keeps them equal to it (qorpera-agent-plug.py). The same file runs on every node.
@@ -11,11 +12,6 @@
 table bridge qorpera_agent_exit_bridge {
 	set clients {
 		type ether_addr . ipv4_addr
-		size 65536
-	}
-
-	set client_macs {
-		type ether_addr
 		size 65536
 	}
 
@@ -30,9 +26,18 @@ table bridge qorpera_agent_exit_bridge {
 		meta ibrname != "qagent0" accept
 		# The exit's own port.
 		iifname "qx-br" accept
-		ether type arp ether saddr . arp saddr ip @clients accept
+		# Anything to a DHCP server port, from any source, is judged by the dhcp chain alone.
+		ether type ip udp dport 67 jump dhcp
+		ether type arp ether saddr . arp saddr ip @clients arp saddr ether . arp saddr ip @clients accept
 		ether type ip ether saddr . ip saddr @clients accept
-		ether type ip ip saddr 0.0.0.0 ip daddr 255.255.255.255 udp sport 68 udp dport 67 ether saddr @client_macs accept
+		counter name "dropped_unbound" drop
+	}
+
+	# One rule per client map entry, written with the set (by qorpera-agent-exit.sh up and the plug's reconciler): a
+	# DHCP message passes only from a machine's own MAC, from no address or its own, and naming that MAC as its client
+	# (BOOTP chaddr, 28 bytes into the UDP payload). So no machine can take, release or decline another's lease
+	# (dnsmasq holds back a static address for 10 minutes after a DHCPDECLINE that names its MAC).
+	chain dhcp {
 		counter name "dropped_unbound" drop
 	}
 

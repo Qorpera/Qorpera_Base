@@ -11,7 +11,8 @@ writes two files:
 The machine's LXD card then carries both: nictype bridged, parent qagent0, hwaddr, ipv4.address, ipv6.address none,
 MAC and IPv6 filtering and port isolation, and not LXD's IPv4 filtering (its forward chain has no DHCP exception, so on
 a bridge LXD does not manage it drops every DHCP request on its way to the exit). The exit's own bridge rules
-(qorpera-agent-exit-bridge.nft) tie each MAC to its address instead, from the client map. A repeated `plug` for the
+(qorpera-agent-exit-bridge.nft) tie each MAC to its address instead, from the client map: a set of MAC and address
+pairs, and one DHCP rule per machine (its own MAC, naming itself). A repeated `plug` for the
 same instance returns its entry, with a new time when the machine it was given to has been seen (it is being made
 again).
 
@@ -23,7 +24,7 @@ The reconciler (root, the plug unit) reads LXD every few seconds and keeps the m
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy
   (`qorpera-agent-exit.sh verify` reads <run-dir>/plug.json);
-- the bridge rules' sets are kept equal to the client map.
+- the bridge rules (the pairs set and the per-machine DHCP rules) are kept equal to the client map.
 Flushing covers both connection tables: the exit's own, and the node's masqueraded twin of each connection (phase 1).
 A flush that fails is tried again every pass, and its address is not given out until it succeeds.
 
@@ -36,7 +37,7 @@ also against a forged entry, and an address stays tied to its company as long as
 
   qorpera-agent-plug.py plug --kind K --company C --machine M [--member U] --project P --instance I
   qorpera-agent-plug.py list
-  qorpera-agent-plug.py elements                      (nft statements that fill the bridge rules' sets)
+  qorpera-agent-plug.py elements                      (nft statements that fill the bridge rules for `up`)
   qorpera-agent-plug.py reconcile [--once]            (root)
   qorpera-agent-plug.py --parse-conntrack             (test: stdin conntrack -L lines; stdout: twins as JSON lines)
 """
@@ -343,14 +344,26 @@ def ensure_lease(paths, entry):
     write_replace(path, line, 0o644)
 
 
-def elements(entries):
-    """nft statements that put every entry's MAC and address into the bridge rules' sets."""
+def dhcp_rule(entry):
+    """A machine's DHCP rule: its own MAC, from no address or its own, naming its own MAC as the client (chaddr)."""
+    mac = entry["hwaddr"]
+    return (f"ether saddr {mac} ip saddr {{ 0.0.0.0, {entry['address']} }} @th,288,48 0x{mac.replace(':', '')} "
+            f"accept comment \"{entry['address']}\"")
+
+
+def elements(entries, fresh=False):
+    """nft statements that fill the bridge rules from the client map: for `up`, after the table file (its dhcp chain
+    holds the final drop, the machines' rules go above it); with fresh, as one replacement of everything."""
     family, table = BRIDGE_TABLE
-    pairs = sorted((e["hwaddr"], e["address"]) for e in entries.values())
-    lines = []
-    if pairs:
-        lines.append(f"add element {family} {table} clients {{ {', '.join(f'{m} . {a}' for m, a in pairs)} }}")
-        lines.append(f"add element {family} {table} client_macs {{ {', '.join(m for m, _ in pairs)} }}")
+    ordered = sorted(entries.values(), key=lambda e: ipaddress.ip_address(e["address"]))
+    lines = [f"flush set {family} {table} clients", f"flush chain {family} {table} dhcp"] if fresh else []
+    if ordered:
+        pairs = ", ".join(f"{e['hwaddr']} . {e['address']}" for e in ordered)
+        lines.append(f"add element {family} {table} clients {{ {pairs} }}")
+    verb = "add" if fresh else "insert"
+    lines += [f"{verb} rule {family} {table} dhcp {dhcp_rule(e)}" for e in ordered]
+    if fresh:
+        lines.append(f'add rule {family} {table} dhcp counter name "dropped_unbound" drop')
     return lines
 
 
@@ -581,25 +594,38 @@ class Reconciler:
             if result.returncode != 0:
                 print(f"cannot clear {address} from the exit's sets: {result.stderr.strip()[:200]}", flush=True)
 
-    def sync_bridge_sets(self, entries):
-        """Keeps the bridge rules' sets equal to the client map, in one transaction."""
-        if not self.nft:
-            return
+    def bridge_state(self):
+        """What the bridge rules hold now: the set's pairs, the dhcp chain's per-machine rules (by their comment), and
+        whether that chain still ends in its drop. None when they cannot be read."""
         family, table = BRIDGE_TABLE
         listed = self.run(["nft", "-j", "list", "set", family, table, "clients"])
-        if listed.returncode != 0:
-            self.problems.append(f"cannot read the bridge rules: {listed.stderr.strip()[:200]}")
-            return
-        current = set()
+        chain = self.run(["nft", "-j", "list", "chain", family, table, "dhcp"])
+        if listed.returncode != 0 or chain.returncode != 0:
+            self.problems.append(f"cannot read the bridge rules: {(listed.stderr or chain.stderr).strip()[:200]}")
+            return None
+        pairs = set()
         for item in json.loads(listed.stdout).get("nftables", []):
             for elem in item.get("set", {}).get("elem", []) or []:
                 parts = elem.get("concat") if isinstance(elem, dict) else None
                 if parts and len(parts) == 2:
-                    current.add((str(parts[0]).lower(), str(parts[1])))
-        wanted = {(e["hwaddr"], e["address"]) for e in entries.values()}
-        if current == wanted:
+                    pairs.add((str(parts[0]).lower(), str(parts[1])))
+        rules = [item["rule"] for item in json.loads(chain.stdout).get("nftables", []) if "rule" in item]
+        comments = sorted(r.get("comment", "") for r in rules[:-1])
+        ends_in_drop = bool(rules) and "comment" not in rules[-1] and any("drop" in e for e in rules[-1].get("expr", []))
+        return pairs, comments, ends_in_drop
+
+    def sync_bridge(self, entries):
+        """Keeps the bridge rules equal to the client map (the set and the per-machine DHCP rules), in one
+        transaction. Read back every pass, so a restart, a crash or a hand edit is set right within a pass."""
+        if not self.nft:
             return
-        batch = [f"flush set {family} {table} clients", f"flush set {family} {table} client_macs", *elements(entries)]
+        state = self.bridge_state()
+        if state is None:
+            return
+        wanted = ({(e["hwaddr"], e["address"]) for e in entries.values()}, sorted(entries), True)
+        if state == wanted:
+            return
+        batch = elements(entries, fresh=True)
         result = subprocess.run(["nft", "-f", "-"], input="\n".join(batch) + "\n", capture_output=True, text=True)
         if result.returncode != 0:
             self.problems.append(f"cannot update the bridge rules: {result.stderr.strip()[:200]}")
@@ -728,7 +754,7 @@ class Reconciler:
                 remove(os.path.join(self.paths.unflushed, name))
         self.tidy(at)
         entries = read_entries(self.paths)[0]
-        self.sync_bridge_sets(entries)
+        self.sync_bridge(entries)
         return self.write_status(at, entries)
 
     def write_status(self, at, entries):

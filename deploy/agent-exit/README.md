@@ -30,7 +30,7 @@ own and removes the node's masquerade.
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `verify`, `health`, `status` |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one |
-| `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): from a machine's port only ARP and IPv4 from a MAC and address pair in the client map, and DHCP requests from a client map MAC; the node takes nothing from the bridge. `up` loads it with its sets filled from the client map, in one transaction |
+| `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): from a machine's port only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled from the client map, in one transaction |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
 | `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name and log units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
 | `qorpera-agent-exit-dns.service` | dnsmasq, run inside `qexit` (`NetworkNamespacePath=`) and sandboxed: static DHCP leases (10 minutes) from `/var/lib/qorpera-agent-exit/dhcp-hosts` (E2 writes one `mac,address` file per machine, readable by dnsmasq's unprivileged user, and reloads the unit after removing one), machines' own names ignored and never published, DNS forwarded to 9.9.9.9 and 1.1.1.1, every query logged to `/var/log/qorpera-agent-exit/dns.log` |
@@ -83,7 +83,9 @@ Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), 
 - every entry is checked against its machine (the card above, the identity keys), a running machine's card must be
   a port of `qagent0`, and every machine on `qagent0` must have an entry. A problem goes to
   `/run/qorpera-agent-exit/plug.json`, and `verify` fails while there is one;
-- it keeps the bridge rules' sets (`clients`: MAC and address pairs; `client_macs`) equal to the client map;
+- it keeps the bridge rules (the `clients` set of MAC and address pairs, and the `dhcp` chain's rule per machine) equal
+  to the client map, read back every pass, so a restart, a crash or a hand edit is set right within a pass. Until a
+  machine's entry is in them, nothing from its card passes (a new machine's first DHCP request may wait one pass);
 - `/var/log/qorpera-agent-exit/clients-YYYY-MM-DD.jsonl` (mode 0640) ties an address to a company only for an entry
   LXD backs: `plugged` (from the entry's time) once it matches, `unplugged` when it goes. An entry LXD does not back
   gets a `mismatch` line (the claim, what LXD says, the problems) and is never attributed; one that goes without

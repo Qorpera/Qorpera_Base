@@ -220,11 +220,13 @@ dns() {
 	has_ns || die "the exit is not up"
 	for server in $upstreams; do args+=("--server=$server"); done
 	# Static leases only: the agent plug (E2) writes one "mac,address" file per machine into dhcp-hosts and sends
-	# SIGHUP (the dns unit's reload) when it removes one. Machines' own names are ignored and never published.
+	# SIGHUP (the dns unit's reload) when it removes one. Machines' own names are ignored and never published, and so
+	# are their client ids: a lease is the MAC's alone, so no machine can reach another's lease by naming its id.
 	local command=(dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file=
 		--no-resolv --no-hosts --no-poll --bind-interfaces --interface=br0 --listen-address="$GATEWAY"
 		"${args[@]}"
 		--dhcp-range="${AGENTS%/*},static,255.255.0.0,$LEASE" --dhcp-authoritative --dhcp-ignore-names
+		--dhcp-ignore-clid
 		--dhcp-hostsdir="$state_dir/dhcp-hosts" --dhcp-leasefile="$run_dir/dnsmasq.leases"
 		--dhcp-option=option:router,"$GATEWAY" --dhcp-option=option:dns-server,"$GATEWAY"
 		--log-queries=extra --log-facility="$log_dir/dns.log" --log-async=50)
