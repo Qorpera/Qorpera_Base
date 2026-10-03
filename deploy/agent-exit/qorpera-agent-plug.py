@@ -9,8 +9,9 @@ writes two files:
 - the client map entry clients/<address>.json (address, MAC, kind, company, machine, member, LXD project and
   instance, since), created exclusively, so two creators never get the same address;
 - dnsmasq's static lease dhcp-hosts/<address> ("mac,address"), which dnsmasq reads by itself.
-The machine's LXD card then carries both: nictype bridged, parent qagent0, hwaddr, ipv4.address, ipv6.address none,
-MAC and IPv6 filtering and port isolation, and not LXD's IPv4 filtering (its forward chain has no DHCP exception, so on
+The machine's LXD card then carries the MAC: nictype bridged, parent qagent0, hwaddr, ipv6.address none, MAC and IPv6
+filtering and port isolation; not ipv4.address (LXD 6.9 refuses it on a bridge it does not manage unless its IPv4
+filter is on: the address lives in the client map, the lease and the bridge rules), and not LXD's IPv4 filtering (its forward chain has no DHCP exception, so on
 a bridge LXD does not manage it drops every DHCP request on its way to the exit). The exit's own bridge rules
 (qorpera-agent-exit-bridge.nft) tie each port to its MAC and each MAC to its address instead: a set of LXD ports and
 their MACs, a set of MAC and address pairs, and one DHCP rule per machine (its own MAC, naming itself). Only entries
@@ -421,8 +422,9 @@ def host_port(instance):
 
 def backed(paths, entries, instances, loaded=()):
     """The entries LXD backs (each matched once and still matching its machine, if it has one now), and the ports of
-    their machines. A machine missing from this one read of LXD keeps the port the loaded rules give it (loaded): one
-    odd read never cuts a machine off, as it never unplugs one."""
+    their machines. A machine missing from this read of LXD for the first time keeps the port the loaded rules give it
+    (loaded): one odd read never cuts a machine off, as it never unplugs one. A machine being made again (its entry
+    has a new time) does not keep the old one's port."""
     by_name = {(i.get("project", "default"), i["name"]): i for i in instances}
     loaded_by_mac = {mac: port for port, mac in loaded}
     ok, ports = {}, set()
@@ -433,7 +435,12 @@ def backed(paths, entries, instances, loaded=()):
         if instance is not None and check_machine(entry, instance):
             continue
         ok[address] = entry
-        port = host_port(instance) if instance is not None else loaded_by_mac.get(entry["hwaddr"])
+        first_miss = (instance is None and os.path.lexists(os.path.join(paths.missing, address))
+                      and seen_since(paths, address) == entry["since"])
+        if instance is not None:
+            port = host_port(instance)
+        else:
+            port = loaded_by_mac.get(entry["hwaddr"]) if first_miss else None
         if port:
             ports.add((port, entry["hwaddr"]))
     return ok, ports
@@ -493,7 +500,7 @@ def check_machine(entry, instance):
         return [f"{where(entry)} has {len(nics)} network cards on {BRIDGE}, not 1"]
     nic = next(iter(nics.values()))
     problems = []
-    wanted = dict(PLUG_NIC, hwaddr=entry["hwaddr"], **{"ipv4.address": entry["address"]})
+    wanted = dict(PLUG_NIC, hwaddr=entry["hwaddr"])
     for key, value in wanted.items():
         if nic.get(key) != value:
             problems.append(f"{where(entry)}: its card's {key} is {nic.get(key)!r}, not {value!r}")

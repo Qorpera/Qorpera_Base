@@ -63,9 +63,13 @@ umask (dnsmasq's unprivileged user reads the leases). The creator then makes the
 else on `qagent0`:
 
 ```
-type: nic, nictype: bridged, parent: qagent0, name: <eth0 | eth1>, hwaddr: <hwaddr>, ipv4.address: <address>,
-ipv6.address: none, security.mac_filtering: true, security.ipv6_filtering: true, security.port_isolation: true
+type: nic, nictype: bridged, parent: qagent0, name: <eth0 | eth1>, hwaddr: <hwaddr>, ipv6.address: none,
+security.mac_filtering: true, security.ipv6_filtering: true, security.port_isolation: true
 ```
+
+No `ipv4.address`: LXD 6.9 refuses it on a bridge it does not manage unless its own IPv4 filter is on ("Cannot use
+manually specified ipv4.address when using unmanaged parent bridge", seen in E2b's proof). The machine's address lives
+in the client map, its lease and the bridge rules, all tied to the MAC on the card.
 
 Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge it does
 not manage it drops every DHCP request on its way to the exit. `qorpera-agent-exit-bridge.nft` ties each MAC to its

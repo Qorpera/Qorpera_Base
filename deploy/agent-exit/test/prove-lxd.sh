@@ -138,7 +138,7 @@ machine() {
 	lx init "$IMAGE" "$name" --no-profiles --storage "$POOL" -c limits.cpu=1 -c limits.memory=512MiB \
 		-c user.qorpera.company_id="$company" -c user.qorpera.machine_id="$name" >/dev/null 2>&1
 	lx config device add "$name" eth0 nic nictype=bridged parent=qagent0 name=eth0 hwaddr="$hwaddr" \
-		ipv4.address="$address" ipv6.address=none security.mac_filtering=true security.ipv6_filtering=true \
+		ipv6.address=none security.mac_filtering=true security.ipv6_filtering=true \
 		security.port_isolation=true >/dev/null
 	lx start "$name"
 	echo "$address"
