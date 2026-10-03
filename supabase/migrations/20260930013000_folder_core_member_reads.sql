@@ -130,7 +130,9 @@ $$;
 -- 4. History ----------------------------------------------------------------------------------------------------
 
 -- A path's versions, newest first, when the member may read the path now. p_before is the last version of the
--- previous page. A move names the other path only when the member may read it too, as the feed does.
+-- previous page. A move names the other path only when the member may read it too, as the feed does. Versions are
+-- ordered and paged by their time, which is seq order for one key: writers of a path hold its lock to the end of
+-- their commit (core §3), so a later version of the same key is written after the earlier one committed.
 create function public.qorpera_member_folder_path_history(p_environment_id uuid, p_path text, p_before uuid,
 	p_limit integer)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
@@ -182,15 +184,18 @@ begin
 		'next', case when jsonb_array_length(v_items) = p_limit then v_items -> (p_limit - 1) -> 'version' end);
 end $$;
 
--- The change sets, newest first, each with the paths in it the member may read (at most 20; `more` when it has
--- others they may read, or more than this call examined). A change set with none is left out; authority rows are
--- left out. Each call examines at most p_limit change sets and 200 path versions of each. p_before is a seq: change
--- sets before it.
+-- The change sets, newest first, each with the paths in it the member may read: the first 20 in unit order, and
+-- `more` when it has others they may read, or more versions than one call examines. A change set's versions are
+-- examined in unit order until a 21st readable one, and at most 1,000 of them: a change set none of whose first 1,000
+-- versions the member may read is left out, like one with no readable path at all (the feed and a path's history still
+-- show its changes). Authority rows are left out. Work per call is bounded: at most p_limit change sets, and 10,000
+-- versions in all; a change set the remaining budget can't examine whole is left for the next page. p_before is a
+-- seq: change sets before it.
 create function public.qorpera_member_folder_history(p_environment_id uuid, p_before bigint, p_limit integer)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_actor jsonb := public.qorpera_member_folder_actor(p_environment_id); v_profile uuid; v_last bigint;
-	v_journal record; v_items jsonb[] := '{}'; v_scanned integer := 0; v_paths jsonb; v_examined integer;
-	v_readable integer; v_oldest bigint;
+	v_journal record; v_version record; v_items jsonb[] := '{}'; v_paths jsonb;
+	v_seen integer; v_found integer; v_cap integer; v_budget integer := 10000; v_oldest bigint;
 begin
 	-- C4 P27a (20260930013000)
 	perform public.qorpera_folder_read_actor(p_environment_id, v_actor);
@@ -199,6 +204,7 @@ begin
 	select file.profile_id, clock.last_seq into v_profile, v_last
 	from public.qorpera_company_files as file join public.qorpera_folder_clocks as clock using (environment_id)
 	where file.environment_id = p_environment_id and file.core = 'folder-v2';
+	<<change_sets>>
 	for v_journal in select journal.seq, commit_row as commit_row
 		from public.qorpera_folder_journal as journal
 		join public.qorpera_folder_commits as commit_row on commit_row.id = journal.commit_id
@@ -207,31 +213,36 @@ begin
 		order by journal.seq desc
 		limit p_limit
 	loop
-		v_scanned := v_scanned + 1;
-		v_oldest := v_journal.seq;
-		with examined as materialized (
-			select version.path, version.op, version.kind, version.version, version.unit_no
+		v_cap := least(1000, v_budget);
+		v_seen := 0; v_found := 0; v_paths := '[]';
+		-- One version at a time, in unit order, so the scan stops at the 21st readable one or the cap.
+		for v_version in select version.path, version.op, version.kind, version.version
 			from public.qorpera_folder_path_versions as version
 			where version.commit_id = (v_journal.commit_row).id
 			order by version.unit_no, version.version
-			limit 201
-		), shown as materialized (
-			select examined.* from (select * from examined order by unit_no, version limit 200) as examined
-			where public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_actor, examined.path, 'read')
-		)
-		select (select count(*) from examined)::integer, (select count(*) from shown)::integer,
-			(select coalesce(jsonb_agg(jsonb_build_object('path', listed.path, 'op', listed.op, 'kind', listed.kind,
-				'version', listed.version) order by listed.unit_no, listed.version), '[]'::jsonb)
-			from (select * from shown order by unit_no, version limit 20) as listed)
-		into v_examined, v_readable, v_paths;
-		if v_readable > 0 then
+		loop
+			v_seen := v_seen + 1;
+			exit when v_seen > v_cap;
+			if public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_actor, v_version.path, 'read') then
+				v_found := v_found + 1;
+				exit when v_found > 20;
+				v_paths := v_paths || jsonb_build_array(jsonb_build_object('path', v_version.path, 'op', v_version.op,
+					'kind', v_version.kind, 'version', v_version.version));
+			end if;
+		end loop;
+		-- The budget ran out inside this change set: it goes whole to the next page.
+		exit change_sets when v_seen > v_cap and v_cap < 1000 and v_found <= 20;
+		v_budget := v_budget - least(v_seen, v_cap);
+		v_oldest := v_journal.seq;
+		if v_found > 0 then
 			v_items := v_items || jsonb_build_object('seq', v_journal.seq, 'at', (v_journal.commit_row).created_at,
 				'by', public.qorpera_folder_commit_by(v_journal.commit_row), 'paths', v_paths,
-				'more', v_readable > 20 or v_examined > 200);
+				'more', v_found > 20 or v_seen > v_cap);
 		end if;
 	end loop;
+	-- Whatever stopped the page, an older change set is the next page's.
 	return jsonb_build_object('schema', 'qorpera.folder-history/v1', 'asOfSeq', v_last, 'items', to_jsonb(v_items),
-		'next', case when v_scanned = p_limit and exists (select 1 from public.qorpera_folder_journal as journal
+		'next', case when v_oldest is not null and exists (select 1 from public.qorpera_folder_journal as journal
 			where journal.environment_id = p_environment_id and journal.kind = 'change_set' and journal.seq < v_oldest)
 			then v_oldest end);
 end $$;

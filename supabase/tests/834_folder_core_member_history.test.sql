@@ -204,6 +204,36 @@ begin
 		'63000000-0000-4000-8000-000000000020', -1, 10)$s$), '22023 Feed position is invalid', 'an invalid position');
 end $$;
 
+-- A change set whose readable path comes after many the member may not read is still found: its versions are
+-- examined in unit order until a readable one, up to 1,000.
+select pg_temp.claims('service_role');
+do $$
+declare v_contents jsonb := '[]';
+begin
+	for i in 1..205 loop
+		v_contents := v_contents || jsonb_build_array(jsonb_build_object('path', 'h' || lpad(i::text, 3, '0') || '.txt',
+			'kind', 'file', 'file', pg_temp.stage('hidden ' || i)));
+	end loop;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'member-history-hidden', jsonb_build_array(
+		jsonb_build_object('op', 'new_folder', 'path', 'locked/hidden', 'contents', v_contents),
+		jsonb_build_object('op', 'write', 'path', 'after.txt', 'file', pg_temp.stage('after')))), 2, 'saved');
+end $$;
+select pg_temp.as_member(3);
+do $$
+declare v jsonb := pg_temp.history(null, 1);
+begin
+	perform pg_temp.same(pg_temp.seqs(v), '13', 'the change set whose readable path comes last');
+	perform pg_temp.same(v -> 'items' -> 0 -> 'paths', '[]'::jsonb || jsonb_build_object('path', 'after.txt', 'op', 'write',
+		'kind', 'file', 'version', (select version from public.qorpera_folder_path_versions
+			where environment_id = '63000000-0000-4000-8000-000000000020' and path = 'after.txt')), 'only its readable path');
+	perform pg_temp.same(v -> 'items' -> 0 ->> 'more', 'false', 'and nothing more the member may read');
+end $$;
+select pg_temp.as_member(2);
+do $$ begin
+	perform pg_temp.same(jsonb_array_length(pg_temp.history(null, 1) -> 'items' -> 0 -> 'paths')::text || ' '
+		|| (pg_temp.history(null, 1) -> 'items' -> 0 ->> 'more'), '20 true', 'the private folder''s owner sees it all');
+end $$;
+
 -- An agent's commit names the agent, never the member who asked it.
 select pg_temp.claims('service_role');
 do $$ begin
@@ -226,6 +256,17 @@ select pg_temp.as_member(2);
 do $$
 declare v jsonb; v_item jsonb;
 begin
+	v := public.qorpera_member_folder_read('63000000-0000-4000-8000-000000000020', 'notes/log.txt');
+	perform pg_temp.shape(v, 'asOfSeq,entry,found,schema', 'a read');
+	perform pg_temp.shape(v -> 'entry',
+		'bytes,executable,fileSha256,kind,manifestSha256,mediaType,path,seq,updatedAt,version', 'a file entry');
+	perform pg_temp.shape(public.qorpera_member_folder_read('63000000-0000-4000-8000-000000000020', 'notes') -> 'entry',
+		'kind,path,seq,updatedAt,version', 'a folder entry');
+	v := public.qorpera_member_folder_read('63000000-0000-4000-8000-000000000020', 'nowhere.txt');
+	perform pg_temp.shape(v, 'asOfSeq,entry,found,schema', 'a read of nothing');
+	perform pg_temp.same(jsonb_typeof(v -> 'entry'), 'null', 'its entry is null');
+	perform pg_temp.shape(public.qorpera_member_folder_list('63000000-0000-4000-8000-000000000020', null, null, 2),
+		'asOfSeq,entries,next,schema', 'a listing');
 	v := pg_temp.path_history('notes/log.txt');
 	perform pg_temp.shape(v, 'asOfSeq,items,next,schema', 'a path history page');
 	perform pg_temp.shape(v -> 'items' -> 0,
