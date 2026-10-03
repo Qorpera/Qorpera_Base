@@ -122,8 +122,9 @@ begin
 		'a quote again');
 	perform pg_temp.expect(pg_temp.state_of($call$select pg_temp.draft(8, 'Svar »ja« og »nej« i dag.')$call$), '22023',
 		'an older client''s save removing the last quote and adding own marks');
-	perform pg_temp.expect(pg_temp.state_of($call$select pg_temp.draft(8, 'Svar «Order 7 is late» nu.', '[]')$call$),
-		'22023', 'an empty list keeping the quote''s words');
+	-- The draft's own refusal, not the message check's ("Message quotes are invalid"), which refuses an empty list.
+	perform pg_temp.expect(pg_temp.message_of($call$select pg_temp.draft(8, 'Svar «Order 7 is late» nu.', '[]')$call$),
+		'A save would keep a quote''s words without its record', 'an empty list keeping the quote''s words');
 	v_result := pg_temp.draft(8, 'Svar »ja« og »nej« i dag.', '[]');
 	perform pg_temp.expect(v_result ->> 'status', 'ok', 'an empty list removing the last quote and adding own marks');
 	perform pg_temp.expect((v_result -> 'draft' ? 'quotes')::text, 'false', 'stored as none');
