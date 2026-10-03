@@ -134,7 +134,11 @@ end $$;
 rollback to savepoint quotes_whole_tree;
 savepoint quotes_folder_v2;
 set local session_replication_role = replica;
-update public.qorpera_company_files set core = 'folder-v2' where environment_id = '30000000-0000-4000-8000-000000000020';
+-- A folder-v2 company has no snapshot head and no path gateway (qorpera_company_files_core_head): it takes quotes as
+-- folder-v2 alone.
+update public.qorpera_company_files
+set core = 'folder-v2', head_snapshot_id = null, path_gateway_version = null, path_index_snapshot_id = null
+where environment_id = '30000000-0000-4000-8000-000000000020';
 do $$ begin
 	perform pg_temp.expect(pg_temp.check_here(), 'ok', 'a folder-v2 company');
 end $$;
