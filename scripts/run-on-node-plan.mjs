@@ -208,6 +208,9 @@ export const STEPS = [
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
+			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
+			/^packages\/object-gateway\/src\/(connection-files|platform-folder-writer|object-store|native-objects|dependency)\.ts$/,
+			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
