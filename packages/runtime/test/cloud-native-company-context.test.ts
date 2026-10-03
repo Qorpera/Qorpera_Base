@@ -196,6 +196,14 @@ it.each([
 					"# This wake: your workers reported",
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
+				// The first run acknowledges as its reply policy asks, then reads what its role names, then greets; no
+				// formation stages (folder core C4, after P28b).
+				if (kind === "first-run") {
+					expect(instructions).toContain(
+						"Follow delivery.beforeWork first, then read what your role section says to read before you greet",
+					);
+					expect(instructions).not.toContain("stages");
+				}
 				// Only a dynamic routine's run is told to decide its next run.
 				expect(instructions.includes("# This routine is dynamic")).toBe(false);
 				if (kind === "routine") {
