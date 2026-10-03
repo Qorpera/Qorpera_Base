@@ -415,7 +415,7 @@ begin
 		'from',f,'to','agents/ada/todos/call-the-bank/renamed','asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'moves only with its agent''s folder');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0003', jsonb_build_array(jsonb_build_object('op','mkdir',
-		'path','agents/ada/todos/plan-the-trip')), jsonb_build_object('op','mkdir','path','agents/ada/todos/plan-the-trip/sneaky'))),
+		'path','agents/ada/todos/plan-the-trip'), jsonb_build_object('op','mkdir','path','agents/ada/todos/plan-the-trip/sneaky'))),
 		2, 'made by manage_worker''s dispatch');
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0004', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/ada/todos/call-the-bank.md','expectedVersion',pg_temp.f2_version('agents/ada/todos/call-the-bank.md')))),
