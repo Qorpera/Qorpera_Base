@@ -873,6 +873,11 @@ only after durable storage.
 - `GET/PUT /v1/member-company-file/…` — logical Company File reads and writes
   through the authority layer
 - `GET/PUT /v1/member-company-objects/…` — content-addressed objects
+- `GET /v1/member-folder-objects/<environmentId>/<sha256>` — a folder-v2 company's bytes for a member (folder core
+  C4, P27b), one manifest or chunk of a file the member may read, now or in a version they may read
+  (`qorpera_member_folder_object`, checked before and after the read). Behind the member company gateway like the
+  other member routes. `CloudMemberFolderClient.readFile` fetches the manifest, then its chunks, and checks each
+  against its hash and the whole against the file's.
 - `/v1/member-session-attachments/…` — attachments on canonical sessions
 - `POST /v1/read-leases/revoke` — revoke a read lease
 - `/v1/native-company-objects/…` — runner-only, not for clients
