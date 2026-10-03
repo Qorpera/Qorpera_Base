@@ -225,7 +225,8 @@ declare v_roots jsonb := '[{"key":"contacts/maria.md","cutoffSeq":10,"cutoffUnit
 		"problems":[{"line":3,"key":"email","code":"invalid","message":"put \"x\" in double quotes"}]},
 		{"unit":2,"op":"write","path":"contacts/other.md","outcome":"refused","reason":"structured_rule",
 		"problems":[{"line":null,"key":"id","code":"taken","message":"this contact already has the file contacts/Maria.md"},
-			{"line":null,"key":"name","code":"x","message":"unrelated"}]},
+			{"line":null,"key":"name","code":"x","message":"unrelated"},
+			{"line":null,"key":"near","code":"x","message":"see contacts/Maria for more"}]},
 		{"unit":3,"op":"move","path":"docs/q.md","to":"contacts/maria.md","outcome":"saved","version":"11111111-1111-4111-8111-111111111111"}]';
 	v_out jsonb;
 begin
@@ -233,8 +234,8 @@ begin
 	if v_out -> 0 <> '{"unit":1,"op":"write","path":"","outcome":"refused","reason":"structured_rule"}'::jsonb then
 		raise exception 'A unit under the root loses its path and problems: %', v_out -> 0; end if;
 	if v_out -> 1 -> 'problems' -> 0 ->> 'message' <> '' or v_out -> 1 -> 'problems' -> 1 ->> 'message' <> 'unrelated'
-		or v_out -> 1 ->> 'path' <> 'contacts/other.md' then
-		raise exception 'Another unit''s quoting message is blanked, nothing else: %', v_out -> 1; end if;
+		or v_out -> 1 -> 'problems' -> 2 ->> 'message' <> 'see contacts/Maria for more' or v_out -> 1 ->> 'path' <> 'contacts/other.md' then
+		raise exception 'Another unit''s quoting message is blanked, nothing else (a stem alone never): %', v_out -> 1; end if;
 	if v_out -> 2 ->> 'to' <> '' or v_out -> 2 ->> 'path' <> 'docs/q.md' then raise exception 'A target under the root: %', v_out -> 2; end if;
 	-- After the cutoff (a later life), nothing changes; an unsaved change set goes by time.
 	if public.qorpera_folder_erasure_units(v_units, 11, now(), v_roots, v_needles) is not null then
@@ -274,6 +275,88 @@ begin
 			'qorpera_folder_erasure_runs','qorpera_folder_erasure_hashes') and not c.relrowsecurity)
 		or has_table_privilege('service_role', 'public.qorpera_folder_erasures', 'select') then
 		raise exception 'The erasure tables are closed'; end if;
+end $$;
+
+-- 7. Path permissions, a company being deleted, connection rows, copies, a moved folder, the step's bound ---------------
+
+do $$
+declare r jsonb; d jsonb; v_id uuid; v_resource uuid; v_version uuid; v_commit uuid; v_secret uuid := extensions.gen_random_uuid();
+	v_before bigint;
+begin
+	-- A path permission at or under a deleted root is revoked first. The environment's root resource, and a live root's
+	-- own permission (it governs the current file), never refuse.
+	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, policy, created_by_user_id)
+	values ('70700000-0000-4000-8000-000000000020', '', 'subtree', 'company_shared', 'normal', '70700000-0000-4000-8000-000000000001')
+	on conflict do nothing;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-r-1', jsonb_build_array(pg_temp.mkdir('docs/r'),
+		pg_temp.put('docs/r/a.md', 'r'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-r-2', jsonb_build_array(pg_temp.del('docs/r'))), 1, 'saved');
+	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, policy, created_by_user_id)
+	values ('70700000-0000-4000-8000-000000000020', 'docs/r/A.md', 'exact', 'company_shared', 'normal',
+		'70700000-0000-4000-8000-000000000001') returning id into v_resource;
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['docs/r'], 'erase-r-3')$q$), '22023',
+		'a permission under a deleted root');
+	update public.qorpera_company_path_resources set revoked_at = clock_timestamp() where id = v_resource;
+	r := pg_temp.erase(array['docs/r'], 'erase-r-3');
+	perform pg_temp.is(pg_temp.drain((r ->> 'erasureId')::uuid).state, 'done', 'erased once revoked');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-l-1', jsonb_build_array(pg_temp.put('docs/l.md', 'l one'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-l-2', jsonb_build_array(pg_temp.del('docs/l.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-l-3', jsonb_build_array(pg_temp.put('docs/l.md', 'l two'))), 1, 'saved');
+	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, policy, created_by_user_id)
+	values ('70700000-0000-4000-8000-000000000020', 'docs/l.md', 'exact', 'company_shared', 'normal',
+		'70700000-0000-4000-8000-000000000001');
+	perform pg_temp.drain((pg_temp.erase(array['docs/l.md'], 'erase-l-4') ->> 'erasureId')::uuid);
+	perform pg_temp.is(pg_temp.versions_at('docs/l.md')::text, '1', 'a live root''s own permission does not refuse');
+
+	-- A retired connection row built from an erased file goes with the request, as the index rows do.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-k-1', jsonb_build_array(pg_temp.put('docs/k.md', 'k'))), 1, 'saved');
+	v_version := pg_temp.version('docs/k.md');
+	select commit_id into v_commit from public.qorpera_folder_path_versions where version = v_version;
+	insert into public.qorpera_folder_connection_index(secret_id, environment_id, profile_id, folder_path, folder_path_version,
+		commit_id, purpose, retired_at)
+	values (v_secret, '70700000-0000-4000-8000-000000000020', '70700000-0000-4000-8000-000000000010', 'docs/k.md', v_version,
+		v_commit, 'the k account', clock_timestamp());
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-k-2', jsonb_build_array(pg_temp.del('docs/k.md'))), 1, 'saved');
+	r := pg_temp.erase(array['docs/k.md'], 'erase-k-3');
+	if exists (select 1 from public.qorpera_folder_connection_index where secret_id = v_secret) then
+		raise exception 'The retired connection row goes with the request'; end if;
+	-- A company being deleted: no new erasure, and the drain leaves its open ones to the purge.
+	v_id := (r ->> 'erasureId')::uuid;
+	insert into public.qorpera_company_deletions(profile_id, requested_by_user_id) values ('70700000-0000-4000-8000-000000000010', null);
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['docs/r'], 'erase-k-4')$q$), '55000', 'a company being deleted');
+	perform public.qorpera_folder_erasure_step(3, 3, 3);
+	if pg_temp.versions_at('docs/k.md') <> 2 or (select phase from public.qorpera_folder_erasures where id = v_id) <> 1 then
+		raise exception 'The drain leaves a company being deleted'; end if;
+	delete from public.qorpera_company_deletions where profile_id = '70700000-0000-4000-8000-000000000010';
+	perform pg_temp.is(pg_temp.drain(v_id).state, 'done', 'drained once the deletion is gone');
+	perform pg_temp.is(pg_temp.versions_at('docs/k.md')::text, '0', 'its versions are gone');
+
+	-- A copy: another file with the erased bytes is named in the reply, not followed.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-c-1', jsonb_build_array(pg_temp.put('docs/c1.md', 'copied text'),
+		pg_temp.put('docs/c2.md', 'copied text'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-c-2', jsonb_build_array(pg_temp.del('docs/c1.md'))), 1, 'saved');
+	r := pg_temp.erase(array['docs/c1.md'], 'erase-c-3');
+	if r -> 'copies' <> '["docs/c2.md"]'::jsonb then raise exception 'The copy is named: %', r; end if;
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+	perform pg_temp.is(pg_temp.versions_at('docs/c2.md')::text, '1', 'the copy stays');
+
+	-- A moved folder, then deleted: the refusal names the old folder alone, not each key under it.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-s-1', jsonb_build_array(pg_temp.mkdir('docs/s'),
+		pg_temp.put('docs/s/a.md', 's'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-s-2', jsonb_build_array(pg_temp.mv('docs/s', 'docs/t'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-s-3', jsonb_build_array(pg_temp.del('docs/t'))), 1, 'saved');
+	d := pg_temp.detail($q$select pg_temp.erase(array['docs/t'], 'erase-s-4')$q$);
+	if d -> 'add' <> '["docs/s"]'::jsonb or d -> 'live' <> '[]'::jsonb then raise exception 'Name the old folder: %', d; end if;
+	r := pg_temp.erase(array['docs/t', 'docs/s'], 'erase-s-5');
+	-- One step deletes at most its bound of versions.
+	v_before := pg_temp.versions_at('docs/s') + pg_temp.versions_at('docs/s/a.md') + pg_temp.versions_at('docs/t')
+		+ pg_temp.versions_at('docs/t/a.md');
+	perform public.qorpera_folder_erasure_step(3, 3, 3);
+	perform pg_temp.is((v_before - pg_temp.versions_at('docs/s') - pg_temp.versions_at('docs/s/a.md') - pg_temp.versions_at('docs/t')
+		- pg_temp.versions_at('docs/t/a.md'))::text, '3', 'a step deletes its bound');
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+	if pg_temp.versions_at('docs/s') + pg_temp.versions_at('docs/s/a.md') + pg_temp.versions_at('docs/t')
+		+ pg_temp.versions_at('docs/t/a.md') <> 0 then raise exception 'The moved folder''s whole history goes'; end if;
 end $$;
 
 rollback;
