@@ -37,6 +37,9 @@ const createdAt = "2026-09-29T08:00:00.000Z";
 const capability = "l".repeat(43);
 const assignment = { assignmentId, jobId, capability };
 
+/** A folder-v2 run (folder core C3, P23): its job and its description name no Company File substrate. */
+let folderRun = false;
+
 function jobRecord(status: "leased" | "completed" = "leased", result: unknown = null) {
 	return {
 		job_id: jobId,
@@ -45,7 +48,7 @@ function jobRecord(status: "leased" | "completed" = "leased", result: unknown = 
 		profile_id: profileId,
 		environment_id: environmentId,
 		session_id: null,
-		substrate_version_id: versionId,
+		substrate_version_id: folderRun ? null : versionId,
 		client_job_id: "11111111-1111-4111-8111-111111111111",
 		required_capability: "agent_turn",
 		job_type: "agent_turn",
@@ -68,8 +71,21 @@ function jobRecord(status: "leased" | "completed" = "leased", result: unknown = 
 	};
 }
 
-/** qorpera_runner_broker_describe for a native company run. */
+/** qorpera_runner_broker_describe for a native company run (for a folder-v2 run, with no substrate anywhere). */
 function descriptionRecord() {
+	const description = snapshotDescriptionRecord();
+	if (!folderRun) return description;
+	return {
+		...description,
+		run: { ...description.run, substrate_version_id: null, company_snapshot_id: null },
+		version: null,
+		snapshot: null,
+		artifact_index: null,
+		company_file_output_limits: null,
+	};
+}
+
+function snapshotDescriptionRecord() {
 	return {
 		company_runtime: "company-path-v1",
 		job: jobRecord(),
@@ -364,6 +380,23 @@ describe("runner start", () => {
 		expect(f.broker.describe).not.toHaveBeenCalled();
 		expect(f.broker.acquireNativeAuthority).not.toHaveBeenCalled();
 		expect(f.broker.renewNativeAuthority).not.toHaveBeenCalled();
+	});
+
+	it("hands a folder-v2 run (no Company File substrate) to its computer and completes it naming none", async () => {
+		folderRun = true;
+		try {
+			const f = await nativeWorker("deferred");
+			const { result } = await f.runNext();
+			// The completed job echoes the completion's result: the path lane's, naming no substrate.
+			expect(result).toMatchObject({
+				status: "completed",
+				job: { result: { runtime: "company-path-v1", substrate_version_id: null } },
+			});
+			expect(f.startCompany).toHaveBeenCalledOnce();
+			expect(f.broker.describe).toHaveBeenCalled();
+		} finally {
+			folderRun = false;
+		}
 	});
 
 	it("makes the separate calls when the cloud deferred the start's reads", async () => {

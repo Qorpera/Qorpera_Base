@@ -15,7 +15,7 @@ end $$;
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020';
-	a jsonb; r jsonb; e jsonb; v_seed jsonb; v_release uuid := extensions.gen_random_uuid();
+	a jsonb; r jsonb; e jsonb; v_units jsonb; v_seed jsonb; v_release uuid := extensions.gen_random_uuid();
 begin
 	a := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000001');
 	v_seed := public.qorpera_folder_commit(env, '{"kind":"platform"}', 'client-shape-seed', jsonb_build_array(
@@ -57,11 +57,14 @@ begin
 		'authority,bytes,executable,fileSha256,kind,manifestSha256,mediaType,path,seq,updatedAt,version', 'a listed file');
 	perform pg_temp.shape(r -> 'entries' -> 0 -> 'authority', 'grantId,grantRevision,resourceId,resourceRevision', 'a listed receipt');
 
-	-- A commit as the run: a saved unit carries its version, a conflict its reason; a replay returns the same units.
-	r := public.qorpera_folder_commit(env, a, 'client-shape-commit', jsonb_build_array(
+	-- A commit as the run: a saved unit carries its version, a conflict its reason; a replay returns the same units. The
+	-- run holds its files first, as its own upload would (634's pg_temp.possess).
+	v_units := jsonb_build_array(
 		jsonb_build_object('op','write','path','notes/b.md','file',pg_temp.stage('b')),
 		jsonb_build_object('op','write','path','notes/a.md','file',pg_temp.stage('again')),
-		jsonb_build_object('op','copy','from','notes/a.md','to','notes/c.md')));
+		jsonb_build_object('op','copy','from','notes/a.md','to','notes/c.md'));
+	perform pg_temp.possess(env, a, v_units);
+	r := public.qorpera_folder_commit(env, a, 'client-shape-commit', v_units);
 	perform pg_temp.shape(r, 'commitId,replay,schema,seq,units', 'a commit');
 	perform pg_temp.shape(r -> 'units' -> 0, 'op,outcome,path,unit,version', 'a saved write');
 	perform pg_temp.shape(r -> 'units' -> 1, 'op,outcome,path,reason,unit', 'a unit that was not saved');
@@ -96,11 +99,13 @@ begin
 
 	-- A structured file refused with problems: the commit strips nulls inside each outcome, so a problem without a
 	-- line or key comes back without those keys (the client reads them as null).
-	r := public.qorpera_folder_commit(env, a, 'client-shape-refused', jsonb_build_array(
+	v_units := jsonb_build_array(
 		jsonb_build_object('op','write','path','agents/x/agent.md','file',pg_temp.stage('not an agent'),
 			'structured', jsonb_build_array(jsonb_build_object('path','agents/x/agent.md','kind','agent','problems',
 				jsonb_build_array(jsonb_build_object('line', null, 'key', null, 'code', 'front_matter', 'message', 'no front matter'),
-					jsonb_build_object('line', 2, 'key', 'name', 'code', 'value', 'message', 'a name')))))));
+					jsonb_build_object('line', 2, 'key', 'name', 'code', 'value', 'message', 'a name'))))));
+	perform pg_temp.possess(env, a, v_units);
+	r := public.qorpera_folder_commit(env, a, 'client-shape-refused', v_units);
 	perform pg_temp.shape(r -> 'units' -> 0, 'op,outcome,path,problems,reason,unit', 'a refused structured unit');
 	perform pg_temp.shape(r -> 'units' -> 0 -> 'problems' -> 0, 'code,message', 'a problem without a line or key');
 	perform pg_temp.shape(r -> 'units' -> 0 -> 'problems' -> 1, 'code,key,line,message', 'a problem with a line and key');

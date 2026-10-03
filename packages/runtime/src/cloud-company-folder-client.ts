@@ -209,6 +209,9 @@ export interface CloudCompanyFolderBytes {
 	/** Stages one file; its version-2 manifest carries the media type and the executable bit (C1D §2). */
 	put(bytes: Uint8Array, mediaType: string, executable: boolean, signal: AbortSignal): Promise<CloudFileReference>;
 	get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array>;
+	/** Bytes `offset` to `offset + length` of a file (fewer at its end), fetching only the chunks they fall in, each
+	 * checked against its hash. */
+	range(file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal): Promise<Uint8Array>;
 }
 
 /** A file's content in a change set. Text is stored as UTF-8. */
@@ -896,6 +899,23 @@ export class CloudCompanyFolderClient {
 			throw new CloudCompanyPathNotText("Company folder file is not UTF-8 text");
 		}
 		return { entry: found, text };
+	}
+
+	/** Bytes `offset` to `offset + length` of a file entry this client read (fewer at its end), for a model read of one
+	 * window of a file: only the chunks the window falls in are fetched. */
+	async readRange(
+		file: CloudCompanyFolderFileEntry,
+		offset: number,
+		length: number,
+		signal: AbortSignal,
+	): Promise<Uint8Array> {
+		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0)
+			throw new Error("Invalid Company folder byte range");
+		const expected = Math.max(0, Math.min(file.file.bytes, offset + length) - offset);
+		const bytes = await this.#bytes.range(file.file, offset, length, signal);
+		if (bytes.byteLength !== expected)
+			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
+		return bytes;
 	}
 
 	/** One page of a folder's entries (or, with `recursive`, of its whole subtree), in key order. */

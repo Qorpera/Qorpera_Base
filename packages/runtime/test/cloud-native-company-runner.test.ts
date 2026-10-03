@@ -92,6 +92,17 @@ it("executes with only cloud identity and produces a private receipt, never a tr
 	expect(f.terminate).not.toHaveBeenCalled();
 });
 
+it("completes a folder-v2 run, which has no Company File substrate, naming none (folder core C3, P23)", async () => {
+	const f = fixture();
+	delete f.options.job.substrateVersionId;
+	const result = await executeNativeCompanyRunnerJob(f.options);
+	expect(result.result).toMatchObject({ runtime: "company-path-v1", substrate_version_id: null });
+	const withSubstrate = fixture();
+	await expect(executeNativeCompanyRunnerJob(withSubstrate.options)).resolves.toMatchObject({
+		result: { substrate_version_id: withSubstrate.options.job.substrateVersionId },
+	});
+});
+
 it("accepts a silent private completion for a wake run and leaves reply obligations to the cloud", async () => {
 	const { options, startCompany } = fixture();
 	const { authority, job, bridge } = options;
