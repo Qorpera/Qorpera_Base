@@ -74,6 +74,13 @@
 - `companyStateSeedTree` lists a new company's seeded folder (vision, sections, the Co-Founder's `agent.md` with its first job, and the empty `agents/groups/`, `connections/`, `skills/`, `rules/`), with `COMPANY_STATE_SEEDED_PATHS`, `COMPANY_STATE_COFOUNDER_HANDLE` and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`. The founding table's `vision`, `founders` (a `- name: role` line each under "How we work") and `firstTodo` (at `COMPANY_STATE_FIRST_TODO_PATH`) go in too; it throws rather than seed a file that would not parse.
 - An agent's instructions refuse control characters other than tab and line breaks.
 
+- The interface parser refuses a `message` button that would fill in outside content it can't quote (`outside_value`; `RUNTIME-INTERFACES.md` §3.3, §4 and §6; Interfaces step I5d part 4a). `interfaceOutsideColumns(source)` gives a source's outside-content columns:
+  - `mail`'s `from_name`, `from_address` and `subject`;
+  - a `file:` source's `text` under `hooks/` or `human-tasks/`, by folder key.
+
+  A button whose text names such a column of a source outside the quote list (`INTERFACE_QUOTE_SOURCES`: `mail`), or more than 16 of them, is refused, for every source a block reads. A client cuts each outside value to `INTERFACE_OUTSIDE_VALUE_MAX_CHARS` (2,000) before it fills it in. F2's I6 save check needs this before interface files are saved in the folder.
+- `CloudMemberFolderClient`, a member's client for a folder-v2 company's folder (folder core C4, slice P27b; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md` §2): `read`, `list`, `pathHistory`, `history` and `changes` call the member functions (P27a), and `readFile` fetches a file's version-2 manifest and chunks through the object gateway's member folder route, each checked against its hash and the whole against the file's. Each answer is parsed with closed key sets (`parseCloudMemberFolderRead`, `…List`, `…PathHistory`, `…History`, `…Changes`, `…By`), the shapes SQL test 834 pins. Nothing uses it yet (P33).
+
 ### Changed
 
 - The worker brief and results parses (`WorkerBriefFile`, `WorkerResultsFile`) give their body's sections (F2-5b-1) in place of the whole body: `brief` and `report` are gone. Nothing wrote or read them yet.

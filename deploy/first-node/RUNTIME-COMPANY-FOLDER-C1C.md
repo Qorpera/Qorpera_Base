@@ -1035,7 +1035,7 @@ Decisions:
     (23503): a login's owner or creator, a private conversation's member, anyone who ran, posted or connected. An
     account close function that runs the prelude per company, one company per transaction, is the fix.
 
-### 6.6 C1c-3d-2 as built: the vault's order (migration 20260930003500, test 850)
+### 6.7 C1c-3d-2 as built: the vault's order (migration 20260930003500, test 850)
 
 On `folder-v2` an agent's tool call takes the company row only `KEY SHARE` (rank 0), so #660's key share orders nothing
 there: a vault change and a tool call, or a vault change and a member change, met in the vault rows and could
@@ -1079,6 +1079,136 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   agent (`qorpera_revoke_secret_grants_for_inactive_staff`) still revokes its grants in scan order, as it did before:
   against a vault change that now locks by id it can meet in the opposite order. A follow-up locks the agent's active
   grants by id first on `folder-v2`.
+
+### 6.7 C1c-3j as built: the Company Computer's lock, creation and start (migration 20260930012000, test 893)
+
+The coordinator's P06a (plan `outputs/company-accounts/p06-office-folder-v2-plan.md`). Until now no folder-v2 office
+could exist, and every office path took the gc fence (the company row `FOR UPDATE`). On folder-v2:
+
+| Path | Before | Now (`folder-v2`) |
+|---|---|---|
+| `assert_runtime_office_provider` (33 callers: start, activation, screen heartbeats, lifecycle, reset, software, package, delete) | gc fence, office | 3f's machine fence (the folder fence and rank 0 `KEY SHARE`), office |
+| Provider set, office reservation (`reserve_runtime_machine`'s office branch, `reserve_runtime_node_machine`'s office kind) | gc fence | machine fence |
+| A member's start, cancel, withdrawal and status; the provider's reserve and check (and their wrappers, before the assertion); the fleet offer and placement; the office's activation and its startup lock (`activate_runtime_office`, `lock_runtime_office_startup`, before the assertion) | gc fence, office, then the start's member or agent | `qorpera_folder_office_enter`: machine fence, the acting member and the start's requester (rank 1), the requesting agent's staff row (rank 2), then the office |
+| `member_office_catalog` | gc fence, member | machine fence, member |
+| `register_runtime_office` (a company's first computer) | gc fence; refused (path gateway 1 only) | machine fence, the owner or admin's member row, the seat lock (a second first registration waits and returns the same computer), the office rows |
+| `check_runtime_office_adoption` with a non-empty mapping (a replaced computer's screens) | gc fence, office, then the mapping's agents and members | refused with 0A000 before any lock, until C1c-3k |
+| Gates (registration, start source, guest binding, office reservation) | `path_gateway_version = 1` | also a ready folder-v2 Company File |
+| The interlock trigger | gc fence on every company-computer write | returns first: a folder-v2 company has no version-1 cutover |
+| A hire's default access (`runtime_office_default_access_for_staff`) | offices in scan order | offices by id (both cores) |
+
+- **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
+  called as the company's owner the first time the company needs its computer. Today no product path registers a
+  company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38
+  registers the proof company's (core §11). P14's creation commit makes no office.
+- **The hire-vs-start deadlock** the gc fence hid: a hire, or an agent's return, takes the agent's staff row and then,
+  through its default office access, each office's revision (the browser grant). A start took the office and then
+  shared the agent's row in its start-source check. On folder-v2 the start shares the agent's row (and the members)
+  before the office, which is the hire's order (staff rank 2 before offices). Test 893 C builds it: the start waits at
+  the staff row holding no office, and the return lands. Activation and its startup lock run on every first start, so
+  they take the same prelude (review r1: before it, the startup check waited at the owner's member row while holding
+  the office; harmless while only members start, a cycle once C1c-3l lets agents start).
+- **Test 893** (648's committed fixture; each "must not wait" call is sent while another session holds the company row
+  `FOR NO KEY UPDATE`, which lets `KEY SHARE` through and stops anything stronger). Folder-v2 only: by the founder's
+  decision of 3 October (production's companies are wiped, snapshot-v1 compatibility is dropped) it has no snapshot-v1
+  case and no old-text digests.
+  - A, A2, A3: registration; a second registration that waits at the owner's member row (a role change) holding no
+    office, then returns the same computer; one that waits at the seat lock;
+  - B: the catalog;
+  - C, C2: the hire-vs-start deadlock above, through the provider's reserve wrapper; a member's start waiting at the
+    member row holding no office;
+  - D: status and cancel;
+  - E, E2: the provider's other calls (assertion, provider status and set, check wrapper, reserve body, placement,
+    offer, office and node reservations), the member's withdrawal and before-idle; the office reservation answers
+    `reserved` and the node reservation reaches its provider check, so both gates and the office kind's fence are open;
+    the guest binding passes its gate;
+  - F: a folder-v2 adoption with screens refuses at once under the hold;
+  - G: a first start end to end (request, reserve, prepare, ready); the preparation, the startup check and the
+    activation each wait at the owner's member row holding no office, then land;
+  - H: the ordered office walk, and exactly 25 bodies naming the migration (24 patched functions and the prelude).
+- **Until C1c-3g**, an office path waiting at rank 0 behind a company deletion's gc fence holds the folder fence
+  `KEY SHARE` that the purge's cascade wants: one 40P01 that heals on retry, as for 3f's sweep (§6.4).
+- **Not in 3j:** screens and their events and observations, the shared surface and restart-surface gates, access
+  configuration, the adoption mapping (refused above), the member's agent-office call (C1c-3k); an agent's start, the
+  descriptor and the activation-wake drain (C1c-3l). Capture and export stay refused (C1d, C3).
+
+### 6.8 C1c-3h as built: coding machines (migration 20260930002300, test 826)
+
+- **The company first, on the folder fence.** Every coding machine call that needs the company took the gc fence first
+  (runtime v123, 20260925123000), which locks the company row `FOR UPDATE`. On `folder-v2` these calls take 3f's
+  `qorpera_folder_machine_fence` in the same place: the folder fence `KEY SHARE`, then the company row `KEY SHARE`.
+  - A turn's admission to its machine (`authorize_coding_machine_run`) and a plan (`plan_coding_machine`) take it
+    before the worker and the session.
+  - A plan takes it again before it inserts a member's new machine. The gc fence did that so two new members could not
+    both upgrade a key share; `KEY SHARE` is never upgraded here.
+  - Sleep (`suspend_coding_machine`) and release (`release_coding_machine`) take it before the machine.
+- **The node reservation** (`reserve_runtime_node_machine`): 3f's folder branch now serves the coding kind as well as the
+  machine kind. Its callers above hold the folder fence already, so it never waits. Offices keep the gc fence (3j).
+- **What it means:** a folder effect (the fence and the company row `KEY SHARE`) never makes these calls wait (826 A).
+  A stop's second phase (the fence `FOR UPDATE`) makes them wait at the fence before any coding row or the company row
+  (826 B).
+- **The pause is not read before the fence**, as in 3f's machine paths. Under the gc fence a new caller queued behind a
+  waiting stop; under the fence `KEY SHARE` an admission or a plan that arrives after the pause is let in and makes the
+  stop's second phase wait until the reservation reads the pause and refuses. Core §9 and the inventory (§11) ask for
+  a pause check first: left for the load test (C1e), with 3f's paths.
+- **Until 3g:** a coding call holding the fence `KEY SHARE` can wait at the company row behind the deletion finisher,
+  whose purge wants the fence row (it deletes it by cascade): a 40P01 that heals on retry, as §6.4 notes for 3f. 3g's
+  drain takes the fence `FOR UPDATE` before the company row and closes it.
+- **Snapshot-v1** keeps each statement in its `else` branch, so the activation markers of 20260925123000 stay in each
+  body. Each body reversed is master's text (826 D; the digests came from a test VM run of the reversal), and the
+  snapshot-v1 company still waits for a
+  holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
+  row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
+- **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
+  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event and worker drains.
+- **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
+  turn admission.
+- Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
+  lock and need no change; the secret broker's coding credential takes the company row `KEY SHARE` already (v123).
+
+### 6.9 C1c-3e as built: a dynamic routine's next run (migration 20260930009500, test 819)
+
+An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick
+(`qorpera_restore_dynamic_routine_runs`, inside the Company File drain that `reconcile` runs). That tick visits every
+company in one transaction, so since C1c-2c part 1 it skips `folder-v2`, and a `folder-v2` dynamic routine never ran
+again after its first. 3e gives it a `folder-v2` path with one company per transaction, as routine firing has
+(`qorpera_folder_enqueue_routine_wake`, §5.6):
+- **`qorpera_folder_dynamic_routines_due(after, limit)`** (service role) lists the `folder-v2` dynamic routines that may
+  be missing their run, with the legacy tick's own filter, paged by routine id like the schedule heads, without a lock.
+- **`qorpera_folder_restore_dynamic_routine_run(routine, expected version)`** (service role) handles one routine in the
+  caller's transaction:
+  - the folder fence `KEY SHARE` and the pause read under it, then the company row `KEY SHARE` (rank 0);
+  - the version's member, agent and execution authority `KEY SHARE` (ranks 1 to 3);
+  - the routine `FOR NO KEY UPDATE SKIP LOCKED` (rank 5): a save or a decision holding it makes this pass skip it
+    (`busy`), as the legacy tick's `SKIP LOCKED` does;
+  - the legacy checks, in the legacy order: the version and its single `once` trigger, a pending run, a live run, a
+    member's Stop of the latest run (the routine pauses, once), the retry spacing, expiry and the occurrence limit;
+  - the public session `KEY SHARE`, admission, then the insert, at the version's chosen instant or the retry's.
+  It answers a status (`inserted`, `pending`, `running`, `changed`, `gone`, `not_folder`, `paused`, `busy`,
+  `stopped`, `ended`, `suspended`) for every routine it cannot run. It raises for a caller that is not the service
+  role, a missing fence or admission row, a wake whose audience changed under it (QRC01), and any other error; the
+  reconciler reports those after its pass. A run the kernel refuses for want of authority (42501 from the wake's pin
+  trigger) undoes the admission and the insert, suspends the routine and tells its member once, as the legacy tick
+  does (`suspended`).
+- The list leaves out routines already past their expiry or at their occurrence limit (819 §8), which the lifecycle
+  sweep closes. A routine whose next retry would fall after its expiry is still listed, and answered `ended` every
+  30 s, until the sweep closes it. A raised 42501 (a missing fence or admission row) reaches the orchestrator as HTTP
+  401, which the reconciler reports like any failure; only a broken `folder-v2` company shows it.
+- **`qorpera_ensure_dynamic_routine_run`** refuses a `folder-v2` routine (0A000) as its first line. It takes no fence
+  and no ranks, and none of its callers reaches `folder-v2`: the tick skips it, and the agent tools refuse it.
+- **The runner-orchestrator edge function** has two new actions, `folder_dynamic_routines` and
+  `restore_dynamic_routine`. **The orchestrator's routine reconciler** calls them after the schedule heads, one restore
+  per listed routine, at most every 30 s (`folderDynamicIntervalMs`), not on every poll. One routine's failure is
+  reported after the pass and never stops the others. An edge function that predates the actions answers 400; the
+  reconciler then reports it and asks again after ten minutes, as it does for the first-slot advance.
+- **Deploy order:** the migration, then the edge function, then the orchestrator. An older orchestrator never calls the
+  actions, and a `folder-v2` dynamic routine waits for it.
+- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1). The legacy tick
+  is unchanged.
+- Not in 3e: the run itself (materializing a `folder-v2` wake) is C4's materializer (P28). Until then the inserted wake
+  stays `queued`, and the list skips the routine (its run is pending). Like the legacy tick, the restore inserts the
+  wake even when the company has no computer hours left; P28's materializer holds it ("Waiting for computer hours"),
+  as routine firing's deferral does before admission.
 
 ## 7. Traps for C1c-2 and C1c-3
 

@@ -14,7 +14,8 @@
 
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
-/** The function tests the old workflows ran (web-client and step2-lxd); the others never ran in CI. */
+/** The function tests the old workflows ran (web-client and step2-lxd), and the artifact GC worker's (its folder phase,
+ * C1D §9.10); the others never ran in CI. */
 const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
@@ -29,6 +30,7 @@ const FUNCTION_TESTS = [
 	"supabase/functions/mail-outbox/mail-outbox.test.ts",
 	"supabase/functions/mail-attachments/mail-attachments.test.ts",
 	"supabase/functions/runner-control/runner-control.test.ts",
+	"supabase/functions/artifact-gc-worker/artifact-gc-worker.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
@@ -180,7 +182,7 @@ export const STEPS = [
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
@@ -206,6 +208,10 @@ export const STEPS = [
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
+			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
+			// So does company creation's worker script (P14b).
+			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency)\.ts$/,
+			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),

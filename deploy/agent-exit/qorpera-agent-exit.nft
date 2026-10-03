@@ -1,0 +1,148 @@
+# Qorpera agent exit (E1): the rules inside the exit's own network namespace, qexit. Agent road machines on the
+# bridge qagent0 reach the exit's br0 (10.210.0.1/16); the exit sends their traffic out of up0 from its own address.
+# It refuses our own networks and TCP port 25 at once, drops IPv6, foreign sources and invalid packets, bounds each
+# machine to 16,384 connections and the exit to 98,304 (decided 3 October), counts new connections and
+# refusals per machine, keeps each refused flow an hour
+# for the log, and answers names and DHCP itself (dnsmasq on 10.210.0.1). Plain DNS a machine sends elsewhere is
+# redirected to it.
+#
+# Load it with qorpera-agent-exit.sh, never with `nft -f` alone. The same file runs on every node. See README.md and
+# deploy/first-node/RUNTIME-AGENT-EXIT.md.
+
+table inet qorpera_agent_exit {
+	# Never reached from an agent road machine: private, shared (Tailscale), loopback, link-local and special ranges,
+	# and our own public address. The agent addresses join this set when the address block is in use (E9).
+	set internal4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 93.164.62.162
+		}
+	}
+
+	# Per machine: new connections and refusals, counted (the line guard's counts, E7).
+	set new_by_client {
+		type ipv4_addr
+		flags dynamic
+		size 65536
+	}
+
+	set refused_by_client {
+		type ipv4_addr
+		flags dynamic
+		size 65536
+	}
+
+	# Per machine: open connections, bounded at 16,384 (contract item 4; an infrastructure guard for the node).
+	set open_by_client {
+		type ipv4_addr
+		flags dynamic
+		size 65536
+	}
+
+	# Per machine: how fast it may add refused flows to the log sets, so one machine cannot crowd out the others.
+	set refusal_rate {
+		type ipv4_addr
+		flags dynamic, timeout
+		timeout 1h
+		size 65536
+	}
+
+	# A refused flow, added once and kept an hour, so the logger writes it once an hour (refusals never reach
+	# conntrack's events). TCP and UDP per port, other protocols per protocol.
+	set refused_flows {
+		type ipv4_addr . ipv4_addr . inet_proto . inet_service
+		flags dynamic, timeout
+		timeout 1h
+		size 65536
+	}
+
+	set refused_other {
+		type ipv4_addr . ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout 1h
+		size 16384
+	}
+
+	counter refused_internal {
+	}
+
+	counter refused_mail {
+	}
+
+	counter refused_open_limit {
+	}
+
+	counter refused_unlogged {
+	}
+
+	counter refused_spoofed {
+	}
+
+	counter dropped_ipv6 {
+	}
+
+	counter dropped_invalid {
+	}
+
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname "br0" ip saddr 10.210.0.0/16 ip daddr != 10.210.0.1 udp dport 53 dnat ip to 10.210.0.1
+		iifname "br0" ip saddr 10.210.0.0/16 ip daddr != 10.210.0.1 tcp dport 53 dnat ip to 10.210.0.1
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state established,related accept
+		iifname "br0" oifname "up0" jump agent_out
+	}
+
+	chain agent_out {
+		meta nfproto ipv6 counter name "dropped_ipv6" drop
+		ip saddr != 10.210.0.0/16 counter name "refused_spoofed" drop
+		ct state invalid counter name "dropped_invalid" drop
+		update @new_by_client { ip saddr counter }
+		ip daddr @internal4 counter name "refused_internal" goto refuse
+		tcp dport 25 counter name "refused_mail" goto refuse
+		# The per-machine bound first: a machine at its own bound never reaches the shared total's list.
+		add @open_by_client { ip saddr ct count over 16384 } counter name "refused_open_limit" goto refuse
+		ct count over 98304 counter name "refused_open_limit" goto refuse
+		accept
+	}
+
+	chain refuse {
+		update @refused_by_client { ip saddr counter }
+		# Only a flow not yet kept spends the machine's share; one that still is not kept (share spent, set full) is
+		# counted as unlogged, and the logger turns that count into a gap line.
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport != @refused_flows update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_flows { ip saddr . ip daddr . meta l4proto . th dport }
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport != @refused_flows counter name "refused_unlogged"
+		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto != @refused_other update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_other { ip saddr . ip daddr . meta l4proto }
+		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto != @refused_other counter name "refused_unlogged"
+		meta l4proto tcp reject with tcp reset
+		reject with icmpx admin-prohibited
+	}
+
+	# The exit itself answers agent road machines' DHCP, DNS and ping, and nothing else.
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iifname "lo" accept
+		ct state established,related accept
+		iifname "br0" ip saddr { 0.0.0.0, 10.210.0.0/16 } udp sport 68 udp dport 67 accept
+		iifname "br0" ip saddr 10.210.0.0/16 ip daddr 10.210.0.1 udp dport 53 accept
+		iifname "br0" ip saddr 10.210.0.0/16 ip daddr 10.210.0.1 tcp dport 53 accept
+		iifname "br0" ip saddr 10.210.0.0/16 ip daddr 10.210.0.1 icmp type echo-request accept
+	}
+
+	# The exit's own answers (DNS, DHCP) never leave by the uplink, so a forged source cannot bounce them outward.
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "up0" udp sport { 53, 67 } drop
+		oifname "up0" tcp sport 53 drop
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "up0" masquerade
+	}
+}

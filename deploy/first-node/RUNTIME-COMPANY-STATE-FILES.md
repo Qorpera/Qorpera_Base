@@ -320,14 +320,35 @@ closes the conversation; a restore reopens both, with the same conversation.
 - **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
   may change the body only, and never creates or deletes the file.
 - **Body:** company-authored.
-- **Authority:** the vault and the operation grants stay in charge (contract 5.6).
+- **Authority:** the vault and the operation grants stay in charge (contract 5.6). Every tool that acts on an account
+  (open, fill, find, use, Disconnect) reads the vault, never this file: the file describes the account and may trail
+  the vault by seconds.
+- **How it is written (P22, 3 October 2026):** only the catalog's connectors (Gmail, Drive, GitHub …) and website
+  accounts have a file; a hook's signing secret and a secret card do not (the event intake describes hooks itself). A
+  vault change on such a company-owned connection of a folder-v2 environment inserts a due mark in its own transaction (`qorpera_folder_connection_file_marks`, migration `20260930006000`): a
+  secret written or revoked, its account name changed, an operation grant on it given or withdrawn, a website
+  account's status, login, site, two-step method or todo changed. The object gateway's writer claims a due connection
+  (`qorpera_claim_connection_file`), gets what the file should say, built from an allow-list of the vault's fields only
+  (never a secret, an envelope, a key or the vault's own purpose text), commits one unit as the platform with the
+  operation key `connection-file:<secret>:<generation>` and the version it read (keeping the company's text below the
+  settings; a member's edit meanwhile makes it read again), and finishes the claim
+  (`qorpera_finish_connection_file`); a claim never waits for a vault change or a company being deleted (only,
+  briefly, for another claim's new work rows), and a writer makes one per transaction. A claim skips a company whose
+  creation has not completed (P14a, migration `20260930010000`); its marks wait until it has. A revoked secret or
+  a closed account means its file is deleted. `actions` lists the operations with an active, unexpired grant; an expiry
+  marks nothing, so the file shows an expired grant until the connection's next change.
+  `qorpera_mark_connection_files(environment)` marks every connection due at once: an operator step, in its own
+  transaction, for a company whose vault held connections before it became folder-v2 or a connector that gained
+  catalog operations later. A new file is
+  named after the site, or the connector (and the vault's name unless it is `primary`), in the name rule (cut to 64
+  characters); when the name is taken the writer numbers it `-2`, `-3` …, cutting the name so the number fits.
 - **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this
   company and environment, and never changes. A platform write matches that row: it is active and
   its connector is the `service`. One file holds one account. A file saved before this slice is not
   trusted as the saved version until the platform writes it (the index points at its path).
 - **Deleting:** only the platform deletes the file, and only once the vault record is revoked
-  (refused while it is active, whatever its status). Disconnecting removes the file; the
-  writer treats a file already missing as done.
+  (refused while it is active, whatever its status). Disconnecting removes the file; a file a member moved
+  meanwhile is found again through the index on the next claim.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
 
@@ -1714,6 +1735,39 @@ do not overlap. SQL test 801 (on 704's fixture): the platform saves a website fi
 member changes only its text (and an old gmail file's text, whose shape is unchanged), the shapes, and which rule
 each refusal names; 13 of 13 mutants caught (the review's two survivors included).
 
+**Built (P22a, the vault's due marks; migration `20260930006000`, SQL tests 852 and 853):** the coordinator approved
+on 3 October that the vault never commits a file itself (core §3 step 4 and C4 amended): it marks, and the object
+gateway's writer (P22b, behind its own flag) converges. Triggers on `qorpera_cloud_secrets`,
+`qorpera_cloud_secret_operation_grants` and `qorpera_company_accounts` insert a mark (a plain insert with a generated
+key and the company row's foreign key, which every vault change on folder-v2 already holds `KEY SHARE`: no wait, no
+cycle) for a company-owned connection of a folder-v2 environment, only when a field its file shows changed. The writers'
+table `qorpera_folder_connection_file_work` keeps one row per connection (so each claim's generation, and its operation
+key, is new); the claim creates rows in secret order, takes one due row `SKIP LOCKED`, consumes the marks it sees (a
+mark that commits later keeps the connection due), and answers `qorpera.connection-file-claim/v1`: the generation, the
+operation key, `present`, the allow-listed `settings`, the new file's `path`, and `current` (the indexed file's path,
+version and hashes). The finish closes the claim for the current generation's writer only, or backs it off with a
+problem code (2^attempts seconds, at most ten minutes). Review round 1 added: the claim takes the companies' key share
+and the marks it consumes SKIP LOCKED, so a purge (company row, marks, then work rows) never deadlocks with it and a
+company held for deletion never stalls other companies' claims; files only for catalog connectors and website accounts
+(`qorpera_folder_connection_has_file`); `actions` only for unexpired grants; and `qorpera_mark_connection_files`. 852:
+each mark and non-mark, the claims' state, the platform commits (write, the member's text kept, a stale version,
+delete), leases, names, website and agent accounts, back-off bounds, expiries, and that nothing outside the allow-list
+leaves; 853: the races (out-of-order marks, two writers, a vault change during a claim, a purge, a company held for
+deletion).
+
+**Built (P22b, the writer; object gateway, off unless `QORPERA_CONNECTION_FILE_WRITER=1`):** `connection-files.ts`
+claims up to ten due connections every 15 s in a loop of its own (one drain at a time, 60 s each, its own database
+client, so the gateway's other maintenance never waits for it) and refuses, unread, a claim carrying any field outside the
+allow-list (finished `claim_invalid`). A new file is the canonical writer's; an existing one keeps every byte but the
+settings that changed; a file the parser refuses keeps its text below the settings. It stages the bytes as the platform
+in the gateway's own store, commits one unit with the claim's operation key and the version it read (`:2`, `:3` … and
+`-2`, `-3` … names when a new file's name is taken), deletes the file of a revoked or closed account, and finishes with
+a code on any problem (`version_changed`, `lock_conflict`, `unavailable`, …). The staging, reading and committing as
+the platform live in `platform-folder-writer.ts`, which F2's company creation (P14b) shares.
+`scripts/test-object-gateway-connection-files.mjs` (hosted-db step) runs it on a real database: 704's company, the
+first files, a member's text kept through a rewrite, a Disconnect's delete, and nothing outside the allow-list in any
+file version or writer commit.
+
 **Plan (F2-5b): worker briefs and results on the folder core** (core C3; the coordinator's slice P21 of
 2 October). Revised after design review r1 and the coordinator's answers of 3 October.
 
@@ -1912,9 +1966,12 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
 - `report_work` on `folder-v2` writes `results.md` the same way, under the worker run's receipt.
 - The wake shapes gain `folder-v2` paths: the output folder is the worker's folder, and the todo path is
   the todo file. A write worker still writes where its agent may (the brief's authority text).
-- The new entry joins the native host's call list (`qorpera_native_host_calls`, scope `folder`, run
-  actors only), and cancel and status join it with scope `binding`; all three join the runtime client's
-  RPC lists (test 760's pinned shapes).
+- The new entry and status join the native host's call list (`qorpera_native_host_calls`) with scope
+  `folder` (run actors only; their signatures take the environment and the actor), and cancel with scope
+  `binding`. All three join the runtime client's RPC lists (test 760's pinned shapes) and its
+  `NATIVE_HOST_CALLS` in F2-5b-4.
+- A retired worker row keeps the folder key it had: a worker's folder deleted before its agent's folder is
+  renamed comes back only at its old path.
 
 **PRs, in this order** (each with an exact-head review and node 2 `changed`):
 - **F2-5b-1, the parser** (`packages/cloud-client`, no SQL): the sections, the parses, the writers with

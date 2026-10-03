@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
+import type { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { serveFolderObject } from "./folder-objects.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
@@ -8,6 +9,7 @@ import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./m
 import { serveMemberCompanyPresence } from "./member-company-presence.ts";
 import { createMemberCors } from "./member-cors.ts";
 import { serveMemberFileExport } from "./member-file-exports.ts";
+import { type MemberFolderObjectAuthority, serveMemberFolderObject } from "./member-folder-objects.ts";
 import {
 	MEMBER_OBSERVATIONS_PATH,
 	type MemberCompanyObservations,
@@ -24,6 +26,7 @@ import type { AuthorizedObject, ObjectGatewayAuthority } from "./supabase-author
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const OBJECT_PATH_PATTERN = /^\/v1\/profile-objects\/([^/]+)\/([^/]+)$/;
+const FOLDER_GC_PATH_PATTERN = /^\/v1\/folder-gc\/([^/]+)\/([^/]+)$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
 
 export interface ObjectGatewayServiceOptions {
@@ -34,8 +37,12 @@ export interface ObjectGatewayServiceOptions {
 	readLeases?: ObjectReadLeases;
 	revocationToken?: string;
 	replication?: ObjectGatewayReplication;
+	/** Folder GC's unlink lane (C1D §9.8), on the control token. */
+	folderGc?: ObjectGatewayFolderGc;
 	nativeObjects?: NativeCompanyObjectOptions;
 	memberObjects?: MemberCompanyObjectAuthority;
+	/** A member's bytes of a folder-v2 company (folder core C4, P27b). */
+	memberFolderObjects?: MemberFolderObjectAuthority;
 	memberFiles?: MemberCompanyAuthority;
 	memberPresence?: MemberCompanyAuthority;
 	memberObservations?: MemberCompanyObservations;
@@ -146,7 +153,8 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		try {
 			if (
 				request.url?.startsWith("/v1/member-company-objects/") ||
-				request.url?.startsWith("/v1/member-company-snapshot-objects/")
+				request.url?.startsWith("/v1/member-company-snapshot-objects/") ||
+				request.url?.startsWith("/v1/member-folder-objects/")
 			)
 				observation = options.memberObservations?.start("object_read");
 			else if (request.url?.startsWith("/v1/member-company-file/"))
@@ -199,7 +207,10 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						const age = Date.now() - Date.parse(dependency.checkedAt ?? "");
 						return dependency.status === "healthy" && age >= 0 && age < 60_000;
 					};
-					const healthy = Object.values(dependencies).every(recentHealthy) && !replication.degraded;
+					// Folder GC's last scan met an error: something in quarantine, or a blocked entry, waits for a later one.
+					const folderGcDegraded = options.folderGc?.degraded() ?? false;
+					const healthy =
+						Object.values(dependencies).every(recentHealthy) && !replication.degraded && !folderGcDegraded;
 					const ready =
 						replication.pending !== null &&
 						((recentHealthy(dependencies.api) &&
@@ -212,6 +223,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						ready,
 						dependencies,
 						replication,
+						...(options.folderGc ? { folderGc: { degraded: folderGcDegraded } } : {}),
 						readContinuity: options.readLeases ? "bounded-exact-object-leases" : "disabled",
 						controlContinuity: "requires-live-authority",
 					});
@@ -289,6 +301,17 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
 					return;
 				}
+				if (request.url?.startsWith("/v1/member-folder-objects/")) {
+					if (!options.memberFolderObjects) throw new HttpError(404, "Not found");
+					await serveMemberFolderObject(
+						request,
+						response,
+						options.memberFolderObjects,
+						options.store,
+						observation,
+					);
+					return;
+				}
 				if (request.url?.startsWith("/v1/folder-objects/")) {
 					if (!options.nativeObjects?.folder || !options.replication) throw new HttpError(404, "Not found");
 					await serveFolderObject(
@@ -298,6 +321,23 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						options.store,
 						options.replication,
 					);
+					return;
+				}
+				if (request.url?.startsWith("/v1/folder-gc/")) {
+					if (!options.folderGc) throw new HttpError(404, "Not found");
+					if (!secureEqual(bearer(request), options.controlToken)) throw new HttpError(401, "Unauthorized");
+					if (request.method !== "DELETE") throw new HttpError(405, "Method not allowed");
+					const match = FOLDER_GC_PATH_PATTERN.exec(
+						new URL(request.url, "http://object-gateway.invalid").pathname,
+					);
+					if (!match || !UUID_PATTERN.test(match[1] ?? "") || !SHA256_PATTERN.test(match[2] ?? ""))
+						throw new HttpError(404, "Not found");
+					const leaseId = request.headers["x-qorpera-gc-lease-id"];
+					if (typeof leaseId !== "string" || !UUID_PATTERN.test(leaseId))
+						throw new HttpError(400, "Cleanup authority is invalid");
+					// 200 with the outcome. 503: the NAS lanes are busy or a dependency is down, and the worker stops for
+					// this run. 409: a lock conflict on this object (the mark is given up, or expires if the begin met it).
+					json(response, 200, { outcome: await options.folderGc.collect(match[1]!, match[2]!, leaseId) });
 					return;
 				}
 				if (request.url?.startsWith("/v1/native-company-objects/")) {
