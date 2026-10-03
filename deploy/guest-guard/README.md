@@ -212,13 +212,17 @@ loads the real rules into a stand-in node built from network namespaces: two gue
 `coding-net`, the office network with the NAS and the router, and node 1 on the tailnet. It covers no guard,
 observe (exact counts), enforce (TCP, UDP DNS, ping, IPv6, spoofed sources, cross-bridge and same-bridge
 refusals), switching back and removal. Routine `run-on-node.mjs changed` runs as a normal user and skips the
-root part. Run it on the test machine with:
+root part. Its br_netfilter part runs only in a throwaway VM inside a test machine, never on the shared test machine
+itself (the test refuses there); in such a VM, with this checkout in it, run:
 
 ```bash
-node scripts/run-on-node.mjs --sudo --no-install --env QORPERA_GUEST_GUARD_TEST_BR_NETFILTER=1 -- node --test deploy/guest-guard/qorpera-guest-guard.test.mjs
+sudo env QORPERA_GUEST_GUARD_TEST_BR_NETFILTER=1 node --test deploy/guest-guard/qorpera-guest-guard.test.mjs
 ```
 
-The variable loads br_netfilter for the run (the test machine does not load it) and unloads it afterwards.
+The variable loads br_netfilter for the run and leaves it loaded. Run it only in a throwaway VM inside a test
+machine, never on a shared test machine itself (the test refuses there): a module load changes the whole machine, and
+unloading it with `modprobe -r` also unloads the `bridge` module, which destroys every bridge on the machine (docker0
+included; it happened on 3 October).
 
 ## The NAS (for Jonas, in DSM)
 
