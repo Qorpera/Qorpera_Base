@@ -18,7 +18,7 @@
 --   fence and no ranks, and none of its callers reaches folder-v2 (the tick skips it; the agent tools refuse it).
 -- The runner-orchestrator edge function gets the actions `folder_dynamic_routines` and `restore_dynamic_routine`, and
 -- the orchestrator's routine reconciler calls them after the schedule heads. Each inserted text names this migration
--- (20260930003600), for deploy guards.
+-- (20260930004100), for deploy guards.
 
 set local lock_timeout = '3s';
 
@@ -28,7 +28,7 @@ create function public.qorpera_folder_dynamic_routines_due(p_after_routine_id uu
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_items jsonb; v_next uuid; v_has_more boolean;
 begin
-	-- 20260930003600: folder core C1c-3e.
+	-- 20260930004100: folder core C1c-3e.
 	if auth.role() <> 'service_role' then
 		raise exception 'routine schedule discovery requires control-plane authority' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 500 then
@@ -44,6 +44,10 @@ begin
 			and not exists (select 1 from public.qorpera_wake_occurrences as wake where wake.routine_id = routine.id
 				and wake.status = 'materialized' and public.qorpera_wake_run_live(wake.run_id))
 			and not public.qorpera_company_execution_paused(routine.profile_id)
+			-- Not one the restore would only answer `ended` for (the lifecycle sweep closes it).
+			and (routine.expires_at is null or routine.expires_at > statement_timestamp())
+			and (routine.max_occurrences is null or (select count(*) from public.qorpera_wake_occurrences as wake
+				where wake.routine_id = routine.id) < routine.max_occurrences)
 		order by routine.id
 		limit p_limit + 1
 	), visible as (
@@ -64,9 +68,9 @@ create function public.qorpera_folder_restore_dynamic_routine_run(p_routine_id u
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_routine public.qorpera_cloud_routines%rowtype; v_version public.qorpera_cloud_routine_versions%rowtype;
 	v_trigger jsonb; v_ended integer; v_at timestamptz; v_id uuid; v_last public.qorpera_wake_occurrences%rowtype;
-	v_session uuid; v_occurrence public.qorpera_wake_occurrences%rowtype; v_owner uuid;
+	v_session uuid; v_occurrence public.qorpera_wake_occurrences%rowtype; v_owner uuid; v_error text;
 begin
-	-- 20260930003600: folder core C1c-3e.
+	-- 20260930004100: folder core C1c-3e.
 	if auth.role() <> 'service_role' then
 		raise exception 'routine firing requires control-plane authority' using errcode = '42501'; end if;
 	if p_routine_id is null or p_expected_version is null then
@@ -144,6 +148,9 @@ begin
 			jsonb_build_object('schema', 'qorpera.routine-once-occurrence/v1', 'attempt', v_ended + 1))
 		returning * into v_occurrence;
 	exception when insufficient_privilege then
+		-- Admission's own 42501 (no admission row) is not the kernel refusing the run: raise it.
+		get stacked diagnostics v_error = message_text;
+		if v_error = 'Company folder is unavailable' then raise; end if;
 		update public.qorpera_cloud_routines set status = 'paused', pause_reason = 'authorization_failed',
 			updated_at = statement_timestamp()
 		where id = v_routine.id and status = 'active';
@@ -173,7 +180,7 @@ begin
 		raise exception 'C1c-3e patch anchor not found once in qorpera_ensure_dynamic_routine_run'; end if;
 	execute replace(v_definition, v_old,
 		E'begin\n'
-		|| E'\t-- 20260930003600: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
+		|| E'\t-- 20260930004100: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
 		|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
 		|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n'

@@ -21,14 +21,14 @@ $$;
 do $$
 begin
 	if md5(replace(pg_get_functiondef('public.qorpera_ensure_dynamic_routine_run(uuid)'::regprocedure),
-			E'\t-- 20260930003600: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
+			E'\t-- 20260930004100: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
 			|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
 			|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
 			|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n',
 			'')) <> '2abbbce4e97a962ccb121b68d2ef385b' then
 		raise exception 'The legacy dynamic tick''s snapshot-v1 text changed: %', md5(replace(pg_get_functiondef(
 			'public.qorpera_ensure_dynamic_routine_run(uuid)'::regprocedure),
-			E'\t-- 20260930003600: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
+			E'\t-- 20260930004100: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
 			|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
 			|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
 			|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n',
@@ -85,18 +85,30 @@ begin
 	delete from public.qorpera_company_execution_pauses where profile_id = '63400000-0000-4000-8000-000000000010';
 end $$;
 
--- 4. A member's Stop of the routine's latest run pauses the routine, once, and it leaves the list.
+-- 4. A member's Stop of the routine's latest run pauses the routine, once, and it leaves the list. The run is built by
+-- hand (triggers off): its job cancelled by the member, as a Stop leaves it, and the routine's wake failed with it.
 do $$
-declare v_routine uuid := pg_temp.routine('agent'); v_wake uuid;
-	w jsonb := pg_temp.native(pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002'));
+declare v_routine uuid := pg_temp.routine('agent'); v_wake uuid; v_run uuid := extensions.gen_random_uuid();
+	v_job uuid := extensions.gen_random_uuid();
 begin
 	perform pg_temp.path_claims('service_role');
 	v_wake := (pg_temp.restore(v_routine) ->> 'occurrence_id')::uuid;
-	perform pg_temp.fx(format('update public.qorpera_runner_jobs set status = %L, cancelled_at = clock_timestamp(),
-		cancelled_by_user_id = %L, lease_token_sha256 = null, lease_expires_at = null where id = %L',
-		'cancelled', '63400000-0000-4000-8000-000000000002', w ->> 'jobId'));
-	perform pg_temp.fx(format('update public.qorpera_wake_occurrences set status = %L, run_id = %L where id = %L',
-		'failed', w ->> 'runId', v_wake));
+	perform pg_temp.fx(format($f$insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id,
+		client_job_id, required_capability, job_type, payload, created_by_user_id, status, run_id, cancelled_at, cancelled_by_user_id)
+		values (%L, '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', extensions.gen_random_uuid(),
+			extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}', '63400000-0000-4000-8000-000000000002', 'cancelled', %L,
+			clock_timestamp(), '63400000-0000-4000-8000-000000000002')$f$, v_job, v_run));
+	perform pg_temp.fx(format($f$insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id,
+		job_id, substrate_version_id, company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version,
+		required_capability, job_type, payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id,
+		model_provider, model_id, model_selection, audience_kind, runtime_bundle_id, runtime_bundle_sha256, input_ids)
+		values (%L, '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', 'wake', %L, %L,
+			extensions.gen_random_uuid(), extensions.gen_random_uuid(), '63400000-0000-4000-8000-0000000000a1', 1,
+			'63400000-0000-4000-8000-0000000000b1', 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0,
+			'63400000-0000-4000-8000-000000000002', '63400000-0000-4000-8000-000000000002', 'openai', 'gpt-test',
+			'provider_default', 'company', extensions.gen_random_uuid(), repeat('b', 64), '{}')$f$, v_run, v_wake, v_job));
+	perform pg_temp.fx(format('update public.qorpera_wake_occurrences set status = %L, run_id = %L, finished_at = clock_timestamp()
+		where id = %L', 'failed', v_run, v_wake));
 	if pg_temp.restore(v_routine) ->> 'status' <> 'stopped'
 		or (select status || '/' || pause_reason from public.qorpera_cloud_routines where id = v_routine) <> 'paused/member'
 		or (select blocked_reason from public.qorpera_wake_occurrences where id = v_wake) <> 'A member stopped this run; the routine paused'

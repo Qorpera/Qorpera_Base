@@ -649,7 +649,7 @@ describe("cloud runner orchestrator", () => {
 		control.listFolderDynamicRoutines = list;
 		control.restoreFolderDynamicRoutineRun = restore;
 		let now = new Date("2026-10-03T09:00:00.000Z");
-		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now, folderDynamicIntervalMs: 0 });
 
 		// One routine's failure never stops the others; it is reported after the pass.
 		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
@@ -675,7 +675,31 @@ describe("cloud runner orchestrator", () => {
 		expect(list).toHaveBeenCalledTimes(4);
 
 		// A control plane without the actions only schedules.
-		await expect(new CloudRoutineScheduleReconciler({ now: () => now }).reconcile(controlPlane())).resolves.toBeUndefined();
+		const scheduleOnly = new CloudRoutineScheduleReconciler({ now: () => now });
+		await expect(scheduleOnly.reconcile(controlPlane())).resolves.toBeUndefined();
+	});
+
+	it("lists the folder-v2 dynamic routines at most every 30 seconds, not on every poll", async () => {
+		const control = controlPlane();
+		const list = vi.fn(
+			async (): Promise<CloudFolderDynamicRoutinePage> => ({ items: [], hasMore: false }),
+		);
+		control.listFolderDynamicRoutines = list;
+		control.restoreFolderDynamicRoutineRun = vi.fn(
+			async (): Promise<CloudFolderDynamicRoutineRun> => ({ status: "pending" }),
+		);
+		let now = new Date("2026-10-03T09:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+		await reconciler.reconcile(control);
+		now = new Date("2026-10-03T09:00:29.000Z");
+		await reconciler.reconcile(control);
+		expect(list).toHaveBeenCalledTimes(1);
+		now = new Date("2026-10-03T09:00:30.000Z");
+		await reconciler.reconcile(control);
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(() => new CloudRoutineScheduleReconciler({ folderDynamicIntervalMs: -1 })).toThrow(
+			"Folder dynamic routine interval is outside the supported range",
+		);
 	});
 
 	it("recomputes an unadmitted initial slot from the existing latest-slot rule", async () => {

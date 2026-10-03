@@ -187,7 +187,18 @@ export interface CloudFolderDynamicRoutinePage {
 
 /** What the per-routine restore did: `inserted` its next run, or why it inserted none. */
 export interface CloudFolderDynamicRoutineRun {
-	status: "inserted" | "pending" | "running" | "changed" | "gone" | "not_folder" | "paused" | "busy" | "stopped" | "ended" | "suspended";
+	status:
+		| "inserted"
+		| "pending"
+		| "running"
+		| "changed"
+		| "gone"
+		| "not_folder"
+		| "paused"
+		| "busy"
+		| "stopped"
+		| "ended"
+		| "suspended";
 	occurrenceId?: string;
 }
 
@@ -254,6 +265,8 @@ export interface CloudRoutineScheduleReconcilerOptions {
 	now?: () => Date;
 	pageSize?: number;
 	catchUpLimit?: number;
+	/** How often the folder-v2 dynamic routines are listed (folder core C1c-3e); default 30 s. */
+	folderDynamicIntervalMs?: number;
 }
 
 export interface CloudRunnerProviderAdapter {
@@ -601,7 +614,7 @@ function parseFolderDynamicRoutinePage(value: unknown): CloudFolderDynamicRoutin
 	return {
 		items: input.items.map((value) => {
 			const item = record(value, "folder dynamic routine");
-			if (!Number.isSafeInteger(item.version) || (item.version as number) < 1) {
+			if (!Number.isSafeInteger(item.version) || (item.version as number) < 1 || (item.version as number) > 1_000_000) {
 				throw new Error("Runner orchestrator returned an invalid folder dynamic routine version");
 			}
 			return { routineId: responseUuid(item.routine_id, "folder dynamic routine id"), version: item.version as number };
@@ -1364,16 +1377,27 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	#advancePausedUntil = 0;
 	/** The same for the folder-v2 dynamic routines' actions (folder core C1c-3e). */
 	#folderDynamicPausedUntil = 0;
+	/** The folder-v2 dynamic routines are listed at most this often, not on every poll. */
+	readonly #folderDynamicIntervalMs: number;
+	#folderDynamicNextAt = 0;
 
 	constructor(options: CloudRoutineScheduleReconcilerOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
 		this.#pageSize = options.pageSize ?? 250;
 		this.#catchUpLimit = options.catchUpLimit ?? 32;
+		this.#folderDynamicIntervalMs = options.folderDynamicIntervalMs ?? 30_000;
 		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
 			throw new Error("Routine schedule page size is outside the supported range");
 		}
 		if (!Number.isSafeInteger(this.#catchUpLimit) || this.#catchUpLimit < 1 || this.#catchUpLimit > 256) {
 			throw new Error("Routine schedule catch-up limit is outside the supported range");
+		}
+		if (
+			!Number.isSafeInteger(this.#folderDynamicIntervalMs) ||
+			this.#folderDynamicIntervalMs < 0 ||
+			this.#folderDynamicIntervalMs > 3_600_000
+		) {
+			throw new Error("Folder dynamic routine interval is outside the supported range");
 		}
 	}
 
@@ -1453,7 +1477,8 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	): Promise<void> {
 		if (!controlPlane.listFolderDynamicRoutines || !controlPlane.restoreFolderDynamicRoutineRun) return;
 		const now = this.#now().getTime();
-		if (now < this.#folderDynamicPausedUntil) return;
+		if (now < this.#folderDynamicPausedUntil || now < this.#folderDynamicNextAt) return;
+		this.#folderDynamicNextAt = now + this.#folderDynamicIntervalMs;
 		let afterRoutineId: string | undefined;
 		do {
 			let page: CloudFolderDynamicRoutinePage;
