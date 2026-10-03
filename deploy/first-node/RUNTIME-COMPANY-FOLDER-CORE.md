@@ -161,6 +161,8 @@ All tables are keyed by company environment.
     step: find entries and resources whose stored key differs from
     `qorpera_folder_key(path)`, and recompute them (`update ... set path =
     path`, which regenerates the keys) before the folder is served again.
+    The same step reindexes the expression indexes on the folder key (the
+    resources', and the path versions' that erasure uses, P18).
     `snapshot-v1`'s keys share the exposure.
   - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
     rows hold at most 2,704 bytes. A unit that would store a longer key, or
@@ -351,8 +353,13 @@ is never upgraded. The steps:
    - Unique keys a unit introduces (a new agent `id`, a new handle) are
      claimed with `INSERT … ON CONFLICT DO NOTHING`, so a clash becomes an
      outcome at step 7, not an exception.
-   - The vault calls the commit inside its own transaction, and its secret
-     rows are locked here, not before step 1.
+   - The vault never calls the commit (amended 3 October 2026, P22): a vault
+     change marks its connection file due in its own transaction (an
+     insert-only mark), and the object gateway's writer commits the file as
+     the platform afterwards, converging it to the vault's current rows (as
+     "After the commit" below). So no vault change waits for, or fails on, a
+     file. (A commit can still write vault rows itself: hiring or archiving
+     an agent grants or revokes its operations.)
    - The commit then re-resolves every unit's covering resource and
      authorization after these locks. The check before the transaction was
      only advisory.
@@ -467,7 +474,8 @@ Every writer uses the same commit function, as service_role:
   sections, agent details, routines and group chats, which write files for
   `folder-v2`;
 - the Company Computer's saves;
-- the vault, for connection files;
+- the vault's connection-file writer in the object gateway, for connection
+  files (P22: after the vault change, from its due marks);
 - the reviewed-card approvals;
 - a card's "Always allow" answer, which writes `rules/<rule>.md` as the
   answering owner or admin (2026-09-25 amendment, item 5); and
@@ -852,10 +860,12 @@ company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 Permanent erasure (contract 5.6) is an owner or admin operation on a deleted
 path: a deleted agent's folder, or any other deleted path, such as a contact's
 file (contract, the 2026-10-02 amendment "work for people", item 3). It
-removes that path's versions and the conflict copies of its paths, clears the
-retired index rows' pointers to them, and marks the commits' units erased,
-keeping their attribution. The bytes then lose their roots, and GC collects
-them.
+removes that path's versions and the conflict copies of its paths, removes or
+clears the retired index rows built from them, and blanks the path names (and
+problem texts that quote them) in the commits' units, keeping the commits'
+attribution. A file's history that runs through moves is erased whole or not
+at all. The bytes then lose their roots, and GC collects them. Design:
+RUNTIME-COMPANY-FOLDER-ERASURE.md (slice P18).
 
 ### Tests
 
@@ -1116,7 +1126,9 @@ For `folder-v2` companies:
 - The memory, skills, todo, routine and hiring writers write files. The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
-- The vault writes connection files.
+- The vault writes connection files: it marks a file due, and the object
+  gateway's writer commits it as the platform (P22a marks and claims, P22b
+  the writer, P22c website accounts).
 - The tools the layout amendment retires are removed from the model's tool
   list, or become thin writers of the same files.
 
@@ -1144,7 +1156,8 @@ For `folder-v2` companies:
   - the edge functions handle `folder-v2` (runner-broker's verifier call
     `index.ts:348`, runner-control's `outputSnapshotId` `runner-control.ts:155`,
     member-company-gateway's snapshot route);
-  - the secret broker, deployed separately, writes connection files.
+  - the object gateway's connection-file writer, switched on by its flag
+    (amended 3 October 2026, P22: the secret broker gets no folder access).
 
 ### C5. Proof, reset and switch
 
