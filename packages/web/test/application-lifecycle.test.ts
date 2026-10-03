@@ -7,6 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
@@ -192,7 +193,7 @@ describe("account and route ownership", () => {
 
 		// Leave the accepted send waiting for its transcript and start another
 		// compose for the same session, so session identity cannot distinguish them.
-		location.hash = `#/c/${profileA.profileId}/file/history`;
+		location.hash = `#/c/${profileA.profileId}/file`;
 		await draw();
 		location.hash = `#/c/${profileA.profileId}/new`;
 		await draw();
@@ -594,15 +595,6 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
-	it("initializes Company File once while its response is delayed", async () => {
-		const f = mounted(`#/c/${profileA.profileId}/file/history`);
-		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
-		vi.mocked(f.api.getCompanyFile).mockReturnValue(loading.promise);
-		await draw();
-		await vi.advanceTimersByTimeAsync(180);
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
-	});
-
 	it("toggles and closes company navigation without replacing the composer", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
@@ -765,6 +757,38 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main")?.textContent).toContain("This company is not available to your account.");
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		expect(f.root.querySelector<HTMLElement>("main")?.inert).toBe(false);
+	});
+
+	it("opens the company's folder as the Company File, and draws it again when the member's role changes", async () => {
+		const list = vi.fn(async () => ({
+			asOfSeq: 1,
+			entries: [
+				{ path: "notes", kind: "folder", version: id(101), seq: 1, updatedAt: session.updatedAt, file: null },
+			],
+			next: null,
+		}));
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue({ list } as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+		const mode = vi.spyOn(WebCompanyFiles.prototype, "mode");
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		await draw();
+		const page = f.root.querySelector("main .folder-page");
+		expect(page?.querySelector(".files-row .files-name")?.textContent).toBe("notes");
+		vi.mocked(f.api.getTeam).mockResolvedValue({
+			...team,
+			role: "viewer",
+			capabilities: { ...team.capabilities, write: false, authorize: false },
+		});
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		await draw();
+		const again = f.root.querySelector("main .folder-page");
+		expect(again?.querySelector(".files-row .files-name")?.textContent).toBe("notes");
+		expect(again).not.toBe(page);
+		expect(page?.isConnected).toBe(false);
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(mode).not.toHaveBeenCalled();
+		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
 	});
 
 	it("says why the Company File cannot open when membership could not be read", async () => {
