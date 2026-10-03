@@ -2,7 +2,7 @@
 -- Company folder core C1c-3d-2 (20260930003500): on a folder-v2 company the vault's own changes take rank 8's inner
 -- order (tickets, grants, secrets) and the member row before them, so they never meet an agent's tool call or a member
 -- change in a cycle. In each case a holder keeps one row so the others queue behind it in the order that deadlocked
--- before: the change must wait where the order puts it (and leave the secret free), and once the holder ends both land.
+-- before: the change must wait where the order puts it (and leave the secret free), and once the holder ends each lands.
 -- 648's committed fixture (Ada's leased run), plus a broker authority, secrets, grants and capture tickets of the company,
 -- an admin and a second contributor; all removed at the end.
 
@@ -422,6 +422,77 @@ begin
 		or (select status from public.qorpera_cloud_secrets where id = '85000000-0000-4000-8000-0000000000a6') <> 'active' then
 		raise exception 'G: the Disconnect % and the call %', v_disconnect, v_call; end if;
 end $$;
+
+-- K and L (review round 2): a pending rotation ticket expires while a rotation's start waits for its secret. Timed: the
+-- ticket expires a few seconds after the start begins waiting, and the holder ends after that.
+create function pg_temp.rotation_ticket(p_id uuid, p_secret uuid, p_connector text, p_name text, p_capture text, p_seconds integer)
+returns timestamptz language sql as $$
+	insert into public.qorpera_cloud_secret_capture_tickets(id, profile_id, environment_id, broker_authority_id, key_id, secret_id,
+		target_version, owner_kind, owner_user_id, connector_id, secret_name, purpose, capture_capability_sha256, created_by_user_id,
+		expires_at)
+	select p_id, secret.profile_id, secret.environment_id, secret.broker_authority_id, 'test', secret.id, secret.current_version + 1,
+		'company', null, p_connector, p_name, secret.purpose, p_capture, '64800000-0000-4000-8000-000000000001',
+		clock_timestamp() + make_interval(secs => p_seconds)
+	from public.qorpera_cloud_secrets as secret where secret.id = p_secret
+	returning expires_at
+$$;
+create function pg_temp.sql_start(p_secret uuid, p_connector text, p_name text, p_purpose text) returns text language sql as $$
+	select format('select public.qorpera_begin_cloud_secret_capture(%L, %L, %L, %L, %L, %L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'company', null, p_connector, p_name, p_purpose,
+		p_secret)
+$$;
+create function pg_temp.sleep_past(p_at timestamptz) returns void language sql as $$
+	select pg_sleep(greatest(0, extract(epoch from p_at - clock_timestamp())) + 0.3)
+$$;
+
+-- K. No seal: the start, released after the ticket expired, expires it and lands with its own ticket. (Each ticket is
+--    committed on its own first: an uncommitted one would hold its secret's key against the holder.)
+select set_config('qorpera_test.expires', pg_temp.rotation_ticket('85000000-0000-4000-8000-0000000000da',
+	'85000000-0000-4000-8000-0000000000a3', 'google_drive', 'primary', repeat('4', 64), 6)::text, false);
+do $$
+declare v_expires timestamptz := current_setting('qorpera_test.expires')::timestamptz; v_start text;
+begin
+	perform pg_temp.hold(pg_temp.sql_secret('85000000-0000-4000-8000-0000000000a3'));
+	perform pg_temp.claims('fence_three', '64800000-0000-4000-8000-000000000001');
+	perform dblink_send_query('fence_three', pg_temp.sql_start('85000000-0000-4000-8000-0000000000a3', 'google_drive', 'primary', 'Files'));
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secrets') or clock_timestamp() >= v_expires then
+		perform pg_temp.release(); raise exception 'K: the start must wait at the secret before the ticket expires'; end if;
+	perform pg_temp.sleep_past(v_expires);
+	perform pg_temp.release();
+	v_start := pg_temp.outcome('fence_three');
+	if v_start <> 'ok'
+		or (select status from public.qorpera_cloud_secret_capture_tickets where id = '85000000-0000-4000-8000-0000000000da') <> 'expired'
+		or (select count(*) from public.qorpera_cloud_secret_capture_tickets where secret_id = '85000000-0000-4000-8000-0000000000a3'
+			and status = 'pending') <> 1 then
+		raise exception 'K: the start % expires the old ticket and opens its own', v_start; end if;
+end $$;
+
+-- L. The broker's seal of the ticket checked it in time, holds it and queues for the secret behind the start: the start
+--    takes the expired ticket NOWAIT and is refused with 55P03, and the seal lands. Before, the start waited for the
+--    ticket while the seal waited for the secret.
+select dblink_exec('fence_two', 'set session authorization qorpera_secret_broker');
+select set_config('qorpera_test.expires', pg_temp.rotation_ticket('85000000-0000-4000-8000-0000000000db',
+	'85000000-0000-4000-8000-0000000000a2', 'gmail', 'b', repeat('5', 64), 10)::text, false);
+do $$
+declare v_expires timestamptz := current_setting('qorpera_test.expires')::timestamptz; v_start text; v_seal text;
+begin
+	perform pg_temp.hold(pg_temp.sql_secret('85000000-0000-4000-8000-0000000000a2'));
+	perform dblink_send_query('fence_three', pg_temp.sql_start('85000000-0000-4000-8000-0000000000a2', 'gmail', 'b', 'Mail B'));
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secrets') then
+		perform pg_temp.release(); raise exception 'L: the start must wait at the secret'; end if;
+	perform dblink_send_query('fence_two', pg_temp.sql_seal('85000000-0000-4000-8000-0000000000db'));
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_cloud_secrets') or clock_timestamp() >= v_expires
+		or pg_temp.row_free(format('select 1 from public.qorpera_cloud_secret_capture_tickets where id = %L for update',
+			'85000000-0000-4000-8000-0000000000db')) then
+		perform pg_temp.release(); raise exception 'L: the seal must hold the ticket and wait at the secret before it expires'; end if;
+	perform pg_temp.sleep_past(v_expires);
+	perform pg_temp.release();
+	v_start := pg_temp.outcome('fence_three'); v_seal := pg_temp.outcome('fence_two');
+	if v_start not like '55P03 %' or v_seal <> 'ok'
+		or (select current_version from public.qorpera_cloud_secrets where id = '85000000-0000-4000-8000-0000000000a2') <> 2 then
+		raise exception 'L: the start % and the seal %', v_start, v_seal; end if;
+end $$;
+select dblink_exec('fence_two', 'reset session authorization');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 

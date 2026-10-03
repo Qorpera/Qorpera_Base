@@ -956,7 +956,7 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
 | Grant one operation (`grant_cloud_secret_operation`) | secret, then the agent's staff row | staff row, then the secret | F |
 | Share (`grant_cloud_connector`) | secret, then the (agent, tool) grants it replaces | those grants by id, then the secret; a secret of another company or environment locks nothing | B, H, J |
 | Seal (`complete_cloud_secret_capture`) | ticket, then the creator's member row; for a company connection the secret (or none, a first capture), then (sharing) the grants by agent and operation | the creator's member row, then the ticket; for a company connection the grants by id, then the secret | C, D, I |
-| Rotation start (`begin_cloud_secret_capture`) | secret and stale tickets, then the insert trigger's member check; tickets expired by a second clock reading | the caller's member row, then the stale tickets, then the secret; only the tickets it locked expire (one cutoff, the statement's start) | E |
+| Rotation start (`begin_cloud_secret_capture`) | secret and stale tickets, then the insert trigger's member check | the caller's member row, then the stale tickets, then the secret; a ticket that expired while it waited is taken `NOWAIT` | E, K, L |
 
 `share_company_connection` is left as it is: the seal is its only caller and then already holds the grants it writes.
 
@@ -967,12 +967,16 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   archive), B a share against an agent call, C a company rotation's seal against an agent call, D a first capture's
   seal against the owner demoting its creator, E a member's rotation start against the owner removing them, I a first
   capture's seal against a Disconnect taking the same grants by id. H: a share of another company's secret is refused
-  (P0002) without queueing behind a grant.
+  (P0002) without queueing behind a grant. K and L time a rotation ticket to expire while a rotation's start waits for
+  the secret: with no seal the start expires it and lands (K); with the broker's seal holding it, the start is refused
+  with 55P03 and the seal lands (L).
 - **Grants created while a change waited.** A change locks the grants it will write before the secret, so one
   created meanwhile is not among them. A Disconnect takes a grant on its secret that it did not pre-lock `NOWAIT` once
   the secret is held (an agent call may hold it and wait for the secret); a share or a seal
   (`grant_cloud_connector_operations`) takes every grant it did not pre-lock `NOWAIT`, whichever secret it is on (its
-  holder may wait for a grant the change holds). Either way 55P03, retryable (never 40001: test 361). Raced
+  holder may wait for a grant the change holds). Either way 55P03 (never 40001: test 361): a member's action can be
+  tried again; a seal refused this way fails as the broker's "Cloud secret capture was not confirmed", and the member
+  connects again. Raced
   deterministically: G (a Disconnect, with the grant committed while it waits and an agent call on it) and J (a share,
   with a new grant on another secret held as an agent call would). The member-facing refusal reaches the web client
   with Postgres' own wording; #705's member changes map theirs to QRC01.

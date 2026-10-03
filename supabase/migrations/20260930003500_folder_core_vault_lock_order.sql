@@ -27,8 +27,8 @@
 -- on the secret that it did not pre-lock NOWAIT once the secret is held: an agent call may hold it and wait for the
 -- secret. A share or a seal (qorpera_grant_cloud_connector_operations) takes every grant it did not pre-lock NOWAIT,
 -- whichever secret it is on: its holder may wait for a grant this change holds. Either way 55P03 refuses retryably
--- (never 40001: test 361). A rotation's start expires only the stale tickets it locked, by one cutoff (the statement's
--- start).
+-- (never 40001: test 361). A rotation's start takes a pending ticket that expired while it waited for the secret NOWAIT
+-- too: the broker's seal of that ticket may hold it and wait for the secret.
 --
 -- Exact-text patches: each fails unless its text is found exactly once. Each patched function names this migration
 -- (20260930003500) in a comment, for deploy guards.
@@ -104,8 +104,8 @@ $old$			select existing.* into v_existing from public.qorpera_cloud_secret_opera
 $new$			-- Folder-v2 (20260930003500): the share and the seal locked the agents' active grants of these tools by id
 			-- before the secret, so they hold these already. One they do not hold was created while they waited, and its
 			-- holder (an agent call, a Disconnect of another secret) may wait for a row they hold: NOWAIT, 55P03. The
-			-- third caller, the staff trigger granting a new or returning agent, finds none: such an agent has no active
-			-- grants (archiving revokes them, and a grant needs active staff).
+			-- third caller, the staff trigger granting a new or returning agent, finds none but its own: such an agent
+			-- has no active grants (archiving revokes them, and a grant needs active staff).
 			if public.qorpera_company_is_folder_v2(p_profile_id) then
 				select existing.* into v_existing from public.qorpera_cloud_secret_operation_grants as existing
 				where existing.profile_id = p_profile_id and existing.environment_id = p_environment_id
@@ -175,17 +175,20 @@ $new$			perform 1 from public.qorpera_profiles as profile where profile.id = p_p
 		end if;
 		select secret.* into strict v_secret$new$);
 
--- The rotation's start expires only the stale tickets it locked: one cutoff, the statement's start (statement_timestamp
--- does not move during the call), so a ticket that expires while the start waits for the secret is left for a later
--- start (the seal refuses it anyway) instead of being locked after the secret.
+-- The rotation's start expires the stale tickets: those it locked before the secret, and NOWAIT one that expired while
+-- it waited (a seal that checked the ticket in time may hold it and wait for the secret: 55P03, never a deadlock).
 select pg_temp.folder_vault_order_patch(
 	'public.qorpera_begin_cloud_secret_capture(uuid,uuid,text,uuid,text,text,text,uuid)'::regprocedure,
 $old$		where secret_id = v_secret.id and target_version > 1 and status = 'pending'
 			and expires_at <= clock_timestamp();$old$,
 $new$		where secret_id = v_secret.id and target_version > 1 and status = 'pending'
 			and expires_at <= clock_timestamp()
-			-- Folder-v2 (20260930003500): only the tickets locked before the secret, by the same cutoff.
-			and (not public.qorpera_company_is_folder_v2(p_profile_id) or expires_at <= statement_timestamp());$new$);
+			-- Folder-v2 (20260930003500): a ticket that expired since the pre-lock is taken NOWAIT.
+			and (not public.qorpera_company_is_folder_v2(p_profile_id) or id in (
+				select stale.id from public.qorpera_cloud_secret_capture_tickets as stale
+				where stale.secret_id = v_secret.id and stale.target_version > 1 and stale.status = 'pending'
+					and stale.expires_at <= clock_timestamp()
+				for update nowait));$new$);
 
 -- Granting one operation: the agent's staff row (rank 2) before the secret (rank 8).
 select pg_temp.folder_vault_order_patch(
