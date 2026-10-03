@@ -1127,9 +1127,10 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   finisher's drain waits it out. No legacy wake-admission bump (folder effects never read it), in the request or in
   its stop. The stop's job pass still skips the jobs effects hold; the finisher ends them.
   - The request's stop now runs beside folder effects, where the row `FOR UPDATE` kept them apart. Its locks after
-    rank 0 (jobs `SKIP LOCKED` and their termination's sessions and clock, coding todos and workers, the machine
-    advisory lock and machines, invitations, seats, access state) come in the order every folder path takes them
-    (3f's machines, 3h's coding calls, 3d-2's vault, 3c's member management), and the clock last; no cycle found.
+    rank 0 (jobs `SKIP LOCKED`, never waited for, and their termination: run events, wake occurrences, inputs; no
+    conversation write or operation clock; then coding todos, workers and sessions, the machine advisory lock and
+    machines, invitations, seats, access state) come in the order every folder path takes them (3f's machines, 3h's
+    coding calls, 3d-2's vault, 3c's member management); no cycle found (review r2 traced the job end's triggers).
   - The old `FOR UPDATE` also waited for a transaction that had just inserted a row pointing at the company (a job
     enqueued just before). The request no longer does; the finisher's stop runs again after its drain.
 - **The finisher** (`finish_company_deletion`) runs the folder pause's second phase for deletion,
