@@ -498,8 +498,8 @@ select pg_temp.f25b_worker_files_replace('public.qorpera_company_state_parse_pro
 		if not coalesce(public.qorpera_company_state_instant(p_parse -> 'dispatchedAt'), false) then
 			v_bad := array_append(v_bad, 'dispatchedAt'); end if;
 		if jsonb_typeof(p_parse -> 'followUps') is distinct from 'number'
-			or case when (p_parse ->> 'followUps') ~ '^(0|[1-9][0-9]{0,9})$' then (p_parse ->> 'followUps')::bigint > 2147483646
-				else true end
+			or (case when (p_parse ->> 'followUps') ~ '^(0|[1-9][0-9]{0,9})$' then (p_parse ->> 'followUps')::bigint > 2147483646
+				else true end)
 			or (p_parse ->> 'followUps' = '0') is distinct from (jsonb_typeof(p_parse -> 'followedUpAt') = 'null')
 			or (p_parse ->> 'followUps' = '0') is distinct from (jsonb_typeof(p_parse -> 'followUp') = 'null')
 			or (jsonb_typeof(p_parse -> 'followedUpAt') <> 'null'
@@ -516,7 +516,7 @@ select pg_temp.f25b_worker_files_replace('public.qorpera_company_state_parse_pro
 		-- At most 8 sources, each a path the folder can hold of up to 512 bytes, written once by key.
 		if jsonb_typeof(p_parse -> 'sources') is distinct from 'array' or jsonb_array_length(p_parse -> 'sources') > 8
 			or exists (select 1 from jsonb_array_elements(p_parse -> 'sources') f
-				where jsonb_typeof(f) <> 'string' or octet_length(f #>> '{}') > 512 or (f #>> '{}') ~ '[\x01-\x1f\x7f-\x9f  ]'
+				where jsonb_typeof(f) <> 'string' or octet_length(f #>> '{}') > 512 or (f #>> '{}') ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]'
 					or not public.qorpera_company_path_valid(f #>> '{}'))
 			or (select count(distinct public.qorpera_folder_key(f #>> '{}')) from jsonb_array_elements(p_parse -> 'sources') f)
 				<> jsonb_array_length(p_parse -> 'sources') then
@@ -544,7 +544,7 @@ select pg_temp.f25b_worker_files_replace('public.qorpera_company_state_parse_pro
 			v_bad := array_append(v_bad, 'needs'); end if;
 		if jsonb_typeof(p_parse -> 'files') is distinct from 'array' or jsonb_array_length(p_parse -> 'files') > 4
 			or exists (select 1 from jsonb_array_elements(p_parse -> 'files') f
-				where jsonb_typeof(f) <> 'string' or octet_length(f #>> '{}') > 256 or (f #>> '{}') ~ '[\x01-\x1f\x7f-\x9f  ]'
+				where jsonb_typeof(f) <> 'string' or octet_length(f #>> '{}') > 256 or (f #>> '{}') ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]'
 					or not public.qorpera_company_path_valid(f #>> '{}'))
 			or (select count(distinct public.qorpera_folder_key(f #>> '{}')) from jsonb_array_elements(p_parse -> 'files') f)
 				<> jsonb_array_length(p_parse -> 'files') then
