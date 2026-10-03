@@ -206,7 +206,9 @@ begin
 	if (select row(job.*)::text from public.qorpera_runner_jobs as job where job.id = v_job.id) <> row(v_job.*)::text then
 		raise exception 'G: the sweep changes no job'; end if;
 	set local session_replication_role = replica;
-	update public.qorpera_runner_jobs set status = 'cancelled', finished_at = clock_timestamp() where id = v_job.id;
+	update public.qorpera_runner_jobs set status = 'cancelled', cancelled_at = clock_timestamp(),
+		cancelled_by_user_id = '30000000-0000-4000-8000-000000000001', lease_token_sha256 = null, lease_expires_at = null
+	where id = v_job.id;
 	set local session_replication_role = origin;
 	v_sweep := pg_temp.sweep();
 	if v_sweep ->> 'closed' <> '1' or pg_temp.open_notices() <> '{}' then
