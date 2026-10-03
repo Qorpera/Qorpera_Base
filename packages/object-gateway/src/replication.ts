@@ -19,6 +19,13 @@ export interface ObjectReplicationAuthority extends ObjectGatewayAuthority {
 interface PendingObject extends LegacyObjectMigrationItem {
 	state: "unconfirmed" | "replicate" | "delete" | "deleted" | "blocked";
 	authorizationId?: string;
+	/** Folder GC (C1D §9.9): when a blocked entry's folder-v2 object was first found with no catalog row. */
+	missingSince?: string;
+}
+
+/** An entry the reconcile gave up on (`blocked`), for folder GC's check of bytes with no catalog row. */
+export interface BlockedObject extends LegacyObjectMigrationItem {
+	missingSince?: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -34,7 +41,11 @@ function pendingObject(value: unknown, expectedKey: string): PendingObject {
 		entry.bytes < 0 ||
 		entry.bytes > 8 * 1024 * 1024 ||
 		!["unconfirmed", "replicate", "delete", "deleted", "blocked"].includes(entry.state) ||
-		(["delete", "deleted"].includes(entry.state) && !UUID.test(entry.authorizationId ?? ""))
+		(["delete", "deleted"].includes(entry.state) && !UUID.test(entry.authorizationId ?? "")) ||
+		(entry.missingSince !== undefined &&
+			(entry.state !== "blocked" ||
+				typeof entry.missingSince !== "string" ||
+				!Number.isFinite(Date.parse(entry.missingSince))))
 	) {
 		throw new Error("Replication intent is invalid");
 	}
@@ -126,6 +137,52 @@ export class ObjectGatewayReplication {
 		const prior = await this.#journal.read(name);
 		if (prior === undefined || ["delete", "deleted"].includes(pendingObject(prior, name).state)) return;
 		await this.#journal.remove(name);
+	}
+
+	/** Up to `limit` blocked entries, by name after `after`, reading at most 500 entries. `next` is where the next call
+	 * goes on from, or undefined once the list has been read to its end. */
+	async blockedEntries(
+		after: string | undefined,
+		limit: number,
+	): Promise<{ objects: BlockedObject[]; next: string | undefined }> {
+		const names = (await this.#journal.list("pending")).filter((name) => after === undefined || name > after);
+		const objects: BlockedObject[] = [];
+		let read = 0;
+		for (const name of names) {
+			if (objects.length >= limit || read >= 500) return { objects, next: names[read - 1] };
+			read++;
+			const stored = await this.#journal.read(name);
+			if (stored === undefined) continue;
+			const entry = pendingObject(stored, name);
+			if (entry.state !== "blocked") continue;
+			objects.push({
+				profileId: entry.profileId,
+				sha256: entry.sha256,
+				bytes: entry.bytes,
+				...(entry.missingSince === undefined ? {} : { missingSince: entry.missingSince }),
+			});
+		}
+		return { objects, next: undefined };
+	}
+
+	/** With the object's lock held: its entry, if it is blocked. */
+	async blockedLocked(profileId: string, sha256: string): Promise<BlockedObject | undefined> {
+		const name = key({ profileId, sha256, bytes: 0 });
+		const stored = await this.#journal.read(name);
+		if (stored === undefined) return undefined;
+		const entry = pendingObject(stored, name);
+		if (entry.state !== "blocked") return undefined;
+		return {
+			profileId,
+			sha256,
+			bytes: entry.bytes,
+			...(entry.missingSince === undefined ? {} : { missingSince: entry.missingSince }),
+		};
+	}
+
+	/** With the object's lock held: a blocked entry notes when its object was first found with no catalog row. */
+	async markMissingLocked(object: LegacyObjectMigrationItem, since: string): Promise<void> {
+		await this.#journal.write(key(object), { ...object, state: "blocked", missingSince: since });
 	}
 
 	async audit(event: Record<string, unknown>): Promise<void> {

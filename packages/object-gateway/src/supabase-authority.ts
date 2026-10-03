@@ -533,6 +533,19 @@ export class SupabaseObjectAuthority
 		return value;
 	}
 
+	async folderCatalogState(profileId: string, sha256: string): Promise<"catalogued" | "listed" | "missing" | "other"> {
+		const value = await this.#rpc(
+			"qorpera_folder_gc_catalog_state",
+			{ p_profile_id: profileId, p_sha256: sha256 },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		if (value !== "catalogued" && value !== "listed" && value !== "missing" && value !== "other")
+			throw new Error("Invalid folder GC catalog state");
+		return value;
+	}
+
 	async authorizeDelete(
 		profileId: string,
 		sha256: string,

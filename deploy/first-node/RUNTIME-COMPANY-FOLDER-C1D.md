@@ -649,3 +649,18 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   racing the rename, the scan against a live lane, two lanes on one object, a re-upload while the replica is removed,
   the reconciler during quarantine, no NAS file, a deletion starting mid-lane, abandon on a lane error); the worker's
   folder phase; runtime QRC01; SQL 880 (the switch).
+
+**Built (C1d-2c part 1, migration 20260930009100, test 881; slice P12): bytes with no catalog row.**
+- `qorpera_folder_gc_catalog_state(profile, sha256)` (service role, plain reads, the 2 s budget) answers `catalogued`,
+  `other` (a company folder GC does not serve: snapshot-v1, mixed, or being deleted), `listed` (no row, but an upload
+  intent that expired less than the grace window ago lists it: its writer may still confirm) or `missing`.
+- The gateway's scan, after the quarantine, reads up to 500 journal entries per pass from a cursor and checks up to 50
+  `blocked` ones, each under the object's lock (an upload holds it from its put to its confirm), re-read there. A
+  `missing` object's entry first records `missingSince` (the gateway's clock); once 24 hours have passed with the object
+  still `missing`, its NAS file and any Storage replica are removed and the entry dropped
+  (`folder_object_uncatalogued_removed` in the audit log). `catalogued`, `other` and `listed` leave the entry as it is.
+  An upload that puts the object again rewrites the entry (`unconfirmed`, then `replicate`), which ends the wait.
+- This also settles C1d-1b's open follow-up (a stop or a lock timeout at confirm leaves the NAS file outside the catalog
+  and the entry `blocked`): the entry is kept, so the bytes are never untracked, and goes after the grace window.
+- Pending entries of objects the lane collected are dropped by the lane itself (`forgetLocked`); one that a crash left
+  behind becomes `blocked` at its next reconcile (the row is gone) and goes the same way.
