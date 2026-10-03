@@ -1042,6 +1042,11 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
+  The `folder-v2` materializer (P28) also calls F2's worker drain,
+  `qorpera_folder_drain_worker_wakes(environment, limit)`, for each company
+  that `qorpera_folder_worker_wakes_due()` lists, in its own transaction,
+  before it materializes that company's wakes (RUNTIME-COMPANY-STATE-FILES.md,
+  "Plan (F2-5b)" §6).
 - The members' and clients' hint (the feed itself is C1f).
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,
