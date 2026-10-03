@@ -33,7 +33,7 @@ when they act for an agent.
 | Traffic | Road | How |
 | --- | --- | --- |
 | Company Computer browser | agent | the browser relay's connections leave through the computer's agent plug (§6) |
-| Company Computer shells (#411) | agent | the per-screen namespaces route out of the agent plug (§6) |
+| Company Computer shells, terminal, desktop (#411) | agent | the per-screen namespaces route out of the agent plug (§6) |
 | Agents' own machines | agent | their only network card is an agent plug |
 | Coding machines: git, registries, websites | agent | their only network card is an agent plug |
 | Coding machines: AI sign-in and model traffic | platform | the provider door (§5) |
@@ -69,9 +69,11 @@ agent road machine only ever uses the exit of the node it runs on.
 - To the exit itself from `br0`: DHCP, DNS and ping to `10.210.0.1` only.
 - From `up0`: replies only.
 - Every new connection is counted per client address, and each refused flow is kept an hour for the log (added once
-  per hour, not refreshed on every hit).
-- Each client holds at most 16,384 connections through the exit at once (contract item 4), so one machine cannot fill
-  the exit's connection table for every company on the node.
+  per hour, not refreshed on every hit; only a new flow spends a machine's share of the log, so repeats cannot hide
+  other refusals).
+- Proposed, pending Jonas (contract item 4): each client holds at most 16,384 connections through the exit at once,
+  and the exit at most 196,608 in all, so one machine cannot fill the exit for every company and agent traffic
+  cannot fill the node's own connection table.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
@@ -93,14 +95,17 @@ lines (§7). When the kernel drops events under load, conntrack says so, and the
 **Units (proposed).**
 - `qorpera-agent-exit.service` (oneshot). Start builds or repairs the namespace, bridge, veths, addresses and rules.
   Reload does the same in place. Stop removes the exit and is refused while a machine is plugged in.
-- `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, both bound to it.
+- `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, wanted by it and ordered after it, but not
+  bound to it.
 - The coordinator installs them with `deploy/agent-exit/install-agent-exit.sh`, and they stay disabled until a node
   is switched on. With a machine plugged in, stopping the exit's unit fails and changes nothing: the name and log
-  services are not bound to it and keep running, so traffic never flows without them.
+  services are not bound to it and keep running. The unit is then marked failed; `systemctl start` brings it back
+  in place. Stopping the name and log services by name is the operator's own step, part of the undo with nothing
+  plugged in.
 - Packages: `dnsmasq-base`, `conntrack` and `python3` (no services of their own).
 
 **Updates (contract item 10).** An exit update never stops a machine:
-- it reloads the rules in one transaction per table;
+- it reloads the rules in one transaction per table, before any link is touched;
 - it restarts dnsmasq and the logger in place;
 - it keeps the bridge and the veths.
 
@@ -122,7 +127,8 @@ healthy exit (E2).
 - One shared helper allocates the address and writes the DHCP lease and the client map entry (address → company,
   machine, kind, member for coding machines, since).
 - When a machine goes away, its entry and lease are removed, its address's connections are flushed, and the address
-  stays unused for 10 minutes, so late log lines are never given to the wrong company.
+  stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so late log lines are never given to the wrong
+  company and the address is free again before it is reused.
 - Machines move one kind at a time, each behind its own switch. A running machine moves the next time it starts.
 - Today agents' machines and coding machines have LXD ACLs on `machine-net` and `coding-net` as their second line.
   On `qagent0` the exit's and the host's rules take that place, with the NIC filters and port isolation.
@@ -148,7 +154,8 @@ never enter the exit.
 
 ## 6. The Company Computer (E6)
 
-A computer gets a second network card, an agent plug, in the next office image (with #411).
+The machine behind the Company Computer gets a second network card, an agent plug, in the next office image (with
+#411).
 
 **Inside the computer.**
 - The browser relay's outbound connections and #411's per-screen namespaces route out of the agent plug.
@@ -229,9 +236,11 @@ allow = []             # used when mode is "only-listed"
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
   DNS, gets past a block list.
-- **"Only listed":** strict. A machine reaches only addresses the exit's own lookups gave for a listed name (a
-  per-company set filled as names resolve). On port 443 the TLS server name must be listed too, so a listed name sent
-  to another address does not pass. Other protocols, QUIC and SSH included, are refused in this mode.
+- **"Only listed":** strict. A machine reaches only TCP ports 80 and 443, and only on addresses the exit's own
+  lookups gave for a listed name (a per-company set filled as names resolve). On port 443 the TLS server name must
+  be listed too, so an unlisted site that shares a listed site's address is refused. E8 adds that check as a
+  pass-through that reads only the server name, like the provider door. Everything else is refused in this mode:
+  other ports and protocols, UDP (QUIC) and SSH included.
 
 ## 11. The address block (E9, choice 1)
 
@@ -243,7 +252,8 @@ allow = []             # used when mode is "only-listed"
   sets the router up.
 - Each node switches in place: `up0` becomes a macvlan with the node's address, and the host's masquerade for the
   exit is removed. Connections open at that moment end, and new ones start from the new address. Sites that tie a
-  sign-in to an address may ask an agent's session to sign in again.
+  sign-in to an address may ask an agent's session to sign in again, and a machine set up on another node leaves
+  from that node's address.
 - Reverse names under qorpera.com, and the info page with the abuse contact.
 - TDC's terms say the line may not carry traffic for anyone but the customer. The TDC message asks TDC to confirm
   that a hosted service is fine.
@@ -255,15 +265,17 @@ allow = []             # used when mode is "only-listed"
   - The node observer reports the failed `verify` to the runtime operator, and placement gives that node no new
     agent road machines.
   - Agents' commands on that node see network errors.
-  - Recovery: `systemctl reload qorpera-agent-exit.service` repairs the exit's own parts in place. If the bridge
+  - Recovery: `systemctl reload qorpera-agent-exit.service` (or `systemctl start` when the unit is marked failed)
+    repairs the exit's own parts in place. If the bridge
     itself was lost, plugged machines lose their links until they restart; E2's `verify` checks that every plugged
     machine's network card is on the bridge. If repair fails, the operator moves the node's work as for any node
     fault.
 - **Uplink down.** The same as the exit being down.
-- **Log down (proposed, pending Jonas).** Traffic continues, the time is a gap in the log, and `verify` fails, with
-  the consequences above (no new machines, a report to the operator). A short gap in the log is preferred over
-  cutting running work; the contract's item 10 says so, and the founder may change it.
-- **Rule change.** Applies at once through set updates, without a restart.
+- **Log down (proposed on 3 October, pending Jonas).** Traffic continues, the time is a gap in the log, and `verify`
+  fails, with the consequences above (no new machines, a report to the operator). A short gap in the log is preferred
+  over cutting running work; the contract's item 10 says so, and the founder may change it. A gap record carries
+  `since` (the logger's last heartbeat), so a lookup marks the whole outage as unknown.
+- **Rule change.** Applies at once (the resolver reloads its lists and the exit its sets), without a restart.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
 ## 13. Build plan
@@ -277,7 +289,7 @@ allow = []             # used when mode is "only-listed"
 | E3 | Log shipping to the NAS, 90-day cleanup, the "who used this address" lookup | none |
 | E4 | Agents' machines use the agent plug | they start there |
 | E5 | Coding machines use the agent plug, with the provider door | they move |
-| E6 | Company Computer: a second network card for the browser and shells (with the next image) | it moves |
+| E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | it moves |
 | E7 | Line guard: counting, then the brake at the levels the founder decides | after his decision |
 | E8 | Company rules | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |

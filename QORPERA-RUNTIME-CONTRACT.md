@@ -802,7 +802,9 @@ subscriptions, which self-limit.
 > exit's line guard: TCP port 25 is refused, and a brake on bursts of new
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
-> leaves through the agent exit", section 19, item 9).
+> leaves through the agent exit", section 19, item 9). Proposed, pending
+> Jonas: at most 16,384 connections per machine through the exit and 196,608
+> in all, bounds that protect the node (item 4).
 
 ## 8. Wake bus
 
@@ -4558,16 +4560,19 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - IPv6, for now.
 
    Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
-   (item 9). A refusal answers at once. Each machine holds at most 16,384 connections through the exit at once, the
-   same bound a computer has inside (compute item 2). It keeps one machine from filling the exit for every company on
-   the node; it protects the node and is not a limit on the work.
+   (item 9). A refusal answers at once.
+
+   Proposed, pending Jonas: each machine holds at most 16,384 connections through the exit at once, and the exit at
+   most 196,608 in all (the numbers #411 uses inside a computer). They keep one machine from filling the exit for
+   every company on the node, and agent traffic from filling the node's own connection table. Like 7.4's storage
+   bounds, they protect the node and are not a limit on the work.
 5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
    (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
    - On an execution host, the existing model relay carries them.
    - In a coding machine, a provider door carries them. It is a new node service for coding machines only. It
      passes a connection only when the server name in its TLS handshake is one of the providers' names. It reads
-     nothing else. In a coding machine every connection to a provider name goes through the door, an agent's own
-     included.
+     nothing else. In a coding machine every connection made by a provider's name goes through the door, an
+     agent's own included.
    - On every other agent road machine, a call to an AI service is agent traffic like any other.
 6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
    addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
@@ -4598,9 +4603,10 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - A block list works on names: the exit's name lookups refuse a blocked name for that company, and the refusal
      is in the name-lookup record. A machine that reaches a site by its address, or through its own encrypted DNS,
      gets past a block list.
-   - The "only listed" mode is strict. A machine reaches only addresses the exit's own name lookups gave for a
-     listed name, and on port 443 only when the TLS server name is listed too. Other protocols are refused in that
-     mode.
+   - The "only listed" mode is strict. A machine reaches only TCP ports 80 and 443, and only on addresses the
+     exit's own name lookups gave for a listed name. On port 443 the TLS server name must be listed too, so an
+     unlisted site on a listed site's shared address is refused. Everything else is refused in that mode: other
+     ports and protocols, UDP (QUIC) included.
 9. **The line guard (choice 2).**
    - TCP port 25 is refused from the exit's first day.
    - For two weeks the exit only counts, per company: new connections, refused ones, bursts of new connections (a
@@ -4614,13 +4620,15 @@ It amends these texts. Where older text conflicts with this amendment, this amen
       bridge and the machines' links stay up, and no company is paused.
     - The exit is never removed while a machine is plugged into it.
     - If a node's exit or its log is not healthy, the node takes no new agent road machines, and the node observer
-      reports it to the runtime operator.
+      reports it to the runtime operator. A machine already set up on that node still starts there (a machine does
+      not move); while the exit itself is down it has no internet.
     - If the exit itself is down, that node's agent road machines have no internet until it is back, and agents'
       commands there see network errors. Agent traffic never falls back to the platform road. On a Company Computer
       this rests on the computer's own rules: agents' browser, shells, terminal and desktop reach only its agent
       network card, and agents cannot change those rules (step E6 proves both).
-    - If only the log is down, traffic continues and the time is a gap in the log (item 7). This is the design's
-      proposal of 3 October, pending Jonas: a short gap in the log is preferred over cutting running work.
+    - If only the log is down, traffic continues and the time is a gap in the log (item 7). Proposed on 3 October,
+      pending Jonas: a short gap in the log is preferred over cutting running work. (Each restart of the logger in an
+      update leaves a short gap either way.)
     - A company rule applies at once, without a restart.
 11. **Companies share the agent addresses.** The line guard and the log keep one company from spoiling them for
     the rest. Addresses per company (IPv6) are a later decision.
@@ -4629,8 +4637,10 @@ It amends these texts. Where older text conflicts with this amendment, this amen
       machine each reach a website through the exit, and the exit's log names their company;
     - the NAS, the nodes, Tailscale and cloud metadata stay unreachable from them, and TCP port 25 is refused;
     - a coding turn's model traffic leaves through the provider door and is absent from the exit's log;
-    - with the exit stopped, none of them reaches the internet, a Company Computer through its own network included;
+    - with the exit failed, none of them reaches the internet; a Company Computer whose agent network card is gone
+      does not reach it through its own network either, and its agents cannot change that;
     - a company's block list refuses a name for that company and for no other;
+    - in "only listed" mode, an unlisted site is refused even on a listed site's shared address;
     - once the block is in use, websites see the agent address, not the platform address.
 
 **What this replaces.**
@@ -4649,7 +4659,7 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 - The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
   `rules/network.toml`.
 - 5.6: `rules/` also holds `network.toml` (changed in place).
-- 7.4: the line guard joins what remains (changed in place).
+- 7.4: the line guard, and the proposed connection bounds of item 4, join what remains (changed in place).
 - Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
 - Section 23: the agent exit is a network path, with item 10 as its failure behaviour (changed in place).
 
