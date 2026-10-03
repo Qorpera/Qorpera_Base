@@ -140,6 +140,7 @@ switch, G2-3d and G2-4 are on; G2-5 removes that copy, and only then does the VM
 - A host back on the key: rebuild it without `EXEC_HOST_CREDENTIAL` (its file is then empty), then
   `qorpera_revoke_execution_host_credential('<host id>')`.
 - The SQL: drop `qorpera_execution_host_call`, `_call_long`, `qorpera_execution_host_dispatch`,
-  `qorpera_execution_host_claims_run`, `qorpera_execution_host_uuid`, `qorpera_bind_execution_host_credential`,
+  `qorpera_execution_host_claims_run`, `qorpera_execution_host_run_machine`, `qorpera_execution_host_uuid`,
+  `qorpera_bind_execution_host_credential`,
   `qorpera_revoke_execution_host_credential` and the tables `qorpera_execution_host_calls` and
   `qorpera_execution_host_principals`, once no host uses them.

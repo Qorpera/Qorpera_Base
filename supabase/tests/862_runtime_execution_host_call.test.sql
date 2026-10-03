@@ -380,11 +380,39 @@ select pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', jso
 	current_setting('qorpera_test.identity'), 'p_run_id', current_setting('qorpera_test.run'))), 'refused', 'an ended run''s identity');
 select pg_temp.expect(pg_temp.own('qorpera_release_runtime_machine', jsonb_build_object('p_allocation_id',
 	'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64)),
-	'qorpera_execution_host_call_long'), 'not refused', 'an ended run machine''s release');
+	'qorpera_execution_host_call_long'), 'ok', 'an ended run machine''s release');
 select pg_temp.expect(pg_temp.own('qorpera_bind_native_identity_credential', jsonb_build_object('p_allocation_id',
 	'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64),
 	'p_holder_kind', 'exec_slot', 'p_credential_sha256', pg_temp.sha('V' || repeat('v', 42)))), 'refused', 'an ended run''s bind');
 rollback to savepoint ended_run;
+-- A run retried and claimed again by the host's own orchestrator is the host's while its claim is current (claimed and
+-- the job queued): its identity, a runner row for the new attempt and that runner's run machine.
+do $$
+declare v_runner jsonb; v_client uuid := '86200000-0000-4000-8000-000000000077';
+begin
+	begin
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		perform public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,
+			'failed', 'Runner lease expired before durable completion', true);
+		if public.qorpera_claim_runner_job_for_orchestrator('30000000-0000-4000-8000-000000000092', extensions.gen_random_uuid(), 120)
+			#>> '{work,run_id}' is distinct from current_setting('qorpera_test.run') then
+			raise exception 'the retried run was not claimed by the host''s orchestrator'; end if;
+		perform set_config('request.jwt.claims', '', true);
+		perform pg_temp.expect(pg_temp.own('qorpera_identity_recovery_runtime_state', pg_temp.identity_args()), 'ok',
+			'the identity of a run the host claimed again');
+		v_runner := substr(pg_temp.own('qorpera_provision_execution_runner', jsonb_build_object('p_run_id',
+			current_setting('qorpera_test.run'), 'p_client_runner_id', v_client, 'p_provider_adapter', 'process',
+			'p_activation_token_sha256', repeat('2', 64))), 4)::jsonb;
+		if v_runner ->> 'runner_id' is null then raise exception 'no runner row for the new attempt: %', v_runner; end if;
+		perform pg_temp.expect(pg_temp.own('qorpera_reserve_runtime_machine', jsonb_build_object('p_allocation_id', v_client,
+			'p_provider_adapter', 'process', 'p_instance_sha256', repeat('8', 64), 'p_run_id', current_setting('qorpera_test.run'),
+			'p_runner_id', v_runner ->> 'runner_id')), 'ok', 'the run machine of a run the host claimed again');
+		if not exists (select 1 from public.qorpera_runtime_machine_allocations where id = v_client and released_at is null) then
+			raise exception 'the new attempt''s reservation left no allocation'; end if;
+		raise exception using errcode = 'QG23E', message = 'roll the retry back';
+	exception when sqlstate 'QG23E' then null;
+	end;
+end $$;
 -- A run retried and claimed by another orchestrator, of another adapter or of the same one, is no longer the host's.
 do $$
 declare v_orchestrator uuid; v_state text;
