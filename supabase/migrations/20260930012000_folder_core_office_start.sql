@@ -16,20 +16,26 @@
 --   return) takes that staff row and then, through its default office access (the browser grant's office revision), the
 --   offices; a start that took the office first and the agent's row after could deadlock with it once the gc fence
 --   stopped serializing them. The member's start, cancel, withdrawal and status, the provider's reserve and check (and
---   their wrappers, before qorpera_assert_runtime_office_provider) and the fleet offer and placement take it.
--- * The default access trigger of a hire walks the company's offices by id, as every office path takes several.
+--   their wrappers, before qorpera_assert_runtime_office_provider), the fleet offer and placement, the office's
+--   activation and its startup lock (both before the assertion) take it.
+-- * The default access trigger of a hire walks the company's offices by id, the order every path that takes several
+--   offices uses.
 -- * member_office_catalog, a member's first call to the Company Computer, takes the machine fence on folder-v2, then the
 --   member's row as before: never the company row FOR UPDATE (the coordinator's condition, 3 October).
 -- * Registering a folder-v2 company's first computer (qorpera_register_runtime_office, the coordinator's decision of
---   3 October): the machine fence, the owner or admin's member row FOR SHARE, then the office rows as before. The
---   coordinator registers it as the company's owner the first time the company needs its computer.
+--   3 October): the machine fence, the owner or admin's member row FOR SHARE, the seat lock (so a second first
+--   registration waits and returns the same computer), then the office rows as before. The coordinator registers it
+--   as the company's owner the first time the company needs its computer.
 -- * The gates of registration, the start-source check, the guest binding and the office reservation accept a ready
 --   folder-v2 company's Company File (core = 'folder-v2') as well as a version-1 path gateway. The interlock trigger
 --   returns before its gc fence on folder-v2: it serializes the version-1 cutover, which a folder-v2 company never has.
 --
--- Not in 3j: screens, the shared surface, access configuration, the adoption check and the other member-facing calls
+-- * Adopting a replaced computer's screens (a non-empty adoption mapping, whose agents and members it shares after the
+--   office) refuses on folder-v2 with 0A000 before any lock, until C1c-3k orders it.
+--
+-- Not in 3j: screens, the shared surface, access configuration, the adoption mapping and the other member-facing calls
 -- (C1c-3k); an agent's start and the activation-wake drain (C1c-3l). Each patched function names this migration
--- (20260930012000) in its body, for the deploy guard.
+-- (20260930012000) in its body, for the deploy guard; test 893 J pins every snapshot-v1 body by its digest.
 
 set local lock_timeout = '3s';
 
@@ -96,10 +102,12 @@ begin
 	-- Company File passes the gate.
 	perform pg_temp.c1c3j_replace('public.qorpera_register_runtime_office(uuid,uuid,text,text,integer)',
 		E'\tperform public.qorpera_lock_profile_gc_fence(v_profile);\n',
-		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, the company row KEY SHARE and the member (rank 1).\n'
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, the company row KEY SHARE, the member (rank 1) and the\n'
+		|| E'\t-- seat lock, so a second first registration waits and finds the computer.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(v_profile) then\n'
 		|| E'\t\tperform public.qorpera_folder_machine_fence(v_profile);\n'
 		|| E'\t\tperform 1 from public.qorpera_profile_members where profile_id=v_profile and user_id=auth.uid() for share;\n'
+		|| E'\t\tperform public.qorpera_lock_runtime_office_seats(p_environment_id);\n'
 		|| E'\telse\n'
 		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_profile);\n'
 		|| E'\tend if;\n', 1);
@@ -122,38 +130,81 @@ begin
 		E'profile_id=v_profile and state=''ready''\n'
 		|| E'\t\t\t\t\tand (path_gateway_version=1 or core=''folder-v2'' /* C1c-3j 20260930012000 */))\n', 1);
 	perform pg_temp.c1c3j_replace('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)',
-		E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n',
-		E' -- C1c-3j (20260930012000): a folder-v2 office too (its callers hold the folder fence the same way).\n'
+		E' -- C1c-3f (20260930002000): a folder-v2 machine takes the folder fence and the company row KEY SHARE, held by\n'
+		|| E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
+		|| E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n',
+		E' -- C1c-3f (20260930002000) and C1c-3j (20260930012000): a folder-v2 machine or office takes the folder fence and\n'
+		|| E' -- the company row KEY SHARE, held by every caller; coding (C1c-3h) still comes with the gc fence.\n'
 		|| E' if p_provider_kind in (''machine'',''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n', 1);
 end $$;
 
 -- 3. The start family: the member's calls and the provider's, each with the prelude --------------------------------------
 
 do $$
-declare
-	v_site record;
 begin
-	for v_site in select * from (values
-		('public.qorpera_request_runtime_office_start(jsonb,bigint,uuid)', 'o', 'auth.uid()', 'null'),
-		('public.qorpera_request_runtime_office_start_before_idle(jsonb,bigint,uuid)', 'v_office', 'auth.uid()', 'null'),
-		('public.qorpera_cancel_runtime_office_start(jsonb,bigint,uuid)', 'v_office', 'auth.uid()', 'null'),
-		('public.qorpera_runtime_office_start_status(jsonb)', 'v_office', 'auth.uid()', 'null'),
-		('public.qorpera_withdraw_runtime_office_wake(jsonb,bigint,uuid)', 'o', 'auth.uid()', 'null'),
-		('public.qorpera_reserve_runtime_office_start_unbound(jsonb,bigint,uuid,uuid,text,text,text,text)', 'v_office', 'null',
-			'p_intent_id'),
-		('public.qorpera_check_runtime_office_start_unbound(jsonb,bigint,uuid,uuid,text,text)', 'v_office', 'null',
-			'p_intent_id')) as site(target, office, member, intent)
-	loop
-		perform pg_temp.c1c3j_replace(v_site.target::regprocedure,
-			format(E'\tperform public.qorpera_lock_profile_gc_fence(%s.profile_id);\n', v_site.office),
-			E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
-			|| E'\t-- start-source check shares, before the office.\n'
-			|| format(E'\tif public.qorpera_company_is_folder_v2(%s.profile_id) then\n', v_site.office)
-			|| format(E'\t\tperform public.qorpera_folder_office_enter(%s.id, %s, %s);\n', v_site.office, v_site.member, v_site.intent)
-			|| E'\telse\n'
-			|| format(E'\tperform public.qorpera_lock_profile_gc_fence(%s.profile_id);\n', v_site.office)
-			|| E'\tend if;\n', 1);
-	end loop;
+	perform pg_temp.c1c3j_replace('public.qorpera_request_runtime_office_start(jsonb,bigint,uuid)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(o.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(o.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(o.id, auth.uid(), null);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(o.profile_id);\n'
+		|| E'\tend if;\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_request_runtime_office_start_before_idle(jsonb,bigint,uuid)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(v_office.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(v_office.id, auth.uid(), null);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n'
+		|| E'\tend if;\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_cancel_runtime_office_start(jsonb,bigint,uuid)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(v_office.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(v_office.id, auth.uid(), null);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n'
+		|| E'\tend if;\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_runtime_office_start_status(jsonb)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(v_office.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(v_office.id, auth.uid(), null);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n'
+		|| E'\tend if;\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_withdraw_runtime_office_wake(jsonb,bigint,uuid)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(o.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(o.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(o.id, auth.uid(), null);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(o.profile_id);\n'
+		|| E'\tend if;\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_reserve_runtime_office_start_unbound(jsonb,bigint,uuid,uuid,text,text,text,text)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(v_office.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(v_office.id, null, p_intent_id);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n'
+		|| E'\tend if;\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_check_runtime_office_start_unbound(jsonb,bigint,uuid,uuid,text,text)',
+		E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(v_office.profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter(v_office.id, null, p_intent_id);\n'
+		|| E'\telse\n'
+		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_office.profile_id);\n'
+		|| E'\tend if;\n', 1);
 
 	-- The fleet offer and placement (one-space indent).
 	perform pg_temp.c1c3j_replace('public.qorpera_offer_runtime_office_fleet(jsonb)',
@@ -204,6 +255,41 @@ begin
 		E'\t\t\tand profile_id=v_office.profile_id and state=''ready'' and path_gateway_version=1)\n',
 		E'\t\t\tand profile_id=v_office.profile_id and state=''ready''\n'
 		|| E'\t\t\tand (path_gateway_version=1 or core=''folder-v2'' /* C1c-3j 20260930012000 */))\n', 1);
+end $$;
+
+-- 3b. An office's activation (review round 1): its start's members and agent before the provider's assertion takes the
+--     office, in the activation and in the startup lock (report-ready and the screen events go through it). Adopting a
+--     replaced computer's screens (non-empty mappings) is refused on folder-v2 until C1c-3k orders its agents and members.
+
+do $$
+begin
+	perform pg_temp.c1c3j_replace(
+		'public.qorpera_activate_runtime_office(jsonb,bigint,uuid,uuid,uuid,text,text)',
+		E'\tperform public.qorpera_assert_runtime_office_provider(p_scope,p_computer_generation,p_provider_id,p_provider_policy_sha256,false);\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the start\'s members and agent before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2((select office.profile_id from public.qorpera_runtime_offices as office\n'
+		|| E'\t\twhere office.id=(p_scope->>''companyComputerId'')::uuid)) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter((p_scope->>''companyComputerId'')::uuid, null, p_intent_id);\n'
+		|| E'\tend if;\n'
+		|| E'\tperform public.qorpera_assert_runtime_office_provider(p_scope,p_computer_generation,p_provider_id,p_provider_policy_sha256,false);\n', 1);
+	perform pg_temp.c1c3j_replace('public.qorpera_lock_runtime_office_startup(jsonb)',
+		E'\tperform public.qorpera_assert_runtime_office_provider(p_startup->''scope'',(p_startup->>''computerGeneration'')::bigint,\n',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the activation\'s start members and agent before the office.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2((select office.profile_id from public.qorpera_runtime_offices as office\n'
+		|| E'\t\twhere office.id=(p_startup#>>''{scope,companyComputerId}'')::uuid)) then\n'
+		|| E'\t\tperform public.qorpera_folder_office_enter((p_startup#>>''{scope,companyComputerId}'')::uuid, null, v_activation.intent_id);\n'
+		|| E'\tend if;\n'
+		|| E'\tperform public.qorpera_assert_runtime_office_provider(p_startup->''scope'',(p_startup->>''computerGeneration'')::bigint,\n', 1);
+	perform pg_temp.c1c3j_replace(
+		'public.qorpera_check_runtime_office_adoption(jsonb,bigint,uuid,uuid,text,text,uuid,text,jsonb)',
+		E'\tv_result:=public.qorpera_check_runtime_office_start(p_scope,p_computer_generation,p_intent_id,p_allocation_id,\n',
+		E'\t-- C1c-3j (20260930012000): adopting screens on folder-v2 comes with C1c-3k (its agents and members first); it\n'
+		|| E'\t-- refuses before any lock.\n'
+		|| E'\tif jsonb_typeof(p_mappings)=''array'' and jsonb_array_length(p_mappings)>0\n'
+		|| E'\t\tand public.qorpera_company_is_folder_v2((select office.profile_id from public.qorpera_runtime_offices as office\n'
+		|| E'\t\t\twhere office.id=(p_scope->>''companyComputerId'')::uuid)) then\n'
+		|| E'\t\traise exception ''Adopting a computer''''s screens comes later on this company'' using errcode=''0A000''; end if;\n'
+		|| E'\tv_result:=public.qorpera_check_runtime_office_start(p_scope,p_computer_generation,p_intent_id,p_allocation_id,\n', 1);
 end $$;
 
 -- 4. The member's catalog, the hire's office walk and the interlock --------------------------------------------------------

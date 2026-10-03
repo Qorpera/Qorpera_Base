@@ -223,8 +223,9 @@ begin
 		current_setting('qorpera_test.envelope_sha'), v_result);
 end $$;
 
--- B2. The reservation's folder branch serves the machine kind only: a coding reservation for the folder-v2 company still
--- takes the gc fence (C1c-3h), so it waits for a holder of the company row KEY SHARE, and then refuses for its own reasons.
+-- B2. The reservation's folder branch serves the machine kind (and, since C1c-3j, the office kind) only: a coding
+-- reservation for the folder-v2 company still takes the gc fence (C1c-3h), so it waits for a holder of the company row
+-- KEY SHARE, and then refuses for its own reasons.
 do $$
 declare v_state text;
 begin
@@ -552,9 +553,12 @@ create temporary table c1c3f_patches(n serial, fn text, digest text, patched tex
 insert into c1c3f_patches(fn, digest, patched, original) values
 		-- C1c-3j (20260930012000) widened C1c-3f's machine branch to offices: undone first, then C1c-3f's own patch.
 		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
-			E' -- C1c-3j (20260930012000): a folder-v2 office too (its callers hold the folder fence the same way).\n'
+			E' -- C1c-3f (20260930002000) and C1c-3j (20260930012000): a folder-v2 machine or office takes the folder fence and\n'
+			|| E' -- the company row KEY SHARE, held by every caller; coding (C1c-3h) still comes with the gc fence.\n'
 			|| E' if p_provider_kind in (''machine'',''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n',
-			E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n'),
+			E' -- C1c-3f (20260930002000): a folder-v2 machine takes the folder fence and the company row KEY SHARE, held by\n'
+			|| E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
+			|| E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n'),
 		('qorpera_company_machine_fence_briefly(uuid)', '67fbb82ff9e2ca093be14b54b9ac764a',
 			E'\t-- C1c-3f (20260930002000): on folder-v2 the folder fence and the company row KEY SHARE.\n'
 			|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
