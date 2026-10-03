@@ -260,6 +260,9 @@ describe("public member Company File gateway", () => {
 		["runtime route", request(`/v1/runtime-objects/${id}`), 404],
 		["upstream query", request(`${object}?upstream=https://evil.test`), 404],
 		["wrong method", request(object, { method: "POST" }), 405],
+		["a folder object without its hash", request(`/v1/member-folder-objects/${id}`), 404],
+		["a folder object with a version", request(`/v1/member-folder-objects/${id}/${id}/${"b".repeat(64)}`), 404],
+		["a folder object write", request(`/v1/member-folder-objects/${id}/${"b".repeat(64)}`, { method: "PUT" }), 405],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forwardMemberCompanyGateway(req, {
@@ -400,6 +403,7 @@ describe("public member Company File gateway", () => {
 		});
 	for (const path of [
 		`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`,
+		`/v1/member-folder-objects/${id}/${"b".repeat(64)}`,
 		`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`,
 		`/v1/member-company-file/${id}/edits/${id}`,
 		`/v1/member-company-file/${id}/edits/${id}/content`,

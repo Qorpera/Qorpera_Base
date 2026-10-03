@@ -1,5 +1,7 @@
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const OBJECT = new RegExp(`^/v1/member-company(?:-snapshot)?-objects/${UUID}/${UUID}/[0-9a-f]{64}$`);
+/** A member's bytes of a folder-v2 company, one manifest or chunk (folder core C4, P27b). */
+const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64}$`);
 const FILE = new RegExp(
 	`^/v1/member-company-file/${UUID}/(edits|proposals)(?:/(${UUID}))?(?:/(review|content|file))?$`,
 );
@@ -18,6 +20,7 @@ export interface MemberCompanyGatewayOptions {
 
 function route(path: string): { method: string; headers: string[] } | undefined {
 	if (OBJECT.test(path)) return { method: "GET", headers: ["authorization", "x-qorpera-company-path"] };
+	if (FOLDER_OBJECT.test(path)) return { method: "GET", headers: ["authorization"] };
 	if (EXPORT.test(path)) return { method: "GET", headers: ["authorization"] };
 	if (PRESENCE.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
 	if (UPLOAD.test(path))
