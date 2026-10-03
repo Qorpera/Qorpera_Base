@@ -786,6 +786,10 @@ answers 42501 "Company folder is unavailable" for a caller who is not a member o
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
 looks absent in every answer. Reads only: member writes come with P31.
 
+- `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
+  `20260930013200_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
+  company with the functions below, never with the governed Company File calls.
+
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
   `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
