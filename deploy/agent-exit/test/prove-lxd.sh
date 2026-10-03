@@ -173,11 +173,31 @@ exit_mac=$(ip -n qexit -br link show br0 | awk '{print $3}')
 host_if=$(lx config get m1 volatile.eth0.host_name)
 in_m m1 ip neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
 new_count() { ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -o "$1 counter packets [0-9]*" || true; }
-# LXD's own layers on each machine's port: port isolation, and its per-port MAC filter.
+# LXD's own layers on each machine's port, each tested with ours opened for it (the reconciler stopped meanwhile, so
+# it cannot close them again): port isolation, its MAC filter and its IPv6 filter must hold by themselves.
 for port in "$(lx config get m1 volatile.eth0.host_name)" "$(lx config get m2 volatile.eth0.host_name)"; do
 	[[ $(cat "/sys/class/net/$port/brport/isolated") == 1 ]] || fail "LXD did not isolate $port"
-	nft list table bridge lxd | grep -q "\"$port\"" || fail "LXD's bridge filter does not name $port"
 done
+kill "$plug_pid"
+wait "$plug_pid" 2>/dev/null || true
+nft add element bridge qorpera_agent_exit_bridge ports "{ \"$host_if\" . 0e:51:0a:d2:99:98 }"
+nft add element bridge qorpera_agent_exit_bridge clients "{ 0e:51:0a:d2:99:98 . $a1 }"
+in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address 0e:51:0a:d2:99:98; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+reach m1 198.51.100.1 80 && fail "LXD's MAC filter let another MAC through"
+in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $mac1; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+nft insert rule bridge qorpera_agent_exit_bridge forward iifname "$host_if" ether type ip6 accept
+nft add table bridge qae2b_lxd6
+nft add chain bridge qae2b_lxd6 seen '{ type filter hook forward priority 100; }'
+nft add rule bridge qae2b_lxd6 seen iifname "$host_if" ether type ip6 counter
+in_m m1 sh -c 'sysctl -qw net.ipv6.conf.eth0.disable_ipv6=0; ping -6 -c 3 -W 1 ff02::1%eth0' >/dev/null 2>&1 || true
+nft list chain bridge qae2b_lxd6 seen | grep -q 'packets 0 ' || fail "LXD's IPv6 filter let IPv6 through: $(nft list chain bridge qae2b_lxd6 seen)"
+nft delete table bridge qae2b_lxd6
+handle=$(nft -a list chain bridge qorpera_agent_exit_bridge forward | awk '/ether type ip6 accept/ {print $NF}')
+nft delete rule bridge qorpera_agent_exit_bridge forward handle "$handle"
+start_plug
+wait_for "! nft list set bridge qorpera_agent_exit_bridge clients | grep -q 0e:51:0a:d2:99:98" 100
+wait_for "reach m1 198.51.100.1 80" 100
+pass "LXD isolates each machine's port, and its MAC and IPv6 filters hold on their own"
 # Another address than its own (in the range, and another machine's), towards the internet: the exit counts every
 # connection it forwards, so a spoofed one would show there.
 from_addr() { in_m m1 timeout 4 python3 -c 'import socket, sys; s = socket.socket(); s.settimeout(3); s.bind((sys.argv[1], 0)); s.connect(("198.51.100.1", 80))' "$1" 2>/dev/null; }
@@ -258,7 +278,6 @@ grep -q DHCPDECLINE "$work/log/dns.log" && fail "a machine declined another's le
 bridge fdb show br qagent0 | grep -q "$mac2 dev $port2" || fail "another machine's MAC moved: $(bridge fdb show br qagent0)"
 bridge fdb show br qagent0 | grep -q "$exit_mac dev $host_if" && fail "the exit's MAC moved to a machine"
 pass "no gratuitous ARP for another's address, no ARP sender MAC, no DHCP naming another's MAC, no MAC theft"
-pass "LXD isolates each machine's port and filters it by MAC"
 # A frame from the exit to a MAC the bridge has forgotten reaches only that machine's port.
 nft add table bridge qae2b_flood
 nft add chain bridge qae2b_flood seen '{ type filter hook forward priority 100; }'
