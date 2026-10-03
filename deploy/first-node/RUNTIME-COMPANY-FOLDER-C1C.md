@@ -863,7 +863,12 @@ Decisions:
   - Pre-existing, for 3d: capture completion and secret rotation take vault rows before the creator's member row
     (`FOR SHARE`), against a removal's rank order; a joiner misses an agent thread created at the same moment (on
     master too). For 3g: the last member's leave during the purge can meet `finish_company_deletion` once (40P01,
-    which heals: finish retries and the leave refuses).
+    which heals: finish retries and the leave refuses). Likewise 3f's sweep of stopped task machines (§6.5): while it
+    waits at a `folder-v2` company's row it holds that company's fence `KEY SHARE`, and the purge's cascade wants the
+    fence `FOR UPDATE` while it holds the row. Both must land within milliseconds of one admission pass (a deletion
+    request committed after the sweep's cursor opened, then a finisher tick), and it heals: the pass retries next pass,
+    or the finisher's 40P01 or 5 s lock timeout retries next minute. 3g's deletion drain takes the fence `FOR UPDATE`
+    before rank 0, so the sweep's fence `NOWAIT` then skips the company.
   - The founding lobby's own functions (`lock_company_founding`, `remove_company_founder`, `respond_company_founding`)
     go with 3d.
 
@@ -896,7 +901,8 @@ Decisions:
     id order (`authorize_node_update_drain`, `node_update_locked`), and deletion's finisher handles several companies in
     one transaction; an earlier sweep in the pass holds other companies' rows.
   - So the sweep waits for a `folder-v2` company's row only while the pass has given up no disk and holds no other
-    company's row. Otherwise that company waits a pass (824 E4, E5); a pass that waits holds nothing such a holder wants.
+    company's row. Otherwise that company waits a pass (824 E4, E5). A pass that waits holds nothing such a holder wants
+    but that company's own fence `KEY SHARE`, which only deletion's purge wants (see the 3g note in §6.4).
   - A pass can still wait behind another old gc-fence holder of the row (a sign-in, until §6.1's other sites move).
   - It inserts no wake, so core §3 step 10's one-company rule does not apply.
 - **Giving up a disabled executor** takes each `folder-v2` company's fence in place of the gc fence, in the same id order.
