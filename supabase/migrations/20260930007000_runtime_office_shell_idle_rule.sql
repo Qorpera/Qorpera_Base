@@ -393,7 +393,10 @@ begin
 		'parentWake',jsonb_build_object('kind',v_parent_wake.wake_kind,'sourceKind',v_parent_wake.source_kind,
 			'routineIntent',(select prompt from public.qorpera_cloud_routine_versions
 				where routine_id = v_parent_wake.routine_id and version = v_parent_wake.routine_version),
-			'roomPost',(select jsonb_build_object('kind','historical_room_input','id',id,'authorUserId',author_user_id,'body',body)
+			-- A quoted member message is fenced, as in every other continuation (I5d-1, 20260930000100).
+			'roomPost',(select jsonb_build_object('kind','historical_room_input','id',id,'authorUserId',author_user_id,'body',
+					case when public.qorpera_member_message_fenced(id, body) is null then body
+						else body - 'text' - 'quotes' || public.qorpera_member_message_fenced(id, body) end)
 				from public.qorpera_session_inputs where v_parent_wake.source_kind = 'room' and id = v_parent_wake.source_id
 					and session_id = v_parent.session_id and kind = 'user_message')),
 		'receipts',v_receipts,'priorSends',v_sends,
