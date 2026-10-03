@@ -604,7 +604,7 @@ export class CloudMemberFolderClient {
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const token = await this.#token(requestSignal);
-				const response = await this.#fetch(`${this.#controlOrigin}/rest/v1/rpc/${name}`, {
+				const init: RequestInit & Pick<Request, "cache"> = {
 					method: "POST",
 					headers: {
 						apikey: this.#publishableKey,
@@ -615,7 +615,8 @@ export class CloudMemberFolderClient {
 					signal: requestSignal,
 					redirect: "error",
 					cache: "no-store",
-				});
+				};
+				const response = await this.#fetch(`${this.#controlOrigin}/rest/v1/rpc/${name}`, init);
 				if (response.status !== 200) {
 					void response.body?.cancel().catch(() => undefined);
 					throw new CloudMemberFolderError(`Company folder is unavailable (${response.status})`);
@@ -635,15 +636,16 @@ export class CloudMemberFolderClient {
 	/** One object through the member folder route, checked against its hash. */
 	async #object(sha256: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
 		const token = await this.#token(signal);
+		const init: RequestInit & Pick<Request, "cache"> = {
+			method: "GET",
+			headers: { authorization: `Bearer ${token}` },
+			signal,
+			redirect: "error",
+			cache: "no-store",
+		};
 		const response = await this.#fetch(
 			`${this.#objectOrigin}/v1/member-folder-objects/${this.#environmentId}/${sha256}`,
-			{
-				method: "GET",
-				headers: { authorization: `Bearer ${token}` },
-				signal,
-				redirect: "error",
-				cache: "no-store",
-			},
+			init,
 		);
 		if (response.status !== 200 || response.headers.get("x-qorpera-access-mode") !== "live-path-authority") {
 			void response.body?.cancel().catch(() => undefined);
