@@ -77,28 +77,88 @@ begin
 		pg_temp.span(v_body, 'Order 7', current_setting('qorpera_test.account_thread')))), '22023', 'account mail');
 end $$;
 
--- Only a company whose runs fence quotes takes them: this company is on the company path, and an environment with no
--- Company File on it (a whole-tree company's) is refused.
-select pg_temp.path_claims('service_role');
+-- The member's own guillemets (Danish »ja«, French « merci ») sit beside a kept quote, in the save that adds it and
+-- the next one alike. The same text without its quote is refused, and a stale save answers with the quotes.
 do $$
-declare v_body jsonb := pg_temp.quoted('About ', 'Order 7', '.', current_setting('qorpera_test.mail_thread'));
+declare v_body text := 'Svar »ja« til «Order 7 is late», « merci ».';
+	v_next text := 'Svar »ja« til «Order 7 is late», « merci ». Tak.';
 begin
+	perform pg_temp.expect(pg_temp.draft(4, v_body, pg_temp.span(v_body, 'Order 7 is late')) ->> 'status', 'ok',
+		'own marks beside a new quote');
+	perform pg_temp.expect(pg_temp.draft(5, v_next, pg_temp.span(v_next, 'Order 7 is late')) ->> 'status', 'ok',
+		'own marks in the next save');
+	perform pg_temp.expect(pg_temp.state_of(format('select pg_temp.draft(6, %L)', v_next)), '22023',
+		'the same text without its quote');
+	perform pg_temp.expect(pg_temp.draft(2, 'x') ->> 'status', 'stale', 'a stale save');
+	perform pg_temp.expect(pg_temp.draft(2, 'x') -> 'draft' -> 'quotes', pg_temp.span(v_next, 'Order 7 is late'),
+		'a stale save answers with the quotes');
+end $$;
+
+-- A co-editor's older client saves text only: keeping the quote's words is refused, removing the quote whole while
+-- the owner's own marks stay is an ordinary save.
+select pg_temp.path_claims('service_role');
+insert into public.qorpera_company_room_members (room_id, principal_kind, principal_id, status, source_path_version)
+values ('30000000-0000-4000-8000-000000081605', 'member', '30000000-0000-4000-8000-000000000002', 'active',
+	'30000000-0000-4000-8000-000000081606');
+select pg_temp.member('30000000-0000-4000-8000-000000000002');
+do $$ begin
+	perform pg_temp.expect(pg_temp.state_of($call$select pg_temp.draft(6, 'Svar »ja« til «Order 7 is late», « merci ». Tak!')$call$),
+		'22023', 'a co-editor''s text-only save keeping the quote');
+	perform pg_temp.expect(pg_temp.state_of($call$select pg_temp.draft(6, 'Svar »ja« til «Order 7 is late!», « merci ». Tak.')$call$),
+		'22023', 'a co-editor''s text-only save changing the quote''s words');
+	perform pg_temp.expect(pg_temp.draft(6, 'Svar »ja« til, « merci ». Tak.') ->> 'status', 'ok',
+		'a co-editor''s text-only save removing the quote whole');
+end $$;
+
+-- Only a company whose runs fence quotes takes them. This company is on the company path; the same company as a
+-- whole-tree one (snapshot-v1, no path gateway) is refused, and as a folder-v2 one it takes them. Each change is the
+-- company row's alone, for its savepoint (triggers skipped: the path head guard refuses a write outside the gateway).
+select pg_temp.path_claims('service_role');
+do $$ begin
 	perform pg_temp.expect((select count(*) from public.qorpera_company_files
 		where environment_id = '30000000-0000-4000-8000-000000000020' and path_gateway_version = 1)::text, '1',
 		'the fixture company is on the company path');
-	perform pg_temp.expect(pg_temp.state_of(format(
-		'select public.qorpera_check_member_quotes(%L::uuid, extensions.gen_random_uuid(), %L::jsonb)',
-		'30000000-0000-4000-8000-000000000010', v_body)), '22023', 'a company whose runs can''t fence quotes');
-	perform pg_temp.expect(pg_temp.message_of(format(
-		'select public.qorpera_check_member_quotes(%L::uuid, extensions.gen_random_uuid(), %L::jsonb)',
-		'30000000-0000-4000-8000-000000000010', v_body)), 'Quotes need a company whose runs fence them',
-		'and it says why');
+end $$;
+create function pg_temp.check_here() returns text language sql as $$
+	select pg_temp.message_of(format('select public.qorpera_check_member_quotes(%L::uuid, %L::uuid, %L::jsonb)',
+		'30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000020',
+		pg_temp.quoted('About ', 'Order 7', '.', current_setting('qorpera_test.mail_thread'))))
+$$;
+savepoint quotes_whole_tree;
+set local session_replication_role = replica;
+update public.qorpera_company_files set path_gateway_version = null, path_index_snapshot_id = null
+where environment_id = '30000000-0000-4000-8000-000000000020';
+do $$ begin
+	perform pg_temp.expect(pg_temp.check_here(), 'Quotes need a company whose runs fence them', 'a whole-tree company');
+end $$;
+rollback to savepoint quotes_whole_tree;
+savepoint quotes_folder_v2;
+set local session_replication_role = replica;
+update public.qorpera_company_files set core = 'folder-v2' where environment_id = '30000000-0000-4000-8000-000000000020';
+do $$ begin
+	perform pg_temp.expect(pg_temp.check_here(), 'ok', 'a folder-v2 company');
+end $$;
+rollback to savepoint quotes_folder_v2;
+do $$ begin
+	perform pg_temp.expect(current_setting('session_replication_role'), 'origin', 'triggers are back');
+	perform pg_temp.expect(pg_temp.check_here(), 'ok', 'the company path again');
 end $$;
 
--- Both markers stay in the check: part 1's and this part's.
+-- Every function this part patches or adds carries its marker; the check keeps part 1's too.
 do $$
-declare v_definition text := pg_get_functiondef('public.qorpera_check_member_quotes(uuid,uuid,jsonb)'::regprocedure);
+declare v_function regprocedure;
 begin
-	if strpos(v_definition, 'I5d-1 (20260930000100)') = 0 or strpos(v_definition, 'I5d-2 (20260930008000)') = 0 then
-		raise exception 'the quote check lost a body marker'; end if;
+	if strpos(pg_get_functiondef('public.qorpera_check_member_quotes(uuid,uuid,jsonb)'::regprocedure),
+		'I5d-1 (20260930000100)') = 0 then raise exception 'the quote check lost part 1''s marker'; end if;
+	foreach v_function in array array['public.qorpera_check_member_quotes(uuid,uuid,jsonb)',
+		'public.qorpera_draft_keeps_quotes(text,jsonb,text,jsonb)',
+		'public.qorpera_room_draft_json_internal(public.qorpera_room_drafts)',
+		'public.qorpera_put_room_draft(uuid,uuid,bigint,text,jsonb)']::regprocedure[] loop
+		if strpos(pg_get_functiondef(v_function), 'I5d-2 (20260930008000)') = 0 then
+			raise exception '% has no body marker', v_function; end if;
+	end loop;
+	foreach v_function in array array['public.qorpera_draft_keeps_quotes(text,jsonb,text,jsonb)']::regprocedure[] loop
+		if has_function_privilege('authenticated', v_function, 'EXECUTE') or has_function_privilege('service_role', v_function, 'EXECUTE') then
+			raise exception '% is exposed', v_function; end if;
+	end loop;
 end $$;

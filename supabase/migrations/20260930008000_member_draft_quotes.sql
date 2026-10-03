@@ -6,9 +6,14 @@
 --   its Company File is on the company path (path_gateway_version 1). Every input RPC goes through it.
 -- - A draft keeps its quotes beside its text, room drafts included, so a reload, another device or a co-editor keeps
 --   them. qorpera_put_room_draft takes the quotes as an optional fifth argument (a client that sends four arguments
---   still reaches it), checks them as a message's quotes, and stores them. Once a draft holds quotes, every «…» pair
---   of a save must be a quote with its record: a save that keeps a quote's words without its record, or changes them,
---   is refused (22023). Removing a quote whole is an ordinary save. The draft's JSON carries its quotes.
+--   still reaches it), checks them as a message's quotes, and stores them. The draft's JSON carries its quotes.
+--   Once a draft holds quotes, a save that keeps a quote's words without its record, or changes them, is refused
+--   (22023), and removing a quote whole is an ordinary save (qorpera_draft_keeps_quotes):
+--   - each earlier quote's words still in the text, inside their marks, keep a record of the same thread at that
+--     place;
+--   - a text-only save (an older client's, which can't send quotes) brings no newly marked words: a quote edited
+--     inside its marks would otherwise become the member's own.
+--   The member's own guillemets (»ja«, « merci ») are theirs.
 --
 -- Exact-text patches keep I5d part 1's body marker; each patched or new function also carries "I5d-2 (20260930008000)".
 
@@ -28,7 +33,7 @@ select pg_temp.member_draft_quotes_patch('public.qorpera_check_member_quotes(uui
 $old$,
 	$new$	if jsonb_typeof(p_body) is distinct from 'object' or not p_body ? 'quotes' then return; end if;
 	-- I5d-2 (20260930008000): a whole-tree company's legacy runner can't fence a quote.
-	if not public.qorpera_company_is_folder_v2(p_profile_id) and not exists (
+	if not public.qorpera_environment_is_folder_v2(p_environment_id) and not exists (
 		select 1 from public.qorpera_company_files as file
 		where file.environment_id = p_environment_id and file.path_gateway_version = 1) then
 		raise exception 'Quotes need a company whose runs fence them' using errcode = '22023'; end if;
@@ -54,6 +59,55 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		|| case when p_draft.quotes is null then '{}'::jsonb else jsonb_build_object('quotes', p_draft.quotes) end
 $$;
 revoke all on function public.qorpera_room_draft_json_internal(public.qorpera_room_drafts)
+	from public, anon, authenticated, service_role;
+
+-- Whether a save keeps a draft's quotes: see the header. Positions count characters (code points) from 0, as quotes do.
+create function public.qorpera_draft_keeps_quotes(p_old_body text, p_old_quotes jsonb, p_body text, p_quotes jsonb)
+returns boolean language plpgsql immutable security definer set search_path = '' as $$
+declare
+	v_quote jsonb;
+	v_words text;
+	v_from integer;
+	v_at integer;
+	v_own text[];
+	v_segment text;
+	v_index integer;
+begin
+	-- I5d-2 (20260930008000): a draft's quotes are kept, never turned into the member's words.
+	if p_old_quotes is null then return true; end if;
+	for v_quote in select value from jsonb_array_elements(p_old_quotes) loop
+		v_words := substr(p_old_body, (v_quote ->> 'start')::integer + 1,
+			(v_quote ->> 'end')::integer - (v_quote ->> 'start')::integer);
+		v_from := 1;
+		loop
+			v_at := strpos(substr(p_body, v_from), '«' || v_words || '»');
+			exit when v_at = 0;
+			-- The « stands at character v_from + v_at - 1 (from 1), so the words start there (from 0).
+			if not exists (select 1 from jsonb_array_elements(coalesce(p_quotes, '[]'::jsonb)) as kept(value)
+				where (kept.value ->> 'start')::integer = v_from + v_at - 1
+					and (kept.value ->> 'end')::integer = v_from + v_at - 1 + char_length(v_words)
+					and kept.value ->> 'source' = v_quote ->> 'source' and kept.value ->> 'ref' = v_quote ->> 'ref') then
+				return false; end if;
+			v_from := v_from + v_at;
+		end loop;
+	end loop;
+	if p_quotes is not null then return true; end if;
+	-- A text-only save: its marked words must all have been the member's own before.
+	v_own := array(select segment[1] from regexp_matches(p_old_body, '«([^«»]*)»', 'g') as segment);
+	for v_quote in select value from jsonb_array_elements(p_old_quotes) loop
+		v_index := array_position(v_own, substr(p_old_body, (v_quote ->> 'start')::integer + 1,
+			(v_quote ->> 'end')::integer - (v_quote ->> 'start')::integer));
+		if v_index is not null then v_own := v_own[:v_index - 1] || v_own[v_index + 1:]; end if;
+	end loop;
+	for v_segment in select segment[1] from regexp_matches(p_body, '«([^«»]*)»', 'g') as segment loop
+		v_index := array_position(v_own, v_segment);
+		if v_index is null then return false; end if;
+		v_own := v_own[:v_index - 1] || v_own[v_index + 1:];
+	end loop;
+	return true;
+end
+$$;
+revoke all on function public.qorpera_draft_keeps_quotes(text, jsonb, text, jsonb)
 	from public, anon, authenticated, service_role;
 
 -- Replace a draft's text, and its quotes, only from its current revision. A stale revision changes nothing and
@@ -113,11 +167,9 @@ begin
 		return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'ok',
 			'draft', public.qorpera_room_draft_json_internal(v_draft));
 	else
-		-- Once a draft holds quotes, every «…» pair of a save is a quote with its record: a save that keeps a quote's
-		-- words without it (a client that lost the quote, an older one that saves text only) or changes them is refused.
-		-- Removing a quote whole is an ordinary save.
-		if v_draft.quotes is not null and (select count(*) from regexp_matches(p_body, '«[^«»]*»', 'g'))
-			<> coalesce(jsonb_array_length(p_quotes), 0) then
+		-- A save that keeps a quote's words without its record, or changes them, is refused; removing a quote whole is
+		-- an ordinary save.
+		if not public.qorpera_draft_keeps_quotes(v_draft.body, v_draft.quotes, p_body, p_quotes) then
 			raise exception 'A save would keep a quote''s words without its record' using errcode = '22023';
 		end if;
 		-- The owner emptying the draft (it was sent or cleared) ends its contributors.

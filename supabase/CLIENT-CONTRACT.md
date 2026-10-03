@@ -570,13 +570,14 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   quoted message waits: only a cloud run fences one.
 - A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
   (`mentionFold`) folds each quote to its placeholder first.
-- Quotes are refused (22023) in a company whose runs can't fence them: one that is neither folder-v2 nor on the
-  company path (`20260930008000_member_draft_quotes`).
+- Quotes are refused (22023) in a company whose runs can't fence them: an environment that is neither folder-v2 nor
+  on the company path (`20260930008000_member_draft_quotes`).
 - Room drafts keep their quotes: `qorpera_put_room_draft(p_room_id, p_owner_user_id, p_base_revision, p_body,
   p_quotes?)` checks `p_quotes` as a message's quotes and stores them, and `qorpera.room-draft/v1` carries `quotes`
-  when the draft has any. Once a draft holds quotes, every «…» pair of a save must be a quote with its record (22023
-  otherwise); removing a quote whole is an ordinary save. A client that sends four arguments still reaches the
-  function, but a text-only save of a draft that holds quotes is refused.
+  when the draft has any. Once a draft holds quotes, a save that keeps a quote's words without its record (in their
+  marks, at that place), or changes them, is refused (22023); removing a quote whole is an ordinary save, and the
+  member's own guillemets stay theirs. A client that sends four arguments still reaches the function, but such a
+  text-only save may bring no newly marked words while the draft holds quotes.
 
 ### Computer hours (20260928248000_runtime_computer_hours_meter)
 
@@ -781,12 +782,13 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   `20260928000500_room_shared_drafts`): a room member's unsent message, which
   the room's other members see and edit live. Private broadcast channel, event
   `draft`, payload `qorpera.room-draft/v1` (`ownerUserId`, `body`, `revision`,
-  `editorUserId`, `contributors`, `updatedAt`). Members of the room receive it
+  `editorUserId`, `contributors`, `updatedAt`, and `quotes` when the draft has
+  any). Members of the room receive it
   (RLS on `realtime.messages` via `qorpera_can_share_room_draft`); nobody
   publishes: only `qorpera_put_room_draft` sends, through `realtime.send`, so a
   change always names the editor the token did. Lossy: `qorpera_list_room_drafts`
   re-reads, and a write from a stale revision returns the current draft.
-  `qorpera_put_room_draft(room, owner, base revision, body)` writes only from the
+  `qorpera_put_room_draft(room, owner, base revision, body, quotes?)` writes only from the
   current revision (0 starts the caller's own draft; only the owner starts one);
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
