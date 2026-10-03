@@ -636,7 +636,8 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     (`qorpera_action_reviews.card_session_id`), where `qorpera_answer_action_review` answers it. It is given only when
     that call's checks of the member pass: the card waits for this member, or for owners and admins and the member is
     one, and the member can write the conversation (`qorpera_can_write_session`: not a viewer, never another member's
-    private conversation). The conversation may still be closed.
+    private conversation). The answer can still be refused: a closed conversation, a paused company, or a folder-v2
+    card outside an agent thread (0A000); the Mailbox shows the error.
   - `qorpera_mark_mail_thread_read(environment, thread)`: the member's read mark; a newer received message makes the
     thread unread again.
 - **Account mail.** Mail to an address a company account signs in with (A1's `qorpera_company_account_mail`, called

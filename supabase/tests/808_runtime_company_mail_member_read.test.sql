@@ -412,8 +412,9 @@ select pg_temp.wake_assert(jsonb_array_length(waiting) = 2
 		and waiting #>> '{1,sessionId}' = '80800000-0000-4000-8000-0000000000c5' and not waiting -> 0 ? 'sessionId',
 	'Every open send, newest first, a new email without a thread: ' || waiting::text)
 from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
--- Only a viewer who may answer a card gets its conversation (20260930000400): a contributor gets none for the owners'
--- and admins' card; once the card waits for that contributor, the contributor gets it and the owner none.
+-- Only a member who may answer a card gets its conversation (20260930000400): a contributor gets none for the owners'
+-- and admins' card; once the card waits for that contributor, the contributor gets it and the owner none; a card
+-- waiting for a viewer (who cannot write the conversation) names it to nobody.
 select pg_temp.path_claims('service_role');
 insert into auth.users(id, email) values ('80800000-0000-4000-8000-0000000000c6', 'mail-contributor@example.test');
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
@@ -436,6 +437,14 @@ from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-0000000
 select pg_temp.member();
 select pg_temp.wake_assert(not waiting -> 1 ? 'sessionId', 'The owner gets none for a card waiting for another member: '
 	|| waiting::text)
+from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
+select pg_temp.path_claims('service_role');
+update public.qorpera_action_reviews set approver_user_id = '30000000-0000-4000-8000-000000000003'
+where id = current_setting('qorpera_test.card')::uuid;
+select pg_temp.member('30000000-0000-4000-8000-000000000003');
+select pg_temp.wake_assert(jsonb_array_length(waiting) = 2 and not waiting -> 1 ? 'sessionId'
+		and not pg_temp.thread(current_setting('qorpera_test.quote_thread')) #> '{waiting,0}' ? 'sessionId',
+	'A viewer the card waits for cannot write its conversation and gets none: ' || waiting::text)
 from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
 select pg_temp.path_claims('service_role');
 update public.qorpera_action_reviews set approver_scope = 'owners_admins', approver_user_id = null

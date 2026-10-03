@@ -703,7 +703,8 @@ wake), so no agent runs and nothing is charged before it.
   answered through `qorpera_answer_action_review` with its `reviewId`. Since 20260930000400 a waiting send the member
   may answer also carries `sessionId`, the card's conversation: the card waits for this member, or for owners and
   admins and the member is one, and the member can write that conversation. Without `sessionId`, show the send without
-  a way to answer it.
+  a way to answer it. With it, the answer can still be refused (a closed conversation, a paused company, a folder-v2
+  card outside an agent thread); show that error.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
