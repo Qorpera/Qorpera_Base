@@ -1,5 +1,6 @@
 # Changelog
 
+- A folder-v2 run's Company File tools work through the folder core (folder core slice P19, core C3; the 2 October 2026 amendment "light threads", item 2; no migration): `company_read`, `company_list`, `company_write`, `company_mkdir` and `company_delete` act as the run actor. A read is a window of a file (fetching only the chunks it falls in) or what is at a path; a listing is a page of a folder, paged by its last path. Each answer is fitted to one tool result, and everything it shows is released with the run actor under the hash of exactly that text before the model sees it, cited as `companyReadId`. A change is a one-unit change set under the call's receipt (`qorpera.company-folder-result/v1`: `applied`, `proposed` or `not_applied`, with what to do next on a stale version or a missing folder); a deletion records the automatic review's approval of its call, and deletes a file or an empty folder. Other runs keep the legacy tools.
 ## [Unreleased]
 
 ### Breaking Changes
