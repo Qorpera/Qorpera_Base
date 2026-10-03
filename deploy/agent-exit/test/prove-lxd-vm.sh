@@ -63,7 +63,8 @@ modules >"$work/modules-before"
 
 # --- What the VM needs, fetched here ----------------------------------------------------------------------------
 mkdir -p "$work/push/snaps" "$work/push/debs" "$work/push/image"
-(cd "$work/push/snaps" && snap download lxd --channel=6/stable >/dev/null && snap download core26 >/dev/null)
+(cd "$work/push/snaps" && snap download snapd >/dev/null && snap download core26 >/dev/null &&
+	snap download lxd --channel=6/stable >/dev/null)
 (cd "$work/push/debs" && apt-get download -q dnsmasq-base conntrack libnetfilter-conntrack3 libnetfilter-cthelper0 \
 	libnetfilter-cttimeout1 libnetfilter-queue1 libnfnetlink0 libmnl0 >/dev/null 2>&1) ||
 	fail "cannot fetch the packages"
@@ -89,9 +90,10 @@ lx exec "$VM" -- true || fail "the VM's agent did not answer"
 pass "a throwaway VM with no network card runs in the test machine"
 
 lx file push -r "$work/push" "$VM/root/" >/dev/null
-lx exec "$VM" -- bash -euo pipefail -c '
+lx exec "$VM" -- env PATH=/snap/bin:/usr/sbin:/usr/bin:/sbin:/bin bash -euo pipefail -c '
 	touch /etc/qorpera-throwaway-vm
 	cd /root/push/snaps
+	snap ack snapd_*.assert && snap install snapd_*.snap >/dev/null
 	snap ack core26_*.assert && snap install core26_*.snap >/dev/null
 	snap ack lxd_*.assert && snap install lxd_*.snap >/dev/null
 	lxd waitready --timeout=120
@@ -103,7 +105,8 @@ lx exec "$VM" -- bash -euo pipefail -c '
 pass "LXD, the container image and the packages are set up in the VM, offline"
 
 # --- The proof, inside the VM -----------------------------------------------------------------------------------
-lx exec "$VM" -- env QORPERA_AGENT_EXIT_DIR=/root/push/agent-exit QORPERA_AGENT_EXIT_PROOF_IMAGE=qae2b-ct \
+lx exec "$VM" -- env PATH=/snap/bin:/usr/sbin:/usr/bin:/sbin:/bin QORPERA_AGENT_EXIT_DIR=/root/push/agent-exit \
+	QORPERA_AGENT_EXIT_PROOF_IMAGE=qae2b-ct \
 	bash /root/push/agent-exit/test/prove-lxd.sh | tee "$work/inner.out" || fail "the proof inside the VM failed"
 grep -q "^ALL PASSED" "$work/inner.out" || fail "the proof inside the VM did not finish"
 
