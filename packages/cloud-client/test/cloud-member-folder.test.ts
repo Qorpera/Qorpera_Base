@@ -85,7 +85,15 @@ describe("member folder answers", () => {
 				schema: "qorpera.folder-path-history/v1",
 				asOfSeq: 11,
 				items: [
-					{ version, seq: 8, op: "delete", kind: "file", path: "papers/a.txt", at, by: { kind: "member", userId: member } },
+					{
+						version,
+						seq: 8,
+						op: "delete",
+						kind: "file",
+						path: "papers/a.txt",
+						at,
+						by: { kind: "member", userId: member },
+					},
 					{
 						version: version2,
 						seq: 5,
@@ -112,7 +120,9 @@ describe("member folder answers", () => {
 				{
 					schema: "qorpera.folder-path-history/v1",
 					asOfSeq: 11,
-					items: [{ version, seq: 2, op: "write", kind: "file", path: "a", at, by: { kind: "platform" }, to: "b" }],
+					items: [
+						{ version, seq: 2, op: "write", kind: "file", path: "a", at, by: { kind: "platform" }, to: "b" },
+					],
 					next: null,
 				},
 				10,
@@ -125,8 +135,20 @@ describe("member folder answers", () => {
 			schema: "qorpera.folder-history/v1",
 			asOfSeq: 12,
 			items: [
-				{ seq: 12, at, by: { kind: "platform" }, paths: [{ path: "wide", op: "mkdir", kind: "folder", version }], more: true },
-				{ seq: 10, at, by: { kind: "member", userId: member }, paths: [{ path: "n", op: "write", kind: "file", version }], more: false },
+				{
+					seq: 12,
+					at,
+					by: { kind: "platform" },
+					paths: [{ path: "wide", op: "mkdir", kind: "folder", version }],
+					more: true,
+				},
+				{
+					seq: 10,
+					at,
+					by: { kind: "member", userId: member },
+					paths: [{ path: "n", op: "write", kind: "file", version }],
+					more: false,
+				},
 			],
 			next: 10,
 		});
@@ -136,13 +158,28 @@ describe("member folder answers", () => {
 			parseCloudMemberFolderHistory({
 				...out,
 				items: [
-					{ seq: 10, at, by: { kind: "platform" }, paths: [{ path: "a", op: "write", kind: "file", version }], more: false },
-					{ seq: 12, at, by: { kind: "platform" }, paths: [{ path: "a", op: "write", kind: "file", version }], more: false },
+					{
+						seq: 10,
+						at,
+						by: { kind: "platform" },
+						paths: [{ path: "a", op: "write", kind: "file", version }],
+						more: false,
+					},
+					{
+						seq: 12,
+						at,
+						by: { kind: "platform" },
+						paths: [{ path: "a", op: "write", kind: "file", version }],
+						more: false,
+					},
 				],
 			}),
 		).toThrow("Invalid company folder history");
 		expect(() =>
-			parseCloudMemberFolderHistory({ ...out, items: [{ seq: 10, at, by: { kind: "platform" }, paths: [], more: false }] }),
+			parseCloudMemberFolderHistory({
+				...out,
+				items: [{ seq: 10, at, by: { kind: "platform" }, paths: [], more: false }],
+			}),
 		).toThrow();
 	});
 
@@ -189,8 +226,15 @@ describe("member folder answers", () => {
 	});
 
 	it("names an author exactly", () => {
-		expect(parseCloudMemberFolderBy({ kind: "agent", staffAgentId: version })).toEqual({ kind: "agent", staffAgentId: version });
-		for (const bad of [{ kind: "agent", staffAgentId: version, requesterUserId: member }, { kind: "platform", userId: member }, { kind: "run" }])
+		expect(parseCloudMemberFolderBy({ kind: "agent", staffAgentId: version })).toEqual({
+			kind: "agent",
+			staffAgentId: version,
+		});
+		for (const bad of [
+			{ kind: "agent", staffAgentId: version, requesterUserId: member },
+			{ kind: "platform", userId: member },
+			{ kind: "run" },
+		])
 			expect(() => parseCloudMemberFolderBy(bad)).toThrow("Invalid company folder author");
 	});
 });
@@ -240,7 +284,13 @@ function stored(content: string) {
 			[sha(manifest), manifest],
 			[sha(bytes), bytes],
 		]),
-		file: { manifestSha256: sha(manifest), fileSha256: sha(bytes), bytes: bytes.length, mediaType: "text/plain", executable: false },
+		file: {
+			manifestSha256: sha(manifest),
+			fileSha256: sha(bytes),
+			bytes: bytes.length,
+			mediaType: "text/plain",
+			executable: false,
+		},
 	};
 }
 

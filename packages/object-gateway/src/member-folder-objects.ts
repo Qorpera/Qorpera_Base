@@ -54,7 +54,11 @@ export async function serveMemberFolderObject(
 			bytes = await authority.readLegacyObject(admitted.profileId, sha256);
 		} catch (fallback) {
 			// A busy NAS lane and no Storage copy yet (replication pending) is the lane's 503, not Storage's miss.
-			if (error instanceof ObjectDependencyError && fallback instanceof ObjectDependencyError && !fallback.unavailable)
+			if (
+				error instanceof ObjectDependencyError &&
+				fallback instanceof ObjectDependencyError &&
+				!fallback.unavailable
+			)
 				throw error;
 			throw fallback;
 		}

@@ -131,7 +131,7 @@ export interface CloudMemberFolderRead {
 
 export function parseCloudMemberFolderRead(value: unknown): CloudMemberFolderRead {
 	const read = closed(value, ["schema", "asOfSeq", "found"], ["entry"], "read");
-	if (read.schema !== "qorpera.folder-read/v1" || typeof read.found !== "boolean" || read.found !== ("entry" in read))
+	if (read.schema !== "qorpera.folder-read/v1" || typeof read.found !== "boolean" || read.found !== "entry" in read)
 		invalid("read");
 	return { asOfSeq: seq(read.asOfSeq, "read"), entry: read.found ? parseCloudMemberFolderEntry(read.entry) : null };
 }
@@ -199,7 +199,12 @@ export function parseCloudMemberFolderPathHistory(value: unknown, limit: number)
 	if (page.schema !== "qorpera.folder-path-history/v1" || !Array.isArray(page.items) || page.items.length > limit)
 		invalid("path history");
 	const items = page.items.map((input): CloudMemberFolderVersion => {
-		const item = closed(input, ["version", "seq", "op", "kind", "path", "at", "by"], [...FILE_KEYS, "from", "to"], "version");
+		const item = closed(
+			input,
+			["version", "seq", "op", "kind", "path", "at", "by"],
+			[...FILE_KEYS, "from", "to"],
+			"version",
+		);
 		const op = oneOf(item.op, OPS, "version");
 		const kind = oneOf(item.kind, ["file", "folder"] as const, "version");
 		if (("from" in item && op !== "move_in") || ("to" in item && op !== "move_out")) invalid("version");
@@ -252,7 +257,12 @@ export function parseCloudMemberFolderHistory(value: unknown): CloudMemberFolder
 		invalid("history");
 	const items = page.items.map((input): CloudMemberFolderChangeSet => {
 		const item = closed(input, ["seq", "at", "by", "paths", "more"], [], "change set");
-		if (!Array.isArray(item.paths) || item.paths.length < 1 || item.paths.length > 20 || typeof item.more !== "boolean")
+		if (
+			!Array.isArray(item.paths) ||
+			item.paths.length < 1 ||
+			item.paths.length > 20 ||
+			typeof item.more !== "boolean"
+		)
 			invalid("change set");
 		return {
 			seq: seq(item.seq, "change set"),
@@ -443,12 +453,21 @@ export class CloudMemberFolderClient {
 	}
 
 	/** One folder's entries in folder-key order; `parent` null for the top. */
-	list(parent: string | null, after: string | null, limit: number, signal: AbortSignal): Promise<CloudMemberFolderListPage> {
+	list(
+		parent: string | null,
+		after: string | null,
+		limit: number,
+		signal: AbortSignal,
+	): Promise<CloudMemberFolderListPage> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
 			throw new CloudMemberFolderError("Invalid company folder listing");
 		return this.#call(
 			"qorpera_member_folder_list",
-			{ p_parent: parent === null ? null : path(parent), p_after: after === null ? null : path(after), p_limit: limit },
+			{
+				p_parent: parent === null ? null : path(parent),
+				p_after: after === null ? null : path(after),
+				p_limit: limit,
+			},
 			signal,
 		).then((value) => parseCloudMemberFolderList(value, limit));
 	}
@@ -471,7 +490,12 @@ export class CloudMemberFolderClient {
 
 	/** The change sets, newest first. */
 	history(before: number | null, limit: number, signal: AbortSignal): Promise<CloudMemberFolderHistory> {
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50 || (before !== null && (!Number.isSafeInteger(before) || before < 1)))
+		if (
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > 50 ||
+			(before !== null && (!Number.isSafeInteger(before) || before < 1))
+		)
 			throw new CloudMemberFolderError("Invalid company folder history request");
 		return this.#call("qorpera_member_folder_history", { p_before: before, p_limit: limit }, signal).then(
 			parseCloudMemberFolderHistory,
@@ -479,8 +503,18 @@ export class CloudMemberFolderClient {
 	}
 
 	/** The feed from a position: what changed, to refresh what is on screen after a hint. */
-	changes(from: CloudMemberFolderFeedPosition, limit: number, signal: AbortSignal): Promise<CloudMemberFolderChangesPage> {
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000 || !Number.isSafeInteger(from.afterSeq) || from.afterSeq < 0)
+	changes(
+		from: CloudMemberFolderFeedPosition,
+		limit: number,
+		signal: AbortSignal,
+	): Promise<CloudMemberFolderChangesPage> {
+		if (
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > 1000 ||
+			!Number.isSafeInteger(from.afterSeq) ||
+			from.afterSeq < 0
+		)
 			throw new CloudMemberFolderError("Invalid company folder feed position");
 		return this.#call(
 			"qorpera_member_folder_changes",
@@ -493,7 +527,8 @@ export class CloudMemberFolderClient {
 	readFile(reference: CloudMemberFolderFile, signal: AbortSignal, maximumBytes = MAX_FILE_BYTES): Promise<Uint8Array> {
 		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAX_FILE_BYTES)
 			throw new CloudMemberFolderError("Invalid company folder read limit");
-		if (reference.bytes > maximumBytes) throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
+		if (reference.bytes > maximumBytes)
+			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const manifestBytes = await this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal);
@@ -600,13 +635,16 @@ export class CloudMemberFolderClient {
 	/** One object through the member folder route, checked against its hash. */
 	async #object(sha256: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
 		const token = await this.#token(signal);
-		const response = await this.#fetch(`${this.#objectOrigin}/v1/member-folder-objects/${this.#environmentId}/${sha256}`, {
-			method: "GET",
-			headers: { authorization: `Bearer ${token}` },
-			signal,
-			redirect: "error",
-			cache: "no-store",
-		});
+		const response = await this.#fetch(
+			`${this.#objectOrigin}/v1/member-folder-objects/${this.#environmentId}/${sha256}`,
+			{
+				method: "GET",
+				headers: { authorization: `Bearer ${token}` },
+				signal,
+				redirect: "error",
+				cache: "no-store",
+			},
+		);
 		if (response.status !== 200 || response.headers.get("x-qorpera-access-mode") !== "live-path-authority") {
 			void response.body?.cancel().catch(() => undefined);
 			throw new CloudMemberFolderError(`Company folder bytes are unavailable (${response.status})`);

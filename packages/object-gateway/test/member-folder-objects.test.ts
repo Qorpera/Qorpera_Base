@@ -154,9 +154,9 @@ describe("a member's folder-v2 bytes", () => {
 	it("takes only its own route, a GET and a member's bearer token", async () => {
 		const gateway = await fixture();
 		expect((await gateway.get(`/v1/member-folder-objects/${environmentId}/${"z".repeat(64)}`)).status).toBe(404);
-		expect((await gateway.get(`/v1/member-folder-objects/not-a-uuid-at-all-not-a-uuid-at-all00/${sha256}`)).status).toBe(
-			404,
-		);
+		expect(
+			(await gateway.get(`/v1/member-folder-objects/not-a-uuid-at-all-not-a-uuid-at-all00/${sha256}`)).status,
+		).toBe(404);
 		expect((await gateway.get(undefined, { method: "PUT", body: "x" })).status).toBe(405);
 		expect((await gateway.get(undefined, { headers: { authorization: "Basic x" } })).status).toBe(401);
 		expect(gateway.state.calls).toEqual([]);

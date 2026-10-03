@@ -303,7 +303,13 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				}
 				if (request.url?.startsWith("/v1/member-folder-objects/")) {
 					if (!options.memberFolderObjects) throw new HttpError(404, "Not found");
-					await serveMemberFolderObject(request, response, options.memberFolderObjects, options.store, observation);
+					await serveMemberFolderObject(
+						request,
+						response,
+						options.memberFolderObjects,
+						options.store,
+						observation,
+					);
 					return;
 				}
 				if (request.url?.startsWith("/v1/folder-objects/")) {
