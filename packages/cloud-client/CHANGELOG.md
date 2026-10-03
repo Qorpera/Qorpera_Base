@@ -79,6 +79,7 @@
   - a `file:` source's `text` under `hooks/` or `human-tasks/`, by folder key.
 
   A button whose text names such a column of a source outside the quote list (`INTERFACE_QUOTE_SOURCES`: `mail`), or more than 16 of them, is refused, for every source a block reads. A client cuts each outside value to `INTERFACE_OUTSIDE_VALUE_MAX_CHARS` (2,000) before it fills it in. F2's I6 save check needs this before interface files are saved in the folder.
+- `CloudMemberFolderClient`, a member's client for a folder-v2 company's folder (folder core C4, slice P27b; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md` §2): `read`, `list`, `pathHistory`, `history` and `changes` call the member functions (P27a), and `readFile` fetches a file's version-2 manifest and chunks through the object gateway's member folder route, each checked against its hash and the whole against the file's. Each answer is parsed with closed key sets (`parseCloudMemberFolderRead`, `…List`, `…PathHistory`, `…History`, `…Changes`, `…By`), the shapes SQL test 834 pins. Nothing uses it yet (P33).
 
 ### Changed
 
