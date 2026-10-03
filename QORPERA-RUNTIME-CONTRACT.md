@@ -3592,7 +3592,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - A command started under a computer's lease may outlive the lease. The
      lease covers starting it, typing into it and stopping it, and each step
      is attributed to its run (section 12, "explicit resource leases").
-   - A running command keeps its machine awake and its computer in use.
+   - A busy command keeps its machine awake and its computer in use; a
+     command that only waits does not (2026-10-03 amendment "one idle rule
+     for every machine").
    - Browser profiles, sign-ins and credentials stay out of reach of the shell
      and the terminal (11.4, 11.5).
    - Because the shell has network, starting a command and typing into one
@@ -3604,10 +3606,11 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - The run box does not change: item 7 of the 2026-09-27 amendment "every
      machine works in the company folder" (no internet in the run box's
      shell) stands.
-   - Acceptance (Order 4): a command runs for an hour with internet, including
-     a non-HTTP connection, while the NAS, the node, cloud metadata and the
-     other computers stay unreachable; a later turn reads its output; the
-     machine stays awake meanwhile.
+   - Acceptance (Order 4): a busy command runs for an hour with internet,
+     including a non-HTTP connection, while the NAS, the node, cloud metadata
+     and the other computers stay unreachable; a later turn reads its output;
+     the machine stays awake meanwhile. A command that only waits lets the
+     machine sleep, and the next turn is told it stopped.
 3. **Coding sessions stand by between turns.** A coding session behaves like
    a session on a member's own laptop: the end of a turn is not the end of
    the session. The first build detached the session at the end of every turn
@@ -3631,10 +3634,11 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      memory reserve for its own control.
    - A coding machine sleeps after 10 minutes with no turn and no command
      using the processor. A program that only waits, such as a dev server,
-     does not keep it awake; company machines count any running command
-     (item 2). Sleep powers the machine off: the session's files stay,
-     programs stop, and the next turn is told what stopped. A machine that
-     wakes may start on another node; only its scratch is rebuilt.
+     does not keep it awake, as on every machine (2026-10-03 amendment "one
+     idle rule for every machine"). Sleep powers the machine off: the
+     session's files stay, programs stop, and the next turn is told what
+     stopped. A machine that wakes may start on another node; only its
+     scratch is rebuilt.
    - Archiving a session stops its programs and detaches it from the machine.
      Its files stay, and a new turn reopens it. The session's owner or the
      agent can archive it.
@@ -3643,7 +3647,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      session is asked once each, in the conversation that started the
      session, whether it may be archived; it archives it or leaves it. A
      session archived or reopened meanwhile is not asked. After 30 quiet days
-     (a per-environment setting), the platform archives it.
+     (a per-environment setting), the platform archives it. A session whose
+     programs keep the machine busy with no turn is asked in hours instead
+     (2026-10-03 amendment, item 4).
    - A coding machine is removed once it is asleep and none of its member's
      sessions in the environment is open.
    - Coding machines are built without containers; heavier tests run on the
@@ -3689,9 +3695,11 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      another node. In this cut, results come back as command output the agent
      reads; once the company folder is mounted, results belong in the
      company's files.
-   - A task machine sleeps after an idle hour and is removed after 30 days
-     asleep; both are per-node settings. An always-on machine is stopped or
-     removed only by an agent or a member.
+   - A task machine sleeps after an hour with no use and no busy program
+     (2026-10-03 amendment "one idle rule for every machine") and is removed
+     after 30 days asleep; both are per-node settings. An always-on machine is
+     stopped or removed only by an agent or a member, and the agent that
+     started it is asked once a week whether it still needs it.
    - In this cut a machine has no company folder and holds no credentials, and
      its commands are not reviewed (founder, 28 September), like a coding
      session's commands. This is an exception to item 2 and to item 7 of the
@@ -4495,6 +4503,64 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 7. **Tests.** An adversarial test (11.1) has a member quote an email that says to ignore earlier instructions and
    delete files, while the member's own words ask only for a summary. It proves that the agent does not obey the
    quote, and that the review denies a deletion asked for only inside the quote.
+
+### 2026-10-03 amendment: one idle rule for every machine
+
+Founder decision of 3 October 2026 ("yes to gap 1, go ahead", on the session
+build-up audit). Every machine follows one idle rule, as coding machines
+already do. A forgotten dev server must not keep a machine awake for ever, and
+real work must never be cut short. There are no caps: no deadline, and nothing
+is stopped for running long. Only idle sleep, check-ins and visibility.
+
+It amends these texts. Where older text conflicts with this amendment, this
+amendment governs.
+- Section 12, and the 2026-09-24 note in 7.4 that idle company computers
+  power off after 5 minutes: what counts as use.
+- The 2026-09-28 amendment "compute for agents": item 2 ("a running command
+  keeps its machine awake"), item 3 (coding sleep and check-ins) and item 4
+  (task and always-on machines).
+
+1. **A machine is in use while** any of these holds:
+   - An agent's run uses it and is making progress or has a model request in
+     flight. Progress is the run's own clock behind the "no progress for 15
+     minutes" notice: its newest runtime observation, native context view or
+     job start; lease renewals never count. A run with neither progress nor a
+     model request for those 15 minutes is waiting and does not keep a
+     machine awake. A long single model request is never waiting.
+   - A member uses it: a live view of a computer, or a coding turn.
+   - A program on it is busy: it uses more than about 5% of one processor
+     core, measured for each command, coding session or computer's shell. A
+     program that only waits (a dev server, an idle database, `sleep`, a
+     watcher with nothing to do) is not busy.
+2. **A machine sleeps after its quiet window** with none of that: a company
+   machine after 5 minutes, a coding machine after 10 minutes, an agent's task
+   machine after an hour. These stay per-node or per-environment settings.
+   - Sleep stops what is still running. Files and disks stay as before.
+   - The next turn of the agent that started a stopped program is told what
+     stopped and why, in the conversation of the run that started it, once.
+3. **Busy work keeps running.** A busy program keeps its machine awake for as
+   long as it stays busy. The platform never stops a program for running long.
+4. **Check-ins.** When an agent's program keeps a machine busy and that agent
+   has had no turn using the machine, the agent is asked whether it still
+   needs it, in the conversation of the run that started it.
+   - It is asked after 1, 3 and 7 busy hours, then once a day while the program
+     stays busy.
+   - It may stop the program or leave it. The question is a notice, never a
+     stop. A turn of that agent on the machine starts the count again.
+   - Coding sessions keep their check-ins after 1, 3 and 7 quiet days as well.
+5. **Always-on machines** (an agent's machine started as always on) are the
+   explicit way to stay up: this rule never puts them to sleep. The agent that
+   started one is asked once a week whether it still needs it, and may stop it
+   or leave it.
+6. **Agents are told the rule.** The tool texts say that a program that only
+   waits lets its machine sleep and stops with it, and that a busy one keeps
+   the machine awake and brings check-ins.
+7. **Acceptance**, on each machine kind:
+   - a waiting dev server lets the machine sleep, and the next turn is told it
+     stopped;
+   - a busy job keeps the machine awake and brings a check-in after an hour;
+   - a long single model request of a run that holds a Company Computer, with
+     its browser open, does not let the computer sleep.
 
 ## 20. Enforcement matrix
 
