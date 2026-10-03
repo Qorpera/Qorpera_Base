@@ -190,7 +190,8 @@ begin
 	perform pg_temp.refuses(format('select public.qorpera_native_office_company_file_source(%L, %L)', b, '{}'));
 	perform pg_temp.refuses(format('select public.qorpera_confirm_office_company_file_import(%L, %L, %L, %L, %L, %L)', b, '{}', '{}', '{}',
 		extensions.gen_random_uuid(), '{}'));
-	perform pg_temp.refuses($q$select public.qorpera_runner_broker_describe('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
+	-- Since C3's runner broker lane (P23, test 829) the broker describes a folder-v2 run: no longer refused as folder-v2.
+	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_describe('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64))$q$);
 	perform pg_temp.refuses($q$select public.qorpera_runner_broker_authorize_input_object('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), repeat('b', 64))$q$);

@@ -212,6 +212,57 @@ describe("runner provider HTTP service", () => {
 		expect(provider.close).toHaveBeenCalledOnce();
 	});
 
+	it("provisions and delivers a folder-v2 run, which pins no Company File snapshot", async () => {
+		const provider = backend();
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		const port = await service.start();
+		const endpoint = `http://127.0.0.1:${port}/v1/qorpera-runner-provider`;
+		const folderWork = Object.fromEntries(
+			Object.entries(work).filter(([key]) => key !== "substrateVersionId" && key !== "companySnapshotId"),
+		) as CloudRunnerWork;
+		const post = (body: Record<string, unknown>) =>
+			fetch(endpoint, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({ schema: "qorpera.runner-provider/v1", adapter_id: "managed", ...body }),
+			});
+
+		const acquire = await post({ action: "acquire", acquisition_id: folderWork.runId, work: folderWork });
+		expect(acquire.status).toBe(200);
+		const acquired = provider.acquire.mock.calls[0]?.[1] as CloudRunnerWork;
+		expect(acquired).toStrictEqual(folderWork);
+		expect(Object.keys(acquired)).not.toContain("substrateVersionId");
+		expect(Object.keys(acquired)).not.toContain("companySnapshotId");
+
+		const delivery: CloudRunnerAssignmentDelivery = {
+			assignment: {
+				assignmentId: "77777777-7777-4777-8777-777777777777",
+				claimId: "22222222-2222-4222-8222-222222222222",
+				runId: folderWork.runId,
+				jobId: folderWork.jobId,
+				runnerId,
+				capabilitySha256: "b".repeat(64),
+				expiresAt: "2026-08-21T18:00:00.000Z",
+			},
+			capability: "a".repeat(43),
+			work: folderWork,
+		};
+		const delivered = await post({ action: "deliver", runner, delivery });
+		expect(delivered.status).toBe(200);
+		expect(provider.deliver).toHaveBeenCalledWith(runner, delivery, expect.any(AbortSignal));
+
+		// One of the two without the other is refused before the backend sees it.
+		const half = await post({
+			action: "acquire",
+			acquisition_id: folderWork.runId,
+			work: { ...folderWork, substrateVersionId: work.substrateVersionId },
+		});
+		expect(half.status).not.toBe(200);
+		expect(provider.acquire).toHaveBeenCalledOnce();
+		await service.close();
+	});
+
 	it("rejects an unauthenticated or mismatched acquisition", async () => {
 		const provider = backend();
 		const service = new HttpCloudRunnerProviderService(provider, token);

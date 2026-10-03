@@ -54,8 +54,9 @@ export interface CloudRunnerWork {
 	sourceKind: CloudExecutionSourceKind;
 	sourceId: string;
 	sessionId?: string;
-	substrateVersionId: string;
-	companySnapshotId: string;
+	/** Both or neither: a folder-v2 run pins no Company File snapshot (folder core C4; its pin becomes companySeq). */
+	substrateVersionId?: string;
+	companySnapshotId?: string;
 	staffAgentId: string;
 	staffVersion: number;
 	inputIds: readonly string[];
@@ -668,8 +669,14 @@ function parseRunnerWork(value: unknown): CloudRunnerWork {
 		...(input.session_id === null || input.session_id === undefined
 			? {}
 			: { sessionId: responseUuid(input.session_id, "session id") }),
-		substrateVersionId: responseUuid(input.substrate_version_id, "substrate version id"),
-		companySnapshotId: responseUuid(input.company_snapshot_id, "Company File snapshot id"),
+		// Both or neither (a folder-v2 run has neither); one alone fails its own check.
+		...((input.substrate_version_id === null || input.substrate_version_id === undefined) &&
+		(input.company_snapshot_id === null || input.company_snapshot_id === undefined)
+			? {}
+			: {
+					substrateVersionId: responseUuid(input.substrate_version_id, "substrate version id"),
+					companySnapshotId: responseUuid(input.company_snapshot_id, "Company File snapshot id"),
+				}),
 		staffAgentId: responseUuid(input.staff_agent_id, "staff agent id"),
 		staffVersion: responseInteger(input.staff_version, "staff version"),
 		inputIds: input.input_ids.map((value) => responseUuid(value, "input id")),
@@ -1441,14 +1448,17 @@ export function validateCloudRunnerWork(work: CloudRunnerWork): void {
 		["Profile id", work.profileId],
 		["Environment id", work.environmentId],
 		["Source id", work.sourceId],
-		["Substrate version id", work.substrateVersionId],
-		["Company snapshot id", work.companySnapshotId],
 		["Staff agent id", work.staffAgentId],
 		["Sponsor binding id", work.sponsor.bindingId],
 		["Provider connection id", work.sponsor.providerConnectionId],
 	] as const) {
 		requiredUuid(value, label);
 	}
+	if ((work.substrateVersionId === undefined) !== (work.companySnapshotId === undefined)) {
+		throw new Error("Substrate version id and Company snapshot id go together");
+	}
+	if (work.substrateVersionId !== undefined) requiredUuid(work.substrateVersionId, "Substrate version id");
+	if (work.companySnapshotId !== undefined) requiredUuid(work.companySnapshotId, "Company snapshot id");
 	if (work.sessionId !== undefined) requiredUuid(work.sessionId, "Session id");
 	if (work.logicalComputerId !== undefined) requiredUuid(work.logicalComputerId, "Logical computer id");
 	if (work.computeIdentityId !== undefined) requiredUuid(work.computeIdentityId, "Compute identity id");

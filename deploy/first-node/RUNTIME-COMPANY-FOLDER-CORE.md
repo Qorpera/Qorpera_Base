@@ -1107,6 +1107,10 @@ For `folder-v2` companies:
   - These tools stay for turns (decided 3 October 2026, "light threads" item
     2). Changes of several files, and changes a command makes, come from a
     machine's change set.
+  - Built in slice P19 (`packages/runtime/src/cloud-folder-file-tools.ts`):
+    each read or listing is fitted to one tool result before its release, and
+    `company_delete` records the automatic review's approval of its call (C2
+    R1) and deletes a file or an empty folder.
 - The memory, skills, todo, routine and hiring writers write files. The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
@@ -1126,7 +1130,7 @@ For `folder-v2` companies:
   (RUNTIME-COMPANY-STATE-FILES.md, "What H2b without H2c means").
 - Tolerant readers and writers go out first:
   - the runner orchestrator accepts runs without snapshot or substrate ids
-    (`orchestrator.ts:640-641`);
+    (`parseRunnerWork` and `validateCloudRunnerWork` in `orchestrator.ts`; done in #709);
   - the object gateway serves `folder-v2` without tree manifests
     (`member-company-file.ts:794`, `company-bootstrap.ts:252`);
   - the edge functions handle `folder-v2` (runner-broker's verifier call

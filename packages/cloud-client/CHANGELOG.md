@@ -75,4 +75,5 @@
 
 ### Changed
 
+- `CloudRunnerJob.substrateVersionId` is optional: a folder-v2 run has no Company File substrate (folder core C3, P23).
 - `cloudAgentFolder(companyId, staffAgentId, place?)` takes where the company keeps its agents' folders (`CloudAgentFolderPlace`): `agents/<staffAgentId>` for a snapshot-v1 company (`CLOUD_AGENT_FOLDER_BY_ID`, the default) and `agents/<handle>` for a folder-v2 company, the handle checked against the company folder's naming rule. `isCloudAgentFolder(path)` tells such a folder from other paths.
