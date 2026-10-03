@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { CompanyBootstrapProvisioner } from "./company-bootstrap.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
+import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
@@ -38,6 +39,7 @@ const authority = new SupabaseObjectAuthority({
 const store = new FileSystemObjectStore(resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")));
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const replication = new ObjectGatewayReplication(journal, store, authority);
+const folderGc = new ObjectGatewayFolderGc(store, replication, authority);
 const readLeases = readLeaseSeconds > 0 ? new ObjectReadLeases(journal) : undefined;
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
@@ -74,6 +76,7 @@ const handler = createObjectGatewayHandler({
 	controlToken: required(process.env, "QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN"),
 	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 	replication,
+	folderGc,
 	memberObjects: authority,
 	memberObservations: new MemberCompanyObservations(),
 	memberClientOrigins: JSON.parse(process.env.QORPERA_MEMBER_CLIENT_ORIGINS ?? "[]"),
@@ -104,8 +107,12 @@ if (process.argv[2] === "migrate") {
 		try {
 			await Promise.all([
 				authority.probeHealth(),
-				store.probe(),
-				replication.reconcile(),
+				// One after another, so the probe and the scan never take both NAS slots at once; folder GC's quarantine
+				// before the reconcile, so a replicate entry the scan writes finds its object back in place.
+				store
+					.probe()
+					.then(() => folderGc.recover())
+					.then(() => replication.reconcile()),
 				readLeases?.prune(),
 				companyBootstrap.provisionOne(),
 			]);

@@ -161,6 +161,8 @@ All tables are keyed by company environment.
     step: find entries and resources whose stored key differs from
     `qorpera_folder_key(path)`, and recompute them (`update ... set path =
     path`, which regenerates the keys) before the folder is served again.
+    The same step reindexes the expression indexes on the folder key (the
+    resources', and the path versions' that erasure uses, P18).
     `snapshot-v1`'s keys share the exposure.
   - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
     rows hold at most 2,704 bytes. A unit that would store a longer key, or
@@ -411,7 +413,9 @@ is never upgraded. The steps:
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:
-    - the creation commit's first run and the post-commit worker's first runs;
+    - the post-commit worker's first runs, and the creation's first run once
+      C4 (P28) materializes it (the creation commit itself writes the
+      kickoff and its turn request, no wake: CREATION §3);
     - sends, room posts and escalations that wake an agent;
     - routine firing, the materializer and the file drain.
 
@@ -688,9 +692,13 @@ Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
 - the empty seeded folders.
 
 The same transaction writes the Co-Founder's staff row and exactly one silent
-first-run wake (launch item 3). The company stays hidden until the queue has
+first-run kickoff with its turn request (launch item 3); the first-run wake
+comes when C4 (P28) materializes that turn. The company stays hidden until the
+creation is completed, and, once P15's queue exists, until the queue has
 converged its other side effects, as today's bootstrap job keeps a company
-hidden (`qorpera_finalize_company_bootstrap`).
+hidden (`qorpera_finalize_company_bootstrap`). How creation runs (the
+creation row, the worker, the operator's path):
+`RUNTIME-COMPANY-FOLDER-CREATION.md`.
 
 ### After the commit
 
@@ -858,10 +866,12 @@ company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 Permanent erasure (contract 5.6) is an owner or admin operation on a deleted
 path: a deleted agent's folder, or any other deleted path, such as a contact's
 file (contract, the 2026-10-02 amendment "work for people", item 3). It
-removes that path's versions and the conflict copies of its paths, clears the
-retired index rows' pointers to them, and marks the commits' units erased,
-keeping their attribution. The bytes then lose their roots, and GC collects
-them.
+removes that path's versions and the conflict copies of its paths, removes or
+clears the retired index rows built from them, and blanks the path names (and
+problem texts that quote them) in the commits' units, keeping the commits'
+attribution. A file's history that runs through moves is erased whole or not
+at all. The bytes then lose their roots, and GC collects them. Design:
+RUNTIME-COMPANY-FOLDER-ERASURE.md (slice P18).
 
 ### Tests
 
@@ -1047,7 +1057,9 @@ identical nodes, and the Interfaces session.
   agent starting the computer), S3 (the compute fence; deletion; coding
   machines) and F3 (the activation checks).
 - **C1d-2b and C1d-2c** (the gateway's GC lane, the worker's folder phase,
-  bytes with no catalog row, a deleted company's leftovers) are F2's.
+  bytes with no catalog row, a deleted company's leftovers) were F2's; from
+  3 October 2026 they, and erasure (C2), are the folder GC session's
+  (slices P11, P12 and P18).
 - **C5 early** (C1D, "C5 early"): F3 moves the SQL test fixtures to version-2
   staging and makes `qorpera_verify_company_path_file` refuse `folder-v2`. F3
   also makes the read actor refuse a company being deleted for members and
@@ -1117,7 +1129,13 @@ For `folder-v2` companies:
     each read or listing is fitted to one tool result before its release, and
     `company_delete` records the automatic review's approval of its call (C2
     R1) and deletes a file or an empty folder.
-- The memory, skills, todo, routine and hiring writers write files. The
+- The memory, skills, todo, routine and hiring writers write files. Memory
+  and skills: slice P20 (`packages/runtime/src/cloud-folder-notebooks.ts`)
+  runs the same composition and tools over a folder-v2 form of the trusted
+  gateway. Each tool call releases its reads under its answer; composition's
+  reads are released once under the composed context, before the first model
+  request. A skill deletion in the agent's own library records its review
+  as `company_delete`'s does (`20260930001200`). The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
 - The vault writes connection files: it marks a file due, and the object
@@ -1173,7 +1191,8 @@ For `folder-v2` companies:
    switches to `folder-v2` by default.
 
 **Core acceptance (C5).** On a new company:
-- the seeded tree exists, and creation wrote exactly one first-run wake;
+- the seeded tree exists, and creation wrote exactly one kickoff and its
+  turn request; the first-run wake once P28 materializes it;
 - agents read, list, search and write through change sets, and disjoint
   writes never conflict (search is `company_search` on the node's folder
   service, "light threads" item 2, so the folder service is live before the

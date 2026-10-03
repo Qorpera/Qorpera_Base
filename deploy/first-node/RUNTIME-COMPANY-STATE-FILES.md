@@ -332,13 +332,15 @@ closes the conversation; a restore reopens both, with the same conversation.
   (never a secret, an envelope, a key or the vault's own purpose text), commits one unit as the platform with the
   operation key `connection-file:<secret>:<generation>` and the version it read (keeping the company's text below the
   settings; a member's edit meanwhile makes it read again), and finishes the claim
-  (`qorpera_finish_connection_file`); a claim never waits, and a writer makes one per transaction. A revoked secret or
+  (`qorpera_finish_connection_file`); a claim never waits for a vault change or a company being deleted (only,
+  briefly, for another claim's new work rows), and a writer makes one per transaction. A revoked secret or
   a closed account means its file is deleted. `actions` lists the operations with an active, unexpired grant; an expiry
   marks nothing, so the file shows an expired grant until the connection's next change.
-  `qorpera_mark_connection_files(environment)` marks every connection due at once, for a company whose vault held
-  connections before it became folder-v2. A new file is
-  named after the site, or the connector (and the vault's name unless it is `primary`), in the name rule, with `-2`,
-  `-3` … when the name is taken.
+  `qorpera_mark_connection_files(environment)` marks every connection due at once: an operator step, in its own
+  transaction, for a company whose vault held connections before it became folder-v2 or a connector that gained
+  catalog operations later. A new file is
+  named after the site, or the connector (and the vault's name unless it is `primary`), in the name rule (cut to 64
+  characters); when the name is taken the writer numbers it `-2`, `-3` …, cutting the name so the number fits.
 - **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this
   company and environment, and never changes. A platform write matches that row: it is active and
   its connector is the `service`. One file holds one account. A file saved before this slice is not
@@ -1743,9 +1745,14 @@ key, is new); the claim creates rows in secret order, takes one due row `SKIP LO
 mark that commits later keeps the connection due), and answers `qorpera.connection-file-claim/v1`: the generation, the
 operation key, `present`, the allow-listed `settings`, the new file's `path`, and `current` (the indexed file's path,
 version and hashes). The finish closes the claim for the current generation's writer only, or backs it off with a
-problem code (2^attempts seconds, at most ten minutes). 852: each mark and non-mark, the claims' state, the platform
-commits (write, the member's text kept, a stale version, delete), leases, and that nothing outside the allow-list
-leaves; 853: the races.
+problem code (2^attempts seconds, at most ten minutes). Review round 1 added: the claim takes the companies' key share
+and the marks it consumes SKIP LOCKED, so a purge (company row, marks, then work rows) never deadlocks with it and a
+company held for deletion never stalls other companies' claims; files only for catalog connectors and website accounts
+(`qorpera_folder_connection_has_file`); `actions` only for unexpired grants; and `qorpera_mark_connection_files`. 852:
+each mark and non-mark, the claims' state, the platform commits (write, the member's text kept, a stale version,
+delete), leases, names, website and agent accounts, back-off bounds, expiries, and that nothing outside the allow-list
+leaves; 853: the races (out-of-order marks, two writers, a vault change during a claim, a purge, a company held for
+deletion).
 
 **Built (P22b, the writer; object gateway, off unless `QORPERA_CONNECTION_FILE_WRITER=1`):** `connection-files.ts`
 claims up to ten due connections every 15 s in a loop of its own (one drain at a time, 60 s each, its own database

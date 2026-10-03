@@ -147,7 +147,7 @@ begin
 	if not pg_temp.finish_on('fence_three', 'bb', c) then raise exception 'R3: B finishes'; end if;
 end $$;
 
--- R4 (review round 1). A purge holds the company row and its marks (as qorpera_purge does, before the work rows): a
+-- R4 (review round 1). A purge holds the company row and its marks (as qorpera_purge_company does, before the work rows): a
 --     claim of a due connection never waits for the marks it cannot take (SKIP LOCKED); the purge's next lock, the work
 --     rows, then finds the claim done. Before, the claim waited for the marks while holding the work row: a deadlock.
 select dblink_exec('fence_two', pg_temp.label('a2', 'b-purge@example.test'));
