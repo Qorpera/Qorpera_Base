@@ -29,6 +29,10 @@ create function pg_temp.claims(p_user uuid) returns text language sql as $$
 	select format('set request.jwt.claims = %L', jsonb_build_object('role','authenticated','sub',p_user,
 		'email',(select email from auth.users where id = p_user))::text)
 $$;
+-- The global policy row, kept to be put back at the end (this test commits).
+select set_config('qorpera_test.policy', coalesce((select to_jsonb(policy) from public.qorpera_provider_execution_policies as policy
+	where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli')::text, ''), false);
+select pg_temp.as_service();
 select public.qorpera_set_provider_execution_policy('openai','native_subscription','codex-cli',
 	'supported','enabled',32,null,'folder-company-creation-race-fixture') \g /dev/null
 
@@ -388,7 +392,14 @@ begin
 	delete from public.qorpera_company_creation_requests where created_by_user_id::text like '85700000-%';
 	delete from public.qorpera_friendships where requested_by::text like '85700000-%';
 end $$;
+-- The policy row as it was.
+delete from public.qorpera_provider_execution_policies
+where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli';
+insert into public.qorpera_provider_execution_policies
+select (jsonb_populate_record(null::public.qorpera_provider_execution_policies, current_setting('qorpera_test.policy')::jsonb)).*
+where current_setting('qorpera_test.policy') <> '';
 set session_replication_role = origin;
+select set_config('request.jwt.claims', '', false);
 delete from auth.users where id::text like '85700000-%';
 do $$
 begin
