@@ -403,8 +403,8 @@ describe("company notices", () => {
 		// Dismiss and Escape wait while the Stop runs.
 		expect(action("dismiss-notification").getAttribute("aria-disabled")).toBe("true");
 		action("dismiss-notification").click();
-		const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
-		view.el.querySelector(".company-notice")!.dispatchEvent(escape);
+		const escapeKey = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+		view.el.querySelector(".company-notice")!.dispatchEvent(escapeKey);
 		await settle();
 		expect(client.acknowledgeNotification).not.toHaveBeenCalled();
 		pending.resolve({ runId: id(86), status: "cancelled", canCancel: false });
