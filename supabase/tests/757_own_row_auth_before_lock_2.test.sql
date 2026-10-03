@@ -479,7 +479,11 @@ select pg_temp.wake_assert(pg_temp.own_served(pg_temp.own_row('qorpera_event_hoo
 --    the contributor and an id nobody has are refused; the owner keeps each active. The contributor cannot disable the
 --    owner's connection, nor revoke it, nor a connection nobody has, but revokes their own. The company's connection
 --    has no owner: someone outside the company, the viewer and the contributor are refused revoking it (the locked
---    check let them through until 20260928339790); an admin waits for it and revokes it.
+--    check let them through until 20260928339790); an admin waits for it and revokes it. The connection status takes
+--    the publishable key's EXECUTE back for the probe only (20260930005000 revoked it; its body still refuses the key).
+select set_config('qorpera_test.own_status_acl', proacl::text, false) from pg_proc
+where oid = 'public.qorpera_set_provider_connection_status(uuid,uuid,text)'::regprocedure;
+grant execute on function public.qorpera_set_provider_connection_status(uuid,uuid,text) to anon;
 do $$
 declare v_case record;
 begin
@@ -505,6 +509,10 @@ begin
 			v_case.function_name || ': the owner keeps it active');
 	end loop;
 end $$;
+revoke execute on function public.qorpera_set_provider_connection_status(uuid,uuid,text) from anon;
+select pg_temp.wake_assert(proacl::text = current_setting('qorpera_test.own_status_acl'),
+	'The connection status''s grants are as before')
+from pg_proc where oid = 'public.qorpera_set_provider_connection_status(uuid,uuid,text)'::regprocedure;
 select pg_temp.own_refused(pg_temp.own_row('qorpera_provider_connections', current_setting('qorpera_test.own_connection')),
 	pg_temp.own_contributor(), pg_temp.own_status('qorpera_set_provider_connection_status', current_setting('qorpera_test.own_connection'),
 		'revoked'), 'provider connection lifecycle requires authorize access', 'The contributor revoking the owner''s connection');

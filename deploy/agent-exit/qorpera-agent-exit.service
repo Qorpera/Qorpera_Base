@@ -1,0 +1,24 @@
+[Unit]
+Description=Qorpera agent exit (namespace, bridge, uplink and rules for agent road machines' internet)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+After=qorpera-guest-guard.service
+# Up before LXD starts machines that plug into qagent0; at shutdown LXD stops them first, so the exit then stops clean.
+Before=snap.lxd.daemon.service
+Wants=qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# LXD waits for this unit at boot; a hung start must not hold it for long.
+TimeoutStartSec=60
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
+# A restart (stop, then start) stops the name and log services in `down`; start them again.
+ExecStartPost=/bin/systemctl start --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
+# Reload repairs in place: rules reload in one transaction each; links, addresses and routes are made right again.
+ExecReload=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
+# Stop removes the exit only when no machine is plugged in. With a machine plugged in it fails and changes nothing:
+# the exit, its name service and its log keep running (they are not bound to this unit), and `verify` stays healthy.
+ExecStop=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh down
+
+[Install]
+WantedBy=multi-user.target

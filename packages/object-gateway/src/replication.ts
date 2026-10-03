@@ -106,6 +106,32 @@ export class ObjectGatewayReplication {
 		});
 	}
 
+	/** Runs `operation` under the object's lock: the one its upload, replication, cleanup and folder GC's lane take. */
+	async exclusive<T>(profileId: string, sha256: string, operation: () => Promise<T>): Promise<T> {
+		return this.#journal.exclusive(key({ profileId, sha256, bytes: 0 }), operation);
+	}
+
+	/** Folder GC (C1D §9.8), with the object's lock held: the reconcile copies the object's replica again. An entry of
+	 * the deleted-company lane (`delete`, `deleted`) is left alone. */
+	async requeueLocked(object: LegacyObjectMigrationItem): Promise<void> {
+		const prior = await this.#journal.read(key(object));
+		if (prior !== undefined && ["delete", "deleted"].includes(pendingObject(prior, key(object)).state)) return;
+		await this.#journal.write(key(object), { ...object, state: "replicate" });
+	}
+
+	/** Folder GC, with the object's lock held: the object is gone, so its entry goes, unless it is the deleted-company
+	 * lane's. */
+	async forgetLocked(profileId: string, sha256: string): Promise<void> {
+		const name = key({ profileId, sha256, bytes: 0 });
+		const prior = await this.#journal.read(name);
+		if (prior === undefined || ["delete", "deleted"].includes(pendingObject(prior, name).state)) return;
+		await this.#journal.remove(name);
+	}
+
+	async audit(event: Record<string, unknown>): Promise<void> {
+		await this.#journal.audit(event);
+	}
+
 	async remove(profileId: string, sha256: string, bytes: number, authorizationId: string): Promise<void> {
 		const object: PendingObject = { profileId, sha256, bytes, state: "delete", authorizationId };
 		await this.#journal.exclusive(key(object), async () => {
