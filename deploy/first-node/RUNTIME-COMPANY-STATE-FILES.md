@@ -1736,6 +1736,18 @@ problem code (2^attempts seconds, at most ten minutes). 852: each mark and non-m
 commits (write, the member's text kept, a stale version, delete), leases, and that nothing outside the allow-list
 leaves; 853: the races.
 
+**Built (P22b, the writer; object gateway, off unless `QORPERA_CONNECTION_FILE_WRITER=1`):** `connection-files.ts`
+claims up to ten due connections per maintenance tick and refuses, unread, a claim carrying any field outside the
+allow-list (finished `claim_invalid`). A new file is the canonical writer's; an existing one keeps every byte but the
+settings that changed; a file the parser refuses keeps its text below the settings. It stages the bytes as the platform
+in the gateway's own store, commits one unit with the claim's operation key and the version it read (`:2`, `:3` … and
+`-2`, `-3` … names when a new file's name is taken), deletes the file of a revoked or closed account, and finishes with
+a code on any problem (`version_changed`, `lock_conflict`, `unavailable`, …). The staging, reading and committing as
+the platform live in `platform-folder-writer.ts`, which F2's company creation (P14b) shares.
+`scripts/test-object-gateway-connection-files.mjs` (hosted-db step) runs it on a real database: 704's company, the
+first files, a member's text kept through a rewrite, a Disconnect's delete, and nothing outside the allow-list in any
+file version or writer commit.
+
 ## 9. The seeded tree
 
 `companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new

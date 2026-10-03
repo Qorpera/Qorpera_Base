@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { CompanyBootstrapProvisioner } from "./company-bootstrap.ts";
+import { ConnectionFileWriter } from "./connection-files.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
@@ -51,6 +52,16 @@ const companyBootstrap = new CompanyBootstrapProvisioner({
 	authorizeServiceDownload: (profileId, sha256) => authority.authorizeServiceDownload(profileId, sha256),
 	readLegacyObject: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
 });
+// The vault's connection-file writer (P22b): off unless QORPERA_CONNECTION_FILE_WRITER=1; the coordinator turns it on.
+const connectionFiles =
+	process.env.QORPERA_CONNECTION_FILE_WRITER === "1"
+		? new ConnectionFileWriter({
+				workerId: process.env.QORPERA_CONNECTION_FILE_WORKER_ID?.trim() || randomUUID(),
+				authority: memberAuthority,
+				store,
+				replication,
+			})
+		: undefined;
 const handler = createObjectGatewayHandler({
 	store,
 	authority,
@@ -91,6 +102,7 @@ if (process.argv[2] === "migrate") {
 				replication.reconcile(),
 				readLeases?.prune(),
 				companyBootstrap.provisionOne(),
+				connectionFiles?.writeDue(10),
 			]);
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
