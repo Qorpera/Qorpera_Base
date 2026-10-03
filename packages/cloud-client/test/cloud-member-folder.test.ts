@@ -42,10 +42,10 @@ describe("member folder answers", () => {
 				entry: { path: "notes", kind: "folder", version, seq: 1, updatedAt: at },
 			}).entry?.file,
 		).toBeNull();
-		expect(parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: false })).toEqual({
-			asOfSeq: 9,
-			entry: null,
-		});
+		expect(
+			parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: false, entry: null }),
+		).toEqual({ asOfSeq: 9, entry: null });
+		expect(() => parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: false })).toThrow();
 	});
 
 	it("refuses an entry with a field it does not know, a folder with content, or half of the content", () => {
@@ -297,7 +297,7 @@ function stored(content: string) {
 describe("the member folder client", () => {
 	it("calls the member functions with the member's own token and the environment", async () => {
 		const { folder, calls } = client(() =>
-			Response.json({ schema: "qorpera.folder-read/v1", asOfSeq: 0, found: false }),
+			Response.json({ schema: "qorpera.folder-read/v1", asOfSeq: 0, found: false, entry: null }),
 		);
 		await folder.read("notes/a.txt", new AbortController().signal);
 		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_folder_read");
