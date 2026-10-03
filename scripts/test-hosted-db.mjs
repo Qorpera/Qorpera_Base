@@ -136,7 +136,7 @@ export function parseArguments(args) {
 			const value = arg === "--only" ? args[++i] : arg.slice("--only=".length);
 			if (only !== null || !value) throw new Error(USAGE);
 			only = value.split(",").map((part) => part.trim());
-			if (only.some((part) => !/^[0-9a-z_.-]+$/.test(part))) throw new Error(USAGE);
+			if (only.some((part) => !/^[0-9a-z_][0-9a-z_.-]*$/.test(part))) throw new Error(USAGE);
 		} else throw new Error(USAGE);
 	}
 	return { withScripts, only };

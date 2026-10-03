@@ -133,7 +133,14 @@ test("--only keeps the named tests in order and refuses a value that matches non
 		withScripts: false,
 		only: ["811_folder_company_search"],
 	});
-	for (const bad of [["--only"], ["--only", ""], ["--only", "811", "--only", "818"], ["--only", "../x"], ["--quick"]])
+	for (const bad of [
+		["--only"],
+		["--only", ""],
+		["--only", "--scripts"],
+		["--only", "811", "--only", "818"],
+		["--only", "../x"],
+		["--quick"],
+	])
 		assert.throws(() => parseArguments(bad), /Usage/);
 	const tests = ["001_a.test.sql", "811_search.test.sql", "818_race.test.sql", "8180_other.test.sql"];
 	assert.equal(selectTests(tests, null), tests);

@@ -16,7 +16,9 @@ node scripts/run-on-node.mjs hosted-db -- --only 810,811       # every migration
 ```
 
 `--only` is for trying your own tests while you work. It still replays every migration, but skips the other
-tests, and a narrowed run never posts the suite's status on the commit. A hand-off still needs `changed`.
+SQL tests (with `--scripts`, the scripts still run in full), and a narrowed run never posts the suite's status
+on the commit. The tests share one database in order, so a narrowed run can miss what earlier tests leave
+behind: a hand-off still needs `changed`.
 Never run PostgreSQL, Docker or the tests on a Mac.
 
 One run starts one PostgreSQL and replays the migrations once, in one `psql` process that opens a fresh
