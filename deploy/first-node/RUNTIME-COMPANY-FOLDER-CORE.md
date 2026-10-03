@@ -1113,6 +1113,10 @@ For `folder-v2` companies:
   - These tools stay for turns (decided 3 October 2026, "light threads" item
     2). Changes of several files, and changes a command makes, come from a
     machine's change set.
+  - Built in slice P19 (`packages/runtime/src/cloud-folder-file-tools.ts`):
+    each read or listing is fitted to one tool result before its release, and
+    `company_delete` records the automatic review's approval of its call (C2
+    R1) and deletes a file or an empty folder.
 - The memory, skills, todo, routine and hiring writers write files. The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
@@ -1125,6 +1129,12 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
+  The `folder-v2` materializer (P28) also calls F2's worker drain,
+  `qorpera_folder_drain_worker_wakes(environment, limit)`, for each company
+  that `qorpera_folder_worker_wakes_due()` lists, in its own transaction,
+  before it materializes that company's wakes (RUNTIME-COMPANY-STATE-FILES.md,
+  "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
+  returns".
 - The members' and clients' hint (the feed itself is C1f).
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,
@@ -1134,7 +1144,7 @@ For `folder-v2` companies:
   (RUNTIME-COMPANY-STATE-FILES.md, "What H2b without H2c means").
 - Tolerant readers and writers go out first:
   - the runner orchestrator accepts runs without snapshot or substrate ids
-    (`orchestrator.ts:640-641`);
+    (`parseRunnerWork` and `validateCloudRunnerWork` in `orchestrator.ts`; done in #709);
   - the object gateway serves `folder-v2` without tree manifests
     (`member-company-file.ts:794`, `company-bootstrap.ts:252`);
   - the edge functions handle `folder-v2` (runner-broker's verifier call

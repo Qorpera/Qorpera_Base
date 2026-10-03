@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseArgs } from "./run-on-node.mjs";
-import { repoSlug, statusContext, statusDecision, statusDescription, statusState } from "./run-on-node-status.mjs";
+import { machineLabel, repoSlug, statusContext, statusDecision, statusDescription, statusState } from "./run-on-node-status.mjs";
 
 test("the repository comes from any GitHub remote form", () => {
 	for (const url of [
@@ -45,6 +45,15 @@ test("only the plain invocation of a suite is plain", () => {
 	])
 		assert.equal(parseArgs(argv).plain, false, argv.join(" "));
 	assert.equal(parseArgs(["--", "true"]).plain, false);
+	// Choosing the machine narrows nothing: both run the same suites the same way.
+	assert.equal(parseArgs(["--machine", "node01", "changed"]).plain, true);
+});
+
+test("statuses name the machine the run used", () => {
+	assert.equal(machineLabel("node01"), "node 1");
+	assert.equal(machineLabel("node02"), "node 2");
+	assert.equal(machineLabel("node12"), "node 12");
+	assert.equal(machineLabel("custom"), "custom");
 });
 
 test("results map to GitHub states and short descriptions", () => {
@@ -55,19 +64,19 @@ test("results map to GitHub states and short descriptions", () => {
 		"error",
 		"error",
 	]);
-	assert.equal(statusDescription({ result: "install-failed", elapsedSeconds: 30, runner: "ci03" }), "failed on node 2 in 30s: npm ci or the build (ci03)");
+	assert.equal(statusDescription({ machine: "node02", result: "install-failed", elapsedSeconds: 30, runner: "ci03" }), "failed on node 2 in 30s: npm ci or the build (ci03)");
 	assert.equal(
-		statusDescription({ result: "passed", elapsedSeconds: 552.4, runner: "ci02", changed: { steps: ["lint", "web"] } }),
-		"passed on node 2 in 9m12s: 2 steps (ci02)",
+		statusDescription({ machine: "node01", result: "passed", elapsedSeconds: 552.4, runner: "ci02", changed: { steps: ["lint", "web"] } }),
+		"passed on node 1 in 9m12s: 2 steps (ci02)",
 	);
 	assert.equal(
-		statusDescription({ result: "failed", elapsedSeconds: 41, runner: "ci01", failedSteps: ["runtime", "scripts"] }),
+		statusDescription({ machine: "node02", result: "failed", elapsedSeconds: 41, runner: "ci01", failedSteps: ["runtime", "scripts"] }),
 		"failed on node 2 in 41s: runtime, scripts (ci01)",
 	);
 	assert.equal(
-		statusDescription({ result: "setup-failed", elapsedSeconds: 3, runner: null }),
-		"setup-failed on node 2 in 3s: the harness, not the suite",
+		statusDescription({ machine: "node01", result: "setup-failed", elapsedSeconds: 3, runner: null }),
+		"setup-failed on node 1 in 3s: the harness, not the suite",
 	);
-	const long = statusDescription({ result: "failed", elapsedSeconds: 1, runner: "ci01", failedSteps: Array(40).fill("runner-orchestrator") });
+	const long = statusDescription({ machine: "node02", result: "failed", elapsedSeconds: 1, runner: "ci01", failedSteps: Array(40).fill("runner-orchestrator") });
 	assert.ok(long.length <= 140, String(long.length));
 });

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 
-/** GitHub commit statuses for run-on-node results. With GitHub Actions switched off, a PR shows its node 2
- * result as an ordinary status check on the tested commit (the statuses API uses no Actions minutes).
+/** GitHub commit statuses for run-on-node results. With GitHub Actions switched off, a PR shows its test
+ * machine result as an ordinary status check on the tested commit (the statuses API uses no Actions minutes).
  * A status is posted only when what ran is exactly a pushed commit: a clean working tree whose HEAD
  * GitHub knows. Posting never changes the run's exit code. */
 
@@ -31,6 +31,12 @@ export function statusDecision({ suite, dirty, disabled, slug, plain = true, bas
 	return { post: true, reason: null };
 }
 
+/** How a status names the machine a run used: node01 is "node 1". */
+export function machineLabel(name) {
+	const node = /^node0*([1-9][0-9]*)$/.exec(name);
+	return node ? `node ${node[1]}` : name;
+}
+
 function duration(seconds) {
 	const whole = Math.round(seconds);
 	return whole >= 60 ? `${Math.floor(whole / 60)}m${String(whole % 60).padStart(2, "0")}s` : `${whole}s`;
@@ -38,7 +44,7 @@ function duration(seconds) {
 
 /** At most 140 characters, as GitHub requires. */
 export function statusDescription(record) {
-	const where = `on node 2 in ${duration(record.elapsedSeconds)}`;
+	const where = `on ${machineLabel(record.machine)} in ${duration(record.elapsedSeconds)}`;
 	const who = record.runner ? ` (${record.runner})` : "";
 	let text;
 	if (record.result === "passed")

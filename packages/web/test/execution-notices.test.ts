@@ -263,6 +263,157 @@ describe("company notices", () => {
 		await settle();
 		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
+
+	it("names the agent whose run made no progress for 15 minutes, and dismisses it like any line", async () => {
+		const stalled: MemberNotification = {
+			...item(78),
+			kind: "run_no_progress",
+			subject: {
+				schema: "qorpera.member-notification.run-no-progress/v1",
+				runId: id(80),
+				staffAgentId: id(83),
+				sessionId: null,
+				since: timestamp,
+				minutes: 15,
+				worker: false,
+			},
+		};
+		const client = {
+			listNotifications: vi.fn(async () => [stalled]),
+			acknowledgeNotification: vi.fn(async () => ({ ...stalled, acknowledgedAt: timestamp })),
+		};
+		const lifetime = new AbortController();
+		const named = new ExecutionNotices(client, lifetime.signal, undefined, undefined, (staffAgentId) =>
+			staffAgentId === id(83) ? "Nova" : undefined,
+		);
+		document.body.append(named.el);
+		cleanup.push(() => named.dispose());
+		await settle();
+		expect(named.el.querySelector("p")?.textContent).toBe("Nova has made no progress for 15 minutes.");
+		action("dismiss-notification").click();
+		await settle();
+		expect(client.acknowledgeNotification).toHaveBeenCalledWith(id(78), expect.any(AbortSignal));
+		expect(named.el.hidden).toBe(true);
+		// Without the agent's name (another window's staff list), the line still says what happened.
+		const unnamed = setup([stalled]);
+		await settle();
+		expect(unnamed.view.el.querySelector("p")?.textContent).toBe("An agent has made no progress for 15 minutes.");
+	});
+
+	it("offers Stop for a worker's run to a member who may stop it, and the stopped run's notice is done (gap 4b)", async () => {
+		const stalled = (n: number, worker: boolean): MemberNotification => ({
+			...item(70 + n),
+			kind: "run_no_progress",
+			subject: {
+				schema: "qorpera.member-notification.run-no-progress/v1",
+				runId: id(80 + n),
+				staffAgentId: id(83),
+				sessionId: worker ? null : id(84),
+				since: timestamp,
+				minutes: 15,
+				worker,
+			},
+		});
+		const mount = (items: MemberNotification[], canCancel: boolean) => {
+			const client = {
+				listNotifications: vi.fn(async () => items),
+				acknowledgeNotification: vi.fn(async (notificationId: string) => ({
+					...items.find((entry) => entry.notificationId === notificationId)!,
+					acknowledgedAt: timestamp,
+				})),
+			};
+			const workerRuns = {
+				workerRunControl: vi.fn(async (runId: string) => ({ runId, status: "leased" as const, canCancel })),
+				stopWorkerRun: vi.fn(async (runId: string) => ({ runId, status: "cancelled" as const, canCancel: false })),
+			};
+			const lifetime = new AbortController();
+			const view = new ExecutionNotices(client, lifetime.signal, undefined, undefined, undefined, workerRuns);
+			document.body.append(view.el);
+			cleanup.push(() => view.dispose());
+			return { client, workerRuns, view };
+		};
+		// A member who may stop it: Stop beside Dismiss; pressed, the run stops and the notice is done.
+		const f = mount([stalled(1, true)], true);
+		await settle();
+		expect(f.workerRuns.workerRunControl).toHaveBeenCalledWith(id(81));
+		expect(action("stop-worker-run").textContent).toBe("Stop");
+		action("stop-worker-run").click();
+		await settle();
+		expect(f.workerRuns.stopWorkerRun).toHaveBeenCalledWith(id(81));
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledWith(id(71), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(true);
+		f.view.dispose();
+		document.body.replaceChildren();
+		// A failed Stop says so and keeps the button; nothing is acknowledged.
+		const failing = mount([stalled(2, true)], true);
+		failing.workerRuns.stopWorkerRun.mockRejectedValueOnce(new Error("offline"));
+		await settle();
+		action("stop-worker-run").click();
+		await settle();
+		expect(failing.view.el.textContent).toContain("The work could not be stopped. Try again.");
+		expect(action("stop-worker-run")).not.toBeNull();
+		expect(failing.client.acknowledgeNotification).not.toHaveBeenCalled();
+		failing.view.dispose();
+		document.body.replaceChildren();
+		// A member who may not stop it, and a run in a conversation (Stop is in its thread), get no Stop here.
+		const viewer = mount([stalled(3, true)], false);
+		await settle();
+		expect(viewer.view.el.querySelector('[data-action="stop-worker-run"]')).toBeNull();
+		viewer.view.dispose();
+		document.body.replaceChildren();
+		const thread = mount([stalled(4, false)], true);
+		await settle();
+		expect(thread.workerRuns.workerRunControl).not.toHaveBeenCalled();
+		expect(thread.view.el.querySelector('[data-action="stop-worker-run"]')).toBeNull();
+	});
+
+	it("while a Stop runs, Dismiss waits, and the finished Stop dismisses the notice it stopped (gap 4b)", async () => {
+		const stalled: MemberNotification = {
+			...item(76),
+			kind: "run_no_progress",
+			subject: {
+				schema: "qorpera.member-notification.run-no-progress/v1",
+				runId: id(86),
+				staffAgentId: id(83),
+				sessionId: null,
+				since: timestamp,
+				minutes: 15,
+				worker: true,
+			},
+		};
+		const client = {
+			listNotifications: vi.fn(async () => [stalled, item(70)]),
+			acknowledgeNotification: vi.fn(async (notificationId: string) => ({
+				...(notificationId === stalled.notificationId ? stalled : item(70)),
+				acknowledgedAt: timestamp,
+			})),
+		};
+		const pending = deferred<{ runId: string; status: "cancelled"; canCancel: boolean }>();
+		const workerRuns = {
+			workerRunControl: vi.fn(async (runId: string) => ({ runId, status: "leased" as const, canCancel: true })),
+			stopWorkerRun: vi.fn(() => pending.promise),
+		};
+		const lifetime = new AbortController();
+		const view = new ExecutionNotices(client, lifetime.signal, undefined, undefined, undefined, workerRuns);
+		document.body.append(view.el);
+		cleanup.push(() => view.dispose());
+		await settle();
+		action("stop-worker-run").click();
+		await settle();
+		// Dismiss and Escape wait while the Stop runs.
+		expect(action("dismiss-notification").getAttribute("aria-disabled")).toBe("true");
+		action("dismiss-notification").click();
+		const escapeKey = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+		view.el.querySelector(".company-notice")!.dispatchEvent(escapeKey);
+		await settle();
+		expect(client.acknowledgeNotification).not.toHaveBeenCalled();
+		pending.resolve({ runId: id(86), status: "cancelled", canCancel: false });
+		await settle();
+		// Only the stopped notice is dismissed; the next one shows.
+		expect(client.acknowledgeNotification).toHaveBeenCalledTimes(1);
+		expect(client.acknowledgeNotification).toHaveBeenCalledWith(id(76), expect.any(AbortSignal));
+		expect(view.el.querySelector("p")?.textContent).toBe(FULL);
+	});
 });
 
 it("reads notices for the company workspace without any popup, also across an account change", async () => {
