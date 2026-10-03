@@ -1769,100 +1769,168 @@ first files, a member's text kept through a rewrite, a Disconnect's delete, and 
 file version or writer commit.
 
 **Plan (P15): the follow-up queue** (core §5 "After the commit", core §11 C2; the coordinator's slice P15, after P16a;
-design, 4 October). The facts are in the inventory of 4 October (today's publish path, the 12 staff triggers, what
-`qorpera_company_state_index_agent` does). Folder-v2 only.
+design, 4 October; review r1 folded). The facts are in the inventory of 4 October (today's publish path, the 12 staff
+triggers, what `qorpera_company_state_index_agent` does). Folder-v2 only.
 
 *What is missing today.* An agent's save is indexed by its staff row, and the staff triggers give it a thread, a default
-root grant, office access, execution authority and connector grants, and on archive close its thread and revoke its
-secret grants. Four gaps remain:
+root grant, office access, execution authority and connector grants, and on archive close its thread and pair sessions
+and revoke its secret grants. What remains:
 - a hire gets no first run (only a creation's Co-Founder does, inside the creation);
-- an archive leaves its routines `active` in the index, its execution authority and session bindings in place, and its
-  other open sessions open (all fenced already: wake authorization needs an active agent);
+- an archive leaves its routines `active` in the index, and its execution authority, session bindings and other open
+  sessions in place;
+- routine firing (the folder-v2 enqueue and the dynamic tick) never checks the routine's agent, so an archived agent's
+  routine still fires;
 - the company name in `vision.md` never reaches `qorpera_profiles.name`, which the hub reads;
-- three triggers write after the commit's paths, outside the global order: the default grant (ranks 6–7, and outside
-  the authority journal), the connector grants on a hire and the secret revocation on an archive (rank 8). The thread
-  trigger updates the thread and pair sessions (rank 11), which the hook does not name.
+- four triggers write after the commit's paths, outside the global order: the default grant (ranks 6–7), the connector
+  grants on a hire and the secret revocation on an archive (rank 8), and the routines-stop trigger (rank 5). The
+  thread trigger updates the thread session and closes pair sessions (rank 11), which the hook does not name.
 
 *The queue* (P22a's model: marks, then one work row per subject, converged to its current state, never replayed):
-- `qorpera_folder_follow_up_marks`: insert-only rows `(environment, subject kind, subject id, by user, commit)`, written
-  by apply with no lock of their own (a foreign key only to the folder clock row, as the indexes have). Subjects:
-  - `agent` (the staff id): every unit that writes an `agent.md`, and every move, delete or restore that repoints or
-    retires a staff row;
+- `qorpera_folder_follow_up_marks`: insert-only rows `(environment, subject kind, subject id, by user, commit seq)`,
+  written by apply with no lock of their own (no foreign key to `auth.users`; to the folder clock row only, which the
+  commit already holds). Subjects:
+  - `agent` (the staff id): every unit that inserts an `agent.md`, changes its status, or retires or restores the
+    agent (a rename converges to nothing, so it writes no mark);
   - `company` (the profile): every `vision.md` write.
-- `qorpera_folder_follow_ups`: one row per subject, kept: `generation`, `dirty`, the lease, `attempts`, `not_before`,
-  `last_problem`, and `hired_by_user_id` (the `by` of the subject's first mark, for its first run).
-- **The drain** is SQL: a procedure pg_cron calls every 5 seconds (as erasure's step), one subject per transaction
-  (it commits between subjects), at most 1 second a pass, `lock_timeout` 2 seconds. It never runs inside a caller's
-  transaction. It claims marked subjects `SKIP LOCKED`, skips companies being deleted (their rows are blocked, as
-  creations are) and backs off paused ones (55000), with `2^attempts` seconds up to 10 minutes on any refusal.
-  Service-role wrappers converge one subject for tests and operators.
 
-*Converging an agent* (`qorpera_folder_converge_agent(environment, staff)`, F2's): it reads the staff row plainly to
-choose its targets, enters the company (`qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, rank 0), takes
-its targets in the global order, reads the row again under its lock, and acts on what it finds:
+  The kind check is open to more kinds (F2-5b-3 may add `todo` for a cancelled todo's workers).
+- `qorpera_folder_follow_ups`: one row per subject, kept: `dirty`, `attempts`, `not_before`, `last_problem`,
+  `last_attempt_at`, and `hired_by_user_id` (see the first run). No foreign key: nothing that holds the fence ever waits
+  on it, and a deleted company's rows are removed by the purge's sweep.
+- **The drain** is a pg_cron step every 2 seconds, one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
+  step: `lock_timeout` 2 seconds, read committed). One step is one transaction:
+  1. plain reads: skip companies being deleted (`qorpera_company_deletions`) and paused companies (a pause is not an
+     attempt, so a hire converges as soon as the company resumes);
+  2. turn the marks it can see into work rows (`dirty`, and a new mark clears `not_before`), and delete them, `SKIP
+     LOCKED`;
+  3. take the oldest due work row `FOR UPDATE SKIP LOCKED`;
+  4. converge it inside one exception block. The converge never updates the folder clock (it writes no journal row,
+     below), the row whose savepoints meet PostgreSQL's multixact error, and one step converges one subject, so one
+     subtransaction updates the company operation clock. On success the row is clean and `attempts` resets; on an
+     error (a lock timeout, 40P01, a refusal) the row keeps `dirty` with `attempts + 1`, `not_before` `2^attempts`
+     seconds up to 10 minutes, and the error code in `last_problem`.
+
+  **Kicks:** a writer that just committed agent marks may call the service-role `qorpera_folder_follow_up_now(env,
+  kind, id)`, which runs steps 3–4 for that subject in its own transaction: the creation worker after a completed
+  creation, and the runtime's `hire_agent` after its commit. The step is the safety net.
+- A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`.
+- The job runs as the database owner with no JWT. Every helper the converge calls checks no `auth.role()`; the
+  service-role wrappers do.
+
+*Converging an agent* (`qorpera_folder_converge_agent(environment, staff)`, F2's). It reads the staff row plainly to
+choose its targets, enters the company (`qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, rank 0, and
+ranks 1–5), takes ranks 6–11 itself, and reads the staff row again under its lock. If the status, the folder or the
+first-run state changed since the plain read, it ends as a retry that is not counted as an attempt. After rank 2 it
+waits at most 200 milliseconds a lock, so a member's or run's commit never waits long behind it. Its locks, in order:
 1. rank 1: the hire's member row (`KEY SHARE`), when a first run is due;
 2. rank 2: the staff row (`FOR NO KEY UPDATE`);
 3. rank 3: the agent's execution authorities (`FOR UPDATE`), on an archive;
 4. rank 4: the thread room (`KEY SHARE`);
-5. rank 5: the agent's routines (`FOR NO KEY UPDATE`, by id), to pause or resume;
-6. ranks 6–7: each live shared root (`FOR NO KEY UPDATE`) and the agent's grants on it (`FOR UPDATE`), for the default
-   grant;
-7. rank 8: the agent's vault grants in the vault's inner order, for connector grants or their revocation;
-8. rank 11: the agent's open sessions (`FOR UPDATE`, by id): the thread for a first run's kickoff, the rest to close;
-9. the folder clock last, through one authority journal row, only when a grant changed.
+5. rank 5: the agent's routines (`FOR NO KEY UPDATE`, by id), on an archive;
+6. ranks 6–7: only when a default grant must be inserted (read plainly first): the live shared root (`FOR NO KEY
+   UPDATE`) and the agent's grants on it (`FOR NO KEY UPDATE`);
+7. rank 8: the agent's vault grants by id, then each shared secret `FOR KEY SHARE NOWAIT` before a connector grant is
+   inserted (a busy secret ends the attempt with 55P03; a company share or seal never waits on the converge);
+8. rank 11: the agent's open sessions (`FOR UPDATE`, by id, `SKIP LOCKED` for those it only closes; a skipped one
+   leaves the subject dirty), then their execution bindings;
+9. the company operation clock, taken by the staff and session writes.
+
+There is no folder clock and no journal row: the default grant is a widening, and the authority check needs no journal
+row for one (C1C, "Left as they are"); its grant and resource revisions are bumped as the folder's grant path does.
 
 For an **active agent whose folder is live**:
-- the default grant through a journaled internal helper with today's rules (read and write on every live shared root;
-  never widening an explicit read-only grant, never reviving a revoked default, origin `default_agent_read`), with the
-  revisions bumped and one widening journal row;
-- the shared connectors, as today's trigger does;
-- **the first run, once ever** (`qorpera_agent_first_runs` holds at most one per agent), never for the Co-Founder (the
-  creation makes its own): the kickoff in the thread, `qorpera.agent-first-run/v1` with
-  `{kind:'staff_startup', companyId, staffAgentId, firstTodo}` (the path of the hire's first todo, when there is one),
-  authored by `hired_by_user_id`, its turn request on that member's login as P14a's (`qorpera_member_first_run_sponsor`
-  and `qorpera_sponsor_serves_requester`), or pending without one. No wake: P28 materializes the turn, as for a
-  creation. One helper serves both: P14a's creation path calls it too.
-- routines paused for the agent's archive (`pause_reason = 'agent'`) resume.
+- **the default grant**, on folder-v2 only inserted: read and write on each live shared root where the agent has no
+  grant row of any kind, origin `default_agent_read`, attributed to the owner (contract 14.1). It never widens an
+  explicit grant and never revives a revoked or expired default, as today. (The read-to-read-and-write upgrade and the
+  recovery from earlier root versions are left out: every folder-v2 default is read and write, and the root's version
+  is fixed.)
+- **the shared connectors**, as today's trigger does, in the vault's order above;
+- **the first run, once ever** (`qorpera_agent_first_runs` holds at most one per agent):
+  - for a hire: the kickoff in the thread (`client_input_id = md5('qorpera.folder-agent-first-run:' || staff)`),
+    `qorpera.agent-first-run/v1` with `{kind:'staff_startup', companyId, staffAgentId, firstTodoId}` (the id of the
+    agent's `first-assignment` todo when it has one; P28 reads its path when the run starts), and the first-run row;
+  - for every agent, the Co-Founder included: **the turn request**, queued after the default grant, on the login of the
+    kickoff's author as P14a's (`qorpera_member_first_run_sponsor`, `qorpera_sponsor_serves_requester`), or pending
+    without one. The creation commit keeps the Co-Founder's kickoff and first-run row (contract 14.1, P14a's check),
+    and stops queueing its turn; one helper queues every agent's pending turn once its grant exists. No wake: P28
+    materializes the turn.
+  - **Who:** `hired_by_user_id` is the `by` of the earliest mark (by commit seq) the converge finds with the row active,
+    so the member whose change made the agent active authors and pays. If that member has left, the kickoff is
+    authored by the owner with no turn request, and `last_problem` says why; an owner starts it as today.
 
 For an **archived or retired agent**:
-- its active routines are paused in the index with `pause_reason = 'agent'`;
+- its active routines are paused in the index with the new reason `agent_archived` (widening the reason check), never
+  resumed by the queue: a paid save that changes nothing, or `manage_routine resume`, ends the pause once the routine's
+  agent is active (`qorpera_company_state_routine_resumes` learns the reason). This holds for a routine handed to
+  another, active agent too. The web shows these routines as paused because their agent is archived;
+- the expired routines' `expired_while_active` is cleared (the routines-stop trigger's work);
 - its secret and connector grants are revoked;
-- its execution authorities and session bindings are deleted;
-- its open sessions are closed (the thread trigger closes the thread and pair sessions in the commit).
+- its execution authorities, and the bindings of the sessions it closes, are deleted;
+- its pair sessions and other open sessions are closed (members' private conversations with it too, as legacy did;
+  reactivation reopens none of them). The thread trigger closes only the thread, which the commit names.
 
-*Routine files are not written.* This changes §2's plan, which had the platform write `status: paused` into an archived
-agent's routine files. `agent.md`'s status is the truth, routine firing is fenced by it at once, and converging to the
-agent's current status pauses and resumes the index; writing files would need a gateway worker and a platform change
-set for no reader. A restored or reactivated agent's routines follow its status at the next converge. The other
-platform pauses (a member's Stop, an authorization failure, a wait for a login) stay as they are.
+*Routine files are not written.* This changes §2's routine-status text: there the platform wrote `status: paused` into
+an archived agent's routine files. `agent.md`'s status is the truth, and the index pause with its own reason is the
+platform's record (coordinator, 3 October); the other platform pauses (a member's Stop, an authorization failure, a
+wait for a login) stay index-only as today. §2's "Status" and W4c's lines are amended to say so.
 
-*Converging the company name* (`qorpera_folder_converge_company(environment)`): in its own transaction, the company row
-`FOR NO KEY UPDATE NOWAIT`, then `qorpera_profiles.name` from `qorpera_folder_company_index.name` when they differ. This
-is the one exception to "the company row only `KEY SHARE`" (core §3): only this step takes it, alone in its
-transaction, without waiting (55P03 backs off); folder-v2 effects take `KEY SHARE` and never conflict with it; a
-company being deleted is skipped.
+*Routine firing checks the agent.* The folder-v2 enqueue and the dynamic tick already hold the routine's staff row
+`KEY SHARE`; they defer when it is not active (a deferred occurrence counts no run and no authorization failure). P28:
+cancel an archived agent's waiting occurrences the same way.
+
+*Converging the company name* (`qorpera_folder_converge_company(environment)`): a plain compare of
+`qorpera_profiles.name` with `qorpera_folder_company_index.name` first; only when they differ, alone in its own
+transaction (never inside one holding the fence), the company row `FOR NO KEY UPDATE NOWAIT`, the compare again, and the
+update. A busy row backs off. This is core §3's one named exception to "the company row only `KEY SHARE`" (coordinator,
+3 October); `FOR NO KEY UPDATE` does not conflict with the `KEY SHARE` every folder-v2 effect takes. Core §3 step 3, §9
+and the activation check are amended to name it. A company being deleted is skipped.
 
 *The commit's side* (F2's hook):
 - apply writes the marks;
-- the default grant, connector grant and secret revocation triggers skip folder-v2 companies (their work is the
-  converge's);
-- the hook names the thread session and the pair sessions at rank 11 for an agent unit that renames, archives or
-  retires the agent (C1C's promise), so the thread trigger's updates are in order;
+- the default grant, connector grant, secret revocation and routines-stop triggers skip folder-v2 companies, and the
+  thread trigger leaves pair sessions to the converge on folder-v2;
+- the hook names the thread session at rank 11 under exactly the conditions it names the room at rank 4: a write that
+  changes the name or the status or restores the agent, and a delete of an active agent's folder;
 - execution authority (rank 3, inserted on a hire), office access and the thread room stay with their triggers.
 
-*Creation.* `qorpera_folder_company_ready` also waits until the Co-Founder's agent subject and the company subject have
-converged (core §5 "Company creation is one commit"): the Co-Founder gets its default grant from the queue now.
+*Creation and `ready`.* `qorpera_folder_company_ready` is the creation completed and the Co-Founder's agent subject
+converged (its default grant, then its first-run turn). The hub's hidden condition and `companySetup` read `ready`, and a
+Co-Founder subject failing for more than 10 minutes shows as `failed`. The creation worker kicks the Co-Founder's
+subject after a completed creation. The company subject does not gate `ready`: the names agree at creation.
 
-*What waits for the queue.* A hire reads and writes the company's files, and has its first run queued, once its subject
-converges (about 5 seconds). An agent it hires through `hire_agent` meanwhile is a restricted hire (its default grant is
-not yet there). Nothing else waits.
+*What waits for the queue* (until its subject converges, a few seconds after the commit, at once with a kick):
+- a hire's default grant: a run of the new agent before then (a post in its thread, a coworker message) cannot read or
+  write the company's files, and an agent it hires through `hire_agent` meanwhile is a restricted hire;
+- a hire's first run;
+- an archive's cleanup (the agent is fenced at once: wake authorization, runs, the broker, views and office access read
+  its status);
+- the company name in the hub.
 
-*Tests* (migration 20260930022000):
-- 877: a hire (first run, grants journaled, connectors), an archive (routines, execution authority, bindings, sessions,
-  secret grants), a reactivation, a retire and restore, the Co-Founder at creation, the company name, `ready`, the
-  marks, back-off and the blocked rows of a company being deleted;
-- 878: races: a converge against an archive commit, a rename, a second drain, and a deletion;
-- 879: the triggers' folder-v2 guards, the rank-11 targets, the drain procedure and the cron job;
+Contract 14.1 says creating an agent "MUST atomically persist … resource grants … and exactly one first-run wake". The
+amendment line this slice proposes: "the default grant and the first run converge within seconds after the commit,
+through the follow-up queue; the first-run turn is materialized by C4", as P14a amended the creation wake.
+
+*Documents amended in this slice:* core §3 step 3 (the exception), §3's vault and first-run lines (the commit writes no
+vault rows on hire or archive; the queue inserts no wake), §5 "After the commit" (marks, work rows, the drain), §9;
+§2's routine status and W4c's platform-pause lines; §5's follow-ups list; C1C's and CREATION's "in the commit that
+creates the agent" (now the queue); P24's load script gains the drain. The rebuild marks every agent subject. Member
+notices stay out (no slice yet).
+
+*Tests* (migration 20260930022000; 856's apply digest pin is dropped under the folder-v2-only rule):
+- 877: a hire (the default grant's rules: no widening of an explicit grant, no revival, no journal row, revisions; the
+  first run and its turn after the grant; connectors), the hirer gone, no login, saved archived and activated by
+  another member, a rename before the converge; an archive (routines paused `agent_archived`, an agent's own file pause
+  untouched, expired flags, execution authority, bindings, sessions, secret grants); reactivation (routines stay
+  paused; a paid unchanged save resumes); a handover to an active agent; a retire and restore; the enqueue and the tick
+  deferring for an archived owner; the Co-Founder at creation (`ready`, the hub, `companySetup`, the turn after the
+  grant); the company name; the marks; back-off, a pause, and a company being deleted; the step as the job's role.
+- 878: races: a converge against a status flip between its read and its lock, a post or a run's call on the thread
+  session, the hirer's removal, a share or seal or Disconnect, a routine save or move and the expiry sweep, the
+  enqueue, two converges on one root, an owner's grant on the root, the deletion finisher and purge, the name copy
+  against the lobby and the purge, and on the commit side a reactivation against a post in the thread.
+- 879: the triggers' folder-v2 guards (default grant, connectors, secret revocation, routines stop, pair sessions), the
+  rank-11 targets (rename, archive, retire, reactivation, restore), an assertion that an agent unit's apply takes no row
+  lock after the paths beyond those already held, and the step and its cron job;
 - and a mutant run.
 
 **Plan (F2-5b): worker briefs and results on the folder core** (core C3; the coordinator's slice P21 of
