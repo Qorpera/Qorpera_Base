@@ -1,24 +1,30 @@
 # Company folder core: file-change wakes (slice P29)
 
-Status: design, decided 4 October 2026 (§13); review running. Owner: the folder GC and erasure session (P29 moved from Q1 on 4 October 2026). Rules:
-core §6 "Wakes" and §9 ("a file change wakes a listener exactly once"), WAKE-BUS.md (today's listener contract),
-STATE-FILES.md §8 "Plan (H2)" item 9 (H2c builds on this). Builds on P28 (#756, the folder-v2 materializer).
-Evidence: `~/work/qorpera-folder-core-tools/reports/P29-inventory.md`. Q1 and F2 answered the questions on the
-materializer's wake format, the lock order and the drain's placement.
+Status: design v2, after review r1 (`~/work/qorpera-folder-core-tools/reports/P29-design-review-r1.md`) and the
+coordinator's decisions of 4 October 2026 (§14). Owner: the folder GC and erasure session (P29 moved from Q1 on
+4 October).
+
+Rules:
+- core §6 "Wakes" and §9 ("a file change wakes a listener exactly once");
+- WAKE-BUS.md (today's listener contract: activation, causality, denied claims, read rechecks);
+- STATE-FILES.md §8 "Plan (H2)" item 9 (H2c builds on this).
+
+Builds on P28 (#756, the folder-v2 materializer). Evidence: `~/work/qorpera-folder-core-tools/reports/P29-inventory.md`.
+Q1 (P28) and F2 (F2-5b, H2c) reviewed the drain's placement, the wake format and the hook.
 
 ## 1. What P29 is
 
 A routine file whose trigger is `when: file-change` (with `watch` and `match`) wakes its agent when a saved change
 touches the watched path. On folder-v2 nothing does this today:
-- the routine rules refuse a file-change routine ("waits for the folder's file events");
-- six places refuse or break a file wake (§7);
+- the routine rules refuse a file-change routine;
+- the places in §7 refuse or break a file wake;
 - after P28, reconcile no longer runs the old snapshot-v1 drain, so file wakes run on no core at all.
 
 P29 brings them back on folder-v2, read from the folder journal.
 
-It also opens the commit stream to H2c (P31, human-task wakes; §8). It does not cover:
-- a worker's results (F2-5b-3's worker drain makes that wake from the worker row, not from a file change, so the
-  listener must not wake a parent for a worker's report);
+It also offers every change set to H2c (P31, human-task wakes; §8). It does not cover:
+- a worker's results: F2-5b-3's worker drain wakes the parent from the worker row. A worker's `report_work` commits as
+  the worker's run, so the self rule (§5) keeps the listener from waking the parent's own subscription;
 - overdue human tasks (H2c's own timed scan);
 - event, office and machine wakes.
 
@@ -29,112 +35,134 @@ It also opens the commit stream to H2c (P31, human-task wakes; §8). It does not
 - its current version's trigger is a file-change trigger.
 
 **The trigger:**
-- `qorpera_company_state_routine_trigger` returns `{kind: 'file-change', watch, match, timeZone}`. `watch` is the
-  folded key of the watched path; `match` is `exact` or `subtree`.
-- The trigger keeps today's `id: 'file'` and `replyPolicy`.
-- The routine rules stop refusing it.
-- At save, the rules check what the old listener checked: the routine's agent, with its requester, may read the watched
-  path (`qorpera_folder_actor_allowed`, read). Otherwise the save is refused, naming the path.
+- `qorpera_company_state_routine_trigger` returns `{kind: 'file-change', id: 'file', watch, match, timeZone,
+  replyPolicy}`. `watch` is the folded key of the watched path; `match` is `exact` or `subtree`.
+- `qorpera_cloud_routine_trigger_valid` accepts that kind (§7).
+- The routine rules stop refusing it, and at save they refuse:
+  - a watched path the routine's agent, with its requester, may not read (`qorpera_folder_actor_allowed`, read), as the
+    old listener checked;
+  - a payer that is a ChatGPT plan: a plan pays only for work its member starts (20260928359950; §7).
 
-**Activation, future-only:** a listener sees the changes with seq greater than its **activation seq**. The activation seq
-is the seq of the commit that last wrote the routine row (`folder_commit_id`):
-- a new routine or a new version listens from the change set that saved it, so that change never wakes it;
-- a resume, which is a save, starts again from the resume;
-- a change the drain had not reached when the routine was edited is not delivered to the edited routine, as today's
-  version cursor drops it (WAKE-BUS.md). STATE-FILES.md's routine section says so, so agents know.
+**Activation, future-only:** a listener sees the changes whose seq is greater than its **activation seq**. The
+activation seq is the seq of the commit that last wrote the routine row (`folder_commit_id`). This matches today's
+version cursors, with one difference: any save of the routine file moves it, including a quiet-hours edit or a save
+that changes nothing, where today only a new version or a resume does.
+- A new routine or version listens from the change set that saved it, so that change never wakes it.
+- A resume, which is a save, starts again.
+- A change the drain had not reached when the routine was edited is not delivered (decision 2). STATE-FILES.md's routine
+  section says so for agents.
+- A routine whose activation seq cannot be read is no listener; the compare is NULL-safe.
 
-No activation trigger runs inside the commit:
-- today's `qorpera_cloud_routine_listener_activation` and `_status` take the gc fence and read a snapshot head, and
-  would break in a folder-v2 commit;
-- both get a folder-v2 early return, keyed on the routine's `folder_path`.
+**The old triggers:** today's `qorpera_cloud_routine_listener_activation` and `_status` act only on the legacy kind
+`listener` and on legacy cursor rows, so they do nothing for `file-change`. They stay as they are.
 
 ## 3. The cursor
 
 One cursor per environment: `qorpera_folder_listener_cursors(environment_id → folder clock cascade, processed_seq,
-updated_at)`. Every seq up to `processed_seq` is done for every listener. Per-listener cursors would cost a row and a
-lock per routine, and the activation seq already gives each listener its start.
+updated_at)`, with RLS on and revoked from every role. Every seq up to `processed_seq` is done for every listener and
+for the hook.
 
-**Where a new cursor starts:** at the smallest activation seq among the environment's active listeners (or the clock's
-`last_seq` when there is none), so no change after a listener's activation is missed.
+**Creation:** the drain creates the row lazily, after the fence (§4 step 3), never before it. It starts at the smallest
+activation seq among the environment's active listeners, or at the clock's `last_seq` when there is none.
 
-**The drain's lease:** the drain takes the cursor row `FOR UPDATE SKIP LOCKED` after its ranks (§4 step 4), as a
-run-owned row.
-- Only the drain locks that row. Commits, routine firing, the materializer and erasure never touch it.
-- The company purge deletes it by cascade, after the folder fence that the drain's ranks take first (KEY SHARE). So a
-  purge and a drain meet at the fence and never in a cycle; a cursor lease taken before the fence would deadlock with
-  the purge's cascade.
-- So two drains of one company never overlap, and a commit never waits on a drain's lease.
+**The lease:** the cursor row, `FOR UPDATE SKIP LOCKED`, taken after the ranks, as a run-owned row.
+- Only the drain locks it. Commits, routine firing, the materializer and erasure never touch it.
+- The company purge deletes it by cascade, after the fence the drain takes first (KEY SHARE). So the two meet at the
+  fence and never in a cycle; a lease taken before the fence would deadlock with the purge's cascade.
 
 ## 4. The drain
 
 `qorpera_folder_listen_company(p_environment_id uuid, p_limit integer default 64) returns jsonb` works on one company,
-in its own transaction. It is service_role only, like the materializer's RPCs. It never runs inside
-`qorpera_folder_materialize_company`, whose admission would then come before its own ranks (Q1, F2).
+in its own transaction. It is service_role only. It never runs inside `qorpera_folder_materialize_company`, whose
+admission would then come before its own ranks (Q1, F2).
 
-1. **Plain reads.**
-   - The journal's `change_set` rows with seq in `(processed_seq, processed_seq + p_limit]`, up to the clock's
-     `last_seq`. Authority rows are passed over and count as done.
-   - The active listeners.
-   - For each listener and each commit after its activation seq, the matched path versions, at most 21 (§5).
-2. **Ranks:** `qorpera_folder_company_enter(env, profile, targets, refuse_paused => false)`. The targets are each matched
-   routine's requester (rank 1), its agent (rank 2) and the agent's execution authority (rank 3), all KEY SHARE; the
-   routine FOR NO KEY UPDATE (rank 5); and the hook's targets (§8). This is the materializer's and routine firing's
-   prefix (fence KEY SHARE, rank 0, ranks 1 to 5).
-3. **The lease:** the cursor row `FOR UPDATE SKIP LOCKED` (§3). A held cursor answers `busy`. If `processed_seq` moved
-   since the plain read, the step answers `raced` and the next tick reads again.
-4. **Re-checks under the locks:**
-   - each matched routine is still active, and its current version is the matched one;
-   - its activation seq is below the change's seq;
-   - it has neither expired (`expires_at`) nor reached its occurrence limit, as the restore of a dynamic routine run
-     checks (20260930009500), so the lifecycle trigger's 55000 does not fail the step.
-   A routine that fails is passed over for those changes. Each insert also runs in a subtransaction that catches only
-   the lifecycle trigger's two refusals, by message ('Routine has expired', the occurrence limit), and skips that wake,
-   in case a race got past the re-check. Any other error, such as the pin trigger's 'Folder wake admission is
-   required', is a bug signal and fails the step.
-5. **Sessions:** each matched routine's public session KEY SHARE (`qorpera_folder_wake_public_session`), as routine
-   firing takes it before admission.
-6. **Admission:** `qorpera_folder_admit_wakes(profile)`.
-7. **Wakes:** one insert per (change, routine), with `on conflict (routine_id, occurrence_key) do nothing`.
-8. **The hook:** `qorpera_folder_listener_commit(env, commit)` for each change set, in seq order (§8).
-9. **The cursor:** `processed_seq` moves to the last seq read.
+Settings: `lock_timeout = '2s'`; a 55P03 answers `busy`, and the next tick tries again.
 
-**Paused company:** the drain still runs. The pin trigger inserts a paused company's routine wakes as `cancelled`, as it
-does today, and the cursor moves on, so a resume does not replay a pause's worth of changes.
+1. **The role check,** before anything is read or locked.
+2. **Plain reads,** bounded:
+   - the journal's `change_set` rows with seq in `(processed_seq, processed_seq + p_limit]` (authority rows are passed
+     over and count as done);
+   - the active listeners;
+   - for each listener and each commit after its activation seq, up to 21 matched readable path versions, through the
+     new index `(commit_id, (qorpera_folder_key(path)) collate "C")` with the key range written out (§5);
+   - the hook's targets (§8).
+3. **Ranks:** `qorpera_folder_company_enter(env, profile, targets, p_refuse_paused => false)`: the fence KEY SHARE,
+   rank 0, then each matched routine's requester (rank 1), its agent (rank 2) and the agent's execution authority
+   (rank 3), all KEY SHARE, the routine FOR NO KEY UPDATE (rank 5), and the hook's targets. This is routine firing's
+   and the materializer's prefix.
+   - A company being deleted answers `deleting`.
+   - The cursor row is created here if it is absent.
+4. **The lease:** the cursor row `FOR UPDATE SKIP LOCKED` (§3). A held cursor answers `busy`. A `processed_seq` that
+   moved since the plain read answers `busy` too, and the next tick reads again.
+5. **A paused company:** the cursor moves past the window, no wake is written, and the hook is told the company is
+   paused (§8). A cancelled wake row per change would count toward a routine's `runs` limit and could expire it
+   (decision 3, amended).
+6. **Checks under the locks.** Each (change, listener) match is checked against everything the wake triggers check, so
+   an insert does not raise:
+   - the routine is still active, its current version is the matched one, and its activation seq is below the seq;
+   - it has not expired by the wake's `scheduled_for`;
+   - it is below its occurrence limit, counting this step's own inserts;
+   - the requester is a member and the agent is active;
+   - a `required` reply has a public session;
+   - the causal chain is not fenced (§5).
 
-**Bounds:**
-- at most `p_limit` seqs a step;
-- at most 21 matched versions per (listener, change), read through an index (below);
-- at most 32 listeners matched per step;
-- at most 48 subtransactions that write per step (wake inserts, hook calls and hook retries together). Past 64 in one
+   A failed check is final, as today's denied claim is. Nothing is written, and the step's answer counts it. The step
+   also probes `(routine_id, occurrence_key)` and inserts nothing for a wake that exists.
+7. **Sessions:** each matched routine's public session KEY SHARE (`qorpera_folder_wake_public_session`), and the
+   sessions the hook named, as routine firing takes them before admission.
+8. **Admission:** `qorpera_folder_admit_wakes(profile)`, only when the step will insert.
+9. **Wakes:** one insert per match. Each runs in a subtransaction that catches only the known refusals (the lifecycle
+   trigger's 'Routine has expired' and occurrence limit, and the pin trigger's recipient, audience and ancestry
+   refusals) as a final skip. Any other error fails the step, such as 'Folder wake admission is required', a lock
+   timeout or a deadlock (Q1). After each insert, the chosen session is checked as routine firing checks it.
+10. **The hook:** `qorpera_folder_listener_commit` per change set, in seq order (§8), after the recorded failures are
+    tried again.
+11. **The cursor:** `processed_seq` moves to the last seq whose work is all done.
+
+**Bounds per step:**
+- at most `p_limit` seqs;
+- at most 21 matched versions per (listener, change), each found through the commit-and-key index;
+- at most 32 new wakes;
+- at most 48 subtransactions that write (wake inserts, hook calls and hook retries together). Past 64 in one
   transaction, PostgreSQL's subtransaction cache overflows, which slows every concurrent reader (core §3 step 7; Q1).
 
-What a bound leaves waits for the next step, and the cursor stops before the first seq left unfinished.
+What a bound leaves waits for the next step: the cursor stops before the first seq not finished, and that seq's
+existing wakes are found by the probe and not counted again. A company with many listeners gets a smaller seq window,
+so that listeners × seqs stays within a fixed budget.
 
 ## 5. Matching
 
 **What matches:** a change set matches a listener when one of its saved path versions lies at the watched key (`exact`)
-or at or under it (`subtree`, the range written out as P18's searches do):
-- **moves:** a move writes a `move_out` at each source path and a `move_in` at each target, one per descendant, so a
-  move from or into the watch matches, and so does moving an ancestor of an `exact` watch;
-- **copies:** a copy matches at its target only; its source does not change;
-- **refused units:** they write no version and never match;
-- **erasure:** an erased change has no versions and never matches.
+or at or under it (`subtree`).
+- **Moves:** a move writes a `move_out` at each source path and a `move_in` at each target, one per descendant, so a
+  move from or into the watch matches, and so does moving an ancestor of an `exact` watch.
+- **Copies:** a copy matches at its target only; its source does not change.
+- **Refused and erased units:** they have no versions and never match.
 
-**The search:** `qorpera_folder_path_versions` by `(environment_id, folded key)` (P18a's index) with `commit_id` the
-change's, or by `(commit_id, unit_no, version)` for a large change set: the planner chooses. Either way the read is
-bounded.
+**The read:** the new index `(commit_id, (qorpera_folder_key(path)) collate "C")` serves "this commit's versions under
+this watch", whatever the size of the change set or the history under the watch. It is an expression index, so the
+table is not rewritten. Without it, one 100,000-entry move would read every row of the commit for each listener.
 
-**Who is woken:**
-- **The self rule:** a change set never wakes the agent that made it. Ancestry comes from the commit:
-  `qorpera_wake_ancestry(commit.run_id, the commit's staff actor, recipient, commit.id)`. Null means the recipient is
-  already in the chain (or the chain has 16 agents), and there is no wake.
-- **A detached view's commit** (a coding session or a desktop, staff actor, no run) is the actor's own, so its agent is
-  never woken by it.
-- **The member's and platform's commits** wake normally.
+**What the agent may read:**
+- A match counts only if the run that the wake will start may read it. The check uses that run's actor: kind
+  `staff_agent`, the routine's agent, its requester, the audience of the routine's public session (or `company` when it
+  has none), session kind `in_house`.
+- The filter runs inside the indexed probe, so an unreadable 21st match never hides a readable 22nd.
+- No readable match means no wake, and the change is never named or counted (decision 4).
+- When the run reads its wake, the check runs again (§6), as WAKE-BUS requires at delivery.
 
-**What the agent may read:** a matched path counts only if the routine's agent, with its requester, may read it. If none
-of a change's matched paths may be read, there is no wake. The listener never reveals that an unreadable path changed,
-as the feed leaves such a change out: an unreadable path is never named, and never counted in `more`.
+**Who is woken (ancestry from the commit, `qorpera_wake_ancestry(parent, actor, recipient, commit.id)`):**
+- **A run's commit:** the parent is the commit's `run_id`. The run's agent is in its own chain, so it is never woken
+  by its own change.
+- **A coding session's commit during a leased turn:** the parent is the commit's `turn_run_id`, not a fresh root. This
+  keeps two agents' coding sessions from waking each other without end, since WAKE-BUS fences unknown provenance rather
+  than resetting it. C1B calls `turn_run_id` "attribution only", so this needs the coordinator's OK (§14, item 8).
+- **A desktop whose run has ended:** the parent is null, the actor is the staff agent, and the root is the commit.
+- **A member's or the platform's commit:** a fresh chain. A platform commit that follows from a run's own act (the
+  vault's connection-file writer) also starts fresh; this is a known gap, noted for C4.
+
+A null answer means the recipient is already in the chain, the chain has 16 agents, or the parent's provenance is
+unknown. All three are fenced, never reset.
 
 ## 6. The wake
 
@@ -143,129 +171,185 @@ as the feed leaves such a change out: an unreadable path is never named, and nev
 | `wake_kind` | `routine` |
 | `routine_id`, `routine_version` | the listener's |
 | `source_kind` | `company-file` |
-| `source_id` | the commit's id |
+| `source_id` | the commit's id (the pin trigger keeps it; §7) |
 | `trigger_id` | `file` |
-| `occurrence_key` | `file:<seq>:<routine_version>` (unique with the routine: the wake is the claim, keyed by company, seq and trigger) |
-| `scheduled_for`, `not_before` | now; the lifecycle trigger may defer it for quiet hours |
-| `payload` | `{schema: 'qorpera.folder-file-wake/v1', seq, commitId, changes: [{path, op, version, priorVersion?, from?}], more}`, at most 20 changes, at most 8192 bytes; `more` is true when trimmed |
+| `occurrence_key` | `file:<seq>:<routine_version>`, unique with the routine: the wake is the claim, keyed by company, seq and trigger |
+| `scheduled_for`, `not_before` | the commit's `created_at` and now; the lifecycle trigger may defer `not_before` for quiet hours |
+| `payload` | `{schema: 'qorpera.folder-file-wake/v1', seq, commitId, versions: [≤ 21 version ids], more}` |
 
-The pin trigger fills in the staff, requester, sponsor and session from the routine version, as it does for a schedule
-wake. The run's `company_seq` (P28) is the clock read at materialization, never below the change's seq, so the run is
-composed as of at least this change, as core §6 asks.
+`more` is the number of readable matches past the first 21; unreadable ones are never counted. An event wake's `more`
+is a count too.
 
-## 7. The six places that refuse or break a file wake today
+**No path names in the row.** `qorpera_folder_read_wake` builds the run's payload when the run reads its wake:
+`{schema, seq, commitId, changes: [{path, op, version, priorVersion?, from?}], more}`.
+- It uses the versions that still exist and that the run's own actor may still read.
+- `from` and `priorVersion` appear only when the source is readable too, as the feed shows a move's prior version.
+- An erased version has gone, so it drops out by itself. Erasure needs no wake scrub, the wake identity guard stays as
+  it is, and no race can leave an erased path in a wake.
+- A run that already read its wake is noted by erasure (§10).
 
-1. **`qorpera_folder_wake_authorized`** refuses `company-file`. Its folder-v2 branch gains company-file:
+**The pin:** the pin trigger fills in the staff, requester, sponsor and session from the routine version. The run's
+`company_seq` (P28) is the clock read at materialization, never below the change's seq.
+
+**The envelope:** for a member's commit, `actorUserId` names that member.
+
+## 7. What P29 changes outside its new functions
+
+1. **`qorpera_folder_wake_authorized`** refuses `company-file` today. Its folder-v2 branch gains company-file:
    - the source commit exists in the wake's environment;
    - the routine is active and current;
-   - ancestry recomputed from the commit (as §5) equals the stored root and agents, so the materializer's comparison
-     holds, including for a detached view's commit;
-   - the session rule is as for a routine wake.
+   - ancestry recomputed from the commit (§5) equals the stored root and agents, so the materializer's comparison holds
+     for every kind of commit;
+   - the session rule is as for a routine wake;
+   - no ChatGPT plan pays: a plan-paid company-file wake is refused, and so is any wake whose parent run follows a
+     listener (`qorpera_run_follows_listener`), as the snapshot-v1 branch refuses them (20260928359950:195-204).
 2. **`qorpera_folder_run_resolve`** refuses company-file runs (0A000). It accepts them, as it does schedule wakes.
-3. **The pin trigger's company-file branch** reads a snapshot-v1 path revision (`file_event_id`). A folder-v2 branch
-   takes the parent run and actor from the commit named by `source_id`, and leaves `file_event_id` null.
-4. **`qorpera_runtime_wake_policy_internal`** falls back to the closed policy unless `source_id` equals `file_event_id`.
-   A folder-v2 branch keys on `source_id` = the commit.
-5. **The runtime's company-file payload** is closed to the snapshot-v1 shape. P29b (runtime, rides the bundle) accepts
-   `qorpera.folder-file-wake/v1` with `source.id` = `commitId`. It must be live in the same release as P29a's SQL, as
-   P28b is for `companySeq`.
-6. **The routine rules and trigger** (§2).
+3. **The pin trigger:**
+   - its company-file branch requires the legacy kind `listener` and a `file_event_id`, and overwrites `source_id` with
+     the routine id;
+   - a folder-v2 branch accepts `file-change`, keeps `source_id` (the commit), leaves `file_event_id` null, and takes
+     the parent and actor from the commit (§5).
+4. **The wake policy** (`qorpera_runtime_wake_policy_internal`) closes a company-file wake unless its kind is `listener`
+   and `source_id` equals `file_event_id`. A folder-v2 branch accepts `file-change` with `source_id` = the commit.
+   Otherwise every chain from a file-woken run would be fenced.
+5. **`qorpera_cloud_routine_trigger_valid`** accepts `file-change`. Without it, the folder rules (the save), the pin
+   trigger, the session-less check and the wake policy all refuse the kind.
+6. **`qorpera_routine_occurrence_count`** counts distinct `(trigger_id, file_event_id, scheduled_for)`. That would
+   count one step's file wakes as one. Company-file wakes count by `occurrence_key`.
+7. **The runtime (P29b):**
+   - the wake envelope parser accepts `qorpera.folder-file-wake/v1` with `source.id = commitId`;
+   - the prompt text ("wake.payload names the changed path and versions") and the first presence (`wake.payload.path`)
+     use `changes`;
+   - when `more` is set, the prompt tells the agent the change set has more readable changes, which it can read with
+     its folder tools;
+   - the snapshot-v1 shape is dropped (3 October).
+8. **The routine rules and trigger** (§2).
 
 ## 8. The hook for H2c (P31)
 
-H2c needs every landed change set in seq order, inside the transaction that admits its wakes (F2). It also needs its
-lock targets taken at their ranks before admission. P29 ships two functions with no-op bodies, which P31 replaces
-(`create or replace`, its own body marker):
+H2c needs every landed change set in seq order, inside the transaction that admits its wakes (F2). P29 ships two
+functions with no-op bodies, and P31 replaces them (`create or replace`, its own body marker):
 - **`qorpera_folder_listener_targets(env, commits jsonb) returns jsonb`** returns `{targets, sessions}`. It is called
   once a step, before the ranks.
-  - `targets` are lock targets for `company_enter`, at ranks 1 to 3 (F2: the woken agent's staff row and execution
-    authority, the payer's member row).
-  - `sessions` are the conversations the drain takes KEY SHARE at step 5, beside the routines' sessions. So H2c's wakes
-    take no session lock after admission.
-- **`qorpera_folder_listener_commit(env, commit jsonb) returns void`** is called once per change set, after admission
-  (step 8).
-  - `commit` is `{commitId, seq, actor: {kind, id}, runId, units: [{unit, op, path, from?, version, priorVersion}]}`,
-    read from the path versions. `actor` is the commit's: `kind` is `member`, `platform` or `staff_agent`, and `id` is
-    the user, null, or the staff agent. A run's or a view's commit has kind `staff_agent` with the agent's id, and
-    `runId` says which run.
-  - It runs in a subtransaction. A failure never fails the step, never holds the cursor and never blocks other
-    companies, but it is not dropped either (coordinator, 4 October: a human task's answer must not get lost).
-    - The failure is recorded in `qorpera_folder_listener_hook_failures(environment_id, commit_id, seq, error,
-      attempts, last_attempt_at)`.
-    - Each later step first calls the hook again for the environment's recorded failures, oldest seq first and a few
-      a step, and deletes a row once its call succeeds.
-    - H2c keeps its own markers and dedupes, so calling it again is safe (F2).
-  - The `human-tasks/*.md` pre-filter is H2c's.
+  - `targets` are lock targets for `company_enter` at ranks 1 to 3: the woken agent's staff row and execution
+    authority, and the payer's member row (F2).
+  - `sessions` are conversations the drain takes KEY SHARE at step 7, so no session lock is taken after admission.
+- **`qorpera_folder_listener_commit(env, commit jsonb) returns void`** is called per change set, in seq order, after
+  admission. `commit` is `{commitId, seq, actor: {kind, id}, runId, paused}`.
+  - `actor` is the commit's: `kind` is `member`, `platform` or `staff_agent`, and `id` is the user, null, or the staff
+    agent. A run's or a view's commit has kind `staff_agent` with the agent's id, and `runId` says which run.
+  - The hook reads its own units through the commit-and-key index (H2c: `human-tasks/`), so a large change set never
+    sits in memory.
+  - `paused` tells H2c that its wakes would come out cancelled, so it does not mark them as delivered (F2).
 
-A paused company's wakes come out `cancelled` (§4). P29 never counts a cancelled wake as delivered; H2c records its
-markers only for live wakes and wakes again after a resume (F2).
+**Rules for P31:**
+- After admission, the commit hook takes no lock except a foreign key's KEY SHARE on rows its targets named.
+- Each call runs in a subtransaction and counts toward the 48.
+- A lock timeout or deadlock is never caught: it fails the step, which is tried again.
+- Any other failure never fails the step, never holds the cursor and never blocks another company, but it is not
+  dropped either (decision 6).
+  - It is recorded in `qorpera_folder_listener_hook_failures(environment_id, commit_id, seq, error, attempts,
+    last_attempt_at)`.
+  - Each later step first calls the hook again for the environment's recorded failures, oldest seq first and a few a
+    step, and deletes a row once its call succeeds. H2c dedupes, so calling it again is safe (F2).
+
+**Companies with no listener:** their commits still reach the hook. The due list counts every environment whose clock
+is ahead of its cursor (§9). Such a step is cheap: the fence, rank 0, the lease, the hook, the cursor.
 
 ## 9. Scheduling
 
-**The due list:** `qorpera_folder_listen_due(p_after_environment uuid default null, p_limit integer default 100)` returns
-the environments whose clock is ahead of their cursor (an absent cursor counts as behind when a listener is active).
-It is a plain read, through the clock and the cursor.
+**The due list:** `qorpera_folder_listen_due(p_after_environment uuid default null, p_limit integer default 100)`
+returns the folder-v2 environments whose clock is ahead of their cursor (an absent cursor counts as behind), leaving
+out companies being deleted. It is a plain read, through the clock and the cursor.
 
-**The orchestrator:** `CloudFolderRunMaterializer` runs the listen step before it lists the materializer's due
-companies, one company per request, through new edge actions `folder_listen_due` and `folder_listen_company`. The wakes
-a step inserts are then materialized in the same pass. Commits don't nudge the orchestrator, so a file wake waits at
-most one 2 s poll.
-- **Its own pause and failures** (Q1): the listen step has its own 400 pause, since an edge function that predates its
-  actions answers 400. A listen failure goes into the pass's `RoutineWakeAdmissionErrors` aggregate. Neither ever stops
-  the materializer's list.
-- The orchestrator wiring is this slice's, added to #756's files once #756 has merged.
+**The orchestrator:**
+- The order per pass is F2's worker drain, then the listen step, then the materializer (core §5, C4).
+- The listen step lives in `CloudFolderRunMaterializer`, one company per request, through new edge actions
+  `folder_listen_due` and `folder_listen_company`. Its wakes are materialized in the same pass.
+- It has its own failure state and its own 400 pause, apart from the materializer's: an edge function that predates its
+  actions answers 400, which must never stop runs. Its failures go into the pass's `RoutineWakeAdmissionErrors`.
+- The orchestrator installers are re-pinned, as P28's were.
+- Commits do not nudge the orchestrator, so a file wake waits at most one 2 s poll.
+
+The orchestrator wiring is this slice's, added to #756's files once #756 has merged (Q1).
 
 ## 10. Erasure
 
-A file wake's payload holds paths, so P18's erasure scrubs it, as ERASURE.md §5 says the listener's wakes must ("join
-before they hold paths"). In phase 2, the drain also walks the environment's company-file wakes made before a root's
-cutoff time (by `created_at`, with a cursor and the step's budget). Each matched change's `path` and `from` become
-`""`, keeping the payload's shape. This is P29's change to erasure.
+The wake row holds version ids, not paths (§6). So:
+- an erased change drops out of a wake by itself;
+- `qorpera_folder_read_wake` never shows it;
+- the wake identity guard needs no change.
 
-## 11. The split
+What remains for P18's drain is runs that already read such a wake. In phase 1, for each commit whose versions it
+erases, it also notes the runs of the company-file wakes whose `source_id` is that commit, through a new index on
+`qorpera_wake_occurrences (source_id) where source_kind = 'company-file'`. Phase 4 then scrubs those runs' receipts and
+reviewed cards as for any noted run.
+
+## 11. Routine expiry
+
+After P28, `qorpera_expire_cloud_routines()` has no caller: its only caller was the legacy file drain, which P28 took
+out of reconcile. P29 checks expiry itself before every wake (§4 step 6), so a stale `active` routine never raises at
+insert. Routine expiry on folder-v2 as a whole (status, schedules) needs an owner (§14, item 9).
+
+## 12. The split
 
 - **P29a** (migration 20260930020000; SQL tests 887 for the listener, drain, refusals, hook and erasure, and 888 for
   races):
-  - the cursor table and the drain, due and hook functions;
-  - the six fixes of §7, except the runtime one;
-  - the routine rules and trigger;
-  - the activation and status early returns;
-  - erasure's wake scrub;
+  - the cursor and hook-failure tables;
+  - the drain, due and hook functions;
+  - the commit-and-key index on path versions and the company-file index on wakes;
+  - everything in §7 except the runtime;
+  - erasure's run noting;
   - the orchestrator step and edge actions.
-- **P29b** (runtime): the `qorpera.folder-file-wake/v1` payload in the wake envelope parser. It goes out with P29a in the
-  same release.
+- **P29b** (runtime): §7 item 7.
 
-## 12. Tests
+P29b must be live before P29a's wakes are read, or both go in under one paused cut (as P28 requires for `companySeq`).
+
+## 13. Tests
 
 887:
-- a write, a delete, a move from and into the watch, an ancestor's move and a copy, each waking once with its changes;
-- `exact` against `subtree`;
-- a refused unit never wakes;
-- the self rule, including a detached view's commit;
-- an unreadable path is never revealed;
-- activation: no wake for the saving change set, and a resume starts from the resume;
-- the materializer runs the wake (with P28 merged);
-- a paused company's wakes are cancelled and the cursor moves on;
-- the 20-change and 8192-byte bounds;
-- the hook's order and the arguments it receives;
-- erasure scrubs a file wake's paths;
-- the refusals of §7 are gone.
+- **Matching:** a write, a delete, a move from and into the watch, an ancestor's move and a copy, each waking once with
+  its changes; `exact` against `subtree`; a refused unit never wakes.
+- **Self rule:** a run's commit; a coding session's commit during a turn (its turn run as parent); a desktop's commit
+  after its run.
+- **Read rights:** an unreadable match is never named or counted; a readable 22nd is found behind unreadable ones; a
+  grant narrowed before the run reads its wake drops that change.
+- **Activation:** no wake for the saving change set; a resume starts from the resume.
+- **No stuck listener:** a listener at its `runs` limit, an expired one, an archived agent, a `required` routine with no
+  session, and 33 listeners on one change. In each case the other listeners still wake.
+- **Pause:** a paused company writes nothing, and the cursor moves on.
+- **Bounds:** 21 versions, 32 wakes and 48 subtransactions per step; a 100,000-entry move read through the index (plan
+  check).
+- **Plans:** a ChatGPT plan cannot pay for a file-change routine, nor for a wake that follows one.
+- **The hook:** order, arguments and the paused flag; a failure is recorded and called again until it succeeds; a lock
+  error fails the step.
+- **Erasure:** an erased version drops out of a wake, and a run that read the wake is noted.
+- **The materializer** runs a file wake (with P28 merged).
+- **The refusals of §7** are gone.
 
 888 (dblink):
-- two drains of one company: the second answers `busy` (or `raced`);
+- two drains of one company: the second answers `busy`;
 - a drain against the company purge: they meet at the fence, never in a cycle;
-- an expired routine, or one at its occurrence limit, is passed over without failing the step;
-- a drain against a commit that edits the routine, and against routine firing;
-- the drain against the materializer;
-- lock order: no wait from a commit on a drain's lease.
+- a drain against a commit that edits the routine, against routine firing, and against the materializer;
+- no commit waits on a drain's lease.
 
-## 13. Decisions (coordinator, 4 October 2026)
+## 14. Decisions
 
+Taken by the coordinator on 4 October 2026:
 1. One cursor per company; each routine listens from the change set that saved it.
 2. Editing a routine drops the changes the drain had not reached; the routine docs say so.
-3. A paused company's file wakes are recorded as cancelled and not replayed after resume.
+3. A paused company's file wakes are not replayed after resume. **Amended (review r1):** the drain writes no wake rows
+   during a pause, rather than cancelled ones, since cancelled rows count toward a routine's `runs` limit.
 4. A path the agent may not read gives no wake and is never named, nor counted in `more`.
-5. 20 changes and 8 KiB with `more`; erasure scrubs the paths. The agent lists a whole change set with its folder tools.
+5. Bounded payload with `more`. **Amended (review r1):** the wake holds version ids, and the paths are built when the
+   run reads its wake, so erasure needs no scrub and read rights are checked again at delivery.
 6. Two hook functions for H2c. A hook failure never blocks the drain or other companies, and is recorded and called
-   again until it succeeds (§8).
-7. P29a (SQL and the orchestrator step) and P29b (the runtime parser), in the same release, both on master after #756.
+   again until it succeeds.
+7. P29a (SQL and the orchestrator step) and P29b (the runtime), on master after #756; the runtime first or in the same
+   paused cut.
+
+New, for the coordinator:
+8. **Coding sessions' saves:** they take `turn_run_id` as the causal parent (§5). This needs the coordinator's OK, since
+   C1B calls `turn_run_id` attribution only.
+9. **Routine expiry on folder-v2** has no caller after P28 (§11). P29 checks it before each file wake. Who owns it for
+   the rest?
