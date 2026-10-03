@@ -44,7 +44,12 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_authorize_object_upload"
 	| "qorpera_folder_confirm_object"
 	| "qorpera_folder_seal_upload"
-	| "qorpera_folder_commit";
+	| "qorpera_folder_commit"
+	// Company creation's worker (company-folder-creation.ts, P14b): its claim, create, release and fail.
+	| "qorpera_folder_company_creation_claim"
+	| "qorpera_folder_company_create"
+	| "qorpera_folder_company_creation_release"
+	| "qorpera_folder_company_creation_fail";
 
 export interface MemberCompanyAuthority {
 	member(
