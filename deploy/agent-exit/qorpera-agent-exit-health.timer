@@ -1,0 +1,11 @@
+[Unit]
+Description=Qorpera agent exit: write verify's answer every 10 seconds
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+
+[Timer]
+OnActiveSec=0
+OnUnitActiveSec=10s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

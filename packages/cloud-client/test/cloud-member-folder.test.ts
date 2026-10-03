@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
+	CloudMemberFolderHints,
+	cloudMemberFolderHintTopic,
 	parseCloudMemberFolderBy,
 	parseCloudMemberFolderChanges,
+	parseCloudMemberFolderHint,
 	parseCloudMemberFolderHistory,
 	parseCloudMemberFolderList,
 	parseCloudMemberFolderPathHistory,
@@ -419,5 +422,112 @@ describe("the member folder client", () => {
 		const outage = client(() => new Response(null, { status: 503 })).folder.read("a", signal);
 		await expect(outage).rejects.toThrow("unavailable (503)");
 		await expect(outage).rejects.not.toBeInstanceOf(CloudMemberFolderAccessDenied);
+	});
+});
+
+describe("the folder hint", () => {
+	function realtime(removeAnswers: string[] = []) {
+		const channels: {
+			topic: string;
+			config: unknown;
+			onBroadcast?: (message: { payload?: unknown }) => void;
+			onStatus?: (status: string) => void;
+		}[] = [];
+		const removed: unknown[] = [];
+		const client = {
+			channel: (topic: string, options: { config: unknown }) => {
+				const channel = {
+					topic,
+					config: options.config,
+					on(_type: string, _filter: unknown, callback: (message: { payload?: unknown }) => void) {
+						channel.onBroadcast = callback;
+						return channel;
+					},
+					subscribe(callback: (status: string) => void) {
+						channel.onStatus = callback;
+						return channel;
+					},
+				} as (typeof channels)[number] & Record<string, unknown>;
+				channels.push(channel);
+				return channel;
+			},
+			removeChannel: async (channel: unknown) => {
+				removed.push(channel);
+				return removeAnswers.shift() ?? "ok";
+			},
+		};
+		return { client: client as never, channels, removed };
+	}
+
+	it("joins the company's private topic and passes on each well-formed hint", () => {
+		const { client, channels } = realtime();
+		const seqs: number[] = [];
+		new CloudMemberFolderHints({
+			environmentId: env,
+			client,
+			signal: new AbortController().signal,
+			onHint: (seq) => seqs.push(seq),
+		});
+		expect(channels).toHaveLength(1);
+		expect(channels[0]!.topic).toBe(`qorpera-folder-${env}`);
+		expect(channels[0]!.config).toEqual({ private: true });
+		for (const payload of [
+			{ schema: "qorpera.folder-hint/v1", seq: 7 },
+			{ schema: "qorpera.folder-hint/v1", seq: 0 },
+			{ schema: "qorpera.folder-hint/v1", seq: "8" },
+			{ schema: "qorpera.folder-hint/v2", seq: 9 },
+			{ schema: "qorpera.folder-hint/v1", seq: 10, path: "a" },
+			null,
+		])
+			channels[0]!.onBroadcast?.({ payload });
+		expect(seqs).toEqual([7]);
+		expect(cloudMemberFolderHintTopic(env)).toBe(`qorpera-folder-${env}`);
+		expect(parseCloudMemberFolderHint({ schema: "qorpera.folder-hint/v1", seq: 3 })).toBe(3);
+	});
+
+	it("joins again with a fresh channel once the closed one is removed, and only then", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client, channels, removed } = realtime(["timed out", "ok"]);
+			new CloudMemberFolderHints({ environmentId: env, client, signal: new AbortController().signal, onHint() {} });
+			channels[0]!.onStatus?.("CLOSED");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(removed).toEqual([channels[0]]);
+			await vi.advanceTimersByTimeAsync(10_000);
+			// Not removed yet: removing is tried again, no new channel is made.
+			expect(channels).toHaveLength(1);
+			expect(removed).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(channels).toHaveLength(2);
+			// A status from the old channel changes nothing.
+			channels[0]!.onStatus?.("CLOSED");
+			await vi.advanceTimersByTimeAsync(20_000);
+			expect(channels).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("closes once, on close() or when its signal ends, and joins no more", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client, channels, removed } = realtime();
+			const stop = new AbortController();
+			const hints = new CloudMemberFolderHints({ environmentId: env, client, signal: stop.signal, onHint() {} });
+			stop.abort();
+			await hints.close();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(removed).toEqual([channels[0]]);
+			channels[0]!.onStatus?.("CLOSED");
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(channels).toHaveLength(1);
+			const aborted = new AbortController();
+			aborted.abort();
+			const before = channels.length;
+			new CloudMemberFolderHints({ environmentId: env, client, signal: aborted.signal, onHint() {} });
+			expect(channels).toHaveLength(before);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

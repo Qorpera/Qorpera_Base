@@ -1,0 +1,9 @@
+[Unit]
+Description=Qorpera agent exit: write verify's answer for the node observer
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+
+[Service]
+Type=oneshot
+# An unhealthy exit is an answer, not a failure of this unit.
+SuccessExitStatus=1
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh health
