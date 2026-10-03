@@ -8,7 +8,8 @@ import {
 	numberedConnectionPath,
 	parseConnectionFileClaim,
 } from "../src/connection-files.ts";
-import { PlatformFolderProblem } from "../src/platform-folder-writer.ts";
+import { ObjectDependencyError } from "../src/dependency.ts";
+import { drainPlatformClaims, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
 
 const workerId = "33000000-0000-4000-8000-00000000000a";
 const secretId = "33000000-0000-4000-8000-0000000000e1";
@@ -65,6 +66,7 @@ function folder(
 		outcomes?: { outcome: string; reason?: string }[];
 		storeMisses?: boolean;
 		finish?: unknown;
+		commitThrows?: Error;
 	} = {},
 ) {
 	const objects = new Map<string, Uint8Array>();
@@ -136,6 +138,7 @@ function folder(
 					};
 				}
 				case "qorpera_folder_commit":
+					if (options.commitThrows) throw options.commitThrows;
 					return {
 						schema: "qorpera.folder-commit/v1",
 						units: [{ unit: 1, ...(outcomes.shift() ?? { outcome: "saved" }) }],
@@ -437,5 +440,46 @@ describe("connection file writer, review round 1", () => {
 		expect(await superseded.writer.writeOne()).toBe(true);
 		const unreadable = folder({ claims: [claim()], finish: { ok: true } });
 		await expect(unreadable.writer.writeOne()).rejects.toThrow(PlatformFolderProblem);
+	});
+});
+
+describe("connection file writer, review round 2", () => {
+	it("backs off when a delete finds the file moved, so the next claim finds it through the index", async () => {
+		const run = folder({ outcomes: [{ outcome: "conflict", reason: "missing" }] });
+		const current = run.existing("connections/gmail.md", writeConnectionFile({ ...gmailSettings, purpose: "" }));
+		run.queue(claim({ present: false, settings: null, path: null, current }));
+		await run.writer.writeOne();
+		expect(run.finishes()).toEqual(["missing"]);
+	});
+
+	it.each([
+		["lock_conflict", new ObjectDependencyError(409, true)],
+		["unavailable", new ObjectDependencyError(503)],
+		["refused", new ObjectDependencyError(403)],
+	])("finishes with %s when the commit fails that way", async (code, error) => {
+		const run = folder({ claims: [claim()], commitThrows: error });
+		await run.writer.writeOne();
+		expect(run.finishes()).toEqual([code]);
+	});
+
+	it("turns a reason outside the code rule into refused", async () => {
+		const run = folder({ claims: [claim()], outcomes: [{ outcome: "refused", reason: "Not A Code!" }] });
+		await run.writer.writeOne();
+		expect(run.finishes()).toEqual(["refused"]);
+	});
+
+	it("takes no new claim once its deadline has passed", async () => {
+		const controller = new AbortController();
+		let claims = 0;
+		const handled = await drainPlatformClaims(
+			10,
+			async () => {
+				claims++;
+				controller.abort();
+				return true;
+			},
+			controller.signal,
+		);
+		expect([handled, claims]).toEqual([1, 1]);
 	});
 });

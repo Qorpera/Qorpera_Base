@@ -48,10 +48,15 @@ export function platformFolderProblemCode(error: unknown): string {
 			: "writer_failed";
 }
 
-/** Runs `claimOne` until it reports that nothing is due or `max` were handled; returns how many were handled. */
-export async function drainPlatformClaims(max: number, claimOne: () => Promise<boolean>): Promise<number> {
+/** Runs `claimOne` until it reports that nothing is due, `max` were handled or `signal` ended (no new claim is taken
+ * then); returns how many were handled. */
+export async function drainPlatformClaims(
+	max: number,
+	claimOne: () => Promise<boolean>,
+	signal?: AbortSignal,
+): Promise<number> {
 	let handled = 0;
-	while (handled < max && (await claimOne())) handled++;
+	while (handled < max && !signal?.aborted && (await claimOne())) handled++;
 	return handled;
 }
 
@@ -84,7 +89,7 @@ const contentHash = (bytes: Uint8Array): string => createHash("sha256").update(b
 export function record(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return platformFolderProblem(code);
 	const input = value as Record<string, unknown>;
-	if (Object.keys(input).some((key) => !keys.includes(key)) || keys.some((key) => !(key in input)))
+	if (Object.keys(input).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(input, key)))
 		platformFolderProblem(code);
 	return input;
 }
@@ -277,7 +282,12 @@ export class PlatformFolderWriter {
 				error instanceof Error &&
 				(error.message === "Object not found" || (error instanceof ObjectDependencyError && error.unavailable));
 			if (!missing || !this.#options.readFallback) throw error;
-			bytes = await this.#options.readFallback(answer.profileId, hash);
+			try {
+				bytes = await this.#options.readFallback(answer.profileId, hash);
+			} catch (fallback) {
+				// A busy NAS lane and no Storage copy yet is the lane's outage, as the folder route answers it.
+				throw error instanceof ObjectDependencyError && error.unavailable ? error : fallback;
+			}
 		}
 		if (bytes.byteLength !== answer.bytes || contentHash(bytes) !== hash) platformFolderProblem("file_unreadable");
 		return bytes;

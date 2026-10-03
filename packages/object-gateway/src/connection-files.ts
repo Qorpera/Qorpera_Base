@@ -93,6 +93,9 @@ export interface ConnectionFileClaim {
 
 const problem = platformFolderProblem;
 
+/** A commit's reason as a problem code the finish accepts; anything else is `refused`. */
+const reasonCode = (reason: string): string => (/^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "refused");
+
 /** Text of 1 to `max` characters, counted as the database and the parser count them (code points). */
 const text = (value: unknown, max: number): string =>
 	typeof value === "string" && value.length >= 1 && [...value].length <= max ? value : problem("claim_invalid");
@@ -271,7 +274,7 @@ export class ConnectionFileWriter {
 
 	/** Writes due files until none is due or `max` were handled. Returns how many were handled. */
 	writeDue(max = 20, signal: AbortSignal = AbortSignal.timeout(240_000)): Promise<number> {
-		return drainPlatformClaims(max, () => this.writeOne(signal));
+		return drainPlatformClaims(max, () => this.writeOne(signal), signal);
 	}
 
 	/** Claims one due connection and brings its file to the claim; false when nothing is due. */
@@ -320,8 +323,8 @@ export class ConnectionFileWriter {
 					signal,
 				),
 			);
-			// A file already gone is done.
-			if (unit.outcome !== "saved" && unit.reason !== "missing") problem(unit.reason ?? unit.outcome);
+			// Not saved (a member moved the file meanwhile, say): back off; the next claim finds it through the index.
+			if (unit.outcome !== "saved") problem(reasonCode(unit.reason ?? unit.outcome));
 			return;
 		}
 		const settings = claim.settings as ConnectionSettings;
@@ -377,7 +380,7 @@ export class ConnectionFileWriter {
 			);
 			if (unit.outcome === "saved") return;
 			// A new file whose name another file took gets the next number; anything else is the claim's problem.
-			if (current || unit.reason !== "exists") return problem(unit.reason ?? unit.outcome);
+			if (current || unit.reason !== "exists") return problem(reasonCode(unit.reason ?? unit.outcome));
 			path = numberedConnectionPath(claim.path as string, attempt + 1);
 		}
 		problem("name_taken");
