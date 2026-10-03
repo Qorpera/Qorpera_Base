@@ -628,20 +628,23 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
      replica back to the NAS); `stale`: the quarantine state decides;
   5. on the lane's own error: abandon, then the quarantine state, each best effort; what is left is the scan's.
 - **The scan** (`recover`, run at start and before every reconcile, so a `replicate` entry finds its object back):
-  up to 50 quarantine entries per pass, each under the object's lock, re-checked to still exist there (a lane may have
-  settled it while the scan waited), then `live` leaves it, `restore` and `remove` as above, `remove` always removing
-  the replica too. A company folder found empty is removed. Names that are not entries are left alone.
+  up to 50 quarantine entries per pass, from where the last pass stopped (a cursor, so entries that stay never starve
+  the rest), each under the object's lock, re-checked to still exist there (a lane may have settled it while the scan
+  waited), then `live` leaves it, `restore` and `remove` as above, `remove` always removing the replica too. A company
+  folder found empty is removed. Names that are not entries are left alone. The gateway runs the NAS probe, then the
+  scan, then the reconcile, so the scan never takes both NAS slots with the probe.
 - **Replication:** folder GC's QRC01 409 from `authorize_replication` (an object GC holds, told apart by its message) is
   a lock conflict to the reconciler (`ObjectLockConflict`, 503): the entry stays pending, not `blocked`, and the circuit
   is left alone. snapshot-v1's cleanup fence also answers QRC01, with another message, and keeps its 409; no other RPC
-  changes.
+  changes. Test 880 pins the message the gateway matches (`qorpera_folder_object_collecting()`).
 - **Runtime:** `cloudCompanyFolderFailure` reads QRC01 as `contended` (after a commit's or a release's own retries),
   so open and seal refusing an object GC holds are `contended`, as the gateway's 409 (authorize, confirm) already was.
 - **The worker's folder phase** (`runFolderObjectGc` in `supabase/functions/artifact-gc-worker`): its own try/catch,
   before the phases that return early. It asks `qorpera_folder_gc_enabled()` (and runs only with the gateway
   configured), sweeps 25 intents, claims 25 objects under a new lease, and calls the lane for each in order; a 503, an
-  unreachable gateway or 20 s without an answer stops it for this run; any other failure leaves that mark to expire.
-  Its result is `folderObjects` in the worker's answer. The worker's test now runs in the node plan's functions step.
+  unreachable gateway or 20 s without an answer stops it for this run, and so does its 60 s budget, checked before
+  each lane (so a phase runs at most about 80 s); any other failure leaves that mark to expire. Its result is
+  `folderObjects` in the worker's answer, where `stopped` means a busy gateway or the budget. The worker's test now runs in the node plan's functions step.
 - **The switch** (`qorpera_folder_gc_settings`, off): switching it on is refused (55000) until
   `qorpera_verify_company_path_file`'s body carries P10's marker text `folder-v2 refuses version 1` (§9.3 step 3; a
   refusal written without it keeps the phase off); the worker's question checks that again. The coordinator turns it on after P10 is live: `update public.qorpera_folder_gc_settings set
