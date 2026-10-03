@@ -184,12 +184,14 @@ async function call(kind, rpc, sql, params, deadlineMs, { rollback = false, expe
 	const connected = performance.now();
 	let value = null;
 	let failure = null;
+	let queried = connected;
 	try {
 		await client.query("begin");
 		await client.query("select set_config('request.path', $1, true), set_config('request.jwt.claims', $2, true)", [
 			`/rpc/${rpc}`,
 			SERVICE_CLAIMS,
 		]);
+		queried = performance.now();
 		value = (await client.query(sql, params)).rows[0]?.value ?? null;
 		await client.query(rollback ? "rollback" : "commit");
 	} catch (error) {
@@ -204,6 +206,7 @@ async function call(kind, rpc, sql, params, deadlineMs, { rollback = false, expe
 		endedAt: ended,
 		totalMs: ended - started + options.rtt,
 		queueMs: connected - started,
+		queriedAt: queried,
 		gaveUp: ended - started + options.rtt > deadlineMs,
 		failure: failure && expected.includes(failure.name) ? { ...failure, expected: true } : failure,
 	};
@@ -262,6 +265,8 @@ const seal = (runRow, text) =>
 
 // Who held a grant on load/restricted when: per agent, its grants as [granted (committed), revokeBegan, revoked].
 const grants = new Map();
+// Receipts a run could not resolve within 30 s (a commit or a completion that kept failing).
+let unresolved = 0;
 const restrictedReads = [];
 const wakes = { passes: 0, byStatus: {} };
 const gcOutcomes = new Map();
@@ -289,25 +294,26 @@ async function agentRun(runRow, others, gcTexts) {
 				"select public.qorpera_folder_record_release($1::uuid, $2::jsonb, $3::uuid, $4::jsonb, $5) as value",
 				[ENVIRONMENT, runRow.actor, randomUUID(), JSON.stringify(entries), "0".repeat(64)],
 				PATH_DEADLINE,
-				{ expected: ["paused", "busy", "refused"] },
+				{ expected: ["paused", "busy"] },
 			);
 		}
+		if (!running()) return;
 		if (round % 2 === 0) await write(runRow, round, gcTexts);
+		if (!running()) return;
 		if (round % 5 === 0) {
-			const sample = await read("restricted-read", runRow, `load/restricted/r${1 + Math.floor(Math.random() * 50)}.md`, [
-				"paused",
-				"refused",
-			]);
+			const sample = await read("restricted-read", runRow, `load/restricted/r${1 + Math.floor(Math.random() * 50)}.md`);
 			// A read the actor may not make finds nothing (found: false), as for a path that is not there.
 			restrictedReads.push({
 				agent: runRow.agent,
-				// The read's statement began after its connection came from the pool, and ended by endedAt.
-				began: sample.sample.startedAt + sample.sample.queueMs,
+				// The read's statement was sent at queriedAt, and ended by endedAt.
+				began: sample.sample.queriedAt,
 				endedAt: sample.sample.endedAt,
 				ok: sample.value?.found === true,
 			});
 		}
+		if (!running()) return;
 		if (round % 7 === 0) await subtree(runRow, round);
+		if (!running()) return;
 		if (round % 11 === 0 && others.length)
 			await call(
 				"message",
@@ -315,8 +321,7 @@ async function agentRun(runRow, others, gcTexts) {
 				"select public.qorpera_send_coworker_message($1::jsonb, $2::uuid, $3, $4, true) as value",
 				[runRow.binding, pick(others).agent, `load-${runRow.n}-${round}`, `Load message ${round}.`],
 				TOOL_DEADLINE,
-				// A recipient that may not read what the sender read is refused (C1B-2 §4).
-				{ expected: ["paused", "busy", "refused"] },
+				{ expected: ["paused", "busy"] },
 			);
 		await sleep(Math.random() * 20);
 	}
@@ -342,14 +347,18 @@ async function write(runRow, round, gcTexts) {
 	// A receipt that needs a revision completes only with its commit: a refused commit (a stop, a narrowing) is sent
 	// again with the same operation key and receipt until it lands, as the runtime does.
 	const units = [{ op: "write", path: `load/work/${runRow.handle}/w${round}.md`, file: sealed.value.file }];
+	// A run never ends with its receipt unresolved: the retries outlast the load's clock, for at most 30 s.
 	let committed = await commit("commit", runRow, key, units, receipt);
-	while (committed.failure && running()) {
+	for (let attempt = 0; committed.failure && attempt < 120; attempt += 1) {
 		await sleep(250);
 		committed = await commit("commit-retry", runRow, key, units, receipt);
 	}
-	if (!committed.value?.commitId) return;
+	if (!committed.value?.commitId) {
+		unresolved += 1;
+		return;
+	}
 	// The completion too, until it lands (a stop refuses it while it lasts).
-	while (running()) {
+	for (let attempt = 0; attempt < 120; attempt += 1) {
 		const completed = await call(
 			"receipt-complete",
 			"qorpera_folder_complete_run_receipt",
@@ -358,9 +367,10 @@ async function write(runRow, round, gcTexts) {
 			TOOL_DEADLINE,
 			{ expected: ["paused"] },
 		);
-		if (!completed.failure) break;
+		if (!completed.failure) return;
 		await sleep(250);
 	}
+	unresolved += 1;
 }
 
 /** A folder of 20 files, then its subtree deleted as the agent saw it. */
@@ -467,7 +477,7 @@ async function wakeAdmitter() {
 			"select public.qorpera_folder_admit_wakes($1::uuid)::text as value",
 			[COMPANY],
 			10_000,
-			{ expected: ["paused", "busy", "nowait", "lock-timeout"] },
+			{ expected: [] },
 		);
 		if (!admitted.failure) wakes.passes += 1;
 		await sleep(1000);
@@ -874,8 +884,8 @@ try {
 	const leaked = leaks();
 	const drains = stops.map((stop) => stop.drainMs);
 	const all = [...stats.entries()].flatMap(([kind, samples]) => samples.map((sample) => ({ kind, ...sample })));
-	// Unexpected: a failure no call listed as expected (a deadlock, a statement timeout, a lock wait that ran out are
-	// never listed).
+	// Unexpected: a failure no call listed as expected. A deadlock, a statement timeout or another failure is never
+	// excused; only GC, whose functions wait at most 2 s for a lock and skip, lists a lock wait that ran out.
 	const unexpected = all.filter((sample) => sample.failure && (!sample.failure.expected || UNEXPECTED.has(sample.failure.name))).length;
 	const slowTools = all.filter((sample) => RUN_KINDS.has(sample.kind) && sample.totalMs > RESULT_FENCE_MS).length;
 	const slowBig = all.filter((sample) => sample.kind.startsWith("big-fence") && sample.totalMs > FENCE_CALL_MS).length;
@@ -918,6 +928,7 @@ try {
 		slowTools,
 		slowBig,
 		bigFailed,
+		unresolved,
 		quiet,
 		stops: { count: stops.length, drainP50: Math.round(percentile(drains, 0.5)), drainMax: Math.round(Math.max(0, ...drains)) },
 		wakes,
@@ -935,6 +946,7 @@ try {
 		lostBytes ? `${lostBytes} files whose bytes are gone` : "",
 		slowTools ? `${slowTools} run calls over the 4 s result fence` : "",
 		stuck ? `${stuck} revokes never landed` : "",
+		unresolved ? `${unresolved} receipts left unresolved` : "",
 		slowBig ? `${slowBig} big-run context fences over the 3.5 s call budget` : "",
 		bigFailed ? `${bigFailed} big-run context fences failed` : "",
 		bigRow && quiet.fenceAfterRegrantMs > FENCE_CALL_MS
