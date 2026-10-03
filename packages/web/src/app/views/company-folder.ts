@@ -131,7 +131,7 @@ export class CompanyFolderBrowser {
 		this.#people = people;
 		this.#stop = new AbortController();
 		this.#when = new Intl.DateTimeFormat(this.#locale, { dateStyle: "medium", timeStyle: "short" });
-		source.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 		this.#search.addEventListener("input", () => this.#drawList(false));
 		this.#search.addEventListener("keydown", (event) => {
 			if (event.key === "Escape" && this.#search.value) {
@@ -218,6 +218,7 @@ export class CompanyFolderBrowser {
 		this.#downloads?.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
+		this.#host.classList.remove("files-page", "folder-page", "has-preview");
 	}
 
 	// ---- lifetime -------------------------------------------------------------
