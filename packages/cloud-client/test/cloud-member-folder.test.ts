@@ -45,7 +45,9 @@ describe("member folder answers", () => {
 		expect(
 			parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: false, entry: null }),
 		).toEqual({ asOfSeq: 9, entry: null });
-		expect(() => parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: false })).toThrow();
+		expect(() =>
+			parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: false }),
+		).toThrow();
 	});
 
 	it("refuses an entry with a field it does not know, a folder with content, or half of the content", () => {

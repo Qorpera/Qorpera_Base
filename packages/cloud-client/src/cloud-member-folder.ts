@@ -132,7 +132,11 @@ export interface CloudMemberFolderRead {
 export function parseCloudMemberFolderRead(value: unknown): CloudMemberFolderRead {
 	// The SQL always sends `entry`: null when not found.
 	const read = closed(value, ["schema", "asOfSeq", "found", "entry"], [], "read");
-	if (read.schema !== "qorpera.folder-read/v1" || typeof read.found !== "boolean" || read.found !== (read.entry !== null))
+	if (
+		read.schema !== "qorpera.folder-read/v1" ||
+		typeof read.found !== "boolean" ||
+		read.found !== (read.entry !== null)
+	)
 		invalid("read");
 	return { asOfSeq: seq(read.asOfSeq, "read"), entry: read.found ? parseCloudMemberFolderEntry(read.entry) : null };
 }
