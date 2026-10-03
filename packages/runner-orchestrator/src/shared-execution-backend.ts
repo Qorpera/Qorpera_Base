@@ -19,6 +19,7 @@ import {
 	token,
 	workSha256,
 } from "./provider-shared.ts";
+import { executionHostFetch } from "./shared-execution-host-call.ts";
 import {
 	mountInfoHasMountPoint,
 	readSharedExecutionIdentity,
@@ -97,6 +98,12 @@ export interface SharedExecutionProviderConfig {
 	supabaseUrl: string;
 	supabaseServiceKey: string;
 	supabasePublishableKey: string;
+	/**
+	 * G2-3e: the execution host's own credential, which the node host bound to `hostId`. With it the service's own
+	 * database calls go through the execution host's entry points with the publishable key, never the service key;
+	 * the service key then only reaches the slots, until G2-5.
+	 */
+	executionHostCredential?: string;
 	/** Journals and per-slot scratch state (disk). */
 	stateRoot: string;
 	/** Per-slot credentials and environment for PID 1 (tmpfs). */
@@ -332,6 +339,8 @@ async function systemAccount(name: string): Promise<SharedExecutionAccount> {
 function validateConfig(config: SharedExecutionProviderConfig): void {
 	if (!ADAPTER_PATTERN.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 	if (!/^[a-z][a-z0-9-]{0,62}$/.test(config.hostId)) throw new Error("Execution host id is invalid");
+	if (config.executionHostCredential !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(config.executionHostCredential))
+		throw new Error("Execution host credential is invalid");
 	for (const [label, path] of [
 		["State root", config.stateRoot],
 		["Run root", config.runRoot],
@@ -477,14 +486,31 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		validateConfig(config);
 		this.adapterId = config.adapterId;
 		this.#config = { ...config, nativeCompanyRuntime: structuredClone(config.nativeCompanyRuntime) };
-		this.#fetch = dependencies.fetch ?? fetch;
+		const baseFetch = dependencies.fetch ?? fetch;
+		const runScoped = config.executionHostCredential !== undefined;
+		this.#fetch =
+			config.executionHostCredential === undefined
+				? baseFetch
+				: executionHostFetch(
+						config.supabaseUrl,
+						{
+							hostId: config.hostId,
+							credential: config.executionHostCredential,
+							publishableKey: config.supabasePublishableKey,
+						},
+						baseFetch,
+					);
 		this.#units = dependencies.units ?? new SystemctlUnitControl();
 		this.#identityAuthority =
 			dependencies.identityAuthority ??
-			supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, config.supabaseServiceKey, this.#fetch);
+			supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, config.supabaseServiceKey, this.#fetch, {
+				runScoped,
+			});
 		this.#loginCustody =
 			dependencies.loginCustody ??
-			supabaseSharedExecutionLoginCustody(config.supabaseUrl, config.supabaseServiceKey, this.#fetch);
+			supabaseSharedExecutionLoginCustody(config.supabaseUrl, config.supabaseServiceKey, this.#fetch, {
+				runScoped,
+			});
 		this.#account = dependencies.account ?? systemAccount;
 		this.#now = dependencies.now ?? Date.now;
 		this.#requireIdentityMount = dependencies.requireIdentityMount;
@@ -591,7 +617,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					await readFile(this.#mountInfoPath, "utf-8"),
 					join(this.#config.identityRoot, work.computeIdentityId),
 				) &&
-				!(await this.#loginCustody(work.computeIdentityId, signal))
+				!(await this.#loginCustody(work.computeIdentityId, signal, work.runId))
 			) {
 				const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
 				this.#identityWaits.delete(acquisitionId);
@@ -1156,8 +1182,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// A reused host was verified when its warm slot was claimed and keeps its credentials. A
 		// login kept by the vault has no volume: its host gets empty key and epoch files and asks
 		// the vault for the run's login.
-		const vaultLogin = !current.reusedHost && (await this.#loginCustody(current.computeIdentityId, signal));
-		const vaultState = vaultLogin ? await this.#identityAuthority(current.computeIdentityId, signal) : undefined;
+		const vaultLogin =
+			!current.reusedHost && (await this.#loginCustody(current.computeIdentityId, signal, current.runId));
+		const vaultState = vaultLogin
+			? await this.#identityAuthority(current.computeIdentityId, signal, current.runId)
+			: undefined;
 		if (vaultState && (vaultState.blocked || vaultState.computeIdentityId !== current.computeIdentityId))
 			throw new Error("The run's Compute Identity is fenced");
 		const identity =
@@ -1167,6 +1196,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						identityRoot: this.#config.identityRoot,
 						computeIdentityId: current.computeIdentityId,
 						authority: this.#identityAuthority,
+						runId: current.runId,
 						signal,
 						...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
 						mountInfoPath: this.#mountInfoPath,
@@ -1375,11 +1405,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				throw new Error("Warm slot expired");
 			if (warm.masterKeySha256 === VAULT_LOGIN_MARKER) {
 				// A host that holds no key: the identity must still be at that epoch and in the vault.
-				const state = await this.#identityAuthority(work.computeIdentityId, signal);
+				const state = await this.#identityAuthority(work.computeIdentityId, signal, work.runId);
 				if (
 					state.blocked ||
 					state.epoch !== warm.epoch ||
-					!(await this.#loginCustody(work.computeIdentityId, signal))
+					!(await this.#loginCustody(work.computeIdentityId, signal, work.runId))
 				)
 					throw new Error("Warm slot identity changed");
 			} else {
@@ -1387,6 +1417,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					identityRoot: this.#config.identityRoot,
 					computeIdentityId: work.computeIdentityId,
 					authority: this.#identityAuthority,
+					runId: work.runId,
 					signal,
 					...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
 					mountInfoPath: this.#mountInfoPath,

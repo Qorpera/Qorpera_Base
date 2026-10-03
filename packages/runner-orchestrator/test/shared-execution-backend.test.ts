@@ -127,6 +127,15 @@ interface Fixture {
 	backend: SharedExecutionProviderBackend;
 	units: FakeUnits;
 	rpc: Array<{ name: string; body: Record<string, unknown> }>;
+	/** Calls that came through the execution host's entry points (G2-3e), unwrapped into `rpc` as well. */
+	hostCalls: Array<{
+		entry: string;
+		name: string;
+		hostId: unknown;
+		credential: unknown;
+		apikey: string | null;
+		authorization: string | null;
+	}>;
 	deliveries: Array<{ port: number; authorization: string | null; body: Record<string, unknown> }>;
 	stateRoot: string;
 	runRoot: string;
@@ -153,6 +162,7 @@ async function fixture(
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
+		executionHostCredential?: string;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -206,6 +216,7 @@ async function fixture(
 		backend: undefined as unknown as SharedExecutionProviderBackend,
 		units: new FakeUnits(),
 		rpc: [],
+		hostCalls: [],
 		deliveries: [],
 		stateRoot,
 		runRoot,
@@ -244,12 +255,28 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
+		...(options.executionHostCredential === undefined
+			? {}
+			: { executionHostCredential: options.executionHostCredential }),
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
 		if (url.pathname.startsWith("/rest/v1/rpc/")) {
-			const name = url.pathname.slice("/rest/v1/rpc/".length);
-			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			let name = url.pathname.slice("/rest/v1/rpc/".length);
+			let body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			if (name === "qorpera_execution_host_call" || name === "qorpera_execution_host_call_long") {
+				const headers = new Headers(init?.headers);
+				state.hostCalls.push({
+					entry: name,
+					name: String(body.p_name),
+					hostId: body.p_host_id,
+					credential: body.p_credential,
+					apikey: headers.get("apikey"),
+					authorization: headers.get("authorization"),
+				});
+				name = String(body.p_name);
+				body = body.p_args as Record<string, unknown>;
+			}
 			state.rpc.push({ name, body });
 			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);
 			if (name === "qorpera_runtime_ended_runners")
@@ -372,6 +399,35 @@ async function liveJournalNames(f: Fixture): Promise<string[]> {
 }
 
 describe("shared execution provider backend", () => {
+	it("sends the service's own calls through the execution host's entry points with its credential (G2-3e)", async () => {
+		const credential = token();
+		const f = await fixture({ executionHostCredential: credential });
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		// The service key still reaches the slot's native host (until G2-5), never a call of the service's own.
+		expect(
+			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-supabase-service-key"), "utf-8"),
+		).toBe("service-key\n");
+		await f.backend.deliver(runner, delivery(token()));
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		const host = { hostId: "qorpera-exec-test", credential, apikey: "publishable-key", authorization: null };
+		expect(f.hostCalls).toEqual([
+			{ entry: "qorpera_execution_host_call", name: "qorpera_provision_execution_runner", ...host },
+			{ entry: "qorpera_execution_host_call", name: "qorpera_reserve_runtime_machine", ...host },
+			{ entry: "qorpera_execution_host_call", name: "qorpera_compute_identity_login_in_vault", ...host },
+			{ entry: "qorpera_execution_host_call_long", name: "qorpera_release_runtime_machine", ...host },
+		]);
+		// Every database call went through an entry point; an identity read names the run it is read for.
+		expect(f.rpc.map((call) => call.name)).toEqual(f.hostCalls.map((call) => call.name));
+		expect(f.rpc[2]?.body).toEqual({ p_compute_identity_id: computeIdentityId, p_run_id: runId });
+	});
+
+	it("refuses an execution host credential that is not 32 base64url bytes (G2-3e)", async () => {
+		await expect(fixture({ executionHostCredential: "short" })).rejects.toThrow("Execution host credential is invalid");
+	});
+
 	it("hands the sandbox the coding command gateway when the host is configured for it", async () => {
 		const gateway = { origin: "https://coding.example.test:8789", token: token() };
 		const f = await fixture({ codingCommand: gateway });
