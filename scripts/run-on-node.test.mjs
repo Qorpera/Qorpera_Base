@@ -1,16 +1,24 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import {
+	CLOSED,
 	CPU_SLOTS,
+	candidateMachines,
+	customTarget,
+	describeProbes,
+	firstTaking,
 	includeRules,
+	MACHINES,
 	parseArgs,
 	parseStatus,
+	probeScript,
 	pruneScript,
 	RUNNERS,
+	rankMachines,
 	runScript,
 	secretLooking,
 	shellQuote,
@@ -125,6 +133,152 @@ test("at most three runs execute at once, in arrival order, with two vitest work
 		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 3 > 0 ? ${cpus} / 3 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
 	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
 });
+
+test("one test machine per node, each with its own address and so its own host key", () => {
+	assert.deepEqual(
+		MACHINES.map((machine) => machine.name),
+		["node02", "node01"],
+	);
+	for (const field of ["name", "host", "jump"])
+		assert.equal(new Set(MACHINES.map((machine) => machine[field])).size, MACHINES.length, field);
+	// Every node's bridge is testmach0 10.201.0.0/24 (the guest guard's subnet); .1 is the node itself.
+	for (const machine of MACHINES) assert.match(machine.host, /^tester@10\.201\.0\.([2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])$/);
+});
+
+test("--machine picks one machine; QORPERA_TEST_MACHINE* replaces the list", () => {
+	assert.equal(parseArgs(["--machine", "node01", "hosted-db"]).machine, "node01");
+	assert.equal(parseArgs(["--machine", "node02", "changed"]).machine, "node02");
+	assert.equal(parseArgs(["hosted-db"]).machine, null);
+	assert.throws(() => parseArgs(["--machine", "node03", "hosted-db"]), /Unknown machine node03 \(node02, node01\)/);
+	assert.throws(() => parseArgs(["--machine"]), /--machine needs a value/);
+	assert.deepEqual(candidateMachines(null, {}), MACHINES);
+	assert.deepEqual(candidateMachines("node01", {}), [MACHINES[1]]);
+	assert.deepEqual(candidateMachines(null, { QORPERA_TEST_MACHINE: "me@192.0.2.9" }), [
+		{ name: "custom", host: "me@192.0.2.9", jump: "company41-node-02" },
+	]);
+	assert.deepEqual(candidateMachines(null, { QORPERA_TEST_MACHINE_JUMP: "" }), [
+		{ name: "custom", host: "tester@10.201.0.2", jump: "" },
+	]);
+	assert.throws(() => candidateMachines("node01", { QORPERA_TEST_MACHINE: "me@192.0.2.9" }), /use one/);
+	assert.equal(customTarget({}), false);
+	assert.equal(customTarget({ QORPERA_TEST_MACHINE: "" }), false);
+	assert.equal(customTarget({ QORPERA_TEST_MACHINE_JUMP: "" }), true);
+});
+
+test("a run goes to the machine with the most free slots; ties keep list order; silent machines drop out", () => {
+	const idle = (name) => ({ name, busy: 0, waiting: 0, closed: false, cpus: 10, load: 0.1 });
+	const names = (probes, pinned = false) => rankMachines(probes, pinned).map((probe) => probe.name);
+	assert.deepEqual(names([idle("node02"), idle("node01")]), ["node02", "node01"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 2 }, { ...idle("node01"), busy: 1 }]), ["node01", "node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 1 }, { ...idle("node01"), busy: 1 }]), ["node02", "node01"]);
+	// Both full: the shorter queue.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 4 }, { ...idle("node01"), busy: 3, waiting: 1 }]), [
+		"node01",
+		"node02",
+	]);
+	// Waiting runs take the next free slots first.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 1, waiting: 2 }, { ...idle("node01"), busy: 2 }]), ["node01", "node02"]);
+	// A free slot beats a queue, whatever the load.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 1, load: 0.5 }, { ...idle("node01"), busy: 2, load: 9 }]), [
+		"node01",
+		"node02",
+	]);
+	assert.deepEqual(names([idle("node02"), { name: "node01", unreachable: "connect failed: No route to host" }]), ["node02"]);
+	assert.deepEqual(names([{ name: "node02", unreachable: "a" }, { name: "node01", unreachable: "b" }]), []);
+	// A closed machine takes no automatic runs, however free; a run that names it still goes there.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 5 }, { ...idle("node01"), closed: true }]), ["node02"]);
+	assert.deepEqual(names([{ ...idle("node01"), closed: true }], true), ["node01"]);
+	assert.deepEqual(names([{ ...idle("node01"), closed: true }]), []);
+	assert.equal(
+		describeProbes([{ ...idle("node02"), busy: 3, waiting: 2 }, { name: "node01", unreachable: "no answer in 25 s" }]),
+		"node02 3/3 slots busy, 2 waiting; node01 unreachable (no answer in 25 s)",
+	);
+	assert.equal(describeProbes([{ ...idle("node01"), closed: true, busy: 1 }]), "node01 closed, 1/3 slots busy, 0 waiting");
+});
+
+test("a machine that fails before the suite starts passes the run to the next; the last failure stands", () => {
+	const ranked = [{ name: "node01" }, { name: "node02" }];
+	const passed = [];
+	const passOver = (machine, error, next) => passed.push(`${machine.name}: ${error.message} -> ${next.name}`);
+	const tried = [];
+	const copy = (failing) => (machine) => {
+		tried.push(machine.name);
+		if (failing.includes(machine.name)) throw new Error(`${machine.name} refused`);
+	};
+	assert.equal(firstTaking(ranked, copy([]), passOver), ranked[0]);
+	assert.deepEqual([tried.splice(0), passed.splice(0)], [["node01"], []]);
+	assert.equal(firstTaking(ranked, copy(["node01"]), passOver), ranked[1]);
+	assert.deepEqual([tried.splice(0), passed.splice(0)], [["node01", "node02"], ["node01: node01 refused -> node02"]]);
+	assert.throws(() => firstTaking(ranked, copy(["node01", "node02"]), passOver), /node02 refused/);
+	assert.deepEqual([tried.splice(0), passed.splice(0)], [["node01", "node02"], ["node01: node01 refused -> node02"]]);
+	assert.throws(() => firstTaking([], copy([]), passOver), /No test machine/);
+});
+
+test("the probe reads the locks the run script takes", () => {
+	const probe = probeScript("/run/lock", CLOSED);
+	assert.equal(CLOSED, "/etc/qorpera-test-machine-closed");
+	assert.equal(spawnSync("bash", ["-n", "-c", probe]).status, 0);
+	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
+	assert.match(script, /exec 9>"\/run\/lock\/qorpera-test-machine-slot\$candidate\.lock"/);
+	assert.match(probe, /5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"/);
+	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
+	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/\*; do/);
+	assert.match(probe, /for i in \$\(seq 1 3\); do/);
+	assert.match(probe, /\[ -e \/etc\/qorpera-test-machine-closed \] && closed=1/);
+	// Read-only: locks are opened for reading, never created, and tried without waiting.
+	assert.doesNotMatch(probe, /\d>"|>>|touch|mkdir|rm /);
+	assert.match(probe, /flock -n 5/);
+});
+
+const flock = spawnSync("flock", ["--version"]).status === 0;
+test(
+	"the probe counts held slots and live queue tickets only, and creates no file",
+	{ skip: flock ? false : "no flock(1) here; the test machines have it" },
+	async () => {
+		const locks = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));
+		const holders = [];
+		// --no-fork: the shell that reports the lock is the process that holds it, and killing it frees it.
+		const hold = (file) =>
+			new Promise((resolvePromise, reject) => {
+				const child = spawn("flock", ["--nonblock", "--no-fork", file, "sh", "-c", "echo held; exec sleep 60"], {
+					stdio: ["ignore", "pipe", "inherit"],
+				});
+				holders.push(child);
+				child.stdout.once("data", () => resolvePromise());
+				child.once("exit", (code) => reject(new Error(`lock holder for ${file} exited ${code}`)));
+			});
+		try {
+			mkdirSync(join(locks, "qorpera-test-machine-queue"));
+			await hold(join(locks, "qorpera-test-machine-slot1.lock"));
+			writeFileSync(join(locks, "qorpera-test-machine-slot3.lock"), "");
+			await hold(join(locks, "qorpera-test-machine-queue", "1-live"));
+			writeFileSync(join(locks, "qorpera-test-machine-queue", "2-dead"), "");
+			const before = [readdirSync(locks).sort(), readdirSync(join(locks, "qorpera-test-machine-queue")).sort()];
+			const result = spawnSync("bash", ["-c", probeScript(locks, join(locks, "closed"))], { encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stderr, "");
+			const answer = parseStatus(result.stdout);
+			assert.deepEqual([answer.busy, answer.waiting, answer.closed], ["1", "1", "0"]);
+			assert.match(answer.cpus, /^[1-9][0-9]*$/);
+			// Slot 2 was never made, and nothing else appeared or went.
+			assert.deepEqual([readdirSync(locks).sort(), readdirSync(join(locks, "qorpera-test-machine-queue")).sort()], before);
+			writeFileSync(join(locks, "closed"), "resize to 12 vCPU\n");
+			assert.equal(parseStatus(spawnSync("bash", ["-c", probeScript(locks, join(locks, "closed"))], { encoding: "utf8" }).stdout).closed, "1");
+			const empty = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));
+			try {
+				// A machine no run has used yet: no lock files, no queue folder.
+				const quiet = parseStatus(spawnSync("bash", ["-c", probeScript(empty, join(empty, "closed"))], { encoding: "utf8" }).stdout);
+				assert.deepEqual([quiet.busy, quiet.waiting, quiet.closed], ["0", "0", "0"]);
+				assert.deepEqual(readdirSync(empty), []);
+			} finally {
+				rmSync(empty, { recursive: true, force: true });
+			}
+		} finally {
+			for (const child of holders) child.kill("SIGKILL");
+			rmSync(locks, { recursive: true, force: true });
+		}
+	},
+);
 
 test("the status file reads back runner, install and times", () => {
 	assert.deepEqual(parseStatus("runner=ci03\ninstalled=1 prepare_ms=1200\nsuite_ms=900\n"), {
