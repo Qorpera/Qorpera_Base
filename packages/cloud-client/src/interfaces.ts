@@ -793,7 +793,7 @@ export function interfaceOutsideColumns(source: string): readonly string[] {
 		const key = companyPathKey(source.slice("file:".length));
 		return key.startsWith("hooks/") || key.startsWith("human-tasks/") ? ["text"] : [];
 	}
-	return INTERFACE_OUTSIDE_COLUMNS[source] ?? [];
+	return Object.hasOwn(INTERFACE_OUTSIDE_COLUMNS, source) ? (INTERFACE_OUTSIDE_COLUMNS[source] ?? []) : [];
 }
 
 /** The `{column}` names a text uses; null when its braces are malformed. */
@@ -973,9 +973,9 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 			}
 			// A message button fills its text from the block's rows. A value from outside content must travel as a
 			// quote, which only the quote list's sources can do, and at most 16 of them (RUNTIME-INTERFACES.md §3.3).
-			const source = block.from.length === 1 ? (block.from[0] ?? "") : "";
-			const outside = interfaceOutsideColumns(source);
-			if (outside.length > 0) {
+			for (const source of block.from) {
+				const outside = interfaceOutsideColumns(source);
+				if (outside.length === 0) continue;
 				for (const id of block.buttons) {
 					const button = buttons.find((candidate) => candidate.id === id);
 					if (button?.verb !== "message" || button.text === null) continue;
