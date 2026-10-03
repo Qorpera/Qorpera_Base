@@ -786,6 +786,10 @@ answers 42501 "Company folder is unavailable" for a caller who is not a member o
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
 looks absent in every answer. Reads only: member writes come with P31.
 
+- `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
+  `20260930013200_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
+  company with the functions below, never with the governed Company File calls.
+
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
   `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
@@ -858,7 +862,8 @@ topic's rows. A new private topic's policies must do the same.
   `20260930013100_folder_core_member_hint`, folder core C4 P30). Private broadcast channel, event `folder`,
   payload `{"schema":"qorpera.folder-hint/v1","seq":<n>}` and nothing else: the folder's clock reached seq `n` (a
   change set or an authority change; the same number as the feed's seq and a run's `companySeq`). Members of the
-  company receive it (RLS on `realtime.messages` via `qorpera_folder_hint_member`); nobody publishes but the database.
+  company receive it, not while it is being deleted (RLS on `realtime.messages` via `qorpera_folder_hint_member`);
+  nobody publishes but the database. `CloudMemberFolderHints` (cloud-client) follows it.
   Topic name from `qorpera_folder_hint_topic`. A nudge only: on a hint, ask `qorpera_member_folder_changes` from the
   position you hold, at most about once a second, and keep a slow poll for hints missed while disconnected.
 - `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
