@@ -1060,8 +1060,14 @@ finding 1, and r4, finding 1, both reproduced).
 
 Renewal takes the view `FOR NO KEY UPDATE`, which never waits for a commit's
 `KEY SHARE`. Closing and superseding take it `FOR UPDATE`, which waits out
-the view's commit in flight. The folder service keeps one commit in flight
-per view.
+the view's commit in flight. A renewal that finds the view no longer valid
+closes it under that same `FOR NO KEY UPDATE`, without waiting for the
+view's commit or release in flight (decided 3 October 2026, after #714's
+review asked). That work may land after the close. The next view's open is
+what waits it out: it takes the machine's newest view `FOR UPDATE`, open or
+closed, and carries its reads into the new view (§5; test 644 H). A run
+box carries no reads, so nothing waits for its work. So a closing renewal
+never stalls the folder service's renewals behind a long save. The folder service keeps one commit in flight per view.
 
 ### 5. Open, renew and close
 

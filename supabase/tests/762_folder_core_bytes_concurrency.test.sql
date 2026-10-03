@@ -251,14 +251,15 @@ select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_thr
 
 -- The committed fixture leaves the shared suite database.
 set session_replication_role = replica;
--- (Foreign-key cascades do not run under replica: each table of C1d is cleared by name. The catalog and 635's Storage
--- rows stay, as after 635, so the fixture can run again; the replica row B wrote goes.)
+-- (Foreign-key cascades do not run under replica: each table of C1d is cleared by name, the catalog too, since 635's
+-- fixture stages version-2 bytes and so can run again without it; the proofs go with the company. The replica row B
+-- wrote goes with the company's other Storage rows.)
 delete from public.qorpera_folder_file_chunks where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_upload_intent_objects where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_upload_intents where profile_id = '63500000-0000-4000-8000-000000000010';
 delete from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010';
-delete from storage.objects where bucket_id = 'qorpera-profile-objects'
-	and name = '63500000-0000-4000-8000-000000000010/' || encode(extensions.digest('race chunk two', 'sha256'), 'hex');
+delete from public.qorpera_profile_objects where profile_id = '63500000-0000-4000-8000-000000000010';
+delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '63500000-0000-4000-8000-000000000010/%';
 delete from public.qorpera_folder_authority_changes where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_run_reads where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_run_read_records where environment_id = '63500000-0000-4000-8000-000000000020';
@@ -286,6 +287,9 @@ begin
 		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '63500000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_upload_intent_objects where profile_id = '63500000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_file_chunks where profile_id = '63500000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_folder_storage_usage where profile_id = '63500000-0000-4000-8000-000000000010')
+		or exists (select 1 from storage.objects where name like '63500000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '63500000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '63500000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

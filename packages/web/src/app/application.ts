@@ -840,7 +840,13 @@ export function mountApplication(
 							canManage: () => controller.store.get().team?.capabilities.authorize === true,
 						}
 					: undefined;
-			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }), plan);
+			notices = new ExecutionNotices(
+				client,
+				controller.signal,
+				() => main.focus({ preventScroll: true }),
+				plan,
+				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
+			);
 			executionNotices.append(notices.el);
 		}
 		if (route.section !== "chat") {
