@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { HttpCloudCompanyFolderBytes } from "@qorpera/runtime/cloud-company-folder-bytes";
 import { CloudCompanyFolderError, type CloudCompanyFolderFile } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { afterEach, expect, it, vi } from "vitest";
 import { ObjectDependencyError } from "../../object-gateway/src/dependency.ts";
 import { ObjectGatewayJournal } from "../../object-gateway/src/journal.ts";
@@ -94,6 +95,8 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		badRequest: undefined as string | undefined,
 		/** When set, fields renew answers with in place of its own. */
 		renewAnswer: undefined as Record<string, unknown> | undefined,
+		/** Objects folder GC holds (C1D §9.7): authorizing their upload is the conflict envelope, QRC01 409. */
+		collecting: new Set<string>(),
 	};
 	const puts: string[] = [];
 	/** The folder RPCs the gateway made, in order. */
@@ -137,6 +140,16 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 			)
 				return Response.json({ code: "42501" }, { status: 403 });
 			if (method === "qorpera_folder_authorize_object_upload") {
+				if (sql.collecting.has(args.p_sha256 as string))
+					return Response.json(
+						{
+							code: "QRC01",
+							message: "Company folder object is being collected; retry",
+							details: null,
+							hint: null,
+						},
+						{ status: 409 },
+					);
 				if (sql.full && !sql.catalog.has(args.p_sha256 as string))
 					return Response.json({ code: "23514", message: "company storage allowance exceeded" }, { status: 400 });
 				if (sql.badRequest !== undefined) {
@@ -553,6 +566,28 @@ it("reads a stop, a lock conflict and a lock timeout at confirm as the run's", a
 	}
 	expect(authority.health().api.status).toBe("healthy");
 	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
+});
+
+it("reads an object folder GC holds as contended, at the control and at the gateway", async () => {
+	const { bytes, sql, control, authority } = await fixture();
+	const signal = new AbortController().signal;
+	// Open (or seal) refuses a present object GC holds with the conflict envelope; the writer asks again later.
+	vi.mocked(control.call).mockRejectedValueOnce(
+		new CloudCompanyFolderRpcError("QRC01", "Company folder object is being collected; retry"),
+	);
+	await expect(bytes.put(Buffer.from("held"), "text/plain", false, signal)).rejects.toMatchObject({
+		failure: "contended",
+	});
+	// The gateway passes the 409 on, and the database circuit stays closed.
+	sql.collecting.add(sha("held"));
+	await expect(bytes.put(Buffer.from("held"), "text/plain", false, signal)).rejects.toMatchObject({
+		failure: "contended",
+	});
+	expect(authority.health().api.status).toBe("healthy");
+	sql.collecting.clear();
+	await expect(bytes.put(Buffer.from("held"), "text/plain", false, signal)).resolves.toMatchObject({
+		fileSha256: sha("held"),
+	});
 });
 
 it("fails fast on any other database 500, which opens the gateway's circuit", async () => {

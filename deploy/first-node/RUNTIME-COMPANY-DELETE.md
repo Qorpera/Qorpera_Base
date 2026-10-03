@@ -222,6 +222,10 @@ records what it waits for.
      recovery": deleted companies' catalog objects and open D5a entries), run it once by hand, then
      schedule it every five minutes (`qorpera-artifact-gc-worker`, the `cron.schedule` in
      ARTIFACT-GC.md).
+  6. The folder-v2 phase (C1D §9.10, migration 20260930009000) stays off through these steps. The
+     coordinator switches it on separately, once `qorpera_verify_company_path_file` refuses folder-v2
+     (slice P10), with `update public.qorpera_folder_gc_settings set enabled = true;`; the switch refuses
+     before then. It needs the object gateway with the `/v1/folder-gc` lane deployed.
 - **D5b** NAS: the Company Computer workbench, emptied by the office provider as the last step of its
   retirement (D3b above; "Office retirement" in RUNTIME-OFFICE-RETENTION.md), and coding workspaces
   `workers/<company>/` (the coding executor cannot remove them alone: their files belong to session
