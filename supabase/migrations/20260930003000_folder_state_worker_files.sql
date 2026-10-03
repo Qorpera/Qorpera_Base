@@ -227,7 +227,7 @@ begin
 		-- A run of the folder's own agent.
 		if v_run.id is null or not exists (select 1 from public.qorpera_profile_staff s
 			where s.profile_id = p_profile_id and s.staff_agent_id = v_staff and s.folder_environment_id = p_environment_id
-				and s.folder_retired_at is null and s.deleted_at is null and public.qorpera_folder_key(s.folder_path) = v_agent_folder) then
+				and s.folder_retired_at is null and s.deleted_at is null and public.qorpera_folder_key(public.qorpera_folder_parent_path(s.folder_path)) = v_agent_folder) then
 			v_problem := 'a worker works on its own agent''s todos';
 		elsif v_action in ('dispatch','followup','decide') and (p_actor -> 'audience' ->> 'kind' is distinct from 'company'
 			or (public.qorpera_run_worker(v_run.id)).id is not null) then
@@ -786,7 +786,7 @@ begin
 	if v_tool -> 'resolved' -> 'audience' ->> 'kind' is distinct from 'company' or (public.qorpera_run_worker(v_run.id)).id is not null
 		or not exists (select 1 from public.qorpera_profile_staff s where s.profile_id = v_run.profile_id
 			and s.staff_agent_id = v_run.staff_agent_id and s.folder_environment_id = v_run.environment_id and s.folder_retired_at is null
-			and public.qorpera_folder_key(s.folder_path) = array_to_string((string_to_array(v_folder, '/'))[1:2], '/')) then
+			and public.qorpera_folder_key(public.qorpera_folder_parent_path(s.folder_path)) = array_to_string((string_to_array(v_folder, '/'))[1:2], '/')) then
 		raise exception 'Worker authority is unavailable' using errcode = '42501'; end if;
 	v_digest := encode(extensions.digest(convert_to(jsonb_build_object('schema', 'qorpera.folder-worker-cancel/v1',
 		'runId', v_run.id, 'folder', v_folder, 'operationKey', p_request ->> 'operationKey')::text, 'utf8'), 'sha256'), 'hex');
