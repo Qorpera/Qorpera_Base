@@ -353,8 +353,13 @@ is never upgraded. The steps:
    - Unique keys a unit introduces (a new agent `id`, a new handle) are
      claimed with `INSERT … ON CONFLICT DO NOTHING`, so a clash becomes an
      outcome at step 7, not an exception.
-   - The vault calls the commit inside its own transaction, and its secret
-     rows are locked here, not before step 1.
+   - The vault never calls the commit (amended 3 October 2026, P22): a vault
+     change marks its connection file due in its own transaction (an
+     insert-only mark), and the object gateway's writer commits the file as
+     the platform afterwards, converging it to the vault's current rows (as
+     "After the commit" below). So no vault change waits for, or fails on, a
+     file. (A commit can still write vault rows itself: hiring or archiving
+     an agent grants or revokes its operations.)
    - The commit then re-resolves every unit's covering resource and
      authorization after these locks. The check before the transaction was
      only advisory.
@@ -469,7 +474,8 @@ Every writer uses the same commit function, as service_role:
   sections, agent details, routines and group chats, which write files for
   `folder-v2`;
 - the Company Computer's saves;
-- the vault, for connection files;
+- the vault's connection-file writer in the object gateway, for connection
+  files (P22: after the vault change, from its due marks);
 - the reviewed-card approvals;
 - a card's "Always allow" answer, which writes `rules/<rule>.md` as the
   answering owner or admin (2026-09-25 amendment, item 5); and
@@ -1045,7 +1051,9 @@ identical nodes, and the Interfaces session.
   agent starting the computer), S3 (the compute fence; deletion; coding
   machines) and F3 (the activation checks).
 - **C1d-2b and C1d-2c** (the gateway's GC lane, the worker's folder phase,
-  bytes with no catalog row, a deleted company's leftovers) are F2's.
+  bytes with no catalog row, a deleted company's leftovers) were F2's; from
+  3 October 2026 they, and erasure (C2), are the folder GC session's
+  (slices P11, P12 and P18).
 - **C5 early** (C1D, "C5 early"): F3 moves the SQL test fixtures to version-2
   staging and makes `qorpera_verify_company_path_file` refuse `folder-v2`. F3
   also makes the read actor refuse a company being deleted for members and
@@ -1115,10 +1123,18 @@ For `folder-v2` companies:
     each read or listing is fitted to one tool result before its release, and
     `company_delete` records the automatic review's approval of its call (C2
     R1) and deletes a file or an empty folder.
-- The memory, skills, todo, routine and hiring writers write files. The
+- The memory, skills, todo, routine and hiring writers write files. Memory
+  and skills: slice P20 (`packages/runtime/src/cloud-folder-notebooks.ts`)
+  runs the same composition and tools over a folder-v2 form of the trusted
+  gateway. Each tool call releases its reads under its answer; composition's
+  reads are released once under the composed context, before the first model
+  request. A skill deletion in the agent's own library records its review
+  as `company_delete`'s does (`20260930001200`). The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
-- The vault writes connection files.
+- The vault writes connection files: it marks a file due, and the object
+  gateway's writer commits it as the platform (P22a marks and claims, P22b
+  the writer, P22c website accounts).
 - The tools the layout amendment retires are removed from the model's tool
   list, or become thin writers of the same files.
 
@@ -1146,7 +1162,8 @@ For `folder-v2` companies:
   - the edge functions handle `folder-v2` (runner-broker's verifier call
     `index.ts:348`, runner-control's `outputSnapshotId` `runner-control.ts:155`,
     member-company-gateway's snapshot route);
-  - the secret broker, deployed separately, writes connection files.
+  - the object gateway's connection-file writer, switched on by its flag
+    (amended 3 October 2026, P22: the secret broker gets no folder access).
 
 ### C5. Proof, reset and switch
 

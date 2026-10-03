@@ -377,7 +377,8 @@ folder-v2 now (C5 early), rather than growing that path with chunk rows:
    temp table lists them), so 761, 762, 766 and 769, which test possession itself, are untouched; a race fixture takes
    possession before its races, since a race's own transaction stages nothing.
 3. **`qorpera_verify_company_path_file` refuses folder-v2** (C5 early). Then the chunk index is complete with no
-   version-1 case, and the file-hash check is not needed.
+   version-1 case, and the file-hash check is not needed. Done in slice P10 (`20260930001100`, test 821): 0A000 before
+   the gc fence, so a refused call takes no lock.
 
 Until step 3, version-1 proofs of folder-v2 companies exist only in test fixtures. C1d-2b's worker phase is not
 switched on before step 3. Manifests of manifests (core §7) will need a recursive step
@@ -606,3 +607,51 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - 767 (dblink): a reference that holds the object first; references that waited on the claim (open, step 6, confirm,
   replication); two claims; the sweep and the claim; an upload slipping past the mark (restored); the finish's lock
   budget; and the finish taking the row before its last re-check (R7).
+
+**Built (C1d-2b, migration 20260930009000, test 880; slice P11).**
+- **The lane** (`packages/object-gateway/src/folder-gc.ts`, `ObjectGatewayFolderGc`): `DELETE
+  /v1/folder-gc/<profileId>/<sha256>` with the control token and `x-qorpera-gc-lease-id`. It answers `{ "outcome":
+  "removed" | "restored" | "stale" }`; 503 when the NAS lanes are busy or a dependency is down (the worker stops), 409
+  for a lock conflict on the object. It runs under the object's journal lock, the one its upload, replication and the
+  deleted-company lane take (`ObjectGatewayReplication.exclusive`), and under it uses only the unlocked journal writes
+  (`requeueLocked`, `forgetLocked`):
+  1. begin (`stale` on 55000: nothing is done); a row the begin reports Storage-backed is abandoned, never collected;
+  2. the NAS file is renamed into `<root>/.quarantine/<profileId>/<sha256>.<leaseId>` (a lane sent again under the same
+     lease finds its file already there). The rename is asked once more if the scan removed an empty company folder
+     between the mkdir and the rename, so a NAS file still in place is never taken for an absent one;
+  3. if a file moved, the Storage replica is removed now. If there was no NAS file, an empty marker
+     `<sha256>.<leaseId>.<bytes>.replica` records that the replica is the only copy, so a lane that stops after the
+     finish leaves the scan something to find (the design's "no NAS file" case, made crash-safe without a journal
+     entry);
+  4. finish; then `removed`: the replica (marker case), the quarantined file and marker, then the object's journal entry
+     unless it is the deleted-company lane's (`delete`, `deleted`); `restore`: first a `replicate` entry (unless the
+     deleted-company lane's), then the file back to its NAS path (or the marker removed: the reconcile then copies the
+     replica back to the NAS); `stale`: the quarantine state decides;
+  5. on the lane's own error: abandon, then the quarantine state, each best effort; what is left is the scan's.
+- **The scan** (`recover`, run at start and before every reconcile, so a `replicate` entry finds its object back):
+  up to 50 quarantine entries per pass, from where the last pass stopped (a cursor, so entries that stay never starve
+  the rest), each under the object's lock, re-checked to still exist there (a lane may have settled it while the scan
+  waited), then `live` leaves it, `restore` and `remove` as above, `remove` always removing the replica too. A company
+  folder found empty is removed. Names that are not entries are left alone. The gateway runs the NAS probe, then the
+  scan, then the reconcile, so the scan never takes both NAS slots with the probe.
+- **Replication:** folder GC's QRC01 409 from `authorize_replication` (an object GC holds, told apart by its message) is
+  a lock conflict to the reconciler (`ObjectLockConflict`, 503): the entry stays pending, not `blocked`, and the circuit
+  is left alone. snapshot-v1's cleanup fence also answers QRC01, with another message, and keeps its 409; no other RPC
+  changes. Test 880 pins the message the gateway matches (`qorpera_folder_object_collecting()`).
+- **Runtime:** `cloudCompanyFolderFailure` reads QRC01 as `contended` (after a commit's or a release's own retries),
+  so open and seal refusing an object GC holds are `contended`, as the gateway's 409 (authorize, confirm) already was.
+- **The worker's folder phase** (`runFolderObjectGc` in `supabase/functions/artifact-gc-worker`): its own try/catch,
+  before the phases that return early. It asks `qorpera_folder_gc_enabled()` (and runs only with the gateway
+  configured), sweeps 25 intents, claims 25 objects under a new lease, and calls the lane for each in order; a 503, an
+  unreachable gateway or 20 s without an answer stops it for this run, and so does its 60 s budget, checked before
+  each lane (so a phase runs at most about 80 s); any other failure leaves that mark to expire. Its result is
+  `folderObjects` in the worker's answer, where `stopped` means a busy gateway or the budget. The worker's test now runs in the node plan's functions step.
+- **The switch** (`qorpera_folder_gc_settings`, off): switching it on is refused (55000) until
+  `qorpera_verify_company_path_file`'s body carries P10's marker text `folder-v2 refuses version 1` (§9.3 step 3; a
+  refusal written without it keeps the phase off); the worker's question checks that again. The coordinator turns it on after P10 is live: `update public.qorpera_folder_gc_settings set
+  enabled = true;`. The worker is still not deployed (RUNTIME-COMPANY-DELETE.md).
+- **Tests:** gateway `test/folder-gc.test.ts` (the lane and the scan on a real NAS store and journal, with the folder
+  core's GC SQL simulated: each outcome, a stop between each step, a restore with re-replication, a stale lease, a put
+  racing the rename, the scan against a live lane, two lanes on one object, a re-upload while the replica is removed,
+  the reconciler during quarantine, no NAS file, a deletion starting mid-lane, abandon on a lane error); the worker's
+  folder phase; runtime QRC01; SQL 880 (the switch).

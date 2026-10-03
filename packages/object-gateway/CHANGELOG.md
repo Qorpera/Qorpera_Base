@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added folder GC's unlink lane (core C1d-2b, slice P11): `DELETE /v1/folder-gc/<profileId>/<sha256>` on the control token with the GC lease (`x-qorpera-gc-lease-id`), which the artifact GC worker's folder phase calls for each object the folder core's claim marked. Under the object's journal lock it begins the unlink, moves the NAS file into `<root>/.quarantine/<profileId>/<sha256>.<leaseId>` (or, with no NAS file, writes a marker that the Storage replica is the only copy), removes the replica, and asks the folder core to finish: `removed` drops the quarantined file (and the replica, in the marker case) and the object's journal entry, `restore` writes a `replicate` entry and puts the file back. It answers `{ "outcome": "removed" | "restored" | "stale" }`, 503 when the NAS lanes are busy, 409 on a lock conflict. A scan before every reconcile settles what an interrupted lane left in quarantine, as the folder core's quarantine state says. Nothing calls the lane until the worker's folder phase is switched on.
+
 - Added the folder core's byte route for folder-v2 runs (core C1d-1b): `/v1/folder-objects/<environmentId>/<sha256>` on the native credential with the run's binding. A put names its upload intent (`x-qorpera-upload-intent`) and is authorized by that intent alone, then stored, confirmed and replicated as native objects are; a get is allowed when an entry or path version the run may read references the hash, checked before and after the NAS read. The folder core's stop (55000) is answered 423 and its lock conflicts (40001, 40P01, 55P03) 409, instead of PostgREST's 500, so neither opens the gateway's database circuit for every company. A read that meets a busy NAS lane when Storage has no copy yet (replication pending) is answered 503, which the runtime asks again, rather than Storage's miss. The native route's token and binding checks are now shared helpers; its behaviour is unchanged.
 
 - Added a bounded member presence endpoint that verifies native signatures and intersects current member/native path permissions in separate authority transactions. Responses contain display metadata only, with explicit browser CORS and no native bindings or routing keys.
@@ -17,6 +19,7 @@
 
 ### Changed
 
+- The replication reconciler reads folder GC's conflict (`qorpera_authorize_profile_object_replication` answering QRC01 409 with the folder core's "being collected" message, for an object folder GC holds) as a lock conflict: the entry stays pending instead of `blocked`, and the database circuit is left alone. snapshot-v1's cleanup fence, which also answers QRC01, keeps its 409, and no other RPC's answer changes.
 - The folder route answers the folder core's storage allowance refusal (23514, which PostgREST sends as 400) with 413, so the runtime can tell a full company from a failed request.
 
 ### Fixed
