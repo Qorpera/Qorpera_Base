@@ -45,9 +45,6 @@ create function pg_temp.sql_request(p_profile uuid default '64800000-0000-4000-8
 		case p_profile when '64800000-0000-4000-8000-000000000010' then '64800000-0000-4000-8000-000000000001'
 			else '64800000-0000-4000-8000-000000000003' end)
 $$;
-create function pg_temp.fence_revision() returns bigint language sql as $$
-	select revision from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
-$$;
 
 -- A. The request beside a folder effect: it does not wait, and while it is open it holds the fence FOR NO KEY UPDATE and
 -- the company row only KEY SHARE (a NO KEY UPDATE of the row is free). Rolled back: the company stays.
