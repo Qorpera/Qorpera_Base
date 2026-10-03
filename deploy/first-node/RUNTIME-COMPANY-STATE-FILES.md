@@ -521,7 +521,7 @@ Not reviewed. Dispatching a worker is reviewed.
 | `dispatched_at` | UTC instant |
 | `follow_ups` | the number of follow-ups, 0 at dispatch (F2-5b) |
 | `followed_up_at` | UTC instant of the latest follow-up, when `follow_ups` is 1 or more |
-| body | the sections `## Goal`, `## Done when`, `## Context`, `## Sources` (`- <path>` items), `## Authority`, `## Output`, `## Cancellation`, `## Completion` and `## Follow-up` (the latest), in that order (§8 "Plan (F2-5b)") |
+| body | the sections `## Goal`, `## Done when`, `## Context` (optional), `## Sources` (optional; `- <path>` items), `## Authority`, `## Output`, `## Cancellation`, `## Completion` and `## Follow-up` (the latest, after a follow-up), in that order (§8 "Plan (F2-5b)") |
 
 `…/results.md`:
 - settings: `outcome` (succeeded, blocked, failed, cancelled), `reported_at`, `decision`
@@ -1785,7 +1785,11 @@ results when it reports … including coding workers, whose view of `agents/` is
   - Without a request, a worker's folder moves only with its whole agent folder (its row is repointed),
     and is deleted only by a delete of a folder that holds it (the worker's folder, its todo's folder, the
     todos folder or the agent's folder), which retires the worker's row. Both only while none of those
-    workers is active. A restore of such a folder brings the files back and the rows back finished.
+    workers is active.
+  - A restore of such a folder (an agent's, as contract 5.6 lets a deleted agent come back) brings a
+    retired worker's `brief.md` and `results.md` back only at the last versions its row records, byte for
+    byte, and the row back finished, never active. Whoever may restore that folder may do it, and the
+    restore's own review class applies; the worker files add none. Any other restore of them is refused.
 - **Authority:** dispatch, follow-up and decide follow folder authority (the run acts for its requester,
   as W1 does). A carried report by the worker's own run passes the authority check (the read-only
   worker's ban included, `qorpera_folder_actor_resource_allowed`), so a narrowed folder or a read-only
@@ -1805,27 +1809,29 @@ results when it reports … including coding workers, whose view of `agents/` is
   - Review: delegation, with an answered review always (R1). A worker unit that would wait for review is
     refused, never parked.
 - **`followup`**, by the same agent's company run: `write brief.md` at its version with `follow_ups` one
-  more, `followed_up_at` new, `## Follow-up` the new text and everything else unchanged; and `delete
-  results.md` at its version when it exists.
+  more, `followed_up_at` within five minutes of the commit, `## Follow-up` the new text and everything else
+  unchanged; and `delete results.md` at its version when it exists.
   - The todo is open or blocked; the worker is not active; an in-house worker that was cancelled cannot
     continue; the starter pays (today's checks). Review: delegation.
 - **`report`**, by the worker's own run (its wake's worker, at the worker's current sequence): `write
   results.md` while the worker is active, with an outcome other than `cancelled`, no decision, and
-  `reported_at` within five minutes of the commit. Each listed file's current version was written by a
-  commit of this run. Plain.
+  `reported_at` within five minutes of the commit. Each listed file has a version written by a commit of
+  this run (today: a revision this run wrote). Plain.
 - **`decide`**, by the agent's company run: `write results.md` at its version with only `decision` and
   `note` changed; `accepted` only when the outcome is `succeeded`. Plain. Without a report there is no
   `results.md`, so `decide` refuses: a worker that failed or was cancelled without reporting is not
   decided on (today a reject of such a worker only suppressed its completion).
-- **`cancel`**: no file. A run effect like a coworker message: `qorpera_folder_tool_run` with the todo and
-  the worker at rank 5, then the receipt, then today's cancel on the row (its queued wake cancelled).
+- **`cancel`**: no file. A run effect like a coworker message: `qorpera_folder_tool_run` with the todo
+  (`FOR SHARE`) and the worker (`FOR NO KEY UPDATE`) at rank 5, then the receipt, then today's cancel on
+  the row (its queued wake cancelled), without touching the todo row.
 - **`status`**: a plain read of the rows, as W1's todo list. It reads no file.
 - **`archive`** is for coding sessions, and refuses on `folder-v2` with them.
 
 **3a. A todo's file and its folder** (as H2 keeps a task's file and folder). A todo's file is moved or
-deleted only when its folder holds no worker's folder: delete the folder first (an earlier unit of the
-same change set), which retires its finished workers, or move the folder with the file in one change set,
-folder first, which repoints them. Never while one of its workers is active.
+deleted only when its folder holds no worker's folder, so a todo with workers is never renamed (its
+workers' folders could not follow: a change set is not atomic). To delete it, delete its folder first (an
+earlier unit of the same change set, or an earlier save), which retires its finished workers; never while
+one of its workers is active.
 
 **4. The index.** The row stays the worker's index and keeps its runtime state. On `folder-v2` the hook
 writes it in the same transaction as the files:
@@ -1866,20 +1872,23 @@ inserts no wake: the hook has no call at core §3 step 10, and a refused wake mu
 files. So a dispatch or a follow-up leaves its row active with no occurrence, and the drain starts it.
 - `qorpera_folder_drain_worker_wakes(environment, limit)`: one company in its own transaction (never
   inside a caller's transaction that holds admission). In order:
-  1. `qorpera_folder_company_enter(environment, profile, targets, true)`: the pause, the fence `KEY SHARE`
-     with the pause read again, the company row at rank 0, and the targets at their ranks: each requester's
-     member row (rank 1, `KEY SHARE`), each parent agent's staff row (rank 2, `KEY SHARE`) and execution
-     authority (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers (`FOR NO KEY UPDATE`) at
-     rank 5;
+  1. `qorpera_folder_company_enter(environment, profile, targets, true)`: the pause (a paused company
+     refuses with 55000, and the due list leaves paused companies out), the fence `KEY SHARE` with the pause
+     read again, the company row at rank 0, and the targets at their ranks: each requester's member row
+     (rank 1, `KEY SHARE`), each parent agent's staff row (rank 2, `KEY SHARE`) and execution authority
+     (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers (`FOR NO KEY UPDATE`) at rank 5. The
+     workers are the due ones and every other waiting worker of their parents, so a revival's set of up to
+     four is always among the locked rows;
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
-  4. one block per worker: the dispatch wake of a row with none; a refused or cancelled dispatch wake
-     makes the worker `failed` (`not_started`, completion `waiting`); a worker that ended without a report
-     becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its workers
-     (`todo_cancelled`, which no queue does yet); and revival with today's rules (`each`, `batch`, at most
-     four results, one revival of a parent at a time). A block that fails (42501, P0002, 55000) marks its
-     worker undeliverable, as today. A pass handles at most 32 workers, within core §3's 64
-     subtransactions.
+  4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
+     cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
+     (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
+     without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
+     workers (`todo_cancelled`, which no queue does yet); and revival with today's rules (`each`, `batch`,
+     at most four results, one revival of a parent at a time). A revival block that fails (42501, P0002,
+     55000) marks its workers undeliverable, as today. The drain never touches a todo row. A pass handles at
+     most 32 workers, within core §3's 64 subtransactions.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
   - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
@@ -1897,8 +1906,9 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
 - `report_work` on `folder-v2` writes `results.md` the same way, under the worker run's receipt.
 - The wake shapes gain `folder-v2` paths: the output folder is the worker's folder, and the todo path is
   the todo file. A write worker still writes where its agent may (the brief's authority text).
-- The new entry, cancel and status join the native host's call list (`qorpera_native_host_calls`, scope
-  `folder`, run actors only) and the runtime client's RPC lists (test 760's pinned shapes).
+- The new entry joins the native host's call list (`qorpera_native_host_calls`, scope `folder`, run
+  actors only), and cancel and status join it with scope `binding`; all three join the runtime client's
+  RPC lists (test 760's pinned shapes).
 
 **PRs, in this order** (each with an exact-head review and node 2 `changed`):
 - **F2-5b-1, the parser** (`packages/cloud-client`, no SQL): the sections, the parses, the writers with
