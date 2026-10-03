@@ -12,14 +12,25 @@ import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts"
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const MEDIA = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
-/** A chunk and the manifest's bounds (C1D §2): 64 chunks of 4 MiB, a manifest of at most 32 KiB. */
+/** The manifest's bounds (C1D §2; `qorpera_folder_manifest`): at most 64 chunks of at most 4 MiB each, at most
+ * 256 MiB in all, and a manifest of at most 32 KiB. */
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_FILE_BYTES = MAX_CHUNKS * CHUNK_BYTES;
 const MAX_MANIFEST_BYTES = 32 * 1024;
-const MAX_ANSWER_BYTES = 4 * 1024 * 1024;
+/** A full page of 1,000 entries or changes with long paths fits. */
+const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
 export class CloudMemberFolderError extends Error {}
+
+/** The database or the gateway refused this member (401 or 403): not an outage. */
+export class CloudMemberFolderAccessDenied extends CloudMemberFolderError {}
+
+function refusal(status: number, what: string): CloudMemberFolderError {
+	return status === 401 || status === 403
+		? new CloudMemberFolderAccessDenied(`${what} access is refused (${status})`)
+		: new CloudMemberFolderError(`${what} is unavailable (${status})`);
+}
 
 function invalid(what: string): never {
 	throw new CloudMemberFolderError(`Invalid company folder ${what}`);
@@ -37,8 +48,9 @@ function closed(value: unknown, required: readonly string[], optional: readonly 
 	return value as Record<string, unknown>;
 }
 
-function seq(value: unknown, what: string): number {
-	if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(what);
+/** A seq: 0 only where the folder may have none yet (asOfSeq, a feed position); a commit's is at least 1. */
+function seq(value: unknown, what: string, minimum = 0): number {
+	if (!Number.isSafeInteger(value) || (value as number) < minimum) invalid(what);
 	return value as number;
 }
 
@@ -118,7 +130,7 @@ export function parseCloudMemberFolderEntry(value: unknown): CloudMemberFolderEn
 		path: text(entry.path, "entry"),
 		kind,
 		version: uuid(entry.version, "entry"),
-		seq: seq(entry.seq, "entry"),
+		seq: seq(entry.seq, "entry", 1),
 		updatedAt: instant(entry.updatedAt, "entry"),
 		file: content,
 	};
@@ -217,7 +229,7 @@ export function parseCloudMemberFolderPathHistory(value: unknown, limit: number)
 		if (kind === "folder" && content !== null) invalid("version");
 		return {
 			version: uuid(item.version, "version"),
-			seq: seq(item.seq, "version"),
+			seq: seq(item.seq, "version", 1),
 			op,
 			kind,
 			path: text(item.path, "version"),
@@ -256,9 +268,9 @@ export interface CloudMemberFolderHistory {
 	readonly next: number | null;
 }
 
-export function parseCloudMemberFolderHistory(value: unknown): CloudMemberFolderHistory {
+export function parseCloudMemberFolderHistory(value: unknown, limit = 50): CloudMemberFolderHistory {
 	const page = closed(value, ["schema", "asOfSeq", "items", "next"], [], "history");
-	if (page.schema !== "qorpera.folder-history/v1" || !Array.isArray(page.items) || page.items.length > 50)
+	if (page.schema !== "qorpera.folder-history/v1" || !Array.isArray(page.items) || page.items.length > limit)
 		invalid("history");
 	const items = page.items.map((input): CloudMemberFolderChangeSet => {
 		const item = closed(input, ["seq", "at", "by", "paths", "more"], [], "change set");
@@ -270,7 +282,7 @@ export function parseCloudMemberFolderHistory(value: unknown): CloudMemberFolder
 		)
 			invalid("change set");
 		return {
-			seq: seq(item.seq, "change set"),
+			seq: seq(item.seq, "change set", 1),
 			at: instant(item.at, "change set"),
 			by: parseCloudMemberFolderBy(item.by),
 			paths: item.paths.map((pathInput) => {
@@ -347,20 +359,21 @@ export function parseCloudMemberFolderChanges(value: unknown): CloudMemberFolder
 		typeof page.more !== "boolean" ||
 		!Array.isArray(page.events) ||
 		page.events.length > 1000 ||
-		(page.resync && (page.next !== null || page.events.length > 0 || page.more))
+		page.resync !== (page.next === null) ||
+		(page.resync && (page.events.length > 0 || page.more))
 	)
 		invalid("feed");
 	const events = page.events.map((input): CloudMemberFolderEvent => {
 		if (input && typeof input === "object" && (input as Record<string, unknown>).kind === "authority") {
 			const event = closed(input, ["kind", "seq"], [], "feed event");
-			return { kind: "authority", seq: seq(event.seq, "feed event") };
+			return { kind: "authority", seq: seq(event.seq, "feed event", 1) };
 		}
 		const event = closed(input, ["kind", "seq", "commitId", "at", "by", "changes"], [], "feed event");
 		if (event.kind !== "change_set" || !Array.isArray(event.changes) || event.changes.length > 1000)
 			invalid("feed event");
 		return {
 			kind: "change_set",
-			seq: seq(event.seq, "feed event"),
+			seq: seq(event.seq, "feed event", 1),
 			commitId: uuid(event.commitId, "feed event"),
 			at: instant(event.at, "feed event"),
 			by: parseCloudMemberFolderBy(event.by),
@@ -372,15 +385,18 @@ export function parseCloudMemberFolderChanges(value: unknown): CloudMemberFolder
 					"feed change",
 				);
 				if (!Number.isSafeInteger(change.unitNo) || (change.unitNo as number) < 1) invalid("feed change");
+				const kind = oneOf(change.kind, ["file", "folder"] as const, "feed change");
+				const content = file(change, false, "feed change");
+				if (kind === "folder" && content !== null) invalid("feed change");
 				return {
 					unitNo: change.unitNo as number,
 					op: oneOf(change.op, OPS, "feed change"),
-					kind: oneOf(change.kind, ["file", "folder"] as const, "feed change"),
+					kind,
 					path: text(change.path, "feed change"),
 					version: uuid(change.version, "feed change"),
 					priorVersion: "priorVersion" in change ? uuid(change.priorVersion, "feed change") : null,
 					updatedAt: "updatedAt" in change ? instant(change.updatedAt, "feed change") : null,
-					file: file(change, false, "feed change"),
+					file: content,
 				};
 			}),
 		};
@@ -502,8 +518,8 @@ export class CloudMemberFolderClient {
 			(before !== null && (!Number.isSafeInteger(before) || before < 1))
 		)
 			throw new CloudMemberFolderError("Invalid company folder history request");
-		return this.#call("qorpera_member_folder_history", { p_before: before, p_limit: limit }, signal).then(
-			parseCloudMemberFolderHistory,
+		return this.#call("qorpera_member_folder_history", { p_before: before, p_limit: limit }, signal).then((value) =>
+			parseCloudMemberFolderHistory(value, limit),
 		);
 	}
 
@@ -559,15 +575,14 @@ export class CloudMemberFolderClient {
 					manifest.chunks.length > MAX_CHUNKS
 				)
 					invalid("manifest");
-				const chunks = (manifest.chunks as unknown[]).map((input, index, all) => {
+				const chunks = (manifest.chunks as unknown[]).map((input) => {
 					const chunk = closed(input, ["sha256", "bytes"], [], "manifest");
 					if (
 						typeof chunk.sha256 !== "string" ||
 						!SHA.test(chunk.sha256) ||
 						!Number.isSafeInteger(chunk.bytes) ||
 						(chunk.bytes as number) < 1 ||
-						(chunk.bytes as number) > CHUNK_BYTES ||
-						(index < all.length - 1 && chunk.bytes !== CHUNK_BYTES)
+						(chunk.bytes as number) > CHUNK_BYTES
 					)
 						invalid("manifest");
 					return { sha256: chunk.sha256, bytes: chunk.bytes as number };
@@ -624,7 +639,7 @@ export class CloudMemberFolderClient {
 				const response = await this.#fetch(`${this.#controlOrigin}/rest/v1/rpc/${name}`, init);
 				if (response.status !== 200) {
 					void response.body?.cancel().catch(() => undefined);
-					throw new CloudMemberFolderError(`Company folder is unavailable (${response.status})`);
+					throw refusal(response.status, "Company folder");
 				}
 				const bytes = await readBoundedCloudResponse(response, MAX_ANSWER_BYTES, requestSignal);
 				try {
@@ -654,7 +669,7 @@ export class CloudMemberFolderClient {
 		);
 		if (response.status !== 200 || response.headers.get("x-qorpera-access-mode") !== "live-path-authority") {
 			void response.body?.cancel().catch(() => undefined);
-			throw new CloudMemberFolderError(`Company folder bytes are unavailable (${response.status})`);
+			throw refusal(response.status, "Company folder bytes");
 		}
 		const bytes = await readBoundedCloudResponse(response, maximum, signal);
 		const declared = response.headers.get("content-length");

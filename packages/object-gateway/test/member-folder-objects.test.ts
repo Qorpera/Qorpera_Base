@@ -27,6 +27,8 @@ async function fixture(options: { onNas?: boolean } = {}) {
 		answers: [] as Array<{ status: number; body?: unknown }>,
 		calls: [] as Array<{ path: string; apikey: string | null; authorization: string | null; body: unknown }>,
 		storage: 0,
+		storagePaths: [] as string[],
+		storageStatus: 200,
 	};
 	const authority = new SupabaseObjectAuthority({
 		projectUrl: "https://cloud.test",
@@ -38,6 +40,9 @@ async function fixture(options: { onNas?: boolean } = {}) {
 			const url = new URL(request.url);
 			if (url.pathname.startsWith("/storage/")) {
 				state.storage++;
+				state.storagePaths.push(url.pathname);
+				expect(request.headers.get("authorization")).not.toBe(`Bearer ${memberToken}`);
+				if (state.storageStatus !== 200) return new Response(null, { status: state.storageStatus });
 				return new Response(Uint8Array.from(bytes));
 			}
 			state.calls.push({
@@ -116,6 +121,25 @@ describe("a member's folder-v2 bytes", () => {
 		expect(response.status).toBe(200);
 		expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
 		expect(gateway.state.storage).toBe(1);
+		expect(gateway.state.storagePaths[0]).toContain(`${companyId}/${sha256}`);
+
+		// Neither the NAS nor Storage has it: nothing is served.
+		const missing = await fixture({ onNas: false });
+		missing.state.storageStatus = 404;
+		expect((await missing.get()).status).not.toBe(200);
+	});
+
+	it("serves nothing when the second check names another company or size", async () => {
+		for (const changed of [
+			{ ...allowed, profileId: "30000000-0000-4000-8000-000000000099" },
+			{ ...allowed, bytes: bytes.length - 1 },
+		]) {
+			const gateway = await fixture();
+			gateway.state.answers.push({ status: 200, body: allowed }, { status: 200, body: changed });
+			const response = await gateway.get();
+			expect(response.status).toBe(503);
+			expect(Buffer.from(await response.arrayBuffer()).equals(bytes)).toBe(false);
+		}
 	});
 
 	it("serves nothing the database refuses, and nothing once access ends during the read", async () => {

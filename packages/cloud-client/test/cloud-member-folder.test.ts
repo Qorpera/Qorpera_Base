@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
 	parseCloudMemberFolderBy,
 	parseCloudMemberFolderChanges,
@@ -57,6 +58,7 @@ describe("member folder answers", () => {
 			{ ...entry, kind: "folder" },
 			{ path: "notes/a.txt", kind: "file", version, seq: 4, updatedAt: at, bytes: 5 },
 			{ ...entry, seq: -1 },
+			{ ...entry, seq: 0 },
 			{ ...entry, mediaType: "Text/Plain" },
 		])
 			expect(() =>
@@ -215,6 +217,32 @@ describe("member folder answers", () => {
 				more: false,
 			}),
 		).toThrow("Invalid company folder feed event");
+		for (const bad of [
+			{ next: null },
+			{
+				events: [
+					{
+						seq: 8,
+						kind: "change_set",
+						commitId: version,
+						at,
+						by: { kind: "platform" },
+						changes: [{ unitNo: 1, op: "mkdir", kind: "folder", path: "a", version, ...fileFields }],
+					},
+				],
+			},
+		])
+			expect(() =>
+				parseCloudMemberFolderChanges({
+					schema: "qorpera.folder-feed/v1",
+					asOfSeq: 8,
+					resync: false,
+					events: [],
+					next: { afterSeq: 8, cursor: null },
+					more: false,
+					...bad,
+				}),
+			).toThrow();
 		expect(
 			parseCloudMemberFolderChanges({
 				schema: "qorpera.folder-feed/v1",
@@ -269,8 +297,18 @@ function objects(store: Map<string, Uint8Array>, mode = "live-path-authority") {
 	};
 }
 
-function stored(content: string) {
+/** A file cut into chunks of the given sizes (the whole by default), with a manifest that may say otherwise. */
+function stored(content: string, sizes?: number[], manifestOverride: Record<string, unknown> = {}) {
 	const bytes = new TextEncoder().encode(content);
+	const store = new Map<string, Uint8Array>();
+	const chunks: { sha256: string; bytes: number }[] = [];
+	let offset = 0;
+	for (const size of sizes ?? (bytes.length ? [bytes.length] : [])) {
+		const chunk = bytes.subarray(offset, offset + size);
+		store.set(sha(chunk), chunk);
+		chunks.push({ sha256: sha(chunk), bytes: chunk.length });
+		offset += size;
+	}
 	const manifest = new TextEncoder().encode(
 		JSON.stringify({
 			schema: "qorpera.cloud-file-manifest/v2",
@@ -278,14 +316,13 @@ function stored(content: string) {
 			bytes: bytes.length,
 			mediaType: "text/plain",
 			executable: false,
-			chunks: [{ sha256: sha(bytes), bytes: bytes.length }],
+			chunks,
+			...manifestOverride,
 		}),
 	);
+	store.set(sha(manifest), manifest);
 	return {
-		store: new Map([
-			[sha(manifest), manifest],
-			[sha(bytes), bytes],
-		]),
+		store,
 		file: {
 			manifestSha256: sha(manifest),
 			fileSha256: sha(bytes),
@@ -334,6 +371,53 @@ describe("the member folder client", () => {
 		swapped.set(file.fileSha256, new TextEncoder().encode("Hello, FOLDER."));
 		await expect(client(objects(swapped)).folder.readFile(file, signal)).rejects.toThrow("integrity");
 		await expect(client(objects(store, "other")).folder.readFile(file, signal)).rejects.toThrow("unavailable");
-		await expect(client(objects(new Map())).folder.readFile(file, signal)).rejects.toThrow("unavailable (403)");
+		await expect(client(objects(new Map())).folder.readFile(file, signal)).rejects.toThrow("refused (403)");
+	});
+
+	it("assembles chunks of any size up to 4 MiB, and an empty file", async () => {
+		const signal = new AbortController().signal;
+		const uneven = stored("Hello, folder of chunks.", [3, 10, 11]);
+		expect(new TextDecoder().decode(await client(objects(uneven.store)).folder.readFile(uneven.file, signal))).toBe(
+			"Hello, folder of chunks.",
+		);
+		const empty = stored("");
+		expect((await client(objects(empty.store)).folder.readFile(empty.file, signal)).byteLength).toBe(0);
+	});
+
+	it("refuses a manifest past its bounds or one whose chunks are not the file", async () => {
+		const signal = new AbortController().signal;
+		const tooMany = stored("x".repeat(65), Array(65).fill(1));
+		await expect(client(objects(tooMany.store)).folder.readFile(tooMany.file, signal)).rejects.toThrow(
+			"Invalid company folder manifest",
+		);
+		const short = stored("abcdef", [3, 3], {
+			chunks: [{ sha256: sha("abc"), bytes: 3 }],
+		});
+		await expect(client(objects(short.store)).folder.readFile(short.file, signal)).rejects.toThrow(
+			"Invalid company folder manifest",
+		);
+		// The manifest names real chunks of another text under this file's hash: each chunk checks, the whole does not.
+		const other = new TextEncoder().encode("abcdeF");
+		const lying = stored("abcdef", [6], { chunks: [{ sha256: sha(other), bytes: 6 }] });
+		lying.store.set(sha(other), other);
+		await expect(client(objects(lying.store)).folder.readFile(lying.file, signal)).rejects.toThrow(
+			"do not match their entry",
+		);
+		const big = stored("big", [3], { padding: "x".repeat(33 * 1024) });
+		await expect(client(objects(big.store)).folder.readFile(big.file, signal)).rejects.toThrow();
+	});
+
+	it("stops when its caller does, and tells a refusal from an outage", async () => {
+		const { store, file } = stored("Hello, folder.");
+		const aborted = new AbortController();
+		aborted.abort();
+		await expect(client(objects(store)).folder.readFile(file, aborted.signal)).rejects.toThrow();
+		const signal = new AbortController().signal;
+		await expect(client(() => new Response(null, { status: 403 })).folder.read("a", signal)).rejects.toBeInstanceOf(
+			CloudMemberFolderAccessDenied,
+		);
+		const outage = client(() => new Response(null, { status: 503 })).folder.read("a", signal);
+		await expect(outage).rejects.toThrow("unavailable (503)");
+		await expect(outage).rejects.not.toBeInstanceOf(CloudMemberFolderAccessDenied);
 	});
 });
