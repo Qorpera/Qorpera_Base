@@ -1035,7 +1035,7 @@ Decisions:
     (23503): a login's owner or creator, a private conversation's member, anyone who ran, posted or connected. An
     account close function that runs the prelude per company, one company per transaction, is the fix.
 
-### 6.6 C1c-3d-2 as built: the vault's order (migration 20260930003500, test 850)
+### 6.7 C1c-3d-2 as built: the vault's order (migration 20260930003500, test 850)
 
 On `folder-v2` an agent's tool call takes the company row only `KEY SHARE` (rank 0), so #660's key share orders nothing
 there: a vault change and a tool call, or a vault change and a member change, met in the vault rows and could
@@ -1080,7 +1080,7 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   against a vault change that now locks by id it can meet in the opposite order. A follow-up locks the agent's active
   grants by id first on `folder-v2`.
 
-### 6.7 C1c-3e as built: a dynamic routine's next run (migration 20260930003600, test 819)
+### 6.8 C1c-3e as built: a dynamic routine's next run (migration 20260930003600, test 819)
 
 An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick
 (`qorpera_restore_dynamic_routine_runs`, inside the Company File drain that `reconcile` runs). That tick visits every
