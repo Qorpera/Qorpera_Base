@@ -844,7 +844,7 @@ describe("folder GC's bytes with no catalog row (C1D §9.9)", () => {
 		expect(await f.journal.read(entryKey)).toBeUndefined();
 	});
 
-	it("sees a break inside the day: checks come at most 10 minutes apart, and any other answer starts the wait over", async () => {
+	it("sees a break inside the day, which starts the wait over: checks come 10 minutes apart", async () => {
 		const f = await fixture();
 		await uncatalogued(f);
 		await f.gc.recover();

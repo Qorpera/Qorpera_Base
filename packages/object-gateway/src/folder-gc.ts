@@ -161,9 +161,9 @@ export class ObjectGatewayFolderGc {
 	 * replication refuses a missing row, and the gateway reports degraded for it. Under the object's lock (an upload
 	 * holds it from its put to its confirm), each blocked entry's object is checked again: once a folder-v2 object has
 	 * been `missing` (no catalog row, no upload intent rooting it) at every check, 10 minutes apart (or as soon after as
-	 * the scan comes back to it), for the grace window, its NAS file and any Storage replica are removed and the entry dropped. Any other answer starts the
-	 * wait over. Entries of any other company, and of catalogued objects, stay as they are. A pass reads up to 500
-	 * entries and checks up to `limit` that are due, going on next time.
+	 * the scan comes back to it), for the grace window, its NAS file and any Storage replica are removed and the entry
+	 * dropped. Any other answer starts the wait over. Entries of any other company, and of catalogued objects, stay as
+	 * they are. A pass reads up to 500 entries and checks up to `limit` that are due, going on next time.
 	 */
 	async #uncatalogued(limit: number): Promise<void> {
 		// Schedules that came due are forgotten, so the map holds only entries checked within the last 10 minutes; so is
