@@ -724,7 +724,8 @@ async function materializeInput(
 	// The whole-tree lane copies a Company File substrate. A folder-v2 run has none (folder core C3, P23) and is never
 	// this lane's: refused before anything is resolved.
 	const substrateVersionId = job.substrateVersionId;
-	if (substrateVersionId === undefined) throw new Error("The whole-tree runner needs a Company File substrate; this run has none");
+	if (substrateVersionId === undefined)
+		throw new Error("The whole-tree runner needs a Company File substrate; this run has none");
 	const [resolvedSubstrate, execution] = await Promise.all([
 		options.substrate.resolve(substrateVersionId),
 		options.substrate.resolveExecution(job),

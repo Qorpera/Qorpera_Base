@@ -382,7 +382,7 @@ describe("runner start", () => {
 		expect(f.broker.renewNativeAuthority).not.toHaveBeenCalled();
 	});
 
-	it("hands a folder-v2 run, which has no Company File substrate, to its computer and completes it naming none", async () => {
+	it("hands a folder-v2 run (no Company File substrate) to its computer and completes it naming none", async () => {
 		folderRun = true;
 		try {
 			const f = await nativeWorker("deferred");

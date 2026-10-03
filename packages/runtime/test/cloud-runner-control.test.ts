@@ -223,7 +223,7 @@ describe("disposable cloud runner", () => {
 		expect(JSON.stringify(runner.snapshot())).not.toContain(pairing.activationToken);
 	});
 
-	it("keeps a folder-v2 job with no Company File substrate across restarts and completes it (folder core C3, P23)", async () => {
+	it("keeps a folder-v2 job with no Company File substrate across restarts and completes it", async () => {
 		const pairing = createCloudRunnerPairingSecret();
 		const store = new MemoryAuthorityStore();
 		const completions: CloudRunnerControlRequest[] = [];
@@ -247,7 +247,10 @@ describe("disposable cloud runner", () => {
 		expect(leased).not.toHaveProperty("substrateVersionId");
 		await expect(runner.complete(jobId, { outcome: "ok" })).resolves.toMatchObject({ jobId, status: "completed" });
 		// The client substrate id is the runner's own deterministic id, never the job's: completion writes no null.
-		expect(completions[0]).toMatchObject({ action: "complete", clientSubstrateVersionId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+		expect(completions[0]).toMatchObject({
+			action: "complete",
+			clientSubstrateVersionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+		});
 	});
 
 	it("recovers heartbeat authority after the previous-token grace period", async () => {

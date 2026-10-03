@@ -74,8 +74,9 @@ export interface CloudRunnerBrokerDescription {
 	job: CloudRunnerJob;
 	run: CloudRunnerExecutionRun;
 	sponsor: CloudRunnerExecutionSponsor;
-	/** The Company File substrate: version, snapshot and companyFileOutputLimits are present together, or absent together
-	 * for a folder-v2 run, which the broker describes in the path lane with no substrate (folder core C3, P23). */
+	/** The Company File substrate: version, snapshot and companyFileOutputLimits are present together, or absent
+	 * together for a folder-v2 run, which the broker describes in the path lane with no substrate (folder core C3,
+	 * P23). */
 	version?: HostedCompanySubstrateVersion;
 	snapshot?: HostedCompanySnapshot;
 	proposalSnapshot?: HostedCompanySnapshot;

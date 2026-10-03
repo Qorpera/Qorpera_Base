@@ -11,10 +11,12 @@
 -- to run the parsers that read it (the PR body names the builds).
 -- * qorpera_folder_runner_broker_describe: the description, with the legacy body's checks that still apply (the run is
 --   the job's, the sponsor binding, its version, the connection and its version are active and the company's, the
---   assignment is accepted). A proposal review describes a proposal snapshot, which folder-v2 has none of: 0A000.
+--   job's environment is its company's Company File, the assignment is accepted). A proposal review describes a proposal snapshot, which folder-v2 has none of: 0A000.
 -- * qorpera_runner_broker_describe: on folder-v2 that description, in place of C1c-1's refusal.
 -- * qorpera_runner_broker_list_operations and _list_artifacts read the substrate version: on folder-v2 they refuse with
---   0A000, where they answered P0002 (which the broker maps to 503, retried for 360 s).
+--   0A000, where they answered P0002, so the reason is named. Over HTTP nothing changes: the broker maps both to 503,
+--   which a runner retries for 360 s. No runner asks: this runtime refuses before it calls, and an older one refuses
+--   the description first.
 -- * Completion needs no change. The folder lane writes the runner's client substrate id (a deterministic id per job,
 --   never null) into the results row, never the job's substrate; and a result naming no substrate passes its check against
 --   a job with none (null is not distinct from null). So a run without a substrate completes once P28 lets one exist.
@@ -67,7 +69,10 @@ begin
 		and connection_version.version = v_sponsor.provider_connection_version;
 	if v_job.run_id is null or v_job.client_lease_id is null or v_run.profile_id <> v_job.profile_id
 		or v_run.environment_id <> v_job.environment_id or v_binding.profile_id <> v_job.profile_id
-		or v_connection.profile_id <> v_job.profile_id then
+		or v_connection.profile_id <> v_job.profile_id
+		-- The job's environment is its company's folder-v2 Company File (the legacy body's file row).
+		or not exists (select 1 from public.qorpera_company_files as file where file.profile_id = v_job.profile_id
+			and file.environment_id = v_job.environment_id and file.core = 'folder-v2') then
 		raise exception 'runner job authority is inconsistent' using errcode = '55000'; end if;
 	if not exists (select 1 from public.qorpera_runner_assignments as assignment
 		where assignment.id = v_job.client_lease_id and assignment.job_id = v_job.id and assignment.run_id = v_run.id

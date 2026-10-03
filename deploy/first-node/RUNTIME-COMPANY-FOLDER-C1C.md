@@ -671,8 +671,10 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   substrate refuses ("This run has no Company File substrate"): resolve, operations, the output and Company File
   publishers, revisions, and the whole-tree runner itself. The broker names the job's company. An older runner refuses
   such a description at its Company File output limits, before it reads anything else.
-- **Lists.** `list_operations` and `list_artifacts` refuse `folder-v2` with 0A000. Before, a null substrate gave
-  P0002, which the broker maps to 503 and the runner retries for 360 s.
+- **Lists.** `list_operations` and `list_artifacts` refuse `folder-v2` with 0A000, where a null substrate gave P0002,
+  so the reason is named. Over HTTP nothing changes: the broker maps both to 503, which the runner retries for 360 s
+  (so does a proposal review's refusal). No runner asks: this runtime refuses before it calls, and an older one
+  refuses the description first.
 - **Completion needs no change.** The folder lane writes the runner's client substrate id (a deterministic id per job,
   never null) into the results row, never the job's. A result naming no substrate passes its check against a job with
   none, since null is not distinct from null. So a run with no substrate completes once P28 lets one exist (829 shows

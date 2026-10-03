@@ -525,17 +525,14 @@ describe("authorized envelope", () => {
 				.agentIds,
 		).toHaveLength(21);
 	});
-	it("admits a folder-v2 run's wake, which pins no Company File snapshot, and still checks a pin that is there", () => {
+	it("admits a folder-v2 wake that pins no Company File snapshot and still checks a pin that is there", () => {
 		const { authority, envelope } = fixture();
-		expect(
-			parseCloudWakeEnvelope({ ...envelope, pins: { ...envelope.pins, companySnapshotId: null } }, authority.identity).pins
-				.companySnapshotId,
-		).toBeNull();
-		expect(() =>
-			parseCloudWakeEnvelope({ ...envelope, pins: { ...envelope.pins, companySnapshotId: "not-a-uuid" } }, authority.identity),
-		).toThrow();
+		const pinned = (companySnapshotId: unknown) => ({ ...envelope, pins: { ...envelope.pins, companySnapshotId } });
+		expect(parseCloudWakeEnvelope(pinned(null), authority.identity).pins.companySnapshotId).toBeNull();
+		expect(() => parseCloudWakeEnvelope(pinned("not-a-uuid"), authority.identity)).toThrow();
 		const { companySnapshotId: _pin, ...withoutPin } = envelope.pins;
-		expect(() => parseCloudWakeEnvelope({ ...envelope, pins: withoutPin as typeof envelope.pins }, authority.identity)).toThrow();
+		const unpinned = { ...envelope, pins: withoutPin as typeof envelope.pins };
+		expect(() => parseCloudWakeEnvelope(unpinned, authority.identity)).toThrow();
 	});
 	it("rejects synthetic runtime bundle pins and repeated causal recipients", () => {
 		const { authority, envelope } = fixture();

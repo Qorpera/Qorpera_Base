@@ -201,7 +201,8 @@ export interface CloudWakeEnvelope {
 	readonly policy: CloudWakePolicy;
 	readonly time: Readonly<{ utc: string; local: string; timeZone: string }>;
 	readonly pins: Readonly<{
-		/** Null for a folder-v2 run, which pins no Company File snapshot (folder core C3, P23; C4's companySeq follows). */
+		/** Null for a folder-v2 run, which pins no Company File snapshot (folder core C3, P23; C4's companySeq
+		 * follows). */
 		companySnapshotId: string | null;
 		staffVersion: number;
 		wakeSchema: typeof CLOUD_WAKE_SCHEMA;
