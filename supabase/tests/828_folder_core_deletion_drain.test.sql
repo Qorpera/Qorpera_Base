@@ -2,9 +2,9 @@
 -- Company folder core, C1c-3g (P08, migration 20260930015000): company deletion drains the folder fence. On folder-v2 the
 -- request takes member management's lock (the fence FOR NO KEY UPDATE, then the company row KEY SHARE), never the row FOR
 -- UPDATE; the finisher and the purge run the folder pause's second phase for deletion (the fence FOR UPDATE and its
--- revision bump), and the purge then takes the company row FOR UPDATE, after the fence. The snapshot-v1 company keeps
--- the gc fence, and each patched body reversed is the definition before this migration. 648's committed fixture,
--- removed at the end (whatever the purge left of the folder-v2 company).
+-- revision bump), and the purge then takes the company row FOR UPDATE, after the fence. Each patched body carries its
+-- folder-v2 branch (folder-v2 only since 3 Oct: no snapshot-v1 pins). 648's committed fixture, removed at the end
+-- (whatever the purge left of the folder-v2 company).
 
 -- fence_one holds what a folder effect holds (the fence and the company row KEY SHARE), what member management holds (the
 -- fence FOR NO KEY UPDATE), what a stop's second phase holds (the fence FOR UPDATE), or a company row KEY SHARE alone;
@@ -89,20 +89,6 @@ begin
 	end loop;
 end $$;
 
--- C. The snapshot-v1 company keeps the gc fence: its request waits for a holder of its company row KEY SHARE.
-do $$
-begin
-	perform pg_temp.hold('row', '64800000-0000-4000-8000-000000000011');
-	perform dblink_exec('fence_two', 'begin');
-	perform dblink_send_query('fence_two', pg_temp.sql_request('64800000-0000-4000-8000-000000000011'));
-	if not pg_temp.waits_for('fence_two', 'fence_one') then
-		perform pg_temp.release();
-		raise exception 'C: a snapshot-v1 request must keep the gc fence'; end if;
-	perform pg_temp.release();
-	perform pg_temp.outcome('fence_two');
-	perform dblink_exec('fence_two', 'rollback');
-end $$;
-
 -- D. The deletion, committed. The purge (rolled back, so the company stays for E): the drain first, then the company row
 -- FOR UPDATE, so behind a holder of the row KEY SHARE alone it waits at the row while it holds the fence.
 select * from dblink('fence_three', pg_temp.sql_request()) as t(r text);
@@ -166,33 +152,28 @@ begin
 		raise exception 'F: the deletion helpers must be postgres-only'; end if;
 end $$;
 
--- G. Snapshot-v1 keeps its text: each patched body with its folder-v2 branches reversed is byte for byte the definition
--- before this migration (master digests from a test VM run of the reversal; stop_company_work's includes P14a, 20260930010000).
-create temporary table c1c3g_patches(n serial, fn text, digest text, patched text, original text) on commit preserve rows;
-insert into c1c3g_patches(fn, digest, patched, original) values
-	('qorpera_delete_hosted_profile(uuid)', 'd188e9c028cfd4cf9184d816eee2896a',
+-- G. Each patched body carries its folder-v2 branch (a later create or replace that drops one fails here).
+create temporary table c1c3g_patches(n serial, fn text, patched text) on commit preserve rows;
+insert into c1c3g_patches(fn, patched) values
+	('qorpera_delete_hosted_profile(uuid)',
 		E'\t-- C1c-3g (20260930015000): on folder-v2 the fence FOR NO KEY UPDATE (a leave, removal or join waits) and rank 0.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
 		|| E'\telse\n'
 		|| E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
-		|| E'\tend if;\n',
-		E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'),
-	('qorpera_request_company_deletion(uuid,uuid)', 'ad8fa4b2297dc20950e8e17389f6a951',
+		|| E'\tend if;\n'),
+	('qorpera_request_company_deletion(uuid,uuid)',
 		E'\t-- C1c-3g (20260930015000): on folder-v2 the fence FOR NO KEY UPDATE and rank 0; the finisher drains the fence.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
 		|| E'\telse\n'
 		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
-		|| E'\tend if;\n',
-		E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
-	('qorpera_request_company_deletion(uuid,uuid)', 'ad8fa4b2297dc20950e8e17389f6a951',
-		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n',
-		E'\tif found then\n'),
-	('qorpera_stop_company_work(uuid)', 'cf24fc56bdd591b1ddc47d29751745f3',
-		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n',
-		E'\tif found then\n'),
-	('qorpera_finish_company_deletion(uuid)', 'fda2fcdc37c906ef5da78a48de7db15b',
+		|| E'\tend if;\n'),
+	('qorpera_request_company_deletion(uuid,uuid)',
+		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n'),
+	('qorpera_stop_company_work(uuid)',
+		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n'),
+	('qorpera_finish_company_deletion(uuid)',
 		E'\t\t\t-- C1c-3g (20260930015000): on folder-v2 the folder pause''s second phase, for deletion, then the company row\n'
 		|| E'\t\t\t-- FOR UPDATE as the purge takes it, before the stop''s and the revocations'' rows (jobs, secrets, grants).\n'
 		|| E'\t\t\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
@@ -200,9 +181,8 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		|| E'\t\t\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 		|| E'\t\t\telse\n'
 		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
-		|| E'\t\t\tend if;\n',
-		E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
-	('qorpera_purge_company(uuid)', '39f2ce9270860ed6ae60c12e44a61f11',
+		|| E'\t\t\tend if;\n'),
+	('qorpera_purge_company(uuid)',
 		E'\t-- C1c-3g (20260930015000): on folder-v2 the drain, then the company row FOR UPDATE (the one folder-v2 path that\n'
 		|| E'\t-- may: it deletes the row), after the fence and before the cascade''s children.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
@@ -210,31 +190,20 @@ insert into c1c3g_patches(fn, digest, patched, original) values
 		|| E'\t\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
 		|| E'\telse\n'
 		|| E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
-		|| E'\tend if;\n',
-		E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
-	('qorpera_finish_company_deletions(integer)', 'ec4dc838385b2873aee4a315056f7976',
+		|| E'\tend if;\n'),
+	('qorpera_finish_company_deletions(integer)',
 		E'\t\t-- C1c-3g (20260930015000): finished in company id order, as the node update drains and the executor give-up\n'
 		|| E'\t\t-- take their companies, so two batches of locks never cross.\n'
 		|| E'\t\tselect sample.profile_id from (select deletion.profile_id from public.qorpera_company_deletions as deletion\n'
 		|| E'\t\twhere deletion.purged_at is null\n'
 		|| E'\t\torder by random()\n'
-		|| E'\t\tlimit p_limit) as sample order by sample.profile_id\n',
-		E'\t\tselect deletion.profile_id from public.qorpera_company_deletions as deletion\n'
-		|| E'\t\twhere deletion.purged_at is null\n'
-		|| E'\t\torder by random()\n'
-		|| E'\t\tlimit p_limit\n');
+		|| E'\t\tlimit p_limit) as sample order by sample.profile_id\n');
 do $$
-declare v record; p record; v_text text; v_bad text[] := '{}';
+declare v_bad text[];
 begin
-	for v in select fn, min(digest) as digest from c1c3g_patches group by fn loop
-		v_text := pg_get_functiondef(('public.' || v.fn)::regprocedure);
-		for p in select * from c1c3g_patches where fn = v.fn order by n loop
-			if position(p.patched in v_text) = 0 then v_bad := v_bad || (v.fn || ' (a patch is missing)'); end if;
-			v_text := replace(v_text, p.patched, p.original);
-		end loop;
-		if md5(v_text) <> v.digest then v_bad := v_bad || (v.fn || ' ' || md5(v_text)); end if;
-	end loop;
-	if cardinality(v_bad) > 0 then raise exception 'G: snapshot-v1 text changed in: %', v_bad; end if;
+	select array_agg(fn order by n) into v_bad from c1c3g_patches
+	where position(patched in pg_get_functiondef(('public.' || fn)::regprocedure)) = 0;
+	if v_bad is not null then raise exception 'G: a folder-v2 branch is missing in: %', v_bad; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

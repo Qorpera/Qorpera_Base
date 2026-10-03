@@ -306,7 +306,7 @@ is never upgraded. The steps:
      Admission itself is serialized on its own row (step 10).
    - The profile row is never locked `FOR UPDATE` or `NOWAIT` on any
      `folder-v2` path (§9), except deletion's finisher and purge, after
-     the fence `FOR UPDATE` (C1C §6.9).
+     the fence `FOR UPDATE` (C1C §6.10).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
    0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
@@ -902,7 +902,7 @@ keys point at `qorpera_profiles`, so a function that locked the profile row
 `FOR UPDATE` and then the fence would deadlock against them (the pattern in
 20260927150000:4-9). So on a `folder-v2` company, no path takes the profile
 row `FOR UPDATE` or `NOWAIT`, whether new or old. The one exception is
-deletion's finisher and purge (C1C §6.9): they take the fence `FOR UPDATE`
+deletion's finisher and purge (C1C §6.10): they take the fence `FOR UPDATE`
 first, so no effect holds the row while they wait, and the purge deletes
 the row. That covers:
 - `qorpera_lock_profile_gc_fence` (20260907000700:7,14), which about 79
@@ -1079,8 +1079,10 @@ identical nodes, and the Interfaces session.
   editors) and F2 (human-task wakes, H2c).
 - **C5:** S3 (the rewrites of §10, the reset function), F3 (the folder service
   #647 and #656 merged and deployed, and the core acceptance script), the
-  coordinator (the proof company and the acceptance) and the coordinator with
-  the Interfaces session (the switch).
+  coordinator (the proof company and the acceptance, including registering the
+  proof company's Company Computer: P38 calls `qorpera_register_runtime_office`
+  as its owner, the folder mode of C1c-3j, decided 3 October 2026) and the
+  coordinator with the Interfaces session (the switch).
 
 Before any `folder-v2` company exists, these must be fixed: #581's N1 (a join
 holds the fence before the invitee check), the read actor refusing a company

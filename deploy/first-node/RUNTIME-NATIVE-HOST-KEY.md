@@ -81,3 +81,63 @@ at startup; once a node's G2-3c switch is on, its guests need the bind function.
 - G2-3c: the node's switch off (with G2-3d off). Its hosts start without a credential and keep using the key, which
   stays until G2-5.
 - G2-3d: the runtime switch's default back off.
+
+## G2-3e: the execution host's own calls
+
+The shared execution host's service (`shared-execution-cli.ts`, root in the execution host VM, not its slots) holds
+the service-role key for its own database calls: a runner row per run, the company-ceiling reservation and its
+release, the ended-runner query, the identity's recovery state and vault custody, and (G2-3c) each slot's credential
+bind. The execution host runs every company's sandboxes, so the key must not be in it. These calls are host-level
+(any company's run on that node), so a per-holder credential cannot cover them: the host gets one credential of its
+own. G2-3e removes the service's own use only: the service still copies the key into each slot
+(`shared-execution-backend.ts`, the slot's `qorpera-supabase-service-key`), whose native host needs it until G2-2's
+switch, G2-3d and G2-4 are on; G2-5 removes that copy, and only then does the VM hold no key.
+
+- **SQL (migration `20260930011000`, SQL tests 862 and 863; inert):**
+  - `qorpera_execution_host_call(p_host_id, p_credential, p_name, p_args)` (8 s) and `_long` (25 s, the release,
+    which sets 25 s itself), the publishable key's alone, check the host's credential first, by its hash and with no
+    lock; every refusal is 42501 "execution host call is refused".
+  - `qorpera_execution_host_calls` lists the seven calls and their budgets. Each is held to the host's own
+    co-located orchestrator and provider adapter, not the whole node's adapter (a node's fresh-VM orchestrator may
+    share it). A run is the host's while its orchestrator holds the run's current claim: claimed or assigned while the
+    job is queued, or accepted while the job is leased by the runner assigned through that claim (an accepted claim is
+    never released, so an ended or retried run is no longer the host's). A runner row, a reservation (of a run
+    machine, with a runner of its adapter), an identity's recovery state and vault custody (only with `p_run_id`, the
+    run it is read for, checked and removed before the call) and a slot bind (only as `exec_slot`) need such a
+    current run. A release and the ended-runner query need its adapter's run machine of a run its orchestrator ever
+    claimed (they come after the run); ended runners 1 to 512.
+  - `qorpera_bind_execution_host_credential(host, adapter, orchestrator, sha256)` (service role): the node host binds,
+    after it registered the host's orchestrator; a bind again (a rebuild) replaces the hash, so the old credential
+    fails at once; the host's adapter and orchestrator never change; a hash and an orchestrator are bound once.
+    `qorpera_revoke_execution_host_credential(host)` ends it. Removing a host revokes it; moving a host to another
+    adapter or orchestrator is a revocation, then a new bind.
+- **Package and scripts (the next PR):** the service uses the entry points when its credential is there and holds no
+  service key. `create-exec-host.sh` and `rebuild-exec-host.sh` run on the node host, which keeps the key:
+  - they mint the host credential (32 random bytes), bind its sha256 with the node's key and push the plaintext
+    straight into the VM's credentials directory (root, 0600), never on a command line or in a receipt, as they do the
+    orchestrator's control token today;
+  - they mint the provider token (loopback only, between the co-located orchestrator and the service);
+  - they copy the node-level tokens (object gateway token, broker runtime token and CA, office routes) from the node
+    host's own LXD-provider credential files. No person carries anything.
+  - The orchestrator's registration and the bundle declaration stay on the node host with its key.
+
+### Rollout (G2-3e)
+
+1. The SQL ships on the release train (inert).
+2. The package and scripts ship; node 2's execution host is rebuilt with the host credential (in the next cut's b3
+   roll-rebuild, or on its own with `rebuild-exec-host.sh`; pausing node 2's runs meanwhile is fine). Check: its
+   first runs start, reserve and release through the entry points, and the service's own unit loads no service key.
+   The key still reaches the slots (for their native hosts) until G2-5.
+3. Any later execution host (node 1's fast host is dropped for now, 3 Oct) is created the same way. Its staging
+   changes in two steps: with G2-3e the script mints and binds the host credential and the service no longer loads
+   the key; with G2-5 **no service key is staged** at all.
+
+### Undo (G2-3e)
+
+- A host back on the key: rebuild it with the service key staged (the scripts keep that path until G2-5), then
+  `qorpera_revoke_execution_host_credential('<host id>')`.
+- The SQL: drop `qorpera_execution_host_call`, `_call_long`, `qorpera_execution_host_dispatch`,
+  `qorpera_execution_host_claims_run`, `qorpera_execution_host_run_machine`, `qorpera_execution_host_uuid`,
+  `qorpera_bind_execution_host_credential`,
+  `qorpera_revoke_execution_host_credential` and the tables `qorpera_execution_host_calls` and
+  `qorpera_execution_host_principals`, once no host uses them.

@@ -103,8 +103,9 @@ for (const forbidGlobalFetch of [false, true]) test(`jitless packaged services s
 			assert.equal(request.headers.apikey, "synthetic-publishable");
 			assert.match(request.headers.authorization, /^Bearer [A-Za-z0-9_-]{43}$/);
 			actions.push(body.action);
-			assert(["rotate_control", "routine_heads", "reconcile", "retained", "claim"].includes(body.action));
-			const value = body.action === "routine_heads" ? { items: [], has_more: false } : body.action === "retained" ? [] : null;
+			assert(["rotate_control", "routine_heads", "folder_dynamic_routines", "reconcile", "retained", "claim"].includes(body.action));
+			const value = body.action === "routine_heads" || body.action === "folder_dynamic_routines"
+				? { items: [], has_more: false } : body.action === "retained" ? [] : null;
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ value }));
 		});
 		const authorityPort = await listen(authority);
