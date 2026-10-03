@@ -565,8 +565,10 @@ works for when that member asks (2026-09-25 amendment, item 1).
 
 > **Amended 2026-10-03 (not built yet).** `rules/network.toml` holds the
 > company's network rules for the agent exit: a block list, or "only listed"
-> sites. It is written like every file in `rules/` ("agent traffic leaves
-> through the agent exit", section 19, item 8).
+> sites. It is written like every file in `rules/`, but it is not a review
+> rule: the reviewer does not read it, its format is checked when it is saved,
+> and a company without it is open ("agent traffic leaves through the agent
+> exit", section 19, item 8).
 
 **Approval.** Everything is approved by default:
 - No path needs a member's approval or a proposal. The mechanism for protected
@@ -797,9 +799,9 @@ subscriptions, which self-limit.
 > bounded at 16 MiB as storage.
 
 > **Amended 2026-10-03 (not built yet).** What remains also holds the agent
-> exit's line guard: outbound mail-server connections are refused, and a brake
-> on scans and floods, set from two weeks of counting and shown to the founder
-> first. It guards the shared line, never counts a run's work ("agent traffic
+> exit's line guard: TCP port 25 is refused, and a brake on bursts of new
+> connections, whose levels the founder decides after two weeks of counting.
+> It guards the shared line and never counts a run's work ("agent traffic
 > leaves through the agent exit", section 19, item 9).
 
 ## 8. Wake bus
@@ -2150,10 +2152,10 @@ requirement to build a separate analytics platform before the product works.
   Company File reads/writes retain operation, timing, outcome and available byte
   counts; unavailable counts are unknown, not zero. Logical file bytes are not
   physical NAS traffic, and resource reservations are not measured utilization.
-- The agent exit keeps a log of every connection agents make: company,
-  machine, times, destination name, address, port, protocol, bytes and refusal,
-  never content, for 90 days (amended 2026-10-03, "agent traffic leaves through
-  the agent exit", item 7).
+- The agent exit keeps a log of the connections agent road machines make:
+  company, machine, times, destination name, address, port, protocol, bytes,
+  and refused flows, never content, for 90 days (amended 2026-10-03, not built
+  yet, "agent traffic leaves through the agent exit", item 7).
 - Computer and screen lifecycle transitions MUST retain identity, time and
   reason: requested, ready, suspended/resumed where supported, closing, closed
   or failed. Closing a client viewer is not closing its cloud computer. Retain
@@ -4507,85 +4509,134 @@ Founder decision of 2 October 2026 ("completely agree… let's fix this", then "
 "Agent Exit", https://claude.ai/artifact/GPjfKe2YagNeMzkQMrY95r). The page's four choices were set as recommended by
 the runtime coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. Not built yet.
 Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md`. The guest guard (step E-1, enforcing on both nodes since 2 October,
-`deploy/guest-guard/`) already keeps every guest on our bridges away from the NAS, the nodes and Tailscale; it stays
-for our own guests.
+`deploy/guest-guard/`) already keeps every guest on our bridges away from the NAS, the nodes and every tailnet service
+it does not list; it stays for our own guests.
 
 It amends these texts. Where older text conflicts with this amendment, this amendment governs.
 - Section 12's note (amended 2026-09-28): a computer's network to the internet.
-- The 2026-09-28 amendment "compute for agents": in item 2, the firewall on the machine and "the browser keeps its
-  own separate path"; in item 4, "it reaches the internet but no private network".
+- The 2026-09-28 amendment "compute for agents": in item 2, "outbound internet on any port and protocol", the
+  firewall on the machine and "the browser keeps its own separate path"; in item 4, "it reaches the internet but no
+  private network".
 - The 2026-09-27 amendment "every machine works in the company folder", items 1 and 9, and the 2026-10-02 amendment
   "light threads", item 5: coding sessions keep their open network.
-- 5.6, `rules/`: a second kind of company rule file.
+- The 2026-09-25 amendment, item 3: "all company rules" means the review rules (`rules/*.md`).
+- 5.6, `rules/`: a second kind of file there.
 - 7.4: what remains.
 - Section 19, "Minimum operational observability": a required record.
 - Section 23: network paths.
 
-1. **Two roads out.** Traffic an agent can steer leaves through the agent exit. Our own traffic keeps the platform
-   road and the platform address, 93.164.62.162.
-   - The agent road carries the Company Computer's browser and shells, agents' own machines, coding machines (git,
-     package registries, websites), and any run box or machine that gets a network later (light threads, item 5).
-   - The platform road carries AI sign-ins and model traffic (item 5), the vault and the official connections it
-     runs (Gmail, Drive, GitHub), the database, the object gateway, Tailscale, the test machine, image builds,
-     coding pushes, and a computer's own services. Chat turns on an execution host run no commands (light threads,
-     item 1) and stay on the platform road.
-   - Mail goes through the mail provider, as today.
-2. **The exit is ours, on every node.** Every node runs the same exit, and a machine uses the exit of the node it
-   runs on, so no agent traffic crosses between nodes and nothing is bound to one node. It runs on our own hardware
-   from our own addresses. No rented or shared relay, and no residential or rotating address.
+1. **Two roads out.** The machines agents work on send their internet traffic through the agent exit:
+   - the Company Computer's browser and shells;
+   - agents' own machines (compute item 4);
+   - coding machines (git, package registries, websites);
+   - any other machine that gets a network later.
+
+   Together these are the **agent road machines**. Everything else keeps the platform road and the platform address,
+   93.164.62.162:
+   - AI sign-ins and model traffic (item 5);
+   - the work our platform services do for agents: the vault and the official connections it runs (Gmail, Drive,
+     GitHub), coding pushes, mail through the mail provider;
+   - the database, the object gateway and Tailscale;
+   - the test machine and image builds;
+   - a Company Computer's own services;
+   - chat turns on execution hosts, which run no commands (light threads, item 1).
+2. **The exit is ours, on every node.** Every node runs the same exit with the same inside addresses. An agent road
+   machine uses the exit of the node it runs on, so no agent traffic crosses between nodes, and nothing is bound to
+   one node. The exit runs on our own hardware from our own addresses: no rented or shared relay, and no residential
+   or rotating address.
 3. **Its own addresses.** The exit leaves from a block of fixed addresses Qorpera holds from its line provider,
-   separate from the platform address: one address per node (choice 1: a block of 8, five usable). Until the block
-   is delivered the exit leaves from the platform address, and everything else in this amendment applies from the
-   first day. Each agent address carries a reverse name under qorpera.com and points to a page that explains the
-   traffic and gives an abuse contact.
-4. **What the exit refuses.** Our own networks (the NAS, the office network, the nodes, Tailscale, link-local and
-   cloud metadata addresses, our own public addresses), outbound connections to mail servers (TCP 25, choice 2),
-   and IPv6 for now. Everything else passes, on any port and protocol, as compute item 2 grants. A refusal answers
-   at once.
+   separate from the platform address. Each node has one of them (choice 1: a block of 8, five usable). Until the
+   block is delivered, the exit leaves from the platform address. Everything else in this amendment applies from the
+   exit's first day. Once the block is in use, each agent address carries a reverse name under qorpera.com and
+   points to a page that explains the traffic and gives an abuse contact.
+4. **What the exit refuses.** The exit refuses:
+   - our own networks: the NAS, the office network, the nodes, Tailscale, link-local and cloud metadata addresses,
+     and our own public addresses;
+   - TCP port 25 (choice 2);
+   - IPv6, for now.
+
+   Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
+   (item 9). A refusal answers at once.
 5. **AI traffic never enters the exit.** The sign-ins and model traffic of our model programs (OpenAI, ChatGPT,
-   Anthropic, Claude) leave from the platform address, direct and undisguised. On an execution host the existing
-   model relay carries them. In a coding machine a provider door does: a pass-through that lets only the
-   providers' names through and reads nothing, separate from the exit. An agent's own code that calls an AI
-   service with its own key is agent traffic like any other.
+   Anthropic, Claude) leave from the platform address, direct and undisguised.
+   - On an execution host, the existing model relay carries them.
+   - In a coding machine, a provider door carries them. It is a new node service for coding machines only. It
+     passes a connection only when the server name in its TLS handshake is one of the providers' names. It reads
+     nothing else.
+   - On every other agent road machine, a call to an AI service is agent traffic like any other.
 6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
    addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
-   stay a person's task in the person's own browser, as A1's design says. The exit's addresses say who we are
-   (item 3).
-7. **The exit's log (choice 3).** For each connection: company, machine, start and end, destination name (from the
-   exit's name lookups, and the TLS name where it is visible), address, port, protocol, bytes each way, and
-   whether it was refused and by which rule. Never content and never full web addresses; nothing is decrypted. It
-   is kept 90 days on our storage, then deleted. Each company can see its own log (later, in Interfaces), and
-   Qorpera uses it to answer abuse reports.
-8. **Company network rules (choice 4).** `rules/network.toml` in the company folder holds a block list, or switches
-   the company to "only listed" sites. Like every file in `rules/`, it is written, moved, deleted and restored only
-   by owners and admins; agents read it and never write it (5.6). Every node's exit applies it, and a refusal tells
-   the agent which rule refused.
-9. **The line guard (choice 2).** TCP 25 is refused from the first day. For two weeks the exit only counts, per
-   company, new connections and refusals. The founder sees the numbers before a brake on scans and floods is set,
-   well above normal use. The brake slows that pattern down; it never stops normal work. It guards the shared line,
-   which the line provider may cut for spam or port scans whoever caused them. It is not a limit on the work: 7.4's
-   rule that a run has no count on its work stands.
-10. **The exit fails closed.** If a node's exit is down, that node's agent machines have no internet until it is
-    back, and the node takes no new agent machines. Agent traffic never falls back to the platform road. A node is
-    emptied before its exit changes (rolling updates), and a company rule applies at once, without a restart.
+   stay a person's task in the person's own browser (`deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md`). Once the block
+   is in use, its addresses say who we are (item 3).
+7. **The exit's log (choice 3).**
+   - For each connection it passes, the log records the company, the machine, the start and the end, the
+     destination name, the address, the port, the protocol and the bytes each way. The destination name comes from
+     the exit's own name lookups, where the machine used them.
+   - For each refused flow (machine, destination, protocol, port), the log records the first refusal in each hour
+     and the rule that refused it. Every refusal is counted.
+   - It never records content or full web addresses, and nothing is decrypted.
+   - The log, and the exit's record of name lookups, are kept 90 days on our storage, then deleted.
+   - A company's owners and admins can see their company's log, and a member can see the lines of their own coding
+     machine. The view comes later, in an amendment of its own.
+   - Qorpera uses the log to answer abuse reports. A refused connection tells the agent only that it was refused;
+     which rule refused it is in the log.
+8. **Company network rules (choice 4).**
+   - `rules/network.toml` in the company folder holds either a block list or a list of the only sites allowed.
+   - It is not a review rule: the reviewer does not read it.
+   - Like every file in `rules/`, it is written, moved, deleted and restored only by owners and admins. Agents read it
+     and never write it (5.6).
+   - Its format is checked when it is saved, and a save that fails the check is refused. A company without the file
+     is open.
+   - Every node's exit applies it, to that company's machines only.
+   - A block list works on names: the exit's name lookups refuse a blocked name. A machine that reaches a site by its
+     address, or through its own encrypted DNS, gets past a block list.
+   - The "only listed" mode is strict: the exit passes only connections whose TLS server name is listed.
+9. **The line guard (choice 2).**
+   - TCP port 25 is refused from the exit's first day.
+   - For two weeks the exit only counts, per company: new connections, refused ones, and bursts of new connections
+     to many addresses (the shape of a scan or a flood).
+   - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
+     Past them, that company's new connections are slowed for a while. The brake never stops normal work.
+   - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
+   - It is not a limit on the work: 7.4's rule that a run has no count on its work stands.
+10. **Updates never stop a machine, and the exit fails closed.**
+    - An exit update reloads its rules in one transaction each and restarts its name and log services in place. The
+      bridge and the machines' links stay up, and no company is paused.
+    - The exit is never removed while a machine is plugged into it.
+    - If a node's exit or its log is not healthy:
+      - the node takes no new agent road machines;
+      - the node observer reports it to the runtime operator;
+      - an agent's commands on that node's machines see network errors.
+    - If the exit itself is down, that node's agent road machines have no internet until it is back. Agent traffic
+      never falls back to the platform road, a Company Computer's own network included.
+    - If only the log is down, traffic continues and the gap shows in the log: a short gap is preferred over cutting
+      running work.
+    - A company rule applies at once, without a restart.
 11. **Companies share the agent addresses.** The line guard and the log keep one company from spoiling them for
     the rest. Addresses per company (IPv6) are a later decision.
-12. **Acceptance.** On each node: the Company Computer's browser, a computer shell (a non-HTTP connection
-    included), an agent's machine and a coding machine reach the internet from the agent address; the NAS, the
-    nodes, Tailscale and cloud metadata stay unreachable from them; TCP 25 is refused; a coding turn's model traffic
-    leaves from the platform address and is absent from the exit's log; stopping a node's exit takes its agent
-    machines' internet away with no fallback; the log names the company of every connection; and a company rule
-    blocks a site for that company only.
+12. **Acceptance.** On each node:
+    - a Company Computer's browser and one of its shells (with a non-HTTP connection), an agent's machine and a coding
+      machine each reach a website through the exit, and the exit's log names their company;
+    - the NAS, the nodes, Tailscale and cloud metadata stay unreachable from them, and TCP port 25 is refused;
+    - a coding turn's model traffic leaves through the provider door and is absent from the exit's log;
+    - with the exit stopped, none of them reaches the internet, a Company Computer through its own network included;
+    - a company's block list refuses a name for that company and for no other;
+    - once the block is in use, websites see the agent address, not the platform address.
 
 **What this replaces.**
 - Section 12's note: a computer's shell, terminal and desktop reach the internet through the agent exit (changed in
   place).
-- Compute item 2: the private and special address ranges are refused by the exit; the firewall on the machine stays
-  as a second line. "The browser keeps its own separate path" reads: its relay's connections leave through the
-  agent exit.
+- Compute item 2:
+  - "outbound internet on any port and protocol" reads with item 4's refusals, the company's rules and the line
+    guard;
+  - the private and special address ranges are refused by the exit, and the firewall on the machine stays as a
+    second line;
+  - "the browser keeps its own separate path" reads: its relay's connections leave through the agent exit.
 - Compute item 4: a machine reaches the internet through the agent exit.
 - Every-machine items 1 and 9, and light-threads item 5: coding sessions keep their open network, through the agent
   exit, with their model traffic on the platform road.
+- The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
+  `rules/network.toml`.
 - 5.6: `rules/` also holds `network.toml` (changed in place).
 - 7.4: the line guard joins what remains (changed in place).
 - Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
@@ -4792,7 +4843,8 @@ Qorpera hosts real companies, so every layer needs a stated failure model:
 the control plane; the Company File mutation gateway and object store/NAS;
 Company Computers and their workbench; workers; provider connections; and
 network paths, among them the agent exit, which fails closed (amended
-2026-10-03, "agent traffic leaves through the agent exit", item 10). For each
+2026-10-03, not built yet, "agent traffic leaves through the agent exit",
+item 10). For each
 layer the model MUST state detection, degraded behavior, recovery, and who is
 notified, and it MUST preserve the
 one-authority rule: two arbiters accepting work is the fork bug in permanent

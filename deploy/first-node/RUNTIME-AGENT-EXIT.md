@@ -15,130 +15,184 @@ long as they keep the page's rules.
 Both nodes sit on the office network behind one TDC router and leave from one address, 93.164.62.162. Agents, our
 builds, our tests, GitHub and AI sign-ins all share it. Once other companies run on Qorpera, one company's agent could
 get that address blocked, and our own platform work would stop with it. The trigger was GitHub refusing the Company
-Computer on 2 October (outputs/GITHUB-BLOCK-REPORT-20261002.md): the cause was the browser announcing automation,
-not the address, so the exit is about isolation, policy, audit and reputation separation. It is not about getting
-past bot checks (§9).
+Computer on 2 October. The coordinator's GitHub block report of that day found the cause was the browser announcing
+automation, not the address. So the exit is about isolation, policy, audit and reputation separation. It is not
+about getting past bot checks (§9).
 
 Step E-1, the guest guard (`deploy/guest-guard/`, enforcing on both nodes since 2 October), already keeps every guest
-on our bridges away from the NAS, the nodes and Tailscale. It stays for our own guests (execution hosts, job VMs,
-builders, the test machine). The exit adds the second address, the per-company log and rules, and the line guard.
+on our bridges away from the NAS, the nodes and every tailnet service it does not list. It stays for our own guests
+(execution hosts, job VMs, builders, the test machine). The exit adds the second address, the per-company log and
+rules, and the line guard.
 
 ## 2. Two roads
+
+The **agent road machines** are the Company Computer (its browser and shells), agents' own machines, coding
+machines, and any other machine that gets a network later. The platform's own services keep the platform road, even
+when they act for an agent.
 
 | Traffic | Road | How |
 | --- | --- | --- |
 | Company Computer browser | agent | the browser relay's connections leave through the computer's agent plug (§6) |
 | Company Computer shells (#411) | agent | the per-screen namespaces route out of the agent plug (§6) |
-| Agents' own machines | agent | their only NIC is an agent plug |
-| Coding machines: git, registries, websites | agent | their only NIC is an agent plug |
+| Agents' own machines | agent | their only network card is an agent plug |
+| Coding machines: git, registries, websites | agent | their only network card is an agent plug |
 | Coding machines: AI sign-in and model traffic | platform | the provider door (§5) |
 | Chat turns on execution hosts (light threads) | platform | no commands; the existing model relay |
-| Vault, official connections, sign-in helper, coding pushes | platform | node host |
+| Vault, official connections, sign-in helper, coding pushes, mail | platform | node host and mail provider |
 | Database, object gateway, Tailscale | platform | as today |
 | Test machine, image builds | platform | as today, behind the guest guard |
-| A computer's own services (database, files, NAS workbench) | platform | the computer's first NIC on `qorpera0` |
-| Mail | mail provider | unchanged |
+| A Company Computer's own services (database, files, NAS workbench) | platform | the computer's first network card on `qorpera0` |
 
 ## 3. The exit on a node (E1)
 
-Every node runs the same exit. Nothing in it is bound to one node: its addresses are the same on every node, and a
-machine only ever uses the exit of the node it runs on.
+Every node runs the same exit with the same inside addresses (below). Each node's public address differs (§11). An
+agent road machine only ever uses the exit of the node it runs on.
 
 **Layout (proposed).**
 - A network namespace `qexit`.
-- A Linux bridge `qagent0` in the host namespace. The host has no address on it, so agent machines cannot reach any
-  host service. Agent plugs (§4) attach to it.
+- A Linux bridge `qagent0` in the host namespace. The host has no address on it, so agent road machines cannot reach
+  any host service. Agent plugs (§4) attach to it.
 - A veth pair `qx-br` (host, a port of `qagent0`) / `br0` (in `qexit`). `br0` holds `10.210.0.1/16`, the agents'
-  gateway. Agent machines get addresses from `10.210.0.0/16`, the same range on every node.
+  gateway. Agent road machines get addresses from `10.210.0.0/16`.
 - An uplink:
   - Phase 1, until TDC delivers the block: a veth pair `qx-up` (host, `10.209.255.1/30`) / `up0` (in `qexit`,
     `10.209.255.2/30`, default route via the host). The exit masquerades to `10.209.255.2`; the host masquerades
-    that address out of its LAN NIC, so traffic leaves from 93.164.62.162. No router change.
+    that address out of its own uplink, so traffic leaves from 93.164.62.162. No router change.
   - Phase 2 (E9): a macvlan `up0` on the host's LAN NIC holding the node's public address from the block, with the
     router's address in the block as default route. The host no longer forwards agent traffic at all.
 
 **Rules in `qexit` (nftables, `inet qorpera_agent_exit`).**
 - From `br0` to `up0`: the source must be in `10.210.0.0/16`; our own networks are refused (the guest guard's
-  `internal4` set plus the node's LAN, our public addresses and the agent addresses); TCP 25 is refused; IPv6 is
-  dropped; everything else passes. Refusals answer at once (TCP reset or ICMP admin-prohibited).
+  `internal4` set plus our public addresses, and the agent addresses once in use); TCP port 25 is refused; IPv6 is
+  dropped; invalid packets are dropped; everything else passes. Refusals answer at once (TCP reset or ICMP
+  admin-prohibited).
 - To the exit itself from `br0`: DHCP, DNS and ping to `10.210.0.1` only.
 - From `up0`: replies only.
-- Every new connection and refusal is counted per client address (dynamic sets with counters), the basis of the line
-  guard (§8).
+- Every new connection is counted per client address, and each refused flow is kept an hour for the log.
+- Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
 **Rules on the host (nftables, `inet qorpera_agent_exit_host`).** A second line: the host forwards from `qx-up`
-only to public addresses and never delivers anything from `qx-up` or `qagent0` to itself. It masquerades
-`10.209.255.2` out of the LAN NIC (phase 1 only).
+only to public addresses and never delivers anything from `qx-up` or `qagent0` to itself; nothing starts a connection
+into `qx-up`. It masquerades `10.209.255.2` out of the node's uplink (phase 1 only). No host rule matches bridged
+traffic on `qagent0`. With br_netfilter (on our nodes), traffic between an agent road machine and the exit's `br0`
+is bridged and passes the host's forward hook. That is why the guest guard must never list `qagent0`.
 
-**Name lookups and addresses (dnsmasq).** `dnsmasq-base` runs in `qexit` on `10.210.0.1`: DHCP with static leases
-only (one file per machine in a hosts directory, written by the agent plug, §4), and DNS forwarded to public
-resolvers (proposed: 9.9.9.9 and 1.1.1.1) through the uplink, with every query logged. Plain DNS a machine sends
-elsewhere is redirected to it, so the log sees names.
+**Name lookups and addresses (dnsmasq).** `dnsmasq-base` runs in `qexit` on `10.210.0.1`:
+- DHCP with static leases only, from a hosts directory the agent plug writes (§4);
+- DNS forwarded to public resolvers (proposed: 9.9.9.9 and 1.1.1.1) through the uplink;
+- every query logged.
 
-**Connection log (conntrack).** `conntrack -E` in `qexit` (with `nf_conntrack_acct` on) writes one line per
-connection as it ends: client address, destination, ports, protocol, bytes each way, start and end. E3 joins these
-with the client map (§4) and the DNS log, and ships them (§7).
+**Connection log (conntrack).** `conntrack -E` in `qexit` (with connection accounting on) reports each connection's
+start and end with bytes each way. A logger writes them, and the refused flows, as JSON lines (§7).
 
-**Units (proposed).** `qorpera-agent-exit.service` (oneshot: namespace, bridge, veths, addresses, rules; `ExecStop`
-removes all of it), `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, both bound to it. All are
-installed by the node setup and stay disabled until the coordinator switches a node on. Packages: `dnsmasq-base` and
-`conntrack` (no services of their own).
+**Units (proposed).**
+- `qorpera-agent-exit.service` (oneshot). Start builds or repairs the namespace, bridge, veths, addresses and rules.
+  Reload does the same in place. Stop removes the exit and is refused while a machine is plugged in.
+- `qorpera-agent-exit-dns.service` and `qorpera-agent-exit-log.service`, both bound to it.
+- The node setup installs them, and they stay disabled until the coordinator switches a node on.
+- Packages: `dnsmasq-base` and `conntrack` (no services of their own).
 
-**Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, both rule tables, dnsmasq and the logger.
-The node observer reports it, and placement gives agent machines only to nodes with a healthy exit (E2).
+**Updates (contract item 10).** An exit update never stops a machine:
+- it reloads the rules in one transaction per table;
+- it restarts dnsmasq and the logger in place;
+- it keeps the bridge and the veths.
+
+Running machines keep their links through it, so no company is paused. A change that would have to rebuild the
+namespace is not made while a machine is plugged in; the tool refuses it.
+
+**Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, both rule tables, dnsmasq and the
+logger's heartbeat. The node observer reports it, and placement gives agent road machines only to nodes with a
+healthy exit (E2).
 
 ## 4. The agent plug (E2)
 
-- An LXD NIC `nictype: bridged`, `parent: qagent0`, with `security.mac_filtering`, `security.ipv4_filtering`,
-  `security.port_isolation` and IPv6 off, and a static `ipv4.address` from the node's pool in `10.210.0.0/16`.
-- One root helper, used by every machine creator (offices, agents' machines, coding machines): `attach` allocates the
-  address, adds the NIC, writes the DHCP lease and the client map entry (address → company, machine, kind, since);
-  `detach` removes them, flushes the address's connections and keeps it unused for 10 minutes so late log lines are
-  never given to the wrong company.
-- Machines move one kind at a time, each behind its own switch; a running machine moves the next time it starts.
+- An LXD NIC with `nictype: bridged` and `parent: qagent0`. It has `security.mac_filtering`,
+  `security.ipv4_filtering` and `security.port_isolation`, IPv6 off, and a static `ipv4.address` from the node's
+  pool in `10.210.0.0/16`.
+- The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact
+  devices: `lxd-office-guest.ts`, `coding-machine.ts`, `coding-vm.ts` and `company-machine.ts` each compare the NIC
+  set they expect.
+- One shared helper allocates the address and writes the DHCP lease and the client map entry (address → company,
+  machine, kind, member for coding machines, since).
+- When a machine goes away, its entry and lease are removed, its address's connections are flushed, and the address
+  stays unused for 10 minutes, so late log lines are never given to the wrong company.
+- Machines move one kind at a time, each behind its own switch. A running machine moves the next time it starts.
+- Today agents' machines and coding machines have LXD ACLs on `machine-net` and `coding-net` as their second line.
+  On `qagent0` the exit's and the host's rules take that place, with the NIC filters and port isolation.
 
 ## 5. The provider door (E5)
 
 A coding machine runs its model program itself. Its sign-in and model traffic must leave from the platform address and
-never enter the exit. The door is the existing SNI-checked relay (`packages/runtime/src/cloud-native-egress.ts`) run
-as a node service on a second address of `qagent0`, outside `qexit`. The exit's DNS answers the providers' names with
-the door's address, and the door connects out from the node's platform address. It lets only the providers' names
-through (OpenAI and ChatGPT as today, plus the Anthropic names Claude Code needs) and reads nothing. Traffic an agent
-sends to a provider by its own address goes through the exit like any other.
+never enter the exit.
+
+- **A new node service (proposed).** It runs in a namespace of its own, `qdoor`, with an address on `qagent0` (for
+  example `10.210.0.2`) and its own uplink to the host. Like the exit, it is never a host service on `qagent0`.
+- It reuses the server-name check of `packages/runtime/src/cloud-native-egress.ts`, but not that relay's per-run
+  shape: that relay is a Unix-socket CONNECT proxy with lifetime caps. The door is a plain TLS pass-through. It reads
+  the server name in the handshake, passes the connection only for a provider name, connects out from the node's
+  platform address, and reads nothing else.
+- It accepts only coding machines' addresses, taken from the client map.
+- Provider names: OpenAI and ChatGPT as today, plus the Anthropic names Claude Code needs.
+- A coding machine reaches the door through name entries its creator writes at start: the provider names point to
+  the door. No other agent road machine is pointed there, and the exit's own DNS answers provider names normally.
+- Traffic an agent sends to a provider any other way goes through the exit like any other.
 
 ## 6. The Company Computer (E6)
 
-A computer gets a second NIC, an agent plug, in the next office image (with #411). Inside it, the browser relay's
-outbound connections and #411's per-screen namespaces route out of the agent plug (policy routing by source); the
-computer's own services keep the first NIC on `qorpera0` (database, object gateway, NAS workbench). The office gate
-refuses bridges with ACLs and digests network configuration, so it learns `qagent0` in the same image and policy
-change. #411's shells use the exit's DNS instead of 1.1.1.1 and 8.8.8.8. The managed browser policy keeps encrypted
-ClientHello off, so TLS names stay visible to our own log.
+A computer gets a second network card, an agent plug, in the next office image (with #411).
+
+**Inside the computer.**
+- The browser relay's outbound connections and #411's per-screen namespaces route out of the agent plug.
+- A rule in the computer drops their traffic if it would leave by the first card, so a routing fault fails closed.
+- The relay resolves names through the exit's DNS.
+- #411's in-guest filter blocks `10.0.0.0/8`, so it must allow the exit's DNS on `10.210.0.1`. #411's shells use that
+  DNS instead of 1.1.1.1 and 8.8.8.8.
+- The computer's own services keep the first card on `qorpera0` (database, object gateway, NAS workbench).
+
+**The office gate.** Today it requires a managed LXD bridge with NAT (`lxd-client.ts`, the managed-bridge check),
+refuses ACL bridges, and fingerprints the network configuration (`lxd-office-node-base.ts`). It learns `qagent0`, an
+unmanaged bridge, in the same image and policy change.
+
+**The browser.** Its managed policy keeps encrypted ClientHello off, so TLS server names stay visible to our own
+log.
 
 ## 7. The log (E3, choice 3)
 
-- One JSON line per connection (proposed): `{ts_start, ts_end, node, company, machine, kind, src, dst, dport, proto,
-  name, bytes_out, bytes_in, verdict, rule}`. `name` comes from the DNS log (the last name that resolved to `dst` for
-  that client), or the TLS name where it is visible.
+- One JSON line per event (proposed):
+  - a connection's start and its end, with bytes and packets each way: `{ts, event, node, company, machine, kind,
+    src, dst, sport, dport, proto, name, bytes_out, bytes_in}`;
+  - a refused flow, the first time in an hour, with the rule that refused it.
+- `name` comes from the exit's DNS log: the last name that resolved to `dst` for that client.
 - Never content, never full web addresses, never decrypted.
-- Kept 90 days on our storage (a platform folder on the NAS, per node and day), then deleted.
+- The log and the DNS record are kept 90 days on our storage (a platform folder on the NAS, per node and day), then
+  deleted.
 - A lookup script answers "who used address X at time T".
-- Each company sees its own log later, as a view in Interfaces (E10).
+- A company's owners and admins see their company's log, and a member sees the lines of their own coding machine,
+  in a view that comes later with its own interfaces amendment (E10).
+- A refused connection tells the agent only that it was refused. The rule is in the log.
 
 ## 8. The line guard (E7, choice 2)
 
-- TCP 25 is refused from day one (in E1).
-- For two weeks the exit only counts, per company: new connections, refused connections, and distinct destinations
-  with failed connections (the shape of a scan).
-- The founder sees the numbers. Then a brake is set well above normal use: past it, that company's new connections
-  slow down for a while. It never stops normal work and is not a count on a run's work (contract 7.4).
+- TCP port 25 is refused from day one (in E1).
+- For two weeks the exit only counts, per company:
+  - new connections;
+  - refused connections;
+  - bursts of new connections to many addresses (the shape of a scan or a flood).
+- The founder sees the numbers and decides the brake's levels, well above normal use.
+- Past those levels, that company's new connections are slowed for a while.
+- The brake never stops normal work and is not a count on a run's work (contract 7.4).
 
 ## 9. What the exit is not
 
-No stealth browser flags, fake browser identities, rotating or residential addresses, or CAPTCHA solving. A block
-page or a CAPTCHA means stop, never retry; strict sites stay a person's task in their own browser (A1). The agent
-addresses carry reverse names under qorpera.com and a page that explains the traffic with an abuse contact.
+The exit never uses:
+- stealth browser flags or fake browser identities;
+- rotating or residential addresses;
+- CAPTCHA solving.
+
+A block page or a CAPTCHA means stop, never retry. Strict sites stay a person's task in their own browser
+(`deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md`). Once the block is in use, the agent addresses carry reverse names
+under qorpera.com and a page that explains the traffic with an abuse contact.
 
 ## 10. Company rules (E8, choice 4)
 
@@ -150,52 +204,64 @@ block = ["casino.example", "*.torrents.example"]
 allow = []             # used when mode is "only-listed"
 ```
 
-- Written, moved, deleted and restored only by owners and admins; agents read it and never write it (contract 5.6).
-- The cloud client parses it; the platform projects it to every node; the exit turns names into per-company sets
-  through its own DNS.
-- "Only listed" adds a TLS-name check on port 443, because shared CDN addresses serve many sites.
-- A refusal tells the agent which rule refused.
+- It is written, moved, deleted and restored only by owners and admins. Agents read it and never write it (contract
+  5.6).
+- It is not a review rule: the reviewer does not read it. Today the folder code treats only `rules/*.md` as rules, so
+  E8 adds the file as its own checked kind. A save that fails the check is refused, and a company without the file
+  is open.
+- The platform projects it to every node.
+- **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
+  sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
+  DNS, gets past a block list.
+- **"Only listed":** strict. The exit passes only connections whose TLS server name is on the list. E8 adds a
+  server-name check on port 443 for such companies.
 
 ## 11. The address block (E9, choice 1)
 
-- A block of 8 fixed IPv4 addresses (/29) from TDC, routed to our line: five usable, one per node (room for four
-  nodes) and a spare. TDC lists holders of 8 or more addresses publicly with RIPE (name, address, phone), so the block
-  is visibly Qorpera's.
+- A block of 8 fixed IPv4 addresses (/29) from TDC, routed to our line:
+  - five usable, one per node (room for four nodes) and a spare;
+  - TDC lists holders of 8 or more addresses publicly with RIPE (name, address, phone), so the block is visibly
+    Qorpera's.
 - Jonas sends the Danish message on the design page. TDC's answer settles how the block reaches the router and who
   sets the router up.
-- Each node switches to its public address while a rolling update has emptied it: `up0` becomes a macvlan with the
-  address, and the host's masquerade for the exit is removed.
+- Each node switches in place: `up0` becomes a macvlan with the node's address, and the host's masquerade for the
+  exit is removed. Connections open at that moment end, and new ones start from the new address.
 - Reverse names under qorpera.com, and the info page with the abuse contact.
-- TDC's terms say the line may not carry traffic for anyone but the customer; the TDC message asks TDC to confirm a
-  hosted service is fine.
+- TDC's terms say the line may not carry traffic for anyone but the customer. The TDC message asks TDC to confirm
+  that a hosted service is fine.
 
 ## 12. Failure model
 
-- **Exit down on a node.** That node's agent machines have no internet; agent traffic never falls back to the
-  platform road. `verify` fails, the observer reports the node, and placement gives it no new agent machines.
-  Recovery: restart the unit, or empty the node.
+- **Exit down on a node.** That node's agent road machines have no internet, and agent traffic never falls back to
+  the platform road.
+  - The node observer reports the failed `verify` to the runtime operator, and placement gives that node no new
+    agent road machines.
+  - Agents' commands on that node see network errors.
+  - Recovery: `systemctl reload qorpera-agent-exit.service` repairs in place. If that fails, the operator moves the
+    node's work as for any node fault.
 - **Uplink down.** The same as the exit being down.
+- **Log down (proposed).** Traffic continues, the gap shows in the log, and `verify` fails, with the consequences
+  above (no new machines, a report to the operator). A short gap in the log is preferred over cutting running work;
+  the contract's item 10 says so, and the founder may change it.
 - **Rule change.** Applies at once through set updates, without a restart.
-- **Update.** A node is emptied before its exit changes (rolling updates), so no live agent traffic is cut.
-- **Log writer down.** Traffic continues; the gap is visible in the log and in `verify`. (Proposed: a brief gap is
-  preferred over stopping agents' work.)
+- **Update.** In place (§3), with no machine stopped and no company paused.
 
 ## 13. Build plan
 
 | Step | What | Changes for companies |
 | --- | --- | --- |
-| E-1 | Guest guard: guests off the NAS, the nodes and Tailscale (#684) | done, enforcing since 2 October |
+| E-1 | Guest guard: guests off the NAS, the nodes and unlisted tailnet services (#684) | done, enforcing since 2 October |
 | E0 | This document and the contract amendment | none |
 | E1 | The exit on a node: namespace, bridge, uplink, both rule tables, DNS and DHCP, connection log, units, `verify`; proven on the node 2 test machine; switched off | none |
-| E2 | The agent plug and the client map; exit health in placement | none (switched off) |
+| E2 | The agent plug in each machine creator's plan, the client map, exit health in placement | none (switched off) |
 | E3 | Log shipping to the NAS, 90-day cleanup, the "who used this address" lookup | none |
 | E4 | Agents' machines use the agent plug | they start there |
 | E5 | Coding machines use the agent plug, with the provider door | they move |
-| E6 | Company Computer: a second NIC for the browser and shells (with the next image) | it moves |
-| E7 | Line guard: counting, then the brake once the founder has seen the numbers | after the founder's yes |
+| E6 | Company Computer: a second network card for the browser and shells (with the next image) | it moves |
+| E7 | Line guard: counting, then the brake at the levels the founder decides | after his decision |
 | E8 | Company rules | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
-| E10 | Each company's own log in Interfaces | companies see it |
+| E10 | Each company's own log view (its own interfaces amendment) | companies see it |
 
 Each step is a small PR with an exact-head independent review and a `run-on-node.mjs changed` run on the node 2 test
 machine. The coordinator merges and installs.
