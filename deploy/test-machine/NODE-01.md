@@ -55,14 +55,18 @@ steps do not take it.
 
 One run, one machine, chosen at the start (README, "Which machine"):
 
-- The wrapper asks both machines at once, read-only, how many of their 3 slots runs hold and how many runs wait
-  in their queue. It takes the one with the most free slots, counting waiting runs against them; on a tie,
-  node 2. A probe answers in about a second; one that cannot reach its machine's SSH within 6 s counts as
-  unreachable, and the machine is left out.
+- The wrapper asks both machines at once, read-only, how many of their 3 slots runs hold, how many runs wait in
+  their queue and how many are still being copied there (a marker per run until it takes a queue ticket, so a
+  burst of starts spreads out). It takes the one with the most free slots, counting waiting and arriving runs
+  against them; on a tie, node 2. A probe answers in about a second; its connection must reach the machine's SSH
+  within 6 s, and once one machine has answered with a free slot the other gets 2 s more. A machine that did not
+  answer is tried last: a probe's budget is short, and the copy's own connection may still get through.
 - If the chosen machine fails before the suite starts (the first SSH call or the copy), the next one takes the
-  run. A started suite is never repeated elsewhere.
+  run, after the event loop has had a turn: a copy an interrupt ended stops the run instead of moving it. A
+  started suite is never repeated elsewhere.
 - `--machine node01|node02` pins a machine. A machine is closed to the automatic choice by the file
-  `/etc/qorpera-test-machine-closed` inside it (maintenance, removal); `--machine` still reaches it.
+  `/etc/qorpera-test-machine-closed` inside it (maintenance, removal), and until `guest-setup.sh` has finished;
+  `--machine` still reaches it.
 
 Least busy rather than a fixed share: the queue length is the cost a session feels, and a fixed share would
 send runs to a full machine while the other idles. A shared queue across machines would need a coordinator
@@ -75,10 +79,13 @@ The script that runs on a machine is unchanged, so everything it enforces is per
 order, `VITEST_MAX_WORKERS` = vCPUs / 3, runner users `ci01`-`ci16`, its own npm caches and worktree copies. Two
 machines run 6 suites at once. The GitHub status context stays `qorpera-ci/<suite>` on either machine; the
 description names it ("passed on node 1 in 6m12s"), and so does the pending one. The run record gains `machine`,
-`machines` (every probe's answer) and `passedOver`.
+`machines` (every probe's answer), `probeSeconds` and `passedOver`.
 
-The wrapper can be merged before node 1's machine exists: node 1 then shows as unreachable (usually within a
-second, at most 6 s) and every run goes to node 2. Clients that have not merged it send everything to node 2.
+The wrapper can be merged before node 1's machine exists: node 1 then shows as unreachable and every run goes to
+node 2. That costs a run little: node 1's jump usually refuses at once ("Network is unreachable"); when it hangs,
+the run waits 2 s past node 2's answer if node 2 has a free slot, and up to 6 s if node 2 is full (12 s is the
+hard limit). Clients that have not merged it send everything to node 2. A new machine counts as closed until
+`guest-setup.sh` has finished, and the runbook keeps it closed until it is proven.
 
 ## Runbook (coordinator)
 
@@ -94,7 +101,7 @@ headroom by both sizes and enroll both entries in one policy replace.
 - SQL: node 1's row (`version`, `headroom_cpu_millis`, `headroom_memory_bytes`, `enabled`, `runs_enabled`), its
   latest stored policy (`qorpera_runtime_node_policies`, highest version; it carries `cpuAllocationRatio`), and its
   inventory policy and digest (`qorpera_runtime_node_inventory_policies`; `e2e4a51f…` at 05:2xZ). Save that
-  inventory policy JSON: the undo puts it back. `qorpera_runtime_node_drain_status('<N1>')` (inside
+  inventory policy JSON: if a step fails inside this hold, it is still the current one and goes back. `qorpera_runtime_node_drain_status('<N1>')` (inside
   `begin … rollback`).
 - `op --node node01 observer-check`: `observerNodeId` is `N1`, `observerHoldsDatabasePolicy` true.
 - Node 1 (root): `lxc project list`, `lxc network list` and `lxc network acl list` show no `testmachines`,
@@ -141,8 +148,8 @@ these steps (no host or LXD restart); that is the coordinator's call.
 ### 3. Headroom
 
 `qorpera_configure_runtime_node(<policy>, <current version>)` with the latest stored policy, `headroomCpuMillis`
-+10000, `headroomMemoryBytes` +17179869184, and `"enabled": false` (the stored policy says `true`; sending it would
-end the hold). Today: 4000 → 14000 and 34359738368 → 51539607552. The node version goes up by one. A refusal
++10000, `headroomMemoryBytes` +17179869184, and `"enabled": false` (step 2 left the stored policy at `false`; the
+step-0 copy says `true`, and sending that would end the hold). Today: 4000 → 14000 and 34359738368 → 51539607552. The node version goes up by one. A refusal
 ("would discard occupied capacity") means node 1 holds more than the new budget allows: undo step 2 and wait.
 
 ### 4. Create (node 1, root)
@@ -154,15 +161,16 @@ lxc network create testmach0 --type=bridge ipv4.address=10.201.0.1/24 ipv4.nat=t
 lxc network edit testmach0 < testmach0.yaml
 lxc project create testmachines </dev/null && lxc project edit testmachines < testmachines.yaml
 lxc init 5e644adaf5d1 qorpera-testvm-node01 --vm --project testmachines --no-profiles --storage qorpera-vm \
-  -c limits.cpu=10 -c limits.memory=16GiB -c boot.autostart=false \
+  -d root,size=150GiB -c limits.cpu=10 -c limits.memory=16GiB -c boot.autostart=false \
   -c "user.test-machine-purpose=Qorpera own test suites; second operator test VM, 2026-10-03" </dev/null
-lxc config device set qorpera-testvm-node01 root size=150GiB --project testmachines
 lxc config device add qorpera-testvm-node01 eth0 nic network=testmach0 name=eth0 ipv4.address=10.201.0.3 \
   security.mac_filtering=true security.ipv4_filtering=true security.ipv6_filtering=true \
   security.port_isolation=true --project testmachines
 ```
 
-The bridge is created with its final settings in one call, so the guard never sees a `testmach0` with IPv6.
+The root disk gets its size in the create itself: the project's `limits.disk` refuses an instance whose root
+device has no size. The bridge is created with its final settings in one call, so the guard never sees a
+`testmach0` with IPv6.
 Then compare with node 2: `lxc config show qorpera-testvm-node01 --project testmachines` must differ from node 2's
 only in name, `ipv4.address`, the purpose text and `volatile.*`; `lxc network acl show`, `lxc network show` and
 `lxc project show` only in `used_by`. `G check` must print `bridge testmach0: matches` (and `G verify` exit 0
@@ -200,11 +208,20 @@ Check node 1 `serving` and `runsServing` (drain status) and that its observer st
 
 ```sh
 lxc start qorpera-testvm-node01 --project testmachines
-lxc exec qorpera-testvm-node01 --project testmachines -- bash -s -- "<public key>" < deploy/test-machine/guest-setup.sh
+for i in $(seq 60); do lxc exec qorpera-testvm-node01 --project testmachines -- true 2>/dev/null && break; sleep 2; done
+lxc exec qorpera-testvm-node01 --project testmachines -- sh -c 'echo "being set up and proven (NODE-01.md 7-9)" > /etc/qorpera-test-machine-closed'
+sha256sum guest-setup.sh   # 02c883215bd5302253f3345d98ec1816e2ec7ef95b0dade95326afc579993cfa at this change
+lxc exec qorpera-testvm-node01 --project testmachines -- bash -s -- "<public key>" < guest-setup.sh
 ```
 
-The public key is the one node 2's `tester` has (`~tester/.ssh/authorized_keys` there; the developer side keeps
-`~/.ssh/id_ed25519_qorpera_testvm`). Setup prints the versions, the runner users and `kvm_device=present`.
+Close it first: from the moment setup installs the key, every developer's probe reaches the machine, and an idle
+machine would win their runs before its runner users exist (each such run would fail with a harness error
+status) and before step 8 has proven it. Until setup writes `/etc/qorpera-test-machine-versions` the wrapper
+counts it as closed anyway; the file keeps it closed through step 8. `guest-setup.sh` comes from a checkout of the
+merged change (node 1 has none: copy the one file over and check the digest; a later change to the script changes
+the digest). The public key is the one node 2's `tester` has (`~tester/.ssh/authorized_keys` there; the developer
+side keeps `~/.ssh/id_ed25519_qorpera_testvm`). Setup prints the versions, the runner users and
+`kvm_device=present`.
 
 Network proof, as on node 2 (from inside the VM; every target must be refused, DNS and HTTPS must work):
 
@@ -229,23 +246,40 @@ node scripts/run-on-node.mjs --machine node01 hosted-db </dev/null
 node scripts/run-on-node.mjs --machine node01 test </dev/null
 ```
 
-The first connection records node 1's host key under 10.201.0.3. `test` must pass in full, as on node 2. Then
-two plain `changed` runs started a few seconds apart from two sessions: the second goes to the machine the first
-did not take.
+`--machine` reaches the closed machine. The first connection records node 1's host key under 10.201.0.3. `test`
+must pass in full, as on node 2.
+
+### 9. Open
+
+```sh
+lxc exec qorpera-testvm-node01 --project testmachines -- rm /etc/qorpera-test-machine-closed
+node scripts/run-on-node.mjs --dry-run hosted-db </dev/null
+```
+
+The dry run shows both machines open and picks the one with more free slots. From now on plain runs from every
+session that has merged this change land on node 1 whenever it has more room (their record's `machine`), and a
+run that is still copying to a machine shows there as `arriving` in another session's dry run.
 
 ### Undo
 
 - **Out of rotation, nothing changed on the node:** close it (`echo "<reason>" > /etc/qorpera-test-machine-closed`
   as root inside the VM) or stop it (`lxc stop`; probes then skip it). It stays enrolled and charged.
-- **Remove it:** close it and wait until `--dry-run --machine node01` shows 0 busy and 0 waiting. Hold (step 2),
-  then `lxc stop qorpera-testvm-node01 --project testmachines` and `lxc delete qorpera-testvm-node01 --project
-  testmachines`; `lxc project delete testmachines`; `lxc network delete testmach0`; `lxc network acl delete
-  testmach-egress`. Put back the inventory policy saved in step 0 with `qorpera_replace_runtime_node_inventory`
-  (previous digest = the current one), `op --node node01 observer-sync`, wait for `ready`, then configure the
-  headroom back (-10000 mCPU, -16 GiB, `enabled` false), and serve (step 6). The VM goes before its entry: an
-  instance the policy does not list makes node 1 `unavailable`. On developer Macs, `ssh-keygen -R 10.201.0.3 -f
-  ~/.ssh/known_hosts_qorpera_test_machines`; dropping `node01` from `MACHINES` is optional (an absent machine is
-  skipped).
+- **Remove it:** close it and wait until `--dry-run --machine node01` shows 0 busy, 0 waiting and 0 arriving. Hold
+  (step 2), then `lxc stop qorpera-testvm-node01 --project testmachines` and `lxc delete qorpera-testvm-node01
+  --project testmachines`; `lxc project delete testmachines`; `lxc network delete testmach0`; `lxc network acl
+  delete testmach-egress`. The VM goes before its entry: an instance the policy does not list makes node 1
+  `unavailable`. Then replace node 1's inventory policy with the **current** one minus the
+  `testmachines`/`qorpera-testvm-node01` entry (not the step-0 copy: entries enrolled since, such as node 1's fast
+  host, and a changed LXD host identity must stay), reviewed as in step 5.3 (`NODE-BUILDER-COEXISTENCE.md` step 8:
+  remove only the reviewed reservations). `op --node node01 observer-sync` and wait for `ready`; configure the
+  headroom back (-10000 mCPU, -17179869184 bytes, `enabled` false) and wait for a fresh `ready` at the new
+  version; then serve (step 6). Dropping `node01` from `MACHINES` is optional (an absent machine is tried last
+  and costs a run little).
 - **A step fails:** before step 5 commits, delete what step 4 made (VM, project, network, ACL), configure the
-  headroom back and serve. From step 5 on, as "Remove it". Never re-run an uncertain create or replace: read the
+  headroom back, wait for a fresh `ready` and serve; here, inside the same hold, the step-0 inventory policy is still
+  the current one. From step 5 on, as "Remove it". Setup or proof failing in steps 7-8 needs no undo: the machine
+  stays closed until it is fixed. Never re-run an uncertain create or replace: read the
   outcome first.
+- **Host keys:** whenever the VM is deleted and made again (a removal, a failed step, a rebuild), every developer
+  Mac that reached the old one keeps its host key and sees node 1 as unreachable from then on. Tell sessions to
+  run `ssh-keygen -R 10.201.0.3 -f ~/.ssh/known_hosts_qorpera_test_machines`.

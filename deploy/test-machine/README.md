@@ -60,30 +60,6 @@ node scripts/run-on-node.mjs --machine node01 hosted-db
 Start runs with `</dev/null` from a background shell: `lxc … create` and `lxc init` read YAML from a stdin
 that is not a terminal, and ssh passes an open one through.
 
-### Which machine
-
-One run, one machine. At the start the wrapper asks every listed machine at once, over SSH and read-only
-(about a second; the connection must reach the machine within 6 s), how many of its three slots runs hold
-and how many runs wait in its queue. It takes the machine with the most free slots, counting waiting runs
-against them; on a tie, the list order (`node02`, then `node01`). A machine that does not answer (its VM
-stopped after a node reboot, its node being updated, a machine not built yet) is left out and named on the
-first line of output. If the chosen machine then fails before the suite starts (the first SSH call or the
-copy), the run moves to the next one. A suite that has started is never repeated elsewhere: its failure is
-the result.
-
-Each machine keeps its own queue, so a run that had to queue stays in that machine's queue even if the other
-frees up first. The choice makes that rare: a run joins the shorter queue. Two runs that ask in the same
-second can still pick the same free slot; one then waits for the other.
-
-`--machine node01` (or `node02`) skips the choice. Use it to work with one machine's state: a Docker image ID
-(the systemd suites below), a `--keep` run directory, or a check of a machine that is closed.
-
-To take a machine out of the choice (maintenance, removal), close it from inside: as root, write a reason to
-`/etc/qorpera-test-machine-closed`. New runs go to the other machine; runs already running or queued there
-finish; `--machine` still reaches it. `--dry-run` shows `closed`, `busy` and `waiting` per machine. Delete the
-file to open it again. Clients older than this list (sessions that have not merged master) send every run to
-node 2 and do not read the file.
-
 `changed` is the everyday check: it runs what the files changed against `origin/master` (or `--base REF`)
 need, and prints what it chose and why. The steps and the paths that start them are in
 [`scripts/run-on-node-plan.mjs`](../../scripts/run-on-node-plan.mjs). They replace the switched-off GitHub
@@ -136,12 +112,41 @@ result (`passed`, `failed`, `setup-failed` when `npm ci`, the build or the harne
 when the status could not be read back), the runner user, the slot and time queued, and for `changed` the
 plan and its base. This
 is the record contract 24.4 asks for. It names the `machine` the run used, what every machine answered
-(`machines`) and, when the first choice failed before the suite started, the machines `passedOver`.
+(`machines`), how long asking took (`probeSeconds`) and, when the first choice failed before the suite started,
+the machines `passedOver`.
 `--record FILE` also writes it to a file.
 
 Several sessions can use a machine at once. Each run has its own directory and runner user, and the
 hosted-db harness names its containers per process. Slots, queue, runner users, npm caches and worktree copies
 are per machine: two machines run six suites at once.
+
+### Which machine
+
+One run, one machine. At the start the wrapper asks every listed machine at once, over SSH and read-only, how
+many of its three slots runs hold, how many runs wait in its queue and how many are still being copied there
+(a marker per run, from its first SSH call until it takes a queue ticket). A probe answers in about a second;
+its connection must reach the machine within 6 s. Once one machine has answered with a free slot, the others
+get 2 s more; otherwise every probe gets up to 12 s. The wrapper takes the machine with the most free slots,
+counting waiting and arriving runs against them; on a tie, the list order (`node02`, then `node01`). The
+answers are printed before the run starts. A machine that did not answer (its VM stopped after a node reboot,
+its node being updated, a machine not built yet, a slow moment) is tried last. If a machine fails before the
+suite starts (the first SSH call or the copy), the run moves to the next one; a copy that an interrupt ended
+stops the run instead. A suite that has started is never repeated elsewhere: its failure is the result.
+
+Each machine keeps its own queue, so a run that had to queue stays in that machine's queue even if the other
+frees up first. The choice makes that rare: a run joins the shorter queue. Two runs that ask within a moment of
+each other, before either has made its marker, can still choose the same machine.
+
+`--machine node01` (or `node02`) skips the choice. Use it to work with one machine's state: a Docker image ID
+(the systemd suites below), a `--keep` run directory, or a check of a machine that is closed.
+
+To take a machine out of the choice (maintenance, removal), close it from inside: as root, write a reason to
+`/etc/qorpera-test-machine-closed`. New runs go to the other machine; runs already running or queued there
+finish; `--machine` and a `QORPERA_TEST_MACHINE*` target still reach it. A machine without
+`/etc/qorpera-test-machine-versions`, which `guest-setup.sh` writes last, counts as closed too. `--dry-run` shows
+`closed`, `busy`, `waiting` and `arriving` per machine. Delete the file to open it again.
+Clients older than this list (sessions that have not merged master) send every run to node 2 and do not read
+the file.
 
 ### Results on the PR
 
