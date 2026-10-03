@@ -5,8 +5,9 @@ Reads conntrack's events inside the exit's namespace and writes one JSON line pe
 as it ends (with bytes each way), one line per refused flow from the exit's refused_flows and refused_other sets, and
 a "gap" line whenever events were lost (conntrack reports the kernel dropping them under load) or a read failed.
 Files are <log-dir>/flows-YYYY-MM-DD.jsonl (UTC). A heartbeat file is touched every few seconds while both readers
-are alive, for `verify`. Never content: only addresses, ports, protocol, times and byte counts. E3 joins these lines
-with the client map and the DNS log.
+are alive and the conntrack reader watches the exit's current namespace, for `verify`; when the namespace was
+replaced under it, the logger exits and its unit starts it again in the new one. Never content: only addresses,
+ports, protocol, times and byte counts. E3 joins these lines with the client map and the DNS log.
 
   qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE
   qorpera-agent-exit-log.py --parse-conntrack   (stdin: conntrack -E lines; stdout: JSON lines)
@@ -145,7 +146,7 @@ class Writer:
         self.write(record)
 
 
-def follow_conntrack(netns, writer):
+def follow_conntrack(netns, writer, reader):
     process = subprocess.Popen(
         ["ip", "netns", "exec", netns, "conntrack", "-E", "-e", "NEW,DESTROY", "-o", "timestamp,extended,id",
          "-b", "16777216"],
@@ -154,6 +155,7 @@ def follow_conntrack(netns, writer):
         text=True,
         bufsize=1,
     )
+    reader["process"] = process
 
     def watch_errors():
         for line in process.stderr:
@@ -166,6 +168,14 @@ def follow_conntrack(netns, writer):
         if record:
             writer.write(record)
     writer.gap(f"conntrack stopped with {process.wait()}")
+
+
+def watches(process, netns):
+    """True when the reader runs in the exit's current namespace (ip netns exec enters it, then becomes conntrack)."""
+    try:
+        return os.stat(f"/proc/{process.pid}/ns/net").st_ino == os.stat(f"/run/netns/{netns}").st_ino
+    except OSError:
+        return process.poll() is not None
 
 
 def nft_json(netns, *what):
@@ -252,17 +262,24 @@ def main():
     except OSError:
         last_beat = None
     writer.gap("logger started", since=last_beat)
+    reader = {}
     threads = [
-        threading.Thread(target=follow_conntrack, args=(args.netns, writer), daemon=True),
+        threading.Thread(target=follow_conntrack, args=(args.netns, writer, reader), daemon=True),
         threading.Thread(target=poll_refused, args=(args.netns, writer, args.interval), daemon=True),
     ]
     for thread in threads:
         thread.start()
     # The heartbeat is written only while both readers are alive, so a dead reader shows in `verify`.
+    elsewhere = 0
     while True:
         time.sleep(min(5.0, args.interval))
         if not all(thread.is_alive() for thread in threads):
             sys.exit("the connection logger stopped")
+        # Twice in a row, so a reader caught between entering the namespace and starting does not count.
+        elsewhere = 0 if "process" not in reader or watches(reader["process"], args.netns) else elsewhere + 1
+        if elsewhere >= 2:
+            writer.gap("the exit's namespace was replaced; the logger starts again in the new one")
+            sys.exit("the conntrack reader watches an old namespace")
         with open(args.heartbeat, "w", encoding="utf-8") as f:
             f.write(f"{time.time():.0f}\n")
 
