@@ -111,6 +111,7 @@
 - The shared execution service defers a run whose Compute Identity volume is not attached to the execution host (`NODE_IDENTITY_ELSEWHERE`, this orchestrator only) before it takes a slot, provisions a runner row or reserves capacity, so a login that just moved to the node waits for its volume instead of failing its run. The wait is bounded: after two minutes the start fails like any other.
 - Shared preparation/configuration journal mechanics while preserving existing preparation authority and event bytes. Configuration records additionally bind the acknowledged preparation observation and use separate schemas and directories.
 - Connected the adoption copier to repeated creation-journal, stopped-VM, physical-policy and cloud mapping checks. A root-protected, boot/plan-bound infrastructure maintenance handoff is required at each checkpoint; it records operator responsibility for excluding other NAS writers and does not acquire a remote lock. Copy completion still grants no boot or activation.
+- The orchestrator accepts a run without a Company File snapshot id and substrate version id, as a `folder-v2` run has (folder core C4, tolerant before any such run exists): both or neither, each checked when present; `CloudRunnerWork.substrateVersionId` and `companySnapshotId` are optional.
 
 - Extended routine reconciliation with weekday-anchored intervals and advanced month, weekday, time-window, and time-zone schedules.
 - Replaced the Pi protocol dependency with the provider-neutral `@qorpera/contracts` package.

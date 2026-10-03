@@ -1,5 +1,5 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- Company folder core, C1c-3d-1 under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.5): a join by
+-- Company folder core, C1c-3d-1 under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.6): a join by
 -- someone other than the invitee of a live invitation refuses without the folder fence (#581 N1); a join beside a
 -- post waits at the thread room in its prelude, holding no invitation, and lands; an answer to a card and a member
 -- change wait for each other at the thread room (#581 N2); a job queued for a member's login after its removal read
