@@ -247,7 +247,11 @@ export interface CloudRunnerOrchestratorControlPlane {
 		limit: number,
 		signal?: AbortSignal,
 	): Promise<CloudFolderMaterializationPage>;
-	materializeFolderCompany?(profileId: string, limit: number, signal?: AbortSignal): Promise<CloudFolderMaterialization>;
+	materializeFolderCompany?(
+		profileId: string,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderMaterialization>;
 	reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void>;
 	retainedClaims(orchestratorId: string, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]>;
 	claimNext(
@@ -409,6 +413,8 @@ type CloudRunnerOrchestratorRequest =
 	  }
 	| { action: "folder_dynamic_routines"; orchestratorId: string; afterRoutineId?: string; limit: number }
 	| { action: "restore_dynamic_routine"; orchestratorId: string; routineId: string; expectedVersion: number }
+	| { action: "folder_materialize_due"; orchestratorId: string; afterProfileId?: string; limit: number }
+	| { action: "folder_materialize_company"; orchestratorId: string; profileId: string; limit: number }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| { action: "claim"; orchestratorId: string; clientClaimId: string; leaseSeconds: number }

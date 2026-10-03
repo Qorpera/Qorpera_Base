@@ -12,18 +12,19 @@
 -- * qorpera_folder_materialize_company(profile, limit): one company, in the caller's transaction, in core §3's order:
 --   the folder fence KEY SHARE with the pause read again and the company row KEY SHARE (rank 0); the requesters, the
 --   agents and their execution authorities KEY SHARE (ranks 1 to 3), a room wake's room FOR SHARE (rank 4, as posting
---   takes it), a routine wake's routine FOR NO KEY UPDATE (rank 5, as firing); then the work rows FOR UPDATE SKIP
---   LOCKED; the model logins (connections, then their versions) FOR UPDATE and the compute identities FOR SHARE NOWAIT,
---   as the reservation and the identity check take them; the conversations FOR UPDATE and the turn inputs FOR UPDATE,
---   in id order; then each item in its own subtransaction: the legacy checks, the job and run (no substrate,
+--   takes it), a routine wake's routine FOR NO KEY UPDATE (rank 5, as firing); then rank 5's last tables (C1B §8): the
+--   model logins (connections, then their versions) FOR UPDATE and the compute identities FOR SHARE NOWAIT, as the
+--   reservation and the identity check take them; the work rows FOR UPDATE SKIP LOCKED; the conversations FOR UPDATE
+--   and the turn inputs FOR UPDATE, in id order; then each item in its own subtransaction: the legacy checks, the job and run (no substrate,
 --   company_seq), the reservation, the input claimed and its transcript events (the operation clock), admission, and
 --   the run's queued event (whose trigger inserts a turn's first-run or human wake under that admission). A refusal
 --   marks the item as the legacy materializers did; a stop that commits meanwhile leaves the item queued. Service role.
 -- * The runner broker's folder-v2 description adds the run's company_seq.
+-- * The reconcile RPC no longer runs the legacy materializers (turns, conversations, wakes and their drains, proposal
+--   reviews): production's companies were wiped (3 October), and the legacy core's functions go with A1's removal slice.
 -- The runner-orchestrator edge function gets the actions `folder_materialize_due` and `folder_materialize_company`, and
--- the orchestrator's reconcile lane calls them on every pass, one company per request. The legacy materializers are
--- left as they are (they skip folder-v2) until the cleanup pass removes them. Each inserted text names this migration
--- (20260930018000), for deploy guards.
+-- the orchestrator's reconcile lane calls them on every pass, one company per request. Each inserted text names this
+-- migration (20260930018000), for deploy guards.
 
 set local lock_timeout = '3s';
 
@@ -107,6 +108,7 @@ begin
 	if not found then return jsonb_build_object('state', 'not_folder'); end if;
 	if public.qorpera_company_execution_paused(p_profile_id) then return jsonb_build_object('state', 'paused'); end if;
 	if public.qorpera_company_at_zero(p_profile_id, v_now) then return jsonb_build_object('state', 'at_zero'); end if;
+	-- F2-5b-3 calls the folder worker drain here, before this function locks anything (core C4).
 
 	-- The work, oldest scan first, read without a lock: it names the rows to lock in rank order.
 	v_request_ids := array(select request.id from public.qorpera_session_turn_requests as request
@@ -154,33 +156,24 @@ begin
 		select jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines', 'key', wake.routine_id::text, 'mode', 'nokeyupdate')
 		from public.qorpera_wake_occurrences as wake where wake.id = any(v_wake_ids) and wake.routine_id is not null
 	) as targets;
-	-- The fence KEY SHARE with the pause read again, the company row KEY SHARE, then the ranks. A stop that committed
+	-- The fence KEY SHARE with the pause read again, the company row KEY SHARE, then ranks 1 to 5. A stop that committed
 	-- its pause meanwhile answers paused.
 	begin
 		perform public.qorpera_folder_company_enter(v_env, p_profile_id, v_targets, true);
 	exception when sqlstate '55000' then
 		return jsonb_build_object('state', 'paused');
 	end;
-
-	-- The work rows, after the ranks: a row another materializer holds is its work this pass. Each scanned row moves
-	-- to the back of the scan order, so a row that waits never starves the others.
-	v_locked_requests := array(select request.id from public.qorpera_session_turn_requests as request
-		where request.id = any(v_request_ids) and request.status = 'queued' order by request.id for update skip locked);
-	v_locked_wakes := array(select wake.id from public.qorpera_wake_occurrences as wake
-		where wake.id = any(v_wake_ids) and wake.status = 'queued' order by wake.id for update skip locked);
-	update public.qorpera_session_turn_requests set admission_scan_at = clock_timestamp() where id = any(v_locked_requests);
-	update public.qorpera_wake_occurrences set admission_scan_at = clock_timestamp() where id = any(v_locked_wakes);
-
-	-- The model logins, as the reservation locks them (connections, then their versions, FOR UPDATE), then the compute
-	-- identities FOR SHARE NOWAIT (one that is busy or recovering leaves its items queued).
+	-- Rank 5's last tables (C1B §8): the model logins, connections then their versions FOR UPDATE, as the reservation
+	-- locks them, then the compute identities FOR SHARE NOWAIT (one that is busy or recovering leaves its items queued).
+	-- This materializer has no target at ranks 6 to 9, so nothing follows them before the work rows.
 	perform 1 from public.qorpera_provider_connections as connection
 	where connection.profile_id = p_profile_id and connection.id in (select sponsor.provider_connection_id
 		from public.qorpera_execution_sponsor_versions as sponsor
 		where (sponsor.binding_id, sponsor.version) in (
 			select request.sponsor_binding_id, request.sponsor_version from public.qorpera_session_turn_requests as request
-			where request.id = any(v_locked_requests)
+			where request.id = any(v_request_ids)
 			union select wake.sponsor_binding_id, wake.sponsor_version from public.qorpera_wake_occurrences as wake
-			where wake.id = any(v_locked_wakes)))
+			where wake.id = any(v_wake_ids)))
 	order by connection.id for update;
 	perform 1 from public.qorpera_provider_connection_versions as version
 	where (version.connection_id, version.version) in (select sponsor.provider_connection_id, sponsor.provider_connection_version
@@ -189,14 +182,14 @@ begin
 			and connection.profile_id = p_profile_id
 		where (sponsor.binding_id, sponsor.version) in (
 			select request.sponsor_binding_id, request.sponsor_version from public.qorpera_session_turn_requests as request
-			where request.id = any(v_locked_requests)
+			where request.id = any(v_request_ids)
 			union select wake.sponsor_binding_id, wake.sponsor_version from public.qorpera_wake_occurrences as wake
-			where wake.id = any(v_locked_wakes)))
+			where wake.id = any(v_wake_ids)))
 	order by version.connection_id, version.version for update;
 	for v_identity in
 		select distinct identity_id from (
 			select request.compute_identity_id as identity_id from public.qorpera_session_turn_requests as request
-			where request.id = any(v_locked_requests)
+			where request.id = any(v_request_ids)
 			union all
 			select coalesce(capsule.compute_identity_id, computer.compute_identity_id)
 			from public.qorpera_wake_occurrences as wake
@@ -207,12 +200,21 @@ begin
 			left join public.qorpera_native_credential_capsules as capsule on capsule.id = version.credential_capsule_id
 				and capsule.status = 'active'
 			left join public.qorpera_logical_computers as computer on computer.id = wake.logical_computer_id
-			where wake.id = any(v_locked_wakes)) as identities
+			where wake.id = any(v_wake_ids)) as identities
 		where identity_id is not null order by identity_id
 	loop
 		if not public.qorpera_try_lock_execution_identity(p_profile_id, v_identity) then
 			v_unavailable := v_unavailable || v_identity; end if;
 	end loop;
+
+	-- The work rows, after the ranks: a row another materializer holds is its work this pass. Each scanned row moves
+	-- to the back of the scan order, so a row that waits never starves the others.
+	v_locked_requests := array(select request.id from public.qorpera_session_turn_requests as request
+		where request.id = any(v_request_ids) and request.status = 'queued' order by request.id for update skip locked);
+	v_locked_wakes := array(select wake.id from public.qorpera_wake_occurrences as wake
+		where wake.id = any(v_wake_ids) and wake.status = 'queued' order by wake.id for update skip locked);
+	update public.qorpera_session_turn_requests set admission_scan_at = clock_timestamp() where id = any(v_locked_requests);
+	update public.qorpera_wake_occurrences set admission_scan_at = clock_timestamp() where id = any(v_locked_wakes);
 
 	-- The conversations FOR UPDATE, then the turn inputs FOR UPDATE, in id order, before any write to them.
 	perform 1 from public.qorpera_shared_sessions as session
@@ -530,4 +532,27 @@ begin
 	if (length(v_definition) - length(replace(v_definition, c_old, ''))) / length(c_old) <> 1 then
 		raise exception 'P28 patch anchor not found in %', v_target; end if;
 	execute replace(v_definition, c_old, c_new);
+end $$;
+
+-- 5. The reconcile RPC no longer runs the legacy materializers -------------------------------------------------------
+
+do $$
+declare v_target regprocedure; v_definition text; v_old text; v_new text;
+begin
+	v_target := 'public.qorpera_reconcile_runner_orchestrator(uuid)'::regprocedure;
+	v_definition := pg_get_functiondef(v_target);
+	v_old := E'\tperform public.qorpera_materialize_session_turn_requests(32);\n';
+	v_new := E'\t-- 20260930018000 (P28): no legacy turn materializer; folder-v2 runs come from qorpera_folder_materialize_company.\n';
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'P28 patch anchor not found in %', v_target; end if;
+	execute replace(v_definition, v_old, v_new);
+	v_target := 'public.qorpera_reconcile_runner_orchestrator_without_sponsored_turns(uuid)'::regprocedure;
+	v_definition := pg_get_functiondef(v_target);
+	v_old := E'\tperform public.qorpera_materialize_session_execution_runs(32);\n'
+		|| E'\tperform public.qorpera_materialize_wake_execution_runs(32);\n'
+		|| E'\tperform public.qorpera_materialize_company_proposal_review_runs(32);\n';
+	v_new := E'\t-- 20260930018000 (P28): no legacy conversation, wake or proposal-review materializer.\n';
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'P28 patch anchor not found in %', v_target; end if;
+	execute replace(v_definition, v_old, v_new);
 end $$;

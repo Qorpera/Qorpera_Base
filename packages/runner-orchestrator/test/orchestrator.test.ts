@@ -1800,9 +1800,7 @@ describe("cloud runner orchestrator", () => {
 		const profileId = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d";
 		const control = controlPlane();
 		vi.mocked(control.claimNext).mockResolvedValue(undefined);
-		const materialize = vi.fn(
-			async (): Promise<CloudFolderMaterialization> => ({ state: "done", runIds: [runId] }),
-		);
+		const materialize = vi.fn(async (): Promise<CloudFolderMaterialization> => ({ state: "done", runIds: [runId] }));
 		control.listFolderMaterializationDue = vi.fn(
 			async (): Promise<CloudFolderMaterializationPage> => ({ items: [profileId], hasMore: false }),
 		);

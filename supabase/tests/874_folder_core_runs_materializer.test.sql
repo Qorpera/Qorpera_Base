@@ -6,6 +6,7 @@
 -- first-run wake under admission; answers a founder's post in the thread with a room delivery; leaves a wake whose
 -- login is full queued (the run undone) and runs it once there is room; cancels a wake whose authority is gone; answers
 -- paused, not_folder and idle without writing. Both functions are the service role's alone. A run has exactly one pin.
+-- The reconcile RPC no longer runs the legacy materializers.
 
 create function pg_temp.materialize(p_profile uuid, p_limit integer default 16) returns jsonb language plpgsql as $$
 begin
@@ -66,6 +67,17 @@ select pg_temp.refused($$select public.qorpera_folder_materialize_company(curren
 select pg_temp.as_service();
 select pg_temp.refused($$select public.qorpera_folder_materialize_company(current_setting('qorpera_test.table')::uuid, 17)$$, '22023');
 select pg_temp.refused($$select public.qorpera_folder_materialize_due(null, 0)$$, '22023');
+
+-- The reconcile RPC no longer runs the legacy materializers; it keeps the heartbeat and the lease reconciliation.
+do $$
+declare v_reconcile text := pg_get_functiondef('public.qorpera_reconcile_runner_orchestrator(uuid)'::regprocedure)
+	|| pg_get_functiondef('public.qorpera_reconcile_runner_orchestrator_without_sponsored_turns(uuid)'::regprocedure);
+begin
+	if v_reconcile ~ 'perform public\.qorpera_materialize_(session_turn_requests|session_execution_runs|wake_execution_runs|company_proposal_review_runs)\('
+		or position('set last_heartbeat_at = statement_timestamp()' in v_reconcile) = 0
+		or position('perform public.qorpera_retire_stale_managed_runners();' in v_reconcile) = 0 then
+		raise exception 'The reconcile RPC still materializes legacy work, or lost its own steps'; end if;
+end $$;
 
 -- 1. The due list ------------------------------------------------------------------------------------------------------
 

@@ -52,9 +52,10 @@ transaction, in core §3's order:
    - rank 4: a room wake's room `FOR SHARE`, as posting takes it;
    - rank 5: a routine wake's routine `FOR NO KEY UPDATE`, as firing takes it (the wake's status trigger updates its
      authorization count).
-3. **The work rows** `FOR UPDATE SKIP LOCKED`, still queued. Each moves to the back of the scan order.
-4. **The model logins** (connections, then their versions) `FOR UPDATE`, as the reservation locks them, and the compute
-   identities `FOR SHARE NOWAIT`. A busy or recovering identity leaves its items queued.
+3. **Rank 5's last tables** (C1B §8): the model logins (connections, then their versions) `FOR UPDATE`, as the
+   reservation locks them, then the compute identities `FOR SHARE NOWAIT`. A busy or recovering identity leaves its
+   items queued.
+4. **The work rows** `FOR UPDATE SKIP LOCKED`, still queued. Each moves to the back of the scan order.
 5. **The conversations** `FOR UPDATE`, then the turn inputs `FOR UPDATE`, in id order.
 6. **Each item, in its own subtransaction:**
    - the old materializers' checks: one turn at a time per conversation, the author's access, the agent, the sponsor
@@ -80,10 +81,10 @@ It answers `{state: done, run_ids, failed, cancelled, blocked, skipped}`, or `id
 `not_folder` with nothing written. The subtransactions stay under the 64 the snapshot cache holds: one for the
 enter, one per identity and one per item, each at most 16.
 
-**Model logins and identities** have no rank in core §3 (C1C deferred them to C3). Here they come after the ranks
-and before the conversations. That matches the reservation's own order, the login consent (the member, then the
-connection) and the runner's native lease (the job, then the connection). The old materializers took the
-conversation first. They do not run on `folder-v2`.
+**Model logins and identities** sit at rank 5, after the hook's tables (coordinator, 4 October; C1B §8 lists the
+exact order). That matches the reservation's own order, the login consent (the member, then the connection) and the
+runner's native lease (the job, then the connection). The old materializers took the conversation first; they no
+longer run.
 
 **The orchestrator:**
 - The runner-orchestrator edge function gets the actions `folder_materialize_due` and `folder_materialize_company`.
@@ -92,8 +93,9 @@ conversation first. They do not run on `folder-v2`.
 - An edge function that predates them answers 400. The lane reports it and asks again after ten minutes, as for
   C1c-3e.
 
-**The legacy materializers** stay in `reconcile`; they skip `folder-v2`. The cleanup pass removes them with the rest
-of `snapshot-v1`.
+**The legacy materializers** leave `reconcile` (coordinator, 4 October: production's companies were wiped). The RPC
+keeps its heartbeat, the queued-job failures and the lease reconciliation. The functions themselves, their drains
+and their tests go with A1's legacy-removal slice.
 
 **Known gaps:**
 - A run's model: `agent.md`'s `model` does not reach runs yet (F2-1b). A login that is not a native subscription
@@ -130,8 +132,8 @@ for the same kickoff.
 
 ## 7. Not in P28
 
-- F2's worker drain (F2-5b-3). Once on master, F2 adds a call to it at the start of `qorpera_folder_materialize_company`
-  (core C4).
+- F2's worker drain (F2-5b-3). F2 adds its call at the start of `qorpera_folder_materialize_company`, where a comment
+  marks the place (core C4).
 - The listener (P29/P31).
 - Machine events (C1c-3i), the observability views (P32), and the edge functions (P26).
 
