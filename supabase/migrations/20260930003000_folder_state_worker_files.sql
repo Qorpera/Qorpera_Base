@@ -692,9 +692,9 @@ select pg_temp.f25b_worker_files_replace('public.qorpera_folder_structured_revie
 
 -- The review recorder takes manage_worker's dispatch and follow-up (their action review is a delegation).
 select pg_temp.f25b_worker_files_replace('public.qorpera_folder_record_review(jsonb,jsonb)'::regprocedure,
-	$old$		and v_action.tool_name in ('hire_agent','create_group_chat','manage_routine','decide_routine','company_delete')$old$,
-	$new$		-- manage_worker: 20260930003000 (F2-5b).
-		and v_action.tool_name in ('hire_agent','create_group_chat','manage_routine','decide_routine','company_delete','manage_worker')$new$);
+	$old$v_action.tool_name in ('hire_agent','create_group_chat','manage_routine','decide_routine','company_delete')$old$,
+	$new$v_action.tool_name in ('hire_agent','create_group_chat','manage_routine','decide_routine','company_delete',
+			'manage_worker' /* 20260930003000 (F2-5b) */)$new$);
 
 -- Authority: a worker's own report, through report_work, passes (the read-only ban included); the hook then allows only
 -- its own results.md (§2).
