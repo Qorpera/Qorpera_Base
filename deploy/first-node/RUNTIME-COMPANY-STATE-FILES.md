@@ -1720,7 +1720,7 @@ In short:
 - **What a member sees:** each worker has two files in its todo's folder, `brief.md` (what it was asked
   to do) and `results.md` (what it reported, and the agent's decision).
 - **Who writes them:** only the worker tools (`manage_worker`, `report_work`). Not the model's file tools,
-  and not a member.
+  and not a member. A restore of a deleted agent brings them back as they were.
 - **What waits:** coding workers on `folder-v2` (their machines come with C1c-3h and 3i; their dispatch
   refuses `0A000` until then), and the wakes that start and revive workers, which run once C4's
   `folder-v2` materializer (P28) calls the worker drain.
@@ -1787,10 +1787,12 @@ results when it reports … including coding workers, whose view of `agents/` is
     and is deleted only by a delete of a folder that holds it (the worker's folder, its todo's folder, the
     todos folder or the agent's folder), which retires the worker's row. Both only while none of those
     workers is active.
-  - A restore of such a folder (an agent's, as contract 5.6 lets a deleted agent come back) brings a
-    retired worker's `brief.md` and `results.md` back only at the last versions its row records, byte for
-    byte, and the row back finished, never active. Whoever may restore that folder may do it, and the
-    restore's own review class applies; the worker files add none. Any other restore of them is refused.
+  - A restore of a folder that holds retired workers (an agent's folder, as contract 5.6 lets a deleted
+    agent come back, or a todo's, the todos folder or a worker's own) brings each one's `brief.md` and
+    `results.md` back only at the last versions its row records, byte for byte, and the row back
+    finished, never active; the row then points at the new versions, which the check step verifies.
+    Whoever may restore that folder may do it, and the restore's own review class applies; the worker
+    files add none. Any other restore of them is refused.
 - **Authority:** dispatch, follow-up and decide follow folder authority (the run acts for its requester,
   as W1 does). A carried report by the worker's own run passes the authority check (the read-only
   worker's ban included, `qorpera_folder_actor_resource_allowed`), so a narrowed folder or a read-only
@@ -1832,7 +1834,8 @@ results when it reports … including coding workers, whose view of `agents/` is
 deleted only when its folder holds no worker's folder, so a todo with workers is never renamed (its
 workers' folders could not follow: a change set is not atomic). To delete it, delete its folder first (an
 earlier unit of the same change set, or an earlier save), which retires its finished workers; never while
-one of its workers is active.
+one of its workers is active. A refused rename says so: "this todo has workers: write a new todo, or delete
+its folder first".
 
 **4. The index.** The row stays the worker's index and keeps its runtime state. On `folder-v2` the hook
 writes it in the same transaction as the files:
@@ -1862,7 +1865,8 @@ writes it in the same transaction as the files:
 - A worker commit takes its todo `FOR SHARE` (so `done` and a dispatch wait for each other, and two
   reports in one todo do not) and its worker `FOR NO KEY UPDATE` (a new worker's id is claimed), with the
   company row `KEY SHARE` at rank 0.
-- A unit that moves or deletes a folder holding workers takes them `FOR NO KEY UPDATE`.
+- A unit that moves, deletes or restores a folder holding workers takes them `FOR NO KEY UPDATE`, and their
+  todos as a todo write does.
 - `decide` answers `version_changed` when a todo or worker row it reads was written after the commit's
   `as_of_seq` and it did not lock it (H2b's guard).
 - This patches F2-6's targets for todos, with a body marker. No company-wide lock, and no lock outside
