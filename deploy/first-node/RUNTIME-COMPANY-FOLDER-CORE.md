@@ -855,7 +855,7 @@ file (contract, the 2026-10-02 amendment "work for people", item 3). It
 removes that path's versions and the conflict copies of its paths, clears the
 retired index rows' pointers to them, and marks the commits' units erased,
 keeping their attribution. The bytes then lose their roots, and GC collects
-them.
+them. Design: RUNTIME-COMPANY-FOLDER-ERASURE.md (slice P18).
 
 ### Tests
 
