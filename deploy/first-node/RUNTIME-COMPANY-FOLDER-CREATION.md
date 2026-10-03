@@ -256,8 +256,8 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   the creation's `mkdir connections` meets a `conflict`, and the creation then fails on every requeue. The skip goes
   into P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000), after the candidate
   select's `lease_until` and `not_before` lines: `and not exists (…creation of work.profile_id whose state is not
-  'completed')`. **Whichever of P14a and #727 lands second carries it** (the coordinator, 3 October; A1 agreed): P14a
-  by an exact anchor with its body marker, or #727 in its next push. Work rows the claim inserts for such a company
+  'completed')`. Whichever of P14a and #727 landed second was to carry it (the coordinator, 3 October; A1
+  agreed): #727 merged first, so P14a carries it, by an exact anchor with its body marker. Work rows the claim inserts for such a company
   stay due until the skip lifts; nothing else changes. **Gate:** the P22 writer is not switched on, and P38/P39 do
   not run, until the skip is on master. A `folder-v2` company with no creation row passes the
   skip, while the hub list hides it: deliberately, since such companies exist only in tests (#727's own among them),
