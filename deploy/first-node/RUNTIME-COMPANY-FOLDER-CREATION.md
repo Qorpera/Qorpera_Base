@@ -1,192 +1,340 @@
 # Company creation on the folder core (C2-create, P14)
 
-Status: design, 3 October 2026 (F2, the coordinator's slice P14). The core's §5 "Company creation is one commit" and
-§11 C2 say what; this says how. It fills the four stubs the founding lobby left for C2
-(`20260928248200_company_founding_lobby.sql`): `qorpera_folder_company_open`, `_seed`, `_ready` and, for C5 only,
-`qorpera_company_founding_available`.
+Status: design, 3 October 2026 (F2, the coordinator's slice P14); revised after design review r1 and the coordinator's
+answers. The core's §5 "Company creation is one commit" and §11 C2 say what; this says how. It fills the stubs the
+founding lobby left for C2 (`20260928248200_company_founding_lobby.sql`): `qorpera_folder_company_open`, `_seed` and
+`_ready`. Nothing changes for customers until C5 turns creation on (`qorpera_company_founding_available()`, P39); the
+coordinator keeps it off until C4's materializer (P28) runs the first run.
 
 In short:
 - **Open** makes the company row, its environment and its owner, already on `folder-v2`: no seeded tree yet.
-- **Start** records a creation request with the founders' vision and roles.
+- **Start** records one creation request with the founders' vision and roles.
 - **A creation worker** in the object gateway builds the seeded tree (`companyStateSeedTree`), stores its files as the
   platform, and then makes **one transaction**: the creation commit, the Co-Founder (staff row, thread, cofounders
-  row), and the Co-Founder's silent first run.
+  row), and the Co-Founder's silent first run (a kickoff and its turn request).
 - **Ready** is that transaction having landed. Until then the company is hidden.
-- `qorpera_company_founding_available()` stays false. C5 turns creation on (P39). Before that, only an operator
-  makes a `folder-v2` company, through the same path (§6).
+- **If setup fails for good,** the founders' table says so, and an operator can retry it. The company stays hidden
+  until it is ready.
+- **Before C5,** only an operator makes a `folder-v2` company, through the same path (§6).
 
 ## 1. What exists (master 186cd8646)
 
-- **The stubs** raise `0A000` or return false. They are revoked even from the service role.
+- **The stubs** (`20260928248200:20-44`): open and seed raise `0A000`, and ready returns false. All three are revoked
+  from every API role. `qorpera_company_founding_available()` returns false; it is granted to `authenticated`, and C5
+  flips it.
 - **The lobby's callers:**
-  - `qorpera_open_company_founding` calls `open` as the signed-in member, with no lock held, and reads
-    `profile_id`.
-  - `qorpera_start_company_founding` calls `seed` inside its own transaction, with the input
-    `qorpera.company-seed-input/v1`: `companyName`, `vision`, `kickoffRequestedBy` (the member who pressed Start) and
-    `founders` (`userId`, `displayName`, `role`). Start then nulls the vision and the roles, so the input is their only
-    copy.
-  - With C1c-3d-1 (#705), Start holds the folder fence and the company row `FOR NO KEY UPDATE` at that point.
-- **The web reads `companyReady`** (from `_ready`) and polls until it is true. Then it expects the company in
+  - `qorpera_open_company_founding` calls `open` as the signed-in member, with no lock held, and reads `profile_id`.
+  - `qorpera_start_company_founding` calls `seed` once, inside its own transaction. A repeated Start returns early at
+    `phase = 'started'` (`248200:415`). The input is `qorpera.company-seed-input/v1`: `companyName`, `vision`,
+    `kickoffRequestedBy` (the member who pressed Start) and `founders` (`userId`, `displayName`, `role`). Start then
+    nulls the vision and the roles, so the input is their only copy.
+  - With C1c-3d-1 (#705), Start holds the folder fence and the company row `FOR NO KEY UPDATE` at that point. #705
+    requires the fence row to exist as soon as Open returns.
+- **The web** reads `companyReady` (from `_ready`) and polls until it is true. Then it expects the company in
   `qorpera_list_hosted_profiles`.
 - **Today's creation (`snapshot-v1`):**
-  - The request does the profile, the environment (whose trigger makes the Company File row), the Co-Founder and a
+  - The request does the profile, the environment (its trigger makes the Company File row), the Co-Founder and a
     bootstrap job.
-  - The object gateway's `CompanyBootstrapProvisioner` stages the files and finalizes. Finalize writes the silent
-    `kickoff` input in the Co-Founder's thread, `qorpera_company_first_runs` and `qorpera_agent_first_runs`, and
-    `qorpera_queue_agent_first_run`'s turn request.
+  - The object gateway's `CompanyBootstrapProvisioner` stages the files and finalizes.
+  - Finalize writes the silent `kickoff` input in the Co-Founder's thread, `qorpera_company_first_runs`,
+    `qorpera_agent_first_runs`, and `qorpera_queue_agent_first_run`'s turn request.
   - The `first-run` wake row appears only when the turn materializer makes the run (`qorpera_admit_input_wake`).
-- **The traps** (registry, #444):
+- **The traps** (registry; #444):
   - Running the old chain beside C2 makes two Co-Founders and two first runs.
   - Enabling the folder core after a bootstrap job is queued leaves the company hidden for good.
   - Claim, finalize and Co-Founder seeding already refuse `folder-v2`. Not yet guarded:
     `qorpera_enqueue_company_bootstrap`, and `qorpera_folder_enable` with a queued job.
 - **Bytes:**
   - A commit unit only references stored bytes (a version-2 proof and catalog rows). SQL cannot store the bytes.
-  - The platform can stage through `qorpera_folder_open_upload` / `_confirm_object` / `_seal_upload` (service role;
-    the platform needs no possession).
-  - The object gateway's folder route serves runs only. Its bootstrap worker is the model for a platform writer.
-- **The commit's platform branch** takes no fence and has no step 10 (no wake).
-- **Delivery:** nothing delivers a `folder-v2` run until C4 (P28). The materializers skip `folder-v2`.
+  - The platform can stage through `qorpera_folder_open_upload`, `_authorize_object_upload`, `_confirm_object` and
+    `_seal_upload` (service role; the platform needs no possession).
+  - A1's P22b writer (`packages/object-gateway/src/platform-folder-writer.ts`) is the gateway's platform stager.
+- **The commit's platform branch** takes no fence and has no admission step (`20260928259230:985-990, 1392-1430`).
+- **First-run wakes:** the wake pin trigger's `first-run` branch requires a `session_turn` run
+  (`20260828023000:195-200`), and the wake policy accepts `first-run` only for such a run. Nothing delivers a
+  `folder-v2` run until C4 (P28).
 
 ## 2. The flow
 
-1. **Open** (`qorpera_folder_company_open(user, clientCreationId, name)`, security definer, called by the lobby):
-   - Repeat-safe on `qorpera_company_creation_requests` (user, creation id): a repeat returns the same company. A
-     creation id the old path already used refuses (`23505`), as the lobby already does for a company with a bootstrap
-     job.
-   - It makes the profile, the owner member and the environment (contract version 2). The provision trigger makes the
-     `snapshot-v1` `provisioning` file row as today.
-   - In the same transaction it switches that row to `folder-v2`, through the enable step's own internal body (clock,
-     fence, admission, the root and `rules/` resources), because `qorpera_folder_enable` itself is service-role only.
-   - No staff, no thread, no seed, no wake. It returns `{profile_id, environment_id}`.
-   - Vault By Default registers the company for sign-in on its own.
+1. **Open** (`qorpera_folder_company_open(user, clientCreationId, name)`, called by the lobby as the member):
+   - It inserts the creation request first (`qorpera_company_creation_requests`, `on conflict do nothing`). A
+     repeat returns the same company. A name mismatch refuses, as `qorpera_create_cloud_company` does. A creation id
+     the old path already used refuses (`23505`, as the lobby does for a company with a bootstrap job). The reverse
+     (a folder-path id sent to the old path) fails at its own strict job lookup.
+   - It makes the profile, the owner member (email and display name read from `auth.users`, so the same body serves
+     a service-role caller), and the environment named after the company (contract version 2). The provision
+     trigger makes the `snapshot-v1` `provisioning` file row as today.
+   - In the same transaction, `qorpera_folder_enable_internal` switches that row to `folder-v2`: the clock, fence and
+     admission rows, and the root and `rules/` resources.
+   - `qorpera_folder_enable` becomes a role check around the same internal function. Both refuse an environment
+     with a bootstrap job (F1's promise on #444). The file row's `state` is then `ready`, and nothing may read that
+     as "the company is ready".
+   - No staff, no thread, no seed, no wake. It returns `{profile_id, environment_id}`. Vault By Default registers the
+     company for sign-in on its own.
 2. **Start** (`qorpera_folder_company_seed(profile, input)`, called inside Start):
-   - It only records the request: a row in a new table `qorpera_folder_company_creations`, one per company, with
-     `state = 'queued'` and the input.
-   - A repeated Start finds the row and returns its id.
-   - Nothing else, so Start's locks stay as #705 made them (the insert's foreign key to the company row is compatible
-     with the `FOR NO KEY UPDATE` Start holds).
-3. **The creation worker** (object gateway, beside the bootstrap provisioner):
-   - claims a queued creation with a lease (`qorpera_folder_company_creation_claim`);
-   - builds `companyStateSeedTree({companyName, cofounderId, vision, founders, firstTodo})`, with the ids derived from
-     the creation's id, so a retry builds the same tree;
-   - parses each structured file with the shared parser;
-   - stages every file as the platform: open, a NAS put of what is missing, confirm, seal;
-   - calls `qorpera_folder_company_create` once (§3).
-   - On a staging error it releases the lease and retries later. A creation that the commit refuses is marked
-     `failed` with the reason, and is never retried blindly.
-4. **Ready** (`qorpera_folder_company_ready(profile)`) is `state = 'completed'`. A plain `stable` read.
+   - It checks the input (the schema, the fields, their sizes as the lobby keeps them) and that the company is
+     `folder-v2` with no bootstrap job.
+   - It inserts one row into `qorpera_folder_company_creations`: `state = 'queued'`, the input, and
+     `kickoff_user_id = kickoffRequestedBy`.
+   - Start reaches it once; a second call finds the row and returns its id (a safety net). The insert adds no lock
+     another session holds in a conflicting mode.
+3. **The creation worker** (object gateway; P14b):
+   - It claims a queued creation with a lease token (`qorpera_folder_company_creation_claim`).
+   - It builds `companyStateSeedTree({companyName, cofounderId, vision, founders, firstTodo: {id, requestedBy:
+     kickoffRequestedBy}})`, with the ids derived from the creation's id, so a retry builds the same tree, and
+     parses each structured file with the shared parser.
+   - It stages every file as the platform with A1's `PlatformFolderWriter.stage()`, in the same attempt as the
+     create (open intents are GC roots; restaging an object already present costs nothing), then calls
+     `qorpera_folder_company_create` once (§3).
+   - Retryable refusals and errors (§3 step 6) release the lease with a back-off. A paused or deleting company
+     (`55000`) is a back-off too, not a failure.
+4. **Ready** (`qorpera_folder_company_ready(profile)`) is `state = 'completed'`: a plain `stable` read.
 
 ## 3. The creation transaction (`qorpera_folder_company_create`, service role)
 
-One transaction, in the core's lock order:
-1. **The creation row `FOR UPDATE`**, its lease checked (it sits where a run's job sits, before the fence). A
-   completed creation answers its stored result: a replay.
-2. **The fence `KEY SHARE`, then the pause read again.** A paused company refuses (`55000`), and the worker retries
-   later. The platform branch of the commit takes no fence, so the creation takes it here. Member management (joins,
-   leaving, role changes) holds the fence `FOR NO KEY UPDATE`, so a join waits until the Co-Founder's thread exists,
-   and then the join's own trigger adds the member to it.
-3. **The commit:** the transaction-local setting `qorpera.folder_company_create` carries the creation (environment,
-   creation id, operation key), as F2-5b's worker request does. Then `qorpera_folder_commit(environment,
-   platform, 'company-create:<id>', units)` runs, with these units:
-   - `mkdir vision`, `write vision/vision.md`;
-   - `mkdir agents`, `write agents/sections.md`;
-   - `new_folder agents/co-founder` (`agent.md`, `memory/`, `todos/` with the first todo, `routines/`);
-   - `mkdir` for each other seeded folder (`agents/groups`, `connections`, `rules`, `skills`, `skills/human-task`
-     with `SKILL.md`, `human-tasks`, `contacts`).
+One transaction, numbered with the core's steps (core §3):
+- **Step 2 (the job's place): the creation row `FOR UPDATE`.** Its lease token is checked, and a completed creation
+  answers its stored result (a replay).
+- **Step 3: the fence.**
+  - The pause is read before the fence (`qorpera_company_execution_paused`, which also covers a company being
+    deleted).
+  - Then the folder fence `FOR NO KEY UPDATE`: the mode member management uses (C1C §6.1). So a join, a leave or a
+    role change and the creation run one after the other. A join can no longer miss the Co-Founder's thread, which
+    the staff-insert trigger creates with the members of that moment.
+  - Effects hold the fence `KEY SHARE` and are not blocked. Stop and resume wait as before. It is the company's
+    existing fence, taken once per company, so it is not a new company-wide lock.
+  - Then the pause again, as every effect does.
+- **Step 1, here: the operation key.** The setting `qorpera.folder_company_create` carries the creation: the
+  environment, the creation id and the operation key `company-create:<id>`. It is set in the body and cleared after,
+  as `qorpera.folder_send` is. Apply cross-checks it against the commit's own key and the creation row it holds.
+  Then `qorpera_folder_commit(environment, platform, 'company-create:<id>', units)` runs, and claims the key at its
+  own step 1, after the creation row and the fence.
+  - This order is a named exception for P13's call-chain check. The key is only ever claimed under its creation row
+    and the fence, so nothing can hold it and wait for them.
+- **The units:**
+  - `mkdir vision`, `write vision/vision.md`;
+  - `mkdir agents`, `write agents/sections.md`;
+  - `new_folder agents/co-founder`: `agent.md`, `memory/`, `skills/`, `routines/`, and `todos/` with the first todo;
+  - `mkdir` for every other seeded folder: `agents/groups`, `connections`, `rules`, `skills`, `skills/human-task`
+    with `SKILL.md`, `human-tasks` and `contacts`;
+  - `interfaces/` and `tables/` with the library copies, once P16 adds them to the seed tree (§8).
 
-   `interfaces/` and `tables/` join with P16. The hook's existing rules apply: only the platform records the
-   Co-Founder (`qorpera_company_cofounders`, formation null); `vision_seeded` is true.
-4. **The first run, in apply, for the Co-Founder's `agent.md` when the setting is there.** After the staff row and its
-   thread exist (the staff-insert triggers, as for a hire):
-   - the silent `kickoff` input in the Co-Founder's thread, authored by `kickoffRequestedBy`, with the assignment
-     `{schema: 'qorpera.company-first-run/v1', assignment: {kind: 'company_founding', companyId,
-     cofounderStaffAgentId, firstTodo: <its path>}}`;
-   - `qorpera_agent_first_runs` (the `agent.md` version as `source_path_version`);
-   - the turn request, through `qorpera_queue_agent_first_run`, with `qorpera_member_first_run_sponsor` of the member
-     who pressed Start, read again now. With no login, the kickoff stays pending, and its author starts it later
-     (`qorpera_start_agent_first_run`), as today.
+  The hook's existing rules apply: only the platform records the Co-Founder (`qorpera_company_cofounders`, formation
+  null), and `vision_seeded` is true.
+- **Steps 4 to 8: the commit's own order.**
+  - Rank 0: the company row `KEY SHARE`.
+  - Rank 1: every member row `KEY SHARE`. The hook names them for an agent with no thread yet. This is where a leave
+    or a role change meets a running creation.
+  - Rank 2: the new staff row; then paths and objects.
+  - Apply: the staff row, its thread room, session and room members (the staff-insert triggers, as for a hire), the
+    operation clock, then the first run (below). Todos are indexed after the agent within the unit, so the first
+    todo comes after the operation clock too. These are all new rows.
+  - The foreign-key `KEY SHARE` locks apply takes after the paths: the kickoff author in `auth.users`; the sponsor
+    binding, sponsor version and compute identity of the turn request; the Company File row (through
+    `qorpera_agent_first_runs`); and the runtime bundle row (the provenance trigger). None closes a cycle: none of
+    these rows is locked more strongly by anything that also holds a lock this transaction waits for. The known
+    exception, an account deletion cascading with no prelude, can meet it as one `40P01` (C1C §6 accepts that).
+- **The first run, in apply, for the Co-Founder's `agent.md`, when the setting is there.** This is the seam P28
+  consumes:
+  - **The kickoff** (`qorpera_session_inputs`):
+    - `session_id` is the Co-Founder's thread (the room bound to the Co-Founder);
+    - `client_input_id = md5('qorpera.folder-company-create/kickoff:' || creation_id)::uuid`;
+    - `kind = 'kickoff'` and `author_user_id = kickoff_user_id`;
+    - `body`:
+      ```json
+      {"schema": "qorpera.company-first-run/v1",
+       "assignment": {"kind": "company_founding", "companyId": "<profile>", "creationId": "<creation>",
+                      "cofounderStaffAgentId": "<agent>",
+                      "firstTodo": "agents/co-founder/todos/start-with-the-founders.md"}}
+      ```
+    - The other columns take their defaults, as finalize's kickoff does.
+  - **`qorpera_agent_first_runs`:** the Co-Founder, the thread, the kickoff, `source_path_version` = the `agent.md`
+    version, and `startup_assignment` = the kickoff's body.
+  - **The turn request,** through `qorpera_queue_agent_first_run`. Its sponsor is `qorpera_member_first_run_sponsor`
+    of `kickoff_user_id`, read again now, together with the same `qorpera_sponsor_serves_requester` check Start made.
+    With no usable login the kickoff stays pending, and its author starts it later, as today.
+  - `qorpera_company_first_runs` is not written (it needs a formation).
+- **Step 9:** the check (verify).
+- **Step 11:** the folder clock.
+- **After the clock:** the creation row becomes `state = 'completed'`, with the commit id, and the input is nulled
+  (the files now hold the vision and the roles). This row is already held, so no new lock is taken.
 
-   `qorpera_company_first_runs` is not written (it needs a formation).
-5. **Every unit must be saved.** If any unit is refused or conflicts, the function raises, and the whole transaction
-   rolls back: no half-seeded company. Then the creation is marked `failed` in a second call, with the outcomes.
-6. **The creation row:** `state = 'completed'`, the commit id, and the input nulled (the files now hold the vision and
-   the roles). This is the row the transaction already holds.
+**Every unit saved, or nothing.**
+- The commit returns normally even when it saves nothing (`seq` null). So the creation checks for a `seq`, one
+  outcome per unit sent, and every outcome `saved`. Otherwise it raises `QFC01`, with the commit's outcomes in the
+  error's DETAIL, and the whole transaction rolls back: no half-seeded company.
+- The worker reads the outcomes:
+  - **Retryable** (release, back off, restage): `bytes_unverified` (a deleting object: "the writer redoes its call
+    once GC has finished", core §8 G3); errors `QRC01`, `55000`, `55P03` and `40P01`.
+  - **Final** (`qorpera_folder_company_creation_fail(creation, token, outcomes)`, which keeps the outcomes and the
+    input): a parse, schema or 5.6 refusal; an unexpected `conflict`; and defects (`22023`, `XX000`).
 
-**No wake row at creation.** As today, the first run is a kickoff and a turn request; the `first-run` wake appears
-when the run is made. That is C4's `folder-v2` materializer (P28: "plain conversations on `folder-v2`"). So the
-creation needs no admission and no change to the core's commit. Core §5 and contract launch item 3 say "one silent
-first-run wake": the kickoff is that, as on `snapshot-v1`, and exactly one, since the creation is one row per company
-and `qorpera_agent_first_runs` is unique per agent.
+**What founders see.**
+- `qorpera_folder_company_ready` stays false, and the lobby's view gains `start.companySetup`: `pending`, `ready` or
+  `failed`. A web follow-up shows "Setup failed; we are looking at it" for `failed`.
+- The operator requeues (`qorpera_folder_company_creation_requeue(creation, reason)`, owner role only) after fixing
+  the cause.
+- Departure and delete are allowed while a creation is `failed`.
 
-## 4. Hiding, and the old chain
+**No wake row at creation** (the coordinator, 3 October).
+- The wake pin trigger's `first-run` branch requires a `session_turn` run, and the wake policy accepts `first-run`
+  only for such a run. So a run-less wake at creation would fail today, while the kickoff and turn request fit both
+  unchanged.
+- This matches contract 14.1 ("exactly one first-run kickoff … a silent system input"), the 2026-09-18 amendment and
+  launch item 3, the way `snapshot-v1` meets them today.
+- Exactly one:
+  - one creation row per company;
+  - `qorpera_agent_first_runs` is unique per agent;
+  - turn requests are unique per input;
+  - the wake index `qorpera_wake_first_run_once` is unique per agent.
+- The core text that says "wake" moves with this (P14a): core §3 step 10's "the creation commit's first run", §5's
+  "exactly one silent first-run wake", and C5's acceptance line, which becomes "one kickoff and its turn request at
+  creation; the first-run wake once P28 materializes it".
 
-- **Hidden until ready:** `qorpera_list_hosted_profiles` also hides a `folder-v2` company whose creation is not
-  completed. A company with no creation row (none exists outside tests) stays hidden as well.
-- **Rules keyed on the bootstrap job, mirrored for a creation:**
-  - a founder cannot leave while the creation is queued or leased (as with a bootstrap job, 20260928248100);
-  - company delete marks a queued creation `blocked` (as it does a bootstrap job, 20260928249150).
+**What P28 needs from this** (Q1's slice; recorded here as the hand-over):
+- **A `folder-v2` turn materializer,** one company per transaction, in the core's order:
+  1. the request row;
+  2. the fence `KEY SHARE`, with the pause read before and after;
+  3. ranks 0 to 4 (the requester, the Co-Founder, the thread room);
+  4. the session `FOR UPDATE`;
+  5. the operation clock;
+  6. `qorpera_folder_admit_wakes`;
+  7. the run and its `queued` event, after which `qorpera_admit_input_wake` inserts the `first-run` wake.
+- **No change to the pin trigger or the wake policy.** A test should prove `qorpera_folder_wake_authorized` accepts
+  it.
+- **A dead request.** The turn request pins the sponsor chosen at creation, and `qorpera_queue_agent_first_run`
+  returns any existing request whatever its status. So `qorpera_start_agent_first_run` needs a `folder-v2` branch
+  (the fence, then the pause) and a way to replace a dead request.
+- **The runtime** passes the kickoff as `startupAssignment` on the `first-run` wake. The kind `company_founding`
+  replaces `company_formation`; P28 checks the runtime reads it.
+
+## 4. Hiding, the old chain, and deletion
+
+- **Hidden until ready:** `qorpera_list_hosted_profiles` gains one condition in its WHERE clause (the eight keys
+  member-web reads stay exactly as they are). A `folder-v2` company shows only when its creation is `completed`. A
+  `folder-v2` company with no creation row (none exists outside tests) stays hidden. The core flag and the creation
+  row are joined once, not called per row.
+- **Founder departure** (`qorpera_guard_founder_departure`, and the team page's `leave` capability): a founder named
+  as a creation's `kickoff_user_id` cannot leave while it is `queued` or `leased`, as with a bootstrap job. `failed`
+  and `blocked` do not hold them.
+- **Company delete** (`qorpera_stop_company_work`, called with the company fence held): it marks `queued` and `leased`
+  creations `blocked` with `FOR UPDATE SKIP LOCKED`, as it treats runner jobs, since the creation row sits before the
+  fence. An in-flight creation refuses after its fence (the pause check covers deletions). The finisher's next pass
+  marks it. A worker's release never turns `blocked` back into `queued`.
 - **Guards:**
-  - `qorpera_folder_enable` refuses an environment with a bootstrap job (F1's promise on #444);
-  - `qorpera_enqueue_company_bootstrap` refuses `folder-v2`;
-  - `qorpera_folder_company_create` refuses a company that has a bootstrap job or a Co-Founder;
-  - `open` never runs the old chain.
+  - `qorpera_folder_enable(_internal)` refuses an environment with a bootstrap job;
+  - `qorpera_enqueue_company_bootstrap` refuses `folder-v2` (a `folder-v2`-only prefix; its old body stays byte for
+    byte);
+  - `qorpera_folder_company_create` refuses a company with a bootstrap job or a Co-Founder;
+  - Open never runs the old chain.
+- **Other platform writers** (P22's connection files) skip a company whose creation is not `completed`. Otherwise
+  the creation's `mkdir connections` meets a `conflict`.
+- **The rollout packet** blocks a cut while bootstrap jobs are queued or leased (`sql-packet.mjs:92`). Creations
+  join that check.
 
-## 5. The worker (TS, `packages/object-gateway`)
+## 5. The worker (TS, `packages/object-gateway`, P14b)
 
-- **`CompanyFolderCreator`,** run from the gateway's maintenance loop like the bootstrap provisioner:
-  - claim (service role);
-  - `companyStateSeedTree` from `@qorpera/cloud-client`;
-  - stage through the gateway's own NAS store with a platform authority (open, authorize, confirm, seal, the
-    replication path the bootstrap uses);
-  - create.
-- **Off by default** behind its own setting, until an operator or C5 needs it.
-- **Its deploy:** the gateway's, apart from the SQL train. It needs the SQL live first.
+- **`CompanyFolderCreator`** runs from the gateway's maintenance loop like the bootstrap provisioner. It is built on
+  A1's P22b module:
+  - `drainPlatformClaims` with its own claim, release, fail and create calls;
+  - `PlatformFolderWriter.stage()` for every seed file;
+  - one `qorpera_folder_company_create` call per creation.
+- **Off by default** behind its own setting. The coordinator switches it on.
+- **Rollout:** the SQL in a cut first; then the gateway, as a node 1 shared service in its own quiet minute. The
+  gateway build carries the cloud-client parser and seed tree that match the live hook.
 - **Tests:**
-  - a crash between staging and create (the retry restages or reuses: sealed objects come back `present`);
-  - a refused commit (failed, not retried);
-  - a paused company;
-  - a replay.
+  - a crash between staging and create (the retry restages; sealed objects come back `present`);
+  - each retryable class, and a final refusal (`failed`, not retried);
+  - a paused and a deleting company (back-off);
+  - a replay;
+  - a stale lease token.
 
-## 6. The operator path (C5 step 2, P38)
+## 6. The operator path (C5 step 2; P38)
 
-`qorpera_folder_company_operator_create(owner, clientCreationId, name, vision)`, service role:
-- open, then a creation with `founders = [the owner]` and `kickoffRequestedBy = owner`;
-- no founding row;
-- the same worker seeds it.
+Two functions, like the lobby. Both are revoked from every API role; the coordinator's P38 lane calls them as the
+owner role:
+- **`qorpera_folder_company_operator_open(owner_user_id, client_creation_id, name, reason)`:** Open for that
+  account. The owner's email must be confirmed. It records the operator's reason in the creation request.
+- **`qorpera_folder_company_operator_start(profile, vision, reason)`:**
+  - It checks the owner has a usable model login, as the lobby's Start requires of every founder. So a proof
+    company's first run is paid, once Vault By Default has registered the company and the owner has connected a
+    login.
+  - Then it records the creation with `founders = [the owner]` and `kickoff_user_id = owner`, with the same first
+    todo as the lobby's. The same worker seeds it.
 
-This is how the proof company is made before C5 turns creation on.
+**Gate:** not before the audit's list "before any `folder-v2` company exists" (P02 #705, P01, F1's six #613
+follow-ups, P03) and P13.
+
+**What the proof company does not prove:** Start's real-seed lock path inside #705's prelude first runs in
+production at P39. A lobby smoke test follows the switch. The web has no `folder-v2` company screens yet (C4); once
+ready, the proof company appears in the owner's hub.
 
 ## 7. Locks, summed up
 
-- **Open:** what `create_hosted_profile` takes today, plus the file row and the new folder rows it inserts. No fence
-  exists yet, so none is taken.
+- **Open:** what profile creation takes today, plus the file row it switches and the new folder rows it inserts. No
+  fence exists yet, so none is taken.
 - **Seed:** one insert, inside Start's locks.
-- **Create:** the creation row, then the fence `KEY SHARE`, then the commit's own order:
-  - the company row `KEY SHARE`;
-  - the new staff row;
-  - paths;
-  - apply: the thread and its session, the operation clock, the kickoff, the first-run rows, the turn request;
+- **Create:** the creation row; the pause, then the fence `FOR NO KEY UPDATE`, then the pause again; then the
+  commit's own order:
+  - the operation key;
+  - rank 0, the company row `KEY SHARE`;
+  - rank 1, the member rows `KEY SHARE`;
+  - rank 2, the new staff row;
+  - paths and objects;
+  - apply: the thread, its session and room members, the operation clock, the kickoff, the first-run row, the turn
+    request, the first todo;
   - verify;
   - the folder clock.
 
-  Nothing is locked after the clock: the creation row is already held.
-- **No company-wide lock beyond the fence `KEY SHARE`** every effect takes.
+  The creation row is updated after the clock, but it is already held.
+- **Company-wide locks:** none beyond the fence, in the mode member management already takes.
 
-## 8. PRs and tests
+## 8. Patches, PRs, tests
 
-- **P14a, the database** (one migration, one SQL test file plus a race file):
-  - the creation table; open, seed, ready, claim, fail, create and the operator entry;
-  - the apply step for the first run; the list and the guards;
-  - Start's race tests with a real seed (#705 left them to P14): a join against a creation, Start twice at once, a
-    delete during a creation.
-- **P14b, the worker** (TS, object gateway), after P14a.
-- **Docs:** core §5's creation paragraph and CLIENT-CONTRACT's lobby section ("no Company File before Start" becomes
-  "no seeded tree before Start").
+**Shared live functions P14a patches**, each with the body marker `<slot>` and an exact anchor, and a snapshot-v1
+reversal test (as #705's 817 §1):
+- `qorpera_folder_structured_apply` (the first run);
+- `qorpera_list_hosted_profiles` (hiding);
+- `qorpera_guard_founder_departure` and `qorpera_profile_team_info` (`leave`);
+- `qorpera_stop_company_work` (creations blocked);
+- `qorpera_enqueue_company_bootstrap` (a `folder-v2` refusal prefix);
+- `qorpera_folder_enable` (a role check around the new `qorpera_folder_enable_internal`, with the bootstrap-job
+  refusal);
+- `qorpera_company_founding_json` (`start.companySetup`);
+- the three stubs (`create or replace`; still revoked from every API role).
 
-## 9. Open points for the coordinator
+**PRs:**
+- **P14a, the database:**
+  - the creation table, with RLS on, revoked from every API role, cascading from the company row;
+  - the functions: open, seed, ready, claim, release, fail, requeue, create, and the two operator functions;
+  - the patches above, and the core and CLIENT-CONTRACT text (core §3 step 10, §5, C5's acceptance line;
+    CLIENT-CONTRACT's lobby: no seeded tree before Start, `companyReady` and `companySetup`, the hub list, the first
+    run's account read again at creation).
+  - Tests:
+    - open (repeat-safe, a reused old id, the core switched, the fence present);
+    - seed (input checks, once);
+    - create (the units, the Co-Founder, the kickoff's exact shape, the first-run row, the turn request with and
+      without a usable login, a replay, a stale token, all-or-nothing with the outcomes in DETAIL, the failure
+      classes);
+    - hiding and ready; the guards; the operator functions (member and anon callers refused, the reason kept).
+    - **Exactly one under a creation retry and under two racing Starts:** one creation row, one
+      `qorpera_agent_first_runs` row, one kickoff.
+    - Races: a join against a creation (the join waits, then is in the thread); a leave against a creation (they
+      meet at the member row); a company delete during a creation, with the deletion path named (the gc fence before
+      P08, the fence drain after).
+  - P14a waits for #705 (P02): Start's real-seed tests need its prelude.
+- **P14b, the worker** (TS, object gateway), on A1's P22b module, after P14a.
+- **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
+  P16 lands before the proof company (P38), so no `folder-v2` company exists without them. P16 also redeploys the
+  gateway.
 
-1. The first run as a kickoff and a turn request, with no wake row (§3). P28's materializer runs it as a plain
-   conversation. Agree?
-2. The worker in the object gateway (a gateway deploy), versus elsewhere.
-3. Whether the operator entry is an SQL function (§6) or a script around it.
+**Hand-overs:**
+- **P15:** the Co-Founder's root grant comes from the staff-insert trigger, outside the authority journal. When P15
+  moves default grants into its queue, it covers the Co-Founder made here, and `ready` then also waits for that queue
+  row ("hidden until the queue has converged", core §5).
+- **P15's name copy:** the hub reads `qorpera_profiles.name`, and `folder-v2` runs read the vision's name from the
+  index. They agree at creation (the input's name is the profile's). P15's name copy keeps them aligned after.
+
+**Custody of the input:** between Start and the commit, the vision and the roles are founders' prose in a database
+row. That is runtime state with a bounded life: the lobby kept it before Start, it is nulled at completion, and it is
+kept only while a creation is `failed`, for the requeue.
