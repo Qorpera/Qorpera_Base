@@ -30,6 +30,12 @@ import {
 } from "./cloud-company-computer-private-fields.ts";
 import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
+import {
+	COMPANY_COMPUTER_SITE_STOP_CODES,
+	COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	CompanyComputerSiteStops,
+	readCompanyComputerSiteStop,
+} from "./cloud-company-computer-site-stops.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
@@ -309,6 +315,19 @@ function tabPreview(value: string, maxBytes: number): string {
 	return value.slice(0, end);
 }
 
+/** The answer to an action refused on a site the computer stopped on (A1-4c): nothing was done. */
+function companyComputerSiteRefusal(action: string, tabId: string | undefined): CompanyComputerToolContent {
+	return {
+		kind: "json",
+		value: {
+			action,
+			...(tabId ? { tabId } : {}),
+			completed: false,
+			refused: { code: "SITE_STOPPED", message: COMPANY_COMPUTER_SITE_STOP_MESSAGE },
+		},
+	};
+}
+
 /** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
  * value holds whitespace itself; 0 when there is none. */
 export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
@@ -335,6 +354,7 @@ export class CompanyComputerGuestAutomation {
 	readonly #fillKey: CompanyComputerFillKey | undefined;
 	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
 	readonly #filled: CompanyComputerFilledValues;
+	readonly #siteStops: CompanyComputerSiteStops;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -351,6 +371,8 @@ export class CompanyComputerGuestAutomation {
 		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
 		fillKey?: CompanyComputerFillKey;
 		filled?: CompanyComputerFilledValues;
+		/** The sites this computer stopped on (A1-4c), shared by its screens. */
+		siteStops?: CompanyComputerSiteStops;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -366,6 +388,7 @@ export class CompanyComputerGuestAutomation {
 		this.#fileImports = options.fileImports;
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
+		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
 	}
 
 	/**
@@ -480,6 +503,45 @@ export class CompanyComputerGuestAutomation {
 			if (values.length > 0) throw new CompanyComputerActionFailedError(new Error("PRIVATE_FIELD_ON_SCREEN"));
 			await this.#assertFilledNotShown(page);
 		}
+	}
+
+	/**
+	 * Whether a shown tab of this screen's browser is on a site the computer stopped on, or shows such a check now
+	 * (A1-4c); its site is recorded. A tab whose visibility cannot be read counts as shown.
+	 */
+	async #siteStopShown(signal: AbortSignal): Promise<boolean> {
+		let pages: Page[];
+		try {
+			const context = (await this.#screenBrowser?.(signal)) ?? this.#browser?.context;
+			pages = context?.pages() ?? [];
+		} catch {
+			signal.throwIfAborted();
+			pages = this.#browser?.context.pages() ?? [];
+		}
+		for (const page of pages) {
+			if (page.isClosed()) continue;
+			let hidden = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				hidden = await Promise.race([
+					page.evaluate(() => (globalThis as unknown as { document: { hidden: boolean } }).document.hidden),
+					new Promise<boolean>((resolve) => {
+						timer = setTimeout(() => resolve(false), 1_000);
+					}),
+				]);
+			} catch {
+				hidden = false;
+			} finally {
+				clearTimeout(timer);
+			}
+			if (hidden === true) continue;
+			const stop = this.#siteStops.stoppedAt(page.url()) ?? (await readCompanyComputerSiteStop(page));
+			if (stop) {
+				this.#siteStops.add(page.url(), stop);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Cancellation closes the automation channel, not the persistent profile bytes. */
@@ -621,6 +683,21 @@ export class CompanyComputerGuestAutomation {
 				await this.#assertFilledNotShown(page);
 				return this.#publish(png, lease, effect, "browser", operation);
 			}
+			// A site this computer stopped on is never acted on again (A1-4c): a person continues there. A page that
+			// shows such a check now stops it before anything is clicked or typed, whatever its address; going to
+			// another site stays open. The refusal is the call's answer, so the agent reads why and can go on to mark
+			// the account (an error would reach it only as an unconfirmed outcome).
+			const actedOn = page.url();
+			if (["navigate", "click", "fill", "press", "vault_fill"].includes(action.action)) {
+				const showing = await readCompanyComputerSiteStop(page);
+				if (showing) this.#siteStops.add(actedOn, showing);
+				if (
+					action.action === "navigate"
+						? this.#siteStops.stoppedAt(action.url)
+						: showing || this.#siteStops.stoppedAt(actedOn)
+				)
+					return companyComputerSiteRefusal(action.action, this.#tabIds.get(page));
+			}
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
 			else if (action.action === "click" || action.action === "fill") {
@@ -705,11 +782,38 @@ export class CompanyComputerGuestAutomation {
 			}
 			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
+			// A page that now shows a CAPTCHA, a human check, an unusual activity warning or a block stops the agent
+			// at once, and the site is never acted on again while this computer runs; nothing tries to pass it.
+			// A link or a redirect that lands on a site stopped on earlier reports the stop too.
+			// What is recorded is the site that shows the check, nothing else: never the site a navigation or a link left
+			// (a search or mail page), nor an address the agent asked for that redirected elsewhere (a link tracker).
+			const stopAt = async () => {
+				const stop = (await readCompanyComputerSiteStop(page)) ?? this.#siteStops.stoppedAt(page.url());
+				if (stop) this.#siteStops.add(page.url(), stop);
+				return stop;
+			};
+			if (action.action !== "snapshot") {
+				// The action happened; what the page shows now stops the agent, in the call's answer.
+				const stop = await stopAt();
+				if (stop)
+					return {
+						kind: "json",
+						value: {
+							action: action.action,
+							tabId: this.#tabIds.get(page)!,
+							completed: true,
+							stop: COMPANY_COMPUTER_SITE_STOP_CODES[stop],
+							message: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+						},
+					};
+			}
 			if (action.action === "snapshot") {
 				// The aria snapshot copies every box's value; read the private ones on both sides of it.
 				const before = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
 				const full = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
 				const after = await this.#pageCall(() => readCompanyComputerPrivateValues(page));
+				// A snapshot of such a page still shows it, and says the agent stops here.
+				const stop = await stopAt();
 				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
 				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
 				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
@@ -747,6 +851,10 @@ export class CompanyComputerGuestAutomation {
 						title: this.#filled.hideText(title).slice(0, 1024),
 						snapshot: snapshot.slice(0, 16_384),
 						truncated: full.length > aria.length || snapshot.length > 16_384,
+						// The page asks for a person: the agent stops here (A1-4c).
+						...(stop
+							? { stop: COMPANY_COMPUTER_SITE_STOP_CODES[stop], message: COMPANY_COMPUTER_SITE_STOP_MESSAGE }
+							: {}),
 					},
 				};
 			}
@@ -761,6 +869,10 @@ export class CompanyComputerGuestAutomation {
 			await this.#assertNoPrivateValueShown(signal);
 			return this.#publish(png, lease, effect, "desktop", operation);
 		}
+		// Desktop input reaches the same browser window: none while a shown tab is on a site the computer stopped on, or
+		// shows such a check now (A1-4c). Moving the pointer only looks.
+		if (action.kind === "desktop" && action.action !== "move" && (await this.#siteStopShown(signal)))
+			return companyComputerSiteRefusal(action.action, undefined);
 		let args: string[];
 		if (action.kind === "shell") args = ["--noprofile", "--norc", "-c", action.command];
 		else if (action.action === "click" || action.action === "move")

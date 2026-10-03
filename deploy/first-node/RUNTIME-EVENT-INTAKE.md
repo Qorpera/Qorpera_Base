@@ -46,7 +46,7 @@ review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachm
 | M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
 | M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260928429984` |
 | M2c-2 | Threads and sent mail as files in the folder | registered when started |
-| I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260929999998` |
+| I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260928439980` |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -367,6 +367,23 @@ Item 33 of section 21 carries the adversarial event case of item 10.
 - `read_event(deliveryId, offset?)` reads one verified delivery of the agent's own company: text in
   pieces of at most 16,000 characters and 32 KiB of JSON, or base64 of 24 KiB of raw bytes. `next` is
   the offset of the following piece (characters for text, bytes for base64).
+  - **Every piece fits one tool result.** The result fence cuts every tool result to 8 KiB from its
+    end, and the result's keys are sorted, so a whole database piece would lose the tail of its text
+    while `next` survived: reading on from `next` skipped what was cut. The runtime tool therefore
+    cuts the piece again before it answers, to what one result shows whole. It measures the receipt
+    as the fence does: the tool's JSON is one string inside the fence's JSON, `< > & U+2028 U+2029`
+    take six bytes, and 3 KiB stay free for the fence's provenance (as `read_context` keeps). The cut
+    falls at a character (text) or after whole three bytes (base64), and `next` points right after it.
+    The hook, type and content type count too.
+  - The headers come with the first piece (offset 0) only, so a sender's long `From` or `Subject`
+    cannot shrink every piece. There, headers that would leave the body less than 1 KiB are cut
+    first, every value to the same number of characters, and the piece says `headersCut`.
+  - A piece is about 4,500 characters of plain text, fewer when characters need escaping (dense
+    HTML about 2,000 to 3,000), or about 3.4 KiB of bytes as base64. A 256 KiB email takes about 55
+    reads as plain text and up to about 120 when it is mostly dense HTML.
+  - The tool refuses a receipt whose `next` is not exactly its offset plus the piece it carries (code
+    points for text, bytes for base64), or whose `done` contradicts `next`. The database's pieces
+    hold to this; the SQL is unchanged.
 
 Both are reads for the automatic review. Agents creating and removing hooks (`manage_hook`, W3,
 reviewed as a new connection; a signed hook asks a member for its secret, connector `event_hook`,
@@ -579,7 +596,7 @@ and receive files by mail, and a received attachment is fetched when an agent sa
 - **folder-v2.** Refused both ways (`0A000`) until the folder-v2 core adds mail attachments as a GC root (C1d). No
   production company uses folder-v2 today.
 
-**Members read mail (I5a)** (migration `20260929999998_runtime_company_mail_member_read`; shapes agreed with the
+**Members read mail (I5a)** (migration `20260928439980_runtime_company_mail_member_read`; shapes agreed with the
 Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, sources `mail` and `mail_addresses`).
 - **Threads.** A thread's id is base64url (no padding) of sha-256 over `<mailbox id>:<key>`: 43 characters, safe in a
   URL and a path, never the raw header, and the same after the text is cleared.

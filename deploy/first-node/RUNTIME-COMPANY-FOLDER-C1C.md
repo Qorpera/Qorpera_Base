@@ -186,14 +186,15 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
 - **Why before the job.** A tool call that arrives while completion holds the job takes the mutex, then waits at the
   job; once completion commits, it finds the run ended and refuses. PostgreSQL grants a new shared locker while an
   exclusive one waits, so without the mutex overlapping tool calls could hold the job `KEY SHARE` without a gap and
-  starve completion (and renewal). With it, a second tool call of the run waits at the mutex, never beside the first
-  at the job: at most one tool call holds the job at a time. When that call commits, a waiting completion or renewal
-  and the next tool call race for the job row. The waiter usually wins, since it only re-reads the row while the next
-  call first takes the mutex and runs its checks; at worst it waits for that one call, and it meets the same race,
-  with the same head start, at each hand-off. That bound holds per hand-off, not over many: strict first-come order
-  would need completion and renewal to take the mutex too, which they do not (test 648 C). The run's own commits,
-  releases and views also hold the job `KEY SHARE`, without the mutex, so a waiting completion or renewal waits for
-  those too; they are short and never queue behind each other at the job.
+  starve completion and the other lease-ending changes. With it, a second tool call of the run waits at the mutex,
+  never beside the first at the job: at most one tool call holds the job at a time. When that call commits, a waiting
+  lease-ending change and the next tool call race for the job row. The waiter usually wins, since it only re-reads
+  the row while the next call first takes the mutex and runs its checks; at worst it waits for that one call, and it
+  meets the same race, with the same head start, at each hand-off. That bound holds per hand-off, not over many: strict
+  first-come order would need lease-ending changes to take the mutex too, which they do not. The run's own commits,
+  releases and views also hold the job `KEY SHARE`, without the mutex, so a waiting lease-ending change waits for
+  those too; they are short and never queue behind each other at the job. Renewal waits for none of them: since P23 it
+  takes the job `FOR NO KEY UPDATE`, which `KEY SHARE` does not block (§5.8; tests 648 C and 825 A).
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
@@ -279,7 +280,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -568,7 +569,13 @@ conversation `FOR UPDATE` before the review row, because the review row's foreig
   and the runner accepts only the two legacy runtimes (`cloud-runner-broker.ts:1042`). C1c-1's refusals stay until C3
   gives `folder-v2` runs their substrate model.
 - `companySeq` pins on runs and wakes (C4's schema).
-- Renewal's move to `FOR NO KEY UPDATE` stays in C3 (C1B). Until then renewal waits for the one tool call in flight.
+- Renewal's move to `FOR NO KEY UPDATE`: done in C3's first part (P23, migration 20260930002200, test 825; 648 C).
+  - On `folder-v2`, `qorpera_renew_runner_job` takes the job `FOR NO KEY UPDATE`, and so does the native lease renewal.
+    The native renewal does it through `qorpera_folder_renewal_locked_job`, which is `qorpera_runner_broker_locked_job`'s
+    text with that lock clause.
+  - Both now run beside the run's tool calls (the job `KEY SHARE`). Every lease-ending change still takes `FOR UPDATE`
+    and waits for those calls.
+  - The other callers of `locked_job` (acquire, release, model authority) keep `FOR UPDATE`.
 - Office-activation and machine-event runs make no tool call: `run_resolve` refuses them (0A000), as offices refuse
   `folder-v2` today.
 - **After C1c-2c, legacy wake inserters fail closed on `folder-v2`.** Posting, `answer_interaction`,
@@ -619,7 +626,8 @@ Concurrency tests (dblink, with `current_database()`), by slice:
 - **C1c-2a:**
   1. Two tool calls of one run: the second waits at the mutex, and nothing deadlocks. (The context views' ordinals
      move to C1c-2b, test 7b: in 2a, `record_native_context_view` refuses `folder-v2` before it writes.)
-  2. Renewal waits only for the one tool call in flight.
+  2. Renewal waits only for the one tool call in flight. (Replaced by P23: renewal waits for no tool call, 648 C and
+     825 A.)
   3. Stop: the drain waits for a tool call in flight, and a call that waited behind it refuses. A deletion row with no
      pause row also refuses a tool call.
   4. A commit rewriting the agent's `agent.md` runs beside that agent's tool call: no 55P03, no deadlock.
@@ -716,7 +724,7 @@ Decisions:
   Nothing is lost, since every later input refuses. C3 and C4 refuse or deliver them. 3b's answers keep the gc fence
   on `folder-v2` until 3b.
 - Who creates a `folder-v2` office, and who owns the machine-event and worker drains on `folder-v2`, are decided with
-  3f and 3j.
+  3f and 3j. 3f decided the drains: they go with 3i (§6.5).
 
 ### 6.2 C1c-3a as built (migration 20260928289620, tests 660 and 661)
 
@@ -867,9 +875,64 @@ Decisions:
   - Pre-existing, for 3d: capture completion and secret rotation take vault rows before the creator's member row
     (`FOR SHARE`), against a removal's rank order; a joiner misses an agent thread created at the same moment (on
     master too). For 3g: the last member's leave during the purge can meet `finish_company_deletion` once (40P01,
-    which heals: finish retries and the leave refuses).
+    which heals: finish retries and the leave refuses). Likewise 3f's sweep of stopped task machines (§6.5): while it
+    waits at a `folder-v2` company's row it holds that company's fence `KEY SHARE`, and the purge's cascade wants the
+    fence `FOR UPDATE` while it holds the row. Both must land within milliseconds of one admission pass (a deletion
+    request committed after the sweep's cursor opened, then a finisher tick), and it heals: the pass retries next pass,
+    or the finisher's 40P01 or 5 s lock timeout retries next minute. 3g's deletion drain takes the fence `FOR UPDATE`
+    before rank 0, so the sweep's fence `NOWAIT` then skips the company.
   - The founding lobby's own functions (`lock_company_founding`, `remove_company_founder`, `respond_company_founding`)
     go with 3d.
+
+### 6.5 C1c-3f as built (migration 20260930002000, test 824)
+
+- `qorpera_folder_machine_fence(company)`: a machine path's company locks on `folder-v2`. It takes the folder fence `KEY
+  SHARE` (stop and resume wait for it; member changes, `FOR NO KEY UPDATE`, do not), then the company row `KEY SHARE`
+  (rank 0). It reads no pause: the paths that end a machine must run while the company is paused, and the node
+  reservation reads the pause again after it, as before.
+- **The executor** (`company_machine_fence_briefly`, still under its 2 s `lock_timeout`) takes it. Custody (suspend,
+  release, running, commands, the executor's authorization) then locks the machine, the placement, the allocation, the
+  node and the demand. Admission takes the company-machines advisory lock and the machine first, and placing takes the
+  executor row before the allocation. Behind a stop's second phase, admission waits at most its 2 s and leaves the company
+  for a later pass (824 A).
+- **Placing a machine and reserving its node** take it again. Every caller already holds it in the same modes (admission's
+  brief fence, or a run's folder tool run), so it never waits. **Suspend and release** skip their second gc fence, which
+  custody's fence replaces (824 C2).
+- **The reservation branches for the `machine` kind only** (824 B2). Coding (3h) and office (3j) reservations still come
+  from callers that take the gc fence first, and a folder fence taken under their company row would come after rank 0,
+  against core §3's order.
+- **A member's start, stop or delete**: the fence, rank 0 and the member's row `KEY SHARE` (rank 1), then the member's write
+  access read again, before the advisory lock and the machine. Before, the gc fence was taken before the machine was even
+  looked up, so any member who could write could hold a `folder-v2` company row `FOR UPDATE`. A removal in flight makes the
+  start wait at the member row, and then refuse (824 G).
+- **The sweep of stopped task machines** (admission's last loop) takes a `folder-v2` company's fence `KEY SHARE NOWAIT`: a
+  company being stopped is swept on a later pass. It then takes the company row `KEY SHARE`, never `FOR UPDATE NOWAIT`.
+  - That wait is only behind a holder of the row stronger (824 E3), which until 3g may want locks the pass holds.
+    Deletion's gc fence wants the company's machine lock and machines next, and the pass's disk give-up holds such
+    locks: it takes no fence and keeps them to the end of the pass. A node update drain locks several companies' rows in
+    id order (`authorize_node_update_drain`, `node_update_locked`), and deletion's finisher handles several companies in
+    one transaction; an earlier sweep in the pass holds other companies' rows.
+  - So the sweep waits for a `folder-v2` company's row only while the pass has given up no disk and holds no other
+    company's row. Otherwise that company waits a pass (824 E4, E5). A pass that waits holds nothing such a holder wants
+    but that company's own fence `KEY SHARE`, which only deletion's purge wants (see the 3g note in §6.4).
+  - A pass can still wait behind another old gc-fence holder of the row (a sign-in, until §6.1's other sites move).
+  - It inserts no wake, so core §3 step 10's one-company rule does not apply.
+- **Giving up a disabled executor** takes each `folder-v2` company's fence in place of the gc fence, in the same id order.
+- **An agent's `machine_start`** serves `folder-v2`: its refusal line gave way to the marker. Its authority check is the
+  folder tool run (the run mutex, the job, the fence, rank 0), then the receipt, the advisory lock, the machine and the rows
+  admission takes (824 B shows it runs beside a folder effect). Its final authority check takes the same rows again in the
+  same modes.
+- **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
+  the definition before 3f (824 H).
+- **Decided with 3f** (§6.1): the machine-event drain and the worker drain on `folder-v2` go with 3i. Both deliver to a
+  parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
+  `folder-v2` run is not told when its machine is running or its command ended). Who creates a `folder-v2` office stays
+  with 3j.
+- Not in 3f:
+  - the coding and office kinds of the reservation (3h, 3j);
+  - a run's own machine reservation and model logins (§6.1's other sites: C3 at the latest);
+  - `stop_company_work`'s machine stop, under deletion's gc fence (3g).
+  - `record_company_machine_error` updates one machine row and takes no company lock, on either core.
 
 ## 7. Traps for C1c-2 and C1c-3
 

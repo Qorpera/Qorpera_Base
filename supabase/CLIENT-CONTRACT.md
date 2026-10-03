@@ -693,7 +693,7 @@ wake), so no agent runs and nothing is charged before it.
   gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
   Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
   allowance.
-- Members read mail (20260929999998_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
+- Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
   (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
   `qorpera_member_mail_thread(p_environment_id, p_thread)` (`{thread, address, messages, more?, waiting}`),
