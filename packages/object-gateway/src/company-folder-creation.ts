@@ -22,7 +22,8 @@ import type { ObjectGatewayReplication } from "./replication.ts";
 /*
  * Company creation's worker (C2-create, P14b; deploy/first-node/RUNTIME-COMPANY-FOLDER-CREATION.md §2 step 3, §5).
  * Start records one creation (P14a); this worker claims one at a time, builds the seeded tree from the founders' input
- * (companyStateSeedTree, with the ids the creation row holds, so every attempt builds the same tree), stages each file
+ * (companyStateSeedTree, with the ids the creation row holds; the library's interfaces and tables draw new ids on each
+ * attempt, which is safe since a creation commits whole and a completed one answers from its row), stages each file
  * as the platform, and calls qorpera_folder_company_create once: one transaction with the creation commit, the
  * Co-Founder and its silent first run. The database sorts the outcome (completed, failed, retry, stale); the worker
  * only backs off (release) or records a failure of its own (fail). Built switched off: the gateway runs it only with
@@ -46,7 +47,10 @@ const CLAIM_KEYS = [
 const INPUT_KEYS = ["schema", "companyName", "vision", "kickoffRequestedBy", "founders"] as const;
 const FOUNDER_KEYS = ["userId", "displayName", "role"] as const;
 const ANSWERS = new Set(["completed", "failed", "retry", "stale"]);
-const MEDIA_TYPE = "text/markdown";
+/** A seeded file's media type, by its extension: the state files are Markdown, interfaces and tables plain text. */
+function mediaType(path: string): string {
+	return path.endsWith(".md") ? "text/markdown" : "text/plain";
+}
 /** A claim, a release and a fail get their own short deadline, so a drain that ran out of time still closes a claim. */
 const CALL_MS = 15_000;
 /** The worker's own failures that no retry can fix (design §2 step 3): a seed tree the parser or a writer refuses,
@@ -122,6 +126,17 @@ export function creationUnits(
 	files: ReadonlyMap<string, PlatformFileReference>,
 ): unknown[] {
 	const cofounder = `agents/${COMPANY_STATE_COFOUNDER_HANDLE}`;
+	// Folders made whole, as one new_folder unit: the Co-Founder's (the agent with its first todo), and each interface
+	// and table (a table's rows read the definition its own unit brings; P16).
+	const whole = new Set(
+		tree
+			.filter(
+				(entry) =>
+					entry.kind === "folder" && (entry.path === cofounder || /^(interfaces|tables)\/[^/]+$/.test(entry.path)),
+			)
+			.map((entry) => entry.path),
+	);
+	const inWhole = (path: string) => [...whole].some((folder) => path.startsWith(`${folder}/`));
 	const structured = (entry: CompanyStateSeedEntry) => {
 		const parsed = parseCompanyStateFile(entry.path, entry.text ?? "");
 		if (!parsed) return null;
@@ -137,13 +152,13 @@ export function creationUnits(
 	const file = (path: string) => files.get(path) ?? platformFolderProblem("stage_incomplete");
 	const units: unknown[] = [];
 	for (const entry of tree) {
-		if (entry.path === cofounder) {
-			const inside = tree.filter((other) => other.path.startsWith(`${cofounder}/`));
+		if (whole.has(entry.path)) {
+			const inside = tree.filter((other) => other.path.startsWith(`${entry.path}/`));
 			units.push({
 				op: "new_folder",
-				path: cofounder,
+				path: entry.path,
 				contents: inside.map((other) => ({
-					path: other.path.slice(cofounder.length + 1),
+					path: other.path.slice(entry.path.length + 1),
 					kind: other.kind,
 					...(other.kind === "file" ? { file: file(other.path) } : {}),
 				})),
@@ -152,8 +167,8 @@ export function creationUnits(
 					return parse ? [parse] : [];
 				}),
 			});
-		} else if (entry.path.startsWith(`${cofounder}/`)) {
-			// Inside the Co-Founder's new_folder.
+		} else if (inWhole(entry.path)) {
+			// Inside a folder made whole.
 		} else if (entry.kind === "folder") {
 			units.push({ op: "mkdir", path: entry.path });
 		} else {
@@ -253,7 +268,7 @@ export class CompanyFolderCreator {
 				await this.#folder.stage(
 					claim.environmentId,
 					new TextEncoder().encode(entry.text ?? ""),
-					{ mediaType: MEDIA_TYPE, executable: false },
+					{ mediaType: mediaType(entry.path), executable: false },
 					signal,
 				),
 			);

@@ -169,7 +169,7 @@ describe("parseCompanyCreationClaim", () => {
 });
 
 describe("creationUnits", () => {
-	it("makes the Co-Founder's folder one new_folder unit and every other entry a mkdir or a write", () => {
+	it("makes the Co-Founder's folder, each interface and each table one new_folder unit, and every other entry a mkdir or a write", () => {
 		const tree = companyStateSeedTree({
 			companyName: "Nordlys Kaffe",
 			cofounderId,
@@ -212,6 +212,15 @@ describe("creationUnits", () => {
 			"mkdir skills/human-task",
 			"write skills/human-task/SKILL.md",
 			"mkdir rules",
+			"mkdir interfaces",
+			"new_folder interfaces/pulse",
+			"new_folder interfaces/mailbox",
+			"new_folder interfaces/members",
+			"write interfaces/order.md",
+			"mkdir tables",
+			"new_folder tables/numbers",
+			"new_folder tables/areas",
+			"new_folder tables/cards",
 		]);
 		const cofounder = units[4];
 		expect(cofounder?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
@@ -232,6 +241,18 @@ describe("creationUnits", () => {
 		// The seeded skill is no structured file: bytes only.
 		expect(units[11]?.structured).toBeUndefined();
 		expect(units[11]?.file).toBe(files.get("skills/human-task/SKILL.md"));
+		// A table's definition and rows go in one unit, so its first rows read the definition it brings (P16).
+		const numbers = units.find((unit) => unit.path === "tables/numbers");
+		expect(numbers?.contents?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
+			"file table.toml",
+			"file rows.csv",
+		]);
+		expect(numbers?.structured?.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
+			"table tables/numbers/table.toml",
+			"table-rows tables/numbers/rows.csv",
+		]);
+		expect(units.find((unit) => unit.path === "interfaces/order.md")?.structured?.[0]?.kind).toBe("interface-order");
+		expect(units.find((unit) => unit.path === "interfaces/pulse")?.structured?.[0]?.kind).toBe("interface");
 	});
 
 	it("refuses a file that was not staged", () => {
@@ -247,10 +268,24 @@ describe("CompanyFolderCreator", () => {
 		const create = named("qorpera_folder_company_create");
 		expect(create).toHaveLength(1);
 		expect(create[0]?.args).toMatchObject({ p_worker: workerId, p_creation_id: creationId, p_generation: 2 });
-		expect((create[0]?.args.p_units as unknown[]).length).toBe(13);
-		// One upload per file: the vision, the sections, the agent, the first todo and the skill.
-		expect(named("qorpera_folder_open_upload")).toHaveLength(5);
+		expect((create[0]?.args.p_units as unknown[]).length).toBe(22);
+		// One upload per file: the vision, the sections, the agent, the first todo and the skill, then the library's
+		// three pages, its order and three tables of two files each.
+		expect(named("qorpera_folder_open_upload")).toHaveLength(15);
 		for (const open of named("qorpera_folder_open_upload")) expect(open.args.p_actor).toEqual({ kind: "platform" });
+		// Markdown for the state files, plain text for interfaces and tables.
+		const media = named("qorpera_folder_open_upload").map(
+			(open) => JSON.parse(open.args.p_manifest as string).mediaType,
+		);
+		expect(media.filter((type) => type === "text/markdown")).toHaveLength(6);
+		expect(media.filter((type) => type === "text/plain")).toHaveLength(9);
+		const units = create[0]?.args.p_units as {
+			path: string;
+			contents?: { path: string; file?: { mediaType: string } }[];
+		}[];
+		expect(
+			units.find((unit) => unit.path === "tables/numbers")?.contents?.map((entry) => entry.file?.mediaType),
+		).toEqual(["text/plain", "text/plain"]);
 		expect(named("qorpera_folder_company_creation_release")).toHaveLength(0);
 		expect(named("qorpera_folder_company_creation_fail")).toHaveLength(0);
 	});

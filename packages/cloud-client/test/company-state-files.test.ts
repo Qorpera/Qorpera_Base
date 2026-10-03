@@ -1778,7 +1778,8 @@ describe("companyStateSeedTree", () => {
 				);
 		}
 		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
-		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct).
+		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct), then
+		// interfaces/ and tables/ with the library (P16).
 		expect(paths.filter((path) => !path.includes("/"))).toEqual([
 			"vision",
 			"agents",
@@ -1787,6 +1788,8 @@ describe("companyStateSeedTree", () => {
 			"contacts",
 			"skills",
 			"rules",
+			"interfaces",
+			"tables",
 		]);
 		const skill = tree.find((entry) => entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH)?.text ?? "";
 		expect(skill).toMatch(/^---\nname: human-task\ndescription: .+\n---\n# Human tasks\n/);
@@ -1805,6 +1808,83 @@ describe("companyStateSeedTree", () => {
 			kind: "sections",
 			sections: [],
 		});
+	});
+
+	it("seeds the library's interfaces and tables, each with the id it is given, Pulse main", () => {
+		let n = 0;
+		const ids: string[] = [];
+		const newId = () => {
+			const id = `5b0e7c52-2f4e-4c1e-9d0a-${String(++n).padStart(12, "0")}`;
+			ids.push(id);
+			return id;
+		};
+		const tree = companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, newId });
+		const library = tree.filter((entry) => /^(interfaces|tables)(\/|$)/.test(entry.path));
+		expect(library.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
+			"folder interfaces",
+			"folder interfaces/pulse",
+			"file interfaces/pulse/interface.toml",
+			"folder interfaces/mailbox",
+			"file interfaces/mailbox/interface.toml",
+			"folder interfaces/members",
+			"file interfaces/members/interface.toml",
+			"file interfaces/order.md",
+			"folder tables",
+			"folder tables/numbers",
+			"file tables/numbers/table.toml",
+			"file tables/numbers/rows.csv",
+			"folder tables/areas",
+			"file tables/areas/table.toml",
+			"file tables/areas/rows.csv",
+			"folder tables/cards",
+			"file tables/cards/table.toml",
+			"file tables/cards/rows.csv",
+		]);
+		const parsed = (path: string) => {
+			const result = parseCompanyStateFile(path, tree.find((entry) => entry.path === path)?.text ?? "");
+			if (!result?.ok) throw new Error(`${path} does not parse`);
+			return result.file;
+		};
+		expect(ids).toHaveLength(6);
+		const pulse = parsed("interfaces/pulse/interface.toml");
+		expect(pulse).toMatchObject({ kind: "interface", main: true });
+		expect(parsed("interfaces/mailbox/interface.toml")).toMatchObject({ kind: "interface", main: false });
+		expect(parsed("interfaces/order.md")).toMatchObject({ kind: "interface-order" });
+		expect(parsed("tables/areas/rows.csv")).toEqual({ kind: "table-rows", header: expect.any(Array), rows: [] });
+		// Every id the library drew is in its files, and the order lists the three pages.
+		const drawn = library.flatMap((entry) => ids.filter((id) => entry.text?.includes(id)));
+		expect(new Set(drawn)).toEqual(new Set(ids));
+		expect(ids).toContain((pulse as { id: string }).id);
+	});
+
+	it("reads interfaces and tables by the path's shape, with their own parser and names", () => {
+		expect(companyStatePath("interfaces/order.md")?.kind).toBe("interface-order");
+		expect(companyStatePath("interfaces/pulse/interface.toml")).toMatchObject({ kind: "interface", name: "pulse" });
+		expect(companyStatePath("Interfaces/Bad_Name/interface.toml")).toMatchObject({
+			kind: "interface",
+			name: "bad_name",
+		});
+		expect(companyStatePath("tables/numbers/table.toml")).toMatchObject({ kind: "table", name: "numbers" });
+		expect(companyStatePath("tables/numbers/rows.csv")).toMatchObject({ kind: "table-rows", name: "numbers" });
+		for (const path of [
+			"interfaces/pulse/README.md",
+			"interfaces/a/b/interface.toml",
+			"tables/rows.csv",
+			"drafts/x/table.toml",
+		])
+			expect(companyStatePath(path)).toBeNull();
+		// Named by their kind: no .md rule; the folder's name follows the naming rule.
+		expect(companyStatePathProblems("tables/numbers/rows.csv")).toEqual([]);
+		expect(companyStatePathProblems("interfaces/Bad_Name/interface.toml")[0]?.message).toMatch(
+			/^the name of an interface's folder \(Bad_Name\)/,
+		);
+		expect(companyStatePathProblems("tables/x_y", true)[0]?.message).toMatch(/^the name of a table's folder \(x_y\)/);
+		expect(companyStatePathProblems("interfaces", true)).toEqual([]);
+		expect(companyStatePathProblems("tables/x/y", true)).toEqual([]);
+		// The dispatch gives parseInterfaceStateFile's answer.
+		const rows = parseCompanyStateFile("tables/numbers/rows.csv", "number,at\nVisits,2026-10-02T09:44Z\n");
+		expect(rows).toMatchObject({ ok: true, path: { kind: "table-rows", name: "numbers" } });
+		expect(parseCompanyStateFile("tables/numbers/table.toml", "format = 1\n")).toMatchObject({ ok: false });
 	});
 
 	it("seeds the founding table's vision, roles and the Co-Founder's first todo", () => {

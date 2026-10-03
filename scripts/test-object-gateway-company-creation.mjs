@@ -150,16 +150,26 @@ async function main() {
 			from public.qorpera_folder_entries e where e.environment_id = '${environmentId}' and e.kind <> 'claim'`));
 		for (const path of ["vision", "agents", "agents/co-founder", "agents/co-founder/memory", "agents/co-founder/skills",
 			"agents/co-founder/routines", "agents/co-founder/todos", "agents/groups", "connections", "human-tasks", "contacts",
-			"skills", "skills/human-task", "rules"])
+			"skills", "skills/human-task", "rules", "interfaces", "interfaces/pulse", "tables", "tables/areas"])
 			assert.equal(entries[path]?.kind, "folder", `${path} is a folder`);
 		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md",
-			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/skill.md"])
+			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/skill.md", "interfaces/order.md",
+			"interfaces/pulse/interface.toml", "tables/areas/table.toml", "tables/areas/rows.csv"])
 			assert.equal(entries[path]?.kind, "file", `${path} is a file`);
 		const text = async (key) =>
 			new TextDecoder().decode(await store.get(profileId, entries[key].sha, Number(entries[key].bytes)));
-		// Every file of the seed tree (built as the worker builds it, from the creation's input and ids) is stored as written,
-		// and every structured one reads back through the parser.
+		// Every file of the seed tree (built as the worker builds it, from the creation's input and ids, and the library's
+		// ids as the stored files carry them, in the order the library draws them) is stored as written, and every
+		// structured one reads back through the parser.
+		const library = [];
+		for (const path of ["interfaces/pulse/interface.toml", "tables/numbers/table.toml", "interfaces/mailbox/interface.toml",
+			"interfaces/members/interface.toml", "tables/areas/table.toml", "tables/cards/table.toml"]) {
+			const parsed = code.parseCompanyStateFile(path, await text(path));
+			assert(parsed?.ok, `${path} parses`);
+			library.push(parsed.file.id);
+		}
 		const tree = code.companyStateSeedTree({
+			newId: () => library.shift(),
 			companyName: "Nordlys Bryggeri",
 			cofounderId: made.cofounder_id,
 			vision: "Small-batch beer for the cafés of Aarhus.",
