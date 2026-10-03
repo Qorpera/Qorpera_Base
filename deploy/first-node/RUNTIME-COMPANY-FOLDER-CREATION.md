@@ -240,9 +240,11 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   - `qorpera_folder_company_create` refuses a company with a bootstrap job or a Co-Founder;
   - Open never runs the old chain.
 - **Other platform writers** (P22's connection files) skip a company whose creation is not `completed`. Otherwise
-  the creation's `mkdir connections` meets a `conflict`. P14a adds the skip to P22a's claim
-  (`qorpera_claim_connection_file`, #727) by an exact anchor with the body marker, if #727 is on master first;
-  otherwise A1 adds it in #727 (agreed with A1).
+  the creation's `mkdir connections` meets a `conflict`. P14a owns the skip (agreed with A1) and lands after #727:
+  it patches P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000) by an exact
+  anchor, the candidate select's `lease_until` and `not_before` lines, appending `and not exists (…creation of
+  work.profile_id whose state is not 'completed')` with the body marker. Work rows the claim inserts for such a
+  company stay due until the skip lifts; nothing else changes.
 - **The rollout packet** blocks a cut while bootstrap jobs are queued or leased (`sql-packet.mjs:92`). P14a adds
   creations to that check.
 
