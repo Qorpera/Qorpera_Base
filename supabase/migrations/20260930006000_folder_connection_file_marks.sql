@@ -16,9 +16,10 @@
 --   foreign key is the company row's, which every vault change on folder-v2 already holds KEY SHARE (#660's rank 0).
 -- * Work: qorpera_folder_connection_file_work, one row per secret ever due (kept, so each claim's generation and
 --   operation key is new), touched only by the writers' two functions.
---   qorpera_claim_connection_file never waits: it creates the work rows of marked secrets (in secret order, and only
---   for companies whose row it can key-share at once, so a company held for deletion is skipped), takes one due row
---   and the marks it can see with SKIP LOCKED, and answers what the file should say. A writer makes one claim per
+--   qorpera_claim_connection_file never waits for a vault change or a company being deleted: it creates the work rows
+--   of marked secrets (in secret order, and only for companies whose row it can key-share at once, so a company held
+--   for deletion is skipped; it can briefly wait for another claim's new work rows, in that one order, never in a
+--   cycle), takes one due row and the marks it can see with SKIP LOCKED, and answers what the file should say. A writer makes one claim per
 --   transaction (one RPC call). Marks committed later stay and make the secret due again, so a change is never lost to a mark that
 --   commits out of order. qorpera_finish_connection_file closes the claim (or backs it off with a problem code) only for
 --   the writer holding the current generation; a writer whose lease another took is told so.
@@ -27,8 +28,10 @@
 --   capability, a sign-in host or the vault's own purpose text. A revoked secret or a closed account says "no file".
 --   `actions` lists the operations with an active, unexpired grant; a grant's expiry marks nothing, so the file shows
 --   it until the connection's next change (the vault refuses the expired grant either way).
--- * qorpera_mark_connection_files(environment) marks every connection of an environment due at once, for a company
---   whose vault held connections before it became folder-v2 (the core's reset, C5).
+-- * qorpera_mark_connection_files(environment) marks every connection of an environment due at once: an operator step,
+--   in its own transaction, for a company whose vault held connections before it became folder-v2, or for a connector
+--   that gained catalog operations later (only later changes mark them otherwise). The folder core's reset deletes
+--   companies, so nothing calls it yet.
 --
 -- Inert until P22b's writer runs: no folder-v2 company exists yet, and nothing claims.
 
@@ -214,8 +217,9 @@ create function public.qorpera_claim_connection_file(p_worker uuid, p_lease_seco
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_work public.qorpera_folder_connection_file_work%rowtype; v_consumed bigint;
 begin
-	-- 20260930006000 (P22a): a claim never waits. It locks only work rows, the marks it consumes and the key share of
-	-- the companies it creates work rows for, each SKIP LOCKED; the vault is read plainly.
+	-- 20260930006000 (P22a): a claim never waits for a vault change or a company being deleted. It locks only work rows,
+	-- the marks it consumes and the key share of the companies it creates work rows for, each SKIP LOCKED (only another
+	-- claim's new work rows can make it wait, briefly, in secret order); the vault is read plainly.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_worker is null or p_lease_seconds is null or p_lease_seconds not between 30 and 900 then
@@ -306,8 +310,9 @@ grant execute on function public.qorpera_finish_connection_file(uuid, uuid, bigi
 
 -- 6. Every connection due at once ----------------------------------------------------------------------------------------
 
--- Marks every connection of a folder-v2 environment that has a file: for a company whose vault already held connections
--- when it became folder-v2 (the core's reset, C5), since only later changes mark them. Service role; returns the count.
+-- Marks every connection of a folder-v2 environment that has a file: an operator step, in its own transaction (its
+-- inserts can wait behind a company being deleted), for a company whose vault held connections before it became
+-- folder-v2, or a connector that gained catalog operations later. Service role; returns the count.
 create function public.qorpera_mark_connection_files(p_environment_id uuid)
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_count integer;
