@@ -459,9 +459,11 @@ begin
 	w := pg_temp.work('85200000-0000-4000-8000-0000000000ef');
 	if w.not_before - w.updated_at not between interval '1.9 seconds' and interval '2.1 seconds' then
 		raise exception 'A first problem backs off two seconds: %', w.not_before - w.updated_at; end if;
-	update public.qorpera_folder_connection_file_work set not_before = clock_timestamp() - interval '1 second'
-	where secret_id = '85200000-0000-4000-8000-0000000000ef';
+	-- Due again first (older than every mark of this block), with many attempts behind it.
+	update public.qorpera_folder_connection_file_work set not_before = clock_timestamp() - interval '1 second',
+		updated_at = '2000-01-01' where secret_id = '85200000-0000-4000-8000-0000000000ef';
 	c := pg_temp.claim();
+	if c ->> 'secretId' <> '85200000-0000-4000-8000-0000000000ef' then raise exception 'The retry is claimed: %', c; end if;
 	update public.qorpera_folder_connection_file_work set attempts = 20 where secret_id = '85200000-0000-4000-8000-0000000000ef';
 	perform pg_temp.finish(c, 'unavailable');
 	w := pg_temp.work('85200000-0000-4000-8000-0000000000ef');
