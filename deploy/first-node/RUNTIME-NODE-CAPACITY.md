@@ -54,7 +54,7 @@ Polling is serialized. A failed completed scan publishes unavailable; an unconfi
 
 ## Receipt retention
 
-Since migration `20260930004000_runtime_node_receipt_retention.sql` (2026-10-03), observation and inventory receipts are no longer kept for ever. Before it, two nodes reporting every five seconds had written 904 MB of inventory and 335 MB of observation receipts in 20 days, about 78 % of the production database.
+Since migration `20260928459200_runtime_node_receipt_retention.sql` (2026-10-03), observation and inventory receipts are no longer kept for ever. Before it, two nodes reporting every five seconds had written 904 MB of inventory and 335 MB of observation receipts in 20 days, about 78 % of the production database.
 
 - **Kept, per node:** the receipt its latest row (`qorpera_runtime_node_observations`) names, with its inventory if it has one, at any age; every receipt observed in the last seven days; and every receipt the computer-hour meter may still read (the cut is never later than its `metered_until` minus one day). A node whose latest report has no inventory (a failed scan) gets nothing more: every check reads only the latest receipt, and `qorpera_runtime_host_inventory` then answers `INVENTORY_MISSING` whatever older receipts exist.
 - **Deleted:** the other receipts, oldest first, each together with its inventory row (the only foreign key into either table).

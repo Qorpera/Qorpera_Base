@@ -28,6 +28,7 @@ import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
+import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
@@ -336,6 +337,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							handle: context.folder.agent,
 						}
 					: undefined;
+			// Its notebook and skills, through the folder core too (P20): the same composition and tools.
+			const notebooks = folder
+				? new CloudFolderNotebooks({
+						folder: folder.client,
+						runId: binding.runId,
+						agentFolder: cloudAgentFolder(
+							context.identity.companyId,
+							context.identity.staffAgentId,
+							agentFolders,
+						),
+					})
+				: undefined;
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -367,7 +380,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
-								gateway,
+								notebooks?.composition ?? gateway,
 								cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
 								new Date(),
 								signal,
@@ -377,10 +390,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							signal.throwIfAborted();
 							return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 						}),
-					composeCloudAgentSkills(gateway, context.identity, signal, agentFolders).catch((error) => {
-						signal.throwIfAborted();
-						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
-					}),
+					composeCloudAgentSkills(notebooks?.composition ?? gateway, context.identity, signal, agentFolders).catch(
+						(error) => {
+							signal.throwIfAborted();
+							return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
+						},
+					),
 				]);
 				return { initialPresence, gateway, memory, skills, openWork: await openWorkRequest };
 			};
@@ -393,6 +408,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
+			// What composition read from the folder is released under the composed context before any model request.
+			await notebooks?.releaseComposition(contextSha256, signal);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -749,14 +766,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: []),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
-								...cloudMemoryTools(gateway, identity, undefined, agentFolders).filter(
+								...(notebooks
+									? notebooks.tools(
+											(files) => cloudMemoryTools(files, identity, undefined, agentFolders),
+											operations,
+										)
+									: cloudMemoryTools(gateway, identity, undefined, agentFolders)
+								).filter(
 									(tool) =>
 										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
 								),
 								// Skills the same way: every run reads and searches them. Only a company run saves one
 								// (a member's private conversation never feeds a shared library), and a worker only
 								// when its dispatch allows Company File writes.
-								...cloudSkillTools(gateway, identity, agentFolders).filter(
+								...(notebooks
+									? notebooks.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
+									: cloudSkillTools(gateway, identity, agentFolders)
+								).filter(
 									(tool) =>
 										tool.name !== "update_skill" ||
 										(identity.audienceKind === "company" &&
