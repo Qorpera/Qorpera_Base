@@ -1,11 +1,8 @@
 # Changelog
+- The version-1 proof of a staged file refuses folder-v2 companies (folder core slice P10, C5 early; migration `20260930001100`, SQL test 821; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md` §9.3 step 3): `qorpera_verify_company_path_file` answers 0A000 for a folder-v2 company before it takes the gc fence, so a refused call takes no lock, and a folder-v2 company's chunk index is complete with no version-1 case. Snapshot-v1 companies are unchanged. Needs P09's fixture move (#724).
 - A company being deleted serves its folder to no one (folder core slice P01, F3's P1; migration `20260930001000`, SQL test 820): `qorpera_folder_read_actor` now refuses members and the platform with 55000 'Company is being deleted' once the company has a deletion row, so read, list and the feed stop for them as they already did for runs and views (which keep 'Company execution is paused'). A pause alone still lets members and the platform read. One plain read, no lock; the body carries the marker `20260930001000`.
 
-<<<<<<< HEAD
-- The version-1 proof of a staged file refuses folder-v2 companies (folder core slice P10, C5 early; migration `20260930001100`, SQL test 821; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md` §9.3 step 3): `qorpera_verify_company_path_file` answers 0A000 for a folder-v2 company before it takes the gc fence, so a refused call takes no lock, and a folder-v2 company's chunk index is complete with no version-1 case. Snapshot-v1 companies are unchanged. Needs P09's fixture move (#724).
-=======
 - A folder-v2 run's Company File tools work through the folder core (folder core slice P19, core C3; the 2 October 2026 amendment "light threads", item 2; no migration): `company_read`, `company_list`, `company_write`, `company_mkdir` and `company_delete` act as the run actor. A read is a window of a file (fetching only the chunks it falls in) or what is at a path; a listing is a page of a folder, paged by its last path. Each answer is fitted to one tool result, and everything it shows is released with the run actor under the hash of exactly that text before the model sees it, cited as `companyReadId`. A change is a one-unit change set under the call's receipt (`qorpera.company-folder-result/v1`: `applied`, `proposed` or `not_applied`, with what to do next on a stale version or a missing folder); a deletion records the automatic review's approval of its call, and deletes a file or an empty folder. Other runs keep the legacy tools.
->>>>>>> origin/master
 ## [Unreleased]
 
 ### Breaking Changes
