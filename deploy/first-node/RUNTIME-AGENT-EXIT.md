@@ -72,13 +72,16 @@ agent road machine only ever uses the exit of the node it runs on.
 - Every new connection is counted per client address, and each refused flow is kept an hour for the log (added once
   per hour, not refreshed on every hit; only a new flow spends a machine's share of the log, so repeats cannot hide
   other refusals).
-- Pending Jonas (contract item 4): each client holds at most 16,384 connections through the exit at once, and the
-  exit at most 98,304 in all; the per-machine bound is checked first. In phase 1 each agent connection takes two
-  entries in the node's connection table (262,144), so the total keeps room for our own traffic. A Company Computer
-  machine's computers share one 16,384. A reload of the rules starts both counts from zero; connections already
-  open are not counted until they end. With br_netfilter the node also tracks refused attempts for a few seconds
-  each; E2's proof on a node measures the table under such a flood and the cost of the shared total, and if needed
-  stops the node tracking bridged `qagent0` traffic.
+- Pending Jonas (contract item 4): each client holds at most 16,384 open connections through the exit at once, and
+  the exit at most 98,304 in all; the per-machine bound is checked first. In phase 1 each agent connection takes two
+  entries in the node's connection table (262,144, read on both nodes on 2 October). The total bounds open
+  connections only: closed connections (120 seconds by default) and refused attempts (10 seconds for TCP, 30 for
+  UDP, 600 for other protocols) stay in the tables for a while. When one company reaches the total, every other
+  company's new connections on that node are refused until connections close. A Company Computer machine's
+  computers share one 16,384. A reload of the rules starts both counts from zero, and connections already open
+  are never counted (their packets pass before the bounds are checked). E2's proof on a node measures the tables
+  under such floods and the cost of the shared total, and if needed stops the node tracking bridged `qagent0`
+  traffic.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
@@ -290,7 +293,7 @@ allow = []             # used when mode is "only-listed"
   running work; the contract's item 10 says so, and Jonas may change it. The gap record written when the logger
   starts again carries `since` (its last heartbeat), so a lookup marks the whole outage as unknown; after a reboot
   there is no heartbeat, and the outage runs from the last line written. Other gap records (lost events, unlogged
-  refusals) mark a moment.
+  refusals) mark a moment; E3 reads them as unknown back to the line before.
 - **Rule change.** Applies at once (the resolver reloads its lists and the exit its sets), without a restart.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 

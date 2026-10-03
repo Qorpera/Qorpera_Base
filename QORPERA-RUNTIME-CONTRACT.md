@@ -4682,9 +4682,8 @@ Founder decision of 2 October 2026 ("completely agree… let's fix this", then "
 the runtime coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. Two rules here
 are the design session's proposals of 3 October and wait for Jonas: the connection bounds (item 4) and what happens
 when only the log is down (item 10). Not built yet. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md`. The guest
-guard (step E-1, enforcing on both nodes since 2 October,
-`deploy/guest-guard/`) already keeps every guest on our bridges away from the NAS, the nodes and every tailnet service
-it does not list; it stays for our own guests.
+guard (step E-1, enforcing on both nodes since 2 October, `deploy/guest-guard/`) already keeps every guest on our
+bridges away from the NAS, the nodes and every tailnet service it does not list; it stays for our own guests.
 
 It amends these texts. Where older text conflicts with this amendment, this amendment governs.
 - Section 12's note (amended 2026-09-28): a computer's network to the internet.
@@ -4733,15 +4732,18 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
    (item 9). The other refusals answer at once.
 
-   Proposed, pending Jonas: each machine holds at most 16,384 connections through the exit at once, and the exit on
-   a node at most 98,304 in all. Like 7.4's storage bounds, they protect the node and are not a limit on the work.
-   - The node's own connection table holds 262,144 entries, and in phase 1 each agent connection takes two of them
-     (the bridged leg and the masqueraded leg), so the total keeps the connections the exit passes from filling the
-     table our own traffic needs. The node also tracks refused attempts for a few seconds each; step E2's proof on a
-     node measures the table under such a flood, and the total's cost, before Jonas decides.
+   Proposed, pending Jonas: each machine holds at most 16,384 open connections through the exit at once, and the
+   exit on a node at most 98,304 in all. Like 7.4's storage bounds, they protect the node and are not a limit on the
+   work.
+   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October), and in phase 1 each
+     agent connection takes two of them (the bridged leg and the masqueraded leg). The total bounds open connections
+     only: a closed connection stays in both tables for a while (120 seconds by default), and so does a refused
+     attempt (10 seconds for TCP, 30 for UDP, 600 for other protocols). Step E2's proof on a node measures the table
+     under such floods, and the total's cost, before Jonas decides.
    - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
      bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
-   - One company with six busy machines on a node could reach the node's total and slow every other company there.
+   - One company with six busy machines on a node could reach the node's total; until its connections close, every
+     other company's new connections on that node are refused.
 5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
    (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
    - On an execution host, the existing model relay carries them.
@@ -4761,8 +4763,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - A time the log could not record (item 10, or events lost under load) is recorded as a gap. For an abuse lookup
      a gap means unknown, never "no one".
    - For each refused flow (machine, destination, protocol, port), the log records the first refusal in each hour
-     and the rule that refused it. Every refusal is counted. Each machine may add up to 600 refused flows an hour to
-     the log; refusals past that, or past the exit's room, are counted and show as a gap.
+     and the rule that refused it. Every refusal is counted. Each machine may add about 600 refused flows an hour to
+     the log (after a first burst of 100); refusals past that, or past the exit's room, are counted and show as a
+     gap.
    - It never records content or full web addresses, and nothing is decrypted.
    - The log, and the exit's record of name lookups, are kept 90 days on our storage, then deleted.
    - A company's owners and admins can see their company's log, and a member can see the lines of their own coding
@@ -4782,8 +4785,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      gets past a block list.
    - The "only listed" mode is strict. A machine reaches only TCP port 443, only on addresses the exit's own name
      lookups gave for a listed name, and only when the TLS server name is listed too, so an unlisted site on a
-     listed site's shared address is refused. Everything else is refused in that mode: plain HTTP, other ports and
-     protocols, UDP (QUIC) included. The exit never decrypts, so a listed TLS name that carries another site inside
+     listed site's shared address is refused. Everything else is refused in that mode: plain HTTP (so a package
+     archive reached over `http://`, as apt's defaults are, fails even when listed), other ports and protocols, UDP
+     (QUIC) included. The exit never decrypts, so a listed TLS name that carries another site inside
      (domain fronting) is not caught.
 9. **The line guard (choice 2).**
    - TCP port 25 is refused from the exit's first day.
@@ -5050,9 +5054,9 @@ the control plane; the Company File mutation gateway and object store/NAS;
 Company Computers and their workbench; workers; provider connections; and
 network paths, among them the agent exit, which fails closed; a log
 outage is a gap (amended 2026-10-03, not built yet, "agent traffic leaves
-through the agent exit", item 10). For each
-layer the model MUST state detection, degraded behavior, recovery, and who is
-notified, and it MUST preserve the
+through the agent exit", item 10). For each layer the model MUST state
+detection, degraded behavior, recovery, and who is notified, and it MUST
+preserve the
 one-authority rule: two arbiters accepting work is the fork bug in permanent
 form.
 
