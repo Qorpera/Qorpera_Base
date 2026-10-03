@@ -76,7 +76,8 @@ lxc project create "$PROJECT" -c features.images=true -c features.profiles=false
 	</dev/null >/dev/null
 lx image copy "$IMAGE" local: --vm --alias qae2b-vm >/dev/null
 lx image copy "$IMAGE" local: --alias qae2b-ct >/dev/null
-lx image export qae2b-ct "$work/push/image/ct" >/dev/null
+lx image export qae2b-ct "$work/push/image/" >/dev/null
+ls "$work/push/image" | grep -q . || fail "the container image did not export"
 cp -r "$here" "$work/push/agent-exit"
 pass "fetched LXD's snaps, the packages and the container image on the test machine"
 
@@ -99,8 +100,10 @@ lx exec "$VM" -- env PATH=/snap/bin:/usr/sbin:/usr/bin:/sbin:/bin bash -euo pipe
 	lxd waitready --timeout=120
 	dpkg -i /root/push/debs/*.deb >/dev/null
 	cd /root/push/image
-	if ls ct*.squashfs >/dev/null 2>&1; then lxc image import ct*.tar.* ct*.squashfs --alias qae2b-ct >/dev/null
-	else lxc image import ct*.tar.* --alias qae2b-ct >/dev/null; fi
+	# A split image is a metadata tarball and a rootfs; a unified one is a single tarball.
+	meta=$(ls | grep -E "\.tar(\.(xz|gz|zst))?$" | head -1)
+	root=$(ls | grep -vxF "$meta" | head -1 || true)
+	lxc image import "$meta" ${root:+"$root"} --alias qae2b-ct >/dev/null
 ' || fail "setting up LXD in the VM"
 pass "LXD, the container image and the packages are set up in the VM, offline"
 
