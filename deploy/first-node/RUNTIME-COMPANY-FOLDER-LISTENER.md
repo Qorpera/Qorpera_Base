@@ -1,6 +1,6 @@
 # Company folder core: file-change wakes (slice P29)
 
-Status: design v2, after review r1 (`~/work/qorpera-folder-core-tools/reports/P29-design-review-r1.md`) and the
+Status: design v2, decided (§14), after review r1 (`~/work/qorpera-folder-core-tools/reports/P29-design-review-r1.md`) and the
 coordinator's decisions of 4 October 2026 (§14). Owner: the folder GC and erasure session (P29 moved from Q1 on
 4 October).
 
@@ -156,7 +156,7 @@ table is not rewritten. Without it, one 100,000-entry move would read every row 
   by its own change.
 - **A coding session's commit during a leased turn:** the parent is the commit's `turn_run_id`, not a fresh root. This
   keeps two agents' coding sessions from waking each other without end, since WAKE-BUS fences unknown provenance rather
-  than resetting it. C1B calls `turn_run_id` "attribution only", so this needs the coordinator's OK (§14, item 8).
+  than resetting it. C1B called `turn_run_id` "attribution only"; P29a amends C1B (§14, item 8).
 - **A desktop whose run has ended:** the parent is null, the actor is the staff agent, and the root is the commit.
 - **A member's or the platform's commit:** a fresh chain. A platform commit that follows from a run's own act (the
   vault's connection-file writer) also starts fresh; this is a known gap, noted for C4.
@@ -292,7 +292,7 @@ reviewed cards as for any noted run.
 
 After P28, `qorpera_expire_cloud_routines()` has no caller: its only caller was the legacy file drain, which P28 took
 out of reconcile. P29 checks expiry itself before every wake (§4 step 6), so a stale `active` routine never raises at
-insert. Routine expiry on folder-v2 as a whole (status, schedules) needs an owner (§14, item 9).
+insert. Routine expiry on folder-v2 as a whole (status, schedules) is Q1's, in the dynamic routine tick (§14, item 9).
 
 ## 12. The split
 
@@ -351,8 +351,8 @@ Taken by the coordinator on 4 October 2026:
 7. P29a (SQL and the orchestrator step) and P29b (the runtime), on master after #756; the runtime first or in the same
    paused cut.
 
-New, for the coordinator:
-8. **Coding sessions' saves:** they take `turn_run_id` as the causal parent (§5). This needs the coordinator's OK, since
-   C1B calls `turn_run_id` attribution only.
-9. **Routine expiry on folder-v2** has no caller after P28 (§11). P29 checks it before each file wake. Who owns it for
-   the rest?
+Also taken on 4 October:
+8. **Coding sessions' saves** take `turn_run_id` as the causal parent (§5). P29a amends C1B so that `turn_run_id` is both
+   attribution and the causal chain, and the 16-agent chain stop applies to it.
+9. **Routine expiry on folder-v2** (status and schedules) goes to Q1, in the folder-v2 dynamic routine tick (P04's
+   per-company pass). P29 keeps its own expiry check before each file wake (§4 step 6).
