@@ -1080,6 +1080,43 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   against a vault change that now locks by id it can meet in the opposite order. A follow-up locks the agent's active
   grants by id first on `folder-v2`.
 
+### 6.7 C1c-3e as built: a dynamic routine's next run (migration 20260930003600, test 819)
+
+An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick
+(`qorpera_restore_dynamic_routine_runs`, inside the Company File drain that `reconcile` runs). That tick visits every
+company in one transaction, so since C1c-2c part 1 it skips `folder-v2`, and a `folder-v2` dynamic routine never ran
+again after its first. 3e gives it a `folder-v2` path with one company per transaction, as routine firing has
+(`qorpera_folder_enqueue_routine_wake`, §5.6):
+- **`qorpera_folder_dynamic_routines_due(after, limit)`** (service role) lists the `folder-v2` dynamic routines that may
+  be missing their run, with the legacy tick's own filter, paged by routine id like the schedule heads, without a lock.
+- **`qorpera_folder_restore_dynamic_routine_run(routine, expected version)`** (service role) handles one routine in the
+  caller's transaction:
+  - the folder fence `KEY SHARE` and the pause read under it, then the company row `KEY SHARE` (rank 0);
+  - the version's member, agent and execution authority `KEY SHARE` (ranks 1 to 3);
+  - the routine `FOR NO KEY UPDATE SKIP LOCKED` (rank 5): a save or a decision holding it makes this pass skip it
+    (`busy`), as the legacy tick's `SKIP LOCKED` does;
+  - the legacy checks, in the legacy order: the version and its single `once` trigger, a pending run, a live run, a
+    member's Stop of the latest run (the routine pauses, once), the retry spacing, expiry and the occurrence limit;
+  - the public session `KEY SHARE`, admission, then the insert, at the version's chosen instant or the retry's.
+  It answers a status (`inserted`, `pending`, `running`, `changed`, `gone`, `not_folder`, `paused`, `busy`,
+  `stopped`, `ended`, `suspended`) and raises only for a caller that is not the service role, a missing fence, or a
+  wake whose audience changed under it (QRC01). A run the kernel refuses for want of authority (42501 from the wake's
+  pin trigger) undoes the admission and the insert, suspends the routine and tells its member once, as the legacy
+  tick does (`suspended`).
+- **`qorpera_ensure_dynamic_routine_run`** refuses a `folder-v2` routine (0A000) as its first line. It takes no fence
+  and no ranks, and none of its callers reaches `folder-v2`: the tick skips it, and the agent tools refuse it.
+- **The runner-orchestrator edge function** has two new actions, `folder_dynamic_routines` and
+  `restore_dynamic_routine`. **The orchestrator's routine reconciler** calls them after the schedule heads, one restore
+  per listed routine. One routine's failure is reported after the pass and never stops the others. An edge function
+  that predates the actions answers 400; the reconciler then reports it and asks again after ten minutes, as it does
+  for the first-slot advance.
+- **Deploy order:** the migration, then the edge function, then the orchestrator. An older orchestrator never calls the
+  actions, and a `folder-v2` dynamic routine waits for it.
+- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1). The legacy tick
+  is unchanged.
+- Not in 3e: the run itself (materializing a `folder-v2` wake) is C4's materializer (P28). Until then the inserted wake
+  stays `queued`, and the list skips the routine (its run is pending).
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.

@@ -173,6 +173,24 @@ export interface CloudRoutineNextDue {
 	nextDueAt?: string;
 }
 
+/** A folder-v2 company's dynamic routine that may be missing its next run (folder core C1c-3e). */
+export interface CloudFolderDynamicRoutine {
+	routineId: string;
+	version: number;
+}
+
+export interface CloudFolderDynamicRoutinePage {
+	items: readonly CloudFolderDynamicRoutine[];
+	hasMore: boolean;
+	nextAfterRoutineId?: string;
+}
+
+/** What the per-routine restore did: `inserted` its next run, or why it inserted none. */
+export interface CloudFolderDynamicRoutineRun {
+	status: "inserted" | "pending" | "running" | "changed" | "gone" | "not_folder" | "paused" | "busy" | "stopped" | "ended" | "suspended";
+	occurrenceId?: string;
+}
+
 export interface CloudRoutineWakeOccurrence {
 	occurrenceId: string;
 	status: "queued" | "materialized" | "completed" | "failed" | "requires_review" | "cancelled" | "deferred";
@@ -189,6 +207,16 @@ export interface CloudRunnerOrchestratorControlPlane {
 	): Promise<CloudRoutineSchedulePage>;
 	enqueueRoutineWake(input: EnqueueCloudRoutineWakeInput, signal?: AbortSignal): Promise<CloudRoutineWakeOccurrence>;
 	advanceRoutineNextDue(input: AdvanceCloudRoutineNextDueInput, signal?: AbortSignal): Promise<CloudRoutineNextDue>;
+	/** Folder-v2 dynamic routines (folder core C1c-3e): each next run in its own company's transaction. */
+	listFolderDynamicRoutines?(
+		afterRoutineId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutinePage>;
+	restoreFolderDynamicRoutineRun?(
+		routine: CloudFolderDynamicRoutine,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutineRun>;
 	reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void>;
 	retainedClaims(orchestratorId: string, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]>;
 	claimNext(
@@ -339,6 +367,8 @@ type CloudRunnerOrchestratorRequest =
 			expectedLastScheduledFor?: string;
 			nextDueAt: string;
 	  }
+	| { action: "folder_dynamic_routines"; orchestratorId: string; afterRoutineId?: string; limit: number }
+	| { action: "restore_dynamic_routine"; orchestratorId: string; routineId: string; expectedVersion: number }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| { action: "claim"; orchestratorId: string; clientClaimId: string; leaseSeconds: number }
@@ -554,6 +584,61 @@ function parseRoutineNextDue(value: unknown): CloudRoutineNextDue {
 			? undefined
 			: responseTimestamp(input.next_due_at, "routine next due time");
 	return { status: input.status, ...(nextDueAt ? { nextDueAt } : {}) };
+}
+
+function parseFolderDynamicRoutinePage(value: unknown): CloudFolderDynamicRoutinePage {
+	const input = record(value, "folder dynamic routine page");
+	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
+		throw new Error("Runner orchestrator returned invalid folder dynamic routine page");
+	}
+	const nextAfterRoutineId =
+		input.next_after_routine_id === null || input.next_after_routine_id === undefined
+			? undefined
+			: responseUuid(input.next_after_routine_id, "folder dynamic routine cursor");
+	if (input.has_more !== (nextAfterRoutineId !== undefined)) {
+		throw new Error("Runner orchestrator returned inconsistent folder dynamic routine pagination");
+	}
+	return {
+		items: input.items.map((value) => {
+			const item = record(value, "folder dynamic routine");
+			if (!Number.isSafeInteger(item.version) || (item.version as number) < 1) {
+				throw new Error("Runner orchestrator returned an invalid folder dynamic routine version");
+			}
+			return { routineId: responseUuid(item.routine_id, "folder dynamic routine id"), version: item.version as number };
+		}),
+		hasMore: input.has_more,
+		...(nextAfterRoutineId ? { nextAfterRoutineId } : {}),
+	};
+}
+
+const FOLDER_DYNAMIC_ROUTINE_RUN_STATUSES = new Set<CloudFolderDynamicRoutineRun["status"]>([
+	"inserted",
+	"pending",
+	"running",
+	"changed",
+	"gone",
+	"not_folder",
+	"paused",
+	"busy",
+	"stopped",
+	"ended",
+	"suspended",
+]);
+
+function parseFolderDynamicRoutineRun(value: unknown): CloudFolderDynamicRoutineRun {
+	const input = record(value, "folder dynamic routine run");
+	const status = input.status as CloudFolderDynamicRoutineRun["status"];
+	if (!FOLDER_DYNAMIC_ROUTINE_RUN_STATUSES.has(status)) {
+		throw new Error("Runner orchestrator returned an invalid folder dynamic routine status");
+	}
+	const occurrenceId =
+		input.occurrence_id === null || input.occurrence_id === undefined
+			? undefined
+			: responseUuid(input.occurrence_id, "folder dynamic routine occurrence id");
+	if (status === "inserted" && !occurrenceId) {
+		throw new Error("Runner orchestrator returned an inserted folder dynamic routine run without its id");
+	}
+	return { status, ...(occurrenceId ? { occurrenceId } : {}) };
 }
 
 function parseExecutionSponsor(value: unknown): CloudExecutionSponsorPin {
@@ -1277,6 +1362,8 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	 * scheduling as before for a while, instead of failing every poll, then ask
 	 * again in case the edge function was deployed meanwhile. */
 	#advancePausedUntil = 0;
+	/** The same for the folder-v2 dynamic routines' actions (folder core C1c-3e). */
+	#folderDynamicPausedUntil = 0;
 
 	constructor(options: CloudRoutineScheduleReconcilerOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
@@ -1353,7 +1440,47 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
 			if (page.hasMore && !afterRoutineId) throw new Error("Routine schedule pagination lost its cursor");
 		} while (afterRoutineId);
+		await this.#restoreFolderDynamicRoutines(controlPlane, failures, signal);
 		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
+	}
+
+	/** A folder-v2 dynamic routine's next run: one restore per listed routine, each in its own company's transaction
+	 * (the legacy tick inside `reconcile` skips folder-v2). One routine's failure never stops the others. */
+	async #restoreFolderDynamicRoutines(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		failures: unknown[],
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (!controlPlane.listFolderDynamicRoutines || !controlPlane.restoreFolderDynamicRoutineRun) return;
+		const now = this.#now().getTime();
+		if (now < this.#folderDynamicPausedUntil) return;
+		let afterRoutineId: string | undefined;
+		do {
+			let page: CloudFolderDynamicRoutinePage;
+			try {
+				page = signal
+					? await controlPlane.listFolderDynamicRoutines(afterRoutineId, this.#pageSize, signal)
+					: await controlPlane.listFolderDynamicRoutines(afterRoutineId, this.#pageSize);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
+					this.#folderDynamicPausedUntil = now + ROUTINE_ADVANCE_RETRY_MS;
+				}
+				failures.push(error);
+				return;
+			}
+			for (const routine of page.items) {
+				try {
+					if (signal) await controlPlane.restoreFolderDynamicRoutineRun(routine, signal);
+					else await controlPlane.restoreFolderDynamicRoutineRun(routine);
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					failures.push(error);
+				}
+			}
+			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
+			if (page.hasMore && !afterRoutineId) throw new Error("Folder dynamic routine pagination lost its cursor");
+		} while (afterRoutineId);
 	}
 }
 
@@ -2277,6 +2404,49 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			signal,
 		);
 		return parseRoutineNextDue(advanced);
+	}
+
+	async listFolderDynamicRoutines(
+		afterRoutineId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutinePage> {
+		if (afterRoutineId !== undefined) requiredUuid(afterRoutineId, "Folder dynamic routine cursor");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+			throw new Error("Folder dynamic routine page limit is outside the supported range");
+		}
+		return parseFolderDynamicRoutinePage(
+			await this.#request(
+				{
+					action: "folder_dynamic_routines",
+					orchestratorId: this.#orchestratorId,
+					...(afterRoutineId ? { afterRoutineId } : {}),
+					limit,
+				},
+				signal,
+			),
+		);
+	}
+
+	async restoreFolderDynamicRoutineRun(
+		routine: CloudFolderDynamicRoutine,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutineRun> {
+		requiredUuid(routine.routineId, "Routine id");
+		if (!Number.isSafeInteger(routine.version) || routine.version < 1 || routine.version > 1_000_000) {
+			throw new Error("Routine version is invalid");
+		}
+		return parseFolderDynamicRoutineRun(
+			await this.#request(
+				{
+					action: "restore_dynamic_routine",
+					orchestratorId: this.#orchestratorId,
+					routineId: routine.routineId,
+					expectedVersion: routine.version,
+				},
+				signal,
+			),
+		);
 	}
 
 	async reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void> {

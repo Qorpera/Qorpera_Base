@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	type CloudFolderDynamicRoutine,
+	type CloudFolderDynamicRoutinePage,
+	type CloudFolderDynamicRoutineRun,
 	type CloudRoutineScheduleHead,
 	CloudRoutineScheduleReconciler,
 	type CloudRunnerOrchestrationClaim,
@@ -564,6 +567,115 @@ describe("cloud runner orchestrator", () => {
 			{ routineId: second.routineId, scheduledFor: "2026-08-20T10:00:00.000Z" },
 		]);
 		expect(control.listRoutineScheduleHeads).toHaveBeenLastCalledWith(first.routineId, 250);
+	});
+
+	it("lists folder-v2 dynamic routines and restores one's run through the private control plane", async () => {
+		const routineId = "12121212-1212-4212-8212-121212121212";
+		const occurrenceId = "13131313-1313-4313-8313-131313131313";
+		const requests: unknown[] = [];
+		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push(body);
+			return Response.json({
+				value:
+					body.action === "folder_dynamic_routines"
+						? { items: [{ routine_id: routineId, version: 4 }], has_more: true, next_after_routine_id: routineId }
+						: body.expectedVersion === 4
+							? { status: "inserted", occurrence_id: occurrenceId, not_before: "2026-10-03T09:00:00+00:00" }
+							: { status: "changed" },
+			});
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			fakeFetch as typeof fetch,
+		);
+
+		await expect(control.listFolderDynamicRoutines(undefined, 250)).resolves.toEqual({
+			items: [{ routineId, version: 4 }],
+			hasMore: true,
+			nextAfterRoutineId: routineId,
+		});
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 4 })).resolves.toEqual({
+			status: "inserted",
+			occurrenceId,
+		});
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 5 })).resolves.toEqual({
+			status: "changed",
+		});
+		expect(requests).toEqual([
+			{ action: "folder_dynamic_routines", orchestratorId, limit: 250 },
+			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 4 },
+			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 5 },
+		]);
+		await expect(control.listFolderDynamicRoutines("not-a-uuid", 250)).rejects.toThrow("Folder dynamic routine cursor");
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 0 })).rejects.toThrow(
+			"Routine version is invalid",
+		);
+		expect(fakeFetch).toHaveBeenCalledTimes(3);
+		// An answer the orchestrator does not know is refused, as is an inserted run without its id.
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { status: "fired" } }));
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 4 })).rejects.toThrow(
+			"invalid folder dynamic routine status",
+		);
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { status: "inserted" } }));
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 4 })).rejects.toThrow("without its id");
+	});
+
+	it("restores every listed folder-v2 dynamic routine after the schedule heads, and waits out an edge function that predates them", async () => {
+		const first = "14141414-1414-4414-8414-141414141414";
+		const second = "15151515-1515-4515-8515-151515151515";
+		const third = "16161616-1616-4616-8616-161616161616";
+		const control = controlPlane();
+		const list = vi.fn(async (after: string | undefined, _limit: number): Promise<CloudFolderDynamicRoutinePage> =>
+			after
+				? { items: [{ routineId: third, version: 1 }], hasMore: false }
+				: {
+						items: [
+							{ routineId: first, version: 2 },
+							{ routineId: second, version: 3 },
+						],
+						hasMore: true,
+						nextAfterRoutineId: second,
+					},
+		);
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		const restore = vi.fn(async (routine: CloudFolderDynamicRoutine): Promise<CloudFolderDynamicRoutineRun> => {
+			if (routine.routineId === second) throw failure;
+			return { status: "inserted", occurrenceId: "17171717-1717-4717-8717-171717171717" };
+		});
+		control.listFolderDynamicRoutines = list;
+		control.restoreFolderDynamicRoutineRun = restore;
+		let now = new Date("2026-10-03T09:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		// One routine's failure never stops the others; it is reported after the pass.
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		expect(restore.mock.calls.map(([routine]) => routine)).toEqual([
+			{ routineId: first, version: 2 },
+			{ routineId: second, version: 3 },
+			{ routineId: third, version: 1 },
+		]);
+		expect(list.mock.calls.map(([after, limit]) => [after, limit])).toEqual([
+			[undefined, 250],
+			[second, 250],
+		]);
+
+		// An edge function that predates the actions answers 400: reported once, then not asked for ten minutes.
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		list.mockRejectedValue(unknown);
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		now = new Date("2026-10-03T09:05:00.000Z");
+		await expect(reconciler.reconcile(control)).resolves.toBeUndefined();
+		expect(list).toHaveBeenCalledTimes(3);
+		now = new Date("2026-10-03T09:11:00.000Z");
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		expect(list).toHaveBeenCalledTimes(4);
+
+		// A control plane without the actions only schedules.
+		await expect(new CloudRoutineScheduleReconciler({ now: () => now }).reconcile(controlPlane())).resolves.toBeUndefined();
 	});
 
 	it("recomputes an unadmitted initial slot from the existing latest-slot rule", async () => {
