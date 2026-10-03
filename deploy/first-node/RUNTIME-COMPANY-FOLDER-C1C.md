@@ -883,24 +883,41 @@ Decisions:
     and the company row the same way.
   - `remove_company_founder` takes the removed founder's jobs first, before the fence (core §3 step 2), through the
     prelude's new `jobs` mode. It does so only for a caller the checks under the lock let through, read first without a
-    lock, so a founder the table refuses never waits at the job (818 F iv).
+    lock, so a founder the table refuses never waits at the job (818 F iv). If that read is stale (the seat was taken
+    just then), the removal's own prelude takes the jobs after the fence instead: a wait holding the fence, not a cycle
+    (a run holding its job asks only for `KEY SHARE` rows here).
   - `respond_company_founding` takes the thread rooms and conversations as a join does, before its member row: a seat
     taken beside a post waits at the room (818 F iii) and behind a member change at the fence (818 F ii).
+    `start_company_founding` takes them the same way before its role changes (not raced: C2's seed is still a stub).
   - The order on `folder-v2`: the jobs (a removal only), the fence, the company row, the founding row, the seat, then
-    the member change's ranks.
+    the member change's ranks; a join, a seat and Start take the thread rooms and conversations before the member rows
+    they write (below).
+  - An invited seat holder passes the plain seated check, so `update_`, `invite_`, `set_founder_role`,
+    `set_founder_ready` and `start_` take the fence before refusing it (42501). Accepted: the caller is a founder's
+    invited friend, and before this the same call took the company row `FOR UPDATE`.
 - **Trigger modes**, for rows no prelude took: an account deletion (`auth.users` cascades into member rows with no
   prelude), or a row that appeared after the prelude's read.
   - The connection cascade (`cascade_provider_connection_unavailability`) takes the jobs it ends `FOR UPDATE NOWAIT`
-    in id order on `folder-v2`. A job queued for the member's login after the removal read its jobs, and held by a
-    tool call of its run, refuses the removal; the retry lands (818 D).
+    in id order on `folder-v2` when the login's owner is no longer a member: its departure or its account's deletion,
+    earlier in the same transaction. A job queued for the member's login after the removal read its jobs, and held by a
+    tool call of its run, refuses the removal; the retry lands (818 D). Any other status change (a member's Disconnect,
+    an authorizer's disable, the node-login switch-off, which catches its own `lock_not_available`) waits for the job
+    as before (818 D); its order against a tool call is 3d-2's.
   - The thread trigger's locks (`folder_lock_agent_threads`, `folder-v2` only) take the rooms and conversations
     `NOWAIT`. An account deletion beside a post refuses (818 E), and so does a member row written with no prelude
     (657 E2).
   - A refusal is `PGRST` with `QRC01` and HTTP 409, retryable (never 40001: test 361). A row a prelude holds is taken
     again at once, so member functions, joins and seats meet it only for a room a hire created between the prelude and
     the trigger that a post into the new thread holds.
-  - The private conversations' trigger keeps its waits: a member's private conversation names its account `ON DELETE
-    RESTRICT` (`audience_user_id`), so an account deletion that would close one refuses anyway (23503).
+  - The private conversations' trigger keeps its waits. An account deletion does reach it (the member cascade's RI
+    trigger fires before the RESTRICT check on `qorpera_shared_sessions.audience_user_id`, in trigger-name order), but
+    that RESTRICT check reads the member's conversations `FOR KEY SHARE` and waits at a held one anyway, and then
+    refuses (23503): a `NOWAIT` there would change neither.
+  - **Rank exception (for 3m's order check):** a join, a seat and Start take the thread rooms (rank 4) and
+    conversations (rank 11) before the member rows they write (rank 1). A new member's row is an insert; an existing
+    member accepting an invitation, or Start's role changes, take an existing member row `FOR NO KEY UPDATE` after the
+    rooms. No cycle: the conflicting holders of a member row are member changes (serialized at the fence) and the
+    vault's `FOR SHARE` readers, which take no room.
 - **The thread refresh** (`ensure_agent_thread_internal`) skips the conversation update on `folder-v2` when the title
   and the status stay. Joins and role changes then write no conversation state operation and take no operation clock
   for the threads (817 §2); a changed title is still written (817 §3).
@@ -915,6 +932,10 @@ Decisions:
   - The vault order (capture completion, rotation and seal against a member change; Disconnect, grant and share against
     a `folder-v2` tool call) is 3d-2.
   - Deletion's last-member check and its fence drain are 3g.
+  - Account deletion stays an operator action without a prelude. In a busy company it can refuse repeatedly: any open
+    transaction that writes into a thread holds its conversation `KEY SHARE`. A member whose login paid for their own
+    runs is refused 23503 after the cascade anyway (`runner_jobs.created_by_user_id` RESTRICT). An account close
+    function that runs the prelude per company, one company per transaction, is the fix.
 
 ## 7. Traps for C1c-2 and C1c-3
 

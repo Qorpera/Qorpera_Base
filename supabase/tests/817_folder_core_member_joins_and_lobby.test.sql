@@ -79,11 +79,22 @@ begin
 			|| E'\t\tperform public.qorpera_folder_member_change_enter(p_profile_id, auth.uid(), ''join'');\n'
 			|| E'\tend if;\n',
 			'', '62a7f1c3c331e04950e2b91de40eb687'),
+		('public.qorpera_start_company_founding(uuid,bigint,uuid)',
+			E'\t-- 20260930000200: on folder-v2 the thread rooms and their conversations first, as a join takes them (the fence and\n'
+			|| E'\t-- the company row are held), so the role changes'' thread trigger finds them held.\n'
+			|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
+			|| E'\t\tperform public.qorpera_folder_member_change_enter(p_profile_id, auth.uid(), ''join'');\n'
+			|| E'\tend if;\n',
+			'', '62d1d515ee29b8fed2a8644c3dd67342'),
 		('public.qorpera_cascade_provider_connection_unavailability()',
-			E'\t-- 20260930000200: on folder-v2 the jobs to end FOR UPDATE NOWAIT first, in id order. A member change''s prelude\n'
-			|| E'\t-- holds them already; one it did not take (queued after its read, or met by an account deletion) and held elsewhere\n'
-			|| E'\t-- refuses the change as a retryable conflict, never a wait behind a run that may wait for this change''s rows.\n'
-			|| E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
+			E'\t-- 20260930000200: on folder-v2, when the login''s owner is no longer a member (its departure or its account''s\n'
+			|| E'\t-- deletion, earlier in this transaction), the jobs to end FOR UPDATE NOWAIT first, in id order. A member change''s\n'
+			|| E'\t-- prelude holds them already; one it did not take (queued after its read, or met by an account deletion) and held\n'
+			|| E'\t-- elsewhere refuses the change as a retryable conflict, never a wait behind a run that may wait for this change''s\n'
+			|| E'\t-- rows. Any other status change (a Disconnect, a switch-off) waits for the job as before.\n'
+			|| E'\tif public.qorpera_company_is_folder_v2(new.profile_id) and new.owner_user_id is not null\n'
+			|| E'\t\tand not exists (select 1 from public.qorpera_profile_members as member\n'
+			|| E'\t\t\twhere member.profile_id = new.profile_id and member.user_id = new.owner_user_id) then\n'
 			|| E'\t\tbegin\n'
 			|| E'\t\t\tperform 1 from public.qorpera_runner_jobs as job\n'
 			|| E'\t\t\twhere job.id in (select run.job_id from public.qorpera_execution_runs as run\n'

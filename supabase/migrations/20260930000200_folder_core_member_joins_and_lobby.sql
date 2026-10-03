@@ -10,14 +10,16 @@
 --   up is a member change), the company row FOR NO KEY UPDATE (the table's name is the company's; effects' KEY SHARE
 --   does not wait for it) and then the founding row, in place of the company row FOR UPDATE; opening a table takes
 --   the fence and the company row the same way. Removing a joined founder takes the jobs its login's revoke will end
---   first, before the fence (a prelude mode 'jobs'), as removing a member does. Taking a seat takes the thread rooms
---   and conversations as a join does, before its member row.
+--   first, before the fence (a prelude mode 'jobs'), as removing a member does. Taking a seat, and Start's role
+--   changes, take the thread rooms and conversations as a join does, before the member rows.
 -- * The member triggers, for the rows no prelude took (an account deletion, which runs no prelude, or a row that
---   appeared after the prelude read): the connection cascade takes the jobs it ends FOR UPDATE NOWAIT, and the thread
+--   appeared after the prelude read): when a departed member's login is revoked, the connection cascade takes the jobs
+--   it ends FOR UPDATE NOWAIT (any other status change, a Disconnect or a switch-off, waits as before), and the thread
 --   trigger takes the thread rooms and conversations NOWAIT. A row held elsewhere refuses the change as a retryable
 --   conflict (QRC01, 409), never a wait behind a run or a post that may be waiting for this change's rows. Rows a
---   prelude holds are taken again at once. (The private conversations' trigger needs no such mode: a member's private
---   conversation names its account ON DELETE RESTRICT, so an account deletion that would close one refuses anyway.)
+--   prelude holds are taken again at once. (The private conversations' trigger keeps its waits: an account deletion
+--   that would close a private conversation waits at it anyway, in the RESTRICT check of the conversation's
+--   audience_user_id, and then refuses, 23503.)
 -- * The thread refresh skips the conversation update when its title and status do not change, so a member change
 --   writes no conversation state operation (and takes no operation clock) for the agent threads.
 -- Each inserted text names this migration (20260930000200), for deploy guards.
@@ -122,6 +124,15 @@ begin
 		|| E'\t\tperform public.qorpera_folder_member_change_enter(p_profile_id, p_user_id, ''jobs'');\n'
 		|| E'\tend if;\n'
 		|| E'\tv_f := public.qorpera_lock_company_founding(p_profile_id);\n', 1);
+	-- Start makes every founder at the table an owner: the thread rooms and conversations first, as a join takes them.
+	perform pg_temp.c1c3d1_replace('public.qorpera_start_company_founding(uuid,bigint,uuid)',
+		E'\tupdate public.qorpera_profile_members member set role = ''owner'' where member.profile_id = p_profile_id\n',
+		E'\t-- 20260930000200: on folder-v2 the thread rooms and their conversations first, as a join takes them (the fence and\n'
+		|| E'\t-- the company row are held), so the role changes'' thread trigger finds them held.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
+		|| E'\t\tperform public.qorpera_folder_member_change_enter(p_profile_id, auth.uid(), ''join'');\n'
+		|| E'\tend if;\n'
+		|| E'\tupdate public.qorpera_profile_members member set role = ''owner'' where member.profile_id = p_profile_id\n', 1);
 	-- Taking a seat: the thread rooms and their conversations, as a join takes them, before the member row.
 	perform pg_temp.c1c3d1_replace('public.qorpera_respond_company_founding(uuid,boolean)',
 		E'\tinsert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)\n',
@@ -137,14 +148,18 @@ end $$;
 
 do $$
 begin
-	-- The connection cascade: the jobs it ends.
+	-- The connection cascade, revoking a departed member's login: the jobs it ends.
 	perform pg_temp.c1c3d1_replace('public.qorpera_cascade_provider_connection_unavailability()',
 		E'\tif old.status = new.status or new.status = ''active'' then return new; end if;\n',
 		E'\tif old.status = new.status or new.status = ''active'' then return new; end if;\n'
-		|| E'\t-- 20260930000200: on folder-v2 the jobs to end FOR UPDATE NOWAIT first, in id order. A member change''s prelude\n'
-		|| E'\t-- holds them already; one it did not take (queued after its read, or met by an account deletion) and held elsewhere\n'
-		|| E'\t-- refuses the change as a retryable conflict, never a wait behind a run that may wait for this change''s rows.\n'
-		|| E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
+		|| E'\t-- 20260930000200: on folder-v2, when the login''s owner is no longer a member (its departure or its account''s\n'
+		|| E'\t-- deletion, earlier in this transaction), the jobs to end FOR UPDATE NOWAIT first, in id order. A member change''s\n'
+		|| E'\t-- prelude holds them already; one it did not take (queued after its read, or met by an account deletion) and held\n'
+		|| E'\t-- elsewhere refuses the change as a retryable conflict, never a wait behind a run that may wait for this change''s\n'
+		|| E'\t-- rows. Any other status change (a Disconnect, a switch-off) waits for the job as before.\n'
+		|| E'\tif public.qorpera_company_is_folder_v2(new.profile_id) and new.owner_user_id is not null\n'
+		|| E'\t\tand not exists (select 1 from public.qorpera_profile_members as member\n'
+		|| E'\t\t\twhere member.profile_id = new.profile_id and member.user_id = new.owner_user_id) then\n'
 		|| E'\t\tbegin\n'
 		|| E'\t\t\tperform 1 from public.qorpera_runner_jobs as job\n'
 		|| E'\t\t\twhere job.id in (select run.job_id from public.qorpera_execution_runs as run\n'

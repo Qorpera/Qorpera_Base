@@ -3,11 +3,11 @@
 -- someone other than the invitee of a live invitation refuses without the folder fence (#581 N1); a join beside a
 -- post waits at the thread room in its prelude, holding no invitation, and lands; an answer to a card and a member
 -- change wait for each other at the thread room (#581 N2); a job queued for a member's login after its removal read
--- the jobs refuses the removal retryably, without waiting; an account deletion beside a post refuses retryably, without
--- waiting; the founding lobby's edit does not wait for a company-row KEY SHARE holder, a seat taken waits at the fence
--- behind a member change and at the thread room beside a post, and removing a founder takes the founder's job before
--- the fence and the founding row (a caller the table refuses never waits there). 648's committed fixture, removed at
--- the end.
+-- the jobs refuses the removal retryably, without waiting, while a Disconnect still waits for it; an account deletion
+-- beside a post refuses retryably, without waiting; the founding lobby's edit does not wait for a company-row KEY SHARE
+-- holder, a seat taken waits at the fence behind a member change and at the thread room beside a post, and removing a
+-- founder takes the founder's job before the fence and the founding row (a caller the table refuses never waits
+-- there). 648's committed fixture, removed at the end.
 
 -- The company's login pays for unattended work (as 663's).
 set session_replication_role = replica;
@@ -233,7 +233,8 @@ end $$;
 
 -- D. A job queued for a member's own login after the member's removal read its jobs (the removal waits at the fence,
 -- held FOR UPDATE elsewhere, meanwhile), held by a tool call of that run: the connection cascade's NOWAIT refuses the
--- removal as a retryable conflict, without waiting for the call; the retry lands and ends the job.
+-- removal as a retryable conflict, without waiting for the call. A status change of the login while its owner is still
+-- a member (a Disconnect) waits for the call as before, then ends the job; the removal's retry lands.
 do $$
 begin
 	perform pg_temp.hold('fence_four', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
@@ -253,7 +254,16 @@ begin
 	v_state := pg_temp.outcome('fence_one');
 	if v_state not like 'PGRST %"QRC01"%A run this login pays for is busy; try again%' then raise exception 'D: the removal: %', v_state; end if;
 	if not pg_temp.member('81800000-0000-4000-8000-000000000005') then raise exception 'D: the refused removal must change nothing'; end if;
+	-- A status change of a member's own login (a Disconnect, a switch-off) still waits for the job, and ends it after.
+	perform dblink_send_query('fence_two', $q$update public.qorpera_provider_connections set status = 'disabled'
+		where id = '81800000-0000-4000-8000-0000000000c5' returning 'ok'::text$q$);
+	if not pg_temp.waits_for('fence_two', 'fence_three') or not pg_temp.waits_at('fence_two', 'public.qorpera_runner_jobs') then
+		raise exception 'D: a Disconnect must wait for the job'; end if;
 	perform dblink_exec('fence_three', 'rollback');
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' or (select status from public.qorpera_runner_jobs where id = '81800000-0000-4000-8000-0000000000f5')
+			not in ('failed','cancelled') then
+		raise exception 'D: the Disconnect after the job: %', v_state; end if;
 	select x into v_state from dblink('fence_one', pg_temp.sql_remove('81800000-0000-4000-8000-000000000005')) as t(x text);
 	if v_state <> 'true' or pg_temp.member('81800000-0000-4000-8000-000000000005')
 		or (select status from public.qorpera_runner_jobs where id = '81800000-0000-4000-8000-0000000000f5') not in ('failed','cancelled') then
