@@ -13,7 +13,9 @@
 --     place;
 --   - a text-only save (an older client's, which can't send quotes) brings no newly marked words: a quote edited
 --     inside its marks would otherwise become the member's own.
---   The member's own guillemets (»ja«, « merci ») are theirs.
+--   The member's own guillemets (»ja«, « merci ») are theirs. A client that knows quotes and has none left sends an
+--   empty list, which the draft stores as none: its save is not a text-only one, so removing the last quote and
+--   writing its own marks in the same save is ordinary. (A message still refuses an empty list.)
 --
 -- Exact-text patches keep I5d part 1's body marker; each patched or new function also carries "I5d-2 (20260930008000)".
 
@@ -123,6 +125,8 @@ declare
 	v_user uuid := auth.uid();
 	v_draft public.qorpera_room_drafts%rowtype;
 	v_contributors uuid[];
+	-- An empty list: a client that knows quotes, with none left. The draft stores none.
+	v_quotes jsonb := case when p_quotes = '[]'::jsonb then null else p_quotes end;
 begin
 	if auth.role() is distinct from 'authenticated' or v_user is null
 		or not public.qorpera_room_draft_member_internal(p_room_id, v_user) then
@@ -134,9 +138,9 @@ begin
 		raise exception 'Draft is invalid' using errcode = '22023';
 	end if;
 	-- I5d-2 (20260930008000): a draft's quotes are checked as a message's would be, before the draft's lock.
-	if p_quotes is not null then
+	if v_quotes is not null then
 		perform public.qorpera_check_member_quotes(room.profile_id, room.environment_id,
-			jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', p_body, 'quotes', p_quotes))
+			jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', p_body, 'quotes', v_quotes))
 		from public.qorpera_company_rooms as room where room.id = p_room_id;
 	end if;
 	-- A draft whose owner left the room is gone for everyone.
@@ -150,7 +154,7 @@ begin
 			return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'gone');
 		end if;
 		insert into public.qorpera_room_drafts (room_id, owner_user_id, body, revision, editor_user_id, quotes)
-		values (p_room_id, p_owner_user_id, p_body, p_base_revision + 1, v_user, p_quotes)
+		values (p_room_id, p_owner_user_id, p_body, p_base_revision + 1, v_user, v_quotes)
 		on conflict (room_id, owner_user_id) do nothing
 		returning * into v_draft;
 		if not found then
@@ -163,12 +167,12 @@ begin
 	elsif v_draft.revision <> p_base_revision then
 		return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'stale',
 			'draft', public.qorpera_room_draft_json_internal(v_draft));
-	elsif v_draft.body = p_body and v_draft.quotes is not distinct from p_quotes then
+	elsif v_draft.body = p_body and v_draft.quotes is not distinct from v_quotes then
 		return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'ok',
 			'draft', public.qorpera_room_draft_json_internal(v_draft));
 	else
 		-- A save that keeps a quote's words without its record, or changes them, is refused; removing a quote whole is
-		-- an ordinary save.
+		-- an ordinary save. The list as sent: an empty one is not a text-only save.
 		if not public.qorpera_draft_keeps_quotes(v_draft.body, v_draft.quotes, p_body, p_quotes) then
 			raise exception 'A save would keep a quote''s words without its record' using errcode = '22023';
 		end if;
@@ -180,7 +184,7 @@ begin
 			else v_draft.contributors || v_user
 		end;
 		update public.qorpera_room_drafts
-		set body = p_body, quotes = p_quotes, revision = v_draft.revision + 1, editor_user_id = v_user,
+		set body = p_body, quotes = v_quotes, revision = v_draft.revision + 1, editor_user_id = v_user,
 			contributors = v_contributors, updated_at = clock_timestamp()
 		where room_id = p_room_id and owner_user_id = p_owner_user_id
 		returning * into v_draft;

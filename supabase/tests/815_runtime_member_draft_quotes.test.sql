@@ -110,6 +110,30 @@ do $$ begin
 		'a co-editor''s text-only save removing the quote whole');
 end $$;
 
+-- A client that knows quotes and has none left sends an empty list: removing the last quote and writing the member's
+-- own marks in one save is ordinary, and the draft holds no quotes. The empty list still keeps no quote's words, and
+-- an older client's text-only save of the same change is refused.
+select pg_temp.member();
+do $$
+declare v_body text := 'Svar «Order 7 is late» i dag.';
+	v_result jsonb;
+begin
+	perform pg_temp.expect(pg_temp.draft(7, v_body, pg_temp.span(v_body, 'Order 7 is late')) ->> 'status', 'ok',
+		'a quote again');
+	perform pg_temp.expect(pg_temp.state_of($call$select pg_temp.draft(8, 'Svar »ja« og »nej« i dag.')$call$), '22023',
+		'an older client''s save removing the last quote and adding own marks');
+	perform pg_temp.expect(pg_temp.state_of($call$select pg_temp.draft(8, 'Svar «Order 7 is late» nu.', '[]')$call$),
+		'22023', 'an empty list keeping the quote''s words');
+	v_result := pg_temp.draft(8, 'Svar »ja« og »nej« i dag.', '[]');
+	perform pg_temp.expect(v_result ->> 'status', 'ok', 'an empty list removing the last quote and adding own marks');
+	perform pg_temp.expect((v_result -> 'draft' ? 'quotes')::text, 'false', 'stored as none');
+	perform pg_temp.expect(((select quotes from public.qorpera_room_drafts
+		where room_id = '30000000-0000-4000-8000-000000081605'
+			and owner_user_id = '30000000-0000-4000-8000-000000000001') is null)::text, 'true', 'the row holds none');
+	perform pg_temp.expect(pg_temp.draft(9, 'Svar »ja« og »nej« i dag.', '[]') -> 'draft' ->> 'revision', '9',
+		'the same text with an empty list changes nothing');
+end $$;
+
 -- Only a company whose runs fence quotes takes them. This company is on the company path; the same company as a
 -- whole-tree one (snapshot-v1, no path gateway) is refused, and as a folder-v2 one it takes them. Each change is the
 -- company row's alone, for its savepoint (triggers skipped: the path head guard refuses a write outside the gateway).
