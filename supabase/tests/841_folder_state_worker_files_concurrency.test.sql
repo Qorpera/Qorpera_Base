@@ -83,13 +83,16 @@ select set_config('qorpera_test.b1', pg_temp.brief('84100000-0000-4000-8000-0000
 select set_config('qorpera_test.u1', pg_temp.dispatch('agents/ada/todos/race-one/worker', current_setting('qorpera_test.b1')::jsonb)::text,
 	false) \g /dev/null
 select set_config('qorpera_test.r1', pg_temp.reviewed('f2b-race-call-1', current_setting('qorpera_test.u1')::jsonb)::text, false) \g /dev/null
+select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u1')::jsonb) \g /dev/null
 select set_config('qorpera_test.d1', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-one.md', 'done'))::text, false) \g /dev/null
--- The member holds the done's file, as its own upload would leave it (C1D §3), before its commit runs on another session.
+-- Each committer holds the files it commits (Ada's run its brief, the member its done), as its own upload would leave
+-- them (C1D §3), before its commit runs on another session.
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.d1')::jsonb) \g /dev/null
 select set_config('qorpera_test.b2', pg_temp.brief('84100000-0000-4000-8000-000000000102')::text, false) \g /dev/null
 select set_config('qorpera_test.u2', pg_temp.dispatch('agents/ada/todos/race-two/worker', current_setting('qorpera_test.b2')::jsonb)::text,
 	false) \g /dev/null
 select set_config('qorpera_test.r2', pg_temp.reviewed('f2b-race-call-2', current_setting('qorpera_test.u2')::jsonb)::text, false) \g /dev/null
+select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u2')::jsonb) \g /dev/null
 select set_config('qorpera_test.d2', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-two.md', 'done'))::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.d2')::jsonb) \g /dev/null
 
