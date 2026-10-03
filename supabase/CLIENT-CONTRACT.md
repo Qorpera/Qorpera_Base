@@ -856,7 +856,8 @@ looks absent in every answer. Reads only: member writes come with P31.
   `20260930013100_folder_core_member_hint`, folder core C4 P30). Private broadcast channel, event `folder`,
   payload `{"schema":"qorpera.folder-hint/v1","seq":<n>}` and nothing else: the folder's clock reached seq `n` (a
   change set or an authority change; the same number as the feed's seq and a run's `companySeq`). Members of the
-  company receive it (RLS on `realtime.messages` via `qorpera_folder_hint_member`); nobody publishes but the database.
+  company receive it, not while it is being deleted (RLS on `realtime.messages` via `qorpera_folder_hint_member`);
+  nobody publishes but the database. `CloudMemberFolderHints` (cloud-client) follows it.
   Topic name from `qorpera_folder_hint_topic`. A nudge only: on a hint, ask `qorpera_member_folder_changes` from the
   position you hold, at most about once a second, and keep a slow poll for hints missed while disconnected.
 - `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
