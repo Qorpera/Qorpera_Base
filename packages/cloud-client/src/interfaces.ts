@@ -1894,7 +1894,6 @@ export type InterfaceStateFileResult =
 	| { readonly ok: true; readonly path: InterfaceStateFilePath; readonly file: InterfaceStateFile }
 	| { readonly ok: false; readonly path: InterfaceStateFilePath; readonly problems: readonly InterfaceProblem[] };
 
-
 /** Reads a rows file without its definition: the size, the encoding, the CSV, a header of unique column names, and
  * rows of the header's width. What the values mean is the save check's, against the definition at commit. */
 export function parseTableRowsText(text: string): InterfaceParseResult<TableRowsFile> {

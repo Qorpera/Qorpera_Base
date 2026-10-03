@@ -146,7 +146,11 @@ export const TABLE_ROWS_CASES: readonly TableRowsCase[] = [
 	{ name: "date before year 100", table: TYPES_TABLE, text: `${HEADER}\n${row("d", { day: "0099-12-31" })}\n` },
 	{ name: "choice", table: TYPES_TABLE, text: `${HEADER}\n${row("c", { state: "Open" })}\n` },
 	{ name: "yes-no", table: TYPES_TABLE, text: `${HEADER}\n${row("y", { ok: "true" })}\n` },
-	{ name: "member in capitals", table: TYPES_TABLE, text: `${HEADER}\n${row("w", { owner: "ABCDEF01-1111-4111-8111-000000000001" })}\n` },
+	{
+		name: "member in capitals",
+		table: TYPES_TABLE,
+		text: `${HEADER}\n${row("w", { owner: "ABCDEF01-1111-4111-8111-000000000001" })}\n`,
+	},
 	{ name: "agents repeated", table: TYPES_TABLE, text: `${HEADER}\n${row("g", { team: `${A} ${A}` })}\n` },
 	{ name: "agents two spaces", table: TYPES_TABLE, text: `${HEADER}\n${row("g", { team: `${A}  ${B}` })}\n` },
 	{ name: "id", table: TYPES_TABLE, text: `${HEADER}\n${row("i", { ref: "not-an-id" })}\n` },

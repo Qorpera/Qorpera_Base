@@ -101,7 +101,10 @@ describe("rows typed against their definition, as the save check's port must typ
 			);
 			const parsed = parseTableFile(text);
 			expect(parsed.ok, type).toBe(false);
-			expect(parsed.problems.map((p) => p.code), type).toContain("bad_value");
+			expect(
+				parsed.problems.map((p) => p.code),
+				type,
+			).toContain("bad_value");
 		}
 	});
 });

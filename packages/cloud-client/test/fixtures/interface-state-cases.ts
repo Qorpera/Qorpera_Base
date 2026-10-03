@@ -42,7 +42,11 @@ export const INTERFACE_STATE_CASES: readonly InterfaceStateCase[] = [
 		path: "tables/numbers/rows.csv",
 		text: 'number,at,value,unit,kept_by\nRevenue,2026-10-02T09:44Z,1200.5,€,11111111-1111-4111-8111-000000000030\n"Visits, web",2026-10-02T10:00:00Z,42,count,11111111-1111-4111-8111-000000000030\n',
 	},
-	{ name: "valid rows, header only", path: "tables/cards/rows.csv", text: "\ufeffid,card,area,holder,state,added_by,todo\n" },
+	{
+		name: "valid rows, header only",
+		path: "tables/cards/rows.csv",
+		text: "\ufeffid,card,area,holder,state,added_by,todo\n",
+	},
 	// One per refusal code.
 	{ name: "too_large", path: "tables/numbers/rows.csv", text: `number\n${"x\n".repeat(33 * 1024)}` },
 	{ name: "encoding", path: "interfaces/pulse/interface.toml", text: `\ufeff${PULSE_INTERFACE}` },
