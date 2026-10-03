@@ -4306,8 +4306,8 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 
 Founder decisions of 2 October 2026, and item 2's write tools on 3 October
 (the coordinator, at Jonas's request). First "light threads": a chat turn has
-no shell. Then, the same day: folders shared with only some agents are worked on
-from the agent's own machine (item 4); folder work runs offline (item 5); a
+no shell. Then, the same day: folders shared with only some agents are worked
+on from the agent's own machine (item 4); folder work runs offline (item 5); a
 company machine's reads go to the run (item 6); and the company machine's
 wake time is accepted (item 3).
 
