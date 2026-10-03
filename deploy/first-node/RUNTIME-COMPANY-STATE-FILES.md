@@ -1768,6 +1768,103 @@ the platform live in `platform-folder-writer.ts`, which F2's company creation (P
 first files, a member's text kept through a rewrite, a Disconnect's delete, and nothing outside the allow-list in any
 file version or writer commit.
 
+**Plan (P15): the follow-up queue** (core §5 "After the commit", core §11 C2; the coordinator's slice P15, after P16a;
+design, 4 October). The facts are in the inventory of 4 October (today's publish path, the 12 staff triggers, what
+`qorpera_company_state_index_agent` does). Folder-v2 only.
+
+*What is missing today.* An agent's save is indexed by its staff row, and the staff triggers give it a thread, a default
+root grant, office access, execution authority and connector grants, and on archive close its thread and revoke its
+secret grants. Four gaps remain:
+- a hire gets no first run (only a creation's Co-Founder does, inside the creation);
+- an archive leaves its routines `active` in the index, its execution authority and session bindings in place, and its
+  other open sessions open (all fenced already: wake authorization needs an active agent);
+- the company name in `vision.md` never reaches `qorpera_profiles.name`, which the hub reads;
+- three triggers write after the commit's paths, outside the global order: the default grant (ranks 6–7, and outside
+  the authority journal), the connector grants on a hire and the secret revocation on an archive (rank 8). The thread
+  trigger updates the thread and pair sessions (rank 11), which the hook does not name.
+
+*The queue* (P22a's model: marks, then one work row per subject, converged to its current state, never replayed):
+- `qorpera_folder_follow_up_marks`: insert-only rows `(environment, subject kind, subject id, by user, commit)`, written
+  by apply with no lock of their own (a foreign key only to the folder clock row, as the indexes have). Subjects:
+  - `agent` (the staff id): every unit that writes an `agent.md`, and every move, delete or restore that repoints or
+    retires a staff row;
+  - `company` (the profile): every `vision.md` write.
+- `qorpera_folder_follow_ups`: one row per subject, kept: `generation`, `dirty`, the lease, `attempts`, `not_before`,
+  `last_problem`, and `hired_by_user_id` (the `by` of the subject's first mark, for its first run).
+- **The drain** is SQL: a procedure pg_cron calls every 5 seconds (as erasure's step), one subject per transaction
+  (it commits between subjects), at most 1 second a pass, `lock_timeout` 2 seconds. It never runs inside a caller's
+  transaction. It claims marked subjects `SKIP LOCKED`, skips companies being deleted (their rows are blocked, as
+  creations are) and backs off paused ones (55000), with `2^attempts` seconds up to 10 minutes on any refusal.
+  Service-role wrappers converge one subject for tests and operators.
+
+*Converging an agent* (`qorpera_folder_converge_agent(environment, staff)`, F2's): it reads the staff row plainly to
+choose its targets, enters the company (`qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, rank 0), takes
+its targets in the global order, reads the row again under its lock, and acts on what it finds:
+1. rank 1: the hire's member row (`KEY SHARE`), when a first run is due;
+2. rank 2: the staff row (`FOR NO KEY UPDATE`);
+3. rank 3: the agent's execution authorities (`FOR UPDATE`), on an archive;
+4. rank 4: the thread room (`KEY SHARE`);
+5. rank 5: the agent's routines (`FOR NO KEY UPDATE`, by id), to pause or resume;
+6. ranks 6–7: each live shared root (`FOR NO KEY UPDATE`) and the agent's grants on it (`FOR UPDATE`), for the default
+   grant;
+7. rank 8: the agent's vault grants in the vault's inner order, for connector grants or their revocation;
+8. rank 11: the agent's open sessions (`FOR UPDATE`, by id): the thread for a first run's kickoff, the rest to close;
+9. the folder clock last, through one authority journal row, only when a grant changed.
+
+For an **active agent whose folder is live**:
+- the default grant through a journaled internal helper with today's rules (read and write on every live shared root;
+  never widening an explicit read-only grant, never reviving a revoked default, origin `default_agent_read`), with the
+  revisions bumped and one widening journal row;
+- the shared connectors, as today's trigger does;
+- **the first run, once ever** (`qorpera_agent_first_runs` holds at most one per agent), never for the Co-Founder (the
+  creation makes its own): the kickoff in the thread, `qorpera.agent-first-run/v1` with
+  `{kind:'staff_startup', companyId, staffAgentId, firstTodo}` (the path of the hire's first todo, when there is one),
+  authored by `hired_by_user_id`, its turn request on that member's login as P14a's (`qorpera_member_first_run_sponsor`
+  and `qorpera_sponsor_serves_requester`), or pending without one. No wake: P28 materializes the turn, as for a
+  creation. One helper serves both: P14a's creation path calls it too.
+- routines paused for the agent's archive (`pause_reason = 'agent'`) resume.
+
+For an **archived or retired agent**:
+- its active routines are paused in the index with `pause_reason = 'agent'`;
+- its secret and connector grants are revoked;
+- its execution authorities and session bindings are deleted;
+- its open sessions are closed (the thread trigger closes the thread and pair sessions in the commit).
+
+*Routine files are not written.* This changes §2's plan, which had the platform write `status: paused` into an archived
+agent's routine files. `agent.md`'s status is the truth, routine firing is fenced by it at once, and converging to the
+agent's current status pauses and resumes the index; writing files would need a gateway worker and a platform change
+set for no reader. A restored or reactivated agent's routines follow its status at the next converge. The other
+platform pauses (a member's Stop, an authorization failure, a wait for a login) stay as they are.
+
+*Converging the company name* (`qorpera_folder_converge_company(environment)`): in its own transaction, the company row
+`FOR NO KEY UPDATE NOWAIT`, then `qorpera_profiles.name` from `qorpera_folder_company_index.name` when they differ. This
+is the one exception to "the company row only `KEY SHARE`" (core §3): only this step takes it, alone in its
+transaction, without waiting (55P03 backs off); folder-v2 effects take `KEY SHARE` and never conflict with it; a
+company being deleted is skipped.
+
+*The commit's side* (F2's hook):
+- apply writes the marks;
+- the default grant, connector grant and secret revocation triggers skip folder-v2 companies (their work is the
+  converge's);
+- the hook names the thread session and the pair sessions at rank 11 for an agent unit that renames, archives or
+  retires the agent (C1C's promise), so the thread trigger's updates are in order;
+- execution authority (rank 3, inserted on a hire), office access and the thread room stay with their triggers.
+
+*Creation.* `qorpera_folder_company_ready` also waits until the Co-Founder's agent subject and the company subject have
+converged (core §5 "Company creation is one commit"): the Co-Founder gets its default grant from the queue now.
+
+*What waits for the queue.* A hire reads and writes the company's files, and has its first run queued, once its subject
+converges (about 5 seconds). An agent it hires through `hire_agent` meanwhile is a restricted hire (its default grant is
+not yet there). Nothing else waits.
+
+*Tests* (migration 20260930022000):
+- 877: a hire (first run, grants journaled, connectors), an archive (routines, execution authority, bindings, sessions,
+  secret grants), a reactivation, a retire and restore, the Co-Founder at creation, the company name, `ready`, the
+  marks, back-off and the blocked rows of a company being deleted;
+- 878: races: a converge against an archive commit, a rename, a second drain, and a deletion;
+- 879: the triggers' folder-v2 guards, the rank-11 targets, the drain procedure and the cron job;
+- and a mutant run.
+
 **Plan (F2-5b): worker briefs and results on the folder core** (core C3; the coordinator's slice P21 of
 2 October). Revised after design review r1 and the coordinator's answers of 3 October.
 
