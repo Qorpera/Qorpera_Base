@@ -717,7 +717,7 @@ describe("conversation UI boundaries", () => {
 			recoveries: { [run.runId]: details },
 		});
 		await settle();
-		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
 			"Fixture agent stopped with changes to review",
 		);
@@ -843,7 +843,7 @@ describe("conversation UI boundaries", () => {
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
 			"Fixture agent stopped with changes to review",
 		);
-		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
 	});

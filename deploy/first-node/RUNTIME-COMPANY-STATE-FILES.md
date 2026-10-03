@@ -1990,6 +1990,170 @@ only; races of dispatch against `done`, two saves of one todo, the drain against
 subtree delete, and an agent folder move against a dispatch; a mutant run, as H1b and H2b; and the legacy
 worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new columns.
 
+**Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
+step I6, with Interfaces; design, 3 October, review r1 folded). The rules are RUNTIME-INTERFACES.md §6.1 (its nine
+checks, as #751 states them) and §7 for review. Interfaces' TS side is #751: `parseInterfaceStateFile`, the parse
+types, the fixtures `interface-state.json` and `table-rows-typed.json`, and `interfaceLibraryFiles`. This plan says how
+the hook runs them. Folder-v2 only (the founder decision of 3 October): no snapshot-v1 branches and no pins of old
+function text.
+
+*The kinds.* `qorpera_structured_path_kind` names four new kinds by the path's shape alone, whatever the name:
+`interfaces/order.md` (`interface-order`), `interfaces/*/interface.toml` (`interface`), `tables/*/table.toml`
+(`table`) and `tables/*/rows.csv` (`table-rows`). So a badly named folder's file is still checked, and refused. The
+shared helpers learn them too:
+- `qorpera_company_state_path_problems` checks the folder's name at position 2 for the three kinds in a named folder,
+  and exempts all four from the `.md` rule;
+- `qorpera_structured_folder_names` names the places: `interfaces` and `tables` (no name of their own),
+  `interfaces/<name>` and `tables/<name>`;
+- `qorpera_company_state_carried` adds `interfaces` and `tables` to its roots, so a folder copied or moved into, within
+  or out of them is checked entry by entry (`kind_change`, `structured_copy`): a table or an interface is never
+  copied as a folder, and a folder holding a file named `table.toml` never becomes a table by moving;
+- `qorpera_company_state_checked` runs the shape check for the four kinds.
+
+In P16b, `companyStatePath` (the TS twin of the path kind) learns the four kinds and exempts them from the `.md`
+rule, and `parseCompanyStateFile` dispatches them to `parseInterfaceStateFile`. Writers decide what to send with
+`companyStatePath`, so only then do the runtime's tools, the web, the object gateway (the creation worker and member
+writes) and the folder service send them as structured entries. The runtime ships through the release train.
+
+*Coding sessions* see `interfaces/` and table definitions read-only (contract 5.6, RUNTIME-INTERFACES.md §7).
+`qorpera_folder_coding_protected` adds `interfaces`, everything under it, and `tables/<name>/table.toml`. The
+callers already check each key of a new folder, a delete and a move, so a coding session never creates, moves or
+deletes a table folder either; it writes `rows.csv` under `[write]` and the rules below.
+
+*(1) The parse's shape* (`qorpera_company_state_parse_problems`; §6.1 rule 1). A parse it refuses is
+`structured_invalid` with the state files' `value` problem (the parser's own codes come from the client):
+- **Full** for `table` (closed keys; a lowercase strict uuid `id`; the name and texts with the parser's bounds; 1–40
+  columns with their types and the keys each type takes; a key of 1–3 columns, each once, never optional and never a
+  number; `holder`, `time` and `[write]`), `table-rows` (§6.1 rule 1's bounds: 1–40 header names, rows of
+  `{line, fields}` with `line` at least 2 and strictly increasing, fields as wide as the header, at most 32,768 rows
+  and 65,536 bytes of fields) and `interface-order` (unique strict uuids).
+- **Shallow** for `interface`: closed top-level keys, and typed `kind`, `id`, `name`, `main` and `access` (an object of
+  exactly `members`, `agents` and `edit`, each with its parser's values). The fields review reads are typed too: `buttons` is an array of objects
+  with a string `id`, and `views` an array of objects whose `blocks` is an array of objects whose `buttons` is an array
+  of strings. The rest by JSON type and size. Three conditions keep this safe (Interfaces):
+  - readers (I7's web, I8's `interface_read`) parse the text themselves and never trust the stored parse, so the
+    parser-only refusals (`outside_value` included) hold even against a client that lies;
+  - `main` from the parse is rule 3's only input, and the web handles zero or two mains in the texts it reads;
+  - a later slice that indexes or reads a field adds that field's full check.
+
+  A stored parse that is missing (a file saved as an ordinary file before P16 in an operator's company) reads as
+  absent: an interface that is not main and open to anyone, a table with no definition (its rows are refused until
+  `table.toml` is saved again).
+
+*(2)-(9) The save check*, against the parses as they are when the unit is decided (earlier units of the change set
+applied). Placement and the owners rule run for every unit, structured or not (`structured_rule` with §6.1's codes):
+- **Placement** (rule 2): every path a unit lands, a moved folder's descendants included, is one §6.1 allows: under
+  `interfaces/` only `order.md` and one folder per interface holding `interface.toml` and `README.md`; under `tables/`
+  one folder per table holding `table.toml`, `rows.csv` and `README.md` (written `README.md` or `readme.md`). So a file
+  `tables/foo` is refused and a folder `tables/foo` allowed. `interfaces/`, `interfaces/order.md`, `tables/`,
+  `tables/areas/`, its `table.toml` and its `rows.csv` join the seeded paths, never deleted or moved. So do the main
+  interface's folder and `interface.toml`, while it is main. A table's two files go or move only with their folder,
+  and a `rows.csv` needs a `table.toml` in its folder: stored, or in the same unit.
+- **Main** (rule 3): a unit whose `interface.toml` has `main = true` is refused while another live one has it (so,
+  during a double main, saves that keep `main = false` still pass). A change set is not atomic and a refusal is per
+  unit, so this is §6.1's per-unit rule (#751): a switch is two units, the old main set to
+  false first, then the new one to true, and `save_interface` and the web send them so; the seed has exactly one main
+  (Pulse). What this gives up, recorded with Interfaces' yes:
+  - zero mains can last: a demotion with no promotion after it leaves none until someone saves one;
+  - contract 5.6's "the main interface can be changed but not deleted" holds while it is main: an interface is
+    demoted, then deleted (put to Jonas through the coordinator, since the contract governs);
+  - **no lock** serializes two promotions. Rule 3 reads the stored mains, and two units that each make a different
+    interface main, decided at the same time while there is none, both pass. This takes no new company-wide lock (the
+    rule of 27 September), at the price of a rare double main, which the web shows (I7) and which the next save of
+    either main resolves: it is refused until one is set to false. A lock on the company's index row would serialize
+    them, but every vision save would then have to take it too, before its paths (a deadlock otherwise: a vision save
+    updates that row in apply).
+- **Owners** (rule 4): while an interface's stored parse has `access.edit = "owners"`, only an owner or admin (or the
+  platform) changes, moves or deletes anything in its folder, or lands anything in it. An agent never does. Creating
+  an interface with `edit = "owners"` is open to anyone who may create one (Interfaces), and a copy out of one only
+  reads it. Like rule 3, the rule reads the stored parse without a lock: a contributor's save can land at the moment
+  an owner's change to `edit = "owners"` commits.
+- **Write** (rule 5): a `rows.csv` save under the stored definition's `[write]`. The platform passes. A table's first
+  rows, in the unit that brings its definition, are its maker's (beyond #751's rule 5, which reads a stored
+  definition; asked of Interfaces).
+- **Rows** (rule 6): the port of `parseTableRows`, set-based SQL (no loop per field or row). The header against the
+  definition (a header that fails refuses the file at line 1); each field by its column type with §6.1's patterns and
+  bounds (a time in its canonical text; years 0100–9999); one `row` problem per row, for the first column in the
+  definition's order that fails; the key as a JSON array; a later row with an earlier key is `duplicate`; at most 50
+  problems, then "and K more problems". The definition is the one the same unit brings, else the stored one.
+- **Definition change** (rule 7), on a `table.toml` save while its folder holds rows (stored, and not replaced in the
+  same unit): the stored rows fit the new definition by rule 6, and a `needs_yes` column gains or loses its flag, or
+  goes, only while every row leaves it empty (`claim`).
+- **Claim** (rule 8), on a `rows.csv` save: the stored rows against the new ones by key, typed by the definition at
+  commit; a cell changes when its value's JSON text differs. *Self* is the member. An agent has no self until I9b,
+  so it changes no claimed cell, and accept never passes until offers exist. The platform passes only changes that
+  clear a cell (a leaving member's cells, contract 5.6); seeding writes header-only rows. A new table's rows have no
+  stored rows, so each claimed cell they set must be a take: the maker's own id.
+- **Areas** (rule 9): `tables/areas/table.toml` keeps its three columns, and after a rows save no agent is in two
+  areas.
+- **Ids:** one live interface per `id`, and one live table per `id` (`duplicate`); a table folder keeps its id
+  (a save that changes it is `duplicate`, as #751's §6.1 says), since its index row is keyed by it. An interface has no index before I7, so it may take a new id.
+  The interface check takes no lock: two interfaces made at the same time with one id can both land (I7 shows it).
+  Two tables made at the same time with one id both pass decide, and the second commit fails whole on the index
+  row's key, as H2's index does.
+
+*The index and the locks.* No index is read before I7, but the rules read a table's definition when its rows change,
+and its rows when its definition changes, and their path locks don't conflict (each holds `tables/<t>` KEY SHARE and
+its own file FOR UPDATE). So P16 adds `qorpera_folder_table_index`, one row per table folder, keyed
+`(environment_id, id)` by the table's id as H2's index is: the folder's path and key, the definition's and the rows'
+versions (rows null while there is no `rows.csv`), the commit, and retired. No foreign key to `qorpera_profiles` (its
+KEY SHARE would come in apply), and a key index that is not unique. It holds only pointers, rebuilt from the files.
+- **The lock**, FOR NO KEY UPDATE at rank 5, after the contact index in the table order, on: every write of
+  `table.toml` (by its parse's id) or `rows.csv` (by its folder's live row), a new folder holding them, and a delete or
+  move at or above a table folder (never the seeded `tables` root, which is refused anyway).
+- **The window:** a row created after this commit read its targets is locked by nobody. So a save finding a table row
+  changed by a commit after this one's `as_of_seq` answers `version_changed`, H2's guard: the caller reads again. A
+  delete or move of a table folder does the same for every live table row at or under its source, so apply never
+  repoints or retires a row it did not lock.
+- **Apply** writes the row: a first `table.toml` inserts it (a retired row of that id is reused), a save moves its
+  versions, a move repoints every row at or under the source to its new path and versions (counting them, and raising
+  on a mismatch, as H2 and F2-5b do), and a delete retires them. **Verify** checks every row the commit wrote: its
+  definition version is its `table.toml` entry's, its rows version is null exactly when there is no `rows.csv` entry
+  and otherwise that entry's, and its path is the entry's spelling.
+
+There is no new company-wide lock. The core's rank-5 list (core §3 step 4) and its kinds list (core §5) are updated.
+
+*Review* (§7). `qorpera_folder_structured_review_class` returns `delegation` for an agent's change that:
+- creates an interface (no stored parse at its path);
+- changes `$.buttons`, or names under `$.views[*].blocks[*].buttons[*]` a button its stored parse names nowhere
+  there (a set, so reordering blocks stays plain);
+- changes `$.access`;
+- creates a table, or changes its `$.columns` or `$.write`.
+
+Anything else is plain, and an agent's delete or move is the core's deletion class before the hook is asked. The
+review recorder (C2 R1) gains `save_interface` as a delegation, only for change sets whose every unit is at or under
+`interfaces/` or `tables/`. An agent's delete of a page or table (`destructive`) goes through `company_delete`; I8
+decides whether `save_interface` also records deletions. A delegation-class change through the mount or a shell has no review, so the commit denies it, as §7 says.
+
+*Cost.* A `rows.csv` parse is stored with its version and sent with its request: at 64 KiB of CSV it is up to about
+1 MB. 865 times the worst case (64 KiB of rows against a 40-column definition, a definition change over them, and the
+claim rule over every row) against the core's 4-second tool bound, and reports the stored parse's bytes for the
+largest and the smallest-row 64 KiB files, the growth each saved version adds.
+
+*The seed.* `companyStateSeedTree` adds `interfaceLibraryFiles(newId)`: `interfaces/` with Pulse, Mailbox, Members
+and `order.md`, and `tables/` with `numbers`, `areas` and `cards` (header-only rows). The SQL seeded list and
+`COMPANY_STATE_SEEDED_PATHS` gain the protected paths. The creation worker's `creationUnits` (P14b) makes each
+interface folder and each table folder one `new_folder` unit, with media types by extension (`text/markdown` for
+`.md`, `text/plain` for `.toml` and `.csv`). Its ids are random on each attempt: a creation commits whole, and a
+completed one answers from its row.
+
+*Hand-overs.* P18b's erasure under `tables/` deletes retired table rows at rank 5, in the lock function's table
+order. I9b: when an agent gets a self (its area's supervisor), its rows save reads `tables/areas` and must lock the
+areas row in the same rank-5 pass; offers will need their own lock.
+
+*PRs, in this order:*
+- **P16a, the database** (migration 20260930016000), with SQL tests:
+  - 864: the kinds, shapes (the fixtures' valid parses, embedded), placement (copy and move into and within the
+    roots), coding sessions, main, owners, ids and review classes;
+  - 865: write, rows (the typed fixture), definition changes, claim (the platform clearing a cell), areas, a
+    creation-shaped new folder, and the worst-case timing;
+  - 866: races: a rows save against a definition change, the window above, a table move or delete against a rows
+    save, and two promotions;
+
+  and a mutant run, as H2b and F2-5b. P16b adds a check that 864's embedded parses equal the fixtures.
+- **P16b, the TS:** `companyStatePath` and the dispatch, the seed tree and seeded paths, and `creationUnits`, after
+  P16a and #751. A creation before P16a would send kinds the hook refuses.
+
 ## 9. The seeded tree
 
 `companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new

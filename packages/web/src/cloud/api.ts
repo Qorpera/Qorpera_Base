@@ -35,13 +35,6 @@ import {
 	parseAccountMatch,
 	parseAgentThreadHandle,
 	parseCompanyFile,
-	parseCompanyProposal,
-	parseCompanyProposalComment,
-	parseCompanyProposalCommentPage,
-	parseCompanyProposalPage,
-	parseCompanySnapshot,
-	parseCompanySnapshots,
-	parseCompanyWorkspaces,
 	parseCreatedCompany,
 	parseEvents,
 	parseFriends,
@@ -78,13 +71,6 @@ import type {
 	HostedAccountEntitlement,
 	HostedAccountMatch,
 	HostedCompanyFile,
-	HostedCompanyProposal,
-	HostedCompanyProposalComment,
-	HostedCompanyProposalCommentPage,
-	HostedCompanyProposalPage,
-	HostedCompanyProposalStatus,
-	HostedCompanySnapshot,
-	HostedCompanyWorkspace,
 	HostedFriend,
 	HostedIncomingProfileInvitation,
 	HostedProfile,
@@ -764,103 +750,6 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_get_company_file", { p_environment_id: requiredUuid(environmentId, "Environment id") })
 			.then(parseCompanyFile);
-	}
-
-	usesPathGateway(profileId: string): Promise<boolean> {
-		return this.cloud
-			.rpc("qorpera_company_uses_path_gateway", { p_profile_id: requiredUuid(profileId, "Profile id") })
-			.then((value) => value === true);
-	}
-
-	listWorkspaces(environmentId: string): Promise<HostedCompanyWorkspace[]> {
-		return this.cloud
-			.rpc("qorpera_list_company_workspaces", { p_environment_id: requiredUuid(environmentId, "Environment id") })
-			.then(parseCompanyWorkspaces);
-	}
-
-	listSnapshots(workspaceId: string, limit = 50): Promise<HostedCompanySnapshot[]> {
-		return this.cloud
-			.rpc("qorpera_list_company_snapshots", {
-				p_workspace_id: requiredUuid(workspaceId, "Workspace id"),
-				p_limit: limit,
-			})
-			.then(parseCompanySnapshots);
-	}
-
-	getSnapshot(snapshotId: string): Promise<HostedCompanySnapshot> {
-		return this.cloud
-			.rpc("qorpera_get_company_snapshot", { p_snapshot_id: requiredUuid(snapshotId, "Snapshot id") })
-			.then(parseCompanySnapshot);
-	}
-
-	listProposals(
-		environmentId: string,
-		status: HostedCompanyProposalStatus,
-		limit = 50,
-		cursor?: PageCursor,
-	): Promise<HostedCompanyProposalPage> {
-		return this.cloud
-			.rpc("qorpera_list_company_proposals", {
-				p_environment_id: requiredUuid(environmentId, "Environment id"),
-				p_status: status,
-				p_after_created_at: cursor?.time ?? null,
-				p_after_id: cursor?.id ?? null,
-				p_limit: limit,
-			})
-			.then(parseCompanyProposalPage);
-	}
-
-	getProposal(proposalId: string): Promise<HostedCompanyProposal> {
-		return this.cloud
-			.rpc("qorpera_get_company_proposal", { p_proposal_id: requiredUuid(proposalId, "Proposal id") })
-			.then(parseCompanyProposal);
-	}
-
-	listProposalComments(
-		proposalId: string,
-		limit = 100,
-		cursor?: PageCursor,
-	): Promise<HostedCompanyProposalCommentPage> {
-		return this.cloud
-			.rpc("qorpera_list_company_proposal_comments", {
-				p_proposal_id: requiredUuid(proposalId, "Proposal id"),
-				p_after_created_at: cursor?.time ?? null,
-				p_after_id: cursor?.id ?? null,
-				p_limit: limit,
-			})
-			.then(parseCompanyProposalCommentPage);
-	}
-
-	appendProposalComment(
-		proposalId: string,
-		clientCommentId: string,
-		body: string,
-	): Promise<HostedCompanyProposalComment> {
-		return this.cloud
-			.rpc("qorpera_append_company_proposal_comment", {
-				p_proposal_id: requiredUuid(proposalId, "Proposal id"),
-				p_client_comment_id: requiredUuid(clientCommentId, "Comment id"),
-				p_body: body.trim(),
-			})
-			.then(parseCompanyProposalComment);
-	}
-
-	acceptProposal(proposalId: string, expectedProposalSnapshotId: string): Promise<HostedCompanyProposal> {
-		return this.cloud
-			.rpc("qorpera_accept_company_proposal", {
-				p_proposal_id: requiredUuid(proposalId, "Proposal id"),
-				p_expected_proposal_snapshot_id: requiredUuid(expectedProposalSnapshotId, "Snapshot id"),
-			})
-			.then(parseCompanyProposal);
-	}
-
-	rejectProposal(proposalId: string, expectedProposalSnapshotId: string): Promise<HostedCompanyProposal> {
-		return this.cloud
-			.rpc("qorpera_reject_company_proposal", {
-				p_proposal_id: requiredUuid(proposalId, "Proposal id"),
-				p_expected_proposal_snapshot_id: requiredUuid(expectedProposalSnapshotId, "Snapshot id"),
-			})
-			.then(parseCompanyProposal);
 	}
 
 	// Objects
