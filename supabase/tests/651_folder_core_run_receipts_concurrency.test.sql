@@ -260,6 +260,10 @@ begin
 	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
 			'64800000-0000-4000-8000-000000000021'))
 		or exists (select 1 from public.qorpera_run_operation_receipts where run_id = '64800000-0000-4000-8000-0000000000f1')
-		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from storage.objects where name like '64800000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '64800000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

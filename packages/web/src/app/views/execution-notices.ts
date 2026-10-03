@@ -1,3 +1,4 @@
+import type { CloudApi } from "../../cloud/api.ts";
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import {
 	PlanSwitchBusyError,
@@ -11,6 +12,8 @@ import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
+/** A worker's own run, which has no conversation: the notice line offers its Stop (gap 4b). */
+export type WorkerRuns = Pick<CloudApi, "workerRunControl" | "stopWorkerRun">;
 /** What the band needs to ask a ChatGPT plan's member to turn on work while away (Sign in with ChatGPT). */
 export interface PlanOffer {
 	native: Pick<WebNativeSubscription, "listConnections"> &
@@ -63,9 +66,17 @@ function offerable(
 /** What a notice tells the member, in plain words; undefined when it gets no line.
  * A reached usage limit is told by the failed run's card in the thread. A changed
  * sponsor asks nothing of the member. */
-function sentence(item: MemberNotification): string | undefined {
+function sentence(
+	item: MemberNotification,
+	agentName?: (staffAgentId: string) => string | undefined,
+): string | undefined {
 	const subject = item.subject;
 	switch (subject.schema) {
+		case "qorpera.member-notification.run-no-progress/v1":
+			return t("{agent} has made no progress for {minutes} minutes.", {
+				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
+				minutes: subject.minutes,
+			});
 		case "qorpera.member-notification.provider-usage-limit/v1":
 		case "qorpera.member-notification.sponsor-handoff/v1":
 			return undefined;
@@ -92,6 +103,13 @@ export class ExecutionNotices {
 	readonly #lifetime = new AbortController();
 	readonly #restoreFocus: (() => void) | undefined;
 	readonly #plan: PlanOffer | undefined;
+	readonly #agentName: ((staffAgentId: string) => string | undefined) | undefined;
+	readonly #workerRuns: WorkerRuns | undefined;
+	/** Per notice of a worker's run: whether this member may stop it, once read. */
+	readonly #stoppable = new Map<string, boolean>();
+	#stopping = false;
+	/** Notices whose Stop failed: the line says so and keeps the button. */
+	readonly #stopFailed = new Set<string>();
 	#items: readonly MemberNotification[] = [];
 	#offer: Offer | undefined;
 	/** Plans whose card this window showed (and recorded): it stays until answered here. */
@@ -112,10 +130,19 @@ export class ExecutionNotices {
 	#acking = false;
 	#drawn = "";
 
-	constructor(client: Client, signal: AbortSignal, restoreFocus?: () => void, plan?: PlanOffer) {
+	constructor(
+		client: Client,
+		signal: AbortSignal,
+		restoreFocus?: () => void,
+		plan?: PlanOffer,
+		agentName?: (staffAgentId: string) => string | undefined,
+		workerRuns?: WorkerRuns,
+	) {
 		this.#client = client;
 		this.#restoreFocus = restoreFocus;
 		this.#plan = plan;
+		this.#agentName = agentName;
+		this.#workerRuns = workerRuns;
 		if (signal.aborted) {
 			this.dispose();
 			return;
@@ -144,6 +171,7 @@ export class ExecutionNotices {
 			const items = await this.#client.listNotifications(signal);
 			if (signal.aborted) return;
 			this.#items = told(items);
+			await this.#readStop(signal);
 			// The plan card has its own reads; a failed one hides only the card, and the next poll reads again.
 			if (!this.#offerDone)
 				this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
@@ -290,9 +318,10 @@ export class ExecutionNotices {
 		this.#draw();
 	}
 
-	async #acknowledge(): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#acking) return;
-		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+	/** Dismisses the shown notice, or the one a finished Stop names; nothing else while a Stop runs. */
+	async #acknowledge(stopped?: MemberNotification): Promise<void> {
+		if (this.#lifetime.signal.aborted || this.#acking || (this.#stopping && !stopped)) return;
+		const item = stopped ?? this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
 		if (!item) return;
 		this.#request?.abort();
 		this.#request = undefined;
@@ -318,22 +347,80 @@ export class ExecutionNotices {
 		}
 	}
 
+	/** A shown notice of a worker's run asks once whether this member may stop it; a failed read offers nothing. */
+	async #readStop(signal: AbortSignal): Promise<void> {
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+		const subject = item?.subject;
+		if (!item || !this.#workerRuns || subject?.schema !== "qorpera.member-notification.run-no-progress/v1") return;
+		if (!subject.worker || this.#stoppable.has(item.notificationId)) return;
+		const control = await this.#workerRuns.workerRunControl(subject.runId).catch(() => undefined);
+		// A failed read offers nothing now and is asked again at the next poll.
+		if (signal.aborted || !control) return;
+		this.#stoppable.set(item.notificationId, control.canCancel);
+	}
+
+	/** Stops the worker's run the shown notice names. Once stopped (or already ended), the notice is done. */
+	async #stop(): Promise<void> {
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+		const subject = item?.subject;
+		if (
+			this.#lifetime.signal.aborted ||
+			this.#stopping ||
+			this.#acking ||
+			!item ||
+			!this.#workerRuns ||
+			subject?.schema !== "qorpera.member-notification.run-no-progress/v1"
+		)
+			return;
+		this.#stopping = true;
+		this.#stopFailed.delete(item.notificationId);
+		this.#draw();
+		let ended = false;
+		try {
+			const control = await this.#workerRuns.stopWorkerRun(subject.runId);
+			ended = control.status !== "queued" && control.status !== "leased";
+		} catch {
+			// Never replayed; the member may press Stop again.
+		}
+		if (this.#lifetime.signal.aborted) return;
+		if (ended) {
+			// The stopped notice itself, even if another one shows meanwhile.
+			await this.#acknowledge(item);
+			this.#stopping = false;
+			this.#draw();
+		} else {
+			this.#stopping = false;
+			this.#stopFailed.add(item.notificationId);
+			this.#draw();
+		}
+	}
+
 	#draw(): void {
 		if (this.#offer) {
 			this.#drawOffer(this.#offer);
 			return;
 		}
 		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
-		const text = item && sentence(item);
-		const key = JSON.stringify([item?.notificationId, text, this.#acking]);
+		const text = item && sentence(item, this.#agentName);
+		const stoppable = item ? this.#stoppable.get(item.notificationId) === true : false;
+		const stopFailed = item ? this.#stopFailed.has(item.notificationId) : false;
+		const key = JSON.stringify([item?.notificationId, text, this.#acking, stoppable, this.#stopping, stopFailed]);
 		if (key === this.#drawn) return;
 		const focused = this.el.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
 		if (text) {
 			const dismiss = button(t("Dismiss"), (event) => event.detail < 2 && void this.#acknowledge(), {
 				small: true,
 			});
 			dismiss.dataset.action = "dismiss-notification";
-			if (this.#acking) dismiss.setAttribute("aria-disabled", "true");
+			if (this.#acking || this.#stopping) dismiss.setAttribute("aria-disabled", "true");
+			// A worker's run has no conversation: its Stop is here, for a member who may stop it (gap 4b).
+			let stop: HTMLElement | null = null;
+			if (stoppable) {
+				stop = button(t("Stop"), (event) => event.detail < 2 && void this.#stop(), { small: true });
+				stop.dataset.action = "stop-worker-run";
+				if (this.#stopping || this.#acking) stop.setAttribute("aria-disabled", "true");
+			}
 			this.el.replaceChildren(
 				h(
 					"div",
@@ -348,13 +435,19 @@ export class ExecutionNotices {
 						},
 					},
 					h("p", null, text),
+					stopFailed
+						? h("p", { class: "company-notice-error" }, t("The work could not be stopped. Try again."))
+						: null,
+					stop,
 					dismiss,
 				),
 			);
 		} else this.el.replaceChildren();
 		this.el.hidden = !text;
 		if (focused) {
-			const target = this.el.querySelector<HTMLElement>("button[data-action]");
+			const target =
+				(focusedAction && this.el.querySelector<HTMLElement>(`button[data-action="${focusedAction}"]`)) ||
+				this.el.querySelector<HTMLElement>("button[data-action]");
 			if (target) target.focus({ preventScroll: true });
 			else this.#restoreFocus?.();
 		}

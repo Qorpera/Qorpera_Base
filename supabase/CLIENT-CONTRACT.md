@@ -421,10 +421,11 @@ they answer 42501 "native host call is refused".
 - `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
 - `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
-### Execution, sponsors, runners, computers (29)
+### Execution, sponsors, runners, computers (31)
 
 - `qorpera_begin_operation_receipt`
 - `qorpera_cancel_runner_job`
+- `qorpera_cancel_worker_run(p_run_id)` — a member's Stop of an in-house worker's own run (no conversation), by run id: the job's creator (the member whose work dispatched the worker) or an owner or admin, through `qorpera_cancel_runner_job`; returns the control below (20260930002800)
 - `qorpera_complete_operation_receipt`
 - `qorpera_configure_runner_model_policy`
 - `qorpera_create_execution_sponsor_binding`
@@ -433,6 +434,7 @@ they answer 42501 "native host call is refused".
 - `qorpera_describe_governed_company_computer`
 - `qorpera_enqueue_execution_run`
 - `qorpera_enqueue_runner_job`
+- `qorpera_get_worker_run_control(p_run_id)` — `{run_id, status, can_cancel}` of an in-house worker's own run, for any member who can read the company; `can_cancel` is the Stop's rule (20260930002800). A `run_no_progress` member notice names such a run with `worker: true`
 - `qorpera_get_execution_run_recovery` — with `usage_limit` (the run's login reached its usage limit) and `paid_by_chatgpt_plan` (a member's ChatGPT plan pays for the run; tell its limit in OpenAI's words with "Manage usage", to the member whose plan it is: `run.requested_by_user_id`, whom a plan-paid run always serves; 20260928379930)
 - `qorpera_list_compute_identities`
 - `qorpera_list_execution_run_recoveries`
@@ -550,6 +552,40 @@ wake), so no agent runs and nothing is charged before it.
   `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
   caller's mentions in a conversation seen. The author is never told about
   their own post.
+
+### Quotes in a member's message (20260928459100_member_message_quotes)
+
+Contract: the 2026-10-02 amendment "quoted outside content in a member's message" (step I5d, part 1).
+
+- A `qorpera.session-prompt/v1` body may carry `quotes`, a list of 1 to 16 spans `{start, end, source, ref}` of its
+  `text`, both for `qorpera_append_session_input` (and the turn requests that call it) and for
+  `qorpera_post_company_room_message`.
+  - `start` and `end` are whole numbers counting characters (Unicode code points) from 0, with `end` excluded.
+  - Each span sits just inside « and »; spans are in order, apart, and 1 to 2,000 characters long.
+  - `source` is `mail`, and `ref` is a thread id that `qorpera_member_mail_thread` shows the member, never account
+    mail.
+  - A body with `quotes` carries no `displayText`. Leave `quotes` out when there are none: an empty list is refused.
+- Every refusal is 22023, after the membership and write checks and before any lock. An unknown, foreign or
+  account-mail `ref` reads the same way, whether or not it exists.
+- The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
+- A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
+  quoted message waits: only a cloud run fences one.
+- A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
+  (`mentionFold`) folds each quote to its placeholder first.
+- Quotes are refused (22023) in a company whose runs can't fence them: an environment that is neither folder-v2 nor
+  on the company path (`20260930008000_member_draft_quotes`).
+- Room drafts keep their quotes: `qorpera_put_room_draft(p_room_id, p_owner_user_id, p_base_revision, p_body,
+  p_quotes?)` checks `p_quotes` as a message's quotes and stores them, and `qorpera.room-draft/v1` carries `quotes`
+  when the draft has any. Once a draft holds quotes, a save that keeps a quote's words without its record (in their
+  marks, at that place), or changes them, is refused (22023); removing a quote whole is an ordinary save, and the
+  member's own guillemets stay theirs.
+  - A client that knows quotes and has none left sends `p_quotes = []`, which the draft stores as none (only the
+    draft call takes an empty list). So removing the last quote and writing the member's own marks in one save is
+    ordinary.
+  - The server finds a kept quote by its words: own marks around the same words as a quote need that quote's record
+    too, so a composer records both or folds its own marks.
+  - A client that sends four arguments still reaches the function, but such a text-only save may bring no newly
+    marked words while the draft holds quotes.
 
 ### Computer hours (20260928248000_runtime_computer_hours_meter)
 
@@ -700,7 +736,11 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
   Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
   thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
-  answered through `qorpera_answer_action_review` with its `reviewId`.
+  answered through `qorpera_answer_action_review` with its `reviewId`. Since 20260930002660 a waiting send the member
+  may answer also carries `sessionId`, the card's conversation: the card waits for this member, or for owners and
+  admins and the member is one, and the member can write that conversation. Without `sessionId`, show the send without
+  a way to answer it. With it, the answer can still be refused (a closed conversation, a paused company, a folder-v2
+  card outside an agent thread); show that error.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
@@ -754,12 +794,13 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   `20260928000500_room_shared_drafts`): a room member's unsent message, which
   the room's other members see and edit live. Private broadcast channel, event
   `draft`, payload `qorpera.room-draft/v1` (`ownerUserId`, `body`, `revision`,
-  `editorUserId`, `contributors`, `updatedAt`). Members of the room receive it
+  `editorUserId`, `contributors`, `updatedAt`, and `quotes` when the draft has
+  any). Members of the room receive it
   (RLS on `realtime.messages` via `qorpera_can_share_room_draft`); nobody
   publishes: only `qorpera_put_room_draft` sends, through `realtime.send`, so a
   change always names the editor the token did. Lossy: `qorpera_list_room_drafts`
   re-reads, and a write from a stale revision returns the current draft.
-  `qorpera_put_room_draft(room, owner, base revision, body)` writes only from the
+  `qorpera_put_room_draft(room, owner, base revision, body, quotes?)` writes only from the
   current revision (0 starts the caller's own draft; only the owner starts one);
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor

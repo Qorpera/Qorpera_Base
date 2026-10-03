@@ -254,10 +254,10 @@ runtime adapter, with no migration.
 **Follow-ups from C1d-1b's review** (for C1d-2 and the thin writers):
 - **Quota before the NAS write: done** (20260928309710). `_authorize_object_upload` checks the soft quota for an
   object the catalog lacks, so a company at its limit is refused before the gateway writes, and the confirm no longer
-  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Still open: a stop or a lock
+  refuses for it. The gateway answers 23514 as 413, which the adapter reads as `full`. Settled by C1d-2c part 1 (below): a stop or a lock
   timeout at confirm (423 or 409, after the write) leaves the NAS file outside the catalog and the gateway's journal
-  entry `blocked` (it reports degraded), as on the native route; the gateway should drop that entry when confirm
-  refuses.
+  entry `blocked` (it reports degraded), as on the native route; the entry is kept, so the bytes stay tracked, and goes
+  after the grace window.
 - **Lock waits inside the deadlines: done** (20260928339780). The seven byte functions set `lock_timeout = '2s'`,
   below the PostgREST role's 8 s:
   - authorize, confirm and the download check, which the gateway calls with a 5 s deadline: a long wait ends as 55P03,
@@ -372,9 +372,13 @@ folder-v2 now (C5 early), rather than growing that path with chunk rows:
 2. **The fixtures switch to it**, with no change in behaviour: F3 moves 630–665 (the coordinator's plan of 2 October 2026), F2 its own (700–709 and the rest).
    F2's 700–709 (and 750, on 707's fixture) keep their `pg_temp.stage(text[, profile])`: the platform stages, and the
    commit helpers first take possession for their actor (`pg_temp.possess`, which seals the same manifest as that
-   actor). 763 is on F1's 634 fixture and moves with it.
+   actor). 763 is on F1's 634 fixture and moves with it. F1's 630–665 moved too (P09): 630, 631, 632, 634, 635 and
+   648 keep `pg_temp.stage(text)`, and their `pg_temp.possess` takes possession only of files `pg_temp.stage` made (a
+   temp table lists them), so 761, 762, 766 and 769, which test possession itself, are untouched; a race fixture takes
+   possession before its races, since a race's own transaction stages nothing.
 3. **`qorpera_verify_company_path_file` refuses folder-v2** (C5 early). Then the chunk index is complete with no
-   version-1 case, and the file-hash check is not needed.
+   version-1 case, and the file-hash check is not needed. Done in slice P10 (`20260930001100`, test 821): 0A000 before
+   the gc fence, so a refused call takes no lock.
 
 Until step 3, version-1 proofs of folder-v2 companies exist only in test fixtures. C1d-2b's worker phase is not
 switched on before step 3. Manifests of manifests (core §7) will need a recursive step
@@ -603,3 +607,78 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - 767 (dblink): a reference that holds the object first; references that waited on the claim (open, step 6, confirm,
   replication); two claims; the sweep and the claim; an upload slipping past the mark (restored); the finish's lock
   budget; and the finish taking the row before its last re-check (R7).
+
+**Built (C1d-2b, migration 20260930009000, test 880; slice P11).**
+- **The lane** (`packages/object-gateway/src/folder-gc.ts`, `ObjectGatewayFolderGc`): `DELETE
+  /v1/folder-gc/<profileId>/<sha256>` with the control token and `x-qorpera-gc-lease-id`. It answers `{ "outcome":
+  "removed" | "restored" | "stale" }`; 503 when the NAS lanes are busy or a dependency is down (the worker stops), 409
+  for a lock conflict on the object. It runs under the object's journal lock, the one its upload, replication and the
+  deleted-company lane take (`ObjectGatewayReplication.exclusive`), and under it uses only the unlocked journal writes
+  (`requeueLocked`, `forgetLocked`):
+  1. begin (`stale` on 55000: nothing is done); a row the begin reports Storage-backed is abandoned, never collected;
+  2. the NAS file is renamed into `<root>/.quarantine/<profileId>/<sha256>.<leaseId>` (a lane sent again under the same
+     lease finds its file already there). The rename is asked once more if the scan removed an empty company folder
+     between the mkdir and the rename, so a NAS file still in place is never taken for an absent one;
+  3. if a file moved, the Storage replica is removed now. If there was no NAS file, an empty marker
+     `<sha256>.<leaseId>.<bytes>.replica` records that the replica is the only copy, so a lane that stops after the
+     finish leaves the scan something to find (the design's "no NAS file" case, made crash-safe without a journal
+     entry);
+  4. finish; then `removed`: the replica (marker case), the quarantined file and marker, then the object's journal entry
+     unless it is the deleted-company lane's (`delete`, `deleted`); `restore`: first a `replicate` entry (unless the
+     deleted-company lane's), then the file back to its NAS path (or the marker removed: the reconcile then copies the
+     replica back to the NAS); `stale`: the quarantine state decides;
+  5. on the lane's own error: abandon, then the quarantine state, each best effort; what is left is the scan's.
+- **The scan** (`recover`, run at start and before every reconcile, so a `replicate` entry finds its object back):
+  up to 50 quarantine entries per pass, from where the last pass stopped (a cursor, so entries that stay never starve
+  the rest), each under the object's lock, re-checked to still exist there (a lane may have settled it while the scan
+  waited), then `live` leaves it, `restore` and `remove` as above, `remove` always removing the replica too. A company
+  folder found empty is removed. Names that are not entries are left alone. The gateway runs the NAS probe, then the
+  scan, then the reconcile, so the scan never takes both NAS slots with the probe.
+- **Replication:** folder GC's QRC01 409 from `authorize_replication` (an object GC holds, told apart by its message) is
+  a lock conflict to the reconciler (`ObjectLockConflict`, 503): the entry stays pending, not `blocked`, and the circuit
+  is left alone. snapshot-v1's cleanup fence also answers QRC01, with another message, and keeps its 409; no other RPC
+  changes. Test 880 pins the message the gateway matches (`qorpera_folder_object_collecting()`).
+- **Runtime:** `cloudCompanyFolderFailure` reads QRC01 as `contended` (after a commit's or a release's own retries),
+  so open and seal refusing an object GC holds are `contended`, as the gateway's 409 (authorize, confirm) already was.
+- **The worker's folder phase** (`runFolderObjectGc` in `supabase/functions/artifact-gc-worker`): its own try/catch,
+  before the phases that return early. It asks `qorpera_folder_gc_enabled()` (and runs only with the gateway
+  configured), sweeps 25 intents, claims 25 objects under a new lease, and calls the lane for each in order; a 503, an
+  unreachable gateway or 20 s without an answer stops it for this run, and so does its 60 s budget, checked before
+  each lane (so a phase runs at most about 80 s); any other failure leaves that mark to expire. Its result is
+  `folderObjects` in the worker's answer, where `stopped` means a busy gateway or the budget. The worker's test now runs in the node plan's functions step.
+- **The switch** (`qorpera_folder_gc_settings`, off): switching it on is refused (55000) until
+  `qorpera_verify_company_path_file`'s body carries P10's marker text `folder-v2 refuses version 1` (§9.3 step 3; a
+  refusal written without it keeps the phase off); the worker's question checks that again. The coordinator turns it on after P10 is live: `update public.qorpera_folder_gc_settings set
+  enabled = true;`. The worker is still not deployed (RUNTIME-COMPANY-DELETE.md).
+- **Tests:** gateway `test/folder-gc.test.ts` (the lane and the scan on a real NAS store and journal, with the folder
+  core's GC SQL simulated: each outcome, a stop between each step, a restore with re-replication, a stale lease, a put
+  racing the rename, the scan against a live lane, two lanes on one object, a re-upload while the replica is removed,
+  the reconciler during quarantine, no NAS file, a deletion starting mid-lane, abandon on a lane error); the worker's
+  folder phase; runtime QRC01; SQL 880 (the switch).
+
+**Built (C1d-2c part 1, migration 20260930009100, test 881; slice P12): bytes with no catalog row.**
+- `qorpera_folder_gc_catalog_state(profile, sha256)` (service role, plain reads, the 2 s budget) answers `catalogued`,
+  `other` (a company folder GC does not serve: snapshot-v1, mixed, being deleted, or purged), `listed` (no row, but an
+  upload intent that is open or ended less than the grace window ago lists it: the same window in which the intent
+  roots its objects) or `missing`.
+- The gateway's scan, after the quarantine, reads up to 500 journal entries per pass from a cursor and checks up to 50
+  `blocked` ones, each under the object's lock (an upload holds it from its put to its confirm), re-read there. A
+  `missing` object's entry first records `missingSince` (the gateway's clock; `folder_object_uncatalogued_found` in the
+  audit log); once it has been `missing` at every check, 10 minutes apart (or as soon after as the scan comes back to
+  it, which with thousands of blocked entries can take longer; an intent stays `listed` far longer still), for 24
+  hours, its NAS file and any Storage replica are removed and the entry dropped (`folder_object_uncatalogued_removed`).
+  Any other answer forgets `missingSince` (`folder_object_uncatalogued_cleared`), so the wait starts over; a stored
+  time more than 5 minutes ahead of the gateway's clock is marked again. `catalogued`, `other` and `listed` leave the
+  entry otherwise as it is. An upload that puts the object again rewrites the entry (`unconfirmed`, then `replicate`),
+  which ends the wait. An entry is asked about again only when due, 10 minutes after its last check (or at the end of
+  its 24 hours, if sooner), or at once when its `missingSince` changed meanwhile; the gateway keeps these times in
+  memory only for entries checked within the last 10 minutes (at most 10,000).
+- A deleted or purged company's blocked entries answer `other`, and the gateway reports them degraded, until part 2
+  (a deleted company's leftovers) takes them.
+- Rollout: unlike P11's lane, this pass runs from the gateway's first deploy with no switch (it is safe without one:
+  nothing committed points at bytes with no catalog row). The migration goes in before the gateway, or the scan reports
+  degraded while the function is missing.
+- This also settles C1d-1b's open follow-up (a stop or a lock timeout at confirm leaves the NAS file outside the catalog
+  and the entry `blocked`): the entry is kept, so the bytes are never untracked, and goes after the grace window.
+- Pending entries of objects the lane collected are dropped by the lane itself (`forgetLocked`); one that a crash left
+  behind becomes `blocked` at its next reconcile (the row is gone) and goes the same way.

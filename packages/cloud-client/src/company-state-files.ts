@@ -1448,13 +1448,8 @@ function workerPaths(
 		if (!line.trim()) return;
 		const number = part.line + 1 + index;
 		const path = line.startsWith("- ") ? trimSpaces(line.slice(2)) : "";
-		if (workerPathProblem(path, maxBytes))
-			problems.add(
-				"body",
-				number,
-				null,
-				`each line under ## ${name} is "- " and a path in the company folder, like sales/q3-draft.pdf`,
-			);
+		const problem = workerPathProblem(path, maxBytes);
+		if (problem) problems.add("body", number, null, `each line under ## ${name} is "- " and a path: ${problem}`);
 		else if (seen.has(companyPathKey(path))) problems.add("body", number, null, `${shown(path)} is listed twice`);
 		else {
 			seen.add(companyPathKey(path));
@@ -1467,7 +1462,7 @@ function workerPaths(
 
 /** Why `path` cannot be a `- <path>` item of a worker's file, or null. */
 function workerPathProblem(path: string, maxBytes: number): string | null {
-	if (!path || path !== trimSpaces(path) || NOT_ONE_LINE.test(path) || !holdablePath(path))
+	if (!path || path !== path.trim() || NOT_ONE_LINE.test(path) || !holdablePath(path))
 		return `"${shown(path)}" is not a path in the company folder, like sales/q3-draft.pdf`;
 	if (encoder.encode(path).byteLength > maxBytes) return `"${shown(path)}" is longer than ${maxBytes} bytes`;
 	return null;
@@ -2165,16 +2160,20 @@ export function workerTextHeading(text: string, kind: "worker-brief" | "worker-r
 	return null;
 }
 
-/** Model text as a section holds it: line breaks as \n, trimmed. Throws when it would start a section. */
+/** Model text as a worker file's section holds it: line breaks as \n, trimmed. The worker tools build
+ * their requests from it, so the database compares like with like. */
+export function workerTextNormal(text: string): string {
+	return text.replace(/\r\n?/g, "\n").trim();
+}
+
+/** Model text as a section holds it ({@link workerTextNormal}). Throws when it would start a section. */
 function workerText(section: string, text: string, kind: "worker-brief" | "worker-results"): string {
-	const normal = text.replace(/\r\n?/g, "\n").trim();
+	const normal = workerTextNormal(text);
 	const heading = workerTextHeading(normal, kind);
-	if (heading) {
-		const what = WORKER_SECTION_WHAT[section] ?? "the summary";
+	if (heading)
 		throw new Error(
-			`${what[0]?.toUpperCase()}${what.slice(1)} has a line "${heading}", which would start a section of the worker's file`,
+			`${section === "Summary" ? "The summary" : `The text for ## ${section}`} has a line "${heading}", which would start a section of the worker's file`,
 		);
-	}
 	return normal;
 }
 
@@ -2215,9 +2214,11 @@ export function workerStandingTexts(worker: {
 /** A worker's key on `folder-v2`: its folder's name, so the folder naming rule (§1 "Names") and the
  * path rule's reserved names (`con`, `nul`, …). Null when it may be used. */
 export function workerKeyProblem(key: string): string | null {
-	return isCompanyStateName(key) && holdablePath(key)
-		? null
-		: `"${shown(key)}" cannot name a worker's folder: use lowercase letters a-z, digits and single hyphens, at most ${COMPANY_STATE_NAME_MAX_CHARS} characters`;
+	if (!isCompanyStateName(key))
+		return `"${shown(key)}" cannot name a worker's folder: use lowercase letters a-z, digits and single hyphens, at most ${COMPANY_STATE_NAME_MAX_CHARS} characters`;
+	if (!holdablePath(key))
+		return `"${shown(key)}" cannot name a worker's folder: con, prn, aux, nul, com1–com9 and lpt1–lpt9 are reserved names`;
+	return null;
 }
 
 export function writeWorkerBriefFile(file: Omit<WorkerBriefFile, "kind">): string {

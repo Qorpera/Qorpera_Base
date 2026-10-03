@@ -6,10 +6,6 @@
 
 - `NativeSubscriptionControl.approveSessionTurnSponsorship` and its input type: a member can no longer ask another member to pay for a turn. `requestSessionTurn` refuses the `sponsorship_request` mode before any call; turn provenance still reads it on older requests.
 
-### Changed
-
-- The worker brief and results parses (`WorkerBriefFile`, `WorkerResultsFile`) give their body's sections (F2-5b-1) in place of the whole body: `brief` and `report` are gone. Nothing wrote or read them yet.
-
 ### Added
 
 - Worker briefs and results with sections (F2's F2-5b-1, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §8 "Plan (F2-5b)"): a `brief.md` body is `## Goal`, `## Done when`, `## Context`, `## Sources` (`- <path>` items), the platform's `## Authority`, `## Output`, `## Cancellation` and `## Completion`, and `## Follow-up` (the latest), with the new settings `follow_ups` and `followed_up_at`; a `results.md` body is the summary, `## Needs` exactly when blocked, and `## Files`. Their parses give each section (`goal`, `doneWhen`, `context`, `sources`, …, `followUp`; `summary`, `needs`, `files`) in place of the whole body, within today's tool bounds. `writeWorkerBriefFile` and `writeWorkerResultsFile` write them and refuse model text that would start a section (`workerTextHeading`); `appendWorkerFollowUp` adds a follow-up; `workerStandingTexts` gives the platform's texts; `workerKeyProblem` holds a worker key to the folder naming rule. Nothing writes worker files yet.
@@ -78,6 +74,14 @@
 - `companyStateSeedTree` lists a new company's seeded folder (vision, sections, the Co-Founder's `agent.md` with its first job, and the empty `agents/groups/`, `connections/`, `skills/`, `rules/`), with `COMPANY_STATE_SEEDED_PATHS`, `COMPANY_STATE_COFOUNDER_HANDLE` and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`. The founding table's `vision`, `founders` (a `- name: role` line each under "How we work") and `firstTodo` (at `COMPANY_STATE_FIRST_TODO_PATH`) go in too; it throws rather than seed a file that would not parse.
 - An agent's instructions refuse control characters other than tab and line breaks.
 
+- The interface parser refuses a `message` button that would fill in outside content it can't quote (`outside_value`; `RUNTIME-INTERFACES.md` §3.3, §4 and §6; Interfaces step I5d part 4a). `interfaceOutsideColumns(source)` gives a source's outside-content columns:
+  - `mail`'s `from_name`, `from_address` and `subject`;
+  - a `file:` source's `text` under `hooks/` or `human-tasks/`, by folder key.
+
+  A button whose text names such a column of a source outside the quote list (`INTERFACE_QUOTE_SOURCES`: `mail`), or more than 16 of them, is refused, for every source a block reads. A client cuts each outside value to `INTERFACE_OUTSIDE_VALUE_MAX_CHARS` (2,000) before it fills it in. F2's I6 save check needs this before interface files are saved in the folder.
+
 ### Changed
 
+- The worker brief and results parses (`WorkerBriefFile`, `WorkerResultsFile`) give their body's sections (F2-5b-1) in place of the whole body: `brief` and `report` are gone. Nothing wrote or read them yet.
+- `CloudRunnerJob.substrateVersionId` is optional: a folder-v2 run has no Company File substrate (folder core C3, P23).
 - `cloudAgentFolder(companyId, staffAgentId, place?)` takes where the company keeps its agents' folders (`CloudAgentFolderPlace`): `agents/<staffAgentId>` for a snapshot-v1 company (`CLOUD_AGENT_FOLDER_BY_ID`, the default) and `agents/<handle>` for a folder-v2 company, the handle checked against the company folder's naming rule. `isCloudAgentFolder(path)` tells such a folder from other paths.

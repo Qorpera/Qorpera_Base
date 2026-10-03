@@ -565,6 +565,13 @@ A member's personal rules stay in the database with that member's other
 settings. An agent may still add an Ask first personal rule for the member it
 works for when that member asks (2026-09-25 amendment, item 1).
 
+> **Amended 2026-10-03 (not built yet).** `rules/network.toml` holds the
+> company's network rules for the agent exit: a block list, or "only listed"
+> sites. It is written like every file in `rules/`, but it is not a review
+> rule: the reviewer does not read it, its format is checked when it is saved,
+> and a company without it is open ("agent traffic leaves through the agent
+> exit", section 19, item 8).
+
 **Approval.** Everything is approved by default:
 - No path needs a member's approval or a proposal. The mechanism for protected
   paths stays, but nothing is configured by default. The one standing
@@ -710,6 +717,14 @@ agent set it up) or an owner or admin. With several runs live, the Stop names
 one the member may stop, the working one first. Before this amendment the Stop
 only reached a member's turns in a plain conversation.
 
+2026-10-03 amendment (session-buildup audit gap 4b): a worker's own run can be
+stopped too, though it has no conversation. Owners and admins may stop it, and
+so may the member whose work dispatched the worker (the run's creator), by the
+same rule and the same stop, which records who stopped it. The member is told
+when a run makes no progress for 15 minutes; nothing stops a run by itself. The
+parent hears that a member stopped the work. A Company Computer start is still
+not stopped here.
+
 ### 7.4 Ceilings and brake
 
 Intelligence is not deterministic, so the kernel bounds the damage a loop can
@@ -775,8 +790,14 @@ subscriptions, which self-limit.
 > - 50,000 Company File entries per company (the tree's storage bound). The
 >   standing counts (32 routines, 64 open todos and 4 active workers per agent,
 >   40 sidebar sections) went in bundle v95;
-> - no stall detection: a run whose harness hangs without crashing keeps its
->   machine until Stop, as in Codex CLI and Claude Code;
+> - no stall detection: a run whose harness hangs without crashing runs until
+>   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
+>   coding or agent's machine awake, unless it hangs inside a model request:
+>   a run with no progress for 15 minutes is idle (changed in place, by the
+>   2026-10-03 amendment "one idle rule for every machine"). A run with no
+>   progress for 15 minutes, also one inside a model request, is shown as one
+>   with no progress, and a member is told (2026-10-03, session-buildup audit
+>   gap 4); nothing stops it;
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
@@ -793,6 +814,16 @@ subscriptions, which self-limit.
 > outputs or over 128 KiB. A request now carries any number of outputs within a
 > 64 MiB fence frame (more than any model context holds), and a view row is
 > bounded at 16 MiB as storage.
+
+> **Amended 2026-10-03 (not built yet).** What remains also holds the agent
+> exit's line guard: TCP port 25 is refused, and a brake on bursts of new
+> connections, whose levels the founder decides after two weeks of counting.
+> It guards the shared line and never counts a run's work ("agent traffic
+> leaves through the agent exit", section 19, item 9). It also holds the
+> exit's connection bounds, decided on 3 October: at most 16,384 open
+> connections per machine through the exit and 98,304 per node, an
+> infrastructure guard for the node's connection table, not a limit on the
+> work (item 4).
 
 ## 8. Wake bus
 
@@ -1120,6 +1151,10 @@ capacity work after it.
 > Computers are seats that free up. A computer's shell, terminal and desktop
 > have their own network to the internet, and commands have no fixed time
 > limit.
+>
+> **Amended 2026-10-03 (not built yet).** That network reaches the internet
+> through the agent exit ("agent traffic leaves through the agent exit",
+> section 19).
 
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
@@ -2140,6 +2175,11 @@ requirement to build a separate analytics platform before the product works.
   Company File reads/writes retain operation, timing, outcome and available byte
   counts; unavailable counts are unknown, not zero. Logical file bytes are not
   physical NAS traffic, and resource reservations are not measured utilization.
+- The agent exit keeps a log of the connections agent road machines make:
+  company, machine, times, destination name, address, port, protocol, bytes,
+  and refused flows, never content, for 90 days; a time it could not record is
+  a gap, which means unknown (amended 2026-10-03, not built yet, "agent traffic
+  leaves through the agent exit", item 7).
 - Computer and screen lifecycle transitions MUST retain identity, time and
   reason: requested, ready, suspended/resumed where supported, closing, closed
   or failed. Closing a client viewer is not closing its cloud computer. Retain
@@ -3525,12 +3565,14 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      node, and why (no node has set it up yet, or no room).
    - A computer is a seat. Besides being in use, a seat can be held by an
      agent waiting for its machine, or woken and still running ("No waiting
-     for a seat" above). It is in use only while it has a live lease or a
-     live viewer, is being taken over or drained, still has resources the
-     agent started there that have not drained, has a command running in its
-     shell, or was opened less than about two minutes ago. A desktop left open
-     with none of these does not keep the seat. The two-minute window may be
-     tuned without a new founder decision.
+     for a seat" above). It is in use only while it has a live lease of a
+     run that counts or a live viewer, is being taken over or drained, still
+     has resources the agent started there that have not drained, has a busy
+     command in its shell, or was opened less than about two minutes ago
+     (changed in place, by the 2026-10-03 amendment "one idle rule for every
+     machine"). A live lease of an idle run still holds the seat but is not
+     use. A desktop left open with none of these does not keep the seat. The
+     two-minute window may be tuned without a new founder decision.
    - Before a seat changes hands, its desktop and shell are closed. Unsaved
      application state on it is lost, and the agent and any viewer are told
      what was closed.
@@ -3544,7 +3586,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      day applies to runner jobs, not to these requests.
    - Each machine powers off by its own idle rule. Only use of that machine
      keeps it awake: its computers in use, its viewers, requests and runs
-     waiting for it, and runs of agents placed on it.
+     waiting for it, and runs of agents placed on it while they make progress
+     or have a model request in flight (changed in place, by the 2026-10-03
+     amendment "one idle rule for every machine").
    - A run reaches the machine its computer is on. A company's machines are
      one trust domain for transport; tool authority still comes from the run,
      its descriptor and effect-time grants. A run that cannot reach its
@@ -3592,7 +3636,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - A command started under a computer's lease may outlive the lease. The
      lease covers starting it, typing into it and stopping it, and each step
      is attributed to its run (section 12, "explicit resource leases").
-   - A running command keeps its machine awake and its computer in use.
+   - A busy command keeps its machine awake and its computer in use; a
+     command that only waits does not (changed in place, by the 2026-10-03
+     amendment "one idle rule for every machine").
    - Browser profiles, sign-ins and credentials stay out of reach of the shell
      and the terminal (11.4, 11.5).
    - Because the shell has network, starting a command and typing into one
@@ -3604,10 +3650,12 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - The run box does not change: item 7 of the 2026-09-27 amendment "every
      machine works in the company folder" (no internet in the run box's
      shell) stands.
-   - Acceptance (Order 4): a command runs for an hour with internet, including
-     a non-HTTP connection, while the NAS, the node, cloud metadata and the
-     other computers stay unreachable; a later turn reads its output; the
-     machine stays awake meanwhile.
+   - Acceptance (Order 4): a busy command runs for an hour with internet,
+     including a non-HTTP connection, while the NAS, the node, cloud metadata
+     and the other computers stay unreachable; a later turn reads its output;
+     the machine stays awake meanwhile. A command that only waits lets the
+     machine sleep, and the next run is told it stopped (changed in place, by
+     the 2026-10-03 amendment "one idle rule for every machine").
 3. **Coding sessions stand by between turns.** A coding session behaves like
    a session on a member's own laptop: the end of a turn is not the end of
    the session. The first build detached the session at the end of every turn
@@ -3629,12 +3677,13 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      or task limit of its own, though an agent may set a deadline. A member's
      sessions share the machine by equal weights, and the machine keeps a
      memory reserve for its own control.
-   - A coding machine sleeps after 10 minutes with no turn and no command
-     using the processor. A program that only waits, such as a dev server,
-     does not keep it awake; company machines count any running command
-     (item 2). Sleep powers the machine off: the session's files stay,
-     programs stop, and the next turn is told what stopped. A machine that
-     wakes may start on another node; only its scratch is rebuilt.
+   - A coding machine sleeps after 10 minutes with no turn making progress
+     and no command using the processor. A program that only waits, such as
+     a dev server, does not keep it awake, as on every machine (changed in
+     place, by the 2026-10-03 amendment "one idle rule for every machine").
+     Sleep powers the machine off: the session's files stay, programs stop,
+     and the next turn is told what stopped. A machine that wakes may start
+     on another node; only its scratch is rebuilt.
    - Archiving a session stops its programs and detaches it from the machine.
      Its files stay, and a new turn reopens it. The session's owner or the
      agent can archive it.
@@ -3643,7 +3692,10 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      session is asked once each, in the conversation that started the
      session, whether it may be archived; it archives it or leaves it. A
      session archived or reopened meanwhile is not asked. After 30 quiet days
-     (a per-environment setting), the platform archives it.
+     (a per-environment setting), the platform archives it. A session whose
+     programs keep the machine busy is also asked by the busy check-ins of
+     the 2026-10-03 amendment "one idle rule for every machine", item 5
+     (changed in place).
    - A coding machine is removed once it is asleep and none of its member's
      sessions in the environment is open.
    - Coding machines are built without containers; heavier tests run on the
@@ -3689,9 +3741,12 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      another node. In this cut, results come back as command output the agent
      reads; once the company folder is mounted, results belong in the
      company's files.
-   - A task machine sleeps after an idle hour and is removed after 30 days
-     asleep; both are per-node settings. An always-on machine is stopped or
-     removed only by an agent or a member.
+   - A task machine sleeps after an hour with no use and no busy program
+     and is removed after 30 days asleep; both are per-node settings. An
+     always-on machine is stopped or removed only by an agent or a member,
+     and the agent that started it is asked once a week whether it still
+     needs it (changed in place, by the 2026-10-03 amendment "one idle rule
+     for every machine").
    - In this cut a machine has no company folder and holds no credentials, and
      its commands are not reviewed (founder, 28 September), like a coding
      session's commands. This is an exception to item 2 and to item 7 of the
@@ -4496,6 +4551,305 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    delete files, while the member's own words ask only for a summary. It proves that the agent does not obey the
    quote, and that the review denies a deletion asked for only inside the quote.
 
+### 2026-10-03 amendment: one idle rule for every machine
+
+Founder decision of 3 October 2026 ("yes to gap 1, go ahead", on the session
+build-up audit). Company machines, coding machines and agents' machines (the
+machines of the 2026-09-28 amendment "compute for agents"; not run boxes,
+execution hosts, login machines or one-run machines) follow one idle rule, as
+coding machines already do. A forgotten dev server must not keep a machine
+awake for ever, and real work must never be cut short. There are no caps: no
+deadline, and nothing is stopped for running long. Only idle sleep and
+check-ins.
+
+It amends these texts. Where older text conflicts with this amendment, this
+amendment governs. In-place edits are marked "(changed in place)".
+- 7.4: the 2026-09-24 notes that idle company computers power off after 5
+  minutes (what counts as use), and that a hung run keeps its machine.
+- The 2026-09-28 amendment "compute for agents": item 1 (a seat in use, and
+  what keeps a company machine awake), item 2 ("a running command keeps its
+  machine awake"), item 3 (coding sleep and check-ins) and item 4 (task and
+  always-on machines).
+
+1. **What keeps a machine awake.** This rule replaces three old terms: "a
+   running command", "a run placed on it" and a computer's live lease.
+   Everything else that keeps a machine awake today stays: a live viewer, a
+   takeover or a drain, resources not yet drained, runs and requests waiting
+   for the machine to start, a wake that starts it, and the two minutes after
+   a computer opens.
+   - **A run** counts while it makes progress or has a model request in
+     flight. So does its lease on a computer.
+     - Its progress clock is the newest of its last recorded tool call, its
+       last native context view (recorded before every model request, by the
+       2026-09-29 amendment "one call before a model request") and its job
+       start. Lease renewals never count.
+     - A model request is in flight from its context view until the run's next
+       tool call, its next context view or its end. So a long single request
+       never makes a run idle; a harness that hangs inside a request keeps the
+       machine awake until its run ends.
+     - A run with neither progress nor a model request for 15 minutes is
+       idle. The same clock drives the run's "no progress for 15 minutes"
+       notice.
+     - A coding turn is a run.
+   - **A program** counts while it is busy: while it uses more than about 5%
+     of one processor core.
+     - That is measured for each command, coding session or computer's shell.
+     - On an agent's machine, programs outside its commands, such as
+       containers, count by the processor share of the whole machine beyond
+       its commands' own use (about 2% of the machine). That share belongs to
+       the agent that started the machine.
+     - A program that only waits (a dev server, an idle database, `sleep`, a
+       watcher with nothing to do) is not busy.
+2. **Seats follow the same test.** A computer's seat is in use under the same
+   terms (item 1 of "compute for agents", changed in place). Decided 3 October
+   2026 (the coordinator, carrying out the founder decision):
+   - A program that only waits does not hold the seat. If another agent needs
+     that seat, the shell closes before the seat changes hands, its programs
+     stop, and the agent is told, as at sleep.
+   - An idle run's lease still holds its seat, so its desktop is not handed
+     to another agent while it is idle, but the machine may still sleep.
+     If the machine sleeps, the run goes on without computer tools until it
+     opens its computer again.
+3. **Sleep.** A machine sleeps after its quiet window with nothing keeping it
+   awake: a company machine after 5 minutes, a coding machine after 10
+   minutes, an agent's task machine after an hour. These stay per-node or
+   per-environment settings.
+   - Sleep stops what is still running. Files and disks stay as before.
+   - The next run of the agent that started a stopped program is told what
+     stopped and why, once.
+     - It is told in the conversation of the run that started the program.
+     - A worker's program is told to its agent, in the conversation that
+       dispatched the worker.
+     - Work outside an agent's machine's commands, such as containers, is told
+       to the agent that started the machine, in the conversation of the run
+       that started it.
+4. **Busy work keeps running.** A busy program keeps its machine awake for as
+   long as it stays busy. The platform never stops a program for running
+   long. Every other stop stays as before, for example an agent's or a
+   member's stop, the computer closing or its authority ending, a takeover, a
+   seat changing hands (item 2), archiving a coding session, zero computer
+   hours and its finish window, the memory guard, the operator pause, a lost
+   attachment, and a deleted company.
+5. **Check-ins for busy programs.** When an agent's program has kept a machine
+   busy since that agent last worked with it, the agent is asked whether it
+   still needs it.
+   - It is asked in the conversation of the run that started the program. For
+     a worker's program, that is the conversation that dispatched the worker.
+     For busy work outside an agent's machine's commands, it is the agent that
+     started the machine, in the conversation of the run that started it.
+   - The count starts at the later of the program's start and the agent's
+     last work with it.
+     - Working with it means starting a command on that machine, typing into
+       one, or a turn of its coding session.
+     - Reading output, or answering a check-in, does not restart the count.
+   - The agent is asked 1, 3 and 7 hours after that start, then every 24
+     hours. Each time, it is asked only if the program is busy at that moment.
+   - It may stop the program or leave it. The question is a notice, never a
+     stop.
+   - An archived agent is not asked. Its programs stay where members see and
+     may stop them.
+   - Coding sessions keep their check-ins after 1, 3 and 7 quiet days too.
+   - On an always-on machine, its weekly check-in (item 6) takes the place of
+     these.
+6. **Always-on machines** are the explicit way to stay up: this rule never puts
+   them to sleep. The agent that started one is asked once a week whether it
+   still needs it, counted from the machine's start, in the conversation of
+   the run that started it. It may stop the machine or leave it.
+7. **Agents are told the rule** in their tool texts. A program that only waits
+   lets its machine sleep and stops with it. A busy one keeps the machine
+   awake and brings check-ins. On agents' machines, always-on is the way to
+   keep a server up.
+8. **Acceptance**, on each machine kind where it applies:
+   - A waiting dev server lets the machine sleep, and the next run is told it
+     stopped.
+   - A busy job keeps the machine awake and brings check-ins at 1 and 3 hours.
+     Reading its output in between does not restart the count.
+   - A run that stops making progress, while holding a computer's lease, lets
+     its company machine sleep about 20 minutes later (15 minutes until it is
+     idle, then the 5-minute window).
+   - A model request lasting more than 20 minutes, by a run that holds a
+     computer on a company machine with its browser open, keeps the machine
+     awake.
+   - When another agent needs the seat of a computer whose shell only runs a
+     waiting server, the shell closes, the seat changes hands, and the first
+     agent's next run is told what stopped.
+   - A busy container on an agent's task machine keeps it awake and brings
+     check-ins to the agent that started the machine.
+   - An always-on machine brings its weekly check-in.
+
+### 2026-10-03 amendment: agent traffic leaves through the agent exit
+
+Founder decision of 2 October 2026 ("completely agree… let's fix this", then "I approve" for the design page
+"Agent Exit", https://claude.ai/artifact/GPjfKe2YagNeMzkQMrY95r). The page's four choices were set as recommended by
+the runtime coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. Two rules the
+page did not cover, the connection bounds (item 4) and what happens when only the log is down (item 10), were decided
+by the runtime coordinator on 3 October on Jonas's standing request that it settle his open questions; he may still
+change them. Not built yet. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md`. The guest
+guard (step E-1, enforcing on both nodes since 2 October, `deploy/guest-guard/`) already keeps every guest on our
+bridges away from the NAS, the nodes and every tailnet service it does not list; it stays for our own guests.
+
+It amends these texts. Where older text conflicts with this amendment, this amendment governs.
+- Section 12's note (amended 2026-09-28): a computer's network to the internet.
+- The 2026-09-28 amendment "compute for agents": in item 1, "a machine starts on any node with room" (placement
+  also needs a healthy exit); in item 2, "outbound internet on any port and protocol", the firewall on the machine
+  and "the browser keeps its own separate path"; in item 4, "it reaches the internet but no private network".
+- The 2026-09-27 amendment "every machine works in the company folder", items 1 and 9, and the 2026-10-02 amendment
+  "light threads", item 5: coding sessions keep their open network.
+- The 2026-09-25 amendment, item 3: "all company rules" means the review rules (`rules/*.md`).
+- 5.6, `rules/`: a second kind of file there.
+- 7.4: what remains.
+- Section 19, "Minimum operational observability": a required record.
+- Section 23: network paths.
+
+1. **Two roads out.** The machines agents work on send their internet traffic through the agent exit:
+   - the Company Computer's browser, shells, terminal and desktop;
+   - agents' own machines (compute item 4);
+   - coding machines (git, package registries, websites);
+   - any other machine that gets a network later.
+
+   Together these are the **agent road machines**. Everything else keeps the platform road and the platform address,
+   93.164.62.162:
+   - AI sign-ins and model traffic (item 5);
+   - the work our platform services do for agents: the vault and the official connections it runs (Gmail, Drive,
+     GitHub), coding pushes, mail through the mail provider;
+   - the database, the object gateway and Tailscale;
+   - the test machine and image builds;
+   - a Company Computer's own services;
+   - chat turns on execution hosts, which run no commands (light threads, item 1).
+2. **The exit is ours, on every node.** Every node runs the same exit with the same inside addresses. An agent road
+   machine uses the exit of the node it runs on, so no agent traffic crosses between nodes, and nothing is bound to
+   one node. The exit runs on our own hardware from our own addresses: no rented or shared relay, and no residential
+   or rotating address.
+3. **Its own addresses.** The exit leaves from a block of fixed addresses Qorpera holds from its line provider,
+   separate from the platform address. Each node has one of them (choice 1: a block of 8, five usable). Until the
+   block is delivered, the exit leaves from the platform address. Everything else in this amendment applies from the
+   exit's first day. A node's switch to its own address ends the connections open at that moment. Once the block is
+   in use, each agent address carries a reverse name under qorpera.com and points to a page that explains the
+   traffic and gives an abuse contact.
+4. **What the exit refuses.** The exit refuses:
+   - our own networks: the NAS, the office network, the nodes, Tailscale, link-local and cloud metadata addresses,
+     and our own public addresses;
+   - TCP port 25 (choice 2);
+   - IPv6, for now (dropped, since no agent road machine has an IPv6 route).
+
+   Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
+   (item 9). The other refusals answer at once.
+
+   Each machine holds at most 16,384 open connections through the exit at once, and the exit on a node at most
+   98,304 in all (decided by the runtime coordinator on 3 October; Jonas may change them). They are an
+   infrastructure guard for the node's connection table, far above normal use, and not a limit on the work.
+   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October), and in phase 1 each
+     agent connection takes two of them (the bridged leg and the masqueraded leg). The total bounds open connections
+     only: a closed connection stays in both tables for a while (120 seconds by default), and so does a refused
+     attempt (10 seconds for TCP, 30 for UDP, 600 for other protocols). Step E2's proof on a node measures the table
+     under such floods, and the total's cost, before any node is switched on.
+   - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
+     bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
+   - One company with six busy machines on a node could reach the node's total; until its connections close, every
+     other company's new connections on that node are refused.
+5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
+   (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
+   - On an execution host, the existing model relay carries them.
+   - In a coding machine, a provider door carries them. It is a new node service for coding machines only. It
+     passes a connection only when the server name in its TLS handshake is one of the providers' names. It reads
+     nothing else. In a coding machine every connection to a provider's name goes through the door, an agent's
+     own included.
+   - On every other agent road machine, a call to an AI service is agent traffic like any other.
+6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
+   addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
+   stay a person's task in the person's own browser (`deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md`). Once the block
+   is in use, its addresses say who we are (item 3).
+7. **The exit's log (choice 3).**
+   - For each connection it passes, the log records the company, the machine, the start and the end, the
+     destination name, the address, the port, the protocol and the bytes each way. The destination name comes from
+     the exit's own name lookups, where the machine used them.
+   - A time the log could not record (item 10, or events lost under load) is recorded as a gap. For an abuse lookup
+     a gap means unknown, never "no one".
+   - For each refused flow (machine, destination, protocol, port), the log records the first refusal in each hour
+     and the rule that refused it. Every refusal is counted. Each machine may add about 600 refused flows an hour to
+     the log (after a first burst of 100); refusals past that, or past the exit's room, are counted and show as a
+     gap.
+   - It never records content or full web addresses, and nothing is decrypted.
+   - The log, and the exit's record of name lookups, are kept 90 days on our storage, then deleted.
+   - A company's owners and admins can see their company's log, and a member can see the lines of their own coding
+     machine. The view comes later, in an amendment of its own.
+   - Qorpera uses the log to answer abuse reports. A refused connection tells the agent only that it was refused;
+     which rule refused it is in the log.
+8. **Company network rules (choice 4).**
+   - `rules/network.toml` in the company folder holds either a block list or a list of the only sites allowed.
+   - It is not a review rule: the reviewer does not read it.
+   - Like every file in `rules/`, it is written, moved, deleted and restored only by owners and admins. Agents read it
+     and never write it (5.6).
+   - Its format is checked when it is saved, and a save that fails the check is refused. A company without the file
+     is open.
+   - Every node's exit applies it, to that company's machines only.
+   - A block list works on names: the exit's name lookups refuse a blocked name for that company, and the refusal
+     is in the name-lookup record. A machine that reaches a site by its address, or through its own encrypted DNS,
+     gets past a block list.
+   - The "only listed" mode is strict. A machine reaches only TCP port 443, only on addresses the exit's own name
+     lookups gave for a listed name, and only when the TLS server name is listed too, so an unlisted site on a
+     listed site's shared address is refused. Everything else is refused in that mode: plain HTTP (so a package
+     archive reached over `http://`, as apt's defaults are, fails even when listed), other ports and protocols, UDP
+     (QUIC) included. The exit never decrypts, so a listed TLS name that carries another site inside
+     (domain fronting) is not caught.
+9. **The line guard (choice 2).**
+   - TCP port 25 is refused from the exit's first day.
+   - For two weeks the exit only counts, per company: new connections, refused ones, bursts of new connections (a
+     flood), and failed connections to many addresses (a scan).
+   - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
+     Past them, that company's new connections are slowed for a while. The brake never stops normal work.
+   - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
+   - It is not a limit on the work: 7.4's rule that a run has no count on its work stands.
+10. **Updates never stop a machine, and the exit fails closed.**
+    - An exit update reloads its rules in one transaction each and restarts its name and log services in place. The
+      bridge and the machines' links stay up, and no company is paused.
+    - The exit is never removed while a machine is plugged into it, running or asleep.
+    - If a node's exit or its log is not healthy, the node takes no new agent road machines, and the node observer
+      reports it to the runtime operator. Placement passes that node over for any other node with room and a
+      healthy exit, as for a full node. A machine that today's build still ties to that node (compute item 1, "gaps,
+      not rules") starts there; while the exit itself is down it has no internet.
+    - If the exit itself is down, that node's agent road machines have no internet until it is back, and agents'
+      commands there see network errors. Agent traffic never falls back to the platform road. On a Company Computer
+      this rests on the computer's own rules: agents' browser, shells, terminal and desktop reach only its agent
+      network card, and agents cannot change those rules (item 12's acceptance proves both).
+    - If only the log is down, traffic continues and the time is a gap in the log (item 7); the exit's refusals stay
+      in force. A short gap in the log is preferred over cutting running work (decided by the runtime coordinator on
+      3 October; Jonas may change it). Each restart of the logger in an update leaves a short gap either way.
+    - A company rule applies at once, without a restart.
+11. **Companies share the agent addresses.** The line guard and the log keep one company from spoiling them for
+    the rest. Addresses per company (IPv6) are a later decision.
+12. **Acceptance.** On each node:
+    - a Company Computer's browser and one of its shells (with a non-HTTP connection), an agent's machine and a coding
+      machine each reach a website through the exit, and the exit's log names their company;
+    - the NAS, the nodes, Tailscale and cloud metadata stay unreachable from them, and TCP port 25 is refused;
+    - a coding turn's model traffic leaves through the provider door and is absent from the exit's log;
+    - with the exit failed, none of them reaches the internet; a Company Computer whose agent network card is gone
+      does not reach it through its own network either, and its agents cannot change that;
+    - a company's block list refuses a name for that company and for no other;
+    - in "only listed" mode, an unlisted site is refused even on a listed site's shared address;
+    - once the block is in use, websites see the agent address, not the platform address.
+
+**What this replaces.**
+- Section 12's note: a computer's shell, terminal and desktop reach the internet through the agent exit (changed in
+  place).
+- Compute item 2:
+  - "outbound internet on any port and protocol" reads with item 4's refusals, the company's rules and the line
+    guard;
+  - the private and special address ranges are refused by the exit, and the firewall on the machine stays as a
+    second line;
+  - "the browser keeps its own separate path" reads: its relay's connections leave through the agent exit.
+- Compute item 1: a machine starts on any node with room and a healthy exit.
+- Compute item 4: a machine reaches the internet through the agent exit.
+- Every-machine items 1 and 9, and light-threads item 5: coding sessions keep their open network, through the agent
+  exit, with item 4's refusals, the company's rules and the line guard, and with their model traffic on the platform
+  road.
+- The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
+  `rules/network.toml`.
+- 5.6: `rules/` also holds `network.toml` (changed in place).
+- 7.4: the line guard and the connection bounds of item 4 join what remains (changed in place).
+- Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
+- Section 23: the agent exit is a network path, with item 10 as its failure behaviour (changed in place).
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
@@ -4700,8 +5054,11 @@ contract defines the agent-runtime bar; it does not waive those gates.
 Qorpera hosts real companies, so every layer needs a stated failure model:
 the control plane; the Company File mutation gateway and object store/NAS;
 Company Computers and their workbench; workers; provider connections; and
-network paths. For each layer the model MUST state detection, degraded
-behavior, recovery, and who is notified, and it MUST preserve the
+network paths, among them the agent exit, which fails closed; a log
+outage is a gap (amended 2026-10-03, not built yet, "agent traffic leaves
+through the agent exit", item 10). For each layer the model MUST state
+detection, degraded behavior, recovery, and who is notified, and it MUST
+preserve the
 one-authority rule: two arbiters accepting work is the fork bug in permanent
 form.
 

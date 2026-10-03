@@ -939,10 +939,10 @@ describe("connections, rules, todos and worker files", () => {
 			expect(workerTextHeading("Done.\r\n## Files\r\n- out/a.md", "worker-results")).toBe("## Files");
 			expect(workerTextHeading("### Goal\n## Notes\n#Goal", "worker-brief")).toBeNull();
 			expect(() => writeWorkerBriefFile({ ...brief, goal: "x\n## Sources\n- y" })).toThrow(
-				'The goal has a line "## Sources"',
+				'The text for ## Goal has a line "## Sources"',
 			);
 			expect(() => writeWorkerBriefFile({ ...brief, doneWhen: "x\r\n## Context\r\ny" })).toThrow(
-				'What done is has a line "## Context"',
+				'The text for ## Done when has a line "## Context"',
 			);
 			const report = {
 				outcome: "succeeded" as const,
@@ -1046,7 +1046,7 @@ describe("connections, rules, todos and worker files", () => {
 					"Finish through coding_finish with the commit to publish, or ask the owner through coding_ask when a decision is theirs.",
 			});
 			expect(workerKeyProblem("price-check-2")).toBeNull();
-			expect(workerKeyProblem("con")).toContain("cannot name a worker's folder");
+			expect(workerKeyProblem("con")).toContain("are reserved names");
 			expect(workerKeyProblem("lpt1")).not.toBeNull();
 			expect(workerKeyProblem("price.check")).toContain("cannot name a worker's folder");
 			expect(workerKeyProblem("a--b")).not.toBeNull();
