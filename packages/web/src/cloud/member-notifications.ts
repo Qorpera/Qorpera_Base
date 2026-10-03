@@ -32,6 +32,8 @@ export type MemberNotificationSubject =
 			sessionId: string | null;
 			since: string;
 			minutes: number;
+			/** A worker's own run, which a member may stop from the notice (gap 4b, 20260930002800). */
+			worker: boolean;
 	  }
 	| {
 			/** The kernel writes this subject without a schema (20260920000000); the web names it. */
@@ -73,6 +75,9 @@ const RETIRED = new Map([
 const UNSHOWN = new Set(["routine_suspended"]);
 
 const invalid = () => new Error("Company notices returned an invalid response.");
+const invalidFlag = (): never => {
+	throw invalid();
+};
 function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
 	return value as Record<string, unknown>;
@@ -158,6 +163,7 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			sessionId: s.sessionId === null ? null : uuid(s.sessionId),
 			since: date(s.since),
 			minutes: integer(s.minutes, 1, 1440),
+			worker: s.worker === undefined ? false : s.worker === true ? true : s.worker === false ? false : invalidFlag(),
 		};
 	} else if (kind === "sponsor_handoff" && s.schema === "qorpera.member-notification.sponsor-handoff/v1") {
 		if (s.reason !== "usage_limit") throw invalid();

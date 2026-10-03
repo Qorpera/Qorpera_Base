@@ -235,6 +235,13 @@ export interface HostedStaffExecutionActivity {
 	updatedAt: string;
 }
 
+/** A worker's own run, for a member's Stop (qorpera_get_worker_run_control; gap 4b, 20260930002800). */
+export interface WorkerRunControl {
+	runId: string;
+	status: "queued" | "leased" | "completed" | "failed" | "cancelled";
+	canCancel: boolean;
+}
+
 /** A failed or stopped run nobody has dismissed yet (qorpera_get_execution_run_recovery). */
 export interface HostedRunRecovery {
 	runId: string;
