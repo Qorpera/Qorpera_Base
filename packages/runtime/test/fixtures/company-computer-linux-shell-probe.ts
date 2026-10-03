@@ -8,11 +8,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
 	CompanyComputerLinuxShell,
 	CompanyComputerShellPressureGuard,
+	companyComputerShellBusy,
 	createCompanyComputerLinuxShellLauncher,
 	readCompanyComputerShellUsage,
 } from "../../src/cloud-company-computer-linux-shell.ts";
 import { parseRecoveryDirectoryMount } from "../../src/cloud-identity-recovery-filesystems.ts";
 import { computerBinding } from "./company-computer.ts";
+
+/** The run that starts the commands here. */
+const SHELL_RUN = "00000000-0000-4000-8000-0000000000c1";
 
 // Disposable Linux fixture only: the real shell namespace (Bubblewrap, Tini,
 // the office's namespace entry file) as the unprivileged office account, with
@@ -81,7 +85,7 @@ try {
 	// Each model call is an effect (start, write, stop) and then a wait for its result.
 	const read = (sessionId: string, waitMs = 10000) => shell!.result({ sessionId, waitMs, signal });
 	const run = async (command: string, waitMs = 10000) =>
-		read((await shell!.start({ key: randomUUID(), command, signal })).sessionId, waitMs);
+		read((await shell!.start({ runId: SHELL_RUN, key: randomUUID(), command, signal })).sessionId, waitMs);
 	/** Reads until the command has ended; a busy test machine can be slow to deliver its exit. */
 	const settled = async (sessionId: string, first: Awaited<ReturnType<typeof read>>) => {
 		let result = first;
@@ -180,6 +184,7 @@ printf isolated`),
 	try {
 		const otherServer = (
 			await other.start({
+				runId: SHELL_RUN,
 				key: randomUUID(),
 				command:
 					"node -e \"require('http').createServer((q,s)=>s.end('other')).listen(8001,'0.0.0.0',()=>console.log('listening'))\"",
@@ -241,7 +246,9 @@ printf isolated`),
 		);
 		try {
 			let devices = await unplumbed.result({
-				sessionId: (await unplumbed.start({ key: randomUUID(), command: "cat /proc/net/dev", signal })).sessionId,
+				sessionId: (
+					await unplumbed.start({ runId: SHELL_RUN, key: randomUUID(), command: "cat /proc/net/dev", signal })
+				).sessionId,
 				waitMs: 10000,
 				signal,
 			});
@@ -276,6 +283,32 @@ printf isolated`),
 	await shell.write({ sessionId: asking.sessionId, text: "yes\n", endInput: false, signal });
 	const answered = await settled(asking.sessionId, await read(asking.sessionId, 5000));
 	assert.equal(answered.output, "got:yes\n");
+
+	// Busy is processor time in the whole namespace: a server that only waits is
+	// not busy (the computer may sleep), a loop is (it keeps the computer awake).
+	const sample = async () => {
+		const pid = shell!.namespacePid!;
+		return { cpuTicks: (await readCompanyComputerShellUsage([pid])).get(pid)!.cpuTicks, at: Date.now() };
+	};
+	const waiting = await run(
+		"node -e \"require('http').createServer(()=>{}).listen(8001,'127.0.0.1',()=>console.log('listening'))\"",
+		3000,
+	);
+	assert.match(await printed(waiting.sessionId, waiting.output, "listening"), /listening/);
+	assert.ok(shell.report().open.some((open) => open.id === waiting.sessionId && open.runId === SHELL_RUN));
+	let before = await sample();
+	await delay(3000);
+	assert.equal(companyComputerShellBusy(before, await sample()), false, "a waiting server is not busy");
+	const loop = await run("timeout 4 sh -c 'while :; do :; done'", 200);
+	assert.equal(loop.state, "running");
+	before = await sample();
+	await delay(3000);
+	assert.equal(companyComputerShellBusy(before, await sample()), true, "a busy loop is busy");
+	assert.equal((await settled(loop.sessionId, await read(loop.sessionId, 5000))).state, "exited");
+	before = await sample();
+	await delay(3000);
+	assert.equal(companyComputerShellBusy(before, await sample()), false, "once the loop ends, the server waits again");
+	assert.equal((await stop(waiting.sessionId)).state, "stopped");
 
 	// Never the screen's display (any X client of it could read what a member
 	// types there): no DISPLAY, no X socket, and none of the display server's

@@ -512,7 +512,8 @@ export function createCompanyComputerTools(options: {
 					"Company File changes use governed file tools. Model-provider subscription credentials never belong on the Company Computer. " +
 					"Shell: start runs a command in this agent's own shell on its computer and replies after waitMs (default 10000, at most 15000) or when it ends; a command still running keeps going as long as the work needs. " +
 					"Use read with its sessionId for later output, write to send it input (default wait 1000; endInput closes it), stop to end it, stop without a sessionId to end everything in the shell, and list to see commands. " +
-					"Commands share the shell's localhost and /tmp; a process left in the background runs until stopped, the computer is closed or its machine powers off, and keeps the machine awake. The browser cannot reach the shell's localhost. " +
+					"Commands share the shell's localhost and /tmp; a process left in the background runs until stopped, the computer is closed or its machine sleeps. The browser cannot reach the shell's localhost. " +
+					"A busy shell (using more than about 5% of one core) keeps the machine awake; one that only waits, such as a dev server or an idle database, does not, so it stops when the machine sleeps after a few idle minutes, and your next run is told what stopped. If your shell stays busy for hours with no work from you, you are asked whether you still need it. " +
 					"Each computer's shell has a network of its own: the public internet on any port and protocol (web, SSH, git, UDP, ping); private and local network addresses, the machine itself and other computers are blocked. " +
 					"Shell commands cannot open windows on the screen; open programs there with desktop actions. " +
 					"If the machine runs out of memory or processes, the shell using the most is stopped first and its commands say so. " +

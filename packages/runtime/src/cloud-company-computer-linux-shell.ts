@@ -62,16 +62,51 @@ const SHELL_IMAGE_FILES = [
 ];
 const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg"];
 
+/**
+ * Why a command ended, for the platform's record of it: on its own, by the
+ * agent, or by the machine (memory or task pressure, the operator's pause, or
+ * the shell closing with its screen).
+ */
+export type CompanyComputerShellEndReason = "exited" | "stopped" | "pressure" | "paused" | "closed";
+
+/** What the office tells the platform about one shell, each busy report. */
+export interface CompanyComputerShellReport {
+	/** workedAt: when the agent last started or typed into it, which restarts the check-in count. */
+	open: { id: string; runId: string; command: string; startedAt: string; workedAt: string }[];
+	ended: {
+		id: string;
+		runId: string;
+		command: string;
+		startedAt: string;
+		reason: CompanyComputerShellEndReason;
+		endedAt: string;
+	}[];
+}
+
+/** The command head the platform keeps and shows; the rest stays in the shell. */
+const REPORTED_COMMAND = 300;
+/** At most REPORTED_COMMAND characters, never half of one (the platform refuses a lone surrogate). */
+function reportedCommand(command: string): string {
+	return Array.from(command).slice(0, REPORTED_COMMAND).join("");
+}
+/** Ended commands kept for the next report; older ones are left to the platform's own end. */
+const REPORTED_ENDED = 256;
+
 interface Session {
 	id: string;
+	/** The run that started it: it is told when the command stops, and asked about it. */
+	runId: string;
 	command: string;
 	startedAt: string;
+	/** When the agent last started or typed into it. */
+	workedAt: string;
 	state: "starting" | CompanyComputerShellCommandResult["state"];
 	exitCode?: number;
 	signal?: string;
 	stopRequested: boolean;
 	/** Why the machine ended it, when neither the command nor the agent did. */
 	note?: string;
+	endReason?: CompanyComputerShellEndReason;
 	inputEnded: boolean;
 	chunks: Buffer[];
 	/** Absolute byte offsets: the first kept byte, the total, and what replies have shown. */
@@ -133,8 +168,14 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#ready?: CompanyComputerShellEnvironment;
 	/** The running namespace's outermost process, once its start has finished. */
 	#pid?: number;
-	/** Why a namespace is ending (the machine relieving pressure, or a failed start), for the commands that end with it. */
-	#endNote?: { environment: Promise<CompanyComputerShellEnvironment>; note: string };
+	/** Why a namespace is ending, for the commands that end with it. */
+	#endNote?: {
+		environment: Promise<CompanyComputerShellEnvironment>;
+		note?: string;
+		reason: CompanyComputerShellEndReason;
+	};
+	/** Commands that ended since the platform last heard, oldest first. */
+	readonly #unreported = new Map<string, CompanyComputerShellReport["ended"][number]>();
 	/** A namespace being stopped as a whole: new commands wait for the next one. */
 	#ending?: Promise<CompanyComputerShellEnvironment>;
 	/** Each launch's own cancellation, joined with the shell's lifetime. */
@@ -185,6 +226,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			if (session.state === "starting") {
 				session.state = "exited";
 				session.exitCode = 127;
+				this.#end(session, "exited");
 			}
 		} else if (event.t === "out") {
 			const bytes = Buffer.from(event.data, "base64");
@@ -207,11 +249,29 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		} else if (event.t === "exit") {
 			if (session.state === "exited" || session.state === "stopped") return;
 			session.state = session.stopRequested ? "stopped" : "exited";
+			this.#end(session, session.stopRequested ? "stopped" : "exited");
 			if (event.code !== null) session.exitCode = event.code;
 			if (event.signal !== null) session.signal = event.signal;
 		}
 		this.#wake(session);
 		this.#forget();
+	}
+
+	/** A command ended: the platform hears why with the next report. */
+	#end(session: Session, reason: CompanyComputerShellEndReason): void {
+		session.endReason = reason;
+		this.#unreported.set(session.id, {
+			id: session.id,
+			runId: session.runId,
+			command: reportedCommand(session.command),
+			startedAt: session.startedAt,
+			reason,
+			endedAt: new Date().toISOString(),
+		});
+		for (const id of this.#unreported.keys()) {
+			if (this.#unreported.size <= REPORTED_ENDED) break;
+			this.#unreported.delete(id);
+		}
 	}
 
 	/** Remember at most a fixed number of finished commands. */
@@ -226,8 +286,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	/** The namespace ended: every command in it has ended with it. */
 	#ended(environment: Promise<CompanyComputerShellEnvironment>): void {
 		if (this.#environment !== environment) return;
-		const note = this.#endNote?.environment === environment ? this.#endNote.note : undefined;
-		if (note !== undefined) this.#endNote = undefined;
+		const end = this.#endNote?.environment === environment ? this.#endNote : undefined;
+		if (end) this.#endNote = undefined;
 		this.#environment = undefined;
 		this.#ready = undefined;
 		this.#pid = undefined;
@@ -237,7 +297,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		for (const session of this.#sessions.values())
 			if (session.state === "starting" || session.state === "running") {
 				session.state = "stopped";
-				if (note) session.note = note;
+				if (end?.note) session.note = end.note;
+				this.#end(session, end?.reason ?? "closed");
 				this.#wake(session);
 			}
 	}
@@ -276,7 +337,11 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 				if (!(error instanceof CompanyComputerActionFailedError))
 					this.#release(Promise.reject(new Error("OFFICE_SHELL_DRAIN_UNCONFIRMED", { cause: error })));
 				if (this.#endNote?.environment !== environment && !this.#stop.signal.aborted)
-					this.#endNote = { environment, note: "The shell could not start; start the command again." };
+					this.#endNote = {
+						environment,
+						note: "The shell could not start; start the command again.",
+						reason: "closed",
+					};
 				this.#ended(environment);
 			},
 		);
@@ -301,11 +366,11 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	 * cancelled and let go of now, and closing waits for its stop; a ready one
 	 * is stopped here. New commands meanwhile wait for the next namespace.
 	 */
-	async #stopAll(note?: string): Promise<void> {
+	async #stopAll(reason: CompanyComputerShellEndReason, note?: string): Promise<void> {
 		const current = this.#environment;
 		if (!current) return;
 		const opened = this.#ready;
-		if (note) this.#endNote = { environment: current, note };
+		this.#endNote = { environment: current, reason, ...(note ? { note } : {}) };
 		if (!opened) {
 			this.#launches.get(current)?.abort();
 			this.#release(
@@ -406,8 +471,10 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const environment = this.#open();
 		const session: Session = {
 			id: randomUUID(),
+			runId: input.runId,
 			command: input.command,
 			startedAt: new Date().toISOString(),
+			workedAt: new Date().toISOString(),
 			state: "starting",
 			stopRequested: false,
 			inputEnded: false,
@@ -446,6 +513,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const environment = this.#current(session);
 		input.signal.throwIfAborted();
 		session.inputEnded = input.endInput;
+		session.workedAt = new Date().toISOString();
 		environment.send({
 			t: "write",
 			id: session.id,
@@ -462,7 +530,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			const running = [...this.#sessions.values()].filter(
 				(s) => s.state === "starting" || s.state === "running",
 			).length;
-			await this.#stopAll();
+			await this.#stopAll("stopped");
 			return { stopped: running };
 		}
 		const session = this.#session(input.sessionId);
@@ -521,7 +589,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		// confirmed: an unconfirmed stop stays busy and weighed, and the note stays
 		// until this namespace ends, even if that is after a stop that timed out.
 		if (!this.#ready) return;
-		await this.#stopAll(note);
+		await this.#stopAll("pressure", note);
 	}
 
 	/**
@@ -530,7 +598,31 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	 * start after the pause opens a fresh one.
 	 */
 	async pause(note: string): Promise<void> {
-		await this.#stopAll(note);
+		await this.#stopAll("paused", note);
+	}
+
+	/**
+	 * What the platform keeps of this shell: the commands still open, and those
+	 * that ended since the last acknowledged report.
+	 */
+	report(): CompanyComputerShellReport {
+		return {
+			open: [...this.#sessions.values()]
+				.filter((s) => s.state === "starting" || s.state === "running")
+				.map((s) => ({
+					id: s.id,
+					runId: s.runId,
+					command: reportedCommand(s.command),
+					startedAt: s.startedAt,
+					workedAt: s.workedAt,
+				})),
+			ended: [...this.#unreported.values()],
+		};
+	}
+
+	/** The platform recorded these ends. */
+	reported(ids: readonly string[]): void {
+		for (const id of ids) this.#unreported.delete(id);
 	}
 
 	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
@@ -789,6 +881,33 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 export interface CompanyComputerShellUsage {
 	memoryBytes: number;
 	tasks: number;
+	/**
+	 * Processor time in clock ticks (USER_HZ, 100 a second on Linux): every
+	 * process's own and its finished children's, so a build's short-lived
+	 * compilers count too. It only grows while the shell's namespace lives.
+	 */
+	cpuTicks: number;
+}
+
+/** Linux's USER_HZ, the unit of processor time in /proc/<pid>/stat on every architecture we run. */
+export const COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND = 100;
+/**
+ * A shell is busy while it uses more than about 5% of one processor core, as a
+ * coding session is (founder, 3 October 2026: one idle rule for every
+ * machine). Per computer, whatever the machine's size: busy is what a program
+ * does, and a waiting server or database stays far below it.
+ */
+export const COMPANY_COMPUTER_SHELL_BUSY_SHARE = 0.05;
+
+/** Whether a shell was busy between two samples of the same namespace. */
+export function companyComputerShellBusy(
+	before: { cpuTicks: number; at: number },
+	after: { cpuTicks: number; at: number },
+): boolean {
+	const seconds = (after.at - before.at) / 1000;
+	if (!(seconds > 0)) return false;
+	const used = (after.cpuTicks - before.cpuTicks) / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND;
+	return used >= COMPANY_COMPUTER_SHELL_BUSY_SHARE * seconds;
 }
 
 /**
@@ -802,16 +921,22 @@ export async function readCompanyComputerShellUsage(
 	rootPids: readonly number[],
 ): Promise<Map<number, CompanyComputerShellUsage>> {
 	const children = new Map<number, number[]>();
+	const ticks = new Map<number, number>();
 	for (const name of await readdir("/proc")) {
 		if (!/^[0-9]+$/.test(name)) continue;
 		const stat = await readCompanyComputerLinuxMetadata(`/proc/${name}/stat`, 4096).catch(() => "");
-		// The command name may hold spaces and parentheses; the parent follows the last ")".
-		const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+		// The command name may hold spaces and parentheses; the fields after it
+		// start at the state (field 3): the parent is field 4, and the processor
+		// time is fields 14 to 17 (its own, and its finished children's).
+		const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+		const parent = Number(fields[1]);
 		if (Number.isSafeInteger(parent)) children.set(parent, [...(children.get(parent) ?? []), Number(name)]);
+		const time = fields.slice(11, 15).reduce((sum, field) => sum + Number(field), 0);
+		if (Number.isSafeInteger(time)) ticks.set(Number(name), time);
 	}
 	const usages = new Map<number, CompanyComputerShellUsage>();
 	for (const rootPid of rootPids) {
-		const usage = { memoryBytes: 0, tasks: 0 };
+		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0 };
 		const pending = [rootPid];
 		let inside: number | undefined;
 		while (pending.length) {
@@ -821,6 +946,7 @@ export async function readCompanyComputerShellUsage(
 			const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
 			usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
 			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
+			usage.cpuTicks += ticks.get(pid) ?? 0;
 		}
 		if (inside !== undefined) {
 			const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);
@@ -914,7 +1040,7 @@ export class CompanyComputerShellPressureGuard {
 			if (excess <= 0) continue;
 			let heaviest: { shell: CompanyComputerLinuxShell; weight: number } | undefined;
 			for (const { shell, pid } of open) {
-				const usage = usages.get(pid) ?? { memoryBytes: 0, tasks: 0 };
+				const usage = usages.get(pid) ?? { memoryBytes: 0, tasks: 0, cpuTicks: 0 };
 				const weight = kind === "memory" ? usage.memoryBytes : usage.tasks;
 				if (!heaviest || weight > heaviest.weight) heaviest = { shell, weight };
 			}

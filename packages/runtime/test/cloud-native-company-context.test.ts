@@ -277,6 +277,24 @@ it("asks only whether a quiet coding session can be archived on its check-in", (
 	expect(instructions).toContain("qorpera.worker-completion-continuation/v1");
 });
 
+it("asks only whether something left running is still needed on a machine check-in", () => {
+	const f = nativeCompanyContextFixture();
+	const instructions = cloudCompanyRuntimeInstructions(
+		{
+			kind: "agent",
+			source: { kind: "machine-checkin", id: f.context.identity.runId, occurrenceKey: "machine-checkin:x" },
+		} as never,
+		false,
+	);
+	expect(instructions).toContain("# This wake: a check-in about something you left running");
+	expect(instructions).toContain("computer_shell with action stop");
+	expect(instructions).toContain("qorpera.machine-checkin-continuation/v1");
+	expect(instructions).not.toContain("# This wake: a message from a coworker");
+	expect(instructions).not.toContain("# This wake: your machine");
+	// The agent's next run hears what the platform stopped, through its open work.
+	expect(instructions).toContain("openWork.computerStopped");
+});
+
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const startup = {

@@ -194,6 +194,7 @@ export interface CloudWakeEnvelope {
 			| "worker-dispatch"
 			| "worker-completion"
 			| "machine-event"
+			| "machine-checkin"
 			| "event";
 		id: string;
 		occurrenceKey: string;
@@ -607,6 +608,34 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				throw new Error("Invalid machine event wake");
 			uuid(event.machineId);
 		}
+	} else if (wake.kind === "agent" && source.kind === "machine-checkin") {
+		// A typed internal check-in of the agent's own run: something it started
+		// has kept a machine busy for hours since it last worked with it (the
+		// 2026-10-03 amendment "one idle rule for every machine"). A question,
+		// never a stop.
+		const question = closed(payloadBody, ["schema", "parentRunId", "checkin"]);
+		const checkin = closed(question.checkin, ["kind", "subjectId", "since", "hours", "detail"]);
+		if (
+			question.schema !== "qorpera.machine-checkin/v1" ||
+			parentRunId === null ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
+			uuid(question.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			wake.routine !== null ||
+			(audience.sessionId === null && policy.final !== "forbidden") ||
+			!["computer", "machine", "coding"].includes(checkin.kind as string) ||
+			uuid(checkin.subjectId) === null ||
+			typeof checkin.since !== "string" ||
+			!Number.isSafeInteger(checkin.hours) ||
+			(checkin.hours as number) < 1 ||
+			typeof checkin.detail !== "object" ||
+			checkin.detail === null ||
+			Array.isArray(checkin.detail) ||
+			Buffer.byteLength(JSON.stringify(checkin.detail)) > 4096
+		)
+			throw new Error("Invalid machine check-in wake");
 	} else if (wake.kind === "agent") {
 		// A coworker message. Delivered into the agent's own shared thread (the
 		// session is the agent's thread and the policy is the pair policy) since

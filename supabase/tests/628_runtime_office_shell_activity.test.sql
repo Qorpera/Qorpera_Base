@@ -1,6 +1,6 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- 20260929070000: a command still running in a Company Computer shell keeps
--- the computer on. The office reports the screens whose shells are busy; a
+-- 20260929070000: a busy Company Computer shell keeps the computer on. The
+-- office reports the screens whose shells are busy; a
 -- report is demand for 90 seconds, for the office's current generation only,
 -- and a screen missing from the next report has nothing running. Only the
 -- office's service role may report, and only screens of that office.
@@ -65,10 +65,14 @@ create function pg_temp.demand() returns boolean language sql as $$
 	select public.qorpera_runtime_office_has_demand(pg_temp.office())
 $$;
 select set_config('qorpera_test.generation',(pg_temp.office()).generation::text,true);
--- As the office reports: its scope, generation and busy screens, nothing read from the table.
+-- As the office reports: its scope, generation and busy screens (each with no
+-- open or ended command; 870 covers commands), nothing read from the table.
 create function pg_temp.report(p_screens uuid[],p_generation bigint default null) returns jsonb language sql as $$
 	select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.office_scope')::jsonb,
-		coalesce(p_generation,current_setting('qorpera_test.generation')::bigint),p_screens)
+		coalesce(p_generation,current_setting('qorpera_test.generation')::bigint),
+		case when p_screens is not null then jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',
+			coalesce((select jsonb_agg(jsonb_build_object('screenId',id,'busy',true,'open','[]'::jsonb,'ended','[]'::jsonb))
+				from unnest(p_screens) as reported(id)),'[]'::jsonb)) end)
 $$;
 create function pg_temp.busy() returns uuid[] language sql as $$
 	select array[current_setting('qorpera_test.screen')::uuid]
@@ -124,7 +128,7 @@ reset role;
 select pg_temp.wake_assert(not pg_temp.demand(),'nothing running is no demand');
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_shell_activity),'the report rows are gone');
 
--- 20260929070100: a running command also keeps the agent's seat.
+-- 20260929070100: a busy command also keeps the agent's seat.
 create function pg_temp.seat() returns boolean language sql as $$
 	select public.qorpera_runtime_office_screen_in_use(s) from public.qorpera_runtime_office_screens s
 	where s.id=current_setting('qorpera_test.screen')::uuid
@@ -136,7 +140,7 @@ select pg_temp.path_claims('service_role');
 set local role service_role;
 select pg_temp.report(pg_temp.busy());
 reset role;
-select pg_temp.wake_assert(pg_temp.seat(),'a running command keeps the seat');
+select pg_temp.wake_assert(pg_temp.seat(),'a busy command keeps the seat');
 update public.qorpera_runtime_office_shell_activity set busy_until=clock_timestamp()-interval '1 second';
 select pg_temp.wake_assert(not pg_temp.seat(),'a stale report keeps no seat');
 

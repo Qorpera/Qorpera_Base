@@ -318,6 +318,8 @@ export interface CompanyComputerGuestShell {
 		/** The effect receipt: a repeated delivery returns the same command. */
 		key: string;
 		command: string;
+		/** The run that started it, which is told when it stops and asked about it. */
+		runId: string;
 		signal: AbortSignal;
 	}): Promise<{ sessionId: string }>;
 	write(input: {
@@ -949,7 +951,9 @@ export class CompanyComputerGuestAutomation {
 			};
 			let value: JsonValue;
 			if (action.action === "start")
-				value = await shell.start({ key: effect.receiptId, command: action.command, signal }).catch(refusal);
+				value = await shell
+					.start({ key: effect.receiptId, command: action.command, runId: effect.identity.runId, signal })
+					.catch(refusal);
 			else if (action.action === "read") {
 				if (!shell.known(action.sessionId)) refusal(new Error("OFFICE_SHELL_SESSION_UNKNOWN"));
 				value = { sessionId: action.sessionId };

@@ -1,5 +1,6 @@
--- 20260929070100: a command still running in a computer's shell keeps its
--- agent's seat, as it keeps the machine awake (20260929070000). Patched into
+-- 20260929070100: a busy shell keeps its agent's seat, as it keeps the
+-- machine awake (20260929070000); one that only waits does neither (the
+-- 2026-10-03 amendment "one idle rule for every machine"). Patched into
 -- qorpera_runtime_office_screen_in_use (20260928237200) in place, after it:
 -- a fresh shell-activity report for the screen, from the office's current
 -- generation, means the screen is in use and cannot change hands.
@@ -15,7 +16,7 @@ end $$;
 select pg_temp.office_shell_seat_patch('public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens)'::regprocedure,
 	$old$or exists(select 1 from public.qorpera_runtime_office_resources r where r.screen_id = p_screen.id and r.state <> 'drained')$old$,
 	$new$or exists(select 1 from public.qorpera_runtime_office_resources r where r.screen_id = p_screen.id and r.state <> 'drained')
-		-- A command still running in the computer's shell (20260929070100).
+		-- A busy shell on the computer (20260929070100).
 		or exists(select 1 from public.qorpera_runtime_office_shell_activity a
 			join public.qorpera_runtime_offices o on o.id = a.office_id
 			where a.screen_id = p_screen.id and a.computer_generation = o.generation and a.busy_until > clock_timestamp())$new$);
