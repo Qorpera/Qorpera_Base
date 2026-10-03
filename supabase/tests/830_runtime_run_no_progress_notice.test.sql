@@ -236,7 +236,7 @@ begin
 		|| E'\t\t\tfrom (select public.qorpera_run_no_progress_since(activity.run_id, activity.started_at) as since) as stall\n'
 		|| E'\t\t\twhere stall.since is not null), ''{}''::jsonb)\n'
 		|| E'\t\telse ''{}''::jsonb end', E'\t\t) else ''{}''::jsonb end');
-	if md5(v_text) <> 'MASTER_ACTIVITY_MD5' then
+	if md5(v_text) <> 'b62fffee4806f0ae74410e9c27d511c4' then
 		raise exception 'H: qorpera_list_staff_execution_activity''s text changed: %', md5(v_text); end if;
 	if not has_function_privilege('authenticated', 'public.qorpera_list_staff_execution_activity(uuid)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_list_staff_execution_activity(uuid)', 'execute') then
