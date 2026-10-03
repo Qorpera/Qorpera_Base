@@ -1080,7 +1080,7 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   against a vault change that now locks by id it can meet in the opposite order. A follow-up locks the agent's active
   grants by id first on `folder-v2`.
 
-### 6.8 C1c-3e as built: a dynamic routine's next run (migration 20260930004100, test 819)
+### 6.8 C1c-3e as built: a dynamic routine's next run (migration 20260930009500, test 819)
 
 An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick
 (`qorpera_restore_dynamic_routine_runs`, inside the Company File drain that `reconcile` runs). That tick visits every

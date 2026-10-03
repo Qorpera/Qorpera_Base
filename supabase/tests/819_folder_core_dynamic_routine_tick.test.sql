@@ -21,14 +21,14 @@ $$;
 do $$
 begin
 	if md5(replace(pg_get_functiondef('public.qorpera_ensure_dynamic_routine_run(uuid)'::regprocedure),
-			E'\t-- 20260930004100: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
+			E'\t-- 20260930009500: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
 			|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
 			|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
 			|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n',
 			'')) <> '2abbbce4e97a962ccb121b68d2ef385b' then
 		raise exception 'The legacy dynamic tick''s snapshot-v1 text changed: %', md5(replace(pg_get_functiondef(
 			'public.qorpera_ensure_dynamic_routine_run(uuid)'::regprocedure),
-			E'\t-- 20260930004100: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
+			E'\t-- 20260930009500: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
 			|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
 			|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
 			|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n',

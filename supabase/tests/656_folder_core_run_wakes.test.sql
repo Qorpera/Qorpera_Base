@@ -527,7 +527,7 @@ begin
 		or not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_company_files'::regclass
 			and conname = 'qorpera_company_files_core_head') then
 		raise exception 'The turn materializer scanned a folder-v2 request'; end if;
-	-- Without the skip the tick would have started it: the folder tick does (C1c-3e, 20260930004100), and the legacy
+	-- Without the skip the tick would have started it: the folder tick does (C1c-3e, 20260930009500), and the legacy
 	-- path refuses it.
 	perform pg_temp.raises_like(format('select public.qorpera_ensure_dynamic_routine_run(%L)', v_dynamic), '0A000',
 		'A folder-v2 routine''s next run comes from the folder tick');
