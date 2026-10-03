@@ -15,34 +15,87 @@ values ('63100000-0000-4000-8000-000000000020','63100000-0000-4000-8000-00000000
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
 select public.qorpera_folder_enable('63100000-0000-4000-8000-000000000020');
 
-create function pg_temp.stage(p_text text) returns jsonb language plpgsql security definer as $$
-declare v_hash text := encode(extensions.digest(convert_to(p_text,'utf8'),'sha256'),'hex'); v_manifest text; v_manifest_hash text;
+-- Verified version-2 bytes for a text, as the object gateway leaves them: the platform stages them (C1D §9.3).
+create function pg_temp.manifest_v2(p_text text) returns text language sql immutable as $$
+	select format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":%s,"mediaType":"text/plain","executable":false,"chunks":[%s]}',
+		encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'), octet_length(convert_to(p_text, 'utf8')),
+		case when p_text = '' then '' else format('{"sha256":"%s","bytes":%s}', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'),
+			octet_length(convert_to(p_text, 'utf8'))) end)
+$$;
+-- Opens an intent for a manifest as the actor, confirms each object the open did not report present (the manifest's
+-- chunks and the manifest itself, by hash and size, as the gateway does once it has stored them), and seals it.
+create function pg_temp.seal_v2(p_env uuid, p_actor jsonb, p_manifest text) returns jsonb language plpgsql as $$
+declare v_open jsonb := public.qorpera_folder_open_upload(p_env, p_actor, p_manifest); v_object jsonb;
 begin
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects','63100000-0000-4000-8000-000000000010/' || v_hash,
-		jsonb_build_object('size',octet_length(p_text))) on conflict do nothing;
-	v_manifest := jsonb_build_object('schema','qorpera.cloud-file-manifest/v1','fileSha256',v_hash,
-		'bytes',octet_length(p_text),'mediaType','application/octet-stream','chunks',
-		jsonb_build_array(jsonb_build_object('sha256',v_hash,'bytes',octet_length(p_text))))::text;
-	v_manifest_hash := encode(extensions.digest(convert_to(v_manifest,'utf8'),'sha256'),'hex');
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects','63100000-0000-4000-8000-000000000010/' || v_manifest_hash,
-		jsonb_build_object('size',octet_length(v_manifest))) on conflict do nothing;
-	perform public.qorpera_verify_company_path_file('63100000-0000-4000-8000-000000000010',v_manifest);
-	return jsonb_build_object('manifestSha256',v_manifest_hash,'fileSha256',v_hash,'bytes',octet_length(p_text),
-		'mediaType','text/plain','executable',false);
+	for v_object in select c from jsonb_array_elements(p_manifest::jsonb -> 'chunks') c
+		union all select jsonb_build_object('sha256', encode(extensions.digest(convert_to(p_manifest, 'utf8'), 'sha256'), 'hex'),
+			'bytes', octet_length(convert_to(p_manifest, 'utf8'))) loop
+		if not (v_open -> 'present') ? (v_object ->> 'sha256') then
+			perform public.qorpera_folder_confirm_object(p_env, p_actor, (v_open ->> 'intentId')::uuid, v_object ->> 'sha256',
+				(v_object ->> 'bytes')::bigint);
+		end if;
+	end loop;
+	return public.qorpera_folder_seal_upload(p_env, p_actor, (v_open ->> 'intentId')::uuid);
+end $$;
+-- The files pg_temp.stage made, which were version 1 before C5 and so exempt from possession.
+create temp table fixture_files(manifest_sha256 text primary key, manifest_text text not null);
+-- The platform stages the text in each folder-v2 environment of the company (an intent is one environment's).
+create function pg_temp.stage(p_text text) returns jsonb language plpgsql as $$
+declare v_env uuid; v_seal jsonb; v_manifest text := pg_temp.manifest_v2(p_text);
+begin
+	for v_env in select environment_id from public.qorpera_company_files where profile_id = '63100000-0000-4000-8000-000000000010'
+		and core = 'folder-v2' order by environment_id loop
+		v_seal := pg_temp.seal_v2(v_env, '{"kind":"platform"}', v_manifest);
+		if v_seal ->> 'state' is distinct from 'sealed' then raise exception 'Fixture staging: %', v_seal; end if;
+	end loop;
+	if v_seal is null then raise exception 'Fixture staging: the company has no folder-v2 environment'; end if;
+	insert into pg_temp.fixture_files values (v_seal -> 'file' ->> 'manifestSha256', v_manifest) on conflict do nothing;
+	return v_seal -> 'file';
+end $$;
+-- A version-2 file is held to possession (C1D §3): before an actor other than the platform commits units, it stages
+-- each of their files pg_temp.stage made itself, as its own upload would, unless it holds an unexpired sealed intent
+-- for it already. A file a test stages any other way is left alone. An actor that may not stage (42501) or a stopped
+-- company (55000) is left to the commit's own refusal; any other error is a fixture defect and surfaces.
+create function pg_temp.possess(p_env uuid, p_actor jsonb, p_units jsonb) returns void language plpgsql as $$
+declare v_manifest text;
+begin
+	if p_actor ->> 'kind' is not distinct from 'platform' or jsonb_typeof(p_units) is distinct from 'array' then return; end if;
+	for v_manifest in select distinct s.manifest_text from jsonb_array_elements(p_units) u
+		cross join lateral (select u -> 'file' as f union all select c -> 'file' from jsonb_array_elements(
+			case when jsonb_typeof(u -> 'contents') = 'array' then u -> 'contents' else '[]'::jsonb end) c) refs
+		join pg_temp.fixture_files s on s.manifest_sha256 = refs.f ->> 'manifestSha256'
+		where not exists (select 1 from public.qorpera_folder_upload_intents i where i.environment_id = p_env
+			and i.manifest_sha256 = s.manifest_sha256 and i.state = 'sealed' and i.expires_at > clock_timestamp()
+			and i.actor_kind = p_actor ->> 'kind' and i.scope_id = public.qorpera_folder_upload_scope(p_actor)) loop
+		begin
+			perform pg_temp.seal_v2(p_env, p_actor, v_manifest);
+		exception when insufficient_privilege or object_not_in_prerequisite_state then null;
+		end;
+	end loop;
 end $$;
 select set_config('qorpera_test.race_one', pg_temp.stage('race one')::text, false);
 select set_config('qorpera_test.race_two', pg_temp.stage('race two')::text, false);
+-- The owner commits both files in the races, and takes possession of them now: its sealed intents must be committed
+-- for the other connections to see, and a race's own transaction stages nothing (sql_commit then finds them held).
+select pg_temp.possess('63100000-0000-4000-8000-000000000020', '{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}',
+	jsonb_build_array(jsonb_build_object('op','write','path','race-one','file',current_setting('qorpera_test.race_one')::jsonb),
+		jsonb_build_object('op','write','path','race-two','file',current_setting('qorpera_test.race_two')::jsonb)));
 
-create function pg_temp.sql_commit(p_key text, p_units jsonb) returns text language sql as $$
-	select format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63100000-0000-4000-8000-000000000020',
-		'{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}', p_key, p_units::text)
-$$;
-create function pg_temp.commit(p_key text, p_units jsonb) returns jsonb language sql as $$
-	select public.qorpera_folder_commit('63100000-0000-4000-8000-000000000020',
-		'{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}', p_key, p_units)
-$$;
+-- A commit's SQL for another connection, as the owner, after taking possession of its files in this one.
+create function pg_temp.sql_commit(p_key text, p_units jsonb) returns text language plpgsql as $$
+begin
+	perform pg_temp.possess('63100000-0000-4000-8000-000000000020', '{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}',
+		p_units);
+	return format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '63100000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}', p_key, p_units::text);
+end $$;
+create function pg_temp.commit(p_key text, p_units jsonb) returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.possess('63100000-0000-4000-8000-000000000020', '{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}',
+		p_units);
+	return public.qorpera_folder_commit('63100000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"63100000-0000-4000-8000-000000000001"}', p_key, p_units);
+end $$;
 create function pg_temp.version(p_path text) returns text language sql as $$
 	select public.qorpera_folder_read('63100000-0000-4000-8000-000000000020', '{"kind":"platform"}', p_path) -> 'entry' ->> 'version'
 $$;
@@ -295,12 +348,19 @@ delete from public.qorpera_folder_journal where environment_id = '63100000-0000-
 delete from public.qorpera_folder_path_versions where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_commits where environment_id = '63100000-0000-4000-8000-000000000020';
+-- Version-2 objects are catalog rows of the object gateway (no Storage mirror, no link to the company), so they go by
+-- hand, with their proofs and chunk rows; the intents go with the company.
+delete from public.qorpera_profile_objects where profile_id = '63100000-0000-4000-8000-000000000010';
 delete from public.qorpera_profiles where id = '63100000-0000-4000-8000-000000000010';
 delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '63100000-0000-4000-8000-000000000010/%';
 delete from auth.users where id = '63100000-0000-4000-8000-000000000001';
 do $$
 begin
 	if exists (select 1 from public.qorpera_company_files where environment_id = '63100000-0000-4000-8000-000000000020')
-		or exists (select 1 from public.qorpera_folder_clocks where environment_id = '63100000-0000-4000-8000-000000000020') then
+		or exists (select 1 from public.qorpera_folder_clocks where environment_id = '63100000-0000-4000-8000-000000000020')
+		or exists (select 1 from storage.objects where name like '63100000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '63100000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '63100000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '63100000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

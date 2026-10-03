@@ -53,12 +53,19 @@ delete from public.qorpera_folder_journal where environment_id = '63100000-0000-
 delete from public.qorpera_folder_path_versions where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_commits where environment_id = '63100000-0000-4000-8000-000000000020';
+-- Version-2 objects are catalog rows of the object gateway (no Storage mirror, no link to the company), so they go by
+-- hand, with their proofs and chunk rows; the intents go with the company.
+delete from public.qorpera_profile_objects where profile_id = '63100000-0000-4000-8000-000000000010';
 delete from public.qorpera_profiles where id = '63100000-0000-4000-8000-000000000010';
 delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '63100000-0000-4000-8000-000000000010/%';
 delete from auth.users where id = '63100000-0000-4000-8000-000000000001';
 do $$
 begin
 	if exists (select 1 from public.qorpera_company_files where environment_id = '63100000-0000-4000-8000-000000000020')
-		or exists (select 1 from public.qorpera_folder_clocks where environment_id = '63100000-0000-4000-8000-000000000020') then
+		or exists (select 1 from public.qorpera_folder_clocks where environment_id = '63100000-0000-4000-8000-000000000020')
+		or exists (select 1 from storage.objects where name like '63100000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '63100000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '63100000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '63100000-0000-4000-8000-000000000010') then
 		raise exception 'The feed race fixture must be removed'; end if;
 end $$;
