@@ -1224,10 +1224,10 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   its stop. The stop's job pass still skips the jobs effects hold; the finisher ends them.
   - The request's stop now runs beside folder effects, where the row `FOR UPDATE` kept them apart. Its locks after
     rank 0 (jobs `SKIP LOCKED`, never waited for, and their termination: run events, wake occurrences, inputs; no
-    conversation write or operation clock; then bootstrap jobs (none on `folder-v2`) and the folder creations not yet made, `SKIP LOCKED` (P14a); then coding
-    todos, workers and sessions, the machine advisory lock and machines, invitations, seats, access state) come in the
-    order every folder path takes them (3f's machines, 3h's coding calls, 3d-2's vault, 3c's member management); no
-    cycle found (review r2 traced the job end's triggers).
+    conversation write or operation clock; then bootstrap jobs (none on `folder-v2`) and the folder creations not yet
+    made, `SKIP LOCKED` (P14a); then coding todos, workers and sessions, the machine advisory lock and machines,
+    invitations, seats, access state) come in the order every folder path takes them (3f's machines, 3h's coding calls,
+    3d-2's vault, 3c's member management); no cycle found (review r2 traced the job end's triggers).
   - The old `FOR UPDATE` also waited for a transaction that had just inserted a row pointing at the company (a job
     enqueued just before). The request no longer does; the finisher's stop runs again after its drain.
 - **The finisher** (`finish_company_deletion`) runs the folder pause's second phase for deletion,
@@ -1239,8 +1239,9 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   deletion row: C5's reset must request deletion first.
 - **The purge** takes the same drain, then the company row `FOR UPDATE`: the one `folder-v2` path that may, since it
   deletes the row. It comes after the fence, so no effect holds the row while it waits, and before the cascade's
-  children, which the remaining legacy holders of the row (sign-ins, retirements, node update drains) take after it
-  (828 D: behind a holder of the row `KEY SHARE` alone, it waits at the row while it holds the fence). The finisher and
+  children, which the remaining legacy holders of the row (sign-ins, node update drains) take after it (828 D: behind
+  a holder of the row `KEY SHARE` alone, it waits at the row while it holds the fence). Since 3j a Company Computer's
+  retirement takes the folder fence first on `folder-v2`, so it waits at the fence behind the finisher, not in a cycle. The finisher and
   the purge are the `folder-v2` exception to core §9's rule on the profile row (CORE §3 step 3 and §9 say so).
 - **The batch** finishes its random sample in company id order, as the node update drains and the executor give-up take
   their companies, so two batches of locks never cross.
