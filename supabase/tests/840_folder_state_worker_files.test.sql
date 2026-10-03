@@ -386,6 +386,11 @@ declare ada jsonb := current_setting('qorpera_test.ada')::jsonb; f text := 'agen
 	w public.qorpera_runtime_workers%rowtype;
 begin
 	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)', ada -> 'binding', '{"folder":"x"}'), '22023');
+	-- A cancel is work: each run acknowledges its wake first (qorpera_assert_wake_work_allowed), as before any effect.
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	perform public.qorpera_folder_send_agent_message(ada -> 'binding', 'f2b-ack-ada', 'Stopping the price check.', 'progress');
+	perform public.qorpera_folder_send_agent_message(current_setting('qorpera_test.ben')::jsonb -> 'binding', 'f2b-ack-ben',
+		'Looking at the todos.', 'progress');
 	r := public.qorpera_folder_cancel_agent_worker(ada -> 'binding', jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0001'));
 	w := pg_temp.worker_row(f);
 	if r ->> 'action' <> 'cancel' or w.state <> 'cancelled' or w.completion_state <> 'suppressed' or w.result ->> 'reason' <> 'parent_cancelled'
