@@ -302,6 +302,53 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 
 	/** A file's bytes: its manifest, then each chunk, each checked against its hash and the file's reference. */
 	async get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array> {
+		const chunks = await this.#chunks(file, signal);
+		const bytes = Buffer.allocUnsafe(file.bytes);
+		let offset = 0;
+		for (const chunk of chunks) {
+			const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
+			if (part.byteLength !== chunk.bytes) invalid();
+			bytes.set(part, offset);
+			offset += part.byteLength;
+		}
+		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
+		if (sha256(bytes) !== file.fileSha256)
+			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
+		return bytes;
+	}
+
+	/** Bytes `offset` to `offset + length` of a file (fewer at its end): only the chunks they fall in are fetched, each
+	 * checked against its hash, as the manifest (itself checked against the entry's hash) names them. A range that is the
+	 * whole file is checked against the file's hash too. */
+	async range(file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal): Promise<Uint8Array> {
+		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0)
+			throw new Error("Invalid Company folder byte range");
+		const end = Math.min(file.bytes, offset + length);
+		if (offset >= end) return new Uint8Array();
+		if (offset === 0 && end === file.bytes) return this.get(file, signal);
+		const chunks = await this.#chunks(file, signal);
+		const bytes = Buffer.allocUnsafe(end - offset);
+		let position = 0;
+		for (const chunk of chunks) {
+			if (position < end && position + chunk.bytes > offset) {
+				const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
+				if (part.byteLength !== chunk.bytes) invalid();
+				bytes.set(
+					part.subarray(Math.max(0, offset - position), Math.min(chunk.bytes, end - position)),
+					Math.max(0, position - offset),
+				);
+			}
+			position += chunk.bytes;
+		}
+		return bytes;
+	}
+
+	/** A file's manifest, fetched by its hash and checked against the entry: its chunks, whose sizes add up to the
+	 * file's. */
+	async #chunks(
+		file: CloudCompanyFolderFile,
+		signal: AbortSignal,
+	): Promise<{ readonly sha256: string; readonly bytes: number }[]> {
 		const manifestBytes = await this.#fetchObject(file.manifestSha256, MAX_MANIFEST_BYTES, signal);
 		let manifest: Manifest;
 		try {
@@ -320,8 +367,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			input.chunks.length > MAX_CHUNKS
 		)
 			invalid();
-		// Every chunk is checked, and their sizes must add up to the file's, before anything is fetched; the file is then
-		// read into one buffer of its size.
+		// Every chunk is checked, and their sizes must add up to the file's, before anything is fetched.
 		const chunks = (input.chunks as unknown[]).map((value) => {
 			const chunk = answer(value, ["sha256", "bytes"]);
 			if (
@@ -335,18 +381,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 			return { sha256: chunk.sha256, bytes: chunk.bytes as number };
 		});
 		if (chunks.reduce((sum, chunk) => sum + chunk.bytes, 0) !== file.bytes) invalid();
-		const bytes = Buffer.allocUnsafe(file.bytes);
-		let offset = 0;
-		for (const chunk of chunks) {
-			const part = await this.#fetchObject(chunk.sha256, chunk.bytes, signal);
-			if (part.byteLength !== chunk.bytes) invalid();
-			bytes.set(part, offset);
-			offset += part.byteLength;
-		}
-		// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
-		if (sha256(bytes) !== file.fileSha256)
-			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
-		return bytes;
+		return chunks;
 	}
 
 	async #fetchObject(hash: string, maximum: number, signal: AbortSignal): Promise<Uint8Array> {

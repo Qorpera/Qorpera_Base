@@ -1190,6 +1190,16 @@ export class CompanyController {
 			: "failed";
 	}
 
+	/** When a working agent's running run last made progress, if that is the cloud's stall minutes ago or more
+	 * (gap 4). The minutes come with it: the web has no number of its own. */
+	noProgress(staffAgentId: string | undefined): { since: string; minutes: number } | undefined {
+		const row = this.activityFor(staffAgentId);
+		if (row?.activity !== "working" || row.jobStatus !== "leased") return undefined;
+		return row.noProgressSince && row.noProgressMinutes
+			? { since: row.noProgressSince, minutes: row.noProgressMinutes }
+			: undefined;
+	}
+
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
 		const row = this.activityFor(staffAgentId);
 		if (!row || !isFailedRun(row)) return undefined;
