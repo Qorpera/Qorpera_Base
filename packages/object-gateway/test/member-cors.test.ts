@@ -181,6 +181,18 @@ describe("member browser CORS", () => {
 		expect(service.authorize).not.toHaveBeenCalled();
 		expect(service.get).not.toHaveBeenCalled();
 	});
+	it("allows a member's folder object GET with only authorization", async () => {
+		const service = await fixture(),
+			response = await service.request(
+				`/v1/member-folder-objects/${id(1)}/${sha256}`,
+				preflight("GET", "authorization"),
+			);
+		expect(response.status).toBe(204);
+		expect(response.headers.get("access-control-allow-methods")).toBe("GET");
+		expect(response.headers.get("access-control-allow-headers")).toBe("authorization");
+		expect(service.authorize).not.toHaveBeenCalled();
+		expect(service.get).not.toHaveBeenCalled();
+	});
 	it.each([
 		[objectRoute, "PUT", "authorization"],
 		[objectRoute, "GET", "authorization,x-qorpera-native-token"],
@@ -195,6 +207,11 @@ describe("member browser CORS", () => {
 		[`/v1/native-company-objects/${id(1)}/${sha256}`, "GET", "authorization"],
 		[`/v1/profile-objects/${id(1)}/${sha256}`, "GET", "authorization"],
 		["/readyz", "GET", "authorization"],
+		[`/v1/member-folder-objects/${id(1)}/${sha256}`, "PUT", "authorization"],
+		[`/v1/member-folder-objects/${id(1)}/${sha256}`, "GET", "authorization,content-type"],
+		[`/v1/member-folder-objects/${id(1)}/${sha256}`, "GET", "authorization,x-qorpera-company-path"],
+		[`/v1/member-folder-objects/${id(1)}/${id(2)}/${sha256}`, "GET", "authorization"],
+		[`/v1/member-folder-objects/${id(1)}/${sha256}?x=1`, "GET", "authorization"],
 	])("refuses preflight %s %s %s without I/O", async (route, method, headers) => {
 		const service = await fixture(),
 			response = await service.request(route, preflight(method, headers));

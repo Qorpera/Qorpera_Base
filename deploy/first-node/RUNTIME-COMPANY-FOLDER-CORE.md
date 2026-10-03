@@ -413,7 +413,9 @@ is never upgraded. The steps:
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:
-    - the creation commit's first run and the post-commit worker's first runs;
+    - the post-commit worker's first runs, and the creation's first run once
+      C4 (P28) materializes it (the creation commit itself writes the
+      kickoff and its turn request, no wake: CREATION §3);
     - sends, room posts and escalations that wake an agent;
     - routine firing, the materializer and the file drain.
 
@@ -690,9 +692,13 @@ Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
 - the empty seeded folders.
 
 The same transaction writes the Co-Founder's staff row and exactly one silent
-first-run wake (launch item 3). The company stays hidden until the queue has
+first-run kickoff with its turn request (launch item 3); the first-run wake
+comes when C4 (P28) materializes that turn. The company stays hidden until the
+creation is completed, and, once P15's queue exists, until the queue has
 converged its other side effects, as today's bootstrap job keeps a company
-hidden (`qorpera_finalize_company_bootstrap`).
+hidden (`qorpera_finalize_company_bootstrap`). How creation runs (the
+creation row, the worker, the operator's path):
+`RUNTIME-COMPANY-FOLDER-CREATION.md`.
 
 ### After the commit
 
@@ -1123,7 +1129,13 @@ For `folder-v2` companies:
     each read or listing is fitted to one tool result before its release, and
     `company_delete` records the automatic review's approval of its call (C2
     R1) and deletes a file or an empty folder.
-- The memory, skills, todo, routine and hiring writers write files. The
+- The memory, skills, todo, routine and hiring writers write files. Memory
+  and skills: slice P20 (`packages/runtime/src/cloud-folder-notebooks.ts`)
+  runs the same composition and tools over a folder-v2 form of the trusted
+  gateway. Each tool call releases its reads under its answer; composition's
+  reads are released once under the composed context, before the first model
+  request. A skill deletion in the agent's own library records its review
+  as `company_delete`'s does (`20260930001200`). The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
 - The vault writes connection files: it marks a file due, and the object
@@ -1179,7 +1191,8 @@ For `folder-v2` companies:
    switches to `folder-v2` by default.
 
 **Core acceptance (C5).** On a new company:
-- the seeded tree exists, and creation wrote exactly one first-run wake;
+- the seeded tree exists, and creation wrote exactly one kickoff and its
+  turn request; the first-run wake once P28 materializes it;
 - agents read, list, search and write through change sets, and disjoint
   writes never conflict (search is `company_search` on the node's folder
   service, "light threads" item 2, so the folder service is live before the

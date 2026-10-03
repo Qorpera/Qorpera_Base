@@ -503,7 +503,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 `;
 const dockerUsable = process.platform === "linux" && spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 
-describe("the exit on a stand-in node", { skip: dockerUsable ? false : "needs Linux with Docker" }, () => {
+// Opt-in (coordinator, 3 Oct): on the shared test VMs this privileged proof removed the VM's own docker0, breaking
+// every later Docker test there. It runs only with QORPERA_AGENT_EXIT_ROOT_PROOF=1, on a throwaway machine, until the
+// egress session makes it provably namespace-safe.
+const rootProofWanted = process.env.QORPERA_AGENT_EXIT_ROOT_PROOF === "1";
+describe("the exit on a stand-in node", {
+	skip: !rootProofWanted ? "opt-in: set QORPERA_AGENT_EXIT_ROOT_PROOF=1 (it changes the host's links)" : dockerUsable ? false : "needs Linux with Docker",
+}, () => {
 	test("the root proof passes inside a privileged, network-less container", () => {
 		const image = `qorpera-agent-exit-test:${sha256(DOCKERFILE).slice(0, 12)}`;
 		if (spawnSync("docker", ["image", "inspect", image], { stdio: "ignore" }).status !== 0) {
