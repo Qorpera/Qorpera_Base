@@ -48,6 +48,14 @@ const publisherOperations = [
 	"qorpera_verify_company_path_file",
 	"qorpera_verify_company_path_tree",
 	"qorpera_stage_member_session_attachment",
+	"qorpera_claim_connection_file",
+	"qorpera_finish_connection_file",
+	"qorpera_folder_authorize_object_download",
+	"qorpera_folder_open_upload",
+	"qorpera_folder_authorize_object_upload",
+	"qorpera_folder_confirm_object",
+	"qorpera_folder_seal_upload",
+	"qorpera_folder_commit",
 ] as const satisfies readonly MemberCompanyPublisherRpc[];
 
 describe.each(credentials)("$name gateway service authority", ({ secretKey, publishableKey, bearer }) => {

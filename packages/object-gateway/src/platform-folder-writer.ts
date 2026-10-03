@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority, MemberCompanyPublisherRpc } from "./member-company-authority.ts";
+import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -14,7 +15,6 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  */
 
 export const PLATFORM_ACTOR = Object.freeze({ kind: "platform" });
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** A chunk and the manifest's bound (C1D §2): 64 chunks of 4 MiB. */
 const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -74,14 +74,38 @@ export type PlatformFolderRpc = Extract<
 	| "qorpera_folder_commit"
 >;
 
-const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+/** The hex SHA-256 of content the writer stages or reads. */
+const contentHash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * An answer with exactly these keys, or the problem `code`. The gateway has no `@qorpera/contracts` dependency (its
+ * `parseClosedRecord`), so the platform's workers share this one copy.
+ */
+export function record(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return platformFolderProblem(code);
+	const input = value as Record<string, unknown>;
+	if (Object.keys(input).some((key) => !keys.includes(key)) || keys.some((key) => !(key in input)))
+		platformFolderProblem(code);
+	return input;
+}
+
+/** A one-unit commit's outcome (`qorpera.folder-commit/v1`): `saved`, or the outcome and its reason. */
+export function commitUnitOutcome(value: unknown): { readonly outcome: string; readonly reason: string | null } {
+	const units = (value as { schema?: unknown; units?: unknown } | null)?.units;
+	if (
+		(value as { schema?: unknown } | null)?.schema !== "qorpera.folder-commit/v1" ||
+		!Array.isArray(units) ||
+		units.length !== 1
+	)
+		return platformFolderProblem("commit_invalid");
+	const unit = units[0] as { outcome?: unknown; reason?: unknown };
+	if (typeof unit?.outcome !== "string") return platformFolderProblem("commit_invalid");
+	return { outcome: unit.outcome, reason: typeof unit.reason === "string" ? unit.reason : null };
+}
 
 function sealedFile(value: unknown): PlatformFileReference {
-	const file = value as Record<string, unknown> | null;
+	const file = record(value, ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"], "stage_invalid");
 	if (
-		!file ||
-		typeof file !== "object" ||
-		Object.keys(file).sort().join() !== "bytes,executable,fileSha256,manifestSha256,mediaType" ||
 		typeof file.manifestSha256 !== "string" ||
 		typeof file.fileSha256 !== "string" ||
 		!Number.isSafeInteger(file.bytes) ||
@@ -96,6 +120,9 @@ export interface PlatformFolderWriterOptions {
 	readonly authority: Pick<MemberCompanyAuthority, "publisher">;
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
+	/** Where an object this gateway's store lacks (or cannot reach for a moment) is read instead: its Storage copy, as
+	 * the gateway's other readers fall back to it. */
+	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
 }
 
 export class PlatformFolderWriter {
@@ -117,10 +144,10 @@ export class PlatformFolderWriter {
 		const chunks: { sha256: string; bytes: number }[] = [];
 		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
 			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
-			chunks.push({ sha256: sha256(chunk), bytes: chunk.byteLength });
-			objects.set(sha256(chunk), chunk);
+			chunks.push({ sha256: contentHash(chunk), bytes: chunk.byteLength });
+			objects.set(contentHash(chunk), chunk);
 		}
-		const fileSha256 = sha256(bytes);
+		const fileSha256 = contentHash(bytes);
 		// The canonical version-2 manifest: keys in this order, no spaces, so the same file gives the same manifest.
 		const manifestText = JSON.stringify({
 			schema: "qorpera.cloud-file-manifest/v2",
@@ -131,7 +158,7 @@ export class PlatformFolderWriter {
 			chunks,
 		});
 		const manifestBytes = new TextEncoder().encode(manifestText);
-		const manifestSha256 = sha256(manifestBytes);
+		const manifestSha256 = contentHash(manifestBytes);
 		objects.set(manifestSha256, manifestBytes);
 		const open = (await this.#rpc(
 			"qorpera_folder_open_upload",
@@ -210,7 +237,7 @@ export class PlatformFolderWriter {
 			parts.push(await this.#object(environmentId, chunk.sha256 as string, signal));
 		}
 		const bytes = Buffer.concat(parts);
-		if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.fileSha256)
+		if (bytes.byteLength !== file.bytes || contentHash(bytes) !== file.fileSha256)
 			platformFolderProblem("file_unreadable");
 		return bytes;
 	}
@@ -242,8 +269,17 @@ export class PlatformFolderWriter {
 			!Number.isSafeInteger(answer.bytes)
 		)
 			return platformFolderProblem("file_unreadable");
-		const bytes = await this.#options.store.get(answer.profileId, hash, answer.bytes as number);
-		if (sha256(bytes) !== hash) platformFolderProblem("file_unreadable");
+		let bytes: Uint8Array;
+		try {
+			bytes = await this.#options.store.get(answer.profileId, hash, answer.bytes as number);
+		} catch (error) {
+			const missing =
+				error instanceof Error &&
+				(error.message === "Object not found" || (error instanceof ObjectDependencyError && error.unavailable));
+			if (!missing || !this.#options.readFallback) throw error;
+			bytes = await this.#options.readFallback(answer.profileId, hash);
+		}
+		if (bytes.byteLength !== answer.bytes || contentHash(bytes) !== hash) platformFolderProblem("file_unreadable");
 		return bytes;
 	}
 

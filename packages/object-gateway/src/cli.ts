@@ -53,13 +53,19 @@ const companyBootstrap = new CompanyBootstrapProvisioner({
 	readLegacyObject: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
 });
 // The vault's connection-file writer (P22b): off unless QORPERA_CONNECTION_FILE_WRITER=1; the coordinator turns it on.
+// Its own database client (its own circuit, so a slow commit never refuses members' file requests) and its own loop.
 const connectionFiles =
 	process.env.QORPERA_CONNECTION_FILE_WRITER === "1"
 		? new ConnectionFileWriter({
 				workerId: process.env.QORPERA_CONNECTION_FILE_WORKER_ID?.trim() || randomUUID(),
-				authority: memberAuthority,
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
 				store,
 				replication,
+				readFallback: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
 			})
 		: undefined;
 const handler = createObjectGatewayHandler({
@@ -102,7 +108,6 @@ if (process.argv[2] === "migrate") {
 				replication.reconcile(),
 				readLeases?.prune(),
 				companyBootstrap.provisionOne(),
-				connectionFiles?.writeDue(10),
 			]);
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
@@ -114,6 +119,23 @@ if (process.argv[2] === "migrate") {
 		void maintain();
 	}, 15_000);
 	void maintain();
+	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
+	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
+	let writing = false;
+	const writeConnectionFiles = async (): Promise<void> => {
+		if (!connectionFiles || writing) return;
+		writing = true;
+		try {
+			await connectionFiles.writeDue(10, AbortSignal.timeout(60_000));
+		} catch {
+			process.stderr.write("Connection file writer requires operator attention\n");
+		} finally {
+			writing = false;
+		}
+	};
+	const connectionFileWrites = setInterval(() => {
+		void writeConnectionFiles();
+	}, 15_000);
 	server.listen(port(process.env), host, () => {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
@@ -121,6 +143,7 @@ if (process.argv[2] === "migrate") {
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
 			clearInterval(maintenance);
+			clearInterval(connectionFileWrites);
 			server.close(() => process.exit(0));
 		});
 	}

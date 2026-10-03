@@ -9,13 +9,16 @@ import {
 	writeConnectionFile,
 } from "@qorpera/cloud-client/company-state-files";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
+import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
+	commitUnitOutcome,
 	drainPlatformClaims,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
 	platformFolderProblem,
 	platformFolderProblemCode,
+	record,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -32,7 +35,6 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * QORPERA_CONNECTION_FILE_WRITER=1.
  */
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const OPERATION = /^[a-z][a-z0-9_]{0,63}$/;
 const CONNECTION_PATH = /^connections\/[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
@@ -61,6 +63,8 @@ const MEDIA_TYPE = "text/markdown";
 const MAX_FILE_BYTES = 64 * 1024;
 /** A taken name is numbered -2, -3 …, at most this many times. */
 const NAME_TRIES = 20;
+/** A finish gets its own short deadline, so a drain that ran out of time still closes its claim. */
+const FINISH_MS = 15_000;
 
 export type ConnectionSettings = Omit<ConnectionFile, "kind" | "purpose">;
 
@@ -88,21 +92,14 @@ export interface ConnectionFileClaim {
 
 const problem = platformFolderProblem;
 
-function record(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return problem("claim_invalid");
-	const input = value as Record<string, unknown>;
-	for (const key of Object.keys(input)) if (!keys.includes(key) && !optional.includes(key)) problem("claim_invalid");
-	for (const key of keys) if (!(key in input)) problem("claim_invalid");
-	return input;
-}
-
+/** Text of 1 to `max` characters, counted as the database and the parser count them (code points). */
 const text = (value: unknown, max: number): string =>
-	typeof value === "string" && value.length >= 1 && value.length <= max ? value : problem("claim_invalid");
+	typeof value === "string" && value.length >= 1 && [...value].length <= max ? value : problem("claim_invalid");
 
 /** The claim's settings, by the allow-list: a field outside it, or a value of the wrong shape, refuses the claim. */
 export function parseConnectionSettings(value: unknown): ConnectionSettings {
 	const website = (value as Record<string, unknown> | null)?.service === "website";
-	const input = record(value, website ? [...SETTINGS_KEYS, ...WEBSITE_KEYS] : SETTINGS_KEYS);
+	const input = record(value, website ? [...SETTINGS_KEYS, ...WEBSITE_KEYS] : SETTINGS_KEYS, "claim_invalid");
 	const actions = input.actions;
 	if (!Array.isArray(actions) || actions.some((action) => typeof action !== "string" || !OPERATION.test(action)))
 		problem("claim_invalid");
@@ -135,7 +132,7 @@ export function parseConnectionSettings(value: unknown): ConnectionSettings {
 /** A claim answer (`qorpera.connection-file-claim/v1`), checked field by field; null when nothing is due. */
 export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | null {
 	if (value === null) return null;
-	const input = record(value, CLAIM_KEYS);
+	const input = record(value, CLAIM_KEYS, "claim_invalid");
 	if (
 		input.schema !== "qorpera.connection-file-claim/v1" ||
 		typeof input.secretId !== "string" ||
@@ -150,7 +147,7 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		problem("claim_invalid");
 	let current: CurrentFile | null = null;
 	if (input.current !== null) {
-		const file = record(input.current, CURRENT_KEYS);
+		const file = record(input.current, CURRENT_KEYS, "claim_invalid");
 		if (
 			typeof file.path !== "string" ||
 			!file.path.startsWith("connections/") ||
@@ -233,7 +230,7 @@ export function connectionFileText(path: string, settings: ConnectionSettings, c
 
 /** The text below a settings block, trimmed as a parse keeps it; the whole text when there is no block. */
 function bodyOf(text: string): string {
-	const lines = text.replace(/^﻿/, "").split("\n");
+	const lines = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).split("\n");
 	const bare = (line: string) => line.replace(/\r$/, "");
 	const close =
 		bare(lines[0] ?? "") === "---" ? lines.findIndex((line, index) => index > 0 && bare(line) === "---") : -1;
@@ -245,24 +242,6 @@ export function numberedConnectionPath(path: string, number: number): string {
 	const base = path.slice("connections/".length, -".md".length);
 	const suffix = `-${number}`;
 	return `connections/${base.slice(0, COMPANY_STATE_NAME_MAX_CHARS - suffix.length).replace(/-$/, "")}${suffix}.md`;
-}
-
-interface Unit {
-	readonly outcome: string;
-	readonly reason: string | null;
-}
-
-function commitUnit(value: unknown): Unit {
-	const units = (value as { schema?: unknown; units?: unknown } | null)?.units;
-	if (
-		(value as { schema?: unknown } | null)?.schema !== "qorpera.folder-commit/v1" ||
-		!Array.isArray(units) ||
-		units.length !== 1
-	)
-		return problem("commit_invalid");
-	const unit = units[0] as { outcome?: unknown; reason?: unknown };
-	if (typeof unit.outcome !== "string") return problem("commit_invalid");
-	return { outcome: unit.outcome, reason: typeof unit.reason === "string" ? unit.reason : null };
 }
 
 export interface ConnectionFileWriterOptions {
@@ -312,7 +291,7 @@ export class ConnectionFileWriter {
 				UUID.test(input.secretId) &&
 				Number.isSafeInteger(input.generation)
 			)
-				await this.#finish(input.secretId, input.generation as number, error.code, signal);
+				await this.#finish(input.secretId, input.generation as number, error.code);
 			throw error;
 		}
 		if (!claim) return false;
@@ -322,7 +301,7 @@ export class ConnectionFileWriter {
 		} catch (error) {
 			code = platformFolderProblemCode(error);
 		}
-		await this.#finish(claim.secretId, claim.generation, code, signal);
+		await this.#finish(claim.secretId, claim.generation, code);
 		return true;
 	}
 
@@ -330,7 +309,7 @@ export class ConnectionFileWriter {
 		const { current } = claim;
 		if (!claim.present) {
 			if (!current) return;
-			const unit = commitUnit(
+			const unit = commitUnitOutcome(
 				await this.#folder.commit(
 					claim.environmentId,
 					claim.operationKey,
@@ -338,7 +317,8 @@ export class ConnectionFileWriter {
 					signal,
 				),
 			);
-			if (unit.outcome !== "saved") problem(unit.reason ?? unit.outcome);
+			// A file already gone is done.
+			if (unit.outcome !== "saved" && unit.reason !== "missing") problem(unit.reason ?? unit.outcome);
 			return;
 		}
 		const settings = claim.settings as ConnectionSettings;
@@ -356,18 +336,19 @@ export class ConnectionFileWriter {
 		let path = current?.path ?? (claim.path as string);
 		const next = connectionFileText(path, settings, existing);
 		if (existing !== null && next === existing) return;
+		const bytes = new TextEncoder().encode(next);
+		if (bytes.byteLength > MAX_FILE_BYTES) return problem("file_too_large");
+		// The same bytes under any name: staged once.
+		const file = await this.#folder.stage(
+			claim.environmentId,
+			bytes,
+			{ mediaType: MEDIA_TYPE, executable: false },
+			signal,
+		);
 		for (let attempt = 1; attempt <= NAME_TRIES; attempt++) {
 			const parsed = parseCompanyStateFile(path, next);
 			if (!parsed?.ok || parsed.file.kind !== "connection") return problem("file_invalid");
-			const bytes = new TextEncoder().encode(next);
-			if (bytes.byteLength > MAX_FILE_BYTES) return problem("file_too_large");
-			const file = await this.#folder.stage(
-				claim.environmentId,
-				bytes,
-				{ mediaType: MEDIA_TYPE, executable: false },
-				signal,
-			);
-			const unit = commitUnit(
+			const unit = commitUnitOutcome(
 				await this.#folder.commit(
 					claim.environmentId,
 					attempt === 1 ? claim.operationKey : `${claim.operationKey}:${attempt}`,
@@ -399,11 +380,15 @@ export class ConnectionFileWriter {
 		problem("name_taken");
 	}
 
-	async #finish(secretId: string, generation: number, code: string | null, signal: AbortSignal): Promise<void> {
-		await this.#options.authority.publisher(
+	/** Closes a claim on its own short deadline. `finished: false` means another writer holds the connection now: its
+	 * claim converges the file, so there is nothing to do. */
+	async #finish(secretId: string, generation: number, code: string | null): Promise<void> {
+		const answer = (await this.#options.authority.publisher(
 			"qorpera_finish_connection_file",
 			{ p_worker: this.#options.workerId, p_secret_id: secretId, p_generation: generation, p_problem: code },
-			signal,
-		);
+			AbortSignal.timeout(FINISH_MS),
+		)) as { schema?: unknown; finished?: unknown } | null;
+		if (answer?.schema !== "qorpera.connection-file-finish/v1" || typeof answer.finished !== "boolean")
+			problem("finish_invalid");
 	}
 }

@@ -30,8 +30,9 @@ const literal = (value) =>
 
 async function main() {
 	const database = await hostedDatabase(databaseName);
-	const scratch = await mkdtemp(join(tmpdir(), "qorpera-connection-files-"));
+	let scratch;
 	try {
+		scratch = await mkdtemp(join(tmpdir(), "qorpera-connection-files-"));
 		const query = (sql) => database.cluster.psql(databaseName, sql, ["-qAt"]).trim();
 		const rpc = (method, args) => {
 			const parameters = Object.entries(args).map(([name, value]) => {
@@ -203,7 +204,7 @@ async function main() {
 		for (const word of forbidden) assert(!commits.includes(word), `a writer's commit carries ${word}`);
 		process.stdout.write("Connection file writer checks passed (write, member text kept, Disconnect deletes, allow-list only)\n");
 	} finally {
-		await rm(scratch, { recursive: true, force: true });
+		if (scratch) await rm(scratch, { recursive: true, force: true });
 		database.close();
 	}
 }

@@ -17,7 +17,7 @@ const profileId = "33000000-0000-4000-8000-000000000010";
 const memberId = "33000000-0000-4000-8000-000000000001";
 const intentId = "33000000-0000-4000-8000-0000000000f0";
 const version = "33000000-0000-4000-8000-0000000000b1";
-const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 
 const gmail = {
 	id: secretId,
@@ -59,15 +59,22 @@ function claim(overrides: Record<string, unknown> = {}) {
 }
 
 /** The database and the store as the writer sees them: every call recorded, commits answered from `outcomes`. */
-function folder(options: { claims?: unknown[]; outcomes?: { outcome: string; reason?: string }[] } = {}) {
+function folder(
+	options: {
+		claims?: unknown[];
+		outcomes?: { outcome: string; reason?: string }[];
+		storeMisses?: boolean;
+		finish?: unknown;
+	} = {},
+) {
 	const objects = new Map<string, Uint8Array>();
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const claims = [...(options.claims ?? [])];
 	const outcomes = [...(options.outcomes ?? [])];
 	let manifest = "";
 	const put = (bytes: Uint8Array) => {
-		objects.set(sha256(bytes), bytes);
-		return sha256(bytes);
+		objects.set(digest(bytes), bytes);
+		return digest(bytes);
 	};
 	/** A file already in the folder: its bytes and manifest in the store, and the claim's `current`. */
 	const existing = (path: string, text: string) => {
@@ -94,7 +101,7 @@ function folder(options: { claims?: unknown[]; outcomes?: { outcome: string; rea
 				case "qorpera_claim_connection_file":
 					return claims.shift() ?? null;
 				case "qorpera_finish_connection_file":
-					return { schema: "qorpera.connection-file-finish/v1", finished: true };
+					return options.finish ?? { schema: "qorpera.connection-file-finish/v1", finished: true };
 				case "qorpera_folder_authorize_object_download": {
 					const bytes = objects.get(args.p_sha256 as string);
 					if (!bytes) throw new Error("missing object");
@@ -105,7 +112,7 @@ function folder(options: { claims?: unknown[]; outcomes?: { outcome: string; rea
 					return {
 						schema: "qorpera.folder-upload/v1",
 						intentId,
-						manifestSha256: sha256(manifest),
+						manifestSha256: digest(manifest),
 						expiresAt: "x",
 						present: [],
 					};
@@ -120,7 +127,7 @@ function folder(options: { claims?: unknown[]; outcomes?: { outcome: string; rea
 						state: "sealed",
 						intentId,
 						file: {
-							manifestSha256: sha256(manifest),
+							manifestSha256: digest(manifest),
 							fileSha256: parsed.fileSha256,
 							bytes: parsed.bytes,
 							mediaType: parsed.mediaType,
@@ -139,6 +146,7 @@ function folder(options: { claims?: unknown[]; outcomes?: { outcome: string; rea
 	};
 	const store = {
 		async get(profile: string, hash: string, bytes: number) {
+			if (options.storeMisses) throw new Error("Object not found");
 			const object = objects.get(hash);
 			if (profile !== profileId || !object || object.byteLength !== bytes) throw new Error("Object not found");
 			return object;
@@ -152,14 +160,25 @@ function folder(options: { claims?: unknown[]; outcomes?: { outcome: string; rea
 			callbacks: { authorize(): Promise<void>; confirm(): Promise<void> },
 		) {
 			expect(profile).toBe(profileId);
-			expect(sha256(bytes)).toBe(hash);
+			expect(digest(bytes)).toBe(hash);
 			await callbacks.authorize();
 			objects.set(hash, bytes);
 			await callbacks.confirm();
 			return "stored" as const;
 		},
 	};
-	const writer = new ConnectionFileWriter({ workerId, authority: authority as never, store, replication });
+	const readFallback = async (profile: string, hash: string) => {
+		const object = objects.get(hash);
+		if (profile !== profileId || !object) throw new Error("Object not found");
+		return object;
+	};
+	const writer = new ConnectionFileWriter({
+		workerId,
+		authority: authority as never,
+		store,
+		replication,
+		readFallback,
+	});
 	const commits = () => calls.filter((call) => call.method === "qorpera_folder_commit");
 	const finishes = () =>
 		calls.filter((call) => call.method === "qorpera_finish_connection_file").map((call) => call.args.p_problem);
@@ -358,5 +377,65 @@ describe("ConnectionFileWriter", () => {
 				status: "pending",
 			},
 		});
+	});
+});
+
+describe("connection file writer, review round 1", () => {
+	it("stages the canonical version-2 manifest the runtime makes, so the hashes agree", async () => {
+		const { writer, calls, committedText } = folder({ claims: [claim()] });
+		await writer.writeOne();
+		const text = committedText();
+		const hash = digest(text);
+		const bytes = new TextEncoder().encode(text).byteLength;
+		expect(calls.find((call) => call.method === "qorpera_folder_open_upload")?.args.p_manifest).toBe(
+			`{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${hash}","bytes":${bytes},"mediaType":"text/markdown","executable":false,"chunks":[{"sha256":"${hash}","bytes":${bytes}}]}`,
+		);
+	});
+
+	it("keeps a setting that did not change exactly as written, note included", () => {
+		const before = `---\nid: ${secretId}\nservice: gmail # the shared one\naccount: old@nordlys.test\nstatus: connected\nactions: [read_message, send_message]\nconnected_by: ${memberId}\nconnected_at: 2026-10-03T08:00:00.5Z\n---\n`;
+		const after = connectionFileText("connections/gmail.md", gmailSettings, before);
+		expect(after).toContain("service: gmail # the shared one\n");
+		expect(after).toContain("account: team@nordlys.test\n");
+	});
+
+	it("counts an account's length in characters, as the database does", () => {
+		const account = "\u{1F600}".repeat(254);
+		expect(parseConnectionFileClaim(claim({ settings: { ...gmail, account } }))?.settings?.account).toBe(account);
+		expect(() => parseConnectionFileClaim(claim({ settings: { ...gmail, account: `${account}x` } }))).toThrow(
+			PlatformFolderProblem,
+		);
+	});
+
+	it("reads a file its own store lacks from the Storage copy", async () => {
+		const run = folder({ storeMisses: true });
+		const current = run.existing(
+			"connections/gmail.md",
+			writeConnectionFile({ ...gmailSettings, account: "old@nordlys.test", purpose: "Ours." }),
+		);
+		run.queue(claim({ current }));
+		await run.writer.writeOne();
+		expect(run.finishes()).toEqual([null]);
+		expect(run.committedText()).toBe(writeConnectionFile({ ...gmailSettings, purpose: "Ours." }));
+	});
+
+	it("stages the bytes once for every name it tries", async () => {
+		const { writer, calls, commits } = folder({
+			claims: [claim()],
+			outcomes: [{ outcome: "conflict", reason: "exists" }, { outcome: "saved" }],
+		});
+		await writer.writeOne();
+		expect(commits()).toHaveLength(2);
+		expect(calls.filter((call) => call.method === "qorpera_folder_open_upload")).toHaveLength(1);
+	});
+
+	it("accepts a finish another writer's claim superseded, and refuses an answer it cannot read", async () => {
+		const superseded = folder({
+			claims: [claim()],
+			finish: { schema: "qorpera.connection-file-finish/v1", finished: false },
+		});
+		expect(await superseded.writer.writeOne()).toBe(true);
+		const unreadable = folder({ claims: [claim()], finish: { ok: true } });
+		await expect(unreadable.writer.writeOne()).rejects.toThrow(PlatformFolderProblem);
 	});
 });
