@@ -98,12 +98,14 @@ describe("rows typed against their definition, as the save check's port must typ
 			const parsed = parseTableFile(TYPES_TABLE.replace('choices = ["open", "done"]', `choices = [${list}]`));
 			return parsed.ok ? [] : parsed.problems.map((p) => `${p.code}:${p.key}`);
 		};
+		// The choice rule's own refusal, never the TOML reader's: the item, then the list it empties.
+		const refused = ["bad_value:column[6].choices", "missing_key:column[6].choices"];
 		expect(choices(`"${"😀".repeat(60)}"`)).toEqual([]);
-		expect(choices(`"${"😀".repeat(61)}"`)).not.toEqual([]);
-		expect(choices('"open\u202e"')).not.toEqual([]);
-		expect(choices('"open\u2066x\u2069"')).not.toEqual([]);
-		expect(choices('"open\u2028"')).not.toEqual([]);
-		expect(choices('"a, b"')).not.toEqual([]);
+		expect(choices(`"${"😀".repeat(61)}"`)).toEqual(refused);
+		expect(choices('"open\u202e"')).toEqual(refused);
+		expect(choices('"open\u2066x\u2069"')).toEqual(refused);
+		expect(choices('"open\u2028"')).toEqual(refused);
+		expect(choices('"a, b"')).toEqual(refused);
 	});
 
 	it("refuses a number as a key column, which keys differently in JS and SQL", () => {
