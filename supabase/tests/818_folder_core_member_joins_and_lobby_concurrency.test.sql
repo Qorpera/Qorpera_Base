@@ -4,10 +4,11 @@
 -- post waits at the thread room in its prelude, holding no invitation, and lands; an answer to a card and a member
 -- change wait for each other at the thread room (#581 N2); a job queued for a member's login after its removal read
 -- the jobs refuses the removal retryably, without waiting, while a Disconnect still waits for it; an account deletion
--- beside a post refuses retryably, without waiting; the founding lobby's edit does not wait for a company-row KEY SHARE
--- holder, a seat taken waits at the fence behind a member change and at the thread room beside a post, and removing a
--- founder takes the founder's job before the fence and the founding row (a caller the table refuses never waits
--- there). 648's committed fixture, removed at the end.
+-- beside a post refuses retryably, without waiting; an existing member's join waits at its member row before any
+-- thread room; the founding lobby's edit does not wait for a company-row KEY SHARE holder, a seat taken waits at the
+-- fence behind a member change and at the thread room beside a post, and removing a founder takes the founder's job
+-- before the fence and the founding row (a caller the table refuses never waits there); a company login's status
+-- change waits for its job. 648's committed fixture, removed at the end.
 
 -- The company's login pays for unattended work (as 663's).
 set session_replication_role = replica;
@@ -32,17 +33,22 @@ insert into auth.users(id, email, email_confirmed_at) values
 	('81800000-0000-4000-8000-00000000000a', 'post-joiner@example.test', clock_timestamp()),
 	('81800000-0000-4000-8000-00000000000b', 'answer-demoted@example.test', clock_timestamp()),
 	('81800000-0000-4000-8000-00000000000c', 'lobby-removed@example.test', clock_timestamp()),
-	('81800000-0000-4000-8000-00000000000d', 'lobby-seat-post@example.test', clock_timestamp());
+	('81800000-0000-4000-8000-00000000000d', 'lobby-seat-post@example.test', clock_timestamp()),
+	('81800000-0000-4000-8000-00000000000f', 'member-invited@example.test', clock_timestamp());
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
 select '64800000-0000-4000-8000-000000000010', id, email, split_part(email, '@', 1), 'contributor' from auth.users
 where id in ('81800000-0000-4000-8000-000000000005', '81800000-0000-4000-8000-000000000006', '81800000-0000-4000-8000-000000000007',
-	'81800000-0000-4000-8000-000000000009', '81800000-0000-4000-8000-00000000000b', '81800000-0000-4000-8000-00000000000c');
+	'81800000-0000-4000-8000-000000000009', '81800000-0000-4000-8000-00000000000b', '81800000-0000-4000-8000-00000000000c',
+	'81800000-0000-4000-8000-00000000000f');
 insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, created_at, expires_at) values
 	('81800000-0000-4000-8000-0000000000e1', '64800000-0000-4000-8000-000000000010', 'n1-invitee@example.test', 'contributor',
 		'64800000-0000-4000-8000-000000000001', clock_timestamp(), clock_timestamp() + interval '1 day'),
 	('81800000-0000-4000-8000-0000000000e2', '64800000-0000-4000-8000-000000000010', 'n1-stranger@example.test', 'contributor',
 		'64800000-0000-4000-8000-000000000001', clock_timestamp() - interval '2 days', clock_timestamp() - interval '1 day'),
 	('81800000-0000-4000-8000-0000000000e3', '64800000-0000-4000-8000-000000000010', 'post-joiner@example.test', 'contributor',
+		'64800000-0000-4000-8000-000000000001', clock_timestamp(), clock_timestamp() + interval '1 day'),
+	-- 0f is a member already, with a live invitation from before it joined.
+	('81800000-0000-4000-8000-0000000000e4', '64800000-0000-4000-8000-000000000010', 'member-invited@example.test', 'contributor',
 		'64800000-0000-4000-8000-000000000001', clock_timestamp(), clock_timestamp() + interval '1 day');
 set session_replication_role = replica;
 insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, owner_user_id, provider, created_by_user_id) values
@@ -293,6 +299,27 @@ begin
 end $$;
 
 
+-- E3. An existing member accepts an invitation while its member row is held FOR SHARE, as a thread's model change
+-- holds it before that thread's room: the join takes the member row (rank 1) before the thread rooms, so it waits
+-- there holding no room (the model change then takes its room and lands), and lands after.
+do $$
+declare v_state text;
+begin
+	perform pg_temp.hold('fence_three', $q$select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+		and user_id = '81800000-0000-4000-8000-00000000000f' for share$q$);
+	perform pg_temp.claims('fence_two', '81800000-0000-4000-8000-00000000000f');
+	perform dblink_send_query('fence_two', pg_temp.sql_accept('81800000-0000-4000-8000-0000000000e4'));
+	if not pg_temp.waits_for('fence_two', 'fence_three') or not pg_temp.waits_at('fence_two', 'public.qorpera_profile_members') then
+		raise exception 'E3: the existing member''s join must wait at its member row'; end if;
+	if not pg_temp.row_free(format('select 1 from public.qorpera_company_rooms where id = %L for key share',
+			current_setting('qorpera_test.cf_room'))) then
+		raise exception 'E3: the join must hold no thread room while it waits at its member row'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' or exists (select 1 from public.qorpera_profile_invitations where id = '81800000-0000-4000-8000-0000000000e4') then
+		raise exception 'E3: the existing member''s join: %', v_state; end if;
+end $$;
+
 -- F. The founding lobby (the company becomes an open table by hand: 01 opened it, 07 sits at it, 08 and 0d are invited).
 update auth.users set email_confirmed_at = clock_timestamp() where id = '64800000-0000-4000-8000-000000000001';
 insert into public.qorpera_company_foundings(profile_id, created_by_user_id, vision_draft)
@@ -380,6 +407,24 @@ begin
 		or (select status from public.qorpera_runner_jobs where id = '81800000-0000-4000-8000-0000000000f7') not in ('failed','cancelled') then
 		raise exception 'F: the founder''s removal after the job: % (job %)', v_state,
 			(select status from public.qorpera_runner_jobs where id = '81800000-0000-4000-8000-0000000000f7'); end if;
+end $$;
+
+-- G. A status change of the company's own login (no owner) waits for a held job of a run it pays for, as before (the
+-- cascade's NOWAIT is for a departed owner's login only). Rolled back.
+do $$
+declare v_state text;
+begin
+	perform pg_temp.hold('fence_three', $q$select 1 from public.qorpera_runner_jobs where id = '64800000-0000-4000-8000-0000000000f2'
+		for key share$q$);
+	perform dblink_exec('fence_two', 'begin');
+	perform dblink_send_query('fence_two', $q$update public.qorpera_provider_connections set status = 'disabled'
+		where id = '64800000-0000-4000-8000-0000000000b3' returning 'ok'::text$q$);
+	if not pg_temp.waits_for('fence_two', 'fence_three') or not pg_temp.waits_at('fence_two', 'public.qorpera_runner_jobs') then
+		raise exception 'G: a status change of the company''s login must wait for the job'; end if;
+	perform dblink_exec('fence_three', 'rollback');
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'rollback');
+	if v_state <> 'ok' then raise exception 'G: the company login''s status change: %', v_state; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
