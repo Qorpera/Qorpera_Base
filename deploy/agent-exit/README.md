@@ -199,49 +199,56 @@ test machine, covers the first three.
 
 ## E2b: the proof on real LXD
 
-`test/prove-lxd-vm.sh`, run as root on a test machine (`run-on-node.mjs --machine node01 --sudo --no-install --
-bash deploy/agent-exit/test/prove-lxd-vm.sh`), never on a node. It changes nothing of the test machine's own kernel
-or network: it makes a throwaway LXD VM with no network card, pushes in LXD's snaps, a container image and two
-packages (the VM is offline), and runs `test/prove-lxd.sh` inside it. That VM has its own kernel and LXD: it loads
-br_netfilter, builds the exit and plugs real LXD containers in the creators' way. Afterwards the test machine's links,
-nft tables, sysctls and network modules are compared with before; any difference fails the run.
+`test/prove-lxd-vm.sh` runs as root on a test machine, never on a node:
 
-Result, 4 October (run 20261003T225003-26776-22654181, node 1's test machine; in the VM LXD 6.9 rev 40916, kernel
-7.0.0-34; the nodes run rev 40424 and 7.0.0-30), all passed:
+```
+node scripts/run-on-node.mjs --machine node01 --sudo --no-install --no-status -- bash deploy/agent-exit/test/prove-lxd-vm.sh </dev/null
+```
+
+It changes nothing of the test machine's own kernel or network. It claims an LXD project, makes a throwaway VM with no
+network card in it, pushes in LXD 6.9 rev 40424 (the nodes' revision), a container image and two packages (the VM is
+offline), and runs `test/prove-lxd.sh` inside. That VM has its own kernel and LXD: it loads br_netfilter, builds the
+exit and plugs real LXD containers in the creators' way. Afterwards the test machine's links (but Docker's), nft
+tables, a few sysctls and the network modules a proof could load are compared with before; a difference fails the
+run. (LXD itself uses `vhost_vsock` for any VM; both test machines already have it.)
+
+Result, 4 October, run 20261003T233548-76214-45756fb5 on node 1's test machine (LXD 6.9 rev 40424 as on the nodes;
+the VM's kernel 7.0.0-34, the nodes' 7.0.0-30), all passed:
 
 | Check | Result |
 | --- | --- |
 | Plug | two containers plugged in the creators' way get their addresses by DHCP from the exit; the card carries only the MAC (LXD refuses `ipv4.address` on an unmanaged parent without its IPv4 filter) |
 | Reach | the stand-in internet through the exit; our networks refused; the node holds no bridged leg (`notrack`) |
-| Isolation | machines never reach each other; each reaches the exit |
-| Spoofing | another address, another machine's address, another MAC, any IPv6, gratuitous ARP for another machine, a spoofed ARP sender MAC, a DHCPDECLINE naming another machine's MAC, another machine's MAC or the exit's taken (`bridge fdb`): none gets through |
+| LXD's own layers | each machine's port isolated; LXD's MAC filter and IPv6 filter each stop a spoof on their own, with the exit's rules opened for it |
+| Spoofing | another address and another machine's address towards the internet (the exit forwards and counts nothing from them), another MAC, any IPv6, gratuitous ARP for another machine, a spoofed ARP sender MAC, a DHCPDECLINE from port 68 naming another machine's MAC (seen reaching the bridge, never dnsmasq), another machine's MAC or the exit's taken (`bridge fdb`): none gets through |
 | Flooding | a frame from the exit to a MAC the bridge has forgotten reaches no other machine |
-| Default deny | a new machine gets nothing until the reconciler has it in the rules; with the reconciler down and the pairs flushed nothing passes, and restarted it sets them right within a pass; an `up` reload keeps running machines' traffic |
+| Default deny | a new machine gets nothing until the reconciler has it in the rules; with the reconciler down and the pairs flushed nothing passes, and restarted it sets them right within a pass; an `up` reload keeps running machines' traffic by itself |
 | Lifecycle | a sleeping machine loses its connections in both tables and wakes with its address; a deleted one goes into quarantine; a stray card makes the exit unhealthy until it is gone |
 
 Floods from one machine, 20,000 each (each phase capped at 60 s), with `notrack` and without it:
 
 | Flood | Time | Exit's table | Node's table | Over the machine's bound |
 | --- | --- | --- | --- | --- |
-| TCP open and close to a site | 13 s | +19,780 | +19,769 (+39,408 without `notrack`) | 0 |
-| SYNs nobody answers | 13 s | +11,204 | +11,201 | 0 |
+| TCP open and close to a site | 15 s | +19,724 | +19,713 (+39,200 without `notrack`) | 0 |
+| SYNs nobody answers | 15 s | +11,275 | +11,275 | 0 |
 | SYNs the exit refuses | 0.6 s | 0 | 0 | 0 |
-| UDP to 20,000 ports | 17 s | +16,392 | +16,388 (+36,386 without) | 3,616 refused |
+| UDP to 20,000 ports | 18 s | +16,393 | +16,384 (+36,396 without) | 3,616 refused |
 | another protocol (253) | 0.3 s | +250 | +250 | 0 |
-| spoofed sources | 0.1 s | 0 | 0 | 0 |
+| spoofed sources | 0.1 s | 0 | about 0 (entries expiring meanwhile) | 0 |
 | IPv6 | 0.3 s | 0 | 0 | 0 |
-
-The shared total's cost: 5,000 new connections took 9.7 s with an empty table and 11.9 s with 16,000 open on another
-machine.
 
 What the numbers say:
 - Refused, spoofed and IPv6 floods leave nothing in either table; the per-machine bound holds (UDP stopped at 16,384).
 - `notrack` halves what a machine leaves in the node's table.
-- Closed connections are not bounded: one machine opening and closing about 1,500 connections a second leaves about
-  20,000 entries in each table for their 120 seconds (TIME_WAIT). Kept up, one machine could hold about 180,000 of the
-  node's 262,144. Proposed next step: a shorter TIME_WAIT for agent connections only (a `ct timeout` policy on the
-  node's masqueraded leg and the exit namespace's own timeout), and the line guard's burst brake (E7). Phase 2 (E9)
-  drops the node's leg altogether.
+- The shared total's cost could not be told apart from load: 5,000 new connections took 9.7 s and then 11.9 s in one
+  run, 10.1 s and then 7.7 s in this one, the second each time while another machine flooded and the exit held over
+  14,000 entries. At this scale it is below the noise.
+- Closed connections are not bounded: one machine opening and closing about 1,300 connections a second leaves about
+  20,000 entries in each table, each held for the kernel's default 120 s (TIME_WAIT). Kept up towards many
+  destinations, one machine could hold over 150,000 of the node's 262,144. The same entries hold the exit's
+  masqueraded source ports towards each destination, which every company on the node shares. Proposed next step: a
+  shorter TIME_WAIT for agent connections only (a `ct timeout` policy on the node's masqueraded leg and the exit
+  namespace's own timeout), and the line guard's burst brake (E7). Phase 2 (E9) drops the node's leg altogether.
 
 ## Notes for later steps
 
