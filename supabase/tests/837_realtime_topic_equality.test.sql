@@ -103,13 +103,17 @@ begin
 				'qorpera_room_drafts_member_receive')),
 		'qorpera_presence_member_publish:INSERT:authenticated qorpera_presence_member_receive:SELECT:authenticated '
 			|| 'qorpera_room_drafts_member_receive:SELECT:authenticated', 'the three policies');
-	for v_policy in select policyname, coalesce(qual, with_check) as rule from pg_policies
-		where schemaname = 'realtime' and tablename = 'messages' loop
+	-- Both the read rule and the write rule of each policy, printed with realtime off the search path so the text is
+	-- always 'realtime.topic()'.
+	perform set_config('search_path', 'pg_catalog, public', true);
+	for v_policy in select policyname, rule from pg_policies, unnest(array[qual, with_check]) as rule
+		where schemaname = 'realtime' and tablename = 'messages' and rule is not null loop
 		if v_policy.rule not like '%topic = ( SELECT realtime.topic()%' then
 			raise exception 'policy % on realtime.messages does not ask for the joined topic: %', v_policy.policyname, v_policy.rule;
 		end if;
 	end loop;
 end $$;
+reset search_path;
 
 -- Joined to a presence topic, the member reads that company's presence and nothing else. Without the topic check:
 -- the other company's presence, both rooms' drafts and the folder hint as well.
