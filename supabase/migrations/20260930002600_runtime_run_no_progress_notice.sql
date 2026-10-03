@@ -8,8 +8,10 @@
 -- * its newest runtime observation (a tool call's start or finish, each model request's result fence; through its
 --   (run_id, id desc) index), but never a "writing" pulse: while a reply is written the runner starts a new
 --   message_composition span every 5 s on its own timer until the reply ends, so a harness that hangs mid-reply would
---   never go stale. The reply counts from its model request's context view instead (below). The look-back is the run's
---   newest 400 observations: past that many pulses (about 16 minutes of a reply) the context view is newer anyway;
+--   never go stale. The reply counts from its model request's context view and the rows before its pulses. The
+--   look-back is the run's newest 400 observations: 400 pulses take about 16 minutes, so once the window holds only
+--   pulses the run counts as stalled either way, and the context view (seconds before the reply's last real row) only
+--   moves the shown "since" a little earlier;
 -- * its newest context view (one per model request, recorded before the request is released;
 --   qorpera_native_context_views, through unique (run_id, ordinal));
 -- * its newest assignment (a new attempt starts afresh; through (run_id, created_at desc, id desc));
@@ -22,7 +24,8 @@
 -- awake), which reads the same clock:
 -- * qorpera_run_stall_minutes(): 15. The web reads it from the rows below, never its own number.
 -- * qorpera_run_last_progress_at(run, job start): the clock above.
--- * qorpera_run_waiting_on_tool(run): its newest observation is a tool call's start.
+-- * qorpera_run_waiting_on_tool(run): its newest observation that is not a "writing" pulse (the same look-back) is a
+--   tool call's start, so both halves of the signal read the same rows.
 -- * qorpera_run_no_progress_since(run, job start): the last progress, when it is at least that many minutes old and
 --   the run is not waiting on a tool; else null.
 -- Readers:
@@ -33,13 +36,13 @@
 --   routine, a coworker's message) to the company's owners and admins. One per member and run (the dedupe
 --   key is the run id; a dismissed notice is not sent again). It closes itself (acknowledged) once its run makes
 --   progress or ends.
--- Known limits: a reviewed tool call records its review first, so a tool waiting for 15 minutes behind its review would
--- read as stalled (none can today); closed notices count toward a member's 50 newest; a notice's insert takes the
--- company and user rows KEY SHARE for its foreign keys, so a wait over 2 s skips that minute's pass.
 -- * qorpera_notify_runs_without_progress(): one pass over leased jobs, run by pg_cron every minute as
 --   'qorpera-run-progress-notices'. It finds them through the existing partial index qorpera_runner_jobs_queue
---   (status in ('queued','leased')), so no index is added. It locks no run, job or company row; it only writes
---   notices.
+--   (status in ('queued','leased')), so no index is added. It takes no lock of its own on a run or job; it writes
+--   notices, whose foreign keys take the company and user rows KEY SHARE (a wait over 2 s skips that minute's pass).
+-- Known limits: a tool call that records a row after its start (a review, a permission check) hides that start, so a
+-- tool waiting 15 minutes behind it would read as stalled (none can today); two replies pulsing at once fill the
+-- look-back twice as fast (only after a lost finish); closed notices count toward a member's 50 newest.
 set local lock_timeout = '3s';
 
 create function public.qorpera_run_stall_minutes()
@@ -78,13 +81,15 @@ stable
 security definer
 set search_path = ''
 as $$
-	-- Gap 4 (20260930002600): the newest observation is a tool call's start, so the run waits on that tool (a long
-	-- build is work). A model request, a turn, writing and the runtime's own checks are not tools.
-	select coalesce((select observation.phase = 'start' and observation.operation not in ('model_turn',
-			'model_request', 'message_composition', 'native_result_fence', 'company_context', 'run_authority',
-			'context_authority', 'diagnostic_export', 'action_review')
-		from public.qorpera_runtime_observations as observation
-		where observation.run_id = p_run_id order by observation.id desc limit 1), false)
+	-- Gap 4 (20260930002600): the newest observation that is not a "writing" pulse is a tool call's start, so the run
+	-- waits on that tool (a long build is work). A model request, a turn and the runtime's own checks are not tools.
+	select coalesce((select recent.phase = 'start' and recent.operation not in ('model_turn', 'model_request',
+			'native_result_fence', 'company_context', 'run_authority', 'context_authority', 'diagnostic_export',
+			'action_review')
+		from (select observation.id, observation.phase, observation.operation
+			from public.qorpera_runtime_observations as observation
+			where observation.run_id = p_run_id order by observation.id desc limit 400) as recent
+		where recent.operation <> 'message_composition' order by recent.id desc limit 1), false)
 $$;
 
 create function public.qorpera_run_no_progress_since(p_run_id uuid, p_started_at timestamptz)
