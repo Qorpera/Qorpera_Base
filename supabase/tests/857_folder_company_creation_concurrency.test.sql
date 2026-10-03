@@ -398,12 +398,19 @@ begin
 	select * into v_creation from public.qorpera_folder_company_creations where profile_id = v_profile;
 	if v_creation.state is distinct from 'leased' then raise exception 'The delete took a held creation row: %', to_jsonb(v_creation); end if;
 	perform dblink_exec('make_one', 'rollback');
-	perform public.qorpera_stop_company_work(v_profile);
+end $$;
+-- The finisher's next pass, committed on its own (this session never holds a row while it waits on another).
+select public.qorpera_stop_company_work(current_setting('qorpera_test.profile_skipped')::uuid) \g /dev/null
+do $$
+declare v_profile uuid := current_setting('qorpera_test.profile_skipped')::uuid; v_creation public.qorpera_folder_company_creations;
+	v_result jsonb;
+begin
 	select * into v_creation from public.qorpera_folder_company_creations where profile_id = v_profile;
 	if v_creation.state is distinct from 'blocked' or v_creation.input is not null then
 		raise exception 'The finisher''s next pass did not block it: %', to_jsonb(v_creation); end if;
-	select r into v_delete from dblink('make_two', current_setting('qorpera_test.create_skipped') || '::text') as t(r text);
-	if v_delete::jsonb ->> 'state' is distinct from 'stale' then raise exception 'A create of a blocked creation: %', v_delete; end if;
+	perform pg_temp.as_service();
+	execute current_setting('qorpera_test.create_skipped') into v_result;
+	if v_result ->> 'state' is distinct from 'stale' then raise exception 'A create of a blocked creation: %', v_result; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['make_one','make_two']) name;
