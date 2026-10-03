@@ -409,7 +409,16 @@ describe("a folder-v2 company's Company File", () => {
 					at,
 					by: { kind: "member", userId: other },
 					changes: [
-						{ unitNo: 1, op: "delete", kind: "file", path: "notes/log.txt", version: id(107), priorVersion: null, updatedAt: null, file: null },
+						{
+							unitNo: 1,
+							op: "delete",
+							kind: "file",
+							path: "notes/log.txt",
+							version: id(107),
+							priorVersion: null,
+							updatedAt: null,
+							file: null,
+						},
 					],
 				},
 			],
@@ -426,7 +435,13 @@ describe("a folder-v2 company's Company File", () => {
 		vi.useFakeTimers();
 		const { fake, src } = await opened();
 		for (let page = 0; page < 6; page++)
-			fake.changes.push({ asOfSeq: 20, resync: false, events: [], next: { afterSeq: 5 + page, cursor: null }, more: true });
+			fake.changes.push({
+				asOfSeq: 20,
+				resync: false,
+				events: [],
+				next: { afterSeq: 5 + page, cursor: null },
+				more: true,
+			});
 		const lists = fake.client.list.mock.calls.length;
 		src.hint(20);
 		await vi.advanceTimersByTimeAsync(1100);

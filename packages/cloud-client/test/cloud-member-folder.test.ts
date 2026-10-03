@@ -462,7 +462,12 @@ describe("the folder hint", () => {
 	it("joins the company's private topic and passes on each well-formed hint", () => {
 		const { client, channels } = realtime();
 		const seqs: number[] = [];
-		new CloudMemberFolderHints({ environmentId: env, client, signal: new AbortController().signal, onHint: (seq) => seqs.push(seq) });
+		new CloudMemberFolderHints({
+			environmentId: env,
+			client,
+			signal: new AbortController().signal,
+			onHint: (seq) => seqs.push(seq),
+		});
 		expect(channels).toHaveLength(1);
 		expect(channels[0]!.topic).toBe(`qorpera-folder-${env}`);
 		expect(channels[0]!.config).toEqual({ private: true });
