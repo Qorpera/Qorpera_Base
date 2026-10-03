@@ -176,12 +176,18 @@ composed as of at least this change, as core §6 asks.
 H2c needs every landed change set in seq order, inside the transaction that admits its wakes (F2). It also needs its
 lock targets taken at their ranks before admission. P29 ships two functions with no-op bodies, which P31 replaces
 (`create or replace`, its own body marker):
-- **`qorpera_folder_listener_targets(env, commits jsonb) returns jsonb`** gives lock targets for `company_enter`. It is
-  called once a step, before the ranks (step 3).
+- **`qorpera_folder_listener_targets(env, commits jsonb) returns jsonb`** returns `{targets, sessions}`. It is called
+  once a step, before the ranks.
+  - `targets` are lock targets for `company_enter`, at ranks 1 to 3 (F2: the woken agent's staff row and execution
+    authority, the payer's member row).
+  - `sessions` are the conversations the drain takes KEY SHARE at step 5, beside the routines' sessions. So H2c's wakes
+    take no session lock after admission.
 - **`qorpera_folder_listener_commit(env, commit jsonb) returns void`** is called once per change set, after admission
   (step 8).
   - `commit` is `{commitId, seq, actor: {kind, id}, runId, units: [{unit, op, path, from?, version, priorVersion}]}`,
-    read from the path versions.
+    read from the path versions. `actor` is the commit's: `kind` is `member`, `platform` or `staff_agent`, and `id` is
+    the user, null, or the staff agent. A run's or a view's commit has kind `staff_agent` with the agent's id, and
+    `runId` says which run.
   - It runs in a subtransaction. A failure never fails the step, never holds the cursor and never blocks other
     companies, but it is not dropped either (coordinator, 4 October: a human task's answer must not get lost).
     - The failure is recorded in `qorpera_folder_listener_hook_failures(environment_id, commit_id, seq, error,
@@ -190,6 +196,9 @@ lock targets taken at their ranks before admission. P29 ships two functions with
       a step, and deletes a row once its call succeeds.
     - H2c keeps its own markers and dedupes, so calling it again is safe (F2).
   - The `human-tasks/*.md` pre-filter is H2c's.
+
+A paused company's wakes come out `cancelled` (§4). P29 never counts a cancelled wake as delivered; H2c records its
+markers only for live wakes and wakes again after a resume (F2).
 
 ## 9. Scheduling
 
