@@ -2,17 +2,22 @@
 -- Company folder core, C4 (P28 part 1; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-RUNS.md): runs on folder-v2. After a
 -- real creation (856's fixture: the Co-Founder, its thread, the kickoff and Anna's queued turn request), the due list
 -- names the company; the per-company materializer refuses a request whose login is gone (failed, nothing written),
--- turns the first run's request into a run with no substrate and the folder clock's pin, its reservation, and the
--- first-run wake under admission; answers a founder's post in the thread with a room delivery; leaves a wake whose
--- login is full queued (the run undone) and runs it once there is room; cancels a wake whose authority is gone; answers
--- paused, not_folder and idle without writing. Both functions are the service role's alone. A run has exactly one pin.
--- The reconcile RPC no longer runs the legacy materializers.
+-- turns the first run's request and a founder's post into runs in one pass (no substrate, the folder clock's pin, the
+-- reservation, the first-run wake under one admission); answers a later post with a room delivery, admitted; leaves a
+-- wake whose login is full queued (the run undone) and runs it once there is room; cancels a wake whose authority is
+-- gone; answers paused, not_folder and idle without writing. Both functions are the service role's alone. A run has
+-- exactly one pin. The reconcile RPC no longer runs the legacy materializers.
 
+-- Each pass as its own transaction would start it: no admission mark from an earlier statement (a post sets it).
 create function pg_temp.materialize(p_profile uuid, p_limit integer default 16) returns jsonb language plpgsql as $$
 begin
 	perform pg_temp.as_service();
+	perform set_config('qorpera.folder_wake_admission', '', true);
 	return public.qorpera_folder_materialize_company(p_profile, p_limit);
 end $$;
+create function pg_temp.admitted(p_profile uuid) returns bigint language sql as $$
+	select admitted from public.qorpera_folder_admissions where profile_id = p_profile
+$$;
 create function pg_temp.due(p_after uuid default null, p_limit integer default 100) returns jsonb language plpgsql as $$
 begin
 	perform pg_temp.as_service();
@@ -120,19 +125,23 @@ where id = current_setting('qorpera_test.request')::uuid;
 update public.qorpera_session_inputs set failed_at = null, failure_reason = null
 where id = (select input_id from public.qorpera_session_turn_requests where id = current_setting('qorpera_test.request')::uuid);
 
--- 3. The first run -----------------------------------------------------------------------------------------------------
+-- 3. The first run, in one pass with a founder's post ----------------------------------------------------------------
 
+select set_config('qorpera_test.first_post', pg_temp.post('87400000-0000-4000-8000-000000000005', 'Welcome aboard.')::text, true);
 do $$
 declare v_claim jsonb := current_setting('qorpera_test.claim')::jsonb; v_profile uuid := (v_claim ->> 'profileId')::uuid;
 	v_env uuid := (v_claim ->> 'environmentId')::uuid; v_cofounder uuid := (v_claim ->> 'cofounderId')::uuid;
 	v_request public.qorpera_session_turn_requests; v_run public.qorpera_execution_runs; v_job public.qorpera_runner_jobs;
 	v_wake public.qorpera_wake_occurrences; v_result jsonb; v_admitted bigint;
 begin
-	select admitted into strict v_admitted from public.qorpera_folder_admissions where profile_id = v_profile;
+	v_admitted := pg_temp.admitted(v_profile);
 	v_result := pg_temp.materialize(v_profile);
-	if v_result ->> 'state' is distinct from 'done' or v_result -> 'run_ids' is distinct from jsonb_build_array(current_setting('qorpera_test.request'))
+	-- Oldest scan first: the request (scanned in §2), then the post's wake; one admission for the pass.
+	if v_result ->> 'state' is distinct from 'done' or v_result -> 'run_ids' is distinct from jsonb_build_array(
+			current_setting('qorpera_test.request'), (select run_id from public.qorpera_wake_occurrences
+				where id = current_setting('qorpera_test.first_post')::uuid))
 		or (v_result ->> 'failed')::integer <> 0 or (v_result ->> 'skipped')::integer <> 0 then
-		raise exception 'The first run was not materialized: %', v_result; end if;
+		raise exception 'The first run and the post were not materialized in one pass: %', v_result; end if;
 	select * into strict v_request from public.qorpera_session_turn_requests where id = current_setting('qorpera_test.request')::uuid;
 	select * into strict v_run from public.qorpera_execution_runs where id = v_request.id;
 	-- No substrate or snapshot: the folder clock's pin.
@@ -163,9 +172,9 @@ begin
 		or v_wake.requested_by_user_id <> '85600000-0000-4000-8000-000000000001'
 		or not public.qorpera_folder_wake_authorized(v_wake) then
 		raise exception 'The first-run wake is not as agreed: %', to_jsonb(v_wake); end if;
-	if (select admitted from public.qorpera_folder_admissions where profile_id = v_profile) <> v_admitted + 1
+	if pg_temp.admitted(v_profile) <> v_admitted + 1
 		or not exists (select 1 from public.qorpera_execution_run_events where run_id = v_run.id and event_type = 'queued') then
-		raise exception 'The first run was not admitted once'; end if;
+		raise exception 'The pass was not admitted once'; end if;
 	-- Nothing more is due.
 	if pg_temp.listed(v_profile) or pg_temp.materialize(v_profile) ->> 'state' is distinct from 'idle' then
 		raise exception 'The company is still due after its first run'; end if;
@@ -180,12 +189,15 @@ end $$;
 select set_config('qorpera_test.wake', pg_temp.post('87400000-0000-4000-8000-000000000001', 'Hello, Co-Founder.')::text, true);
 do $$
 declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_wake public.qorpera_wake_occurrences;
-	v_run public.qorpera_execution_runs; v_job public.qorpera_runner_jobs; v_result jsonb;
+	v_run public.qorpera_execution_runs; v_job public.qorpera_runner_jobs; v_result jsonb; v_admitted bigint;
 begin
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = current_setting('qorpera_test.wake')::uuid;
 	if v_wake.status <> 'queued' or v_wake.wake_kind <> 'room' or not pg_temp.listed(v_profile) then
 		raise exception 'The post did not leave a due room wake: %', to_jsonb(v_wake); end if;
+	v_admitted := pg_temp.admitted(v_profile);
 	v_result := pg_temp.materialize(v_profile);
+	-- A wake-only pass admits too (core §3 step 10: the materializer).
+	if pg_temp.admitted(v_profile) <> v_admitted + 1 then raise exception 'The wake''s pass was not admitted'; end if;
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = v_wake.id;
 	select * into strict v_run from public.qorpera_execution_runs where id = v_wake.run_id;
 	select * into strict v_job from public.qorpera_runner_jobs where id = v_run.job_id;

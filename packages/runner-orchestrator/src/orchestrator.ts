@@ -1641,8 +1641,11 @@ export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconcil
 					failures.push(error);
 				}
 			}
-			afterProfileId = page.hasMore ? page.nextAfterProfileId : undefined;
-			if (page.hasMore && !afterProfileId) throw new Error("Folder materialization pagination lost its cursor");
+			const next = page.hasMore ? page.nextAfterProfileId : undefined;
+			if (page.hasMore && !next) throw new Error("Folder materialization pagination lost its cursor");
+			if (next !== undefined && afterProfileId !== undefined && next <= afterProfileId)
+				throw new Error("Folder materialization pagination did not move forward");
+			afterProfileId = next;
 		} while (afterProfileId);
 		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
 	}
@@ -1922,9 +1925,10 @@ export class CloudRunnerOrchestrator {
 		this.#orchestratorId = options.orchestratorId;
 		this.#controlPlane = options.controlPlane;
 		this.#providerAdapter = options.providerAdapter;
+		// The folder materializer first: a routine schedule outage (whose list error ends the pass) never stops runs.
 		this.#occurrenceReconcilers = [
-			new CloudRoutineScheduleReconciler(),
 			new CloudFolderRunMaterializer(),
+			new CloudRoutineScheduleReconciler(),
 			...(options.occurrenceReconcilers ?? []),
 		];
 		this.#claimLeaseSeconds = requiredSeconds(options.claimLeaseSeconds ?? 120, "Orchestration lease", 900);
@@ -2626,7 +2630,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
 			throw new Error("Folder materialization page limit is outside the supported range");
 		}
-		return parseFolderMaterializationPage(
+		const page = parseFolderMaterializationPage(
 			await this.#request(
 				{
 					action: "folder_materialize_due",
@@ -2637,6 +2641,8 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 				signal,
 			),
 		);
+		if (page.items.length > limit) throw new Error("Runner orchestrator returned more folder companies than asked");
+		return page;
 	}
 
 	async materializeFolderCompany(

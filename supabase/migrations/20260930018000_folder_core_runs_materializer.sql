@@ -6,19 +6,22 @@
 -- and admit many companies in one transaction). Here folder-v2 gets its own materializer, one company per transaction:
 -- * Jobs and runs no longer require a substrate or snapshot. A run carries company_seq instead: the folder clock's
 --   last_seq when it was materialized (core §6, "The pin"). A run has exactly one of the two pins.
--- * qorpera_folder_materialize_due(after, limit): the folder-v2 companies with due work (a queued turn request whose
---   conversation is open and whose input is pending, or a queued wake that is due), not paused and not at zero hours,
---   paged by company id, without a lock. Service role.
+-- * qorpera_folder_materialize_due(after, limit): the folder-v2 companies with due work (a queued turn request at the
+--   head of its open conversation, with its input pending and no live turn there, or a due queued wake; one left
+--   waiting with its reason after 30 seconds), not paused and not at zero hours, paged by company id, without a lock.
+--   Service role.
 -- * qorpera_folder_materialize_company(profile, limit): one company, in the caller's transaction, in core §3's order:
 --   the folder fence KEY SHARE with the pause read again and the company row KEY SHARE (rank 0); the requesters, the
 --   agents and their execution authorities KEY SHARE (ranks 1 to 3), a room wake's room FOR SHARE (rank 4, as posting
 --   takes it), a routine wake's routine FOR NO KEY UPDATE (rank 5, as firing); then rank 5's last tables (C1B §8): the
 --   model logins (connections, then their versions) FOR UPDATE and the compute identities FOR SHARE NOWAIT, as the
---   reservation and the identity check take them; the work rows FOR UPDATE SKIP LOCKED; the conversations FOR UPDATE
---   and the turn inputs FOR UPDATE, in id order; then each item in its own subtransaction: the legacy checks, the job and run (no substrate,
+--   reservation and the identity check take them; the work rows FOR UPDATE SKIP LOCKED (requests and wakes in one scan
+--   order); the conversations FOR UPDATE and the turn inputs FOR UPDATE, in id order; the company's operation clock
+--   (which a turn's transcript events update) before any item; then each item in its own subtransaction: the legacy checks, the job and run (no substrate,
 --   company_seq), the reservation, the input claimed and its transcript events (the operation clock), admission, and
 --   the run's queued event (whose trigger inserts a turn's first-run or human wake under that admission). A refusal
---   marks the item as the legacy materializers did; a stop that commits meanwhile leaves the item queued. Service role.
+--   marks the item as the legacy materializers did; a stop that commits meanwhile, or any unexpected error, undoes the
+--   item and leaves it queued. Service role.
 -- * The runner broker's folder-v2 description adds the run's company_seq.
 -- * The reconcile RPC no longer runs the legacy materializers (turns, conversations, wakes and their drains, proposal
 --   reviews): production's companies were wiped (3 October), and the legacy core's functions go with A1's removal slice.
@@ -38,6 +41,12 @@ alter table public.qorpera_execution_runs alter column substrate_version_id drop
 alter table public.qorpera_execution_runs add constraint qorpera_execution_runs_company_pin check (
 	(substrate_version_id is null) = (company_snapshot_id is null) and num_nonnulls(company_snapshot_id, company_seq) = 1);
 
+-- One company's queued work, in its scan order (the materializer reads it per company).
+create index qorpera_wake_occurrences_company_queue on public.qorpera_wake_occurrences
+	(profile_id, admission_scan_at, created_at, id) where status = 'queued';
+create index qorpera_session_turn_requests_company_queue on public.qorpera_session_turn_requests
+	(profile_id, admission_scan_at, created_at, id) where status = 'queued';
+
 -- 2. The companies with due work -----------------------------------------------------------------------------------
 
 create function public.qorpera_folder_materialize_due(p_after_profile_id uuid default null, p_limit integer default 100)
@@ -49,15 +58,27 @@ begin
 		raise exception 'Run materialization requires control-plane authority' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 500 then
 		raise exception 'Run materialization page limit is invalid' using errcode = '22023'; end if;
+	-- The work the company's materializer would take: a request at the head of its conversation with no live turn, and
+	-- a due wake; a wake left waiting with its reason comes back after 30 seconds, not on every pass.
 	with due as (
 		select request.profile_id from public.qorpera_session_turn_requests as request
 		join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
 		join public.qorpera_session_inputs as input on input.id = request.input_id and input.session_id = request.session_id
 		where request.status = 'queued' and input.completed_at is null and input.failed_at is null
 			and input.execution_run_id is null and input.turn_id is null
+			and not exists (select 1 from public.qorpera_session_turn_requests as earlier
+				join public.qorpera_session_inputs as earlier_input on earlier_input.id = earlier.input_id
+				where earlier.session_id = request.session_id and earlier.status = 'queued'
+					and (earlier.created_at, earlier.id) < (request.created_at, request.id)
+					and earlier_input.completed_at is null and earlier_input.failed_at is null
+					and earlier_input.execution_run_id is null and earlier_input.turn_id is null)
+			and not exists (select 1 from public.qorpera_execution_runs as run
+				join public.qorpera_runner_jobs as job on job.id = run.job_id
+				where run.session_id = request.session_id and run.source_kind = 'session_turn' and job.status in ('queued', 'leased'))
 		union
 		select wake.profile_id from public.qorpera_wake_occurrences as wake
 		where wake.status = 'queued' and wake.not_before <= v_now
+			and (wake.blocked_reason is null or wake.admission_scan_at <= v_now - interval '30 seconds')
 	), page as (
 		select due.profile_id from due
 		join public.qorpera_company_files as file on file.profile_id = due.profile_id and file.core = 'folder-v2'
@@ -110,18 +131,33 @@ begin
 	if public.qorpera_company_at_zero(p_profile_id, v_now) then return jsonb_build_object('state', 'at_zero'); end if;
 	-- F2-5b-3 calls the folder worker drain here, before this function locks anything (core C4).
 
-	-- The work, oldest scan first, read without a lock: it names the rows to lock in rank order.
-	v_request_ids := array(select request.id from public.qorpera_session_turn_requests as request
+	-- The work, read without a lock: it names the rows to lock in rank order. Turn requests and wakes share one scan
+	-- order, so neither starves the other; a request waiting behind its conversation's earlier request or live turn is
+	-- not work this pass.
+	select coalesce(array_agg(item.id order by item.scan_at, item.created_at, item.id) filter (where item.request), '{}'),
+		coalesce(array_agg(item.id order by item.scan_at, item.created_at, item.id) filter (where not item.request), '{}')
+	into v_request_ids, v_wake_ids
+	from (select * from (
+		select true as request, request.id, request.admission_scan_at as scan_at, request.created_at
+		from public.qorpera_session_turn_requests as request
 		join public.qorpera_shared_sessions as session on session.id = request.session_id and session.status = 'open'
 			and session.environment_id = v_env
 		join public.qorpera_session_inputs as input on input.id = request.input_id and input.session_id = request.session_id
 		where request.profile_id = p_profile_id and request.status = 'queued' and input.completed_at is null
 			and input.failed_at is null and input.execution_run_id is null and input.turn_id is null
-		order by request.admission_scan_at, request.created_at, request.id limit p_limit);
-	v_wake_ids := array(select wake.id from public.qorpera_wake_occurrences as wake
+			and not exists (select 1 from public.qorpera_session_turn_requests as earlier
+				join public.qorpera_session_inputs as earlier_input on earlier_input.id = earlier.input_id
+				where earlier.session_id = request.session_id and earlier.status = 'queued'
+					and (earlier.created_at, earlier.id) < (request.created_at, request.id)
+					and earlier_input.completed_at is null and earlier_input.failed_at is null
+					and earlier_input.execution_run_id is null and earlier_input.turn_id is null)
+			and not exists (select 1 from public.qorpera_execution_runs as run
+				join public.qorpera_runner_jobs as job on job.id = run.job_id
+				where run.session_id = request.session_id and run.source_kind = 'session_turn' and job.status in ('queued', 'leased'))
+		union all
+		select false, wake.id, wake.admission_scan_at, wake.created_at from public.qorpera_wake_occurrences as wake
 		where wake.profile_id = p_profile_id and wake.status = 'queued' and wake.not_before <= v_now
-		order by wake.admission_scan_at, wake.not_before, wake.created_at, wake.id
-		limit p_limit - cardinality(v_request_ids));
+	) as due order by scan_at, created_at, id limit p_limit) as item;
 	if cardinality(v_request_ids) + cardinality(v_wake_ids) = 0 then return jsonb_build_object('state', 'idle'); end if;
 
 	-- Ranks 1 to 5: the requesters, the agents and their execution authorities KEY SHARE; a room wake's room FOR SHARE
@@ -226,12 +262,18 @@ begin
 	where input.id in (select request.input_id from public.qorpera_session_turn_requests as request
 		where request.id = any(v_locked_requests))
 	order by input.id for update;
+	-- A turn's transcript events take the company's operation clock (as an update), and admission comes after it. Taken
+	-- here once, before any item, so no item takes the clock after another has admitted.
+	if cardinality(v_locked_requests) > 0 then
+		insert into public.qorpera_profile_operation_clocks(profile_id) values (p_profile_id) on conflict do nothing;
+		perform 1 from public.qorpera_profile_operation_clocks where profile_id = p_profile_id for no key update;
+	end if;
 	v_seq := (select clock.last_seq from public.qorpera_folder_clocks as clock where clock.environment_id = v_env);
 
 	-- Turn requests (a first run's, and a conversation's once it has a folder-v2 path): the legacy turn materializer's
 	-- checks and refusals.
 	for v_request in select * from public.qorpera_session_turn_requests where id = any(v_locked_requests)
-		order by admission_scan_at, created_at, id
+		order by array_position(v_request_ids, id)
 	loop
 		begin
 			select * into v_session from public.qorpera_shared_sessions where id = v_request.session_id;
@@ -386,12 +428,15 @@ begin
 				update public.qorpera_session_inputs set failed_at = statement_timestamp(), failure_reason = v_reason
 				where id = v_request.input_id;
 				v_failed := v_failed + 1;
+			-- Anything else is undone and left queued at the back of the scan order, so one item never stops the company.
+			when others then
+				v_skipped := v_skipped + 1;
 		end;
 	end loop;
 
 	-- Queued wakes (room posts, coworker messages, routines): the legacy wake materializer's checks and refusals.
 	for v_wake in select * from public.qorpera_wake_occurrences where id = any(v_locked_wakes)
-		order by admission_scan_at, not_before, created_at, id
+		order by array_position(v_wake_ids, id)
 	loop
 		begin
 			if v_wake.wake_kind not in ('routine', 'agent', 'room') or not public.qorpera_wake_authorized(v_wake) then
@@ -408,7 +453,7 @@ begin
 				v_capability := v_version.required_capability; v_job_type := v_version.job_type;
 				v_publication := v_version.publication_mode; v_review := v_version.review_policy_key;
 				v_reviewers := v_version.reviewer_staff_ids;
-			elsif v_wake.source_kind in ('worker-dispatch', 'worker-completion') then
+			elsif v_wake.source_kind in ('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event') then
 				-- Continuing protected work cannot downgrade its publication policy.
 				select required_capability, job_type, publication_mode, review_policy_key, reviewer_staff_ids
 				into strict v_capability, v_job_type, v_publication, v_review, v_reviewers
@@ -508,6 +553,11 @@ begin
 				update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp(),
 					blocked_reason = left('The run could not start: ' || sqlerrm, 1000) where id = v_wake.id;
 				v_cancelled := v_cancelled + 1;
+			-- Anything else is undone and left queued with its reason, at the back of the scan order.
+			when others then
+				update public.qorpera_wake_occurrences set blocked_reason = left('The run could not start: ' || sqlerrm, 1000)
+				where id = v_wake.id;
+				v_blocked := v_blocked + 1;
 		end;
 	end loop;
 	return jsonb_build_object('state', 'done', 'run_ids', to_jsonb(v_runs), 'failed', v_failed, 'cancelled', v_cancelled,

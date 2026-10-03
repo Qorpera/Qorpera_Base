@@ -37,13 +37,18 @@ one company. So the folder materializer is new code, run once per company, each 
 
 **`qorpera_folder_materialize_due(after, limit)`** (service role) lists the companies with due work, paged by profile id,
 without a lock. A company is due when it is `folder-v2`, not paused, not at zero hours, and has either:
-- a queued turn request whose conversation is open and whose input is pending; or
-- a queued wake whose `not_before` has passed.
+- a queued turn request at the head of its open conversation, with its input pending and no live turn there; or
+- a queued wake whose `not_before` has passed. A wake left waiting with its reason counts again after 30 seconds, so a
+  full login is not retried on every pass.
+
+Partial indexes on `(profile_id, admission_scan_at, created_at, id) where status = 'queued'` serve the per-company
+reads of wakes and turn requests.
 
 **`qorpera_folder_materialize_company(profile, limit ≤ 16)`** (service role) handles one company, in the caller's
 transaction, in core §3's order:
-1. **The work, read without a lock:** at most `limit` queued turn requests and due wakes, oldest scan first. This only
-   names the rows to lock.
+1. **The work, read without a lock:** at most `limit` items, turn requests and due wakes in one scan order (oldest scan
+   first), so neither starves the other. A request behind an earlier one in its conversation, or behind a live turn,
+   is not work this pass. This only names the rows to lock. The items then run in this order.
 2. **The fence and ranks 0 to 5,** through `qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, the pause
    again (paused: the answer `paused`, nothing written), the company row `KEY SHARE`, then:
    - rank 1: each requester's member row `KEY SHARE`;
@@ -56,7 +61,9 @@ transaction, in core §3's order:
    reservation locks them, then the compute identities `FOR SHARE NOWAIT`. A busy or recovering identity leaves its
    items queued.
 4. **The work rows** `FOR UPDATE SKIP LOCKED`, still queued. Each moves to the back of the scan order.
-5. **The conversations** `FOR UPDATE`, then the turn inputs `FOR UPDATE`, in id order.
+5. **The conversations** `FOR UPDATE`, then the turn inputs `FOR UPDATE`, in id order, then the company's operation
+   clock `FOR NO KEY UPDATE` when there are turns. A turn's transcript events update the clock, and admission comes
+   after it. Taking it once here means no item takes it after another item has admitted.
 6. **Each item, in its own subtransaction:**
    - the old materializers' checks: one turn at a time per conversation, the author's access, the agent, the sponsor
      binding and connection, the payer, the computer, the native capsule, or for a wake its authority, sponsor,
@@ -75,11 +82,14 @@ transaction, in core §3's order:
      reason;
    - the run's own refusals (42501: no model authority, the payer, the audience; 23505: a first run already woken;
      P0002) undo the item and fail the request or cancel the wake;
-   - a stop or zero hours that arrives meanwhile (55000) or a busy row undoes the item and leaves it queued.
+   - a stop or zero hours that arrives meanwhile (55000) or a busy row undoes the item and leaves it queued;
+   - any other error undoes the item and leaves it queued (a wake with its reason), at the back of the scan order, so
+     one item never stops the company.
 
 It answers `{state: done, run_ids, failed, cancelled, blocked, skipped}`, or `idle`, `paused`, `at_zero`,
 `not_folder` with nothing written. The subtransactions stay under the 64 the snapshot cache holds: one for the
-enter, one per identity and one per item, each at most 16.
+enter, one per identity and one per item, each at most 16, plus the orchestrator wake-up trigger's (the review's
+probe measured 30 for a 16-item pass).
 
 **Model logins and identities** sit at rank 5, after the hook's tables (coordinator, 4 October; C1B §8 lists the
 exact order). That matches the reservation's own order, the login consent (the member, then the connection) and the
@@ -116,6 +126,14 @@ and their tests go with A1's legacy-removal slice.
 Images and attachments stay refused until C1d gives conversations folder bytes.
 
 ## 5. The first run's dead request (P28 part 2)
+
+Two notes from part 1's review:
+- `qorpera_wake_first_run_once` is unique on `(environment_id, staff_agent_id)` with no status filter. A restart after
+  the first run's wake exists would hit it (23505, which the materializer turns into a failed request). A restart must
+  either reuse that wake or replace the first-run request only before it has a run.
+- A member-private conversation's run insert takes the member row `FOR SHARE`
+  (`qorpera_require_current_private_audience`), above rank 1's `KEY SHARE`. Part 2 takes that member at rank 1 in
+  `FOR SHARE` for private conversations.
 
 `qorpera_queue_agent_first_run` returns an existing request whatever its status, so a failed first run cannot be started
 again. `qorpera_start_agent_first_run` gets a `folder-v2` order (the fence, then the pause) and replaces a dead request

@@ -759,6 +759,11 @@ describe("cloud runner orchestrator", () => {
 		);
 		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { state: "done" } }));
 		await expect(control.materializeFolderCompany(profileId, 16)).rejects.toThrow("without its runs");
+		// A page longer than asked for is refused.
+		fakeFetch.mockImplementationOnce(async () =>
+			Response.json({ value: { items: [{ profile_id: profileId }, { profile_id: madeRunId }], has_more: false } }),
+		);
+		await expect(control.listFolderMaterializationDue(undefined, 1)).rejects.toThrow("more folder companies than asked");
 	});
 
 	it("materializes every due folder-v2 company in its own request, and waits out an edge function that predates it", async () => {
@@ -804,6 +809,17 @@ describe("cloud runner orchestrator", () => {
 		now = new Date("2026-10-04T09:11:00.000Z");
 		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
 		expect(list).toHaveBeenCalledTimes(4);
+
+		// A cursor that does not move forward ends the pass instead of looping.
+		list.mockReset();
+		list.mockImplementation(async (after: string | undefined) =>
+			after
+				? { items: [first], hasMore: true, nextAfterProfileId: first }
+				: { items: [second], hasMore: true, nextAfterProfileId: second },
+		);
+		await expect(new CloudFolderRunMaterializer({ now: () => now }).reconcile(control)).rejects.toThrow(
+			"did not move forward",
+		);
 
 		// A control plane without the actions makes no request; the bounds are checked.
 		await expect(new CloudFolderRunMaterializer().reconcile(controlPlane())).resolves.toBeUndefined();
