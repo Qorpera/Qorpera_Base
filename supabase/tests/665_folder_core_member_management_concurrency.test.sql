@@ -289,7 +289,7 @@ begin
 end $$;
 
 -- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation while it waits.
--- Since C1c-3g (20260930002500) the last member's deletion takes member management's lock too (the fence FOR NO KEY
+-- Since C1c-3g (20260930015000) the last member's deletion takes member management's lock too (the fence FOR NO KEY
 -- UPDATE), so it waits at the fence behind the join; the join, queued first, joins once the fence is free, and the
 -- deletion then sees another member and refuses. 01 is made the last member first (the others removed by hand,
 -- triggers off).

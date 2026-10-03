@@ -1116,7 +1116,7 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
   lock and need no change; the secret broker's coding credential takes the company row `KEY SHARE` already (v123).
 
-### 6.9 C1c-3g as built: deletion drains the folder fence (migration 20260930002500, test 828)
+### 6.9 C1c-3g as built: deletion drains the folder fence (migration 20260930015000, test 828)
 
 - **The request** (`delete_hosted_profile`, `request_company_deletion`): on `folder-v2` the fence `FOR NO KEY UPDATE`,
   member management's lock (3c), then the company row `KEY SHARE`, where they took the company row `FOR UPDATE` (the gc
@@ -1128,9 +1128,10 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   its stop. The stop's job pass still skips the jobs effects hold; the finisher ends them.
   - The request's stop now runs beside folder effects, where the row `FOR UPDATE` kept them apart. Its locks after
     rank 0 (jobs `SKIP LOCKED`, never waited for, and their termination: run events, wake occurrences, inputs; no
-    conversation write or operation clock; then coding todos, workers and sessions, the machine advisory lock and
-    machines, invitations, seats, access state) come in the order every folder path takes them (3f's machines, 3h's
-    coding calls, 3d-2's vault, 3c's member management); no cycle found (review r2 traced the job end's triggers).
+    conversation write or operation clock; then the folder creations not yet made, `SKIP LOCKED` (P14a); then coding
+    todos, workers and sessions, the machine advisory lock and machines, invitations, seats, access state) come in the
+    order every folder path takes them (3f's machines, 3h's coding calls, 3d-2's vault, 3c's member management); no
+    cycle found (review r2 traced the job end's triggers).
   - The old `FOR UPDATE` also waited for a transaction that had just inserted a row pointing at the company (a job
     enqueued just before). The request no longer does; the finisher's stop runs again after its drain.
 - **The finisher** (`finish_company_deletion`) runs the folder pause's second phase for deletion,

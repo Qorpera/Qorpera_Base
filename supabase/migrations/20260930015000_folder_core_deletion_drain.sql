@@ -39,7 +39,7 @@ end $$;
 create function public.qorpera_folder_deletion_enter(p_profile_id uuid)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-	-- C1c-3g (20260930002500): the folder fence FOR NO KEY UPDATE, then the company row KEY SHARE (rank 0).
+	-- C1c-3g (20260930015000): the folder fence FOR NO KEY UPDATE, then the company row KEY SHARE (rank 0).
 	perform 1 from public.qorpera_folder_fences where profile_id = p_profile_id for no key update;
 	if not found then raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
 	perform 1 from public.qorpera_profiles where id = p_profile_id for key share;
@@ -52,7 +52,7 @@ create function public.qorpera_folder_deletion_drain(p_profile_id uuid)
 returns bigint language plpgsql security definer set search_path = '' as $$
 declare v_revision bigint;
 begin
-	-- C1c-3g (20260930002500): the fence FOR UPDATE waits out every effect in flight; each effect after it re-reads the
+	-- C1c-3g (20260930015000): the fence FOR UPDATE waits out every effect in flight; each effect after it re-reads the
 	-- deletion and refuses.
 	if not public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'The company is not being deleted' using errcode = '55000'; end if;
@@ -71,7 +71,7 @@ begin
 	-- The last member's deletion: member management's lock in place of the company row FOR UPDATE.
 	perform pg_temp.c1c3g_replace('public.qorpera_delete_hosted_profile(uuid)',
 		E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n',
-		E'\t-- C1c-3g (20260930002500): on folder-v2 the fence FOR NO KEY UPDATE (a leave, removal or join waits) and rank 0.\n'
+		E'\t-- C1c-3g (20260930015000): on folder-v2 the fence FOR NO KEY UPDATE (a leave, removal or join waits) and rank 0.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
 		|| E'\telse\n'
@@ -81,7 +81,7 @@ begin
 	-- The request: the same locks (already held when the last member deletes), and no legacy bump.
 	perform pg_temp.c1c3g_replace('public.qorpera_request_company_deletion(uuid,uuid)',
 		E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n',
-		E'\t-- C1c-3g (20260930002500): on folder-v2 the fence FOR NO KEY UPDATE and rank 0; the finisher drains the fence.\n'
+		E'\t-- C1c-3g (20260930015000): on folder-v2 the fence FOR NO KEY UPDATE and rank 0; the finisher drains the fence.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_enter(p_profile_id);\n'
 		|| E'\telse\n'
@@ -90,13 +90,13 @@ begin
 	perform pg_temp.c1c3g_replace('public.qorpera_request_company_deletion(uuid,uuid)',
 		E'\tif found then\n'
 		|| E'\t\t-- The company counts as paused from now on: admission and effects re-read it after this bump.\n',
-		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930002500)\n'
+		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n'
 		|| E'\t\t-- The company counts as paused from now on: admission and effects re-read it after this bump.\n', 1);
 	perform pg_temp.c1c3g_replace('public.qorpera_stop_company_work(uuid)',
 		E'\tif found then\n'
 		|| E'\t\tupdate public.qorpera_company_wake_admission_fences set revision = revision + 1 where profile_id = p_profile_id;\n'
 		|| E'\tend if;\n',
-		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930002500)\n'
+		E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n'
 		|| E'\t\tupdate public.qorpera_company_wake_admission_fences set revision = revision + 1 where profile_id = p_profile_id;\n'
 		|| E'\tend if;\n', 1);
 
@@ -104,7 +104,7 @@ begin
 	perform pg_temp.c1c3g_replace('public.qorpera_finish_company_deletion(uuid)',
 		E'\t\t\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\t\t\tperform public.qorpera_stop_company_work(p_profile_id);\n',
-		E'\t\t\t-- C1c-3g (20260930002500): on folder-v2 the folder pause''s second phase, for deletion, then the company row\n'
+		E'\t\t\t-- C1c-3g (20260930015000): on folder-v2 the folder pause''s second phase, for deletion, then the company row\n'
 		|| E'\t\t\t-- FOR UPDATE as the purge takes it, before the stop''s and the revocations'' rows (jobs, secrets, grants).\n'
 		|| E'\t\t\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\t\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
@@ -118,7 +118,7 @@ begin
 	perform pg_temp.c1c3g_replace('public.qorpera_purge_company(uuid)',
 		E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'
 		|| E'\t-- The company row is locked: no new machine can be reserved for it until this transaction ends.\n',
-		E'\t-- C1c-3g (20260930002500): on folder-v2 the drain, then the company row FOR UPDATE (the one folder-v2 path that\n'
+		E'\t-- C1c-3g (20260930015000): on folder-v2 the drain, then the company row FOR UPDATE (the one folder-v2 path that\n'
 		|| E'\t-- may: it deletes the row), after the fence and before the cascade''s children.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_deletion_drain(p_profile_id);\n'
@@ -134,7 +134,7 @@ begin
 		|| E'\t\twhere deletion.purged_at is null\n'
 		|| E'\t\torder by random()\n'
 		|| E'\t\tlimit p_limit\n',
-		E'\t\t-- C1c-3g (20260930002500): finished in company id order, as the node update drains and the executor give-up\n'
+		E'\t\t-- C1c-3g (20260930015000): finished in company id order, as the node update drains and the executor give-up\n'
 		|| E'\t\t-- take their companies, so two batches of locks never cross.\n'
 		|| E'\t\tselect sample.profile_id from (select deletion.profile_id from public.qorpera_company_deletions as deletion\n'
 		|| E'\t\twhere deletion.purged_at is null\n'
