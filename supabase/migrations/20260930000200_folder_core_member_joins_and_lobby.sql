@@ -19,8 +19,8 @@
 --   conflict (QRC01, 409), never a wait behind a run or a post that may be waiting for this change's rows. Rows a
 --   prelude holds are taken again at once. (The private conversations' trigger keeps its waits: an account deletion
 --   of a member with a private conversation refuses anyway, its audience_user_id being ON DELETE RESTRICT, 23503.)
--- * A join, a seat and Start take the member rows they write before the thread rooms (rank 1 before rank 4), as a
---   removal does.
+-- * A join and Start take the existing member rows they write before the thread rooms (rank 1 before rank 4), as a
+--   removal does; a new member's row (a join's or a seat's) is an insert after them.
 -- * The thread refresh skips the conversation update when its title and status do not change, so a member change
 --   writes no conversation state operation (and takes no operation clock) for the agent threads.
 -- Each inserted text names this migration (20260930000200), for deploy guards.

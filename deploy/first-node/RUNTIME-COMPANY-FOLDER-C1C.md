@@ -905,11 +905,11 @@ Decisions:
   - The connection cascade (`cascade_provider_connection_unavailability`) takes the jobs it ends `FOR UPDATE NOWAIT`
     in id order on `folder-v2` when the login's owner is no longer a member: its departure, earlier in the same
     transaction. (An account deletion of a login's owner or creator refuses with 23503 before the cascade:
-    `owner_user_id` and `created_by_user_id` are `ON DELETE RESTRICT`.) A job queued for the member's login after the removal read its jobs, and held by a
-    tool call of its run, refuses the removal; the retry lands (818 D). Any other status change (a member's Disconnect,
-    an authorizer's disable, the node-login switch-off, which catches its own `lock_not_available`) waits for the job
-    as before (818 D, and 818 G for the company's own login, which has no owner); its order against a tool call is
-    3d-2's.
+    `owner_user_id` and `created_by_user_id` are `ON DELETE RESTRICT`.) A job queued for the member's login after the
+    removal read its jobs, and held by a tool call of its run, refuses the removal; the retry lands (818 D). Any other
+    status change (a member's Disconnect, an authorizer's disable, the node-login switch-off, which catches its own
+    `lock_not_available`) waits for the job as before (818 D, and 818 G for the company's own login, which has no
+    owner); its order against a tool call is 3d-2's.
   - The thread trigger's locks (`folder_lock_agent_threads`, `folder-v2` only) take the rooms and conversations
     `NOWAIT`. An account deletion beside a post refuses (818 E), and so does a member row written with no prelude
     (657 E2).
@@ -918,9 +918,10 @@ Decisions:
     the trigger that a post into the new thread holds.
   - The private conversations' trigger keeps its waits: an account deletion of a member with a private conversation
     refuses with 23503 anyway (`qorpera_shared_sessions.audience_user_id` is `ON DELETE RESTRICT`).
-  - Member rows come before rooms (rank 1, then 4) in joins, seats and Start as in removals. Review r2 found the
-    order the other way round (rooms first) met a thread's model change (`qorpera_session_model_writer`: the member row
-    `FOR SHARE`, then the room) in a cycle (40P01).
+  - Existing member rows come before rooms (rank 1, then 4) in joins and Start, as in removals; a new member's row
+    (a join's or a seat's) is an insert after them. Review r2 found the order the other way round (rooms first) met a
+    thread's model change (`qorpera_session_model_writer`: the member row `FOR SHARE`, then the room) in a cycle
+    (40P01).
 - **The thread refresh** (`ensure_agent_thread_internal`) skips the conversation update on `folder-v2` when the title
   and the status stay. Joins and role changes then write no conversation state operation and take no operation clock
   for the threads (817 §2); a changed title is still written (817 §3).
