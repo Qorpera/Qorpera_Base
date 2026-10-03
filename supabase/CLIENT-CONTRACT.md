@@ -551,6 +551,24 @@ wake), so no agent runs and nothing is charged before it.
   caller's mentions in a conversation seen. The author is never told about
   their own post.
 
+### Quotes in a member's message (20260930000100_member_message_quotes)
+
+Contract: the 2026-10-02 amendment "quoted outside content in a member's message" (step I5d, part 1).
+
+- A `qorpera.session-prompt/v1` body may carry `quotes`, a list of 1 to 16 spans `{start, end, source, ref}` of its
+  `text`, both for `qorpera_append_session_input` (and the turn requests that call it) and for
+  `qorpera_post_company_room_message`.
+  - `start` and `end` are whole numbers counting characters (Unicode code points) from 0, with `end` excluded.
+  - Each span sits just inside « and »; spans are in order, apart, and 1 to 2,000 characters long.
+  - `source` is `mail`, and `ref` is a thread id that `qorpera_member_mail_thread` shows the member, never account
+    mail.
+  - A body with `quotes` carries no `displayText`. Leave `quotes` out when there are none: an empty list is refused.
+- Every refusal is 22023, after the membership and write checks and before any lock. An unknown, foreign or
+  account-mail `ref` reads the same way, whether or not it exists.
+- The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
+- A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
+  quoted message waits: only a cloud run fences one.
+
 ### Computer hours (20260928248000_runtime_computer_hours_meter)
 
 - Contract: section 19, 2026-09-28 amendment "computer hours"; design
