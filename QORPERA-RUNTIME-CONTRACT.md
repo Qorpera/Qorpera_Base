@@ -777,9 +777,9 @@ subscriptions, which self-limit.
 >   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing runs until
 >   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
->   coding or agent's machine awake: a run with no progress for 15 minutes is
->   idle (changed in place, by the 2026-10-03 amendment "one idle rule for
->   every machine");
+>   coding or agent's machine awake, unless it hangs inside a model request:
+>   a run with no progress for 15 minutes is idle (changed in place, by the
+>   2026-10-03 amendment "one idle rule for every machine");
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
@@ -4542,15 +4542,14 @@ amendment governs. In-place edits are marked "(changed in place)".
    a computer opens.
    - **A run** counts while it makes progress or has a model request in
      flight. So does its lease on a computer.
-     - Its progress clock is the newest of its last recorded step (a runtime
-       observation of a tool call or a model request), its last native context
-       view (recorded before every model request, by the 2026-09-29 amendment
-       "one call before a model request") and its job start. Lease renewals
-       never count.
-     - A model request is in flight from its recorded context view until the
-       run records its next step. So a long single request never makes a run
-       idle; a harness that hangs inside a request keeps the machine awake
-       until its run ends.
+     - Its progress clock is the newest of its last recorded tool call, its
+       last native context view (recorded before every model request, by the
+       2026-09-29 amendment "one call before a model request") and its job
+       start. Lease renewals never count.
+     - A model request is in flight from its context view until the run's next
+       tool call, its next context view or its end. So a long single request
+       never makes a run idle; a harness that hangs inside a request keeps the
+       machine awake until its run ends.
      - A run with neither progress nor a model request for 15 minutes is
        idle. The same clock drives the run's "no progress for 15 minutes"
        notice.
@@ -4560,8 +4559,8 @@ amendment governs. In-place edits are marked "(changed in place)".
      - That is measured for each command, coding session or computer's shell.
      - On an agent's machine, programs outside its commands, such as
        containers, count by the processor share of the whole machine beyond
-       its commands' own use (about 2% of the machine), as today. That share
-       belongs to the agent that started the machine.
+       its commands' own use (about 2% of the machine). That share belongs to
+       the agent that started the machine.
      - A program that only waits (a dev server, an idle database, `sleep`, a
        watcher with nothing to do) is not busy.
 2. **Seats follow the same test.** A computer's seat is in use under the same
@@ -4571,7 +4570,8 @@ amendment governs. In-place edits are marked "(changed in place)".
      that seat, the shell closes before the seat changes hands, its programs
      stop, and the agent is told, as at sleep.
    - An idle run's lease still holds its seat, so its desktop is not handed
-     to another agent while it waits, but it does not keep the machine awake.
+     to another agent while it is idle, but it does not keep the machine
+     awake.
      If the machine sleeps, the run goes on without computer tools until it
      opens its computer again.
 3. **Sleep.** A machine sleeps after its quiet window with nothing keeping it
@@ -4584,6 +4584,8 @@ amendment governs. In-place edits are marked "(changed in place)".
      - It is told in the conversation of the run that started the program.
      - A worker's program is told to its agent, in the conversation that
        dispatched the worker.
+     - Work outside an agent's machine's commands, such as containers, is told
+       to the agent that started the machine.
 4. **Busy work keeps running.** A busy program keeps its machine awake for as
    long as it stays busy. The platform never stops a program for running
    long. Every other stop stays as before, for example an agent's or a
@@ -4610,6 +4612,8 @@ amendment governs. In-place edits are marked "(changed in place)".
    - An archived agent is not asked. Its programs stay where members see and
      may stop them.
    - Coding sessions keep their check-ins after 1, 3 and 7 quiet days too.
+   - On an always-on machine, its weekly check-in (item 6) takes the place of
+     these.
 6. **Always-on machines** are the explicit way to stay up: this rule never puts
    them to sleep. The agent that started one is asked once a week whether it
    still needs it, counted from the machine's start, in the conversation of
