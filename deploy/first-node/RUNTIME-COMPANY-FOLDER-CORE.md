@@ -1016,25 +1016,92 @@ and the machine-side session F3, on #408):
 
 | Slice | Contents | Owner |
 | --- | --- | --- |
-| C1a | the flag; the tables; the change-set commit for members and the platform; reads and listings (with each entry's version time); today's object and artifact GC skipping `folder-v2` | storage core |
+| C1a | the flag; the tables; the change-set commit for members and the platform; reads and listings (with each entry's version time); today's object and artifact GC skipping `folder-v2` | storage core (F1) |
 | C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and the clock polled by service_role, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
-| C1b | run actors (job, lease, fence, causal wake, session kind, requester), computer holders (the company-wide view plus the holder's own authority) and coding sessions (agent ∩ member, `agents/**` and `rules/**` read-only); authority revisions; read sets and records; explicit resources and bases; review classification in SQL; the call sites and inert stubs of the §5 hook that F2 fills | storage core |
-| C1c | the actor's `folder-v2` branch and the per-caller decisions; the raw `/v1/profile-objects` fallback refusing `folder-v2`; the activation checks | a separate session |
-| C1d | GC G1–G4; upload intents; the object gateway's put and remove; a `folder-v2` byte check that never locks the profile row; the storage usage row and the quota trigger | a separate session |
-| C1e | the load test of §9 on a real disk | storage core |
+| C1b | run actors (job, lease, fence, causal wake, session kind, requester), computer holders (the company-wide view plus the holder's own authority) and coding sessions (agent ∩ member, `agents/**` and `rules/**` read-only); authority revisions; read sets and records; explicit resources and bases; review classification in SQL; the call sites and inert stubs of the §5 hook that F2 fills | storage core (F1); C1b-3b moved to F3 (below) |
+| C1c | the actor's `folder-v2` branch and the per-caller decisions; the raw `/v1/profile-objects` fallback refusing `folder-v2`; the activation checks | F1 through 3c; from 3d, the owners below |
+| C1d | GC G1–G4; upload intents; the object gateway's put and remove; a `folder-v2` byte check that never locks the profile row; the storage usage row and the quota trigger | F2 (coordinator, 29 September) |
+| C1e | the load test of §9 on a real disk | S3, reviewed by F2 and F3 |
+
+**Owners from 2 October 2026** (the coordinator's plan). The sessions are
+named as in the bundle registry: F1 the storage core, F2 structured files, F3
+the folder on every machine, Q1 event intake, A1 company accounts, S3
+identical nodes, and the Interfaces session.
+- **C1b-3b** (computer shell commands and test machines) is F3's, in the
+  mount's build steps 4 and 6 (RUNTIME-COMPANY-FOLDER.md, "Build order"):
+  light threads gives each shell command on the company machine its own
+  mount (2 October amendment "light threads", item 6). It is off the C5
+  path.
+- **C1c from 3d:** Q1 (joins and the founding lobby on the fence; the
+  dynamic-routine tick), A1 (the vault's lock order; offices, screens and the
+  agent starting the computer), S3 (the compute fence; deletion; coding
+  machines) and F3 (the activation checks).
+- **C1d-2b and C1d-2c** (the gateway's GC lane, the worker's folder phase,
+  bytes with no catalog row, a deleted company's leftovers) are F2's.
+- **C5 early** (C1D, "C5 early"): F3 moves the SQL test fixtures to version-2
+  staging and makes `qorpera_verify_company_path_file` refuse `folder-v2`. F3
+  also makes the read actor refuse a company being deleted for members and
+  the platform too (runs are refused already).
+- **C2:** F2, with the Interfaces session for the interface and table kinds.
+  F3 builds conflict copies on receipts, with their GC root.
+- **C3:** F3 (the Company File tools), F2 (memory, skills, worker files), A1
+  (the vault writes connection files) and S3 (the runner broker's substrate
+  model for `folder-v2`).
+- **C4:** Q1 (`companySeq`, the listener, the edge functions, the
+  observability views), F3 (the member routes and the hint), S3 (the tolerant
+  orchestrator), the Interfaces session (the web file page, history and
+  editors) and F2 (human-task wakes, H2c).
+- **C5:** S3 (the rewrites of §10, the reset function), F3 (the folder service
+  #647 and #656 merged and deployed, and the core acceptance script), the
+  coordinator (the proof company and the acceptance) and the coordinator with
+  the Interfaces session (the switch).
+
+Before any `folder-v2` company exists, these must be fixed: #581's N1 (a join
+holds the fence before the invitee check), the read actor refusing a company
+being deleted, F1's six follow-ups on #613, and the vault's lock order on
+`folder-v2` (#660's follow-up: grants and secrets against Disconnect and
+share, and capture, rotation and seal against a member change).
 
 ### C2. Structured files, seeding and erasure
 
 - The hook of §5: schemas, indexes, the refusals and the converging queue.
-- Company creation as one commit with the first-run wake.
+  - The hook includes the interface and table kinds (`interface.toml`,
+    `order.md`, `table.toml`, `rows.csv`; 2 October amendment "interfaces",
+    item 12, built as step I6).
+  - The queue takes over a hire's default grants (read and write since
+    20260926035000): `qorpera_ensure_default_agent_read_grants` inserts them
+    outside the authority journal today.
+- Company creation as one commit with the first-run wake. The seed includes
+  `human-tasks/` and `contacts/` (2 October amendment "work for people", item
+  5) and `interfaces/` and `tables/` with the library copies (2 October
+  amendment "interfaces", item 11).
 - Proposals for parked units and the restricted hire.
-- Erasure.
+  - R1 (#613) records the review of tool calls. The restricted hire is a card
+    on that record (W4a, #621), not a parked proposal.
+  - R2 reviews change sets that no tool call carried, and adds
+    `qorpera_folder_proposals`. Until it exists, agents make the interface
+    and table changes that "interfaces" item 7 counts as delegation only with
+    `save_interface`, which joins R1's tools.
+- Erasure. "Work for people" item 3, still pending the founder's approval,
+  would widen it from a deleted agent's folder to any deleted path (a
+  contact's file too).
 
 ### C3. Runtime and writers
 
 For `folder-v2` companies:
-- The Company File tools use change sets.
-- The memory, skills, todo, routine and hiring writers write files.
+- The Company File tools work through the folder core.
+  - `company_list`, `company_read` and `company_search` act with the run's own
+    folder view. Each answer is released against the exact text the model is
+    shown, and search runs on the node's folder service (2 October amendment
+    "light threads", item 2).
+  - A turn writes with the one-file tools through the mutation gateway (the
+    same item). On `folder-v2` each such write commits as a change set of one
+    unit (§3).
+  - These tools stay for turns. Their retirement waits on that item's open
+    point: which write tools a turn has once machines publish change sets.
+- The memory, skills, todo, routine and hiring writers write files. The
+  platform writes a worker's brief and results at dispatch, follow-up, report
+  and decision (F2-5b).
 - The vault writes connection files.
 - The tools the layout amendment retires are removed from the model's tool
   list, or become thin writers of the same files.
@@ -1046,7 +1113,9 @@ For `folder-v2` companies:
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write
-  and read files for `folder-v2`.
+  and read files for `folder-v2`. No member writer of `folder-v2` files goes
+  live before human-task wakes (H2c) run on the listener
+  (RUNTIME-COMPANY-STATE-FILES.md, "What H2b without H2c means").
 - Tolerant readers and writers go out first:
   - the runner orchestrator accepts runs without snapshot or substrate ids
     (`orchestrator.ts:640-641`);
@@ -1064,9 +1133,13 @@ For `folder-v2` companies:
    acceptance below. The load test of §9 passes.
 3. The reset procedure is written as a service-role function, and becomes the
    product's "Delete company" for `folder-v2` companies (founder decision,
-   28 September 2026). Today's product delete (`qorpera_delete_hosted_profile`,
-   20260818006000:41-68) fails for any company that has had a run: restrict
-   foreign keys and triggers refuse deletes.
+   28 September 2026). It reuses company delete D1–D6
+   (RUNTIME-COMPANY-DELETE.md), which already deletes a company that has had
+   runs: the request, the finisher and the purge. `folder-v2` adds:
+   - the deletion drain on the folder fence (C1c-3g) and the folder rows in
+     the purge;
+   - a deleted company's leftover bytes (C1d-2c), which the artifact GC
+     worker removes once it is deployed.
 4. Its exact scope goes to the founder for confirmation, including whether the
    proof company is deleted too.
 5. One owner runs it in a short maintenance pause, and company creation
@@ -1075,7 +1148,9 @@ For `folder-v2` companies:
 **Core acceptance (C5).** On a new company:
 - the seeded tree exists, and creation wrote exactly one first-run wake;
 - agents read, list, search and write through change sets, and disjoint
-  writes never conflict;
+  writes never conflict (search is `company_search` on the node's folder
+  service, "light threads" item 2, so the folder service is live before the
+  proof);
 - a same-path conflict keeps a conflict copy;
 - a move and a subtree delete work, and a subtree delete refuses a change it
   did not see;
@@ -1120,5 +1195,7 @@ After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
    to 5.6.
 4. **"Delete company" in the product.** Decided by the founder on
    28 September 2026: the C5 reset procedure becomes the product's delete for
-   `folder-v2` companies. Today's `qorpera_delete_hosted_profile`
-   (`web/src/cloud/api.ts:256`) fails for any company that has had a run.
+   `folder-v2` companies. The old `qorpera_delete_hosted_profile`
+   (`web/src/cloud/api.ts:256`) failed for any company that had had a run;
+   company delete D1–D6 (RUNTIME-COMPANY-DELETE.md) now works after runs, and
+   the reset reuses it (C5, step 3).
