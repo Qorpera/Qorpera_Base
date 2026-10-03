@@ -9,6 +9,7 @@ import {
 	type TableFile,
 } from "../src/interfaces.ts";
 import { INTERFACE_STATE_CASES } from "./fixtures/interface-state-cases.ts";
+import { TABLE_ROWS_CASES, TYPES_TABLE } from "./fixtures/table-rows-cases.ts";
 
 const FIXTURES = JSON.parse(readFileSync(new URL("./fixtures/interface-state.json", import.meta.url), "utf8")) as {
 	name: string;
@@ -33,6 +34,12 @@ describe("the folder hook's entry point for interface files (P16)", () => {
 			const want = item.name === "path" ? "bad_value" : item.name.split(" ")[0];
 			expect(codes(parseInterfaceStateFile(item.path, item.text)), item.name).toContain(want);
 		}
+	});
+
+	it("refuses a misplaced path for that alone, before its content", () => {
+		const result = parseInterfaceStateFile("interfaces/Bad_Name/interface.toml", "not toml at all [");
+		expect(result?.ok).toBe(false);
+		expect(codes(result)).toEqual(["bad_value"]);
 	});
 
 	it("decides the kind on the path's shape, so a badly named folder is checked, never plain", () => {
@@ -65,9 +72,43 @@ describe("the folder hook's entry point for interface files (P16)", () => {
 	});
 });
 
+describe("rows typed against their definition, as the save check's port must type them", () => {
+	const typed = JSON.parse(readFileSync(new URL("./fixtures/table-rows-typed.json", import.meta.url), "utf8")) as {
+		name: string;
+		result: unknown;
+	}[];
+	const table = (text: string) => parseTableFile(text).file as TableFile;
+
+	it("answers each case exactly as table-rows-typed.json holds it", () => {
+		expect(TABLE_ROWS_CASES.map((c) => c.name)).toEqual(typed.map((t) => t.name));
+		for (const [index, item] of TABLE_ROWS_CASES.entries())
+			expect(JSON.parse(JSON.stringify(parseTableRows(table(item.table), item.text))), item.name).toEqual(
+				typed[index]?.result,
+			);
+	});
+
+	it("counts a link's length in code points, as text and the database do", () => {
+		const header = "name,at,link_to";
+		const fits = parseTableRows(table(TYPES_TABLE), `${header}\nl,2026-10-02T09:44Z,${"😀".repeat(200)}\n`);
+		expect(fits.problems).toEqual([]);
+	});
+
+	it("refuses a number as a key column, which keys differently in JS and SQL", () => {
+		for (const type of ["number", "money", "percent"]) {
+			const text = TYPES_TABLE.replace('key = ["name", "at"]', 'key = ["name", "count"]').replace(
+				'name = "count"\ntype = "number"\noptional = true',
+				`name = "count"\ntype = "${type}"${type === "money" ? '\ncurrency = "EUR"' : ""}`,
+			);
+			const parsed = parseTableFile(text);
+			expect(parsed.ok, type).toBe(false);
+			expect(parsed.problems.map((p) => p.code), type).toContain("bad_value");
+		}
+	});
+});
+
 describe("a rows file read without its definition", () => {
 	it("keeps the header and each row's raw fields, drops blank lines and a byte order mark", () => {
-		const result = parseTableRowsText('﻿name,note\n"Ada, the first",""\n\nBo,"says ""hi"""\n');
+		const result = parseTableRowsText('\ufeffname,note\n"Ada, the first",""\n\nBo,"says ""hi"""\n');
 		expect(result.ok && result.file).toEqual({
 			kind: "table-rows",
 			header: ["name", "note"],

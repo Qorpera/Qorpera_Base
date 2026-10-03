@@ -671,8 +671,13 @@
 			"file": {
 				"kind": "table-rows",
 				"header": [
-					"title",
-					"holder"
+					"id",
+					"card",
+					"area",
+					"holder",
+					"state",
+					"added_by",
+					"todo"
 				],
 				"rows": []
 			}
