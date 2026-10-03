@@ -60,7 +60,8 @@ One run, one machine, chosen at the start (README, "Which machine"):
   burst of starts spreads out). It takes the one with the most free slots, counting waiting and arriving runs
   against them; on a tie, node 2. A probe answers in about a second; its connection must reach the machine's SSH
   within 6 s, and once one machine has answered with a free slot the other gets 2 s more. A machine that did not
-  answer is tried last: a probe's budget is short, and the copy's own connection may still get through.
+  answer is tried only when no answering machine is open: a probe's budget is short, and the copy's own
+  connection (15 s to connect) may still get through.
 - If the chosen machine fails before the suite starts (the first SSH call or the copy), the next one takes the
   run, after the event loop has had a turn: a copy an interrupt ended stops the run instead of moving it. A
   started suite is never repeated elsewhere.
@@ -82,9 +83,9 @@ description names it ("passed on node 1 in 6m12s"), and so does the pending one.
 `machines` (every probe's answer), `probeSeconds` and `passedOver`.
 
 The wrapper can be merged before node 1's machine exists: node 1 then shows as unreachable and every run goes to
-node 2. That costs a run little: node 1's jump usually refuses at once ("Network is unreachable"); when it hangs,
-the run waits 2 s past node 2's answer if node 2 has a free slot, and up to 6 s if node 2 is full (12 s is the
-hard limit). Clients that have not merged it send everything to node 2. A new machine counts as closed until
+node 2. That costs a run little: node 1 sends 10.201.0.3 to the LAN router, and its jump either refuses at once
+("Network is unreachable", seen in 0.1-1.8 s) or hangs (seen twice on 2026-10-03); a hang costs a run 2 s past
+node 2's answer when node 2 has a free slot, and 6 s when node 2 is full (12 s is the hard limit). Clients that have not merged it send everything to node 2. A new machine counts as closed until
 `guest-setup.sh` has finished, and the runbook keeps it closed until it is proven.
 
 ## Runbook (coordinator)
@@ -263,18 +264,20 @@ run that is still copying to a machine shows there as `arriving` in another sess
 ### Undo
 
 - **Out of rotation, nothing changed on the node:** close it (`echo "<reason>" > /etc/qorpera-test-machine-closed`
-  as root inside the VM) or stop it (`lxc stop`; probes then skip it). It stays enrolled and charged.
+  as root inside the VM) or stop it (`lxc stop`; probes then find it unreachable, and runs try it only when node 2
+  is not open). It stays enrolled and charged.
 - **Remove it:** close it and wait until `--dry-run --machine node01` shows 0 busy, 0 waiting and 0 arriving. Hold
   (step 2), then `lxc stop qorpera-testvm-node01 --project testmachines` and `lxc delete qorpera-testvm-node01
   --project testmachines`; `lxc project delete testmachines`; `lxc network delete testmach0`; `lxc network acl
   delete testmach-egress`. The VM goes before its entry: an instance the policy does not list makes node 1
   `unavailable`. Then replace node 1's inventory policy with the **current** one minus the
   `testmachines`/`qorpera-testvm-node01` entry (not the step-0 copy: entries enrolled since, such as node 1's fast
-  host, and a changed LXD host identity must stay), reviewed as in step 5.3 (`NODE-BUILDER-COEXISTENCE.md` step 8:
+  host, and a changed LXD host identity must stay). The step 5.3 helper only adds entries, so review this one by
+  hand: the new policy equals the current one with exactly that entry gone (`NODE-BUILDER-COEXISTENCE.md` step 8:
   remove only the reviewed reservations). `op --node node01 observer-sync` and wait for `ready`; configure the
   headroom back (-10000 mCPU, -17179869184 bytes, `enabled` false) and wait for a fresh `ready` at the new
-  version; then serve (step 6). Dropping `node01` from `MACHINES` is optional (an absent machine is tried last
-  and costs a run little).
+  version; then serve (step 6). Dropping `node01` from `MACHINES` is optional (an absent machine is tried only
+  when node 2 is not open, and costs a run little).
 - **A step fails:** before step 5 commits, delete what step 4 made (VM, project, network, ACL), configure the
   headroom back, wait for a fresh `ready` and serve; here, inside the same hold, the step-0 inventory policy is still
   the current one. From step 5 on, as "Remove it". Setup or proof failing in steps 7-8 needs no undo: the machine

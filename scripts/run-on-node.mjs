@@ -388,11 +388,11 @@ export function candidateMachines(machine, env) {
  * counts for 10 minutes; a killed copy's marker ages out. */
 export function probeScript({ locks, closed, setUp, arriving }) {
 	return [
-		`busy=0; waiting=0; closed=0; { [ -e ${shellQuote(closed)} ] || [ ! -e ${shellQuote(setUp)} ]; } && closed=1`,
+		`busy=0; waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
 		`for i in $(seq 1 ${CPU_SLOTS}); do { flock -n 5 || busy=$((busy + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/qorpera-test-machine-slot`)}"$i.lock"; done`,
 		`for t in ${shellQuote(`${locks}/qorpera-test-machine-queue`)}/*; do { flock -n 5 || waiting=$((waiting + 1)); } 2>/dev/null 5<"$t"; done`,
-		`arriving=$(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l)`,
-		'echo "busy=$busy waiting=$waiting arriving=$arriving closed=$closed cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
+		'echo "busy=$busy waiting=$waiting arriving=$arriving closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
 	].join("\n");
 }
 
@@ -401,24 +401,27 @@ function free(probe) {
 	return CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
 }
 
+/** Open to the automatic choice: answered, not closed by an operator, and set up. */
+function open(probe) {
+	return probe.unreachable === undefined && !probe.closed && probe.setUp;
+}
+
 /** Machines that answered their probe, best first: the most free slots, then list order. Unreachable machines
  * are left out, and closed ones unless the run named its machine. */
 export function rankMachines(probes, pinned) {
 	return probes
 		.map((probe, index) => ({ probe, index }))
-		.filter(({ probe }) => probe.unreachable === undefined && (pinned || !probe.closed))
+		.filter(({ probe }) => probe.unreachable === undefined && (pinned || open(probe)))
 		.sort((a, b) => free(b.probe) - free(a.probe) || a.index - b.index)
 		.map(({ probe }) => probe);
 }
 
-/** The order a run tries machines in: those that answered, best first, then those that did not answer, in list
- * order, as a last resort (a probe has a short budget; the copy's own connection may still get through). A
- * closed machine is never tried unless the run named it. */
+/** The order a run tries machines in: those that answered, best first. Only when none of them can take the run
+ * are the machines that did not answer tried, in list order (a probe has a short budget; the copy's own
+ * connection may still get through). A closed machine is never tried unless the run named it. */
 export function runOrder(probes, pinned) {
-	return [
-		...rankMachines(probes, pinned).map((probe) => probe.name),
-		...probes.filter((probe) => probe.unreachable !== undefined).map((probe) => probe.name),
-	];
+	const answered = rankMachines(probes, pinned).map((probe) => probe.name);
+	return answered.length ? answered : probes.filter((probe) => probe.unreachable !== undefined).map((probe) => probe.name);
 }
 
 /** Asks every machine at once with `ask(machine, signal)`, which settles when asked to stop. Once one machine has
@@ -431,7 +434,7 @@ export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
 		return await Promise.all(
 			machines.map((machine) =>
 				ask(machine, stop.signal).then((answer) => {
-					if (!grace && answer.unreachable === undefined && !answer.closed && free(answer) > 0)
+					if (!grace && open(answer) && free(answer) > 0)
 						grace = setTimeout(
 							() => stop.abort(new Error(`no answer within ${graceMs / 1000} s of ${answer.name}'s`)),
 							graceMs,
@@ -451,12 +454,17 @@ export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
  * failure, and a copy a signal ended (`final`), are thrown. The event loop gets a turn first, so an interrupt
  * stops the run rather than moving it. A suite that has started is never repeated elsewhere. */
 export async function firstTaking(ranked, copy, passOver) {
+	const earlier = [];
 	for (const [index, machine] of ranked.entries()) {
 		try {
 			copy(machine);
 			return machine;
 		} catch (error) {
-			if (index === ranked.length - 1 || error.final) throw error;
+			if (index === ranked.length - 1 || error.final) {
+				if (earlier.length) error.message = `${error.message} (before: ${earlier.join("; ")})`;
+				throw error;
+			}
+			earlier.push(`${machine.name}: ${error.message}`);
 			await signalTurn();
 			passOver(machine, error, ranked[index + 1]);
 		}
@@ -473,7 +481,7 @@ export function describeProbes(probes) {
 	return probes
 		.map((probe) =>
 			probe.unreachable === undefined
-				? `${probe.name}${probe.closed ? " closed," : ""} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.arriving ? `, ${probe.arriving} arriving` : ""}`
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.arriving ? `, ${probe.arriving} arriving` : ""}`
 				: `${probe.name} unreachable (${probe.unreachable})`,
 		)
 		.join("; ");
@@ -491,6 +499,9 @@ function sshArgs(machine, key) {
 		`UserKnownHostsFile=${join(homedir(), ".ssh", "known_hosts_qorpera_test_machines")}`,
 		"-o",
 		"ServerAliveInterval=30",
+		// A machine that cannot be reached fails in seconds rather than at the kernel's connect timeout.
+		"-o",
+		"ConnectTimeout=15",
 		"-i",
 		key,
 		// -J would not pass BatchMode to the jump host; a non-interactive session must never prompt there.
@@ -505,7 +516,8 @@ function probeOverSsh(machine, key, signal) {
 		const script = probeScript({ locks: LOCKS, closed: CLOSED, setUp: SET_UP, arriving: ARRIVING });
 		const child = spawn(
 			"ssh",
-			[...sshArgs(machine, key), "-o", `ConnectTimeout=${PROBE_CONNECT_S}`, machine.host, "bash", "-c", shellQuote(script)],
+			// ssh keeps the first value given for an option: the probe's shorter connect time goes first.
+			["-o", `ConnectTimeout=${PROBE_CONNECT_S}`, ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(script)],
 			{ stdio: ["ignore", "pipe", "pipe"], detached: true },
 		);
 		let out = "";
@@ -547,6 +559,7 @@ function probeOverSsh(machine, key, signal) {
 					waiting: Number(answer.waiting),
 					arriving: Number(answer.arriving),
 					closed: answer.closed === "1",
+					setUp: answer.setup === "1",
 					cpus: Number(answer.cpus) || null,
 					load: Number(answer.load) || 0,
 				});
@@ -693,7 +706,7 @@ async function main() {
 	 * machine refuses, with `final` when a signal ended the copy. */
 	function copyTree(t) {
 		copyStarted = Date.now();
-		sshCapture(t, `${pruneScript()}\nmkdir -p ${runDir} ${treeDir} ${ARRIVING}\ntouch ${treeDir}.lock ${ARRIVING}/${run}`);
+		sshCapture(t, `mkdir -p ${ARRIVING} && touch ${ARRIVING}/${run}\n${pruneScript()}\nmkdir -p ${runDir} ${treeDir}\ntouch ${treeDir}.lock`);
 		const rulesDir = mkdtempSync(join(tmpdir(), "run-on-node-"));
 		const rules = join(rulesDir, "rules");
 		writeFileSync(rules, rulesText);
@@ -714,10 +727,18 @@ async function main() {
 			{ stdio: ["ignore", "inherit", "inherit"] },
 		);
 		rmSync(rulesDir, { recursive: true, force: true });
-		if (rsync.status !== 0)
+		if (rsync.status !== 0) {
+			try {
+				sshCapture(t, `rm -f ${ARRIVING}/${run}`);
+			} catch {
+				// Ages out of the probe's count in 10 minutes.
+			}
+			// A signal (or rsync's exit 20 for one) ends the run; files that vanished or could not be read during the
+			// copy (23, 24) are this tree's problem and would fail on every machine.
 			throw Object.assign(new Error(`Copying the working tree failed (rsync ${rsync.signal ?? `exit ${rsync.status}`})`), {
-				final: Boolean(rsync.signal) || rsync.status === 20,
+				final: Boolean(rsync.signal) || [20, 23, 24].includes(rsync.status),
 			});
+		}
 	}
 
 	async function execute() {

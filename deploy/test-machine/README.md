@@ -129,9 +129,10 @@ its connection must reach the machine within 6 s. Once one machine has answered 
 get 2 s more; otherwise every probe gets up to 12 s. The wrapper takes the machine with the most free slots,
 counting waiting and arriving runs against them; on a tie, the list order (`node02`, then `node01`). The
 answers are printed before the run starts. A machine that did not answer (its VM stopped after a node reboot,
-its node being updated, a machine not built yet, a slow moment) is tried last. If a machine fails before the
-suite starts (the first SSH call or the copy), the run moves to the next one; a copy that an interrupt ended
-stops the run instead. A suite that has started is never repeated elsewhere: its failure is the result.
+its node being updated, a machine not built yet, a slow moment) is tried only when no machine that answered is
+open. If a machine fails before the suite starts (the first SSH call or the copy), the run moves to the next
+one, and the final error names each machine's failure; a copy that an interrupt ended, or that failed on files
+of this tree (rsync 23, 24), stops the run instead. A suite that has started is never repeated elsewhere: its failure is the result.
 
 Each machine keeps its own queue, so a run that had to queue stays in that machine's queue even if the other
 frees up first. The choice makes that rare: a run joins the shorter queue. Two runs that ask within a moment of
@@ -143,8 +144,8 @@ each other, before either has made its marker, can still choose the same machine
 To take a machine out of the choice (maintenance, removal), close it from inside: as root, write a reason to
 `/etc/qorpera-test-machine-closed`. New runs go to the other machine; runs already running or queued there
 finish; `--machine` and a `QORPERA_TEST_MACHINE*` target still reach it. A machine without
-`/etc/qorpera-test-machine-versions`, which `guest-setup.sh` writes last, counts as closed too. `--dry-run` shows
-`closed`, `busy`, `waiting` and `arriving` per machine. Delete the file to open it again.
+`/etc/qorpera-test-machine-versions`, which `guest-setup.sh` writes last, is left out too (`setUp` false, "not
+set up" in the output). `--dry-run` shows `closed`, `setUp`, `busy`, `waiting` and `arriving` per machine. Delete the file to open it again.
 Clients older than this list (sessions that have not merged master) send every run to node 2 and do not read
 the file.
 

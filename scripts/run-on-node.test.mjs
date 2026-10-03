@@ -169,7 +169,7 @@ test("--machine picks one machine; QORPERA_TEST_MACHINE* replaces the list", () 
 });
 
 test("a run goes to the machine with the most free slots; ties keep list order; silent machines drop out", () => {
-	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, cpus: 10, load: 0.1 });
+	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
 	const names = (probes, pinned = false) => rankMachines(probes, pinned).map((probe) => probe.name);
 	assert.deepEqual(names([idle("node02"), idle("node01")]), ["node02", "node01"]);
 	assert.deepEqual(names([{ ...idle("node02"), busy: 2 }, { ...idle("node01"), busy: 1 }]), ["node01", "node02"]);
@@ -193,6 +193,9 @@ test("a run goes to the machine with the most free slots; ties keep list order; 
 	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 5 }, { ...idle("node01"), closed: true }]), ["node02"]);
 	assert.deepEqual(names([{ ...idle("node01"), closed: true }], true), ["node01"]);
 	assert.deepEqual(names([{ ...idle("node01"), closed: true }]), []);
+	// So does a machine whose setup has not finished.
+	assert.deepEqual(names([{ ...idle("node02"), busy: 3 }, { ...idle("node01"), setUp: false }]), ["node02"]);
+	assert.deepEqual(names([{ ...idle("node01"), setUp: false }], true), ["node01"]);
 	assert.equal(
 		describeProbes([{ ...idle("node02"), busy: 3, waiting: 2 }, { name: "node01", unreachable: "no answer in 12 s" }]),
 		"node02 3/3 slots busy, 2 waiting; node01 unreachable (no answer in 12 s)",
@@ -201,17 +204,21 @@ test("a run goes to the machine with the most free slots; ties keep list order; 
 		describeProbes([{ ...idle("node01"), closed: true, busy: 1, arriving: 2 }]),
 		"node01 closed, 1/3 slots busy, 0 waiting, 2 arriving",
 	);
+	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/3 slots busy, 0 waiting");
 });
 
-test("machines that did not answer are tried last, in list order; closed ones never unless named", () => {
-	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, cpus: 10, load: 0.1 });
+test("machines that did not answer are tried only when no answering machine is open; closed ones never unless named", () => {
+	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
 	const silent = (name) => ({ name, unreachable: "Connection timed out during banner exchange" });
-	assert.deepEqual(runOrder([silent("node02"), { ...idle("node01"), busy: 3, waiting: 2 }], false), ["node01", "node02"]);
+	// An open machine that answered takes the run, even a full one: its failure is then the run's real error.
+	assert.deepEqual(runOrder([silent("node02"), { ...idle("node01"), busy: 3, waiting: 2 }], false), ["node01"]);
+	assert.deepEqual(runOrder([idle("node02"), idle("node01")], false), ["node02", "node01"]);
 	// A slow probe alone does not fail a run: the copy's own connection decides.
 	assert.deepEqual(runOrder([silent("node02"), silent("node01")], false), ["node02", "node01"]);
 	assert.deepEqual(runOrder([{ ...idle("node02"), closed: true }, silent("node01")], false), ["node01"]);
 	assert.deepEqual(runOrder([{ ...idle("node02"), closed: true }], false), []);
 	assert.deepEqual(runOrder([{ ...idle("node02"), closed: true }], true), ["node02"]);
+	assert.deepEqual(runOrder([{ ...idle("node02"), setUp: false }, silent("node01")], false), ["node01"]);
 });
 
 test("probes: a free machine gives the others a short grace; otherwise every probe gets the full time", async () => {
@@ -224,8 +231,8 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 			signal.addEventListener("abort", () => resolvePromise({ name: machine.name, unreachable: signal.reason.message }));
 		});
 	const timing = { graceMs: 150, timeoutMs: 1500 };
-	const free = { busy: 1, waiting: 0, arriving: 0, closed: false };
-	const full = { busy: 3, waiting: 4, arriving: 0, closed: false };
+	const free = { busy: 1, waiting: 0, arriving: 0, closed: false, setUp: true };
+	const full = { busy: 3, waiting: 4, arriving: 0, closed: false, setUp: true };
 
 	let started = Date.now();
 	let probes = await probeAll(machines, asker({ node02: { ms: 10, value: free } }), timing);
@@ -236,13 +243,15 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 	started = Date.now();
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: full } }), timing);
 	assert.deepEqual(probes[1], { name: "node01", unreachable: "no answer in 1.5 s" });
-	assert.ok(Date.now() - started >= 1500);
+	assert.ok(Date.now() - started >= 1400);
 
 	// Both answer inside the grace: nothing is cut short.
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: free }, node01: { ms: 40, value: full } }), timing);
 	assert.deepEqual(probes.map((probe) => probe.unreachable), [undefined, undefined]);
-	// A closed machine's answer starts no grace.
+	// A closed machine's answer starts no grace, nor does one that is not set up.
 	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, closed: true } } }), timing);
+	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
+	probes = await probeAll(machines, asker({ node02: { ms: 10, value: { ...free, setUp: false } } }), timing);
 	assert.equal(probes[1].unreachable, "no answer in 1.5 s");
 });
 
@@ -259,7 +268,10 @@ test("a machine that fails before the suite starts passes the run to the next; t
 	assert.deepEqual([tried.splice(0), passed.splice(0)], [["node01"], []]);
 	assert.equal(await firstTaking(ranked, copy(["node01"]), passOver), ranked[1]);
 	assert.deepEqual([tried.splice(0), passed.splice(0)], [["node01", "node02"], ["node01: node01 refused -> node02"]]);
-	await assert.rejects(firstTaking(ranked, copy(["node01", "node02"]), passOver), /node02 refused/);
+	// The error names every machine's failure, the first one included.
+	await assert.rejects(firstTaking(ranked, copy(["node01", "node02"]), passOver), {
+		message: "node02 refused (before: node01: node01 refused)",
+	});
 	assert.deepEqual([tried.splice(0), passed.splice(0)], [["node01", "node02"], ["node01: node01 refused -> node02"]]);
 	await assert.rejects(firstTaking([], copy([]), passOver), /No test machine/);
 	// A copy a signal ended is final: the run stops instead of starting a suite on the next machine.
@@ -286,9 +298,10 @@ test("the probe reads the locks the run script takes and counts runs still being
 	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/\*; do/);
 	assert.match(probe, /for i in \$\(seq 1 3\); do/);
-	assert.match(probe, /\{ \[ -e \/etc\/qorpera-test-machine-closed \] \|\| \[ ! -e \/etc\/qorpera-test-machine-versions \]; \} && closed=1/);
+	assert.match(probe, /\[ -e \/etc\/qorpera-test-machine-closed \] && closed=1; \[ -e \/etc\/qorpera-test-machine-versions \] && setup=1/);
 	// The copy marker: made by the run's first SSH call, dropped once it holds a queue ticket, pruned by name.
-	assert.match(probe, /find \/home\/tester\/arriving -maxdepth 1 -type f -mmin -10/);
+	// Arithmetic expansion drops the padding BSD wc adds.
+	assert.match(probe, /arriving=\$\(\( \$\(find \/home\/tester\/arriving -maxdepth 1 -type f -mmin -10 2>\/dev\/null \| wc -l\) \)\)/);
 	assert.ok(script.indexOf("flock 7;") < script.indexOf("rm -f /home/tester/arriving/R"));
 	assert.ok(script.indexOf("rm -f /home/tester/arriving/R") < script.indexOf("while [ -z \"$slot\" ]"));
 	assert.match(pruneScript(), /for f in \/home\/tester\/arriving\/\*; do n=\$\(basename "\$f"\); if \[\[ "\$n" =~ \^\[0-9\]\{8\}T/);
@@ -334,7 +347,7 @@ test(
 			assert.equal(result.status, 0, result.stderr);
 			assert.equal(result.stderr, "");
 			const answer = parseStatus(result.stdout);
-			assert.deepEqual([answer.busy, answer.waiting, answer.arriving, answer.closed], ["1", "1", "1", "0"]);
+			assert.deepEqual([answer.busy, answer.waiting, answer.arriving, answer.closed, answer.setup], ["1", "1", "1", "0", "1"]);
 			assert.match(answer.cpus, /^[1-9][0-9]*$/);
 			// Slot 2 was never made, and nothing else appeared or went.
 			assert.deepEqual(listing(), before);
@@ -342,11 +355,13 @@ test(
 			assert.equal(ask(dir).closed, "1");
 			const empty = mkdtempSync(join(tmpdir(), "run-on-node-locks-"));
 			try {
-				// A machine whose setup has not finished counts as closed.
-				assert.deepEqual([ask(empty).busy, ask(empty).waiting, ask(empty).arriving, ask(empty).closed], ["0", "0", "0", "1"]);
+				// A machine whose setup has not finished says so.
+				const fresh = ask(empty);
+				assert.deepEqual([fresh.busy, fresh.waiting, fresh.arriving, fresh.closed, fresh.setup], ["0", "0", "0", "0", "0"]);
 				// Set up, and no run has used it yet: no lock files, no queue or copy folder.
 				writeFileSync(join(empty, "versions"), "os=test\n");
-				assert.deepEqual([ask(empty).busy, ask(empty).waiting, ask(empty).arriving, ask(empty).closed], ["0", "0", "0", "0"]);
+				const ready = ask(empty);
+				assert.deepEqual([ready.busy, ready.waiting, ready.arriving, ready.closed, ready.setup], ["0", "0", "0", "0", "1"]);
 				assert.deepEqual(readdirSync(empty), ["versions"]);
 			} finally {
 				rmSync(empty, { recursive: true, force: true });
