@@ -30,12 +30,22 @@ p_name, p_args)`, the publishable key's, with authenticator's 8 s.
   the machine, and writes the plaintext only into the guest's credential file (0600, the host's uid). Only the
   hash leaves the node host: never the plaintext in a receipt, journal, log, observation or error.
 - **Rotation.** Binding the same allocation again replaces the hash, and the old credential fails at once. A hash
-  is bound once (23505 otherwise), so a warm reuse, a new allocation, binds a new credential.
+  is bound once (23505 otherwise), so a warm reuse, a new allocation, binds a new credential. A warm exec host's
+  systemd credentials are fixed when its unit starts, so G2-3b/3c hand a warm host each run's credential with the run
+  itself (as G2-2 hands it the job's lease token) and the host drops the old one; the old allocation's credential
+  dies at its release.
 - **Revocation** is per call and takes no lock: the allocation released, the identity disabled or in recovery, the
-  runner revoked or behind the identity's recovery epoch.
+  runner revoked or behind the identity's recovery epoch, an allocation of another company.
 - **Per kind** (`qorpera_native_identity_calls`, migrations only): a job guest and an exec slot get the four
-  identity calls; a login guest gets its own sign-in or refresh (describe, complete) and its identity's account
-  list and record, never the recovery state or vault custody, because its provider CLI can read its files.
+  identity calls; a login guest gets its own sign-in or refresh (describe, complete), and a refresh's guest also its
+  identity's account list and record (the refresh is that list and record), never the recovery state or vault
+  custody, because its provider CLI can read its files. A sign-in's completion takes only the native host's own
+  capsule reference, `native-capsule/<capsule id>`.
+- **For G2-3b:** a login guest reads its identity's recovery state today (the bootstrap, host startup, and the
+  `/login` identity-key backup stage, which re-reads it live and compares the epoch). That call is refused for a
+  login guest, so the login gateway must answer it (it reads the state node side), or the re-read must go with a
+  reason. A sign-in's guest also lists accounts after the sign-in and in its 60 s loop; those calls are refused for
+  it, so G2-3b skips them there (the metadata arrives with the next job or refresh).
 
 ### Rollout
 
@@ -46,6 +56,13 @@ p_name, p_args)`, the publishable key's, with authenticator's 8 s.
 | G2-3c | Node host: the LXD provider, the login gateway and the shared-execution service mint, bind and deliver | Node release | Per node, off by default; node 2 first |
 | G2-3d | The runtime switch's default on | Next image | After every node's G2-3c switch is on |
 
+**Gates before G2-3c's live probe and before G2-3d** (G2-2's switch-on gates, which the credential shares: its
+plaintext travels as an RPC parameter, as the lease token does):
+
+- `log_parameter_max_length` and `log_parameter_max_length_on_error` are 0 wherever statements are logged, so no log
+  line carries the credential;
+- the live proof that hosted PostgREST applies the entry point's 8 s statement budget, not the publishable key's 3 s.
+
 **Order on each node: the LXD guest image before the orchestrator.** The guest bootstrap checks an exact credential
 list, and the journal's `bootstrapSha256` covers every pushed file, the credential list included. An orchestrator
 that pushes the credential file into a guest whose image predates G2-3b fails that guest. So a node's pinned image
@@ -54,9 +71,13 @@ unit ship together).
 
 ### Undo
 
-- G2-3a: nothing uses it. To remove it: drop `qorpera_native_identity_call`, `qorpera_native_identity_dispatch`,
+In this order: G2-3d first, then G2-3c on every node, then G2-3a. Once G2-3d is on, a host without a credential fails
+at startup; once a node's G2-3c switch is on, its guests need the bind function.
+
+- G2-3a: nothing uses it while every node's G2-3c switch is off. To remove it: drop `qorpera_native_identity_call`, `qorpera_native_identity_dispatch`,
   `qorpera_native_host_invoke`, `qorpera_bind_native_identity_credential` and the tables
   `qorpera_native_identity_calls` and `qorpera_native_identity_credentials`. The two fixes it carries stay (the
   sign-in completion's capability check before its lock, and the revoked EXECUTE grants).
-- G2-3c: the node's switch off. Its hosts start without a credential and keep using the key, which stays until G2-5.
+- G2-3c: the node's switch off (with G2-3d off). Its hosts start without a credential and keep using the key, which
+  stays until G2-5.
 - G2-3d: the runtime switch's default back off.

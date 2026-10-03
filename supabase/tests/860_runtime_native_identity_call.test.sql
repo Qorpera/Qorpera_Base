@@ -80,7 +80,7 @@ begin
 end $$;
 create function pg_temp.expect(p_actual text, p_expected text, p_label text) returns void language plpgsql as $$
 begin
-	if (p_expected = 'not refused' and p_actual = 'refused')
+	if p_expected is null or p_actual is null or (p_expected = 'not refused' and p_actual = 'refused')
 		or (p_expected <> 'not refused' and p_actual is distinct from p_expected
 			and not (p_expected = 'ok' and p_actual like 'ok:%')) then
 		raise exception '%: expected %, got %', p_label, p_expected, p_actual; end if;
@@ -95,7 +95,8 @@ $$;
 -- 1. Who may call what: the entry point is the publishable key's alone; its body, the shared call and the binding are
 --    no API role's but the binding's node host; both tables are closed to every API role. Every listed function exists
 --    once, is SECURITY DEFINER, has the entry point's shape, has no statement budget of its own and stays out of the
---    publishable key's and members' reach. The entry point carries authenticator's 8 s.
+--    publishable key's and members' reach, with the argument names the entry point's checks were written for (a new
+--    id argument needs a new check). The entry point carries authenticator's 8 s.
 do $$
 declare v_bad text;
 begin
@@ -129,6 +130,25 @@ begin
 			where 'login_guest' = any(holder_kinds) and name in ('qorpera_identity_recovery_runtime_state',
 				'qorpera_compute_identity_login_in_vault')) then
 		raise exception 'the call list differs'; end if;
+	select string_agg(expected.name, ', ') into v_bad
+	from (values
+		('qorpera_identity_recovery_runtime_state', array['p_compute_identity_id']),
+		('qorpera_compute_identity_login_in_vault', array['p_compute_identity_id']),
+		('qorpera_list_native_provider_account_refreshes', array['p_compute_identity_id', 'p_recovery_epoch']),
+		('qorpera_record_native_provider_account_metadata', array['p_compute_identity_id', 'p_recovery_epoch', 'p_connection_id',
+			'p_connection_version', 'p_credential_capsule_id', 'p_provider_account_email', 'p_provider_account_usage',
+			'p_provider_account_identity']),
+		('qorpera_describe_native_provider_login', array['p_login_id', 'p_capability_sha256']),
+		('qorpera_complete_native_provider_login', array['p_login_id', 'p_capability_sha256', 'p_capsule_id',
+			'p_encrypted_capsule_reference', 'p_attestation_policy_sha256', 'p_provider_account_reference', 'p_billing_source',
+			'p_consent_version', 'p_quota_policy', 'p_provider_account_email']),
+		('qorpera_describe_native_account_refresh_route', array['p_request_id', 'p_capability_sha256']),
+		('qorpera_complete_native_account_refresh', array['p_request_id', 'p_capability_sha256', 'p_recovery_epoch'])
+	) as expected(name, arguments)
+	where not exists (select 1 from pg_proc as p where p.pronamespace = 'public'::regnamespace and p.proname = expected.name
+		and p.proargnames[1:p.pronargs] = expected.arguments)
+		or not exists (select 1 from public.qorpera_native_identity_calls as calls where calls.name = expected.name);
+	if v_bad is not null then raise exception 'listed calls with other arguments than the checks expect: %', v_bad; end if;
 end $$;
 
 -- 2. Binding: the node host only, for an unreleased run, sign-in or refresh allocation of its kind; a bind again
@@ -147,6 +167,8 @@ begin
 		'X' || repeat('x', 42)), '42501', 'a sign-in allocation as a job guest');
 	perform pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-000000000071', 'lxd', repeat('6', 64), 'job_guest',
 		'X' || repeat('x', 42)), '42501', 'another instance');
+	perform pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-000000000071', 'lxd-other', repeat('7', 64), 'job_guest',
+		'X' || repeat('x', 42)), '42501', 'another adapter');
 	perform pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-0000000000ff', 'lxd', repeat('7', 64), 'job_guest',
 		'X' || repeat('x', 42)), '42501', 'an unknown allocation');
 	perform pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-000000000071', 'lxd', repeat('7', 64), 'exec_slot',
@@ -166,11 +188,24 @@ begin
 		'ok', 'the new credential');
 	perform pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-000000000071', 'lxd', repeat('7', 64), 'job_guest',
 		current_setting('qorpera_test.job_credential')), 'ok:job_guest', 'back to the first credential');
+	-- The body's own check: a caller with a member's claims is refused even where it may execute the function.
+	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+	begin
+		perform public.qorpera_bind_native_identity_credential('86000000-0000-4000-8000-000000000071', 'lxd', repeat('7', 64),
+			'job_guest', pg_temp.sha('X' || repeat('x', 42)));
+		raise exception 'a bind with a member''s claims was accepted';
+	exception when insufficient_privilege then null;
+	end;
+	perform set_config('request.jwt.claims', '', true);
 end $$;
+savepoint exec_slot_bind;
+delete from public.qorpera_native_identity_credentials where allocation_id = '86000000-0000-4000-8000-000000000071';
+select pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-000000000071', 'lxd', repeat('7', 64), 'exec_slot',
+	'E' || repeat('e', 42)), 'ok:exec_slot', 'an exec slot binds');
+rollback to savepoint exec_slot_bind;
 
--- 3. Each kind's calls: a job guest's identity calls answer as the service caller's; a login guest gets its own
---    sign-in and its identity's account metadata, never the recovery state or vault custody; a job guest never a
---    sign-in. An exec slot is a job guest's equal.
+-- 3. Each kind's calls: a job guest's identity calls answer as the service caller's; a sign-in's login guest gets its
+--    own sign-in and nothing of its identity's; a job guest never a sign-in. An exec slot is a job guest's equal.
 do $$
 declare v_direct jsonb; v_job text := current_setting('qorpera_test.job_credential');
 	v_login text := current_setting('qorpera_test.login_credential'); v_epoch bigint := pg_temp.epoch();
@@ -213,7 +248,7 @@ begin
 	perform pg_temp.expect(pg_temp.call(v_login, 'qorpera_compute_identity_login_in_vault', pg_temp.identity_args()),
 		'refused', 'a login guest''s vault custody');
 	perform pg_temp.expect(pg_temp.call(v_login, 'qorpera_list_native_provider_account_refreshes',
-		pg_temp.identity_args() || jsonb_build_object('p_recovery_epoch', v_epoch)), 'ok', 'a login guest''s account list');
+		pg_temp.identity_args() || jsonb_build_object('p_recovery_epoch', v_epoch)), 'refused', 'a sign-in guest''s account list');
 	perform pg_temp.expect(pg_temp.call(v_login, 'qorpera_describe_native_account_refresh_route', jsonb_build_object(
 		'p_request_id', '86000000-0000-4000-8000-000000000061', 'p_capability_sha256', pg_temp.sha('refresh-capability'))),
 		'refused', 'a sign-in guest''s account refresh');
@@ -228,7 +263,45 @@ select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.job_credential'
 	'refused', 'an exec slot''s sign-in');
 rollback to savepoint exec_slot;
 
--- 4. An account refresh's login guest: its own refresh, never a sign-in.
+-- The sign-in guest completes its sign-in through the entry point as the service caller would (compared with a direct
+-- completion, rolled back), and only with the native host's own capsule reference.
+do $$
+declare v_direct jsonb; v_outcome text; v_args jsonb := jsonb_build_object(
+	'p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.sha('login-capability'),
+	'p_capsule_id', '86000000-0000-4000-8000-000000000081',
+	'p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-000000000081',
+	'p_attestation_policy_sha256', repeat('b', 64), 'p_provider_account_reference', 'fixture-openai-account',
+	'p_billing_source', 'personal-subscription', 'p_consent_version', 'qorpera-native-provider-consent/v1',
+	'p_quota_policy', '{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}'::jsonb,
+	'p_provider_account_email', 'member@example.com');
+begin
+	begin
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		v_direct := public.qorpera_complete_native_provider_login((v_args ->> 'p_login_id')::uuid, v_args ->> 'p_capability_sha256',
+			(v_args ->> 'p_capsule_id')::uuid, v_args ->> 'p_encrypted_capsule_reference', v_args ->> 'p_attestation_policy_sha256',
+			v_args ->> 'p_provider_account_reference', v_args ->> 'p_billing_source', v_args ->> 'p_consent_version',
+			v_args -> 'p_quota_policy', v_args ->> 'p_provider_account_email');
+		raise exception using errcode = 'QG23A', message = 'roll the direct completion back';
+	exception when sqlstate 'QG23A' then null;
+	end;
+	perform set_config('request.jwt.claims', '', true);
+	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
+		v_args || jsonb_build_object('p_encrypted_capsule_reference', 'model-login/86000000-0000-4000-8000-000000000081')),
+		'refused', 'a sign-in completed with a vault capsule reference');
+	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
+		v_args || jsonb_build_object('p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-000000000082')),
+		'refused', 'a sign-in completed with another capsule''s reference');
+	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
+		v_args - 'p_encrypted_capsule_reference'), 'refused', 'a sign-in completed with no capsule reference');
+	v_outcome := pg_temp.call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login', v_args);
+	if v_direct is null or v_outcome not like 'ok:%' or (substr(v_outcome, 4)::jsonb - 'connection_id') <> (v_direct - 'connection_id') then
+		raise exception 'a sign-in completed through the entry point differs: % vs %', v_outcome, v_direct; end if;
+	if (select status from public.qorpera_native_provider_login_sessions
+		where id = current_setting('qorpera_test.login_id')::uuid) is distinct from 'completed' then
+		raise exception 'the sign-in is not completed'; end if;
+end $$;
+
+-- 4. An account refresh's login guest: its own refresh and its identity's account list and record, never a sign-in.
 update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp()
 where id = '86000000-0000-4000-8000-000000000072';
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, account_refresh_request_id, login_compute_identity_id,
@@ -251,6 +324,35 @@ select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credent
 select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credential'), 'qorpera_describe_native_provider_login',
 	jsonb_build_object('p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.sha('login-capability'))),
 	'refused', 'a refresh guest''s sign-in');
+select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credential'), 'qorpera_identity_recovery_runtime_state',
+	pg_temp.identity_args()), 'refused', 'a refresh guest''s recovery state');
+select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credential'), 'qorpera_compute_identity_login_in_vault',
+	pg_temp.identity_args()), 'refused', 'a refresh guest''s vault custody');
+select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credential'), 'qorpera_list_native_provider_account_refreshes',
+	pg_temp.identity_args() || jsonb_build_object('p_recovery_epoch', pg_temp.epoch())), 'ok', 'a refresh guest''s account list');
+select pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credential'), 'qorpera_record_native_provider_account_metadata',
+	pg_temp.identity_args() || jsonb_build_object('p_recovery_epoch', pg_temp.epoch(), 'p_connection_id', extensions.gen_random_uuid(),
+		'p_connection_version', 1, 'p_credential_capsule_id', extensions.gen_random_uuid(), 'p_provider_account_email', null,
+		'p_provider_account_usage', null)), 'not refused', 'a refresh guest''s account record');
+-- The refresh guest completes its refresh through the entry point as the service caller would.
+do $$
+declare v_direct boolean; v_args jsonb := jsonb_build_object('p_request_id', '86000000-0000-4000-8000-000000000061',
+	'p_capability_sha256', pg_temp.sha('refresh-capability'), 'p_recovery_epoch', pg_temp.epoch());
+begin
+	begin
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		v_direct := public.qorpera_complete_native_account_refresh((v_args ->> 'p_request_id')::uuid, v_args ->> 'p_capability_sha256',
+			(v_args ->> 'p_recovery_epoch')::bigint);
+		raise exception using errcode = 'QG23A', message = 'roll the direct completion back';
+	exception when sqlstate 'QG23A' then null;
+	end;
+	perform set_config('request.jwt.claims', '', true);
+	perform pg_temp.expect(pg_temp.call(current_setting('qorpera_test.refresh_credential'), 'qorpera_complete_native_account_refresh',
+		v_args), 'ok:' || to_jsonb(v_direct)::text, 'a refresh guest''s own refresh completion');
+	if (select status from public.qorpera_native_account_refresh_requests
+		where id = '86000000-0000-4000-8000-000000000061') is distinct from 'completed' then
+		raise exception 'the refresh is not completed'; end if;
+end $$;
 
 -- 5. Everything else is the entry point's one refusal: no or a wrong credential, another identity, an unlisted or
 --    schema-qualified name, an undeclared argument, another recovery epoch, a released allocation, an identity that is
@@ -331,6 +433,15 @@ select pg_temp.expect(pg_temp.bind('86000000-0000-4000-8000-000000000071', 'lxd'
 	current_setting('qorpera_test.job_credential')), '42501', 'binding a released allocation');
 rollback to savepoint released;
 
+-- A second pending sign-in of the identity, by its member, for 6.
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.pending_login_id', public.qorpera_begin_native_provider_login(
+	'30000000-0000-4000-8000-000000000010', '86000000-0000-4000-8000-000000000053', '86000000-0000-4000-8000-000000000054',
+	current_setting('qorpera_test.identity')::uuid, 'openai', 'codex-cli', pg_temp.sha('pending-login-capability'), 900)
+	->> 'login_id', false);
+reset role;
+
 -- 6. A sign-in's completion checks the caller and the capability before it locks the sign-in, NULL-safe: with every
 --    other input valid (as test 300's fixture completes its sign-in), a wrong or no capability is 55000.
 do $$
@@ -340,8 +451,8 @@ begin
 	foreach v_capability in array array[repeat('0', 64), null] loop
 		v_state := 'completed';
 		begin
-			perform public.qorpera_complete_native_provider_login(current_setting('qorpera_test.login_id')::uuid, v_capability,
-				'86000000-0000-4000-8000-000000000081', 'object://native-capsules/86000000-0000-4000-8000-000000000081',
+			perform public.qorpera_complete_native_provider_login(current_setting('qorpera_test.pending_login_id')::uuid, v_capability,
+				'86000000-0000-4000-8000-000000000083', 'object://native-capsules/86000000-0000-4000-8000-000000000083',
 				repeat('b', 64), 'fixture-openai-account', 'personal-subscription', 'qorpera-native-provider-consent/v1',
 				'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}',
 				null);

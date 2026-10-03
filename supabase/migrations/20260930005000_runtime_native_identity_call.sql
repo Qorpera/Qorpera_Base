@@ -10,31 +10,34 @@
 -- 1. The holder is a machine allocation the node host has just reserved: a job guest or an exec slot (a run
 --    allocation, whose runner holds the identity) or a login guest (a sign-in or account refresh allocation of the
 --    identity). The node host binds the credential's sha256 to it with qorpera_bind_native_identity_credential; only
---    the hash is stored, and a bind again replaces it, so the old credential fails at once. Releasing the allocation,
---    disabling the identity, a pending recovery or a newer recovery epoch than the runner's ends it; nothing else does.
+--    the hash is stored, and a bind again replaces it, so the old credential fails at once. It ends when the
+--    allocation is released, the identity is disabled or goes into recovery, or the runner is revoked or falls behind
+--    the identity's recovery epoch.
 -- 2. The entry point checks the credential first, by its hash and with no lock: its allocation is unreleased, the
 --    identity is active, not in recovery and the allocation's company's, and for a runner its pinned recovery epoch is
 --    the identity's. Every refusal is one 42501 "native identity call is refused".
 -- 3. It allows only the calls listed in qorpera_native_identity_calls for the holder's kind (changed by migrations
 --    only; no API role reads or writes it). A login guest, whose provider CLI can read its own files, gets only its
---    own sign-in or account refresh and its identity's account metadata, never the identity's recovery state or vault
---    custody. Whatever the call, p_compute_identity_id and p_recovery_epoch must be the identity's, p_login_id the
---    allocation's sign-in and p_request_id its account refresh; a sign-in or refresh call's capability must be that
---    sign-in's or refresh's.
+--    own sign-in or account refresh; a refresh's guest also gets its identity's account list and record (the refresh
+--    is that list and record), never the identity's recovery state or vault custody. Whatever the call,
+--    p_compute_identity_id and p_recovery_epoch must be the identity's, p_login_id the allocation's sign-in and
+--    p_request_id its account refresh; a sign-in or refresh call's capability must be that sign-in's or refresh's, and
+--    a sign-in's capsule reference the native host's own (native-capsule/<capsule id>).
 -- 4. It calls the one public function of that name as G2-1's entry point does (qorpera_native_host_invoke: named plain
 --    inputs, values through USING, as the platform's service caller on the function's own RPC path, no handler), with
 --    authenticator's 8 s statement and lock budgets.
 -- Also, from G2-3's inventory (both are the #575 pattern):
 -- - qorpera_complete_native_provider_login checks the caller and the sign-in's capability before it locks the
---   sign-in, NULL-safe;
--- - the sign-in describes and the identity family's member functions lose the anon (and, for the service-only ones,
+--   sign-in, NULL-safe (before, a NULL capability completed the sign-in);
+-- - the sign-in, identity and provider connection functions lose the anon (and, for the service-only ones,
 --   authenticated) EXECUTE the default privileges left them.
 --
 -- Locks: none added on the call path. The checks read the credential, allocation, identity, runner, sign-in and
--- refresh rows without locks, before the called function takes its own. Binding inserts one credential row, whose
--- foreign key takes KEY SHARE on the allocation row: a release (NO KEY UPDATE) does not wait for it, a reservation's
--- FOR UPDATE of the same allocation waits for at most that insert. No identity row is locked (no foreign key to it:
--- recovery locks it FOR UPDATE).
+-- refresh rows without locks, before the called function takes its own. A first bind inserts one credential row, whose
+-- foreign key takes KEY SHARE on the allocation row: a release or a reservation of that allocation (both FOR UPDATE)
+-- waits for an open first bind, and a first bind's foreign key check waits for an open release or reservation. Neither
+-- waits for anything else the other holds, so there is no cycle. A bind again (the ON CONFLICT update) leaves the key
+-- unchanged and takes no KEY SHARE. No identity row is locked (no foreign key to it: recovery locks it FOR UPDATE).
 
 set local lock_timeout = '3s';
 
@@ -192,6 +195,7 @@ begin
 	select calls.scope, calls.holder_kinds into v_scope, v_kinds from public.qorpera_native_identity_calls as calls
 	where calls.name = p_name;
 	if v_scope is null or not (v_credential.holder_kind = any(v_kinds))
+		or (v_scope = 'identity' and v_credential.holder_kind = 'login_guest' and v_allocation.account_refresh_request_id is null)
 		or (p_args ? 'p_compute_identity_id' and p_args ->> 'p_compute_identity_id' is distinct from p_compute_identity_id::text)
 		or (p_args ? 'p_recovery_epoch' and p_args ->> 'p_recovery_epoch' is distinct from v_identity.recovery_epoch::text)
 		or (p_args ? 'p_login_id' and p_args ->> 'p_login_id' is distinct from v_allocation.login_session_id::text)
@@ -201,6 +205,8 @@ begin
 			when 'login' then p_args ? 'p_login_id' and exists (select 1 from public.qorpera_native_provider_login_sessions as login
 				where login.id = v_allocation.login_session_id and login.compute_identity_id = p_compute_identity_id
 					and login.capability_sha256 = p_args ->> 'p_capability_sha256')
+				and (p_name <> 'qorpera_complete_native_provider_login'
+					or p_args ->> 'p_encrypted_capsule_reference' = 'native-capsule/' || (p_args ->> 'p_capsule_id'))
 			when 'account_refresh' then p_args ? 'p_request_id' and exists (
 				select 1 from public.qorpera_native_account_refresh_requests as request
 				where request.id = v_allocation.account_refresh_request_id and request.compute_identity_id = p_compute_identity_id
@@ -257,8 +263,9 @@ $replacement$	-- 20260930005000: the caller and the sign-in's capability first, 
 	for update;
 $replacement$);
 
--- Execute rights the default privileges left open on the sign-in and identity family. Service-only functions lose
--- anon and authenticated; member functions lose anon. Their bodies already refused these callers.
+-- Execute rights the default privileges left open on the sign-in, identity and provider connection family.
+-- Service-only functions lose anon and authenticated; member functions lose anon. Their bodies already refused these
+-- callers.
 revoke execute on function public.qorpera_describe_native_provider_login(uuid, text) from anon, authenticated;
 revoke execute on function public.qorpera_describe_native_provider_login_route(uuid, text) from anon, authenticated;
 revoke execute on function public.qorpera_begin_native_provider_login(uuid, uuid, uuid, uuid, text, text, text, integer)
@@ -267,3 +274,12 @@ revoke execute on function public.qorpera_revoke_native_provider_connection(uuid
 revoke execute on function public.qorpera_upsert_member_compute_identity(uuid, uuid, text, text, text, jsonb, jsonb) from anon;
 revoke execute on function public.qorpera_upsert_scoped_compute_identity(uuid, uuid, text, text, text, text, text, jsonb, jsonb)
 	from anon;
+revoke execute on function public.qorpera_acquire_native_provider_connection_lease(uuid, uuid, text, uuid, text, integer)
+	from anon, authenticated;
+revoke execute on function public.qorpera_renew_native_provider_connection_lease(uuid, uuid, text, uuid, text, integer)
+	from anon, authenticated;
+revoke execute on function public.qorpera_release_native_provider_connection_lease(uuid, uuid, text, uuid, text, text)
+	from anon, authenticated;
+revoke execute on function public.qorpera_register_provider_connection(uuid, uuid, uuid, text, text, text, text, text, text, text,
+	text, jsonb, boolean) from anon;
+revoke execute on function public.qorpera_set_provider_connection_status(uuid, uuid, text) from anon;

@@ -1,8 +1,9 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- G2-3a (20260930005000): the native identity entry point checks the holder's credential per call and with no lock,
 -- so a refused call never waits for a transaction that holds the identity, its runner, the holder's allocation or
--- credential; a re-bind or a release takes effect on the next call, not after the calls in flight; a bind and a
--- release never wait for each other, and whichever commits first, a released allocation's credential is refused. A
+-- credential; a re-bind or a release takes effect on the next call, not after the calls in flight. A first bind and
+-- a release of the same allocation wait only for each other's single statement (the bind's foreign key KEY SHARE
+-- against the release's FOR UPDATE), and whichever commits first, a released allocation's credential is refused. A
 -- sign-in's completion compares the capability before it locks the sign-in. Test 300's fixture gives a member's
 -- identity, its runner and a completed sign-in; this adds a run allocation with a bound job guest credential, a
 -- pending sign-in with an unbound allocation, and an account refresh request.
@@ -292,22 +293,25 @@ begin
 	if v_outcome ? 'error' then raise exception 'The new credential was refused: %', v_outcome; end if;
 end $$;
 
--- 4. A release while the holder's call is in flight: the release does not wait for the call's transaction, and the
---    holder's next call, in that same transaction, is refused.
+-- 4. A release (the node host's qorpera_release_runtime_machine) while the holder's call is in flight: the release
+--    does not wait for the call's transaction, and the holder's next call, in that same transaction, is refused.
 do $$
-declare v_outcome jsonb; v_status text;
+declare v_outcome jsonb; v_status jsonb;
 begin
 	perform pg_temp.r861_begin('caller', 'anon');
 	perform * from dblink('r861_caller', pg_temp.r861_call_sql(current_setting('qorpera_test.rotated_credential')))
 		as call(result jsonb);
-	perform dblink_send_query('r861_holder', format(
-		'update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = %L',
-		'86100000-0000-4000-8000-000000000071'));
+	perform pg_temp.r861_begin('holder', 'service_role');
+	perform dblink_send_query('r861_holder', format($q$select public.qorpera_release_runtime_machine(%L, 'lxd', %L)$q$,
+		'86100000-0000-4000-8000-000000000071', repeat('7', 64)));
 	if pg_temp.r861_waited_for('holder', pg_temp.r861_pid('caller')) then
 		perform dblink_exec('r861_caller', 'rollback');
-		raise exception 'A release waited for a native identity call: %', pg_temp.r861_command_outcome('r861_holder'); end if;
-	v_status := pg_temp.r861_command_outcome('r861_holder');
-	if v_status is distinct from 'UPDATE 1' then
+		v_status := pg_temp.r861_collect('r861_holder');
+		perform dblink_exec('r861_holder', 'rollback');
+		raise exception 'A release waited for a native identity call: %', v_status; end if;
+	v_status := pg_temp.r861_collect('r861_holder');
+	perform dblink_exec('r861_holder', 'commit');
+	if v_status ? 'error' then
 		perform dblink_exec('r861_caller', 'rollback');
 		raise exception 'The release failed: %', v_status; end if;
 	perform dblink_send_query('r861_caller', pg_temp.r861_call_sql(current_setting('qorpera_test.rotated_credential')));
@@ -317,27 +321,32 @@ begin
 		raise exception 'A released allocation''s credential was not refused in a call in flight: %', v_outcome; end if;
 end $$;
 
--- 5. A bind and a release of the same allocation never wait for each other, and whichever commits first, the bound
---    credential is refused once the allocation is released. a) The bind first: a login guest's bind is open while its
---    allocation is released. b) The release first: an account refresh's allocation is being released while its
---    login guest's credential is bound.
+-- 5. A first bind and a release of the same allocation (the login gateway's releases) wait only for each other, and
+--    whichever commits first, the bound credential is refused once the allocation is released. a) The bind first: a
+--    sign-in's first bind is open while the gateway releases its allocation. b) The release first: an account
+--    refresh's release is open while its login guest's credential is bound.
 do $$
-declare v_outcome jsonb; v_status text;
+declare v_outcome jsonb;
 begin
 	perform pg_temp.r861_begin('holder', 'service_role');
 	perform * from dblink('r861_holder', format($q$select public.qorpera_bind_native_identity_credential(%L, 'lxd-login', %L, 'login_guest', %L)$q$,
 		'86100000-0000-4000-8000-000000000072', repeat('8', 64), pg_temp.sha(current_setting('qorpera_test.login_credential'))))
 		as bound(result jsonb);
+	perform pg_temp.r861_begin('caller', 'service_role');
 	perform dblink_send_query('r861_caller', format(
-		'update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = %L',
-		'86100000-0000-4000-8000-000000000072'));
-	if pg_temp.r861_waited_for('caller', pg_temp.r861_pid('holder')) then
+		$q$select public.qorpera_release_runtime_login_machine(%L, 'lxd-login', %L, %L)$q$,
+		'86100000-0000-4000-8000-000000000072', repeat('8', 64), current_setting('qorpera_test.login_id')));
+	if not pg_temp.r861_waited_for('caller', pg_temp.r861_pid('holder')) then
 		perform dblink_exec('r861_holder', 'rollback');
-		raise exception 'A release waited for a bind: %', pg_temp.r861_command_outcome('r861_caller'); end if;
-	v_status := pg_temp.r861_command_outcome('r861_caller');
+		v_outcome := pg_temp.r861_collect('r861_caller');
+		perform dblink_exec('r861_caller', 'rollback');
+		raise exception 'The release did not wait for the open first bind (the test holds nothing): %', v_outcome; end if;
 	perform dblink_exec('r861_holder', 'commit');
-	if v_status is distinct from 'UPDATE 1' then raise exception 'The release failed: %', v_status; end if;
-	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.login_credential'));
+	v_outcome := pg_temp.r861_collect('r861_caller');
+	perform dblink_exec('r861_caller', 'commit');
+	if v_outcome ? 'error' then raise exception 'The release after a bind failed: %', v_outcome; end if;
+	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.login_credential'), 'qorpera_describe_native_provider_login',
+		jsonb_build_object('p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.sha('login-capability')));
 	if not pg_temp.r861_refused(v_outcome) then
 		raise exception 'A credential bound before its allocation''s release was not refused: %', v_outcome; end if;
 end $$;
@@ -348,23 +357,23 @@ values ('86100000-0000-4000-8000-000000000073', current_setting('qorpera_test.pr
 do $$
 declare v_outcome jsonb;
 begin
-	perform dblink_exec('r861_holder', 'begin');
-	perform dblink_exec('r861_holder', format(
-		'update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = %L',
-		'86100000-0000-4000-8000-000000000073'));
+	perform pg_temp.r861_begin('holder', 'service_role');
+	perform * from dblink('r861_holder', format(
+		$q$select public.qorpera_release_runtime_account_refresh_machine(%L, 'lxd-login', %L, %L)$q$,
+		'86100000-0000-4000-8000-000000000073', repeat('9', 64), '86100000-0000-4000-8000-000000000061')) as released(result jsonb);
 	perform pg_temp.r861_begin('caller', 'service_role');
 	perform dblink_send_query('r861_caller', format(
 		$q$select public.qorpera_bind_native_identity_credential(%L, 'lxd-login', %L, 'login_guest', %L)$q$,
 		'86100000-0000-4000-8000-000000000073', repeat('9', 64), pg_temp.sha(current_setting('qorpera_test.refresh_credential'))));
-	if pg_temp.r861_waited_for('caller', pg_temp.r861_pid('holder')) then
+	if not pg_temp.r861_waited_for('caller', pg_temp.r861_pid('holder')) then
 		perform dblink_exec('r861_holder', 'rollback');
 		v_outcome := pg_temp.r861_collect('r861_caller');
 		perform dblink_exec('r861_caller', 'rollback');
-		raise exception 'A bind waited for a release: %', v_outcome; end if;
+		raise exception 'The bind did not wait for the open release (the test holds nothing): %', v_outcome; end if;
+	perform dblink_exec('r861_holder', 'commit');
 	v_outcome := pg_temp.r861_collect('r861_caller');
 	perform dblink_exec('r861_caller', 'commit');
-	perform dblink_exec('r861_holder', 'commit');
-	if v_outcome ? 'error' then raise exception 'A bind before the release committed failed: %', v_outcome; end if;
+	if v_outcome ? 'error' then raise exception 'A bind behind a release failed: %', v_outcome; end if;
 	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.refresh_credential'),
 		'qorpera_describe_native_account_refresh_route', jsonb_build_object('p_request_id', '86100000-0000-4000-8000-000000000061',
 			'p_capability_sha256', pg_temp.sha('refresh-capability')));
