@@ -1,0 +1,15 @@
+[Unit]
+Description=Qorpera agent exit: DHCP and DNS for agent machines (dnsmasq in the exit's namespace)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+BindsTo=qorpera-agent-exit.service
+After=qorpera-agent-exit.service
+
+[Service]
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh dns
+Restart=always
+RestartSec=2
+# Every query is logged; journald must not drop lines.
+LogRateLimitIntervalSec=0
+
+[Install]
+WantedBy=qorpera-agent-exit.service

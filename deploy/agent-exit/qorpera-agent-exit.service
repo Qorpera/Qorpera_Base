@@ -1,0 +1,17 @@
+[Unit]
+Description=Qorpera agent exit (namespace, bridge, uplink and rules for agent machines' internet)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+After=network-online.target qorpera-guest-guard.service
+Wants=network-online.target qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
+# Reload repairs links and reloads both rule tables in one transaction each, without removing the exit.
+ExecReload=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh up
+# Stopping refuses while an agent machine is plugged in; empty the node first.
+ExecStop=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh down
+
+[Install]
+WantedBy=multi-user.target

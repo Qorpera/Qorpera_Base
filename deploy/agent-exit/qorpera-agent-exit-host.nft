@@ -1,0 +1,37 @@
+# Qorpera agent exit (E1): the node's side. The exit's uplink qx-up (10.209.255.1/30, the exit is 10.209.255.2) may
+# reach public addresses only, and nothing on the node itself. The bridge qagent0 has no address on the node, so
+# agent machines never reach a node service. Phase 1 masquerades the exit out of the node's own uplink (the platform
+# address); phase 2 (E9) gives the exit a public address of its own and drops that rule.
+#
+# Load it with qorpera-agent-exit.sh. The same file runs on every node. Bridged traffic on qagent0 (agent machine to
+# the exit's br0) is never matched here: no rule names qagent0 in forward.
+
+table inet qorpera_agent_exit_host {
+	set internal4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 93.164.62.162
+		}
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 5; policy accept;
+		iifname "qx-up" ct state established,related return
+		iifname "qx-up" ip saddr != 10.209.255.2 drop
+		iifname "qx-up" meta nfproto ipv6 drop
+		iifname "qx-up" ip daddr @internal4 drop
+		oifname "qx-up" ct state != { established, related } drop
+	}
+
+	chain input {
+		type filter hook input priority filter - 5; policy accept;
+		iifname { "qx-up", "qagent0" } ct state != { established, related } drop
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.209.255.2 oifname != "qx-up" masquerade
+	}
+}
