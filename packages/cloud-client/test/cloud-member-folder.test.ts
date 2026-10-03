@@ -566,6 +566,14 @@ describe("member writes (P34a)", () => {
 			new AbortController().signal,
 		);
 		await expect(denied).rejects.toBeInstanceOf(CloudMemberFolderAccessDenied);
+		// A lock conflict keeps its status, so the caller sends the same change set again with the same key.
+		const busy = client(() => new Response(null, { status: 409 })).folder.commit(
+			"web:4",
+			units,
+			new AbortController().signal,
+		);
+		await expect(busy).rejects.toMatchObject({ status: 409 });
+		await expect(busy).rejects.not.toBeInstanceOf(CloudMemberFolderAccessDenied);
 	});
 
 	it("reads the files through the member function", async () => {

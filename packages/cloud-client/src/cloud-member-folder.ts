@@ -23,15 +23,23 @@ const MAX_MANIFEST_BYTES = 32 * 1024;
 /** A full page of 1,000 entries or changes with long paths fits. */
 const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-export class CloudMemberFolderError extends Error {}
+export class CloudMemberFolderError extends Error {
+	/** The HTTP status that refused the call, or null when no answer did. A change set answered 409 (a lock conflict)
+	 * is sent again with the same operation key; 423 means the company is paused or being deleted. */
+	readonly status: number | null;
+	constructor(message: string, status: number | null = null) {
+		super(message);
+		this.status = status;
+	}
+}
 
 /** The database or the gateway refused this member (401 or 403): not an outage. */
 export class CloudMemberFolderAccessDenied extends CloudMemberFolderError {}
 
 function refusal(status: number, what: string): CloudMemberFolderError {
 	return status === 401 || status === 403
-		? new CloudMemberFolderAccessDenied(`${what} access is refused (${status})`)
-		: new CloudMemberFolderError(`${what} is unavailable (${status})`);
+		? new CloudMemberFolderAccessDenied(`${what} access is refused (${status})`, status)
+		: new CloudMemberFolderError(`${what} is unavailable (${status})`, status);
 }
 
 function invalid(what: string): never {

@@ -21,7 +21,7 @@ begin
 	perform public.qorpera_folder_read_actor(p_environment_id, v_actor);
 	select file.profile_id into v_profile from public.qorpera_company_files as file
 	where file.environment_id = p_environment_id and file.core = 'folder-v2';
-	if exists (select 1 from public.qorpera_company_execution_pauses as pause where pause.profile_id = v_profile) then
+	if public.qorpera_company_execution_paused(v_profile) then
 		raise exception 'Company execution is paused' using errcode = '55000'; end if;
 	return jsonb_build_object('schema', 'qorpera.member-folder-writer/v1', 'actor', v_actor, 'profileId', v_profile);
 end $$;
