@@ -6,8 +6,6 @@ import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHea
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const QUARANTINE = ".quarantine";
-const QUARANTINED_NAME =
-	/^([0-9a-f]{64})\.([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\.(0|[1-9][0-9]{0,6})\.replica)?$/;
 const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
 
 export type ObjectWriteResult = "exists" | "stored";
@@ -261,9 +259,17 @@ export class FileSystemObjectStore {
 				}
 				for (const name of names.sort()) {
 					if (profileId === afterCompany && afterName !== undefined && name <= afterName) continue;
-					const match = QUARANTINED_NAME.exec(name);
-					if (!match) continue;
-					const [, sha256, leaseId, markerBytes] = match;
+					// `<sha256>.<leaseId>`, or a marker `<sha256>.<leaseId>.<bytes>.replica`.
+					const [sha256, leaseId, markerBytes, suffix, ...rest] = name.split(".");
+					if (
+						!SHA256_PATTERN.test(sha256 ?? "") ||
+						!UUID_PATTERN.test(leaseId ?? "") ||
+						rest.length > 0 ||
+						(markerBytes === undefined
+							? suffix !== undefined
+							: suffix !== "replica" || !/^(0|[1-9][0-9]{0,6})$/.test(markerBytes))
+					)
+						continue;
 					let bytes: number;
 					if (markerBytes !== undefined) bytes = Number(markerBytes);
 					else {
