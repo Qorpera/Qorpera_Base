@@ -215,6 +215,22 @@ begin
 		current_setting('qorpera_test.envelope_sha'), v_result);
 end $$;
 
+-- B2. The reservation's folder branch serves the machine kind only: a coding reservation for the folder-v2 company still
+-- takes the gc fence (C1c-3h), so it waits for a holder of the company row KEY SHARE, and then refuses for its own reasons.
+do $$
+declare v_state text;
+begin
+	perform pg_temp.hold('row');
+	perform dblink_send_query('fence_two', format('select public.qorpera_reserve_runtime_node_machine(%L, %L, %L, %L, %L, %L, %L, %L)::text',
+		(select placement.id from public.qorpera_company_machine_placements placement
+			where placement.machine_id = (pg_temp.machine('c-agent')).id and placement.removed_at is null),
+		'coding', 'machine-824', repeat('f', 64), repeat('0', 64), repeat('8', 64), 1000, 1073741824));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'B2: a folder-v2 coding reservation keeps the gc fence'; end if;
+	perform pg_temp.release();
+	v_state := pg_temp.outcome('fence_two');
+	if v_state not like '42501 %' then raise exception 'B2: the coding reservation refuses after the fence: %', v_state; end if;
+end $$;
+
 -- C. Custody beside a folder effect: running, commands and the executor's authorization to run, none waiting. Suspend
 -- behind a stop waits at the fence (its brief fence), before the machine or the placement. The node is observed first,
 -- outside the block: an observation inside it would hold the node row that the reservation waits for.
@@ -352,6 +368,84 @@ begin
 			pg_temp.machine('c-sweep'), pg_temp.machine('s-sweep'); end if;
 end $$;
 
+-- E3. The sweep takes the company row (rank 0) before the machine: behind a holder of the row stronger than KEY SHARE (until
+-- C1c-3g, deletion's gc fence) it waits at the row, then deletes c-sweep2.
+insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+	started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, wanted_at, updated_at)
+values ('82400000-0000-4000-8000-0000000000a4', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'c-sweep2',
+	'Long done', '64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(),
+	'64800000-0000-4000-8000-000000000002', 1, 1073741824, 10737418240, 'standard', 'task', 'stopped',
+	clock_timestamp() - interval '40 days', clock_timestamp() - interval '40 days');
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('fence_two', pg_temp.sql_admit());
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_profiles') then raise exception 'E3: the sweep must wait at the company row'; end if;
+	if exists (select 1 from pg_locks where pid = current_setting('qorpera_test.pid_fence_two')::integer and locktype = 'tuple'
+			and relation = 'public.qorpera_company_machines'::regclass) then raise exception 'E3: the sweep takes the row before the machine'; end if;
+	perform pg_temp.release();
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' or (pg_temp.machine('c-sweep2')).removed_at is null then raise exception 'E3: c-sweep2 after the row: %', v_state; end if;
+end $$;
+
+-- E4. A company whose machine lock the same pass's disk give-up holds is not swept in that pass. The executor gives machines
+-- 40 GiB; c-agent holds 10 and c-sleep, asleep, 20; c-big (20) waits, so the pass gives up c-sleep's disk (its company's
+-- machine lock and c-sleep's row, to the end of the pass). Behind a holder of the company row FOR UPDATE (deletion until
+-- C1c-3g, which wants that lock and those machines next) the sweep then leaves c-sweep3 alone instead of waiting there.
+select public.qorpera_configure_machine_executor('mx-824', repeat('8', 64), true, (select policy from public.qorpera_machine_executors
+	where owner = 'mx-824'), 42949672960) \g /dev/null
+insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+	started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, wanted_at, updated_at)
+values ('82400000-0000-4000-8000-0000000000a5', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'c-sleep',
+	'Sleeps', '64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(),
+	'64800000-0000-4000-8000-000000000002', 1, 1073741824, 21474836480, 'standard', 'task', 'running', clock_timestamp(), clock_timestamp());
+select pg_temp.observe();
+select public.qorpera_admit_executor_machines('mx-824', repeat('8', 64)) \g /dev/null
+select public.qorpera_set_company_machine_desired(machine, 'stopped', 'member') from public.qorpera_company_machines machine
+where machine.name = 'c-sleep' \g /dev/null
+do $$
+begin
+	execute pg_temp.sql_custody('qorpera_authorize_executor_machine', 'c-sleep', ', ''stop''');
+	execute pg_temp.sql_custody('qorpera_suspend_company_machine', 'c-sleep');
+end $$;
+insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+	started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state, wanted_at, updated_at)
+values
+	('82400000-0000-4000-8000-0000000000a6', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'c-big',
+		'Needs room', '64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(),
+		'64800000-0000-4000-8000-000000000002', 1, 1073741824, 21474836480, 'standard', 'task', 'running', clock_timestamp(), clock_timestamp()),
+	('82400000-0000-4000-8000-0000000000a7', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'c-sweep3',
+		'Long done', '64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(),
+		'64800000-0000-4000-8000-000000000002', 1, 1073741824, 10737418240, 'standard', 'task', 'stopped',
+		clock_timestamp() - interval '40 days', clock_timestamp() - interval '40 days');
+select pg_temp.observe();
+do $$
+declare v_state text;
+begin
+	if (select demand.suspended_at from public.qorpera_runtime_node_demands demand join public.qorpera_company_machine_placements placement
+			on placement.id = demand.allocation_id where placement.machine_id = '82400000-0000-4000-8000-0000000000a5'
+			and placement.removed_at is null) is null then raise exception 'E4: c-sleep must sleep on the node'; end if;
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+		for update$q$) as t(x integer);
+	perform dblink_send_query('fence_two', pg_temp.sql_admit());
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
+		perform pg_temp.release();
+		raise exception 'E4: the sweep waited for the company row while the pass held its machine lock'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	perform pg_temp.release();
+	if v_state <> 'ok' or not exists (select 1 from public.qorpera_company_machine_placements
+			where machine_id = '82400000-0000-4000-8000-0000000000a5' and retired_at is not null and removed_at is null)
+		or (pg_temp.machine('c-sweep3')).removed_at is not null then
+		raise exception 'E4: c-sleep''s disk given up and c-sweep3 left for a later pass: %', v_state; end if;
+	-- A later pass sweeps it.
+	perform * from dblink('fence_two', pg_temp.sql_admit()) as t(x text);
+	if (pg_temp.machine('c-sweep3')).removed_at is null then raise exception 'E4: a later pass sweeps c-sweep3'; end if;
+end $$;
+
 -- F. Giving up a disabled executor beside a folder effect: no wait, and the folder-v2 placement left (c-agent's) is removed.
 select public.qorpera_configure_machine_executor('mx-824', repeat('8', 64), false, (select policy from public.qorpera_machine_executors
 	where owner = 'mx-824'), 322122547200) \g /dev/null
@@ -365,6 +459,27 @@ begin
 	perform pg_temp.release();
 	if v_state <> 'ok' or exists (select 1 from public.qorpera_company_machine_placements where owner = 'mx-824' and removed_at is null) then
 		raise exception 'F: every placement given up: %', v_state; end if;
+end $$;
+
+-- G0. A member demoted while its start waits: the same wait at the member's row, then the refusal (a viewer cannot write).
+do $$
+declare v_state text;
+begin
+	perform pg_temp.claims('fence_one', '64800000-0000-4000-8000-000000000001');
+	perform pg_temp.claims('fence_two', '64800000-0000-4000-8000-000000000002');
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', format('select public.qorpera_update_profile_member_role(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000002', 'viewer')) as t(x text);
+	perform dblink_send_query('fence_two', pg_temp.sql_member('64800000-0000-4000-8000-000000000010', 'c-member', 'start'));
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_profile_members') then raise exception 'G0: the start must wait at the member'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> '42501 Company is unavailable' or (pg_temp.machine('c-member')).desired_state <> 'stopped' then
+		raise exception 'G0: a demoted member''s start: %', v_state; end if;
+	perform * from dblink('fence_one', format('select public.qorpera_update_profile_member_role(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000002', 'contributor')) as t(x text);
+	perform pg_temp.claims('fence_one');
+	perform pg_temp.claims('fence_two');
 end $$;
 
 -- G. A member removed while its start waits: the start waits at the member's row behind the removal (the fence NO KEY
@@ -387,12 +502,11 @@ begin
 	perform pg_temp.claims('fence_two');
 end $$;
 
--- H. Snapshot-v1 keeps its text: each patched body with its folder-v2 branch reversed is byte for byte the definition
--- before this migration. The new helper is postgres-only and takes nothing stronger than KEY SHARE.
-do $$
-declare v record; v_text text; v_bad text[] := '{}';
-begin
-	for v in select * from (values
+-- H. Snapshot-v1 keeps its text: each patched body with its folder-v2 branches reversed is byte for byte the definition
+-- before this migration. The new helper refuses a company with no folder fence, is postgres-only and takes nothing
+-- stronger than KEY SHARE.
+create temporary table c1c3f_patches(n serial, fn text, digest text, patched text, original text) on commit preserve rows;
+insert into c1c3f_patches(fn, digest, patched, original) values
 		('qorpera_company_machine_fence_briefly(uuid)', '67fbb82ff9e2ca093be14b54b9ac764a',
 			E'\t-- C1c-3f (20260930002000): on folder-v2 the folder fence and the company row KEY SHARE.\n'
 			|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
@@ -443,8 +557,11 @@ begin
 			E'\tperform public.qorpera_lock_profile_gc_fence(p_profile_id);\n'),
 		('qorpera_admit_executor_machines(text,text,integer)', 'ab46ce15d32dadd7e1a33a0c1e5ef307',
 			E'\t\t\t-- C1c-3f (20260930002000): on folder-v2 the fence KEY SHARE without waiting (a company being stopped is swept\n'
-			|| E'\t\t\t-- on a later pass), then the company row KEY SHARE, which only a purge after the drain would hold stronger.\n'
+			|| E'\t\t\t-- on a later pass), then the company row KEY SHARE, which waits only for a holder of the row stronger (until\n'
+			|| E'\t\t\t-- C1c-3g, deletion''s gc fence). A company whose machine lock this pass''s disk give-up holds is swept later:\n'
+			|| E'\t\t\t-- that deletion wants the lock and the machines next.\n'
 			|| E'\t\t\tif public.qorpera_company_is_folder_v2(v_machine.profile_id) then\n'
+			|| E'\t\t\t\tif v_machine.profile_id = any (v_gave_up) then raise sqlstate ''P0F04''; end if;\n'
 			|| E'\t\t\t\tperform 1 from public.qorpera_folder_fences where profile_id = v_machine.profile_id for key share nowait;\n'
 			|| E'\t\t\t\tif not found then raise sqlstate ''P0F04''; end if;\n'
 			|| E'\t\t\t\tperform 1 from public.qorpera_profiles where id = v_machine.profile_id for key share;\n'
@@ -454,6 +571,14 @@ begin
 			|| E'\t\t\tend if;\n',
 			E'\t\t\tperform 1 from public.qorpera_profiles where id = v_machine.profile_id for update nowait;\n'
 			|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);\n'),
+		('qorpera_admit_executor_machines(text,text,integer)', 'ab46ce15d32dadd7e1a33a0c1e5ef307',
+			E'\tv_busy uuid[] := ''{}'';\n'
+			|| E'\tv_gave_up uuid[] := ''{}''; -- C1c-3f (20260930002000)\n',
+			E'\tv_busy uuid[] := ''{}'';\n'),
+		('qorpera_admit_executor_machines(text,text,integer)', 'ab46ce15d32dadd7e1a33a0c1e5ef307',
+			E'\t\t\t\t\t-- C1c-3f (20260930002000): held to the end of the pass; the sweep skips this company.\n'
+			|| E'\t\t\t\t\tv_gave_up := v_gave_up || v_asleep.profile_id;\n',
+			''),
 		('qorpera_abandon_machine_executor(text,text)', '85ca236d08d4ef9756a9a5abf35aacc8',
 			E'\t\t-- C1c-3f (20260930002000): on folder-v2 the folder fence and the company row KEY SHARE.\n'
 			|| E'\t\tif public.qorpera_company_is_folder_v2(v_profile) then\n'
@@ -464,13 +589,25 @@ begin
 			E'\t\tperform public.qorpera_lock_profile_gc_fence(v_profile);\n'),
 		('qorpera_native_machine_start(jsonb,text,text,uuid,text)', 'dbc139924cbf11ad3911f49e3f60a302',
 			E'\t-- C1c-3f (20260930002000): serves folder-v2; the authority check below is then the folder tool run.\n',
-			E'\tif public.qorpera_binding_is_folder_v2(p_binding) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;\n'))
-		t(fn, digest, patched, original)
-	loop
+			E'\tif public.qorpera_binding_is_folder_v2(p_binding) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;\n');
+do $$
+declare v record; p record; v_text text; v_bad text[] := '{}';
+begin
+	for v in select fn, min(digest) as digest from c1c3f_patches group by fn loop
 		v_text := pg_get_functiondef(('public.' || v.fn)::regprocedure);
-		if position(v.patched in v_text) = 0 or md5(replace(v_text, v.patched, v.original)) <> v.digest then v_bad := v_bad || v.fn; end if;
+		for p in select * from c1c3f_patches where fn = v.fn order by n loop
+			if position(p.patched in v_text) = 0 then v_bad := v_bad || (v.fn || ' (a patch is missing)'); end if;
+			v_text := replace(v_text, p.patched, p.original);
+		end loop;
+		if md5(v_text) <> v.digest then v_bad := v_bad || v.fn; end if;
 	end loop;
 	if cardinality(v_bad) > 0 then raise exception 'H: snapshot-v1 text changed in: %', v_bad; end if;
+	begin
+		perform public.qorpera_folder_machine_fence(extensions.gen_random_uuid());
+		raise exception 'H: the helper must refuse a company with no folder fence';
+	exception when insufficient_privilege then
+		if sqlerrm <> 'Company folder is unavailable' then raise; end if;
+	end;
 	if has_function_privilege('public', 'public.qorpera_folder_machine_fence(uuid)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_folder_machine_fence(uuid)', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_folder_machine_fence(uuid)', 'execute')
@@ -521,6 +658,9 @@ begin
 	delete from public.qorpera_runner_jobs where id = any (v_jobs);
 	delete from public.qorpera_execution_runs where id = any (v_runs);
 	delete from public.qorpera_profiles where id = any (v_profiles);
+	-- The computer-hour inbox keeps ids of hour-log rows the loop above removed.
+	delete from public.qorpera_computer_hour_inbox inbox
+	where not exists (select 1 from public.qorpera_computer_hour_log log where log.id = inbox.log_id);
 end $$;
 set session_replication_role = origin;
 delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '64800000-0000-4000-8000-000000000010/%';

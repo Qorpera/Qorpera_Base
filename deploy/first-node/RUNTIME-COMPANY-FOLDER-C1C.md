@@ -873,29 +873,35 @@ Decisions:
   SHARE` (stop and resume wait for it; member changes, `FOR NO KEY UPDATE`, do not), then the company row `KEY SHARE`
   (rank 0). It reads no pause: the paths that end a machine must run while the company is paused, and the node
   reservation reads the pause again after it, as before.
-- **The executor** (`company_machine_fence_briefly`, still under its 2 s `lock_timeout`) takes it. So custody (suspend,
-  release, running, commands, the executor's authorization) and admission lock in this order: the fence, rank 0, the
-  company-machines advisory lock, the machine, the placement, the allocation, the node, the demand. Behind a stop's second
-  phase, admission waits at most its 2 s and leaves the company for a later pass (824 A).
+- **The executor** (`company_machine_fence_briefly`, still under its 2 s `lock_timeout`) takes it. Custody (suspend,
+  release, running, commands, the executor's authorization) then locks the machine, the placement, the allocation, the
+  node and the demand. Admission takes the company-machines advisory lock and the machine first, and placing takes the
+  executor row before the allocation. Behind a stop's second phase, admission waits at most its 2 s and leaves the company
+  for a later pass (824 A).
 - **Placing a machine and reserving its node** take it again. Every caller already holds it in the same modes (admission's
   brief fence, or a run's folder tool run), so it never waits. **Suspend and release** skip their second gc fence, which
   custody's fence replaces (824 C2).
-- **The reservation branches for the `machine` kind only.** Coding (3h) and office (3j) reservations still come from callers
-  that take the gc fence first. A folder fence taken under a held company row would invert the order: an effect holding the
-  fence `KEY SHARE` and waiting for rank 0, that holder waiting for the fence behind a queued stop, and the stop waiting for
-  the effect.
+- **The reservation branches for the `machine` kind only** (824 B2). Coding (3h) and office (3j) reservations still come
+  from callers that take the gc fence first, and a folder fence taken under their company row would come after rank 0,
+  against core §3's order.
 - **A member's start, stop or delete**: the fence, rank 0 and the member's row `KEY SHARE` (rank 1), then the member's write
   access read again, before the advisory lock and the machine. Before, the gc fence was taken before the machine was even
   looked up, so any member who could write could hold a `folder-v2` company row `FOR UPDATE`. A removal in flight makes the
   start wait at the member row, and then refuse (824 G).
 - **The sweep of stopped task machines** (admission's last loop) takes a `folder-v2` company's fence `KEY SHARE NOWAIT`: a
-  company being stopped is swept on a later pass. It then takes the company row `KEY SHARE`, never `FOR UPDATE NOWAIT`. Its
-  waits can hold several companies' locks in one pass, but only another company's purge could hold a row stronger, and no
-  holder waits for this pass, so no cycle forms. It inserts no wake, so core §3 step 10's one-company rule does not apply.
+  company being stopped is swept on a later pass. It then takes the company row `KEY SHARE`, never `FOR UPDATE NOWAIT`.
+  - That wait is only behind a holder of the row stronger (824 E3). Until 3g that is deletion's gc fence, which then wants
+    the company's machine lock and machines.
+  - So the sweep skips a company whose machine lock the same pass's disk give-up already holds (824 E4). That give-up takes
+    no fence, keeps the advisory lock and the machine row to the end of the pass, and waiting there would close a cycle.
+    Every other lock the pass holds belongs to companies that such a deletion does not touch.
+  - A pass can still wait behind another old gc-fence holder of the row (a sign-in, until §6.1's other sites move).
+  - It inserts no wake, so core §3 step 10's one-company rule does not apply.
 - **Giving up a disabled executor** takes each `folder-v2` company's fence in place of the gc fence, in the same id order.
 - **An agent's `machine_start`** serves `folder-v2`: its refusal line gave way to the marker. Its authority check is the
-  folder tool run (the run mutex, the job, the fence, rank 0), then the receipt, the advisory lock, the machine and the
-  placement, in the order above (824 B). Its final authority check takes the same rows again in the same modes.
+  folder tool run (the run mutex, the job, the fence, rank 0), then the receipt, the advisory lock, the machine and the rows
+  admission takes (824 B shows it runs beside a folder effect). Its final authority check takes the same rows again in the
+  same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
   the definition before 3f (824 H).
 - **Decided with 3f** (§6.1): the machine-event drain and the worker drain on `folder-v2` go with 3i. Both deliver to a
