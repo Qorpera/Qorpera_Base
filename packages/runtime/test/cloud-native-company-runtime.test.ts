@@ -1863,17 +1863,27 @@ it("stops before the final send when a read source loses audience permission", a
 
 it("exports native composition over HTTP before delivery begins and closes it before the send", async () => {
 	const f = await fixture("company-composition", true);
+	// Wait for the export that records the composition start, not a fixed time: under load
+	// the run can take a second or more to reach it.
+	let composed!: () => void;
+	const composing = new Promise<null>((resolve) => {
+		composed = () => resolve(null);
+	});
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		const value = await original(method, args, signal);
+		if (f.observations.some((row) => row.operation === "message_composition" && row.phase === "start")) composed();
+		return value;
+	});
 	const abort = new AbortController();
 	const execution = f.runtime.execute(f.request, f.identityRoot, abort.signal).then(
 		(result) => ({ result }),
 		(error: unknown) => ({ error }),
 	);
 	try {
-		await vi.waitFor(() =>
-			expect(f.observations.some((row) => row.operation === "message_composition" && row.phase === "start")).toBe(
-				true,
-			),
-		);
+		// The fixture holds the composition open, so a run that ends first never exported its start.
+		const ended = await Promise.race([composing, execution]);
+		if (ended) throw "error" in ended ? ended.error : new Error("The run ended before composition started");
 		const started = f.observations.find((row) => row.operation === "message_composition")!;
 		const turn = f.observations.find((row) => row.operation === "model_turn" && row.phase === "start")!;
 		expect(started).toMatchObject({
