@@ -865,7 +865,9 @@ describe("LXD cloud runner provider", () => {
 		expect(JSON.parse(await readFile(journalPath, "utf8"))).toMatchObject({ recoveryVolumeRetired: true });
 		expect(lxd.volumes.has(recovery)).toBe(true);
 		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
+		// Gone, as the interrupted delete would have left it (the fake also remembers its last created volume).
 		lxd.volumes.delete(recovery);
+		if (lxd.volume?.name === recovery) lxd.volume = undefined;
 		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
 		expect(await readdir(stateRoot)).toEqual([runId]);
 
