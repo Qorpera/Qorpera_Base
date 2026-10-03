@@ -763,7 +763,9 @@ describe("cloud runner orchestrator", () => {
 		fakeFetch.mockImplementationOnce(async () =>
 			Response.json({ value: { items: [{ profile_id: profileId }, { profile_id: madeRunId }], has_more: false } }),
 		);
-		await expect(control.listFolderMaterializationDue(undefined, 1)).rejects.toThrow("more folder companies than asked");
+		await expect(control.listFolderMaterializationDue(undefined, 1)).rejects.toThrow(
+			"more folder companies than asked",
+		);
 	});
 
 	it("materializes every due folder-v2 company in its own request, and waits out an edge function that predates it", async () => {
