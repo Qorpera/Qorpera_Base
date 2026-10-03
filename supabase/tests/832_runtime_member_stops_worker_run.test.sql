@@ -64,13 +64,16 @@ select pg_temp.wake_error($q$select pg_temp.control('30000000-0000-4000-8000-000
 	(current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid)$q$, '42501', 'worker run is unavailable');
 select pg_temp.wake_error($q$select public.qorpera_get_worker_run_control(pg_temp.child_run())$q$, '42501', 'worker run is unavailable');
 
--- B. A contributor who did not dispatch it and a viewer cannot stop it; the run goes on.
+-- B. A contributor who did not dispatch it, a viewer and an outsider cannot stop it, and are refused before anything
+-- is locked with the same answer as for a run that is not a worker's; the run goes on.
 select pg_temp.wake_error($q$select pg_temp.stop('30000000-0000-4000-8000-000000000002')$q$, '42501',
-	'runner job cancellation is not allowed');
+	'worker run is unavailable');
 select pg_temp.wake_error($q$select pg_temp.stop('30000000-0000-4000-8000-000000000003')$q$, '42501',
-	'runner job cancellation is not allowed');
+	'worker run is unavailable');
 select pg_temp.wake_error($q$select pg_temp.stop('30000000-0000-4000-8000-000000000099')$q$, '42501',
-	'runner job cancellation is not allowed');
+	'worker run is unavailable');
+select pg_temp.wake_error($q$select pg_temp.stop('30000000-0000-4000-8000-000000000001', extensions.gen_random_uuid())$q$,
+	'42501', 'worker run is unavailable');
 select pg_temp.wake_error($q$select pg_temp.stop('30000000-0000-4000-8000-000000000001',
 	(current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid)$q$, '42501', 'worker run is unavailable');
 do $$
@@ -102,6 +105,26 @@ begin
 end
 $$;
 rollback to dispatching_member;
+
+-- C2. A viewer whose work dispatched it still may not stop it (a viewer stops nothing); a run that already ended
+-- answers its state to a Stop, with nothing to cancel (probed, then undone).
+savepoint viewer_and_ended;
+do $$
+declare v_result jsonb;
+begin
+	perform pg_temp.stall_child('30000000-0000-4000-8000-000000000003');
+	perform pg_temp.wake_assert(pg_temp.control('30000000-0000-4000-8000-000000000003') ->> 'can_cancel' = 'false',
+		'C2: a viewer who dispatched it may not stop it');
+	perform pg_temp.wake_error($q$select pg_temp.stop('30000000-0000-4000-8000-000000000003')$q$, '42501',
+		'worker run is unavailable');
+	perform pg_temp.finish_job(pg_temp.child_run());
+	v_result := pg_temp.stop('30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_assert(v_result = jsonb_build_object('run_id', pg_temp.child_run(), 'status', 'completed', 'can_cancel', false)
+		and (pg_temp.child_job()).cancelled_by_user_id is null,
+		'C2: a Stop of a run that already ended answers its state and cancels nothing: ' || v_result::text);
+end
+$$;
+rollback to viewer_and_ended;
 
 -- D. The owner stops it: the thread run's path, recorded; a second Stop answers the same.
 do $$

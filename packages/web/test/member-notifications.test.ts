@@ -119,6 +119,26 @@ describe("company notices member read", () => {
 			worker: true,
 		});
 	});
+	it("reads a stalled run's worker flag: absent is false, anything but a boolean fails the read (gap 4b)", async () => {
+		const f = setup();
+		const stalled = {
+			...full,
+			kind: "run_no_progress",
+			subject: {
+				schema: "qorpera.member-notification.run-no-progress/v1",
+				runId: id(11),
+				staffAgentId: id(15),
+				sessionId: id(16),
+				since: timestamp,
+				minutes: 15,
+			},
+		};
+		f.fetch.mockResolvedValueOnce(Response.json([stalled]));
+		expect((await f.client.listNotifications())[0]!.subject).toMatchObject({ worker: false, sessionId: id(16) });
+		f.fetch.mockResolvedValueOnce(Response.json([{ ...stalled, subject: { ...stalled.subject, worker: "yes" } }]));
+		await expect(f.client.listNotifications()).rejects.toThrow();
+	});
+
 	it("skips notices of the removed company limits and pause instead of failing the read", async () => {
 		const f = setup();
 		const retired = [

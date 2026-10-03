@@ -318,9 +318,10 @@ export class ExecutionNotices {
 		this.#draw();
 	}
 
-	async #acknowledge(): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#acking) return;
-		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+	/** Dismisses the shown notice, or the one a finished Stop names; nothing else while a Stop runs. */
+	async #acknowledge(stopped?: MemberNotification): Promise<void> {
+		if (this.#lifetime.signal.aborted || this.#acking || (this.#stopping && !stopped)) return;
+		const item = stopped ?? this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
 		if (!item) return;
 		this.#request?.abort();
 		this.#request = undefined;
@@ -353,8 +354,9 @@ export class ExecutionNotices {
 		if (!item || !this.#workerRuns || subject?.schema !== "qorpera.member-notification.run-no-progress/v1") return;
 		if (!subject.worker || this.#stoppable.has(item.notificationId)) return;
 		const control = await this.#workerRuns.workerRunControl(subject.runId).catch(() => undefined);
-		if (signal.aborted) return;
-		this.#stoppable.set(item.notificationId, control?.canCancel === true);
+		// A failed read offers nothing now and is asked again at the next poll.
+		if (signal.aborted || !control) return;
+		this.#stoppable.set(item.notificationId, control.canCancel);
 	}
 
 	/** Stops the worker's run the shown notice names. Once stopped (or already ended), the notice is done. */
@@ -381,9 +383,13 @@ export class ExecutionNotices {
 			// Never replayed; the member may press Stop again.
 		}
 		if (this.#lifetime.signal.aborted) return;
-		this.#stopping = false;
-		if (ended) await this.#acknowledge();
-		else {
+		if (ended) {
+			// The stopped notice itself, even if another one shows meanwhile.
+			await this.#acknowledge(item);
+			this.#stopping = false;
+			this.#draw();
+		} else {
+			this.#stopping = false;
 			this.#stopFailed.add(item.notificationId);
 			this.#draw();
 		}
@@ -407,7 +413,7 @@ export class ExecutionNotices {
 				small: true,
 			});
 			dismiss.dataset.action = "dismiss-notification";
-			if (this.#acking) dismiss.setAttribute("aria-disabled", "true");
+			if (this.#acking || this.#stopping) dismiss.setAttribute("aria-disabled", "true");
 			// A worker's run has no conversation: its Stop is here, for a member who may stop it (gap 4b).
 			let stop: HTMLElement | null = null;
 			if (stoppable) {

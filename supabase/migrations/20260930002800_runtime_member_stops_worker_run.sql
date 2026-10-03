@@ -88,12 +88,27 @@ set lock_timeout = '5s'
 as $$
 declare
 	v_run public.qorpera_execution_runs%rowtype;
+	v_job public.qorpera_runner_jobs%rowtype;
 begin
-	-- Gap 4b (20260930002800): the thread run's stop path, by run id.
+	-- Gap 4b (20260930002800): the thread run's stop path, by run id. The caller is checked before anything is
+	-- locked, with one answer for a run that is not there, not a worker's, or not theirs to stop (so a caller can
+	-- neither hold the job's lock nor learn which runs exist); the cancel checks again under its lock.
 	select run.* into v_run from public.qorpera_execution_runs as run where run.id = p_run_id;
-	if auth.uid() is null or v_run.id is null or not public.qorpera_is_member_worker_run(v_run) then
+	select job.* into v_job from public.qorpera_runner_jobs as job where job.id = v_run.job_id;
+	if auth.uid() is null or v_run.id is null or not public.qorpera_is_member_worker_run(v_run)
+		or not exists (select 1 from public.qorpera_profile_members as member
+			where member.profile_id = v_run.profile_id and member.user_id = auth.uid()
+				and (member.role in ('owner', 'admin')
+					or (member.role = 'contributor' and member.user_id = v_job.created_by_user_id))) then
 		raise exception 'worker run is unavailable' using errcode = '42501'; end if;
-	perform public.qorpera_cancel_runner_job(v_run.job_id);
+	-- A run that already ended answers its state, as a second Stop does.
+	if v_job.status in ('queued', 'leased') then
+		begin
+			perform public.qorpera_cancel_runner_job(v_run.job_id);
+		exception when sqlstate '55000' then
+			null; -- it ended meanwhile (the cancel's "already finished")
+		end;
+	end if;
 	return public.qorpera_get_worker_run_control(p_run_id);
 end
 $$;
