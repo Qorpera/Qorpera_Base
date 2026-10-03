@@ -186,14 +186,15 @@ The run's budget row, `qorpera_execution_run_budgets` (primary key `run_id`, one
 - **Why before the job.** A tool call that arrives while completion holds the job takes the mutex, then waits at the
   job; once completion commits, it finds the run ended and refuses. PostgreSQL grants a new shared locker while an
   exclusive one waits, so without the mutex overlapping tool calls could hold the job `KEY SHARE` without a gap and
-  starve completion (and renewal). With it, a second tool call of the run waits at the mutex, never beside the first
-  at the job: at most one tool call holds the job at a time. When that call commits, a waiting completion or renewal
-  and the next tool call race for the job row. The waiter usually wins, since it only re-reads the row while the next
-  call first takes the mutex and runs its checks; at worst it waits for that one call, and it meets the same race,
-  with the same head start, at each hand-off. That bound holds per hand-off, not over many: strict first-come order
-  would need completion and renewal to take the mutex too, which they do not (test 648 C). The run's own commits,
-  releases and views also hold the job `KEY SHARE`, without the mutex, so a waiting completion or renewal waits for
-  those too; they are short and never queue behind each other at the job.
+  starve completion and the other lease-ending changes. With it, a second tool call of the run waits at the mutex,
+  never beside the first at the job: at most one tool call holds the job at a time. When that call commits, a waiting
+  lease-ending change and the next tool call race for the job row. The waiter usually wins, since it only re-reads
+  the row while the next call first takes the mutex and runs its checks; at worst it waits for that one call, and it
+  meets the same race, with the same head start, at each hand-off. That bound holds per hand-off, not over many: strict
+  first-come order would need lease-ending changes to take the mutex too, which they do not. The run's own commits,
+  releases and views also hold the job `KEY SHARE`, without the mutex, so a waiting lease-ending change waits for
+  those too; they are short and never queue behind each other at the job. Renewal waits for none of them: since P23 it
+  takes the job `FOR NO KEY UPDATE`, which `KEY SHARE` does not block (§5.8; tests 648 C and 825 A).
 - A run without its budget row refuses (42501).
 - Folder commits and releases do not take it: disjoint saves of one run stay parallel.
 
@@ -564,7 +565,13 @@ conversation `FOR UPDATE` before the review row, because the review row's foreig
   and the runner accepts only the two legacy runtimes (`cloud-runner-broker.ts:1042`). C1c-1's refusals stay until C3
   gives `folder-v2` runs their substrate model.
 - `companySeq` pins on runs and wakes (C4's schema).
-- Renewal's move to `FOR NO KEY UPDATE` stays in C3 (C1B). Until then renewal waits for the one tool call in flight.
+- Renewal's move to `FOR NO KEY UPDATE`: done in C3's first part (P23, migration 20260930002200, test 825; 648 C).
+  - On `folder-v2`, `qorpera_renew_runner_job` takes the job `FOR NO KEY UPDATE`, and so does the native lease renewal.
+    The native renewal does it through `qorpera_folder_renewal_locked_job`, which is `qorpera_runner_broker_locked_job`'s
+    text with that lock clause.
+  - Both now run beside the run's tool calls (the job `KEY SHARE`). Every lease-ending change still takes `FOR UPDATE`
+    and waits for those calls.
+  - The other callers of `locked_job` (acquire, release, model authority) keep `FOR UPDATE`.
 - Office-activation and machine-event runs make no tool call: `run_resolve` refuses them (0A000), as offices refuse
   `folder-v2` today.
 - **After C1c-2c, legacy wake inserters fail closed on `folder-v2`.** Posting, `answer_interaction`,
@@ -615,7 +622,8 @@ Concurrency tests (dblink, with `current_database()`), by slice:
 - **C1c-2a:**
   1. Two tool calls of one run: the second waits at the mutex, and nothing deadlocks. (The context views' ordinals
      move to C1c-2b, test 7b: in 2a, `record_native_context_view` refuses `folder-v2` before it writes.)
-  2. Renewal waits only for the one tool call in flight.
+  2. Renewal waits only for the one tool call in flight. (Replaced by P23: renewal waits for no tool call, 648 C and
+     825 A.)
   3. Stop: the drain waits for a tool call in flight, and a call that waited behind it refuses. A deletion row with no
      pause row also refuses a tool call.
   4. A commit rewriting the agent's `agent.md` runs beside that agent's tool call: no 55P03, no deadlock.
