@@ -109,4 +109,21 @@ begin
 		raise exception 'The question takes no lock'; end if;
 end $$;
 
+-- 5. The gateway tells folder GC's conflict from snapshot-v1's cleanup fence by this exact message
+-- (packages/object-gateway/src/supabase-authority.ts, FOLDER_OBJECT_COLLECTING): a reworded message would leave folder
+-- replication entries blocked instead of pending.
+do $$
+declare v_state text; v_message text;
+begin
+	begin
+		perform public.qorpera_folder_object_collecting();
+		raise exception 'The collecting refusal raises';
+	exception when others then
+		get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+	end;
+	if v_state <> 'PGRST' or v_message::jsonb ->> 'code' <> 'QRC01'
+		or v_message::jsonb ->> 'message' <> 'Company folder object is being collected; retry' then
+		raise exception 'The collecting refusal keeps the message the gateway matches: % %', v_state, v_message; end if;
+end $$;
+
 rollback;

@@ -46,6 +46,8 @@ class FolderGcCloud {
 	/** snapshot-v1's cleanup fence on replication (20260913000200): QRC01 too, with its own message. */
 	legacyFence = false;
 	readonly calls: string[] = [];
+	/** The objects the quarantine state was asked about, in order. */
+	readonly stateAsked: string[] = [];
 	/** One-shot PostgREST 500s, by RPC, with their SQLSTATE. */
 	readonly failures = new Map<string, string>();
 	/** Runs before an RPC or Storage call (`storage-delete`, `storage-write`, `storage-read`) is answered: a pause. */
@@ -130,6 +132,7 @@ class FolderGcCloud {
 				return Response.json(true);
 			}
 			case "qorpera_folder_gc_quarantine_state":
+				this.stateAsked.push(body.p_sha256 as string);
 				if (this.#live(key, lease)) return Response.json("live");
 				if (!this.catalog.has(key) || this.deleting.has(body.p_profile_id as string))
 					return Response.json("remove");
@@ -577,6 +580,21 @@ describe("folder GC's scan", () => {
 		expect(await f.nasBytes()).toBeUndefined();
 		expect(f.cloud.catalog.has(identity)).toBe(true);
 		expect(await f.journal.read(entryKey)).toMatchObject({ state: "deleted", authorizationId });
+	});
+
+	it("goes on from where the last pass stopped, so entries that stay never starve the rest", async () => {
+		const f = await fixture();
+		const hashes = ["1", "2"].map((n) => createHash("sha256").update(`stuck ${n}`).digest("hex")).sort();
+		const lease = randomUUID();
+		await mkdir(f.quarantine, { recursive: true, mode: 0o700 });
+		for (const hash of hashes) {
+			await writeFile(join(f.quarantine, `${hash}.${lease}`), "stuck");
+			// A live lease: the scan leaves the entry where it is.
+			f.cloud.gc.set(`${profileId}/${hash}`, { lease, expires: f.cloud.now + 600_000 });
+		}
+		// The third pass finds nothing after the second entry and starts over; the fourth begins at the first again.
+		for (let pass = 0; pass < 4; pass++) await f.gc.recover(1);
+		expect(f.cloud.stateAsked).toEqual([hashes[0], hashes[1], hashes[0]]);
 	});
 
 	it("leaves names that are not entries, and removes an empty company folder", async () => {
