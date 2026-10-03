@@ -2020,7 +2020,8 @@ writes) and the folder service send them as structured entries. The runtime ship
 callers already check each key of a new folder, a delete and a move, so a coding session never creates, moves or
 deletes a table folder either; it writes `rows.csv` under `[write]` and the rules below.
 
-*(1) The parse's shape* (`qorpera_company_state_parse_problems`; §6.1 rule 1):
+*(1) The parse's shape* (`qorpera_company_state_parse_problems`; §6.1 rule 1). A parse it refuses is
+`structured_invalid` with the state files' `value` problem (the parser's own codes come from the client):
 - **Full** for `table` (closed keys; a lowercase strict uuid `id`; the name and texts with the parser's bounds; 1–40
   columns with their types and the keys each type takes; a key of 1–3 columns, each once, never optional and never a
   number; `holder`, `time` and `[write]`), `table-rows` (§6.1 rule 1's bounds: 1–40 header names, rows of
@@ -2064,7 +2065,9 @@ applied). Placement and the owners rule run for every unit, structured or not (`
     updates that row in apply).
 - **Owners** (rule 4): while an interface's stored parse has `access.edit = "owners"`, only an owner or admin (or the
   platform) changes, moves or deletes anything in its folder, or lands anything in it. An agent never does. Creating
-  an interface with `edit = "owners"` is open to anyone who may create one (Interfaces).
+  an interface with `edit = "owners"` is open to anyone who may create one (Interfaces), and a copy out of one only
+  reads it. Like rule 3, the rule reads the stored parse without a lock: a contributor's save can land at the moment
+  an owner's change to `edit = "owners"` commits.
 - **Write** (rule 5): a `rows.csv` save under the stored definition's `[write]`. The platform passes. A table's first
   rows, in the unit that brings its definition, are its maker's (beyond #751's rule 5, which reads a stored
   definition; asked of Interfaces).
@@ -2084,7 +2087,7 @@ applied). Placement and the owners rule run for every unit, structured or not (`
 - **Areas** (rule 9): `tables/areas/table.toml` keeps its three columns, and after a rows save no agent is in two
   areas.
 - **Ids:** one live interface per `id`, and one live table per `id` (`duplicate`); a table folder keeps its id
-  (`placement`), since its index row is keyed by it. An interface has no index before I7, so it may take a new id.
+  (a save that changes it is `duplicate`, as #751's §6.1 says), since its index row is keyed by it. An interface has no index before I7, so it may take a new id.
   The interface check takes no lock: two interfaces made at the same time with one id can both land (I7 shows it).
   Two tables made at the same time with one id both pass decide, and the second commit fails whole on the index
   row's key, as H2's index does.
@@ -2099,7 +2102,9 @@ KEY SHARE would come in apply), and a key index that is not unique. It holds onl
   `table.toml` (by its parse's id) or `rows.csv` (by its folder's live row), a new folder holding them, and a delete or
   move at or above a table folder (never the seeded `tables` root, which is refused anyway).
 - **The window:** a row created after this commit read its targets is locked by nobody. So a save finding a table row
-  changed by a commit after this one's `as_of_seq` answers `version_changed`, H2's guard: the caller reads again.
+  changed by a commit after this one's `as_of_seq` answers `version_changed`, H2's guard: the caller reads again. A
+  delete or move of a table folder does the same for every live table row at or under its source, so apply never
+  repoints or retires a row it did not lock.
 - **Apply** writes the row: a first `table.toml` inserts it (a retired row of that id is reused), a save moves its
   versions, a move repoints every row at or under the source to its new path and versions (counting them, and raising
   on a mismatch, as H2 and F2-5b do), and a delete retires them. **Verify** checks every row the commit wrote: its
@@ -2116,8 +2121,9 @@ There is no new company-wide lock. The core's rank-5 list (core §3 step 4) and 
 - creates a table, or changes its `$.columns` or `$.write`.
 
 Anything else is plain, and an agent's delete or move is the core's deletion class before the hook is asked. The
-review recorder (C2 R1) gains `save_interface`, only for change sets whose every unit is at or under `interfaces/` or
-`tables/`. A delegation-class change through the mount or a shell has no review, so the commit denies it, as §7 says.
+review recorder (C2 R1) gains `save_interface` as a delegation, only for change sets whose every unit is at or under
+`interfaces/` or `tables/`. An agent's delete of a page or table (`destructive`) goes through `company_delete`; I8
+decides whether `save_interface` also records deletions. A delegation-class change through the mount or a shell has no review, so the commit denies it, as §7 says.
 
 *Cost.* A `rows.csv` parse is stored with its version and sent with its request: at 64 KiB of CSV it is up to about
 1 MB. 865 times the worst case (64 KiB of rows against a 40-column definition, a definition change over them, and the

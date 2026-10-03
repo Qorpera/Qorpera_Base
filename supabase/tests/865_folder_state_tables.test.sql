@@ -25,9 +25,6 @@ $$;
 create function pg_temp.claim_rows(p_rows text[][]) returns jsonb language sql as $$
 	select pg_temp.rows(array['task','owner','helper'], p_rows)
 $$;
-create function pg_temp.problem(p_result jsonb, p_unit integer) returns text language sql as $$
-	select p_result -> 'units' -> (p_unit - 1) -> 'problems' -> 0 ->> 'message'
-$$;
 create function pg_temp.save_rows(p_actor jsonb, p_key text, p_path text, p_parse jsonb) returns jsonb language sql as $$
 	select pg_temp.commit(p_actor, p_key, jsonb_build_array(pg_temp.p16_write(p_actor, p_path, p_parse)))
 $$;
@@ -49,6 +46,17 @@ begin
 				is distinct from v_case -> 'expect' -> 'rows' then
 			raise exception 'Case "%": % is not %', v_case ->> 'name', v_out, v_case -> 'expect'; end if;
 	end loop;
+	-- A link counts code points (150 euro signs are 450 bytes); a row that fails twice names its first column in the
+	-- definition's order.
+	v_out := public.qorpera_interface_rows(pg_temp.cases() -> 0 -> 'table', jsonb_build_object('kind','table-rows',
+		'header','["name","at","link_to"]'::jsonb,'rows',jsonb_build_array(jsonb_build_object('line',2,'fields',
+			jsonb_build_array('euros','2026-10-02T09:44Z',repeat('€', 150))))));
+	if v_out -> 'problems' <> '[]'::jsonb then raise exception 'A link of 150 code points: %', v_out; end if;
+	v_out := public.qorpera_interface_rows(pg_temp.cases() -> 0 -> 'table', jsonb_build_object('kind','table-rows',
+		'header','["name","at","count"]'::jsonb,'rows',jsonb_build_array(jsonb_build_object('line',2,'fields',
+			jsonb_build_array('twice','not a time','1,5')))));
+	if v_out -> 'problems' -> 0 ->> 'message' <> 'This row doesn''t fit: at is not a time like 2026-10-02T09:44Z.' then
+		raise exception 'The first failing column: %', v_out; end if;
 	-- At most 50 problems, then one closing line; a row of each fault, once.
 	v_out := public.qorpera_interface_rows(pg_temp.fixture('table'), pg_temp.rows(array['number','at','value','unit','kept_by'],
 		(select array_agg(array['n' || g, 'not a time', '1', '€', '11111111-1111-4111-8111-000000000030'] order by g)
@@ -226,8 +234,11 @@ begin
 	perform pg_temp.refused(r, 1, 'structured_rule', 'areas');
 	perform pg_temp.expect(r, 2, 'saved');
 	-- An agent: agents, owner and supervisor are never its to change, whatever their flags; its other cells are.
-	perform pg_temp.refused(pg_temp.save_rows(g -> 'actor', 'p16t-areas-0003', 'tables/areas/rows.csv', pg_temp.rows(h,
-		array[array['Sales',c_m,'',c_a1 || ' ' || c_a2,'no'], array['Ops','','','','no']])), 1, 'structured_rule', 'claim');
+	r := pg_temp.save_rows(g -> 'actor', 'p16t-areas-0003', 'tables/areas/rows.csv', pg_temp.rows(h,
+		array[array['Sales',c_m,'',c_a1 || ' ' || c_a2,'no'], array['Ops','','','','no']]));
+	perform pg_temp.refused(r, 1, 'structured_rule', 'claim');
+	if pg_temp.problem(r, 1) <> 'an agent never changes an area''s owner, supervisor or agents' then
+		raise exception 'The areas rule for agents: %', r; end if;
 	perform pg_temp.expect(pg_temp.save_rows(g -> 'actor', 'p16t-areas-0004', 'tables/areas/rows.csv', pg_temp.rows(h,
 		array[array['Sales',c_m,'',c_a1,'yes'], array['Ops','','',c_a2,'no']])), 1, 'saved');
 end $$;
@@ -280,6 +291,35 @@ begin
 		|| format('; the claim rule over 1,500 rows %s ms (parse %s bytes)', round(v_ms),
 		(select octet_length(v.structured::text) from public.qorpera_folder_path_versions v where v.version = pg_temp.p16_version('tables/many/rows.csv'))), false);
 	if v_ms > 4000 then raise exception 'A worst-case claim check takes % ms', v_ms; end if;
+	-- The claim rule's worst case: 10,000 rows of a claims table with its claimed column empty (about 60 KB), saved again
+	-- whole with one row taken, and a definition change over them.
+	v_rows := jsonb_build_object('kind','table-rows','header','["task","owner"]'::jsonb,'rows',(select jsonb_agg(jsonb_build_object(
+		'line', n + 1, 'fields', jsonb_build_array(lpad(to_hex(n), 4, '0'), '')) order by n) from generate_series(1, 10000) n));
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0005', jsonb_build_array(pg_temp.p16_folder(m, 'tables/claims-wide',
+		jsonb_build_object('table.toml', pg_temp.claims('86500000-0000-4000-8000-000000000008'), 'rows.csv', v_rows)))), 1, 'saved');
+	v_start := clock_timestamp();
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0006', 'tables/claims-wide/rows.csv',
+		v_rows || jsonb_build_object('rows', jsonb_set(v_rows -> 'rows', '{0,fields,1}', to_jsonb(c_m)))), 1, 'saved');
+	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
+	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
+		|| format('; the claim rule over 10,000 rows %s ms', round(v_ms)), false);
+	if v_ms > 4000 then raise exception 'The claim rule over 10,000 rows takes % ms', v_ms; end if;
+	v_start := clock_timestamp();
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0007', jsonb_build_array(pg_temp.p16_write(m, 'tables/claims-wide/table.toml',
+		pg_temp.claims('86500000-0000-4000-8000-000000000008') || '{"name":"Wide claims"}'))), 1, 'saved');
+	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
+	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
+		|| format('; a definition change over them %s ms', round(v_ms)), false);
+	if v_ms > 4000 then raise exception 'A definition change over 10,000 claimed rows takes % ms', v_ms; end if;
+	-- The claim leaves the column once every row is empty again (the taken row released): rule 7's scan of every row.
+	perform pg_temp.expect(pg_temp.save_rows(m, 'p16t-cost-0007b', 'tables/claims-wide/rows.csv', v_rows), 1, 'saved');
+	v_start := clock_timestamp();
+	perform pg_temp.expect(pg_temp.commit(m, 'p16t-cost-0008', jsonb_build_array(pg_temp.p16_write(m, 'tables/claims-wide/table.toml',
+		jsonb_set(pg_temp.claims('86500000-0000-4000-8000-000000000008'), '{columns,1,needsYes}', 'false') || '{"holder":null}'))), 1, 'saved');
+	v_ms := extract(epoch from clock_timestamp() - v_start) * 1000;
+	perform set_config('qorpera_test.p16_cost', current_setting('qorpera_test.p16_cost')
+		|| format('; a claim dropped over them %s ms', round(v_ms)), false);
+	if v_ms > 4000 then raise exception 'Dropping a claim over 10,000 rows takes % ms', v_ms; end if;
 	-- Short rows: a 4-character key a line, 13,000 lines (65,000 bytes), near the most rows a 64 KiB file holds.
 	v_rows := jsonb_build_object('kind','table-rows','header','["c1"]'::jsonb,'rows',(select jsonb_agg(jsonb_build_object('line', n + 1,
 		'fields', jsonb_build_array(lpad(to_hex(n), 4, '0'))) order by n) from generate_series(1, 13000) n));

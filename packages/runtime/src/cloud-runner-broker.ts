@@ -108,6 +108,9 @@ export interface CloudRunnerExecutionRun {
 	/** Both or neither: a folder-v2 run has no Company File substrate. */
 	substrateVersionId?: string;
 	companySnapshotId?: string;
+	/** A folder-v2 run's pin instead of a snapshot: the folder clock's last_seq when it was materialized (folder core
+	 * C4, P28). Never beside a snapshot. */
+	companySeq?: number;
 	staffAgentId: string;
 	staffVersion: number;
 	inputIds: readonly string[];
@@ -606,6 +609,14 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 	) {
 		throw new Error("Runner broker returned inconsistent execution policy");
 	}
+	if (
+		input.company_seq !== null &&
+		input.company_seq !== undefined &&
+		input.company_snapshot_id !== null &&
+		input.company_snapshot_id !== undefined
+	) {
+		throw new Error("Runner broker returned a run with both a snapshot and a folder sequence");
+	}
 	return {
 		runId: uuid(input.run_id, "execution run id"),
 		profileId: uuid(input.profile_id, "execution profile id"),
@@ -623,6 +634,9 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 					substrateVersionId: uuid(input.substrate_version_id, "execution substrate id"),
 					companySnapshotId: uuid(input.company_snapshot_id, "execution Company File snapshot id"),
 				}),
+		...(input.company_seq === null || input.company_seq === undefined
+			? {}
+			: { companySeq: integer(input.company_seq, "execution folder sequence", 0, Number.MAX_SAFE_INTEGER) }),
 		staffAgentId: uuid(input.staff_agent_id, "execution staff agent id"),
 		staffVersion: integer(input.staff_version, "execution staff version", 1, Number.MAX_SAFE_INTEGER),
 		inputIds,
