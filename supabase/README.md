@@ -12,7 +12,7 @@ SQL and PostgreSQL script tests run on the operator test machine, not on a Mac
 ```sh
 node scripts/run-on-node.mjs hosted-db                       # migrations + SQL tests
 node scripts/run-on-node.mjs --install hosted-db -- --scripts  # also the PostgreSQL scripts (what `changed` runs)
-node scripts/run-on-node.mjs hosted-db -- --only 811,818       # every migration, then only the tests starting 811 or 818
+node scripts/run-on-node.mjs hosted-db -- --only 810,811       # every migration, then only the tests starting 810 or 811
 ```
 
 `--only` is for trying your own tests while you work. It still replays every migration, but skips the other
