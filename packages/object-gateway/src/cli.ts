@@ -97,6 +97,7 @@ const handler = createObjectGatewayHandler({
 	replication,
 	folderGc,
 	memberObjects: authority,
+	memberFolderObjects: authority,
 	memberObservations: new MemberCompanyObservations(),
 	memberClientOrigins: JSON.parse(process.env.QORPERA_MEMBER_CLIENT_ORIGINS ?? "[]"),
 	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),
