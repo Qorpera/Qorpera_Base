@@ -515,6 +515,14 @@ describe("agent todo and worker tools", () => {
 			...counts,
 			computerStopped: [stopped],
 		});
+		// A host reads only the keys it knows, as every host from before computerStopped did.
+		call.mockResolvedValueOnce({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			machineStopped: [{}],
+		});
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual(counts);
 		for (const broken of [
 			[],
 			Array.from({ length: 33 }, () => stopped),

@@ -175,6 +175,9 @@ export interface CompanyComputerLinuxGuestOptions {
 	onFailure(error: Error): void;
 }
 
+/** Shell reports in a row (30 s apart) after which ends the registry keeps refusing are let go. */
+const SHELL_REPORT_ATTEMPTS = 10;
+
 export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #options: CompanyComputerLinuxGuestOptions;
 	readonly #desktop: CompanyComputerLinuxDesktopLauncher;
@@ -198,6 +201,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	#closing?: Promise<void>;
 	/** Whether the last shell report named a busy screen or an open command. */
 	#shellReported = false;
+	/** Shell reports the registry refused or did not answer, in a row. */
+	#shellReportFailures = 0;
 	/** Each screen's last processor sample of its shell's namespace, for its busy measure. */
 	readonly #shellSamples = new Map<string, { pid: number; cpuTicks: number; at: number }>();
 	/** Shells closed with their screens, whose last commands the platform has not heard of yet. */
@@ -312,15 +317,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				this.#stop.signal,
 			);
 		} catch {
-			/* The next report tries again; sleep ends what is still open. */
+			// The next report tries again; sleep ends what is still open. Ends that
+			// still fail after SHELL_REPORT_ATTEMPTS reports are let go, so that
+			// nothing in them can hold up the computer's demand for long.
+			if (++this.#shellReportFailures >= SHELL_REPORT_ATTEMPTS) this.#shellReportsDone(screens);
 			return;
 		}
-		for (const screen of screens)
-			for (const shell of screen.shells) shell.reported(screen.ended.map((ended) => ended.id));
-		this.#closedShells = this.#closedShells.filter(({ shell }) => shell.report().ended.length > 0);
+		this.#shellReportsDone(screens);
 		this.#shellReported = screens.some((screen) => screen.busy || screen.open.length > 0);
 		// The operator paused the company: nothing keeps running in a shell. The
-		// report recorded nothing, and new commands are refused until the pause ends.
+		// report ended every command as paused, and new commands are refused until the pause ends.
 		if (typeof response !== "object" || response === null || (response as { paused?: unknown }).paused !== true)
 			return;
 		this.#shellReported = false;
@@ -331,6 +337,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					.catch(() => undefined),
 			),
 		);
+	}
+
+	/** The ends a report carried are done with: delivered, or let go after repeated failures. */
+	#shellReportsDone(
+		screens: readonly { ended: readonly { id: string }[]; shells: readonly CompanyComputerLinuxShell[] }[],
+	): void {
+		this.#shellReportFailures = 0;
+		for (const screen of screens)
+			for (const shell of screen.shells) shell.reported(screen.ended.map((ended) => ended.id));
+		this.#closedShells = this.#closedShells.filter(({ shell }) => shell.report().ended.length > 0);
 	}
 
 	/** The screen agent's shell, created on first use. Its namespace starts with the first command. */

@@ -239,6 +239,8 @@ describe("what the platform hears of a shell", () => {
 			{
 				id: sleeper.sessionId,
 				runId: SHELL_RUN,
+				// The start's key: on the computer, its effect receipt.
+				receiptId: "key-0",
 				command: "cat",
 				startedAt: expect.any(String),
 				workedAt: expect.any(String),
@@ -248,6 +250,7 @@ describe("what the platform hears of a shell", () => {
 			{
 				id: quick.sessionId,
 				runId: SHELL_RUN,
+				receiptId: "key-1",
 				command: "echo hi",
 				startedAt: expect.any(String),
 				reason: "exited",

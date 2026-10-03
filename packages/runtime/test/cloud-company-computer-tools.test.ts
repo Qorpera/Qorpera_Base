@@ -591,6 +591,14 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(variants).toEqual(["start", "read", "write", "stop", "stop", "list"]);
 		expect(shell.description).not.toContain("15 seconds");
 		expect(shell.description).toContain("public internet");
+		// One idle rule: only a busy shell keeps the machine awake; the next run is told what sleep stopped.
+		expect(shell.description).toContain("Only a busy shell (over about 5% of one core) keeps the machine awake");
+		expect(shell.description).toContain("your next run is told");
+	});
+
+	it("keeps every computer tool's description within a tool registration's 4 KiB", () => {
+		for (const tool of toolHarness().session.tools)
+			expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 	});
 
 	it.each(["file:///etc/passwd", "http://example.com", "https://user:password@example.com", "javascript:alert(1)"])(

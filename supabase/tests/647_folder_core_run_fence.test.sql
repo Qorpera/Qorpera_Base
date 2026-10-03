@@ -131,7 +131,9 @@ begin
 		('qorpera_validate_native_provider_execution_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)', 'guard', '9695f5dc4c068fd8e7a69a38ea3e01c4'),
 		-- Re-pinned for Sign in with ChatGPT (20260928359950): a ChatGPT plan never pays for a file-change or
 		-- event wake, nor for work that follows from one; the snapshot-v1 text is otherwise unchanged.
-		('qorpera_wake_authorized(qorpera_wake_occurrences)', 'guard', '025e118587495df4f03ef7634a9eadab'),
+		-- Re-pinned for the one idle rule (20260930007000): a machine-checkin wake is authorized as a
+		-- machine-event wake is; nothing else changed.
+		('qorpera_wake_authorized(qorpera_wake_occurrences)', 'guard', '257913af4872cb26c60716731b8ac201'),
 		('qorpera_company_path_assert_context(jsonb)', 'guard', '885499e6425c36e3d55ac3976c1459c6'),
 		('qorpera_presence_path_routes(jsonb,text[],boolean)', 'guard', '8e5f14e3327ac4e308f17ed4e61d25c0'),
 		('qorpera_native_office_start(jsonb,text,text,uuid,text)', 'guard', '9a5b091f9db1cda8437c8f34af3f5a98'),
@@ -152,7 +154,8 @@ begin
 		('qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)', 'actor', '3b5736c1cf409a623f10007429aa2f68'),
 		('qorpera_read_company_run_context(jsonb,text,uuid,text,integer,integer)', 'actor', '65725e9941e3dae609539d722faed13f'),
 		('qorpera_native_presence_register(jsonb,uuid,text)', 'actor', '32f9f1dd6f8106351cf53ab012e8b34a'),
-		('qorpera_describe_agent_open_work(jsonb)', 'actor', 'b70d3ac1bbcfe97baf7c9a7baf8f79e3'),
+		-- Re-pinned for the one idle rule (20260930007000): open work adds computerStopped; the counts are unchanged.
+		('qorpera_describe_agent_open_work(jsonb)', 'actor', '38999fa9286d9abc52adde5dbb6641b9'),
 		('qorpera_native_company_object_actor(jsonb,uuid)', 'actor', '57a44af9c107b7c0a3da5bfc6d3eafa7'),
 		('qorpera_company_presence_scope(uuid,jsonb,text[])', 'actor', 'a9398c12528abddb25f91544455da044'),
 		('qorpera_native_presence_subject(uuid,uuid,text[])', 'actor', '0f6897f705023a6b7d6e467aa5346a53'),

@@ -69,13 +69,18 @@ const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fo
  */
 export type CompanyComputerShellEndReason = "exited" | "stopped" | "pressure" | "paused" | "closed";
 
-/** What the office tells the platform about one shell, each busy report. */
+/**
+ * What the office tells the platform about one shell, each busy report. Each
+ * command names the run that started it and that start's effect receipt, which
+ * the platform matches against the screen's own record.
+ */
 export interface CompanyComputerShellReport {
 	/** workedAt: when the agent last started or typed into it, which restarts the check-in count. */
-	open: { id: string; runId: string; command: string; startedAt: string; workedAt: string }[];
+	open: { id: string; runId: string; receiptId: string; command: string; startedAt: string; workedAt: string }[];
 	ended: {
 		id: string;
 		runId: string;
+		receiptId: string;
 		command: string;
 		startedAt: string;
 		reason: CompanyComputerShellEndReason;
@@ -96,6 +101,8 @@ interface Session {
 	id: string;
 	/** The run that started it: it is told when the command stops, and asked about it. */
 	runId: string;
+	/** The start's effect receipt (its key). */
+	receiptId: string;
 	command: string;
 	startedAt: string;
 	/** When the agent last started or typed into it. */
@@ -263,6 +270,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		this.#unreported.set(session.id, {
 			id: session.id,
 			runId: session.runId,
+			receiptId: session.receiptId,
 			command: reportedCommand(session.command),
 			startedAt: session.startedAt,
 			reason,
@@ -472,6 +480,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const session: Session = {
 			id: randomUUID(),
 			runId: input.runId,
+			receiptId: input.key,
 			command: input.command,
 			startedAt: new Date().toISOString(),
 			workedAt: new Date().toISOString(),
@@ -612,6 +621,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 				.map((s) => ({
 					id: s.id,
 					runId: s.runId,
+					receiptId: s.receiptId,
 					command: reportedCommand(s.command),
 					startedAt: s.startedAt,
 					workedAt: s.workedAt,

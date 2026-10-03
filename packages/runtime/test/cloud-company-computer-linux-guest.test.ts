@@ -61,7 +61,7 @@ vi.mock("../src/cloud-company-computer-linux-private-surface.ts", () => ({
 	startCompanyComputerLinuxPrivateSurface: physical.privateStart,
 }));
 /** Each screen's long-running shell; the real one has its own tests and Linux probe. */
-type FixtureShellCommand = { id: string; runId: string; command: string; startedAt: string };
+type FixtureShellCommand = { id: string; runId: string; receiptId: string; command: string; startedAt: string };
 const shells = vi.hoisted(
 	() =>
 		[] as {
@@ -93,12 +93,13 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) =
 			namespacePid: number | undefined = undefined;
 			open: (FixtureShellCommand & { workedAt: string })[] = [];
 			ended: (FixtureShellCommand & { reason: string; endedAt: string })[] = [];
-			start = vi.fn(async (input: { command: string; runId: string }) => {
+			start = vi.fn(async (input: { command: string; runId: string; key: string }) => {
 				this.namespacePid = 4200 + shells.indexOf(this);
 				const at = new Date().toISOString();
 				this.open.push({
 					id: "00000000-0000-4000-8000-0000000000a1",
 					runId: input.runId,
+					receiptId: input.key,
 					command: input.command,
 					startedAt: at,
 					workedAt: at,
@@ -482,8 +483,10 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 			f.effect(),
 		);
 		expect(shells[0].start).toHaveBeenCalledWith(
-			expect.objectContaining({ command: "npm run dev", runId: f.run.identity.runId }),
+			expect.objectContaining({ command: "npm run dev", runId: f.run.identity.runId, key: expect.any(String) }),
 		);
+		// The receipt the platform matches is the start effect's own.
+		expect(shells[0].open[0].receiptId).toBe(shells[0].start.mock.calls[0][0].key);
 		const pid = shells[0].namespacePid!;
 		const reports = () =>
 			f.call.mock.calls
@@ -492,6 +495,7 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		const command = {
 			id: "00000000-0000-4000-8000-0000000000a1",
 			runId: f.run.identity.runId,
+			receiptId: expect.any(String),
 			command: "npm run dev",
 			startedAt: expect.any(String),
 		};
@@ -606,6 +610,40 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await vi.advanceTimersByTimeAsync(30000);
 		expect(shells[0].reported).toHaveBeenCalledExactlyOnceWith(["00000000-0000-4000-8000-0000000000a1"]);
 		expect(shells[0].ended).toEqual([]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
+	it("lets go of ends the registry keeps refusing, after ten reports, and reports again", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "npm test", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const { workedAt: _refusedWorkedAt, ...refused } = shells[0].open[0];
+		shells[0].ended.push({ ...refused, reason: "exited", endedAt: new Date().toISOString() });
+		shells[0].open = [];
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_report_runtime_office_shell_activity")
+				throw new Error("Invalid office shell activity");
+			return original(method, args);
+		});
+		await vi.advanceTimersByTimeAsync(9 * 30000);
+		expect(shells[0].reported).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].reported).toHaveBeenCalledExactlyOnceWith([refused.id]);
+		expect(shells[0].ended).toEqual([]);
+		f.call.mockImplementation(original);
+		const calls = f.call.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(60000);
+		// Nothing is left to say: no open command, nothing busy.
+		expect(
+			f.call.mock.calls.slice(calls).filter(([method]) => method === "qorpera_report_runtime_office_shell_activity"),
+		).toEqual([]);
 		expect(f.failure).not.toHaveBeenCalled();
 		await session.close();
 	});

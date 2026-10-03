@@ -366,6 +366,13 @@ describe("machine check-in envelopes", () => {
 		const { identity, wake } = checkinWakeFixture();
 		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
 	});
+	it("is refused, never misread, by a parser that does not know the kind; so the kernel holds check-ins behind a switch", () => {
+		// A runtime from before machine-checkin reaches its coworker branch with this wake, as this one does
+		// with a kind it does not know: the wake is refused (that run fails), never taken for a coworker message.
+		const { identity, wake } = checkinWakeFixture();
+		const unknown = { ...wake, source: { ...wake.source, kind: "machine-later" } } as unknown as CloudWakeEnvelope;
+		expect(() => parseCloudWakeEnvelope(unknown, identity)).toThrow(/Invalid c/);
+	});
 });
 
 describe("worker dispatch and completion envelopes", () => {

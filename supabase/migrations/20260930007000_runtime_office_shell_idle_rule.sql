@@ -36,9 +36,19 @@ end $$;
 -- host that runs agents has a runtime that reads both.
 create table public.qorpera_idle_rule_settings (
 	singleton boolean primary key default true check (singleton),
-	enabled boolean not null default false
+	enabled boolean not null default false,
+	-- When it was last turned on: only what stopped after that is told, never a backlog.
+	enabled_at timestamptz
 );
 insert into public.qorpera_idle_rule_settings(singleton) values (true);
+create function public.qorpera_idle_rule_settings_stamp() returns trigger language plpgsql set search_path = '' as $$
+begin
+	if new.enabled and not old.enabled then new.enabled_at := clock_timestamp(); end if;
+	return new;
+end $$;
+revoke all on function public.qorpera_idle_rule_settings_stamp() from public,anon,authenticated,service_role;
+create trigger qorpera_idle_rule_settings_stamp before update on public.qorpera_idle_rule_settings
+	for each row execute function public.qorpera_idle_rule_settings_stamp();
 alter table public.qorpera_idle_rule_settings enable row level security;
 revoke all on table public.qorpera_idle_rule_settings from public,anon,authenticated,service_role,qorpera_secret_broker;
 comment on table public.qorpera_idle_rule_settings is
@@ -63,20 +73,21 @@ select pg_temp.office_shell_idle_patch('public.qorpera_begin_runtime_office_life
 -- ---------------------------------------------------------------------------
 -- 2. The next run is told what stopped, once
 -- ---------------------------------------------------------------------------
--- The agent's commands that the platform stopped and that were started in
--- this run's conversation, oldest first, at most 32 a run. A row belongs to
--- the first run that took it; the same run (a restart after a usage limit)
--- takes it again.
+-- The agent's commands that the platform stopped since telling was turned on
+-- and that belong to this run's conversation, oldest first, at most 32 a run.
+-- A row belongs to the first run that took it; the same run (a restart after a
+-- usage limit) takes it again. A run outside any conversation is told nothing.
 create function public.qorpera_take_agent_computer_stopped(p_run public.qorpera_execution_runs)
 returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_taken jsonb;
+declare v_taken jsonb; v_settings public.qorpera_idle_rule_settings%rowtype;
 begin
-	if p_run.staff_agent_id is null
-		or not coalesce((select settings.enabled from public.qorpera_idle_rule_settings settings),false) then return null; end if;
+	select * into v_settings from public.qorpera_idle_rule_settings;
+	if p_run.staff_agent_id is null or p_run.session_id is null or not coalesce(v_settings.enabled,false) then return null; end if;
 	with taken as (
 		select command.id from public.qorpera_runtime_office_shell_commands command
-		where command.staff_agent_id=p_run.staff_agent_id and command.session_id is not distinct from p_run.session_id
+		where command.staff_agent_id=p_run.staff_agent_id and command.session_id=p_run.session_id
 			and command.end_reason in ('slept','closed','paused','pressure','lost')
+			and command.ended_at>=v_settings.enabled_at
 			and (command.told_run_id is null or command.told_run_id=p_run.id)
 		order by command.ended_at,command.id limit 32 for update skip locked),
 	marked as (
@@ -152,43 +163,69 @@ returns integer language sql immutable set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_machine_checkin_mark(double precision) from public,anon,authenticated,service_role;
 
--- The Company Computer's questions: each busy shell whose agent has not
--- worked with it for at least an hour, once per mark, asked of the run that
--- worked with it last. An archived agent is not asked; a paused company is
--- asked when the pause ends (the drain waits).
+-- The Company Computer's questions. A screen whose shell is busy, whose agent
+-- still runs a command there and has not worked with that shell (started or
+-- typed into any command on the screen) for at least an hour, is asked about
+-- once per mark, of the run that worked with it last (for a worker, the run
+-- that dispatched it). An archived agent is not asked, nor a folder-v2
+-- company; a paused company is asked when the pause ends (the drain waits).
+-- One shell's trouble never stops the others or the materializer.
 create function public.qorpera_ask_busy_office_shells(p_limit integer default 32)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_shell record; v_mark integer; v_body jsonb;
+declare v_shell record; v_body jsonb;
 begin
 	if auth.role() is distinct from 'service_role' or p_limit is null or p_limit not between 1 and 64 then
 		raise exception 'Office shell check-in authority or bound is invalid' using errcode = '42501'; end if;
 	if not coalesce((select settings.enabled from public.qorpera_idle_rule_settings settings),false) then return; end if;
 	for v_shell in
-		select activity.screen_id,office.profile_id,office.environment_id,latest.staff_agent_id,latest.run_id,latest.worked_at,
-			clock_timestamp() as checked_at
-		from public.qorpera_runtime_office_shell_activity activity
-		join public.qorpera_runtime_offices office on office.id=activity.office_id and office.generation=activity.computer_generation
-		cross join lateral (select command.staff_agent_id,command.run_id,command.worked_at
-			from public.qorpera_runtime_office_shell_commands command
-			where command.office_id=activity.office_id and command.screen_id=activity.screen_id and command.ended_at is null
-			order by command.worked_at desc,command.id desc limit 1) latest
-		where activity.busy_until>clock_timestamp() and latest.worked_at<=clock_timestamp()-interval '1 hour'
-		order by activity.screen_id limit p_limit
+		select asking.* from (
+			select activity.office_id,activity.screen_id,office.profile_id,office.environment_id,screen.staff_agent_id,
+				latest.conversation_run_id,latest.worked_at,
+				public.qorpera_machine_checkin_mark(extract(epoch from clock_timestamp()-latest.worked_at)/3600) as mark
+			from public.qorpera_runtime_office_shell_activity activity
+			join public.qorpera_runtime_offices office on office.id=activity.office_id and office.generation=activity.computer_generation
+			join public.qorpera_runtime_office_screens screen on screen.id=activity.screen_id
+			cross join lateral (select command.conversation_run_id,command.worked_at
+				from public.qorpera_runtime_office_shell_commands command
+				where command.screen_id=activity.screen_id and command.staff_agent_id=screen.staff_agent_id
+				order by command.worked_at desc,command.id desc limit 1) latest
+			where activity.busy_until>clock_timestamp() and latest.worked_at<=clock_timestamp()-interval '1 hour'
+				and not public.qorpera_company_is_folder_v2(office.profile_id)
+				and exists(select 1 from public.qorpera_runtime_office_shell_commands open_command
+					where open_command.office_id=activity.office_id and open_command.screen_id=activity.screen_id
+						and open_command.staff_agent_id=screen.staff_agent_id and open_command.ended_at is null)
+				and exists(select 1 from public.qorpera_profile_staff staff where staff.profile_id=office.profile_id
+					and staff.staff_agent_id=screen.staff_agent_id and staff.employment_status='active')) asking
+		-- Only questions not asked yet count against the limit.
+		where not exists(select 1 from public.qorpera_machine_checkins asked where asked.machine_kind='computer'
+			and asked.subject_id=asking.screen_id and asked.since=asking.worked_at and asked.mark_hours=asking.mark)
+		order by asking.worked_at,asking.screen_id limit p_limit
 	loop
-		v_mark:=public.qorpera_machine_checkin_mark(extract(epoch from v_shell.checked_at-v_shell.worked_at)/3600);
-		if v_mark is null or not exists(select 1 from public.qorpera_profile_staff staff where staff.profile_id=v_shell.profile_id
-			and staff.staff_agent_id=v_shell.staff_agent_id and staff.employment_status='active') then continue; end if;
-		v_body:=jsonb_build_object('machine','your computer','busyHours',v_mark,
-			'running',(select coalesce(jsonb_agg(jsonb_build_object('command',left(command.command,200),'startedAt',command.started_at)
-				order by command.started_at,command.id),'[]'::jsonb)
-				from (select * from public.qorpera_runtime_office_shell_commands open_command
-					where open_command.screen_id=v_shell.screen_id and open_command.ended_at is null
-					order by open_command.started_at,open_command.id limit 8) command));
-		insert into public.qorpera_machine_checkins(profile_id,environment_id,staff_agent_id,parent_run_id,machine_kind,subject_id,
-			since,mark_hours,body)
-		values(v_shell.profile_id,v_shell.environment_id,v_shell.staff_agent_id,v_shell.run_id,'computer',v_shell.screen_id,
-			v_shell.worked_at,v_mark,v_body)
-		on conflict (machine_kind,subject_id,since,mark_hours) do nothing;
+		begin
+			-- What still runs, as many as fit: 8 at most and 3000 bytes of commands, the rest counted.
+			with listed as (
+				select command.id,command.started_at,
+					jsonb_build_object('command',left(command.command,200),'startedAt',command.started_at) as item
+				from public.qorpera_runtime_office_shell_commands command
+				where command.office_id=v_shell.office_id and command.screen_id=v_shell.screen_id
+					and command.staff_agent_id=v_shell.staff_agent_id and command.ended_at is null),
+			ordered as (
+				select listed.item,row_number() over (order by listed.started_at,listed.id) as n,
+					sum(octet_length(listed.item::text)) over (order by listed.started_at,listed.id) as bytes
+				from listed)
+			select jsonb_build_object('machine','your computer','busyHours',v_shell.mark,
+				'running',coalesce(jsonb_agg(ordered.item order by ordered.n) filter (where ordered.n<=8 and ordered.bytes<=3000),'[]'::jsonb),
+				'more',count(*) filter (where ordered.n>8 or ordered.bytes>3000))
+			into v_body from ordered;
+			insert into public.qorpera_machine_checkins(profile_id,environment_id,staff_agent_id,parent_run_id,machine_kind,subject_id,
+				since,mark_hours,body)
+			values(v_shell.profile_id,v_shell.environment_id,v_shell.staff_agent_id,v_shell.conversation_run_id,'computer',
+				v_shell.screen_id,v_shell.worked_at,v_shell.mark,v_body)
+			on conflict (machine_kind,subject_id,since,mark_hours) do nothing;
+		exception when check_violation or not_null_violation or foreign_key_violation or program_limit_exceeded then
+			-- This question cannot be carried; the others still are.
+			null;
+		end;
 	end loop;
 end $$;
 revoke all on function public.qorpera_ask_busy_office_shells(integer) from public,anon,authenticated,service_role;
@@ -239,9 +276,30 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_machine_checkin_stopped(uuid) from public,anon,authenticated,service_role;
 
+-- Whether a question still stands when it would be delivered: no later mark
+-- was asked for the same count, and (on a Company Computer) the shell is busy
+-- now, its seat is the same agent's and nobody worked with it since.
+create function public.qorpera_machine_checkin_current(p_checkin public.qorpera_machine_checkins)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select not exists(select 1 from public.qorpera_machine_checkins later where later.machine_kind=p_checkin.machine_kind
+			and later.subject_id=p_checkin.subject_id and later.since=p_checkin.since and later.mark_hours>p_checkin.mark_hours)
+		and case p_checkin.machine_kind
+			when 'computer' then exists(select 1 from public.qorpera_runtime_office_shell_activity activity
+				join public.qorpera_runtime_offices office on office.id=activity.office_id and office.generation=activity.computer_generation
+				join public.qorpera_runtime_office_screens screen on screen.id=activity.screen_id
+				where activity.screen_id=p_checkin.subject_id and activity.busy_until>clock_timestamp()
+					and screen.staff_agent_id=p_checkin.staff_agent_id
+					and (select max(command.worked_at) from public.qorpera_runtime_office_shell_commands command
+						where command.screen_id=screen.id and command.staff_agent_id=screen.staff_agent_id)=p_checkin.since)
+			-- Other machines judge their questions when they ask them.
+			else true end
+$$;
+revoke all on function public.qorpera_machine_checkin_current(public.qorpera_machine_checkins) from public,anon,authenticated,service_role;
+
 -- Delivery, as for machine events: the parent's own run ends first; one
--- question at a time per parent; a run a person stopped hears nothing more;
--- a paused company waits. Nothing one question does stops the drain.
+-- question at a time per parent; a question that no longer stands is dropped;
+-- a run a person stopped hears nothing more; a paused company waits; a
+-- folder-v2 company is not asked yet. Nothing one question does stops the drain.
 create function public.qorpera_drain_machine_checkin_wakes(p_limit integer default 32)
 returns void language plpgsql security definer set search_path = '' as $$
 declare v_checkin public.qorpera_machine_checkins%rowtype; v_parent public.qorpera_execution_runs%rowtype; v_status text;
@@ -251,6 +309,7 @@ begin
 		raise exception 'Machine check-in admission authority or bound is invalid' using errcode = '42501'; end if;
 	if not coalesce((select settings.enabled from public.qorpera_idle_rule_settings settings),false) then return; end if;
 	for v_checkin in select * from public.qorpera_machine_checkins where delivery = 'waiting'
+		and not public.qorpera_company_is_folder_v2(profile_id)
 		order by scanned_at, created_at, id for update skip locked limit p_limit loop
 		begin
 			update public.qorpera_machine_checkins set scanned_at = clock_timestamp() where id = v_checkin.id;
@@ -259,7 +318,8 @@ begin
 				update public.qorpera_machine_checkins set delivery = 'undeliverable' where id = v_checkin.id; continue; end if;
 			select status into v_status from public.qorpera_runner_jobs where id = v_parent.job_id;
 			if v_status is null or v_status in ('queued','leased') then continue; end if;
-			if v_status = 'cancelled' or public.qorpera_machine_checkin_stopped(v_parent.id) then
+			if v_status = 'cancelled' or public.qorpera_machine_checkin_stopped(v_parent.id)
+				or not public.qorpera_machine_checkin_current(v_checkin) then
 				update public.qorpera_machine_checkins set delivery = 'suppressed' where id = v_checkin.id; continue; end if;
 			if public.qorpera_company_execution_paused(v_parent.profile_id) then continue; end if;
 			perform public.qorpera_serialize_wake_admission(v_parent.profile_id);
