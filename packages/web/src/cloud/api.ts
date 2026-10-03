@@ -58,6 +58,7 @@ import {
 	parseStaffList,
 	parseStaffSessionHandle,
 	parseTeam,
+	parseWorkerRunControl,
 	UUID_PATTERN,
 } from "./parse.ts";
 import { type CloudPresenceHandle, joinCompanyPresence, type PresenceHealth, type PresenceMember } from "./presence.ts";
@@ -99,6 +100,7 @@ import type {
 	PendingSessionInputPage,
 	SessionInputReceipt,
 	StaffSessionHandle,
+	WorkerRunControl,
 } from "./types.ts";
 
 /* Typed member surface over CLIENT-CONTRACT.md §2. One method per RPC the web
@@ -140,6 +142,22 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_company_waiting_for_hours", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then((value) => value === true);
+	}
+
+	/** A worker's own run, which has no conversation: its state and whether this member may stop it (gap 4b). */
+	workerRunControl(runId: string): Promise<WorkerRunControl> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_get_worker_run_control", { p_run_id: id })
+			.then((value) => parseWorkerRunControl(value, id));
+	}
+
+	/** A member's Stop of a worker's own run: the thread run's stop, by run id (gap 4b). */
+	stopWorkerRun(runId: string): Promise<WorkerRunControl> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_cancel_worker_run", { p_run_id: id })
+			.then((value) => parseWorkerRunControl(value, id));
 	}
 
 	/** The plans and packs of hours this member can buy. */
