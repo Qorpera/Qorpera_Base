@@ -38,34 +38,40 @@ export interface SharedExecutionIdentityMaterial {
 	companyId: string;
 }
 
+/** `runId` is the run the identity is read for: with the execution host's own credential (G2-3e) the entry point
+ * allows an identity only with a run its adapter holds a live claim on. */
 export type SharedExecutionIdentityAuthority = (
 	computeIdentityId: string,
 	signal: AbortSignal,
+	runId: string,
 ) => Promise<SharedExecutionIdentityState>;
 
 /** Whether an identity's login is kept by the vault (Stateless Compute step 1): then no volume,
  * key or epoch file exists for it on this host, and its run asks the vault for its login. */
-export type SharedExecutionLoginCustody = (computeIdentityId: string, signal: AbortSignal) => Promise<boolean>;
+export type SharedExecutionLoginCustody = (
+	computeIdentityId: string,
+	signal: AbortSignal,
+	runId: string,
+) => Promise<boolean>;
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
 }
 
-function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
-	const headers: Record<string, string> = { apikey: serviceKey };
-	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
-		headers.authorization = `Bearer ${serviceKey}`;
-	}
-	return headers;
+/** The arguments of an identity read: the identity and the run it is read for, which the execution host's entry
+ * point checks and removes (G2-3e). */
+function identityArguments(computeIdentityId: string, runId: string): string {
+	if (!UUID_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
+	if (!UUID_PATTERN.test(runId)) throw new Error("Run id is invalid");
+	return JSON.stringify({ p_compute_identity_id: computeIdentityId, p_run_id: runId });
 }
 
-/** The cloud recovery authority for one identity, read with the service key
- * exactly as the one-run guest bootstrap reads it. */
+/** The cloud recovery authority for one identity, read through the execution host's entry point: `fetchImplementation`
+ * is the service's `executionHostFetch`, which sends it with the host's credential. */
 export function supabaseSharedExecutionIdentityAuthority(
 	supabaseUrl: string,
-	serviceKey: string,
-	fetchImplementation: ServiceHttpFetch = fetch,
+	fetchImplementation: ServiceHttpFetch,
 ): SharedExecutionIdentityAuthority {
 	const base = new URL(supabaseUrl);
 	if (
@@ -77,15 +83,15 @@ export function supabaseSharedExecutionIdentityAuthority(
 		base.hash
 	)
 		throw new Error("Native identity authority requires an HTTPS origin");
-	return async (computeIdentityId, signal) => {
-		if (!UUID_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
+	return async (computeIdentityId, signal, runId) => {
+		const body = identityArguments(computeIdentityId, runId);
 		const response = await fetchImplementation(
 			new URL("/rest/v1/rpc/qorpera_identity_recovery_runtime_state", base),
 			{
 				method: "POST",
 				redirect: "error",
-				headers: { ...supabaseServiceHeaders(serviceKey), "content-type": "application/json" },
-				body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+				headers: { "content-type": "application/json" },
+				body,
 				signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
 			},
 		);
@@ -97,10 +103,10 @@ export function supabaseSharedExecutionIdentityAuthority(
 	};
 }
 
+/** Whether the identity's login is in the vault, read as the recovery authority is. */
 export function supabaseSharedExecutionLoginCustody(
 	supabaseUrl: string,
-	serviceKey: string,
-	fetchImplementation: ServiceHttpFetch = fetch,
+	fetchImplementation: ServiceHttpFetch,
 ): SharedExecutionLoginCustody {
 	const base = new URL(supabaseUrl);
 	if (
@@ -112,24 +118,18 @@ export function supabaseSharedExecutionLoginCustody(
 		base.hash
 	)
 		throw new Error("Native identity authority requires an HTTPS origin");
-	return async (computeIdentityId, signal) => {
-		if (!UUID_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
+	return async (computeIdentityId, signal, runId) => {
+		const body = identityArguments(computeIdentityId, runId);
 		const response = await fetchImplementation(
 			new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", base),
 			{
 				method: "POST",
 				redirect: "error",
-				headers: { ...supabaseServiceHeaders(serviceKey), "content-type": "application/json" },
-				body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+				headers: { "content-type": "application/json" },
+				body,
 				signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
 			},
 		);
-		// A database without the check (this build reached the node before its migration)
-		// answers 404: the login is then on a node, as before.
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return false;
-		}
 		if (!response.ok) {
 			void response.body?.cancel().catch(() => undefined);
 			throw new Error(`Native identity custody is unavailable (${response.status})`);
@@ -202,6 +202,8 @@ export interface ReadSharedExecutionIdentityOptions {
 	identityRoot: string;
 	computeIdentityId: string;
 	authority: SharedExecutionIdentityAuthority;
+	/** The run the identity is read for (G2-3e). */
+	runId: string;
 	signal: AbortSignal;
 	mountInfoPath?: string;
 	/** Tests only: skip the mount-point requirement on non-Linux hosts. */
@@ -223,7 +225,7 @@ export async function readSharedExecutionIdentity(
 		throw new Error("Identity root must be an absolute physical path");
 	const volume = join(options.identityRoot, computeIdentityId);
 	const expectedUid = options.expectedUid ?? 0;
-	const state = await options.authority(computeIdentityId, options.signal);
+	const state = await options.authority(computeIdentityId, options.signal, options.runId);
 	if (state.computeIdentityId !== computeIdentityId || state.blocked)
 		throw new Error("Compute Identity is fenced by cloud recovery authority");
 	if (options.requireMount ?? process.platform === "linux") {
