@@ -75,6 +75,12 @@ create function pg_temp.sql_call(p_fn text, p_n integer) returns text language s
 			'82600000-0000-4000-8000-0000000000d' || p_n, 'exec-826', '{"other":true}', repeat('8', 64)) end
 $$;
 
+-- Each call's own refusal, once it has its locks: no leased session, or custody that differs.
+create function pg_temp.refusal(p_fn text) returns text language sql as $$
+	select case when p_fn in ('authorize', 'plan') then '42501 Coding session lease unavailable'
+		else '42501 Coding machine custody differs' end
+$$;
+
 -- A. Beside a folder effect, none of the four waits on folder-v2; each is refused for its own reasons (never a lock).
 do $$
 declare v_fn text; v_state text;
@@ -87,7 +93,7 @@ begin
 			raise exception 'A: % waited for a folder effect', v_fn; end if;
 		v_state := pg_temp.outcome('fence_two');
 		perform pg_temp.release();
-		if v_state = 'ok' or v_state like '40P01%' or v_state like '55P03%' then
+		if v_state <> pg_temp.refusal(v_fn) then
 			raise exception 'A: % must be refused for its own reasons, got %', v_fn, v_state; end if;
 	end loop;
 end $$;
@@ -109,7 +115,7 @@ begin
 			raise exception 'B: % held a coding row or the company row before the fence', v_fn; end if;
 		perform pg_temp.release();
 		v_state := pg_temp.outcome('fence_two');
-		if v_state = 'ok' or v_state like '40P01%' or v_state like '55P03%' then
+		if v_state <> pg_temp.refusal(v_fn) then
 			raise exception 'B: % must be refused for its own reasons after the stop, got %', v_fn, v_state; end if;
 	end loop;
 end $$;

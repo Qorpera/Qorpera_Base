@@ -75,7 +75,7 @@ begin
 	perform pg_temp.c1c3h_replace('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)',
 		E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
 		|| E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n',
-		E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
-		|| E' -- C1c-3h (20260930002300): the coding kind takes the folder branch too; offices keep the gc fence.\n'
+		E' -- every caller. C1c-3h (20260930002300): the coding kind takes it too; office (C1c-3j) reservations still come\n'
+		|| E' -- with the gc fence.\n'
 		|| E' if p_provider_kind in (''machine'', ''coding'') and public.qorpera_company_is_folder_v2(v_profile) then\n', 1);
 end $$;
