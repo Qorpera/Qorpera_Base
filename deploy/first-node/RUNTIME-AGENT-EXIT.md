@@ -132,7 +132,7 @@ bridge back to no forwarding.
 Running machines keep their links through it, so no company is paused. A change that would have to rebuild the
 namespace is not made while a machine is plugged in; the tool refuses it and has no override.
 
-**Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, both rule tables, dnsmasq (in the
+**Health.** `qorpera-agent-exit.sh verify` checks the namespace, the bridge, the three rule tables, dnsmasq (in the
 exit's current namespace), the logger's heartbeat and the agent plug's reconciler (alive, and the client map true to
 LXD, §4). The logger leaves by itself when its reader watches a namespace the exit replaced. The health timer writes
 `verify`'s answer to `/run/qorpera-agent-exit/health.json`, because the node observer has no capabilities and
@@ -149,18 +149,23 @@ healthy exit (E2).
 - Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge LXD
   does not manage it drops every DHCP request on its way to the exit (seen on LXD 6.9 in a test machine, 3 October,
   and in LXD's rule template). The exit's own bridge rules (`qorpera-agent-exit-bridge.nft`, bridge family, on the
-  node) take its place: from a machine's port a frame passes only as ARP (its sender fields too) or IPv4 from a MAC
-  and address pair in the client map, and DHCP only through one rule per machine: its own MAC, from no address or
+  node) take its place. Before the bridge learns where a MAC lives, a machine's port may send only its own MAC (a
+  set of LXD ports and MACs), so no machine can take another's MAC, or the exit's, and with it their traffic; LLDP
+  frames, which would otherwise skip the bridge's hooks, are forwarded through them (`group_fwd_mask`). Then a frame
+  passes only as ARP (its sender fields too) or IPv4 from a MAC and address pair, and DHCP only through one rule per
+  machine: its own MAC, from no address or
   its own, naming its own MAC as the client (BOOTP chaddr). So no machine can take, release or decline another's
   lease (dnsmasq holds back a static address for 10 minutes after a DHCPDECLINE that names it), and dnsmasq ignores
-  client ids, so a lease is the MAC's alone. A card outside the map, or not in it yet, gets no address and nothing
-  through. With LXD's MAC filter (each port keeps its own MAC) that ties each machine to its address. The node takes
+  client ids, so a lease is the MAC's alone. Only entries LXD backs are in the sets: a card outside the map, not in
+  it yet, or claimed by an entry LXD does not back, gets no address and nothing through. With LXD's MAC filter (each port keeps its own MAC) that ties each machine to its address. The node takes
   nothing from the bridge.
 - The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact
   devices: `lxd-office-guest.ts`, `coding-machine.ts` and `company-machine.ts` each compare the NIC set they expect.
   The node inventory also pins a machine's devices when it first sees the machine, and a card changed later makes
-  the node unavailable; so E5 and E6 settle how coding machines and Company Computers that already exist are made
-  again with the plug. Legacy `coding-vm.ts` machines are retired, not moved. The Company Computer keeps its first
+  the node unavailable; so the plug goes in when a machine is made, never later. With no users and no legacy
+  machines (founder decision, 3 October: production's companies are wiped and legacy compatibility is dropped), there
+  is nothing to migrate: the creators of the new architecture plug every machine in from the start. A creator calls
+  `plug` right before each create, after the old instance (if any) is gone, and never reuses a stored address. The Company Computer keeps its first
   card, `network` on `qorpera0`, for its own services (the passthrough finds it by that name); the plug is its
   second card.
 - One shared helper, `deploy/agent-exit/qorpera-agent-plug.py plug`, run by the creators (members of the group
@@ -192,7 +197,7 @@ healthy exit (E2).
   them by and end with their timeout.
 - "Plugged in" means any machine in the client map, running or asleep. E2's guard on removing the exit reads the
   client map, not only the bridge's ports (a sleeping machine has no port).
-- Machines move one kind at a time, each behind its own switch. A running machine moves the next time it starts.
+- No switches: each kind's creator plugs its machines in from its own step (E2c onwards).
 - Today agents' machines and coding machines have LXD ACLs on `machine-net` and `coding-net` as their second line.
   On `qagent0` the exit's, the bridge's and the host's rules take that place, with LXD's MAC and IPv6 filters and
   port isolation.
@@ -362,6 +367,7 @@ Each step is a small PR with an exact-head independent review and a `run-on-node
 machine. The coordinator merges and installs.
 
 E2 lands in four PRs: E2a, the node's side (the plug tool and its reconciler, the bridge rules that tie each MAC
-to its address, `notrack` for the bridged leg, the health file); E2b, the proof on LXD inside a test machine (the NIC filters, port isolation, the floods and the
-tables); E2c, the plug in the three creators' plans; E2d, exit health in placement, with one switch per machine
-kind, all off until E4–E6.
+to its address, `notrack` for the bridged leg, the health file); E2b, the proof on LXD in a throwaway VM inside a
+test machine (the NIC filters, port isolation, the spoofs, the floods and the tables); E2c, the plug in the three
+creators' plans; E2d, exit health in placement. With no users and no legacy machines (founder decision, 3 October),
+neither keeps a switch.

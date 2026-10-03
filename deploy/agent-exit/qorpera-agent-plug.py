@@ -11,8 +11,12 @@ writes two files:
 The machine's LXD card then carries both: nictype bridged, parent qagent0, hwaddr, ipv4.address, ipv6.address none,
 MAC and IPv6 filtering and port isolation, and not LXD's IPv4 filtering (its forward chain has no DHCP exception, so on
 a bridge LXD does not manage it drops every DHCP request on its way to the exit). The exit's own bridge rules
-(qorpera-agent-exit-bridge.nft) tie each MAC to its address instead, from the client map: a set of MAC and address
-pairs, and one DHCP rule per machine (its own MAC, naming itself). A repeated `plug` for the
+(qorpera-agent-exit-bridge.nft) tie each port to its MAC and each MAC to its address instead: a set of LXD ports and
+their MACs, a set of MAC and address pairs, and one DHCP rule per machine (its own MAC, naming itself). Only entries
+LXD backs get into them: a claim LXD does not back gets no traffic at all.
+
+A creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses an address
+it stored: `plug` is the only source of a machine's address. A repeated `plug` for the
 same instance returns its entry, with a new time when the machine it was given to has been seen (it is being made
 again).
 
@@ -24,7 +28,7 @@ The reconciler (root, the plug unit) reads LXD every few seconds and keeps the m
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy
   (`qorpera-agent-exit.sh verify` reads <run-dir>/plug.json);
-- the bridge rules (the pairs set and the per-machine DHCP rules) are kept equal to the client map.
+- the bridge rules (the ports and pairs sets and the per-machine DHCP rules) are kept equal to the entries LXD backs.
 Flushing covers both connection tables: the exit's own, and the node's masqueraded twin of each connection (phase 1).
 A flush that fails is tried again every pass, and its address is not given out until it succeeds.
 
@@ -201,6 +205,8 @@ def entry_problem(entry):
             return "the address is not in the agents' range"
         if address in RESERVED:
             return "the address is kept for the exit's own services"
+        if address.packed[3] in (0, 255):
+            return "the address is a .0 or .255 host"
     except ValueError:
         return "the address is not an address"
     if entry.get("hwaddr") != hwaddr_for(entry["address"]):
@@ -216,7 +222,8 @@ def entry_problem(entry):
         if not isinstance(entry.get(key), str) or not LXD_NAME.match(entry[key]):
             return f"{key} is not an LXD name"
     try:
-        parse_iso(entry.get("since"))
+        if parse_iso(entry.get("since")) > time.time() + 300:
+            return "since is in the future"
     except (TypeError, ValueError):
         return "since is not a time"
     return None
@@ -241,8 +248,8 @@ def read_entries(paths):
         try:
             address = name[: -len(".json")]
             entries[address] = read_entry(os.path.join(paths.clients, name), address)
-        except (OSError, ValueError, UnicodeDecodeError) as error:
-            broken.append(f"{name}: {error}")
+        except (OSError, ValueError, UnicodeDecodeError, RecursionError) as error:
+            broken.append(f"{name}: {error}"[:300])
     return entries, broken
 
 
@@ -345,18 +352,26 @@ def ensure_lease(paths, entry):
 
 
 def dhcp_rule(entry):
-    """A machine's DHCP rule: its own MAC, from no address or its own, naming its own MAC as the client (chaddr)."""
+    """A machine's DHCP rule: its own MAC, from no address or its own, naming its own MAC as the client (chaddr) and
+    no relay (giaddr 0, so dnsmasq never sends its answer anywhere else)."""
     mac = entry["hwaddr"]
-    return (f"ether saddr {mac} ip saddr {{ 0.0.0.0, {entry['address']} }} @th,288,48 0x{mac.replace(':', '')} "
-            f"accept comment \"{entry['address']}\"")
+    return (f"ether saddr {mac} ip saddr {{ 0.0.0.0, {entry['address']} }} @th,256,32 0 "
+            f"@th,288,48 0x{mac.replace(':', '')} accept comment \"{entry['address']}\"")
 
 
-def elements(entries, fresh=False):
-    """nft statements that fill the bridge rules from the client map: for `up`, after the table file (its dhcp chain
-    holds the final drop, the machines' rules go above it); with fresh, as one replacement of everything."""
+def elements(entries, ports, fresh=False):
+    """nft statements that fill the bridge rules: entries are the client map entries LXD backs, ports the (port, MAC)
+    pairs of their running machines. For `up`, after the table file (its dhcp chain holds the final drop, the
+    machines' rules go above it); with fresh, as one replacement of everything."""
     family, table = BRIDGE_TABLE
     ordered = sorted(entries.values(), key=lambda e: ipaddress.ip_address(e["address"]))
-    lines = [f"flush set {family} {table} clients", f"flush chain {family} {table} dhcp"] if fresh else []
+    lines = []
+    if fresh:
+        lines += [f"flush set {family} {table} ports", f"flush set {family} {table} clients",
+                  f"flush chain {family} {table} dhcp"]
+    if ports:
+        named = ", ".join('"%s" . %s' % (port, mac) for port, mac in sorted(ports))
+        lines.append(f"add element {family} {table} ports {{ {named} }}")
     if ordered:
         pairs = ", ".join(f"{e['hwaddr']} . {e['address']}" for e in ordered)
         lines.append(f"add element {family} {table} clients {{ {pairs} }}")
@@ -365,6 +380,53 @@ def elements(entries, fresh=False):
     if fresh:
         lines.append(f'add rule {family} {table} dhcp counter name "dropped_unbound" drop')
     return lines
+
+
+def current_ports():
+    """The (port, MAC) pairs the loaded bridge rules hold, or none when they are not loaded."""
+    family, table = BRIDGE_TABLE
+    try:
+        result = subprocess.run(["nft", "-j", "list", "set", family, table, "ports"], capture_output=True, text=True)
+    except OSError:
+        return set()
+    if result.returncode != 0:
+        return set()
+    found = set()
+    for item in json.loads(result.stdout).get("nftables", []):
+        for elem in item.get("set", {}).get("elem", []) or []:
+            value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
+            parts = value.get("concat") if isinstance(value, dict) else None
+            if parts and len(parts) == 2:
+                found.add((str(parts[0]), str(parts[1]).lower()))
+    return found
+
+
+def host_port(instance):
+    """The node's side of a running machine's plug card, or None."""
+    nics = plug_nics(instance)
+    if len(nics) != 1 or instance.get("status") != "Running":
+        return None
+    key = f"volatile.{next(iter(nics))}.host_name"
+    name = (instance.get("expanded_config") or {}).get(key) or (instance.get("config") or {}).get(key)
+    return name if isinstance(name, str) and re.match(r"^[A-Za-z0-9_.-]{1,15}$", name) else None
+
+
+def backed(paths, entries, instances):
+    """The entries LXD backs (each matched once and still matching its machine, if it has one now), and the ports of
+    their running machines."""
+    by_name = {(i.get("project", "default"), i["name"]): i for i in instances}
+    ok, ports = {}, set()
+    for address, entry in entries.items():
+        if not os.path.lexists(os.path.join(paths.verified, address)):
+            continue
+        instance = by_name.get((entry["project"], entry["instance"]))
+        if instance is not None and check_machine(entry, instance):
+            continue
+        ok[address] = entry
+        port = host_port(instance) if instance is not None else None
+        if port:
+            ports.add((port, entry["hwaddr"]))
+    return ok, ports
 
 
 # --- The reconciler (root) ----------------------------------------------------------------------------------------
@@ -439,13 +501,11 @@ def check_machine(entry, instance):
 
 def check_port(entry, instance):
     """A running machine's plug card must be a port of the agents' bridge (after a rebuild of the bridge it is not)."""
-    nics = plug_nics(instance)
-    if len(nics) != 1 or instance.get("status") != "Running":
+    if len(plug_nics(instance)) != 1 or instance.get("status") != "Running":
         return []
-    key = f"volatile.{next(iter(nics))}.host_name"
-    host_name = (instance.get("expanded_config") or {}).get(key) or (instance.get("config") or {}).get(key)
+    host_name = host_port(instance)
     master = None
-    if isinstance(host_name, str) and re.match(r"^[A-Za-z0-9_.-]{1,15}$", host_name):
+    if host_name:
         try:
             master = os.path.basename(os.readlink(f"/sys/class/net/{host_name}/master"))
         except OSError:
@@ -595,37 +655,44 @@ class Reconciler:
                 print(f"cannot clear {address} from the exit's sets: {result.stderr.strip()[:200]}", flush=True)
 
     def bridge_state(self):
-        """What the bridge rules hold now: the set's pairs, the dhcp chain's per-machine rules (by their comment), and
-        whether that chain still ends in its drop. None when they cannot be read."""
+        """What the bridge rules hold now: the ports and pairs sets, the dhcp chain's per-machine rules (by their
+        comment), and whether that chain still ends in its bare drop. None when they cannot be read."""
         family, table = BRIDGE_TABLE
-        listed = self.run(["nft", "-j", "list", "set", family, table, "clients"])
-        chain = self.run(["nft", "-j", "list", "chain", family, table, "dhcp"])
-        if listed.returncode != 0 or chain.returncode != 0:
-            self.problems.append(f"cannot read the bridge rules: {(listed.stderr or chain.stderr).strip()[:200]}")
+        answers = [self.run(["nft", "-j", "list", what, family, table, name])
+                   for what, name in (("set", "ports"), ("set", "clients"), ("chain", "dhcp"))]
+        failed = [a for a in answers if a.returncode != 0]
+        if failed:
+            self.problems.append(f"cannot read the bridge rules: {failed[0].stderr.strip()[:200]}")
             return None
-        pairs = set()
-        for item in json.loads(listed.stdout).get("nftables", []):
-            for elem in item.get("set", {}).get("elem", []) or []:
-                parts = elem.get("concat") if isinstance(elem, dict) else None
-                if parts and len(parts) == 2:
-                    pairs.add((str(parts[0]).lower(), str(parts[1])))
-        rules = [item["rule"] for item in json.loads(chain.stdout).get("nftables", []) if "rule" in item]
-        comments = sorted(r.get("comment", "") for r in rules[:-1])
-        ends_in_drop = bool(rules) and "comment" not in rules[-1] and any("drop" in e for e in rules[-1].get("expr", []))
-        return pairs, comments, ends_in_drop
 
-    def sync_bridge(self, entries):
-        """Keeps the bridge rules equal to the client map (the set and the per-machine DHCP rules), in one
-        transaction. Read back every pass, so a restart, a crash or a hand edit is set right within a pass."""
+        def pairs(text):
+            found = set()
+            for item in json.loads(text).get("nftables", []):
+                for elem in item.get("set", {}).get("elem", []) or []:
+                    value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
+                    parts = value.get("concat") if isinstance(value, dict) else None
+                    found.add(tuple(str(p).lower() for p in parts) if parts and len(parts) == 2 else ("?",))
+            return found
+
+        rules = [item["rule"] for item in json.loads(answers[2].stdout).get("nftables", []) if "rule" in item]
+        comments = sorted(r.get("comment", "") for r in rules[:-1])
+        last = [next(iter(e)) for e in rules[-1].get("expr", [])] if rules else []
+        bare_drop = bool(rules) and "comment" not in rules[-1] and last == ["counter", "drop"]
+        return pairs(answers[0].stdout), pairs(answers[1].stdout), comments, bare_drop
+
+    def sync_bridge(self, entries, ports):
+        """Keeps the bridge rules equal to the entries LXD backs and their ports, in one transaction. Read back every
+        pass, so a restart or a crash (and the plain hand edits) are set right within a pass."""
         if not self.nft:
             return
         state = self.bridge_state()
         if state is None:
             return
-        wanted = ({(e["hwaddr"], e["address"]) for e in entries.values()}, sorted(entries), True)
+        wanted = ({(p.lower(), m) for p, m in ports}, {(e["hwaddr"], e["address"]) for e in entries.values()},
+                  sorted(entries), True)
         if state == wanted:
             return
-        batch = elements(entries, fresh=True)
+        batch = elements(entries, ports, fresh=True)
         result = subprocess.run(["nft", "-f", "-"], input="\n".join(batch) + "\n", capture_output=True, text=True)
         if result.returncode != 0:
             self.problems.append(f"cannot update the bridge rules: {result.stderr.strip()[:200]}")
@@ -640,7 +707,7 @@ class Reconciler:
                 now = read_entry(self.paths.entry(address), address)
             except FileNotFoundError:
                 now = None
-            except (OSError, ValueError, UnicodeDecodeError):
+            except (OSError, ValueError, UnicodeDecodeError, RecursionError):
                 now = entry
             if now is not None and now["since"] != entry["since"]:
                 return False
@@ -668,12 +735,22 @@ class Reconciler:
         return True
 
     def tidy(self, at):
-        """Temporary files left by a crash in the creators' folders, and quarantines that ended."""
+        """Temporary files left by a crash in the creators' folders, leases that belong to no entry (dnsmasq reads every
+        file there), and quarantines that ended."""
         for directory in (self.paths.clients, self.paths.dhcp):
             for name in os.listdir(directory):
                 path = os.path.join(directory, name)
-                if name.startswith(".tmp-") and at - os.lstat(path).st_mtime > STALE_TMP_SECONDS:
+                age = at - os.lstat(path).st_mtime
+                if name.startswith(".tmp-") and age > STALE_TMP_SECONDS:
                     remove(path)
+                elif (directory == self.paths.dhcp and not name.startswith(".") and age > 60
+                      and not os.path.lexists(self.paths.entry(name))):
+                    try:
+                        os.unlink(path)
+                    except IsADirectoryError:
+                        self.problems.append(f"dhcp-hosts/{name} is a folder; remove it by hand")
+                    except FileNotFoundError:
+                        pass
         for name in os.listdir(self.paths.quarantine):
             if name.startswith("."):
                 continue
@@ -703,45 +780,61 @@ class Reconciler:
                 self.note(f"stray-{project}-{name}", json.dumps(cards, sort_keys=True),
                           lambda: self.history("unattributed", stray, cards=cards))
         for address, entry in sorted(entries.items(), key=lambda item: ipaddress.ip_address(item[0])):
-            instance = by_name.get((entry["project"], entry["instance"]))
-            missing = os.path.join(self.paths.missing, address)
-            if instance is None:
-                if seen_since(self.paths, address) == entry["since"]:
-                    # Gone only when two reads in a row miss it: one odd read of LXD never unplugs anything.
-                    if os.path.lexists(missing):
-                        self.unplug(entry, "the machine is gone")
-                    else:
-                        write_replace(missing, now_iso() + "\n")
-                elif at - parse_iso(entry["since"]) > PENDING_SECONDS:
-                    self.unplug(entry, "the machine was never created")
-                continue
-            remove(missing)
-            self.mark_seen(entry)
+            try:
+                self.reconcile_entry(at, address, entry, by_name.get((entry["project"], entry["instance"])))
+            except Exception as error:  # noqa: BLE001 - one entry never stops the pass for the others
+                self.problems.append(f"{where(entry)}: {type(error).__name__}: {error}"[:300])
+        self.after_entries(at, entries)
+        entries = read_entries(self.paths)[0]
+        ok, ports = backed(self.paths, entries, instances)
+        self.sync_bridge(ok, ports)
+        return self.write_status(at, entries)
+
+    def reconcile_entry(self, at, address, entry, instance):
+        """One entry against its machine in this view of LXD (None: not there)."""
+        missing = os.path.join(self.paths.missing, address)
+        if instance is None:
+            if seen_since(self.paths, address) == entry["since"]:
+                # Gone only when two reads in a row miss it: one odd read of LXD never unplugs anything.
+                if os.path.lexists(missing):
+                    self.unplug(entry, "the machine is gone")
+                else:
+                    write_replace(missing, now_iso() + "\n")
+            elif at - parse_iso(entry["since"]) > PENDING_SECONDS:
+                self.unplug(entry, "the machine was never created")
+            return
+        remove(missing)
+        self.mark_seen(entry)
+        try:
             ensure_lease(self.paths, entry)
-            self.problems += check_port(entry, instance)
-            problems = check_machine(entry, instance)
-            if problems:
-                # A claim LXD does not back: unhealthy, logged, never attributed.
-                self.problems += problems
-                self.mismatch(entry, instance, problems)
-            else:
-                self.mark_verified(entry)
-            stopped = os.path.join(self.paths.stopped, address)
-            if instance.get("status") == "Stopped":
-                if not os.path.lexists(stopped):
-                    twins = self.flush(address)
-                    if twins is not None:
-                        write_replace(stopped, now_iso() + "\n")
-                        print(f"flushed {address} ({where(entry)}, asleep; {twins} twins on the node)", flush=True)
-            else:
-                remove(stopped)
+        except OSError as error:
+            self.problems.append(f"{where(entry)}: cannot write its lease: {error}")
+        self.problems += check_port(entry, instance)
+        problems = check_machine(entry, instance)
+        if problems:
+            # A claim LXD does not back: unhealthy, logged, never attributed.
+            self.problems += problems
+            self.mismatch(entry, instance, problems)
+        else:
+            self.mark_verified(entry)
+        stopped = os.path.join(self.paths.stopped, address)
+        if instance.get("status") == "Stopped":
+            if not os.path.lexists(stopped):
+                twins = self.flush(address)
+                if twins is not None:
+                    write_replace(stopped, now_iso() + "\n")
+                    print(f"flushed {address} ({where(entry)}, asleep; {twins} twins on the node)", flush=True)
+        else:
+            remove(stopped)
+
+    def after_entries(self, at, entries):
         # A seen marker without its entry: the entry was removed by hand. Unplug the address from the marker's copy.
         for name in os.listdir(self.paths.seen):
             if name.startswith(".") or name in entries or os.path.lexists(self.paths.entry(name)):
                 continue
             try:
                 copy = read_entry(os.path.join(self.paths.seen, name), name)
-            except (OSError, ValueError, UnicodeDecodeError):
+            except (OSError, ValueError, UnicodeDecodeError, RecursionError):
                 remove(os.path.join(self.paths.seen, name))
                 continue
             self.unplug(copy, "its entry was removed by hand")
@@ -753,9 +846,6 @@ class Reconciler:
             else:
                 remove(os.path.join(self.paths.unflushed, name))
         self.tidy(at)
-        entries = read_entries(self.paths)[0]
-        self.sync_bridge(entries)
-        return self.write_status(at, entries)
 
     def write_status(self, at, entries):
         status = {"schema": "qorpera.agent-plug-status/v1", "at": now_iso(at), "clients": len(entries),
@@ -805,7 +895,10 @@ def main():
         entries = sorted(read_entries(paths)[0].values(), key=lambda e: ipaddress.ip_address(e["address"]))
         print(json.dumps(entries, indent=1))
     elif args.command == "elements":
-        for line in elements(read_entries(paths)[0]):
+        # For `up`: entries LXD backed when last seen, and the ports the bridge rules hold now (LXD is never asked:
+        # at boot it waits for the exit). The reconciler sets both right within a pass.
+        entries = {a: e for a, e in read_entries(paths)[0].items() if os.path.lexists(os.path.join(paths.verified, a))}
+        for line in elements(entries, current_ports()):
             print(line)
     elif args.command == "reconcile":
         for directory in (*paths.root_dirs(), args.log_dir):

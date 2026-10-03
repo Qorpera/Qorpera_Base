@@ -444,6 +444,10 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 		writeFileSync(join(state, "clients", "10.210.1.99.json"), JSON.stringify({ ...forgedKind, kind: "laptop" }));
 		writeFileSync(join(state, "clients", "10.210.1.98.json"), JSON.stringify({ ...forgedKind, address: "10.210.1.98" }));
 		writeFileSync(join(state, "clients", "10.210.0.7.json"), "{}");
+		const later = { ...forgedKind, address: "10.210.1.96", hwaddr: "0e:51:0a:d2:01:60", kind: "machine" };
+		writeFileSync(join(state, "clients", "10.210.1.96.json"), JSON.stringify({ ...later, company: "c", machine: "m", project: "qp", instance: "x", since: "2100-01-01T00:00:00Z" }));
+		writeFileSync(join(state, "clients", "10.210.1.255.json"), JSON.stringify({ ...forgedKind, address: "10.210.1.255", hwaddr: "0e:51:0a:d2:01:ff" }));
+		writeFileSync(join(state, "clients", "10.210.1.95.json"), `${"[".repeat(30000)}${"]".repeat(30000)}`);
 		symlinkSync("/etc/passwd", join(state, "clients", "10.210.1.97.json"));
 		symlinkSync("/etc/passwd", join(state, "dhcp-hosts", "10.210.1.97"));
 		writeFileSync(lxd, "not json");
@@ -457,20 +461,29 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 		assert.match(problems, /unreadable client map entry 10\.210\.1\.98\.json: the MAC is not the address's/);
 		assert.match(problems, /unreadable client map entry 10\.210\.0\.7\.json: unknown schema/);
 		assert.match(problems, /unreadable client map entry 10\.210\.1\.97\.json: .*(Too many levels|symbolic link)/i);
-		for (const name of ["10.210.1.99.json", "10.210.1.98.json", "10.210.0.7.json", "10.210.1.97.json"]) {
+		assert.match(problems, /unreadable client map entry 10\.210\.1\.96\.json: since is in the future/);
+		assert.match(problems, /unreadable client map entry 10\.210\.1\.255\.json: the address is a \.0 or \.255 host/);
+		assert.match(problems, /unreadable client map entry 10\.210\.1\.95\.json:/, "a deep nesting is a problem, not a crash");
+		for (const name of ["10.210.1.99.json", "10.210.1.98.json", "10.210.0.7.json", "10.210.1.97.json", "10.210.1.96.json", "10.210.1.255.json", "10.210.1.95.json"]) {
 			rmSync(join(state, "clients", name));
 		}
 		rmSync(join(state, "dhcp-hosts", "10.210.1.97"));
 	});
 
-	test("the bridge rules come from the client map: the pairs, and one DHCP rule per machine naming its own MAC", () => {
+	test("the bridge rules hold only entries LXD backed: the pairs, and one DHCP rule per machine naming its own MAC", () => {
 		const fresh = plugged("--kind", "machine", "--company", "c5", "--machine", "m5", "--project", "qp", "--instance", "vm5");
-		const r = spawnSync("python3", [plugTool, "elements", ...dirs()], { encoding: "utf8" });
-		assert.equal(r.status, 0, r.stderr);
+		const statements = () => {
+			const r = spawnSync("python3", [plugTool, "elements", ...dirs()], { encoding: "utf8" });
+			assert.equal(r.status, 0, r.stderr);
+			return r.stdout.trim().split("\n").filter(Boolean);
+		};
+		assert.deepEqual(statements(), [], "a plug LXD has not backed yet gets nothing");
+		lxdHas(machine(entry(fresh.address)));
+		reconcile();
 		const hex = fresh.hwaddr.replaceAll(":", "");
-		assert.deepEqual(r.stdout.trim().split("\n"), [
+		assert.deepEqual(statements(), [
 			`add element bridge qorpera_agent_exit_bridge clients { ${fresh.hwaddr} . ${fresh.address} }`,
-			`insert rule bridge qorpera_agent_exit_bridge dhcp ether saddr ${fresh.hwaddr} ip saddr { 0.0.0.0, ${fresh.address} } @th,288,48 0x${hex} accept comment "${fresh.address}"`,
+			`insert rule bridge qorpera_agent_exit_bridge dhcp ether saddr ${fresh.hwaddr} ip saddr { 0.0.0.0, ${fresh.address} } @th,256,32 0 @th,288,48 0x${hex} accept comment "${fresh.address}"`,
 		]);
 	});
 

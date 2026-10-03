@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -542,9 +542,11 @@ except Exception:
 		};
 
 		before(async () => {
-			// Loaded for good, never unloaded: `modprobe -r br_netfilter` also unloads the `bridge` module when nothing
-			// else holds it, and that destroys every bridge in every namespace of the machine (docker0 included).
+			// Only in a throwaway VM, and never unloaded: a module load or unload changes the whole machine, and
+			// `modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on it (docker0 included). The
+			// shared test machines' own kernel is never changed (3 October rule).
 			if (process.env.QORPERA_GUEST_GUARD_TEST_BR_NETFILTER === "1" && !existsSync("/proc/sys/net/bridge")) {
+				assert.ok(!hostname().startsWith("qorpera-testvm-"), "load br_netfilter only in a throwaway VM, never on a shared test machine");
 				sh("modprobe br_netfilter");
 			}
 			for (const name of Object.values(ns)) sh(`ip netns add ${name} && ip -n ${name} link set lo up`);

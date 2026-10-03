@@ -3,8 +3,10 @@
 The exit that agent road machines' internet traffic leaves through, one per node, the same on every node. Design and
 decisions: `deploy/first-node/RUNTIME-AGENT-EXIT.md` and the contract's "2026-10-03 amendment: agent traffic leaves
 through the agent exit". E1 built the exit itself. E2 adds the node's side of the agent plug: the plug tool machine
-creators call, its reconciler, `notrack` for the bridged leg, and the health file the node observer reads. It is
-installed switched off: no machine kind is plugged in before its own step (E4–E6).
+creators call, its reconciler, the bridge rules that tie each port to its MAC and each MAC to its address, `notrack`
+for the bridged leg, and the health file the node observer reads. Nothing is plugged in until the creators call `plug`
+(E2c); with no users and no legacy machines (founder decision, 3 October) there are no switches and nothing to
+migrate. Nothing is installed in production before a milestone release.
 
 ## Layout
 
@@ -30,9 +32,9 @@ own and removes the node's masquerade.
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `verify`, `health`, `status` |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one |
-| `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): from a machine's port only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled from the client map, in one transaction |
+| `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled from the client map, in one transaction |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
-| `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name and log units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
+| `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log and plug units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
 | `qorpera-agent-exit-dns.service` | dnsmasq, run inside `qexit` (`NetworkNamespacePath=`) and sandboxed: static DHCP leases (10 minutes) from `/var/lib/qorpera-agent-exit/dhcp-hosts` (E2 writes one `mac,address` file per machine, readable by dnsmasq's unprivileged user, and reloads the unit after removing one), machines' own names ignored and never published, DNS forwarded to 9.9.9.9 and 1.1.1.1, every query logged to `/var/log/qorpera-agent-exit/dns.log` |
 | `qorpera-agent-exit-log.service` | the connection log |
 | `qorpera-agent-plug.service` | the agent plug's reconciler, as root, after LXD |
@@ -83,9 +85,11 @@ Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), 
 - every entry is checked against its machine (the card above, the identity keys), a running machine's card must be
   a port of `qagent0`, and every machine on `qagent0` must have an entry. A problem goes to
   `/run/qorpera-agent-exit/plug.json`, and `verify` fails while there is one;
-- it keeps the bridge rules (the `clients` set of MAC and address pairs, and the `dhcp` chain's rule per machine) equal
-  to the client map, read back every pass, so a restart, a crash or a hand edit is set right within a pass. Until a
-  machine's entry is in them, nothing from its card passes (a new machine's first DHCP request may wait one pass);
+- it keeps the bridge rules (the `ports` set of each running machine's port and MAC, the `clients` set of MAC and
+  address pairs, and the `dhcp` chain's rule per machine) equal to the entries LXD backs, read back every pass, so a
+  restart or a crash (and the plain hand edits) are set right within a pass. Until a machine is in them, nothing from
+  its card passes: a new machine, or one that just woke, may wait one pass for its first DHCP answer. An entry LXD does
+  not back gets no traffic at all;
 - `/var/log/qorpera-agent-exit/clients-YYYY-MM-DD.jsonl` (mode 0640) ties an address to a company only for an entry
   LXD backs: `plugged` (from the entry's time) once it matches, `unplugged` when it goes. An entry LXD does not back
   gets a `mismatch` line (the claim, what LXD says, the problems) and is never attributed; one that goes without
@@ -132,7 +136,7 @@ and the exit is bridged and would be refused as a private destination.
 ## Health and failure
 
 `X verify` exits 0 only when the namespace, the bridge (not forwarding, a reverse-path filter on, not answering ARP),
-both addresses, the default route, both rule tables, DNS on 10.210.0.1:53 (from a name service in the exit's current
+both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on 10.210.0.1:53 (from a name service in the exit's current
 namespace), a logger heartbeat younger than 30 seconds and a reconciler status younger than 30 seconds with no
 problem are all there. The heartbeat is written only while both of the logger's readers are alive. If the exit is
 down, its agent road machines have no internet; nothing falls back to the platform road. `X health` (every 10
@@ -194,9 +198,11 @@ test machine, covers the first three.
   (read on both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. E2b
   runs in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel modules there changes
   the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on it).
-- E2c, E4–E6: the creators call `plug` before they create a machine; their units join the group and get write access
-  to `clients/`, `dhcp-hosts/` and `plug.lock`. The node inventory pins a machine's devices when it first sees it,
-  so the plug is never added to a machine that exists.
+- E2c: a creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses
+  an address it stored (`plug` is the only source of a machine's address). Plugging while the old instance still
+  exists, then deleting and making it again, can let the reconciler unplug the address in between. Its unit joins the
+  group, may write `clients/` and `dhcp-hosts/`, and reads `plug.lock`, `quarantine/` and `seen/`. The node inventory
+  pins a machine's devices when it first sees it, so the plug is never added to a machine that exists.
 - The refused-flow log: a flow is logged when it is first refused and again each time it is added back after its hour
   runs out. Refusals the exit could not keep (a machine's share spent, or a set full) are counted in
   `refused_unlogged`, and the logger writes a gap line for them.
