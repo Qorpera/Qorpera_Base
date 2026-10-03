@@ -1,0 +1,15 @@
+[Unit]
+Description=Qorpera agent exit: connection log (conntrack events and refused flows, never content)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+After=qorpera-agent-exit.service
+# At shutdown LXD stops the machines first, so they lose names and the log only after they are gone.
+Before=snap.lxd.daemon.service
+ConditionPathExists=/run/netns/qexit
+
+[Service]
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh log
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=qorpera-agent-exit.service
