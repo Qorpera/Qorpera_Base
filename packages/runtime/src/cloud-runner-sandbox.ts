@@ -501,6 +501,13 @@ async function writeOperationJournal(
 	return inputBytes;
 }
 
+/** Whether a transcript event is a member's message that quotes outside content (it keeps `qorperaQuotes`). */
+function quotesOutsideContent(event: CloudRunnerCanonicalTranscriptEvent): boolean {
+	const body = event.body as { entry?: { qorperaQuotes?: unknown } | null } | null | undefined;
+	const entry = typeof body === "object" && body !== null ? body.entry : undefined;
+	return typeof entry === "object" && entry !== null && entry.qorperaQuotes !== undefined;
+}
+
 async function writeCanonicalTranscript(
 	path: string,
 	context: ResolvedCloudRunnerExecutionContext,
@@ -523,6 +530,10 @@ async function writeCanonicalTranscript(
 					event.sequence > context.run.transcriptStartSequence
 				) {
 					throw new Error("Runner canonical transcript is outside its immutable run prefix");
+				}
+				// An earlier quoted message is fenced only in a cloud run's context; this path would hand it on raw.
+				if (quotesOutsideContent(event)) {
+					throw new Error("Runner canonical transcript quotes outside content, which only a cloud run fences");
 				}
 				const line = `${JSON.stringify(event)}\n`;
 				const lineBytes = Buffer.byteLength(line);
@@ -574,6 +585,11 @@ async function writeQueuedInputs(
 				input.body && typeof input.body === "object" && !Array.isArray(input.body)
 					? (input.body as Record<string, JsonValue>)
 					: undefined;
+			// A quoted message is fenced only where the platform builds a run's context (contract: the 2026-10-02
+			// amendment "quoted outside content in a member's message", item 4); this path can't fence one.
+			if (body !== undefined && Object.hasOwn(body, "quotes")) {
+				throw new Error("Runner queued inputs quote outside content, which only a cloud run fences");
+			}
 			const images = body?.images ?? (input.kind === "kickoff" ? [] : undefined);
 			if (!Array.isArray(images) || images.length > MAX_QUEUED_INPUT_IMAGES) {
 				throw new Error("Runner queued input images are invalid");

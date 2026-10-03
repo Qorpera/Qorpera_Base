@@ -29,6 +29,7 @@ import type {
 	PendingSessionInputPage,
 	SessionInputReceipt,
 	StaffSessionHandle,
+	WorkerRunControl,
 } from "./types.ts";
 import { EXECUTION_SOURCE_KINDS, HOSTED_PROFILE_ROLES, HOSTED_SESSION_EVENT_TYPES } from "./types.ts";
 
@@ -449,6 +450,18 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 			updatedAt: timestamp(activity.updated_at, "activity time"),
 		};
 	});
+}
+
+/** The control of the worker run asked for: the cloud must answer for that run. */
+export function parseWorkerRunControl(value: unknown, runId: string): WorkerRunControl {
+	const control = record(value, "worker run control");
+	if (uuid(control.run_id, "worker run id") !== runId) throw new Error("Cloud returned another worker run");
+	if (typeof control.can_cancel !== "boolean") throw new Error("Cloud returned an invalid worker run control");
+	return {
+		runId,
+		status: oneOf(control.status, ["queued", "leased", "completed", "failed", "cancelled"], "worker run status"),
+		canCancel: control.can_cancel,
+	};
 }
 
 export function parseRunRecovery(value: unknown): HostedRunRecovery {
