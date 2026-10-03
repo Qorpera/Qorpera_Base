@@ -28,14 +28,14 @@ create function pg_temp.same(p_got jsonb, p_want jsonb, p_what text) returns voi
 begin
 	if p_got is distinct from p_want then raise exception '%: got %, want %', p_what, p_got, p_want; end if;
 end $$;
--- A path's history as 'seq:op[:from|to]', newest first.
+-- A path's history as 'seq:op[ from <path>][ to <path>]', newest first.
 create function pg_temp.path_history(p_path text, p_before uuid default null, p_limit integer default 100)
 returns jsonb language sql as $$
 	select public.qorpera_member_folder_path_history('63000000-0000-4000-8000-000000000020', p_path, p_before, p_limit)
 $$;
 create function pg_temp.steps(p_history jsonb) returns text language sql as $$
-	select coalesce(string_agg(concat_ws(':', i.value ->> 'seq', i.value ->> 'op', i.value ->> 'from', i.value ->> 'to'),
-		',' order by i.position), '')
+	select coalesce(string_agg(concat(i.value ->> 'seq', ':', i.value ->> 'op', ' from ' || (i.value ->> 'from'),
+		' to ' || (i.value ->> 'to')), ',' order by i.position), '')
 	from jsonb_array_elements(p_history -> 'items') with ordinality as i(value, position)
 $$;
 create function pg_temp.history(p_before bigint default null, p_limit integer default 50) returns jsonb language sql as $$
@@ -54,13 +54,13 @@ begin
 	v := pg_temp.path_history('papers/a.txt');
 	perform pg_temp.same(v ->> 'schema', 'qorpera.folder-path-history/v1', 'the schema');
 	perform pg_temp.same(v ->> 'asOfSeq', '8', 'asOfSeq');
-	perform pg_temp.same(pg_temp.steps(v), '8:delete,5:move_in:docs/a.txt', 'a moved, then deleted file');
+	perform pg_temp.same(pg_temp.steps(v), '8:delete,5:move_in from docs/a.txt', 'a moved, then deleted file');
 	perform pg_temp.same(v -> 'items' -> 0 -> 'by', '{"kind":"member","userId":"63000000-0000-4000-8000-000000000001"}',
 		'the member who deleted it');
 	perform pg_temp.same(v -> 'items' -> 1 -> 'by', '{"kind":"platform"}', 'the platform moved it');
 	perform pg_temp.same(((v -> 'items' -> 0 ->> 'at')::timestamptz = (select created_at from public.qorpera_folder_commits
 		where environment_id = '63000000-0000-4000-8000-000000000020' and seq = 8))::text, 'true', 'when');
-	perform pg_temp.same(pg_temp.steps(pg_temp.path_history('docs/a.txt')), '5:move_out::papers/a.txt,2:write',
+	perform pg_temp.same(pg_temp.steps(pg_temp.path_history('docs/a.txt')), '5:move_out to papers/a.txt,2:write',
 		'the source of a move');
 	perform pg_temp.same(pg_temp.path_history('docs/a.txt') -> 'items' -> 1 ->> 'fileSha256',
 		(select file_sha256 from public.qorpera_folder_path_versions where environment_id = '63000000-0000-4000-8000-000000000020'
@@ -77,9 +77,9 @@ do $$ begin
 end $$;
 select pg_temp.as_member(2);
 do $$ begin
-	perform pg_temp.same(pg_temp.steps(pg_temp.path_history('notes/secret.txt')), '6:move_in:locked/secret.txt',
+	perform pg_temp.same(pg_temp.steps(pg_temp.path_history('notes/secret.txt')), '6:move_in from locked/secret.txt',
 		'the private folder''s owner sees where it came from');
-	perform pg_temp.same(pg_temp.steps(pg_temp.path_history('locked/secret.txt')), '6:move_out::notes/secret.txt,4:write',
+	perform pg_temp.same(pg_temp.steps(pg_temp.path_history('locked/secret.txt')), '6:move_out to notes/secret.txt,4:write',
 		'and its private history');
 end $$;
 
