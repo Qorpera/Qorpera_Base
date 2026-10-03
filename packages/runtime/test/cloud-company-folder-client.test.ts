@@ -56,6 +56,11 @@ function fixture(handle: (method: CloudCompanyPathRpc, args: Record<string, unkn
 			if (!data) throw new Error("Missing fixture bytes");
 			return data;
 		}),
+		range: vi.fn(async (file: CloudCompanyFolderFile, offset: number, length: number) => {
+			const data = stored.get(file.fileSha256);
+			if (!data) throw new Error("Missing fixture bytes");
+			return data.subarray(offset, offset + length);
+		}),
 	};
 	const calls: { method: CloudCompanyPathRpc; args: Record<string, unknown> }[] = [];
 	const control: CloudCompanyPathControl = {
@@ -113,7 +118,7 @@ describe("the folder client's actor", () => {
 	it("refuses a binding that is not the admitted run's", () => {
 		const { binding, authority } = nativeToolAuthorityFixture();
 		const control: CloudCompanyPathControl = { call: vi.fn() };
-		const bytes: CloudCompanyFolderBytes = { put: vi.fn(), get: vi.fn() };
+		const bytes: CloudCompanyFolderBytes = { put: vi.fn(), get: vi.fn(), range: vi.fn() };
 		expect(
 			() =>
 				new CloudCompanyFolderClient({
@@ -923,7 +928,7 @@ describe("commits", () => {
 			binding: upper,
 			identity: { ...authority.identity, ...upper },
 			control: { call: vi.fn() },
-			bytes: { put: vi.fn(), get: vi.fn() },
+			bytes: { put: vi.fn(), get: vi.fn(), range: vi.fn() },
 		});
 		expect(client.actor).toEqual({
 			kind: "run",

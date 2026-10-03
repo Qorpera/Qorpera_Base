@@ -40,6 +40,7 @@ does not change the digest.
 node scripts/run-on-node.mjs changed
 node scripts/run-on-node.mjs test
 node scripts/run-on-node.mjs hosted-db
+node scripts/run-on-node.mjs hosted-db -- --only 810,811
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_TEST_IMAGE=node:24-bookworm-slim scripts/test-office-storage-inventory-linux.mjs
 node scripts/run-on-node.mjs --no-install -- docker run --rm hello-world
 node scripts/run-on-node.mjs --dry-run npm:test:scripts

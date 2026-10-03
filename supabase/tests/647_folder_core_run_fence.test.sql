@@ -1,8 +1,8 @@
 -- @fixture 634_folder_core_authority.test.sql until "-- Mutators: owners and admins"
 -- Company folder core, C1c-2a (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5): a folder-v2 run's tool calls on
 -- the folder fence. The run check, the lease check, the wake check, the actor entry point, the context assertion, the
--- presence routes and the reading callers serve folder-v2; the stop counts deletions; the office, machine start, the
--- self-approval and the legacy effects refuse it. Snapshot-v1 keeps its text (a digest of each body) and its behaviour.
+-- presence routes and the reading callers serve folder-v2; the stop counts deletions; the office, the self-approval and
+-- the legacy effects refuse it (machine start did until C1c-3f, test 824). Snapshot-v1 keeps its text (a digest of each body) and its behaviour.
 -- Runs are hand-built as in 634, with the native login, runner, assignment, lease, reservation and budget rows added
 -- (foreign keys and triggers off while they go in). Races are in 648.
 
@@ -114,7 +114,8 @@ end $$;
 
 -- 1. Snapshot-v1 keeps its text: each body with the inserted line removed, or each text patch reversed, is byte for
 -- byte the definition before this migration. A later change to one of these functions updates its digest here, once
--- its folder-v2 line is checked to still come first.
+-- its folder-v2 line is checked to still come first. C1c-3f (20260930002000) replaced machine start's refusal with its
+-- marker line in the same place, so its digest is unchanged.
 create function pg_temp.without_guard(p_definition text) returns text language plpgsql as $$
 declare v_body integer := position('$function$' in p_definition); v_at integer; v_end integer;
 begin
@@ -537,7 +538,8 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office, machine start and the self-approval until C1c-3; the runner broker's send, direct receipts
+-- 9. Refusals: the office and the self-approval until C1c-3 (machine start serves folder-v2 since C1c-3f, test 824); the
+-- runner broker's send, direct receipts
 -- and transcript append until C3 (the native send, the interaction request and the tool operation receipts have folder
 -- bodies since C1c-2b, tests 650 and 652). The same calls on a snapshot-v1 company are not refused as folder-v2.
 do $$
@@ -555,7 +557,6 @@ begin
 				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_shared_file_export_source(%L, %L)', v, '{}'),
 			format('select public.qorpera_self_approve_organization_proposal(%L, %L)', v, extensions.gen_random_uuid()),
-			format('select public.qorpera_native_machine_start(%L, %L, %L, %L, %L)', v, '{}', 'start', extensions.gen_random_uuid(), repeat('a', 64)),
 			format('select public.qorpera_begin_run_operation_receipt(%L, %L, %L, %L, %L, %L, %L, %L, %L, %L, false)', v ->> 'runnerId',
 				repeat('f', 64), v ->> 'jobId', repeat('a', 64), v ->> 'assignmentId', extensions.gen_random_uuid(), 'k', 'tool', repeat('a', 64),
 				repeat('b', 64)),
