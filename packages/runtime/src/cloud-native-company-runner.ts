@@ -118,7 +118,8 @@ export async function executeNativeCompanyRunnerJob(options: {
 			runtime: "company-path-v1",
 			backend: "native-company-runtime",
 			native_lease_id: authority.leaseId,
-			substrate_version_id: job.substrateVersionId,
+			// A folder-v2 run has no substrate (folder core C3, P23): completion matches null against its job's null.
+			substrate_version_id: job.substrateVersionId ?? null,
 			backend_result: receipt,
 			output_count: 0,
 			output_bytes: 0,
