@@ -172,6 +172,11 @@ end $$;
 do $$
 begin
 	perform pg_temp.c1c3k_replace('public.qorpera_runtime_office_start_status(jsonb)',
+		E'\t-- C1c-3j (20260930012000): on folder-v2 the folder fence, rank 0, then the members and the agent the\n'
+		|| E'\t-- start-source check shares, before the office.\n',
+		E'\t-- C1c-3j (20260930012000) took the folder fence and the start\'s members and agent here on folder-v2; C1c-3k\n'
+		|| E'\t-- makes a folder-v2 poll plain reads instead (below). Snapshot-v1 keeps the gc fence.\n', 1);
+	perform pg_temp.c1c3k_replace('public.qorpera_runtime_office_start_status(jsonb)',
 		E'\t\tperform public.qorpera_folder_office_enter(v_office.id, auth.uid(), null);\n',
 		E'\t\t-- C1c-3k (20260930019000): a status poll is plain reads on folder-v2 (no fence, no row lock), so it never\n'
 		|| E'\t\t-- waits for a folder stop or a start in flight; the membership check above is the authority.\n'

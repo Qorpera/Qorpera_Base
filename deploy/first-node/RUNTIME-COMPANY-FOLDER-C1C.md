@@ -1260,8 +1260,8 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
 
 ### 6.11 C1c-3k part 1 as built: screens, restarts and power-off (migration 20260930019000, test 894)
 
-The coordinator's P06b, first of two PRs (plan `outputs/company-accounts/p06-office-folder-v2-plan.md`; inventory of
-the office functions after 3j in the PR). Folder-v2 only, by the founder's decision of 3 October: each patch is a
+The coordinator's P06b, first of two PRs (plan `outputs/company-accounts/p06-office-folder-v2-plan.md`; the PR lists the
+33 callers of the provider's assertion and their locks after 3j). Folder-v2 only, by the founder's decision of 3 October: each patch is a
 folder-v2 branch, and the statement that was there before stays untouched in its `else` until snapshot-v1 is removed.
 
 | Path | Before (on folder-v2) | Now |
@@ -1286,13 +1286,22 @@ folder-v2 branch, and the statement that was there before stays untouched in its
   893 F now expects the new refusal text.
 - **Not tested here:** the screen v1 gate (the agent's screen tool, through a folder-v2 run's tool authority) and the
   operator's disposal (a signed delete document). Both are one-line changes of the same shape as the tested ones.
+- **Open after part 1 (review r1), for part 2:**
+  - A new computer for an agent (and 3j's first registration) no longer waits for another agent's hire or return. If
+    both run together, the new computer can miss the hired agent's default access row, and placement then skips that
+    computer for the agent. Part 2 has 'new' and registration share the company's staff rows (rank 2) before the seat
+    lock. Taking the seat lock in the hire's office walk instead would make a cycle, since 'new' takes staff after it.
+  - The shared-surface gate makes `office_screen_browser_grant` reachable; it shares the viewer's member row after the
+    office (`assert_runtime_office_viewer`). That is not a live cycle before C1c-3l's pin.
 - **Not in part 1 (part 2, 20260930019100):**
   - access configuration and its status (a per-company serializer: swapping the gc fence alone deadlocks two capability
     changes of one agent on two computers);
   - opening a screen;
   - the private screen event;
-  - the viewers;
+  - the viewers and the screen's browser grant;
+  - the agent's screen tool through a folder-v2 run (which also tests the screen v1 gate);
   - the view-anchor tests.
+  Part 2's bodies name its own slot, so 894 G's count of 14 stays.
 
   C1c-3l: an agent's own start and the wake drain.
 
