@@ -564,7 +564,13 @@ conversation `FOR UPDATE` before the review row, because the review row's foreig
   and the runner accepts only the two legacy runtimes (`cloud-runner-broker.ts:1042`). C1c-1's refusals stay until C3
   gives `folder-v2` runs their substrate model.
 - `companySeq` pins on runs and wakes (C4's schema).
-- Renewal's move to `FOR NO KEY UPDATE` stays in C3 (C1B). Until then renewal waits for the one tool call in flight.
+- Renewal's move to `FOR NO KEY UPDATE`: done in C3's first part (P23, migration 20260930002200, test 825; 648 C).
+  - On `folder-v2`, `qorpera_renew_runner_job` takes the job `FOR NO KEY UPDATE`, and so does the native lease renewal.
+    The native renewal does it through `qorpera_folder_renewal_locked_job`, which is `qorpera_runner_broker_locked_job`'s
+    text with that lock clause.
+  - Both now run beside the run's tool calls (the job `KEY SHARE`). Every lease-ending change still takes `FOR UPDATE`
+    and waits for those calls.
+  - The other callers of `locked_job` (acquire, release, model authority) keep `FOR UPDATE`.
 - Office-activation and machine-event runs make no tool call: `run_resolve` refuses them (0A000), as offices refuse
   `folder-v2` today.
 - **After C1c-2c, legacy wake inserters fail closed on `folder-v2`.** Posting, `answer_interaction`,
