@@ -243,7 +243,10 @@ functions with no-op bodies, and P31 replaces them (`create or replace`, its own
   - `paused` tells H2c that its wakes would come out cancelled, so it does not mark them as delivered (F2).
 
 **Rules for P31:**
-- After admission, the commit hook takes no lock except a foreign key's KEY SHARE on rows its targets named.
+- After admission, the commit hook takes no lock except a foreign key's KEY SHARE on rows its targets named, and the
+  rows of its own tables that nothing else locks (H2c's markers).
+- When `paused` is true, H2c inserts no wake and leaves its marker unset; its own scan wakes the agent after the resume
+  (F2).
 - Each call runs in a subtransaction and counts toward the 48.
 - A lock timeout or deadlock is never caught: it fails the step, which is tried again.
 - Any other failure never fails the step, never holds the cursor and never blocks another company, but it is not
