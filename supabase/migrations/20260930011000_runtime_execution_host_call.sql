@@ -25,6 +25,7 @@
 --    - a slot credential bind only as an exec slot, for its adapter's run machine allocation.
 --    Whatever the call, p_provider_adapter must be the host's.
 -- 4. They call the target as G2-3a's entry point does (qorpera_native_host_invoke).
+-- Also: qorpera_provision_execution_runner loses the anon and authenticated EXECUTE the default privileges left it.
 --
 -- Locks: none added on the call path. The checks read the principal (by its hash), claims (by run), orchestrators,
 -- runners, runs and allocations (by primary key) without locks, before the called function takes its own. Binding
@@ -213,3 +214,7 @@ revoke all on function public.qorpera_execution_host_call_long(text, text, text,
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_execution_host_call(text, text, text, jsonb) to anon;
 grant execute on function public.qorpera_execution_host_call_long(text, text, text, jsonb) to anon;
+
+-- The runner row's function kept the anon and authenticated EXECUTE the default privileges left it (its body refuses
+-- them); it is the execution host's and the node host's alone, like the other listed calls.
+revoke execute on function public.qorpera_provision_execution_runner(uuid, uuid, text, text) from anon, authenticated;

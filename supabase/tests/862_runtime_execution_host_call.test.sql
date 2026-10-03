@@ -169,9 +169,10 @@ select pg_temp.expect(pg_temp.own('qorpera_runtime_ended_runners',
 rollback to savepoint revoked_host;
 
 -- 3. Each listed call through the host's entry point answers as the service caller's (a direct call first, rolled
---    back), for the run its adapter claimed.
+--    back), for the run its adapter claimed. A run machine's allocation id is its runner's client id (the fixture's
+--    runner was provisioned as 30000000-...-094).
 do $$
-declare v_direct jsonb; v_allocation uuid := '86200000-0000-4000-8000-000000000071';
+declare v_direct jsonb; v_allocation uuid := '30000000-0000-4000-8000-000000000094';
 	v_identity_args jsonb := jsonb_build_object('p_compute_identity_id', current_setting('qorpera_test.identity'));
 begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
@@ -287,7 +288,7 @@ begin
 		v_identity || jsonb_build_object('p_run_id', extensions.gen_random_uuid())), 'refused', 'an identity with another run');
 	-- A slot credential only as an exec slot, for its adapter's run machine.
 	perform pg_temp.expect(pg_temp.own('qorpera_bind_native_identity_credential', jsonb_build_object('p_allocation_id',
-		'86200000-0000-4000-8000-000000000071', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64),
+		'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64),
 		'p_holder_kind', 'login_guest', 'p_credential_sha256', pg_temp.sha('T' || repeat('t', 42)))), 'refused', 'a login guest''s bind');
 	perform pg_temp.expect(pg_temp.own('qorpera_bind_native_identity_credential', jsonb_build_object('p_allocation_id',
 		extensions.gen_random_uuid(), 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64),
@@ -299,7 +300,7 @@ begin
 	perform pg_temp.expect(pg_temp.own('qorpera_runtime_ended_runners', v_ended, 'qorpera_execution_host_call_long'), 'refused',
 		'a standard call through the long entry point');
 	perform pg_temp.expect(pg_temp.own('qorpera_release_runtime_machine', jsonb_build_object('p_allocation_id',
-		'86200000-0000-4000-8000-000000000071', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64))),
+		'30000000-0000-4000-8000-000000000094', 'p_provider_adapter', 'process', 'p_instance_sha256', repeat('7', 64))),
 		'refused', 'the release through the standard entry point');
 end $$;
 -- A run whose claim was released is no longer the adapter's.
