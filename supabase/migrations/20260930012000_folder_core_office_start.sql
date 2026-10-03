@@ -130,12 +130,12 @@ begin
 		E'profile_id=v_profile and state=''ready''\n'
 		|| E'\t\t\t\t\tand (path_gateway_version=1 or core=''folder-v2'' /* C1c-3j 20260930012000 */))\n', 1);
 	perform pg_temp.c1c3j_replace('public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)',
-		E' -- C1c-3f (20260930002000): a folder-v2 machine takes the folder fence and the company row KEY SHARE, held by\n'
-		|| E' -- every caller; coding (C1c-3h) and office (C1c-3j) reservations still come with the gc fence.\n'
-		|| E' if p_provider_kind=''machine'' and public.qorpera_company_is_folder_v2(v_profile) then\n',
-		E' -- C1c-3f (20260930002000) and C1c-3j (20260930012000): a folder-v2 machine or office takes the folder fence and\n'
-		|| E' -- the company row KEY SHARE, held by every caller; coding (C1c-3h) still comes with the gc fence.\n'
-		|| E' if p_provider_kind in (''machine'',''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n', 1);
+		E' -- every caller. C1c-3h (20260930002300): the coding kind takes it too; office (C1c-3j) reservations still come\n'
+		|| E' -- with the gc fence.\n'
+		|| E' if p_provider_kind in (''machine'', ''coding'') and public.qorpera_company_is_folder_v2(v_profile) then\n',
+		E' -- every caller. C1c-3h (20260930002300): the coding kind takes it too, and C1c-3j (20260930012000) the\n'
+		|| E' -- office kind.\n'
+		|| E' if p_provider_kind in (''machine'', ''coding'', ''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n', 1);
 end $$;
 
 -- 3. The start family: the member's calls and the provider's, each with the prelude --------------------------------------

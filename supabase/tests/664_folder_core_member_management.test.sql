@@ -54,7 +54,15 @@ begin
 				E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n')) <> split_part(v_def, '|', 4) then
 			raise exception 'The snapshot-v1 text of % changed', split_part(v_def, '|', 1); end if;
 	end loop;
-	if md5(replace(pg_get_functiondef('public.qorpera_guard_founder_departure()'::regprocedure),
+	-- (P14a's creation block, 20260930010000, taken out first: it adds to this guard for folder-v2 creations.)
+	if md5(replace(replace(pg_get_functiondef('public.qorpera_guard_founder_departure()'::regprocedure),
+			E'\t-- 20260930010000 (P14a): so does a folder-v2 creation, for the member who started it.\n'
+			|| E'\tif exists (select 1 from public.qorpera_folder_company_creations as creation\n'
+			|| E'\t\twhere creation.profile_id = old.profile_id and creation.kickoff_user_id = old.user_id\n'
+			|| E'\t\t\tand creation.state in (''queued'', ''leased'')) then\n'
+			|| E'\t\traise exception ''Company setup must finish before the founder it runs for leaves or steps down''\n'
+			|| E'\t\t\tusing errcode = ''42501'';\n'
+			|| E'\tend if;\n', ''),
 			E'\tif public.qorpera_company_is_folder_v2(old.profile_id) then\n'
 			|| E'\t\tperform 1 from public.qorpera_profiles where id = old.profile_id for key share;\n'
 			|| E'\telse\n'

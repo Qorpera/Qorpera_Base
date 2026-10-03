@@ -330,3 +330,109 @@ export async function runCompanyStorageDeletions(
 	}
 	return result;
 }
+
+/** One folder-v2 object the folder GC claim marked (C1D §9.6): NAS-backed, under this run's lease. */
+export interface FolderObjectGcClaim {
+	profileId: string;
+	sha256: string;
+	bytes: number;
+	leaseId: string;
+}
+
+export type FolderObjectGcOutcome = "removed" | "restored" | "stale";
+
+/** The folder phase's calls: its switch, the sweep and the claim (service-role RPCs), and the gateway's unlink lane
+ * (DELETE /v1/folder-gc/<profileId>/<sha256> with the control token and the lease), which answers `busy` for its 503. */
+export interface FolderObjectGcStore {
+	enabled(): Promise<boolean>;
+	sweep(limit: number): Promise<number>;
+	claim(limit: number, leaseId: string): Promise<unknown>;
+	collect(object: FolderObjectGcClaim): Promise<FolderObjectGcOutcome | "busy">;
+}
+
+export interface FolderObjectGcResult {
+	enabled: boolean;
+	swept: number;
+	claimed: number;
+	removed: number;
+	restored: number;
+	stale: number;
+	failed: number;
+	/** The gateway's NAS lanes were busy, or the phase's time ran out: the rest of the claim waits for its marks to
+	 * expire. */
+	stopped: boolean;
+}
+
+export function parseFolderObjectGcClaim(value: unknown, leaseId: string): FolderObjectGcClaim[] {
+	const claim = record(value, "folder object cleanup claim");
+	if (
+		Object.keys(claim).sort().join() !== "objects,schema" ||
+		claim.schema !== "qorpera.folder-object-gc-claim/v1" ||
+		!Array.isArray(claim.objects) ||
+		claim.objects.length > 100
+	)
+		throw new Error("Invalid folder object cleanup claim");
+	const seen = new Set<string>();
+	return claim.objects.map((entry) => {
+		const input = record(entry, "folder object cleanup object");
+		const profileId = uuid(input.profileId, "folder object cleanup profile id");
+		const sha256 = input.sha256;
+		if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256) || seen.has(`${profileId}/${sha256}`))
+			throw new Error("Invalid folder object cleanup hash");
+		if (!Number.isSafeInteger(input.bytes) || (input.bytes as number) < 0 || (input.bytes as number) > 8 * 1024 * 1024)
+			throw new Error("Invalid folder object cleanup size");
+		// The claim marks NAS-backed rows only, each under the lease this run sent.
+		if (input.backend !== "nas-object-gateway" || input.leaseId !== leaseId)
+			throw new Error("Invalid folder object cleanup lease");
+		seen.add(`${profileId}/${sha256}`);
+		return { profileId: profileId.toLowerCase(), sha256, bytes: input.bytes as number, leaseId };
+	});
+}
+
+/** The worker's folder phase (C1D §9.10), off until its switch is on: a small sweep of expired upload intents, a
+ * small claim under a new lease, then the gateway's lane for each marked object, in order. A busy gateway (503) stops
+ * the phase for this run, so GC never crowds out live traffic, and so does the phase's time budget, so a slow gateway
+ * never leaves the worker's other phases without time; the marks not reached expire. Any other failure leaves that
+ * object's mark to expire. A failed sweep or claim fails the phase; the caller keeps it apart from the other phases. */
+export async function runFolderObjectGc(
+	store: FolderObjectGcStore,
+	leaseId: string,
+	limits: { sweep: number; claim: number; budgetMs: number } = { sweep: 25, claim: 25, budgetMs: 60_000 },
+	now: () => number = Date.now,
+): Promise<FolderObjectGcResult> {
+	const deadline = now() + limits.budgetMs;
+	const result: FolderObjectGcResult = {
+		enabled: false,
+		swept: 0,
+		claimed: 0,
+		removed: 0,
+		restored: 0,
+		stale: 0,
+		failed: 0,
+		stopped: false,
+	};
+	if (!(await store.enabled())) return result;
+	result.enabled = true;
+	result.swept = await store.sweep(limits.sweep);
+	const objects = parseFolderObjectGcClaim(await store.claim(limits.claim, leaseId), leaseId);
+	result.claimed = objects.length;
+	for (const object of objects) {
+		if (now() >= deadline) {
+			result.stopped = true;
+			break;
+		}
+		let outcome: FolderObjectGcOutcome | "busy";
+		try {
+			outcome = await store.collect(object);
+		} catch {
+			result.failed += 1;
+			continue;
+		}
+		if (outcome === "busy") {
+			result.stopped = true;
+			break;
+		}
+		result[outcome] += 1;
+	}
+	return result;
+}
