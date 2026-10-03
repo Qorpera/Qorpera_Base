@@ -3,12 +3,13 @@
 Status: designed and approved, not built. Jonas decided on 2 October 2026 that agent traffic leaves through our own
 controlled exit with its own public address ("completely agree… let's fix this"), and approved the design page
 (https://claude.ai/artifact/GPjfKe2YagNeMzkQMrY95r). The page's four choices were set as recommended by the runtime
-coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them (§11). The contract text is
+coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. The contract text is
 the "2026-10-03 amendment: agent traffic leaves through the agent exit" in section 19 of
 `QORPERA-RUNTIME-CONTRACT.md`. Where this document and the contract differ, the contract governs.
 
 Details the page did not show are marked **proposed**. They can change in review without a new founder decision, as
-long as they keep the page's rules.
+long as they keep the page's rules. Two rules are different: the connection bounds (§3) and the log-outage rule
+(§12) are marked **pending Jonas**. They are the design session's proposals of 3 October and need his decision.
 
 ## 1. Why
 
@@ -33,7 +34,7 @@ when they act for an agent.
 | Traffic | Road | How |
 | --- | --- | --- |
 | Company Computer browser | agent | the browser relay's connections leave through the computer's agent plug (§6) |
-| Company Computer shells, terminal, desktop (#411) | agent | the per-screen namespaces route out of the agent plug (§6) |
+| Company Computer shells, terminal, desktop | agent | #411's per-screen namespaces route out of the agent plug (§6) |
 | Agents' own machines | agent | their only network card is an agent plug |
 | Coding machines: git, registries, websites | agent | their only network card is an agent plug |
 | Coding machines: AI sign-in and model traffic | platform | the provider door (§5) |
@@ -71,9 +72,10 @@ agent road machine only ever uses the exit of the node it runs on.
 - Every new connection is counted per client address, and each refused flow is kept an hour for the log (added once
   per hour, not refreshed on every hit; only a new flow spends a machine's share of the log, so repeats cannot hide
   other refusals).
-- Proposed, pending Jonas (contract item 4): each client holds at most 16,384 connections through the exit at once,
-  and the exit at most 196,608 in all, so one machine cannot fill the exit for every company and agent traffic
-  cannot fill the node's own connection table.
+- Pending Jonas (contract item 4): each client holds at most 16,384 connections through the exit at once, and the
+  exit at most 98,304 in all. In phase 1 each agent connection takes two entries in the node's connection table
+  (262,144), so the total keeps room for our own traffic. A Company Computer machine's computers share one 16,384.
+  A reload of the rules starts both counts from zero; connections already open are not counted until they end.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
@@ -100,9 +102,14 @@ lines (§7). When the kernel drops events under load, conntrack says so, and the
 - The coordinator installs them with `deploy/agent-exit/install-agent-exit.sh`, and they stay disabled until a node
   is switched on. With a machine plugged in, stopping the exit's unit fails and changes nothing: the name and log
   services are not bound to it and keep running. The unit is then marked failed; `systemctl start` brings it back
-  in place. Stopping the name and log services by name is the operator's own step, part of the undo with nothing
-  plugged in.
+  in place. The undo, with nothing plugged in: disable and stop the exit's unit (its stop also stops the name and log
+  services), then disable those two. They are never stopped by name while a machine is plugged in, because traffic
+  would then flow without names and without the log.
 - Packages: `dnsmasq-base`, `conntrack` and `python3` (no services of their own).
+
+**Boot.** The exit's unit is ordered before LXD, so the bridge exists before LXD starts a machine that plugs into
+it. LXD used to turn on IPv4 forwarding; the exit now does it itself when it starts first, and then sets the agents'
+bridge back to no forwarding.
 
 **Updates (contract item 10).** An exit update never stops a machine:
 - it reloads the rules in one transaction per table, before any link is touched;
@@ -126,9 +133,12 @@ healthy exit (E2).
   Legacy `coding-vm.ts` machines are retired, not moved.
 - One shared helper allocates the address and writes the DHCP lease and the client map entry (address → company,
   machine, kind, member for coding machines, since).
-- When a machine goes away, its entry and lease are removed, its address's connections are flushed, and the address
-  stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so late log lines are never given to the wrong
-  company and the address is free again before it is reused.
+- A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
+  never hold its connection bound. When a machine goes away, its entry and lease are removed, its address's
+  connections are flushed, and the address stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so
+  late log lines are never given to the wrong company and the address is free again before it is reused.
+- "Plugged in" means any machine in the client map, running or asleep. E2's guard on removing the exit reads the
+  client map, not only the bridge's ports (a sleeping machine has no port).
 - Machines move one kind at a time, each behind its own switch. A running machine moves the next time it starts.
 - Today agents' machines and coding machines have LXD ACLs on `machine-net` and `coding-net` as their second line.
   On `qagent0` the exit's and the host's rules take that place, with the NIC filters and port isolation.
@@ -236,11 +246,12 @@ allow = []             # used when mode is "only-listed"
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
   DNS, gets past a block list.
-- **"Only listed":** strict. A machine reaches only TCP ports 80 and 443, and only on addresses the exit's own
-  lookups gave for a listed name (a per-company set filled as names resolve). On port 443 the TLS server name must
-  be listed too, so an unlisted site that shares a listed site's address is refused. E8 adds that check as a
-  pass-through that reads only the server name, like the provider door. Everything else is refused in this mode:
-  other ports and protocols, UDP (QUIC) and SSH included.
+- **"Only listed":** strict. A machine reaches only TCP port 443, only on addresses the exit's own lookups gave for
+  a listed name (a per-company set filled as names resolve), and only when the TLS server name is listed too, so an
+  unlisted site that shares a listed site's address is refused. E8 adds that check as a pass-through that reads only
+  the server name, like the provider door. Everything else is refused in this mode: plain HTTP, other ports and
+  protocols, UDP (QUIC) and SSH included. The exit never decrypts, so domain fronting (a listed TLS name carrying
+  another site inside) is not caught.
 
 ## 11. The address block (E9, choice 1)
 
@@ -271,10 +282,12 @@ allow = []             # used when mode is "only-listed"
     machine's network card is on the bridge. If repair fails, the operator moves the node's work as for any node
     fault.
 - **Uplink down.** The same as the exit being down.
-- **Log down (proposed on 3 October, pending Jonas).** Traffic continues, the time is a gap in the log, and `verify`
-  fails, with the consequences above (no new machines, a report to the operator). A short gap in the log is preferred
-  over cutting running work; the contract's item 10 says so, and the founder may change it. A gap record carries
-  `since` (the logger's last heartbeat), so a lookup marks the whole outage as unknown.
+- **Log down (pending Jonas).** Traffic continues, the time is a gap in the log, and `verify` fails, with the
+  consequences above (no new machines, a report to the operator). A short gap in the log is preferred over cutting
+  running work; the contract's item 10 says so, and Jonas may change it. The gap record written when the logger
+  starts again carries `since` (its last heartbeat), so a lookup marks the whole outage as unknown; after a reboot
+  there is no heartbeat, and the outage runs from the last line written. Other gap records (lost events, unlogged
+  refusals) mark a moment.
 - **Rule change.** Applies at once (the resolver reloads its lists and the exit its sets), without a restart.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
