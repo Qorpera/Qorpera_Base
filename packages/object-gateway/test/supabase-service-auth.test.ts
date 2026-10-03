@@ -48,6 +48,14 @@ const publisherOperations = [
 	"qorpera_verify_company_path_file",
 	"qorpera_verify_company_path_tree",
 	"qorpera_stage_member_session_attachment",
+	"qorpera_claim_connection_file",
+	"qorpera_finish_connection_file",
+	"qorpera_folder_authorize_object_download",
+	"qorpera_folder_open_upload",
+	"qorpera_folder_authorize_object_upload",
+	"qorpera_folder_confirm_object",
+	"qorpera_folder_seal_upload",
+	"qorpera_folder_commit",
 ] as const satisfies readonly MemberCompanyPublisherRpc[];
 
 describe.each(credentials)("$name gateway service authority", ({ secretKey, publishableKey, bearer }) => {
@@ -96,7 +104,10 @@ describe.each(credentials)("$name gateway service authority", ({ secretKey, publ
 			publishableKey,
 			fetch: transport(requests),
 		});
-		await expect(authority.publisher(method, {}, new AbortController().signal)).resolves.toBe(true);
+		// The answer is the transport's for that path (a download authorization's shape, or true).
+		await expect(authority.publisher(method, {}, new AbortController().signal)).resolves.toEqual(
+			method.endsWith("_object_download") ? { backend: "nas-object-gateway", bytes: 7 } : true,
+		);
 		expect(requests).toHaveLength(1);
 		expect(requests[0]?.headers.get("apikey")).toBe(secretKey);
 		expect(requests[0]?.headers.get("authorization")).toBe(bearer);

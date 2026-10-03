@@ -36,6 +36,12 @@ function deferred(): Deferred {
 
 class FolderGcCloud {
 	now = 0;
+	/** The gateway's own clock, for the grace of bytes with no catalog row. */
+	wall = Date.now();
+	/** Companies folder GC does not serve (snapshot-v1, mixed, being deleted). */
+	readonly other = new Set<string>();
+	/** Objects an upload intent still lists. */
+	readonly listed = new Set<string>();
 	api: "healthy" | "unavailable" = "healthy";
 	storage: "healthy" | "unavailable" = "healthy";
 	readonly catalog = new Map<string, { bytes: number; backend: string }>();
@@ -159,6 +165,10 @@ class FolderGcCloud {
 				return Response.json(true);
 			case "qorpera_confirm_profile_object_replica":
 				return Response.json(this.catalog.has(key));
+			case "qorpera_folder_gc_catalog_state":
+				if (this.catalog.has(key)) return Response.json("catalogued");
+				if (this.other.has(body.p_profile_id as string)) return Response.json("other");
+				return Response.json(this.listed.has(key) ? "listed" : "missing");
 		}
 		throw new Error(`Unexpected synthetic RPC ${name}`);
 	}
@@ -185,7 +195,7 @@ async function fixture() {
 		circuitCooldownMs: 0,
 	});
 	const replication = new ObjectGatewayReplication(journal, store, authority);
-	const gc = new ObjectGatewayFolderGc(store, replication, authority);
+	const gc = new ObjectGatewayFolderGc(store, replication, authority, () => cloud.wall);
 	const server: Server = createServer(
 		createObjectGatewayHandler({
 			store,
@@ -677,5 +687,267 @@ describe("folder GC against uploads and other lanes", () => {
 		expect(await f.gc.collect(profileId, sha256, lease)).toBe("removed");
 		expect(await f.quarantined()).toEqual([]);
 		expect(f.cloud.replicas.has(identity)).toBe(false);
+	});
+});
+
+describe("folder GC's bytes with no catalog row (C1D §9.9)", () => {
+	const day = 24 * 60 * 60 * 1000;
+	/** A put whose confirm never ran: the gateway stored the bytes, the folder core refused the confirm (a stop), and
+	 * the reconcile then blocked the entry, as folder replication refuses a missing row. */
+	async function uncatalogued(f: Awaited<ReturnType<typeof fixture>>) {
+		await expect(
+			f.replication.uploadWithAuthority(profileId, sha256, bytes, {
+				authorize: async () => undefined,
+				confirm: async () => {
+					throw new ObjectDependencyError(423);
+				},
+			}),
+		).rejects.toMatchObject({ status: 423 });
+		expect(await f.journal.read(entryKey)).toMatchObject({ state: "unconfirmed" });
+		await f.replication.reconcile();
+		expect(await f.journal.read(entryKey)).toMatchObject({ state: "blocked" });
+	}
+
+	it("removes a folder-v2 object's bytes and entry once they have had no catalog row for a day", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		f.cloud.replicas.set(identity, Uint8Array.from(bytes));
+		await f.gc.recover();
+		const first = (await f.journal.read(entryKey)) as { missingSince?: string };
+		expect(first).toMatchObject({ state: "blocked", missingSince: new Date(f.cloud.wall).toISOString() });
+		f.cloud.wall += day - 1;
+		await f.gc.recover();
+		expect(await f.nasBytes()).toEqual(bytes);
+		f.cloud.wall += 1;
+		await f.gc.recover();
+		expect(await f.nasBytes()).toBeUndefined();
+		expect(f.cloud.replicas.has(identity)).toBe(false);
+		expect(await f.journal.read(entryKey)).toBeUndefined();
+		expect((await f.replication.status()).blocked).toBe(0);
+		expect(await readFile(join(f.stateRoot, "audit.jsonl"), "utf-8")).toContain("folder_object_uncatalogued_removed");
+		expect(f.gc.degraded()).toBe(false);
+	});
+
+	it("leaves a catalogued object's entry, any other company's, and bytes an upload intent still lists", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		for (const leave of ["catalogued", "other", "listed"] as const) {
+			if (leave === "catalogued")
+				f.cloud.catalog.set(identity, { bytes: bytes.length, backend: "nas-object-gateway" });
+			if (leave === "other") f.cloud.other.add(profileId);
+			if (leave === "listed") f.cloud.listed.add(identity);
+			await f.gc.recover();
+			f.cloud.wall += 2 * day;
+			await f.gc.recover();
+			expect(await f.nasBytes()).toEqual(bytes);
+			expect(await f.journal.read(entryKey)).toEqual({ profileId, sha256, bytes: bytes.length, state: "blocked" });
+			f.cloud.catalog.clear();
+			f.cloud.other.clear();
+			f.cloud.listed.clear();
+		}
+		// Missing from now on: the grace runs from when the gateway first found it so.
+		await f.gc.recover();
+		f.cloud.wall += day - 1;
+		await f.gc.recover();
+		expect(await f.nasBytes()).toEqual(bytes);
+	});
+
+	it("keeps bytes whose upload confirms after the gateway found them missing", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: expect.any(String) });
+		// The writer puts again and confirms: the entry is the upload's again, and replicates.
+		expect(await f.upload()).toBe("exists");
+		f.cloud.wall += 2 * day;
+		await f.gc.recover();
+		expect(await f.nasBytes()).toEqual(bytes);
+		await f.replication.reconcile();
+		expect(Buffer.from(f.cloud.replicas.get(identity)!)).toEqual(bytes);
+		expect(await f.journal.read(entryKey)).toBeUndefined();
+	});
+
+	it("never meets an upload between its put and its confirm: the pass waits for the object's lock", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		await f.gc.recover();
+		f.cloud.wall += 2 * day;
+		for (const confirms of [true, false]) {
+			// Blocked and missing for two days: due for removal, but an upload holds the object.
+			f.cloud.catalog.clear();
+			await f.journal.write(entryKey, {
+				profileId,
+				sha256,
+				bytes: bytes.length,
+				state: "blocked",
+				missingSince: new Date(f.cloud.wall - 2 * day).toISOString(),
+			});
+			const gate = deferred();
+			const reached = deferred();
+			const upload = f.replication
+				.uploadWithAuthority(profileId, sha256, bytes, {
+					authorize: async () => {
+						reached.resolve();
+						await gate.promise;
+					},
+					confirm: async () => {
+						if (!confirms) throw new ObjectDependencyError(423);
+						f.cloud.catalog.set(identity, { bytes: bytes.length, backend: "nas-object-gateway" });
+					},
+				})
+				.catch(() => "refused");
+			await reached.promise;
+			const asked = f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+			// The pass has listed the entry and waits behind the upload for the object's lock before the upload goes on.
+			const queued = deferred();
+			const exclusive = f.replication.exclusive.bind(f.replication);
+			const spy = vi
+				.spyOn(f.replication, "exclusive")
+				.mockImplementation((objectProfileId, objectSha256, operation) => {
+					queued.resolve();
+					return exclusive(objectProfileId, objectSha256, operation);
+				});
+			const pass = f.gc.recover();
+			await queued.promise;
+			gate.resolve();
+			await upload;
+			await pass;
+			spy.mockRestore();
+			// The entry was the upload's by the time the pass had the lock: it is not asked about, and nothing goes.
+			expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(asked);
+			expect(await f.nasBytes()).toEqual(bytes);
+			expect(await f.journal.read(entryKey)).toMatchObject({ state: confirms ? "replicate" : "unconfirmed" });
+		}
+	});
+
+	it("leaves the deleted-company lane's entries, and keeps an entry when the database or Storage fails", async () => {
+		const f = await fixture();
+		const authorizationId = randomUUID();
+		await f.journal.write(entryKey, { profileId, sha256, bytes: bytes.length, state: "deleted", authorizationId });
+		await f.gc.recover();
+		expect(f.cloud.calls).not.toContain("qorpera_folder_gc_catalog_state");
+		await f.journal.remove(entryKey);
+		await uncatalogued(f);
+		f.cloud.failures.set("qorpera_folder_gc_catalog_state", "57014");
+		await f.gc.recover();
+		expect(f.gc.degraded()).toBe(true);
+		expect(await f.journal.read(entryKey)).toEqual({ profileId, sha256, bytes: bytes.length, state: "blocked" });
+		await f.gc.recover();
+		f.cloud.wall += day;
+		f.cloud.storage = "unavailable";
+		await f.gc.recover();
+		// The NAS file went, the replica could not: the entry stays, and the next pass finishes.
+		expect(await f.nasBytes()).toBeUndefined();
+		expect(await f.journal.read(entryKey)).toMatchObject({ state: "blocked" });
+		f.cloud.storage = "healthy";
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toBeUndefined();
+	});
+
+	it("sees a break inside the day, which starts the wait over: checks come 10 minutes apart", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		await f.gc.recover();
+		const first = new Date(f.cloud.wall).toISOString();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: first });
+		// Within the 10 minutes the entry is not asked about again.
+		const asked = f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+		f.cloud.wall += 9 * 60 * 1000;
+		await f.gc.recover();
+		expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(asked);
+		// Halfway, an intent lists it for a while: the next check sees it, and the wait starts over.
+		f.cloud.wall += 12 * 60 * 60 * 1000;
+		f.cloud.listed.add(identity);
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toEqual({ profileId, sha256, bytes: bytes.length, state: "blocked" });
+		expect(await readFile(join(f.stateRoot, "audit.jsonl"), "utf-8")).toContain("folder_object_uncatalogued_cleared");
+		f.cloud.listed.clear();
+		// A day after the first mark, missing again: marked anew, not removed.
+		f.cloud.wall += 13 * 60 * 60 * 1000;
+		await f.gc.recover();
+		const second = new Date(f.cloud.wall).toISOString();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: second });
+		expect(await f.nasBytes()).toEqual(bytes);
+		// The next check comes 10 minutes after the mark.
+		const marked = f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+		f.cloud.wall += 11 * 60 * 1000;
+		await f.gc.recover();
+		expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(marked + 1);
+		// Missing at every check for a day from the new mark: removed.
+		for (let checks = 0; checks < 6 * 24; checks += 1) {
+			f.cloud.wall += 10 * 60 * 1000;
+			await f.gc.recover();
+		}
+		expect(await f.journal.read(entryKey)).toBeUndefined();
+		expect(await f.nasBytes()).toBeUndefined();
+	});
+
+	it("counts the day only while the object is missing all along, and from a sane time", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: new Date(f.cloud.wall).toISOString() });
+		// An intent lists it again for a while: the wait starts over.
+		f.cloud.listed.add(identity);
+		f.cloud.wall += day;
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toEqual({ profileId, sha256, bytes: bytes.length, state: "blocked" });
+		f.cloud.listed.clear();
+		f.cloud.wall += 11 * 60 * 1000;
+		await f.gc.recover();
+		const marked = new Date(f.cloud.wall).toISOString();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: marked });
+		// A time from a clock that ran ahead is marked again with this gateway's time.
+		await f.journal.write(entryKey, {
+			profileId,
+			sha256,
+			bytes: bytes.length,
+			state: "blocked",
+			missingSince: "2099-01-01T00:00:00.000Z",
+		});
+		f.cloud.wall += day;
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: new Date(f.cloud.wall).toISOString() });
+		expect(await f.nasBytes()).toEqual(bytes);
+		expect(await readFile(join(f.stateRoot, "audit.jsonl"), "utf-8")).toContain("folder_object_uncatalogued_found");
+		// The journal refuses `missingSince` on another state, or a time that is not one.
+		await f.journal.write(entryKey, {
+			profileId,
+			sha256,
+			bytes: bytes.length,
+			state: "replicate",
+			missingSince: marked,
+		});
+		await expect(f.replication.status()).rejects.toThrow("Replication intent is invalid");
+		await f.journal.write(entryKey, {
+			profileId,
+			sha256,
+			bytes: bytes.length,
+			state: "blocked",
+			missingSince: "soon",
+		});
+		await expect(f.replication.status()).rejects.toThrow("Replication intent is invalid");
+		await f.journal.remove(entryKey);
+	});
+
+	it("goes through the blocked entries a few at a time", async () => {
+		const f = await fixture();
+		for (const n of [1, 2, 3]) {
+			const other = createHash("sha256").update(`other ${n}`).digest("hex");
+			await f.journal.write(`pending/${profileId}-${other}`, {
+				profileId,
+				sha256: other,
+				bytes: 7,
+				state: "blocked",
+			});
+		}
+		await f.journal.write(entryKey, { profileId, sha256, bytes: bytes.length, state: "replicate" });
+		const asked = () => f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+		await f.gc.recover(2);
+		expect(asked()).toBe(2);
+		await f.gc.recover(2);
+		expect(asked()).toBe(3);
+		// The replicate entry is the reconcile's, never this pass's.
+		expect(await f.journal.read(entryKey)).toMatchObject({ state: "replicate" });
 	});
 });
