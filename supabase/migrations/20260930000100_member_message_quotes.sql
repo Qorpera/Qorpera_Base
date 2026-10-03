@@ -13,6 +13,7 @@
 --   The run's context source (the current input, and earlier messages in its history) and the room post a
 --   continuation carries use it, so the context, every read_context page and its sha256, `parentInputs` and
 --   `roomPost` all carry the fenced form.
+-- - Room mentions read the member's own words: a name inside a quote names nobody.
 -- - The transcript entry keeps the quotes as `qorperaQuotes`, beside `qorperaAttachments`.
 -- - A desktop's turn claim never takes a quoted message: it can't fence one.
 --
@@ -193,6 +194,20 @@ $old$,
 	perform public.qorpera_check_member_quotes(v_room.profile_id, v_room.environment_id, p_body);
 	-- The room's agents, as the answering loop reads them.
 $new$);
+
+-- Mentions read the member's own words: a name inside a quote (an email's "@Luna") names nobody, so it neither picks
+-- the agent that answers nor tells a member. Both room paths.
+select pg_temp.member_quotes_patch(room_function,
+	$old$		v_mentioned := public.qorpera_record_room_mentions(v_room.id,v_input.id,v_user,v_text);
+$old$,
+	$new$		-- I5d-1 (20260930000100): a name inside a quote names nobody.
+		v_mentioned := public.qorpera_record_room_mentions(v_room.id,v_input.id,v_user,
+			coalesce(public.qorpera_member_message_fenced(v_input.id, p_body) ->> 'text', v_text));
+$new$)
+from unnest(array[
+	'public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)',
+	'public.qorpera_folder_post_room_message(uuid,uuid,jsonb,uuid,bigint)'
+]::regprocedure[]) as room_function;
 
 -- The transcript entry keeps the quotes beside the attachments, so history can be fenced the same way.
 select pg_temp.member_quotes_patch('public.qorpera_append_admitted_input_events(uuid,uuid[])',

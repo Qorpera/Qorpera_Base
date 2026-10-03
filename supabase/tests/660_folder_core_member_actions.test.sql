@@ -38,7 +38,7 @@ begin
 	-- 20260928329660 checks the poster's membership before the fence; 20260930000100 checks a message's quotes after it.
 	perform pg_temp.guarded('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)',
 		'if public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_company_rooms where id = p_room_id)) then',
-		'ab71465ab566ca5b259bc13a49d40e01');
+		'45c41948479b309a2c6bcec0a00b7b4b');
 	-- 20260930000100 checks a message's quotes before the fence, in this input and in the second turn request.
 	perform pg_temp.guarded('public.qorpera_append_session_input(uuid,uuid,text,jsonb)',
 		'if public.qorpera_company_is_folder_v2(public.qorpera_session_profile_id(p_session_id)) then raise exception', '0e3fe4d2e8fc7e0b14643a7cc16d91e9');

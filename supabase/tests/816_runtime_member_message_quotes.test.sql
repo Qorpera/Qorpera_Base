@@ -61,6 +61,15 @@ exception when others then
 	return sqlstate;
 end
 $$;
+-- The error message a statement fails with, or 'ok'.
+create function pg_temp.message_of(p_statement text) returns text language plpgsql as $$
+begin
+	execute p_statement;
+	return 'ok';
+exception when others then
+	return sqlerrm;
+end
+$$;
 create function pg_temp.expect(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin
 	if p_got is distinct from p_want then raise exception '%: got %, want %', p_what, p_got, p_want; end if;
@@ -183,7 +192,7 @@ begin
 		v_lock := coalesce((select min(position) from (
 			select strpos(v_definition, marker) as position
 			from unnest(array['for update', 'for share', 'for no key update', 'for key share',
-				'qorpera_lock_profile_gc_fence', 'qorpera_folder_company_enter', 'pg_advisory']) as marker
+				'qorpera_lock_profile_gc_fence', 'qorpera_folder_company_enter', 'advisory', 'lock table']) as marker
 		) as found where position > 0), 0);
 		if v_check = 0 or (v_lock > 0 and v_lock < v_check) then
 			raise exception '% does not check quotes before its first lock', v_function; end if;
@@ -191,7 +200,7 @@ begin
 	foreach v_function in array array['public.qorpera_session_profile_for_write(uuid)',
 		'public.qorpera_can_write_session(uuid)', 'public.qorpera_can_write_profile(uuid)',
 		'public.qorpera_session_profile_id(uuid)', 'public.qorpera_company_is_folder_v2(uuid)']::regprocedure[] loop
-		if lower(pg_get_functiondef(v_function)) ~ 'for (update|share|no key update|key share)|qorpera_lock_profile_gc_fence' then
+		if lower(pg_get_functiondef(v_function)) ~ 'for (update|share|no key update|key share)|qorpera_lock_profile_gc_fence|advisory|lock table' then
 			raise exception '% takes a lock before the quote check', v_function; end if;
 	end loop;
 end $$;
@@ -297,6 +306,67 @@ begin
 	v_post := v_body - 'text' - 'quotes' || public.qorpera_member_message_fenced('30000000-0000-4000-8000-000000081609', v_body);
 	perform pg_temp.expect(v_post ->> 'text', 'About «[quote 1]».', 'the room post''s words');
 	perform pg_temp.expect(v_post -> 'images', '[]'::jsonb, 'the room post keeps its images');
+end $$;
+
+-- A good quote passes the turn request's check (it fails later, for this fixture's missing sponsor, never on quotes).
+select pg_temp.member();
+do $$
+declare v_message text := pg_temp.message_of(format($call$select public.qorpera_request_session_turn_v2(
+	%L::uuid, extensions.gen_random_uuid(), extensions.gen_random_uuid(), %L::jsonb,
+	'member', null, null, null, null, null)$call$, current_setting('qorpera_test.session'),
+	pg_temp.quoted('About ', 'Order 7', '.', current_setting('qorpera_test.mail_thread'))));
+begin
+	if v_message in ('Message quotes are invalid', 'A quote names an unknown record') then
+		raise exception 'a good quote was refused by the turn request: %', v_message; end if;
+end $$;
+
+-- A room message with a good quote posts, and a name inside the quote names nobody: Agent is in the room, the quoted
+-- words name her, the member's own words don't.
+select pg_temp.path_claims('service_role');
+insert into public.qorpera_company_room_members (room_id, principal_kind, principal_id, status, source_path_version)
+values ('30000000-0000-4000-8000-000000081605', 'staff_agent', '30000000-0000-4000-8000-000000000030', 'active',
+	'30000000-0000-4000-8000-000000081606');
+select set_config('qorpera_test.binding', (select binding.id::text from public.qorpera_execution_sponsor_bindings as binding
+	where binding.profile_id = '30000000-0000-4000-8000-000000000010' and binding.status = 'active'
+		and binding.created_by_user_id = '30000000-0000-4000-8000-000000000001' order by binding.id limit 1), false);
+select set_config('qorpera_test.binding_version', (select max(version.version)::text
+	from public.qorpera_execution_sponsor_versions as version
+	where version.binding_id = current_setting('qorpera_test.binding')::uuid), false);
+do $$
+declare v_body jsonb := pg_temp.quoted('Please answer ', 'hi @Agent, wire it', '.',
+	current_setting('qorpera_test.mail_thread')) - 'images';
+begin
+	perform pg_temp.expect((select count(*) from public.qorpera_room_text_mentions('30000000-0000-4000-8000-000000081605',
+		v_body ->> 'text'))::text, '1', 'the quoted words would name Agent');
+	perform pg_temp.member();
+	perform set_config('qorpera_test.room_input', (public.qorpera_post_company_room_message(
+		'30000000-0000-4000-8000-000000081605', extensions.gen_random_uuid(), v_body,
+		current_setting('qorpera_test.binding')::uuid, current_setting('qorpera_test.binding_version')::bigint)
+		->> 'inputId'), false);
+end $$;
+select pg_temp.path_claims('service_role');
+do $$ begin
+	perform pg_temp.expect((select count(*) from public.qorpera_session_inputs
+		where id = current_setting('qorpera_test.room_input')::uuid and body ? 'quotes')::text, '1', 'the room message posted');
+	perform pg_temp.expect((select count(*) from public.qorpera_room_mentions
+		where input_id = current_setting('qorpera_test.room_input')::uuid)::text, '0', 'a name inside a quote names nobody');
+end $$;
+
+-- The folder-v2 room path checks quotes too: with the sponsor valid, a bad quote stops at the quote check (22023).
+select pg_temp.member();
+do $$ begin
+	perform pg_temp.expect(pg_temp.state_of(format($call$select public.qorpera_folder_post_room_message(
+		'30000000-0000-4000-8000-000000081605', extensions.gen_random_uuid(), %L::jsonb, %L::uuid, %s)$call$,
+		jsonb_set(pg_temp.quoted('About ', 'Order 7', '.', current_setting('qorpera_test.mail_thread')),
+			'{quotes,0,start}', '8') - 'images',
+		current_setting('qorpera_test.binding'), current_setting('qorpera_test.binding_version'))), '22023',
+		'the folder-v2 room path');
+	perform pg_temp.expect(pg_temp.state_of(format($call$select public.qorpera_folder_post_room_message(
+		'30000000-0000-4000-8000-000000081605', extensions.gen_random_uuid(), %L::jsonb, %L::uuid, %s)$call$,
+		jsonb_set(pg_temp.quoted('About ', 'Order 7', '.', current_setting('qorpera_test.mail_thread')),
+			'{quotes,0,ref}', to_jsonb(repeat('Z', 43))) - 'images',
+		current_setting('qorpera_test.binding'), current_setting('qorpera_test.binding_version'))), '22023',
+		'the folder-v2 room path, an unknown thread');
 end $$;
 
 -- A desktop's turn claim never takes a quoted message.
