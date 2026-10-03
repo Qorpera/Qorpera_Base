@@ -1,7 +1,11 @@
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CloudNativeToolBoundary,
+	type CloudToolResult,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -33,6 +37,7 @@ async function fixture(
 			deliveryId: request.deliveryId,
 			hook: { id: HOOK, name: "forms" },
 			type: "contact.submitted",
+			headers: { "content-type": "application/json" },
 			encoding: "utf8",
 			offset: request.offset ?? 0,
 			text: '{"name":"Ada"}',
@@ -115,37 +120,266 @@ describe("agent event tools", () => {
 		}
 	});
 
-	it("passes a next piece's offset on and refuses one that does not move forward", async () => {
-		const receipt = (next: unknown) => (_method: string, args: Record<string, unknown>, runId: string) => ({
-			schema: "qorpera.agent-event/v1",
-			runId,
-			deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
-			encoding: "utf8",
-			offset: (args.p_request as { offset?: number }).offset ?? 0,
-			text: "x",
-			total: 20000,
-			done: false,
-			next,
-		});
-		const moving = await fixture(receipt(9000));
+	it("accepts what the database gives past the end, after the body is cleared, and a padded last piece", async () => {
+		for (const [callId, offset, piece] of [
+			["a1", 10, { encoding: "utf8", offset: 10, text: "", total: 10, done: true }],
+			["a2", 0, { bodyCleared: true, done: true }],
+			["a3", 10, { bodyCleared: true, done: true }],
+			["a4", 24576, { encoding: "base64", offset: 24576, data: "/w==", total: 24577, done: true }],
+			["a5", 24576, { encoding: "base64", offset: 24576, data: "AA==", total: 24600, done: false, next: 24577 }],
+			["a6", 99999, { encoding: "base64", offset: 99999, data: "", total: 24577, done: true }],
+		] as const) {
+			const f = await fixture((_method, args, runId) => ({
+				schema: "qorpera.agent-event/v1",
+				runId,
+				deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
+				hook: { id: HOOK, name: "forms" },
+				headers: {},
+				bytes: 0,
+				...piece,
+			}));
+			try {
+				const read = await f.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset });
+				expect(read.success, callId).toBe(true);
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
+	it("passes a next piece's offset on, and refuses one that skips, stands still or contradicts done", async () => {
+		const receipt =
+			(piece: Record<string, unknown>) => (_method: string, args: Record<string, unknown>, runId: string) => ({
+				schema: "qorpera.agent-event/v1",
+				runId,
+				deliveryId: (args.p_request as { deliveryId: string }).deliveryId,
+				headers: {},
+				encoding: "utf8",
+				offset: (args.p_request as { offset?: number }).offset ?? 0,
+				text: "x\u{1F600}",
+				total: 20000,
+				done: false,
+				...piece,
+			});
+		const moving = await fixture(receipt({ next: 12 }));
 		try {
 			const piece = await moving.boundary.invoke("n1", "qorpera", "read_event", {
 				deliveryId: DELIVERY,
 				offset: 10,
 			});
 			expect(piece.success, JSON.stringify(piece)).toBe(true);
-			expect(piece.contentItems[0].text).toContain('\\"next\\":9000');
+			expect(piece.contentItems[0].text).toContain('\\"next\\":12');
 		} finally {
 			moving.run.close();
 		}
-		const stuck = await fixture(receipt(10));
-		try {
-			expect(
-				(await stuck.boundary.invoke("n2", "qorpera", "read_event", { deliveryId: DELIVERY, offset: 10 })).success,
-			).toBe(false);
-		} finally {
-			stuck.run.close();
+		for (const [callId, piece] of [
+			["n2", { next: 9000 }],
+			["n3", { next: 10 }],
+			["n4", { next: 13 }],
+			["n5", { text: "", next: 10 }],
+			["n6", {}],
+			["n7", { done: true, next: 12 }],
+			["n8", { encoding: "base64", data: "AAAA", next: 12 }],
+			["n9", { encoding: "base64", data: "AAA", next: 12 }],
+			["n10", { offset: 0, next: 12 }],
+			["n11", { headers: { "content-type": 1 }, next: 12 }],
+			["n12", { encoding: "base64", data: "AA==", next: 13 }],
+		] as const) {
+			const other = await fixture(receipt(piece));
+			try {
+				expect(
+					(await other.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset: 10 }))
+						.success,
+					callId,
+				).toBe(false);
+			} finally {
+				other.run.close();
+			}
 		}
+	});
+
+	describe("reading a long body piece by piece", () => {
+		/** qorpera_read_agent_event's piece as the database cuts it (20260928269290): text when the body is UTF-8, up
+		 * to 16,000 characters whose JSON string fits 32 KiB, offsets in characters; else base64 of 24 KiB, offsets in
+		 * bytes. */
+		const databasePiece = (body: Buffer, offset: number): Record<string, unknown> => {
+			const text = body.toString("utf8");
+			if (Buffer.from(text, "utf8").equals(body)) {
+				const rest = [...text].slice(offset);
+				let chars = Math.min(rest.length, 16000);
+				for (;;) {
+					const size = Buffer.byteLength(JSON.stringify(rest.slice(0, chars).join("")));
+					if (size <= 32768 || chars === 0) break;
+					chars = Math.max(0, Math.min(chars - 1, Math.floor((chars * 32768) / size)));
+				}
+				return {
+					encoding: "utf8",
+					offset,
+					text: rest.slice(0, chars).join(""),
+					total: offset + rest.length,
+					done: chars >= rest.length,
+					...(chars < rest.length ? { next: offset + chars } : {}),
+				};
+			}
+			return {
+				encoding: "base64",
+				offset,
+				data: body.subarray(offset, offset + 24576).toString("base64"),
+				total: body.length,
+				done: offset + 24576 >= body.length,
+				...(offset + 24576 < body.length ? { next: offset + 24576 } : {}),
+			};
+		};
+		const delivery = (body: Buffer, headers: Record<string, string>) =>
+			fixture((_method, args, runId) => {
+				const request = args.p_request as { deliveryId: string; offset?: number };
+				return {
+					schema: "qorpera.agent-event/v1",
+					runId,
+					deliveryId: request.deliveryId,
+					hook: { id: HOOK, name: "agents" },
+					type: "mail.received",
+					receivedAt: "2026-10-02T10:00:01.123456+00:00",
+					contentType: "application/json",
+					headers,
+					bytes: body.length,
+					...databasePiece(body, request.offset ?? 0),
+				};
+			});
+		/** Reads the whole event as the model sees it, from offset 0 to done, and returns each piece. */
+		const readAll = async (f: Awaited<ReturnType<typeof fixture>>) => {
+			const pieces: Record<string, unknown>[] = [];
+			let offset = 0;
+			for (;;) {
+				// The longest call id the boundary takes, so its provenance is as large as it gets.
+				const callId = `read-${String(pieces.length).padStart(4, "0")}-${"c".repeat(150)}`;
+				const reply = await f.boundary.invoke(callId, "qorpera", "read_event", { deliveryId: DELIVERY, offset });
+				expect(reply.success, JSON.stringify(reply)).toBe(true);
+				const wire = reply.contentItems[0].text;
+				expect(Buffer.byteLength(wire)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
+				const envelope = JSON.parse(wire) as CloudToolResult;
+				expect(envelope.content.truncated, `piece at ${offset}`).toBe(false);
+				const piece = JSON.parse(envelope.content.text) as Record<string, unknown>;
+				expect(piece.offset).toBe(offset);
+				pieces.push(piece);
+				if (piece.done) return pieces;
+				expect(piece.next).toBeGreaterThan(offset);
+				offset = piece.next as number;
+			}
+		};
+		// Every kind of character the two JSON layers and the fence escape, and multi-byte ones: a quote, a
+		// backslash, < > &, the two line separators, a control character, a tab and a new line, two-, three- and
+		// four-byte characters, and a combining mark.
+		const tricky = `"\\<>&\u2028\u2029\u0001\t\né漢😀e\u0301 `;
+		const mail = {
+			from: "Ada Lovelace <ada@example.test>",
+			to: ["agents@northwind.qorpera.mail"],
+			subject: 'Quarterly "numbers" & <notes>',
+			text: Array.from({ length: 1500 }, (_, n) => `Line ${n}: ${tricky}${"plain words ".repeat(n % 7)}`).join(""),
+			html: Array.from({ length: 400 }, (_, n) => `<p class="x">Para ${n} &amp; ${tricky}</p>`).join(""),
+			attachments: [{ filename: "notes.pdf", contentType: "application/pdf", size: 123456 }],
+		};
+		const mailHeaders = {
+			"delivered-to": "agents@northwind.qorpera.mail",
+			from: "Ada Lovelace <ada@example.test>",
+			subject: 'Quarterly "numbers" & <notes>',
+			"authentication-results": "spf=pass dkim=pass dmarc=pass",
+		};
+
+		it("cuts each text piece to fit one result, and next continues exactly where it stopped", async () => {
+			const body = Buffer.from(JSON.stringify(mail), "utf8");
+			const f = await delivery(body, mailHeaders);
+			try {
+				const pieces = await readAll(f);
+				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
+				const characters = [...body.toString("utf8")].length;
+				// The database alone would have given far fewer, larger pieces: the runtime cut every one but the last.
+				expect(pieces.length).toBeGreaterThan(Math.ceil(characters / 16000) * 2);
+				for (const [place, piece] of pieces.entries()) {
+					expect(piece.encoding).toBe("utf8");
+					expect(piece.total).toBe(characters);
+					// The headers come with the first piece only.
+					expect(piece.headers).toEqual(place === 0 ? mailHeaders : undefined);
+					expect(piece.headersCut).toBeUndefined();
+				}
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("cuts base64 pieces after whole bytes, so the bytes join up exactly", async () => {
+			const body = Buffer.from(Array.from({ length: 60001 }, (_, n) => (n * 151 + 7) % 256));
+			expect(Buffer.from(body.toString("utf8"), "utf8").equals(body)).toBe(false);
+			const f = await delivery(body, { "content-type": "application/octet-stream" });
+			try {
+				const pieces = await readAll(f);
+				expect(Buffer.concat(pieces.map((piece) => Buffer.from(piece.data as string, "base64"))).equals(body)).toBe(
+					true,
+				);
+				expect(pieces.length).toBeGreaterThan(Math.ceil(body.length / 24576) * 2);
+				for (const piece of pieces) {
+					expect(piece.encoding).toBe("base64");
+					expect(piece.total).toBe(body.length);
+				}
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("cuts headers too long to leave the body room, every value to one length, and still reads it all fast", async () => {
+			// As long as the intake keeps them: each value at most 2048 characters, all within 8 KiB of JSON.
+			const headers = {
+				"delivered-to": "agents@northwind.qorpera.mail",
+				from: '"<&>'.repeat(512),
+				subject: "&<\u2028\u2029".repeat(256),
+				"user-agent": "é".repeat(2048),
+			};
+			const body = Buffer.from(JSON.stringify({ ...mail, text: mail.text.slice(0, 20000), html: "" }), "utf8");
+			const f = await delivery(body, headers);
+			try {
+				const pieces = await readAll(f);
+				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
+				const [first, ...rest] = pieces;
+				expect(first.headersCut).toBe(true);
+				const kept = first.headers as Record<string, string>;
+				const most = Math.max(...Object.values(kept).map((value) => [...value].length));
+				for (const [name, value] of Object.entries(headers)) {
+					expect(value.startsWith(kept[name]), name).toBe(true);
+					expect([...kept[name]].length, name).toBe(Math.min([...value].length, most));
+				}
+				expect(kept["delivered-to"]).toBe(headers["delivered-to"]);
+				// The first piece keeps about a kilobyte of the result for the body.
+				expect(
+					Buffer.byteLength(JSON.stringify(JSON.stringify(first.text)).replace(/[<>&\u2028\u2029]/g, "\\u0000")),
+				).toBeGreaterThan(1000);
+				// The rest carry no headers, so a sender's long ones cannot make the body slow to read.
+				for (const piece of rest) {
+					expect(piece.headers).toBeUndefined();
+					expect(piece.headersCut).toBeUndefined();
+				}
+				const plain = await delivery(body, mailHeaders);
+				try {
+					expect(pieces.length).toBeLessThanOrEqual((await readAll(plain)).length + 1);
+				} finally {
+					plain.run.close();
+				}
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("passes a piece that already fits on unchanged", async () => {
+			const body = Buffer.from(JSON.stringify({ ...mail, text: "Short.", html: "" }), "utf8");
+			const f = await delivery(body, mailHeaders);
+			try {
+				const [piece, ...rest] = await readAll(f);
+				expect(rest).toEqual([]);
+				expect(piece).toMatchObject({ text: body.toString("utf8"), done: true, headers: mailHeaders });
+				expect(piece.next).toBeUndefined();
+			} finally {
+				f.run.close();
+			}
+		});
 	});
 
 	it("refuses a call made for another run than the one it was built for", async () => {
