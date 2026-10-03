@@ -2,8 +2,8 @@
 -- company on folder-v2 with nothing seeded; Start records one creation; the worker's claim, release, fail and the one
 -- creation transaction (completed, retry, failed, stale, replay) with the Co-Founder and its silent first run (the
 -- kickoff's exact shape, the first-run row, the turn request with and without a usable login, no wake); ready, the
--- founders' setup state and the hub; the guards (departure, the old chain, enabling, delete); requeue. The operator
--- path is in 858, races in 857.
+-- founders' setup state and the hub; the guards (departure, the old chain, enabling, delete); requeue; snapshot-v1 keeps
+-- every patched text. The operator path is in 858, races in 857.
 begin;
 
 insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values
@@ -675,6 +675,107 @@ begin
 		raise exception 'A blocked creation was requeued' using errcode = 'QTF01';
 	exception when sqlstate '55000' then null;
 	end;
+end $$;
+
+-- 7. Snapshot-v1 keeps its text: each body with its patch reversed is the definition before this migration -----------
+
+do $$
+declare v_case record; v_definition text;
+begin
+	for v_case in select * from (values
+		('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)',
+			$n$				perform public.qorpera_company_state_index_agent(p_environment_id, v_profile, p_commit_id, v_user, v_file.path,
+					v_version, v_entry -> 'parse', v_actor);
+				-- 20260930010000 (P14a): inside a creation, the first run of the creation's own Co-Founder.
+				perform public.qorpera_folder_company_first_run(p_environment_id, p_commit_id, (v_entry -> 'parse' ->> 'id')::uuid,
+					v_version);
+$n$,
+			$o$				perform public.qorpera_company_state_index_agent(p_environment_id, v_profile, p_commit_id, v_user, v_file.path,
+					v_version, v_entry -> 'parse', v_actor);
+$o$,
+			'9bbc1e5e8784ac576bdd90bbe0b1d03b'),
+		('public.qorpera_list_hosted_profiles()',
+			$n$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
+		-- 20260930010000 (P14a): a folder-v2 company shows once its creation is completed.
+		and (not exists (select 1 from public.qorpera_company_files as file where file.profile_id = profile.id and file.core = 'folder-v2')
+			or exists (select 1 from public.qorpera_folder_company_creations as creation where creation.profile_id = profile.id
+				and creation.state = 'completed'))
+$n$,
+			$o$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
+$o$,
+			'42227354f79c284a0e59719e4b7957f5'),
+		('public.qorpera_guard_founder_departure()',
+			$n$		raise exception 'Company setup must finish before the founder it runs for leaves or steps down'
+			using errcode = '42501';
+	end if;
+	-- 20260930010000 (P14a): so does a folder-v2 creation, for the member who started it.
+	if exists (select 1 from public.qorpera_folder_company_creations as creation
+		where creation.profile_id = old.profile_id and creation.kickoff_user_id = old.user_id
+			and creation.state in ('queued', 'leased')) then
+		raise exception 'Company setup must finish before the founder it runs for leaves or steps down'
+			using errcode = '42501';
+	end if;
+	return coalesce(new, old);
+$n$,
+			$o$		raise exception 'Company setup must finish before the founder it runs for leaves or steps down'
+			using errcode = '42501';
+	end if;
+	return coalesce(new, old);
+$o$,
+			'107578f7d129849f06f64e9c6f1079e7'),
+		('public.qorpera_profile_team_info(uuid)',
+			$n$					where job.profile_id = p_profile_id and job.created_by_user_id = auth.uid()
+						and job.state in ('queued', 'leased'))
+				-- 20260930010000 (P14a): nor a folder-v2 creation.
+				and not exists (select 1 from public.qorpera_folder_company_creations as creation
+					where creation.profile_id = p_profile_id and creation.kickoff_user_id = auth.uid()
+						and creation.state in ('queued', 'leased')),
+$n$,
+			$o$					where job.profile_id = p_profile_id and job.created_by_user_id = auth.uid()
+						and job.state in ('queued', 'leased')),
+$o$,
+			'847a09a707ce895c5aca913418d96ff1'),
+		('public.qorpera_stop_company_work(uuid)',
+			$n$	where profile_id = p_profile_id and state in ('queued', 'leased');
+	-- 20260930010000 (P14a): a folder-v2 creation not yet made is blocked. One a worker holds now (its row sits before
+	-- the fence) is skipped: it refuses after its fence (the pause covers a deletion) or completes, and the finisher's next
+	-- pass marks it. A release never turns blocked back into queued.
+	update public.qorpera_folder_company_creations
+	set state = 'blocked', lease_owner = null, lease_until = null, last_problem = 'company_deleted', updated_at = clock_timestamp()
+	where id in (select creation.id from public.qorpera_folder_company_creations as creation
+		where creation.profile_id = p_profile_id and creation.state in ('queued', 'leased') for update skip locked);
+
+	-- Coding:$n$,
+			$o$	where profile_id = p_profile_id and state in ('queued', 'leased');
+
+	-- Coding:$o$,
+			'9485f077055b7b316ced0c28ef47d0fb'),
+		('public.qorpera_enqueue_company_bootstrap(uuid,boolean)',
+			$n$	v_job public.qorpera_company_bootstrap_jobs%rowtype; v_owner uuid;
+begin
+	-- 20260930010000 (P14a): a folder-v2 company never runs the old chain.
+	if public.qorpera_company_is_folder_v2(p_profile_id) then
+		raise exception 'The folder core sets this company up' using errcode = '55000'; end if;
+$n$,
+			$o$	v_job public.qorpera_company_bootstrap_jobs%rowtype; v_owner uuid;
+begin
+$o$,
+			'2db1d98ee2066cda83f8c41743f86c65'),
+		('public.qorpera_company_founding_json(uuid)',
+			$n$'companyReady',public.qorpera_folder_company_ready(p_profile_id),
+			-- 20260930010000 (P14a): pending, ready or failed.
+			'companySetup',public.qorpera_folder_company_setup(p_profile_id)) end);$n$,
+			$o$'companyReady',public.qorpera_folder_company_ready(p_profile_id)) end);$o$,
+			'ea4506f6503174c2d7a28f904afacb4f')) as c(signature, inserted, original, md5) loop
+		v_definition := pg_get_functiondef(v_case.signature::regprocedure);
+		if position(v_case.inserted in v_definition) = 0
+			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then
+			raise exception 'The patch of % is not the only change', v_case.signature; end if;
+	end loop;
+	-- qorpera_folder_enable is replaced whole: a role check around the internal body.
+	if position('20260930010000' in pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure)) = 0
+		or position('qorpera_folder_enable_internal(p_environment_id)' in pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure)) = 0 then
+		raise exception 'qorpera_folder_enable is not the wrapper'; end if;
 end $$;
 
 rollback;
