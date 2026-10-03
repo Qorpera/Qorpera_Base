@@ -288,9 +288,11 @@ begin
 	if v_post <> 'ok' or v_role <> 'ok' then raise exception 'G: the post % and the step-down %', v_post, v_role; end if;
 end $$;
 
--- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation, so the last
--- member's deletion of the company (its stop removes invitations) goes on; the join then finds no invitation. 01 is
--- made the last member first (the others removed by hand, triggers off).
+-- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation while it waits.
+-- Since C1c-3g (20260930002500) the last member's deletion takes member management's lock too (the fence FOR NO KEY
+-- UPDATE), so it waits at the fence behind the join; the join, queued first, joins once the fence is free, and the
+-- deletion then sees another member and refuses. 01 is made the last member first (the others removed by hand,
+-- triggers off).
 set session_replication_role = replica;
 delete from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
 	and user_id <> '64800000-0000-4000-8000-000000000001';
@@ -309,12 +311,14 @@ begin
 		raise exception 'H: the join must hold no invitation while it waits at the fence'; end if;
 	perform dblink_exec('fence_three', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
 	perform dblink_send_query('fence_three', $q$select public.qorpera_delete_hosted_profile('64800000-0000-4000-8000-000000000010')::text$q$);
-	if not pg_temp.finishes_unblocked('fence_three', 'fence_two') then raise exception 'H: the deletion must not wait for the join'; end if;
-	v_delete := pg_temp.outcome('fence_three');
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_folder_fences') then
+		perform dblink_exec('fence_four', 'rollback');
+		raise exception 'H: the deletion must wait at the fence'; end if;
 	perform dblink_exec('fence_four', 'rollback');
 	v_join := pg_temp.outcome('fence_two');
-	if v_delete <> 'ok' or v_join not like 'P0002 profile invitation was not found%' then
-		raise exception 'H: the deletion % and the join %', v_delete, v_join; end if;
+	v_delete := pg_temp.outcome('fence_three');
+	if v_join <> 'ok' or v_delete not like '42501 Only the last member can delete the company%' then
+		raise exception 'H: the join % and the deletion %', v_join, v_delete; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
