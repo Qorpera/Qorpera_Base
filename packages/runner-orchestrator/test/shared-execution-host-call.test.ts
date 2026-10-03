@@ -68,7 +68,9 @@ describe("execution host calls (G2-3e)", () => {
 		await expect(hostFetch(`${supabaseUrl}/rest/v1/rpc/qorpera_native_host_call`, post)).rejects.toThrow(
 			"Not an execution host call",
 		);
-		await expect(hostFetch(`${supabaseUrl}/rest/v1/qorpera_runners`, post)).rejects.toThrow("Not an execution host call");
+		await expect(hostFetch(`${supabaseUrl}/rest/v1/qorpera_runners`, post)).rejects.toThrow(
+			"Not an execution host call",
+		);
 		await expect(hostFetch(`${supabaseUrl}/storage/v1/object/x`, post)).rejects.toThrow("Not an execution host call");
 		await expect(
 			hostFetch(`${supabaseUrl}/rest/v1/rpc/qorpera_runtime_ended_runners`, { method: "GET" }),
@@ -101,7 +103,9 @@ describe("execution host calls (G2-3e)", () => {
 			return Response.json(false);
 		});
 		const signal = new AbortController().signal;
-		expect(await supabaseSharedExecutionLoginCustody(supabaseUrl, hostFetch)(computeIdentityId, signal, runId)).toBe(false);
+		expect(await supabaseSharedExecutionLoginCustody(supabaseUrl, hostFetch)(computeIdentityId, signal, runId)).toBe(
+			false,
+		);
 		expect(sent.map((call) => call.url)).toEqual([`${supabaseUrl}/rest/v1/rpc/qorpera_execution_host_call`]);
 		expect(JSON.parse(String(sent[0]?.init?.body))).toEqual({
 			p_host_id: host.hostId,

@@ -338,7 +338,8 @@ async function systemAccount(name: string): Promise<SharedExecutionAccount> {
 function validateConfig(config: SharedExecutionProviderConfig): void {
 	if (!ADAPTER_PATTERN.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 	if (!/^[a-z][a-z0-9-]{0,62}$/.test(config.hostId)) throw new Error("Execution host id is invalid");
-	if (!/^[A-Za-z0-9_-]{43}$/.test(config.executionHostCredential)) throw new Error("Execution host credential is invalid");
+	if (!/^[A-Za-z0-9_-]{43}$/.test(config.executionHostCredential))
+		throw new Error("Execution host credential is invalid");
 	for (const [label, path] of [
 		["State root", config.stateRoot],
 		["Run root", config.runRoot],

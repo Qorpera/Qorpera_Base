@@ -425,7 +425,9 @@ describe("shared execution provider backend", () => {
 	});
 
 	it("refuses an execution host credential that is not 32 base64url bytes (G2-3e)", async () => {
-		await expect(fixture({ executionHostCredential: "short" })).rejects.toThrow("Execution host credential is invalid");
+		await expect(fixture({ executionHostCredential: "short" })).rejects.toThrow(
+			"Execution host credential is invalid",
+		);
 		await expect(fixture({ executionHostCredential: "" })).rejects.toThrow("Execution host credential is invalid");
 	});
 
