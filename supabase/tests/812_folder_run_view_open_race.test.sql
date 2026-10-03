@@ -237,8 +237,9 @@ begin
 end $$;
 
 -- 6. Renewal beside a save in flight through the view (the view row KEY SHARE) never waits: not when it renews the
---    view, and not when it closes one that no longer matches its anchor (here the job's lease has ended). The next
---    open is what waits such work out (C1B §4, decided 3 October 2026; for desktops, test 644 H).
+--    view, and not when it closes one that no longer matches its anchor (here the job's lease has ended). For a
+--    desktop or a coding session the next open waits such work out and carries its reads (C1B §4, decided 3 October
+--    2026; test 644 H); a run box carries no reads, so nothing waits for it.
 do $$
 declare v_view jsonb; v_outcome jsonb; q text := current_setting('qorpera_test.r812_q');
 	c_renew constant text := 'select public.qorpera_folder_view_renew(%L, %L)';

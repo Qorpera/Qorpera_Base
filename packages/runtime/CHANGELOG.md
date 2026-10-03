@@ -1,6 +1,6 @@
 # Changelog
 
-- A company being deleted serves its folder to no one (folder core slice P01, F3's P1; migration `20260930001000`, SQL test 820): `qorpera_folder_read_actor` now refuses members and the platform with 55000 'Company is being deleted' once the company has a deletion row, so read, list, the feed, agent todos and routine reads stop for them as they already did for runs and views (which keep 'Company execution is paused'). A pause alone still lets members and the platform read. One plain read, no lock; the body carries the marker `20260930001000`.
+- A company being deleted serves its folder to no one (folder core slice P01, F3's P1; migration `20260930001000`, SQL test 820): `qorpera_folder_read_actor` now refuses members and the platform with 55000 'Company is being deleted' once the company has a deletion row, so read, list and the feed stop for them as they already did for runs and views (which keep 'Company execution is paused'). A pause alone still lets members and the platform read. One plain read, no lock; the body carries the marker `20260930001000`.
 ## [Unreleased]
 
 ### Breaking Changes
