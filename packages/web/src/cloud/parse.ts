@@ -424,6 +424,12 @@ export function parseStaffList(value: unknown): HostedStaffAgent[] {
 	return array(raw, "staff list").map(parseStaff);
 }
 
+/** Minutes come only with a stall time. */
+function noStallMinutes(minutes: unknown): Record<string, never> {
+	if (minutes !== undefined && minutes !== null) throw new Error("Cloud returned stall minutes without a stall time");
+	return {};
+}
+
 export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity[] {
 	return array(value, "staff execution activity").map((entry) => {
 		const activity = record(entry, "staff execution activity");
@@ -435,7 +441,7 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 			activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
 			...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
 			...(activity.no_progress_since === undefined || activity.no_progress_since === null
-				? {}
+				? noStallMinutes(activity.no_progress_minutes)
 				: {
 						noProgressSince: timestamp(activity.no_progress_since, "activity stall time"),
 						noProgressMinutes: boundedInteger(activity.no_progress_minutes, "activity stall minutes", 1, 1440),

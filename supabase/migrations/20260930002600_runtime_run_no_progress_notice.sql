@@ -5,8 +5,11 @@
 --
 -- Progress is what the harness does, never the lease: the runner's maintenance loop renews the job while a harness
 -- hangs. A run's last progress is the latest of
--- * its newest runtime observation (a tool call's start or finish, each model request's result fence, "writing" every
---   5 s; qorpera_runtime_observations, read through its (run_id, id desc) index);
+-- * its newest runtime observation (a tool call's start or finish, each model request's result fence; through its
+--   (run_id, id desc) index), but never a "writing" pulse: while a reply is written the runner starts a new
+--   message_composition span every 5 s on its own timer until the reply ends, so a harness that hangs mid-reply would
+--   never go stale. The reply counts from its model request's context view instead (below). The look-back is the run's
+--   newest 400 observations: past that many pulses (about 16 minutes of a reply) the context view is newer anyway;
 -- * its newest context view (one per model request, recorded before the request is released;
 --   qorpera_native_context_views, through unique (run_id, ordinal));
 -- * its newest assignment (a new attempt starts afresh; through (run_id, created_at desc, id desc));
@@ -25,10 +28,14 @@
 -- Readers:
 -- * qorpera_list_staff_execution_activity: a working run carries 'no_progress_since' and 'no_progress_minutes'.
 -- * Member notice 'run_no_progress' (subject qorpera.member-notification.run-no-progress/v1, with the minutes). It
---   goes to the run's member for a member-private run, to the member whose message started a turn, and otherwise (a
---   worker, a routine, a coworker's message) to the company's owners and admins. One per member and run (the dedupe
+--   goes to the run's member for a member-private run, to the member whose message started it (a turn in a
+--   conversation, or a post in an agent's thread, 'room_delivery') while still a member, and otherwise (a worker, a
+--   routine, a coworker's message) to the company's owners and admins. One per member and run (the dedupe
 --   key is the run id; a dismissed notice is not sent again). It closes itself (acknowledged) once its run makes
 --   progress or ends.
+-- Known limits: a reviewed tool call records its review first, so a tool waiting for 15 minutes behind its review would
+-- read as stalled (none can today); closed notices count toward a member's 50 newest; a notice's insert takes the
+-- company and user rows KEY SHARE for its foreign keys, so a wait over 2 s skips that minute's pass.
 -- * qorpera_notify_runs_without_progress(): one pass over leased jobs, run by pg_cron every minute as
 --   'qorpera-run-progress-notices'. It finds them through the existing partial index qorpera_runner_jobs_queue
 --   (status in ('queued','leased')), so no index is added. It locks no run, job or company row; it only writes
@@ -51,10 +58,13 @@ stable
 security definer
 set search_path = ''
 as $$
-	-- Gap 4 (20260930002600): what the harness last did. Never the lease.
+	-- Gap 4 (20260930002600): what the harness last did. Never the lease, never a "writing" pulse.
 	select greatest(p_started_at,
-		(select observation.ingested_at from public.qorpera_runtime_observations as observation
-			where observation.run_id = p_run_id order by observation.id desc limit 1),
+		(select recent.ingested_at
+			from (select observation.id, observation.operation, observation.ingested_at
+				from public.qorpera_runtime_observations as observation
+				where observation.run_id = p_run_id order by observation.id desc limit 400) as recent
+			where recent.operation <> 'message_composition' order by recent.id desc limit 1),
 		(select view.created_at from public.qorpera_native_context_views as view
 			where view.run_id = p_run_id order by view.ordinal desc limit 1),
 		(select assignment.created_at from public.qorpera_runner_assignments as assignment
@@ -156,7 +166,8 @@ begin
 		join public.qorpera_profile_members as member on member.profile_id = stalled.profile_id
 		where stalled.since is not null and case
 			when stalled.audience_kind = 'member_private' then member.user_id = stalled.audience_user_id
-			when stalled.source_kind = 'session_turn' and exists (select 1 from public.qorpera_profile_members as sender
+			when stalled.source_kind in ('session_turn', 'room_delivery') and exists (select 1
+				from public.qorpera_profile_members as sender
 				where sender.profile_id = stalled.profile_id and sender.user_id = stalled.created_by_user_id)
 				then member.user_id = stalled.created_by_user_id
 			else member.role in ('owner', 'admin') end
