@@ -48,7 +48,8 @@ In short:
   - A commit unit only references stored bytes (a version-2 proof and catalog rows). SQL cannot store the bytes.
   - The platform can stage through `qorpera_folder_open_upload`, `_authorize_object_upload`, `_confirm_object` and
     `_seal_upload` (service role; the platform needs no possession).
-  - A1's P22b writer (`packages/object-gateway/src/platform-folder-writer.ts`) is the gateway's platform stager.
+  - A1's P22b writer (`packages/object-gateway/src/platform-folder-writer.ts`, draft #730, stacked on #727 → #715 →
+    #705) will be the gateway's platform stager. P14b depends on it.
 - **The commit's platform branch** takes no fence and has no admission step (`20260928259230:985-990, 1392-1430`).
 - **First-run wakes:** the wake pin trigger's `first-run` branch requires a `session_turn` run
   (`20260828023000:195-200`), and the wake policy accepts `first-run` only for such a run. Nothing delivers a
@@ -62,7 +63,8 @@ In short:
      the old path already used refuses (`23505`, as the lobby does for a company with a bootstrap job). The reverse
      (a folder-path id sent to the old path) fails at its own strict job lookup.
    - It makes the profile, the owner member (email and display name read from `auth.users`, so the same body serves
-     a service-role caller), and the environment named after the company (contract version 2). The provision
+     the operator functions, which have no member's session), and the environment named after the company (contract
+     version 2). The provision
      trigger makes the `snapshot-v1` `provisioning` file row as today.
    - In the same transaction, `qorpera_folder_enable_internal` switches that row to `folder-v2`: the clock, fence and
      admission rows, and the root and `rules/` resources.
@@ -74,20 +76,26 @@ In short:
 2. **Start** (`qorpera_folder_company_seed(profile, input)`, called inside Start):
    - It checks the input (the schema, the fields, their sizes as the lobby keeps them) and that the company is
      `folder-v2` with no bootstrap job.
-   - It inserts one row into `qorpera_folder_company_creations`: `state = 'queued'`, the input, and
-     `kickoff_user_id = kickoffRequestedBy`.
+   - It inserts one row into `qorpera_folder_company_creations`: `state = 'queued'`, the input,
+     `kickoff_user_id = kickoffRequestedBy`, and the ids the seed needs: `cofounder_id` and `first_todo_id`, each a
+     random version-4 UUID (`gen_random_uuid()`), made once here. Every client checks a staff id's version and variant
+     digits (the runner broker, the web, the wake bus), so these are never derived by hashing.
    - Start reaches it once; a second call finds the row and returns its id (a safety net). The insert adds no lock
      another session holds in a conflicting mode.
 3. **The creation worker** (object gateway; P14b):
    - It claims a queued creation with a lease token (`qorpera_folder_company_creation_claim`).
    - It builds `companyStateSeedTree({companyName, cofounderId, vision, founders, firstTodo: {id, requestedBy:
-     kickoffRequestedBy}})`, with the ids derived from the creation's id, so a retry builds the same tree, and
+     kickoffRequestedBy}})` with the ids the claim returns from the creation row, so a retry builds the same tree, and
      parses each structured file with the shared parser.
    - It stages every file as the platform with A1's `PlatformFolderWriter.stage()`, in the same attempt as the
      create (open intents are GC roots; restaging an object already present costs nothing), then calls
      `qorpera_folder_company_create` once (§3).
-   - Retryable refusals and errors (§3 step 6) release the lease with a back-off. A paused or deleting company
-     (`55000`) is a back-off too, not a failure.
+   - The create function sorts its own refusals (§3, "Every unit saved, or nothing"). Any error the worker gets back
+     releases the lease with a back-off; a paused or deleting company (`55000`) is a back-off, not a failure.
+   - The worker's own failures: a seed tree the parser refuses (`RangeError` from `companyStateSeedTree`) or a
+     staging refusal (`stage_invalid`) is final, `qorpera_folder_company_creation_fail(creation, token, code)`;
+     `stage_incomplete` and any code not listed are retried with a growing back-off (to an hour between tries), and
+     the attempts are counted on the row for the operator. There is no attempt limit.
 4. **Ready** (`qorpera_folder_company_ready(profile)`) is `state = 'completed'`: a plain `stable` read.
 
 ## 3. The creation transaction (`qorpera_folder_company_create`, service role)
@@ -123,8 +131,9 @@ One transaction, numbered with the core's steps (core §3):
   null), and `vision_seeded` is true.
 - **Steps 4 to 8: the commit's own order.**
   - Rank 0: the company row `KEY SHARE`.
-  - Rank 1: every member row `KEY SHARE`. The hook names them for an agent with no thread yet. This is where a leave
-    or a role change meets a running creation.
+  - Rank 1: every member row `KEY SHARE`. The hook names them for an agent with no thread yet. Joins, leaves and
+    role changes have already met the creation at the fence; only an account deletion (which cascades with no
+    prelude) meets it here.
   - Rank 2: the new staff row; then paths and objects.
   - Apply: the staff row, its thread room, session and room members (the staff-insert triggers, as for a hire), the
     operation clock, then the first run (below). Todos are indexed after the agent within the unit, so the first
@@ -159,21 +168,24 @@ One transaction, numbered with the core's steps (core §3):
 - **After the clock:** the creation row becomes `state = 'completed'`, with the commit id, and the input is nulled
   (the files now hold the vision and the roles). This row is already held, so no new lock is taken.
 
-**Every unit saved, or nothing.**
-- The commit returns normally even when it saves nothing (`seq` null). So the creation checks for a `seq`, one
-  outcome per unit sent, and every outcome `saved`. Otherwise it raises `QFC01`, with the commit's outcomes in the
-  error's DETAIL, and the whole transaction rolls back: no half-seeded company.
-- The worker reads the outcomes:
-  - **Retryable** (release, back off, restage): `bytes_unverified` (a deleting object: "the writer redoes its call
-    once GC has finished", core §8 G3); errors `QRC01`, `55000`, `55P03` and `40P01`.
-  - **Final** (`qorpera_folder_company_creation_fail(creation, token, outcomes)`, which keeps the outcomes and the
-    input): a parse, schema or 5.6 refusal; an unexpected `conflict`; and defects (`22023`, `XX000`).
+**Every unit saved, or nothing.** The gateway never reads an error's body (`member-company-authority.ts:118-125`),
+so the create function sorts the outcome itself and answers `completed`, `failed` or `retry`:
+- The commit runs inside one exception block (one subtransaction; the creation row and the fence are taken before it
+  and stay held). The commit returns normally even when it saves nothing (`seq` null), so the block checks for a
+  `seq`, one outcome per unit sent and every outcome `saved`; otherwise it raises `QFC01`, which the block catches.
+  Everything the commit wrote rolls back: no half-seeded company.
+- **Retryable** (`retry`: the row stays `leased` until the worker releases it, and the next attempt restages): a
+  `bytes_unverified` outcome (a deleting object: "the writer redoes its call once GC has finished", core §8 G3).
+- **Final** (`failed`: the row keeps the outcomes and the input): a parse, schema or 5.6 refusal, and an unexpected
+  `conflict`.
+- Errors the block does not catch (`QRC01`, `55000`, `55P03`, `40P01`, and defects such as `22023` or `XX000`) roll the
+  whole transaction back; the worker backs off and tries again, and a defect then shows in the attempt count.
 
 **What founders see.**
 - `qorpera_folder_company_ready` stays false, and the lobby's view gains `start.companySetup`: `pending`, `ready` or
   `failed`. A web follow-up shows "Setup failed; we are looking at it" for `failed`.
 - The operator requeues (`qorpera_folder_company_creation_requeue(creation, reason)`, owner role only) after fixing
-  the cause.
+  the cause. It accepts only a `failed` creation, and refuses a company being deleted.
 - Departure and delete are allowed while a creation is `failed`.
 
 **No wake row at creation** (the coordinator, 3 October).
@@ -228,9 +240,11 @@ One transaction, numbered with the core's steps (core §3):
   - `qorpera_folder_company_create` refuses a company with a bootstrap job or a Co-Founder;
   - Open never runs the old chain.
 - **Other platform writers** (P22's connection files) skip a company whose creation is not `completed`. Otherwise
-  the creation's `mkdir connections` meets a `conflict`.
-- **The rollout packet** blocks a cut while bootstrap jobs are queued or leased (`sql-packet.mjs:92`). Creations
-  join that check.
+  the creation's `mkdir connections` meets a `conflict`. P14a adds the skip to P22a's claim
+  (`qorpera_claim_connection_file`, #727) by an exact anchor with the body marker, if #727 is on master first;
+  otherwise A1 adds it in #727 (agreed with A1).
+- **The rollout packet** blocks a cut while bootstrap jobs are queued or leased (`sql-packet.mjs:92`). P14a adds
+  creations to that check.
 
 ## 5. The worker (TS, `packages/object-gateway`, P14b)
 
@@ -254,13 +268,15 @@ One transaction, numbered with the core's steps (core §3):
 Two functions, like the lobby. Both are revoked from every API role; the coordinator's P38 lane calls them as the
 owner role:
 - **`qorpera_folder_company_operator_open(owner_user_id, client_creation_id, name, reason)`:** Open for that
-  account. The owner's email must be confirmed. It records the operator's reason in the creation request.
+  account. The owner's email must be confirmed. The reason is kept for `operator_start`, which stores it on the
+  creation row.
 - **`qorpera_folder_company_operator_start(profile, vision, reason)`:**
   - It checks the owner has a usable model login, as the lobby's Start requires of every founder. So a proof
     company's first run is paid, once Vault By Default has registered the company and the owner has connected a
     login.
-  - Then it records the creation with `founders = [the owner]` and `kickoff_user_id = owner`, with the same first
-    todo as the lobby's. The same worker seeds it.
+  - Then it records the creation through seed's own checks, with `founders = [the owner]`, `kickoff_user_id =
+    owner`, the operator's reason on the creation row, and the same first todo as the lobby's. The same worker seeds
+    it.
 
 **Gate:** not before the audit's list "before any `folder-v2` company exists" (P02 #705, P01, F1's six #613
 follow-ups, P03) and P13.
@@ -319,14 +335,15 @@ reversal test (as #705's 817 §1):
     - hiding and ready; the guards; the operator functions (member and anon callers refused, the reason kept).
     - **Exactly one under a creation retry and under two racing Starts:** one creation row, one
       `qorpera_agent_first_runs` row, one kickoff.
-    - Races: a join against a creation (the join waits, then is in the thread); a leave against a creation (they
-      meet at the member row); a company delete during a creation, with the deletion path named (the gc fence before
-      P08, the fence drain after).
+    - Races: a join against a creation, in both orders (the second waits at the fence; the joiner ends in the
+      thread); a leave against a creation (they meet at the fence); a company delete during a creation, with the
+      deletion path named: before P08 the creation may still finish on a company being deleted (harmless: it stays
+      hidden and is purged); after P08 the fence drain stops it.
   - P14a waits for #705 (P02): Start's real-seed tests need its prelude.
-- **P14b, the worker** (TS, object gateway), on A1's P22b module, after P14a.
+- **P14b, the worker** (TS, object gateway), on A1's P22b module (#730), after P14a and #730.
 - **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
-  P16 lands before the proof company (P38), so no `folder-v2` company exists without them. P16 also redeploys the
-  gateway.
+  P16 lands before the proof company (P38), so no `folder-v2` company exists without them; the coordinator records
+  that dependency in the audit. P16 also redeploys the gateway.
 
 **Hand-overs:**
 - **P15:** the Co-Founder's root grant comes from the staff-insert trigger, outside the authority journal. When P15
