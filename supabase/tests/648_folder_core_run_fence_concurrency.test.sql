@@ -325,48 +325,27 @@ begin
 		lease_expires_at = clock_timestamp() + interval '1 hour' where id = '64800000-0000-4000-8000-0000000000f2';
 end $$;
 
--- C. A job lease renewal is not starved by the run's tool calls. While a tool call is in flight, the next one waits at
--- the mutex, never beside it at the job, so the renewal waits for the call in flight. When that call commits, the
--- renewal and the next call race for the job row: the renewal usually wins (it only re-reads the row), and at worst it
--- waits for that one call. It never waits for anything else.
+-- C. A job lease renewal is never starved by the run's tool calls (P23, migration 20260930002200): it takes the job FOR NO
+-- KEY UPDATE, which a tool call's KEY SHARE does not block, so it runs beside the call in flight. A second tool call
+-- waits at the mutex, never beside the first at the job.
 do $$
-declare v_state text; v_blockers integer[]; v_three_done boolean := false; v_until timestamptz;
-	c_two constant integer := current_setting('qorpera_test.pid_fence_two')::integer;
-	c_three constant integer := current_setting('qorpera_test.pid_fence_three')::integer;
+declare v_state text;
 begin
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', pg_temp.sql_tool()) as t(x text);
 	perform dblink_send_query('fence_two', pg_temp.sql_renew());
-	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The renewal must wait for the tool call in flight'; end if;
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'The renewal must not wait for the tool call in flight'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'The renewal: %', v_state; end if;
 	perform dblink_exec('fence_three', 'begin');
 	perform dblink_send_query('fence_three', pg_temp.sql_tool());
 	if not pg_temp.waits_for('fence_three', 'fence_one') then raise exception 'The second tool call must wait for the first'; end if;
 	if pg_temp.queued_on('fence_three') is distinct from 'public.qorpera_execution_run_budgets'::regclass then
 		raise exception 'The second tool call must wait at the mutex, not beside the first at the job'; end if;
 	perform dblink_exec('fence_one', 'commit');
-	v_until := clock_timestamp() + interval '60 seconds';
-	loop
-		exit when dblink_is_busy('fence_two') = 0;
-		v_blockers := pg_blocking_pids(c_two);
-		if exists (select 1 from unnest(v_blockers) b where b <> c_three) then
-			raise exception 'The renewal must wait for nothing but the tool calls of its run (blocked by %)', v_blockers; end if;
-		-- The second call won the job row: it holds it until it commits, and then the renewal goes.
-		if not v_three_done and c_three = any (v_blockers) and dblink_is_busy('fence_three') = 0 then
-			v_state := pg_temp.outcome('fence_three');
-			if v_state <> 'ok' then raise exception 'The second tool call: %', v_state; end if;
-			perform dblink_exec('fence_three', 'commit');
-			v_three_done := true;
-		end if;
-		if clock_timestamp() > v_until then raise exception 'The renewal did not finish'; end if;
-		perform pg_sleep(0.02);
-	end loop;
-	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' then raise exception 'The renewal: %', v_state; end if;
-	if not v_three_done then
-		v_state := pg_temp.outcome('fence_three');
-		if v_state <> 'ok' then raise exception 'The second tool call after the renewal: %', v_state; end if;
-		perform dblink_exec('fence_three', 'commit');
-	end if;
+	v_state := pg_temp.outcome('fence_three');
+	if v_state <> 'ok' then raise exception 'The second tool call: %', v_state; end if;
+	perform dblink_exec('fence_three', 'commit');
 end $$;
 
 -- D. The stop: a tool call waiting at the mutex when the stop comes refuses; the drain waits for the tool call in
