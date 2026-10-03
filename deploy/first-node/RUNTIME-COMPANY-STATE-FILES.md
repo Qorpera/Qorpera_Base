@@ -1918,11 +1918,11 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
 **PRs, in this order** (each with an exact-head review and node 2 `changed`):
 - **F2-5b-1, the parser** (`packages/cloud-client`, no SQL): the sections, the parses, the writers with
   their refusals, `appendWorkerFollowUp`, the key rule. Live on every writer before F2-5b-2.
-- **F2-5b-2, the database** (migration 20260930NNNNNN): the hook (shape, rules, guard, index, locks), the
+- **F2-5b-2, the database** (migration 20260930003000, SQL tests 840 and 841): the hook (shape, rules, guard, index, locks), the
   entry, cancel, status, the authority exception, the new columns, R1's tool, the native-host list. Body
   markers in every patched function, anchored on today's text (H2b's included). New functions for the
   `folder-v2` payloads; the shared payload functions and the legacy drain stay untouched.
-- **F2-5b-3, the drain** (its own migration): §6.
+- **F2-5b-3, the drain** (migration 20260930003100, SQL tests 842 and 843): §6.
 - **F2-5b-4, the runtime** (TS): §7.
 
 Tests: every action's rules and refusals; a worker-file unit with no request (a member, the model's file
