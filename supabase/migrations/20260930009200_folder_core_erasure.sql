@@ -172,7 +172,7 @@ language sql stable security definer set search_path = '' as $$
 			and public.qorpera_folder_erasure_before(roots.r, m.seq, m.unit_no))
 $$;
 
--- Text with every needle that applies blanked: '' when any needle occurs in it.
+-- Whether any of the needles occurs in a text.
 create function public.qorpera_folder_erasure_hit(p_text text, p_needles text[])
 returns boolean language sql immutable set search_path = '' as $$
 	select p_text is not null and exists (select 1 from unnest(p_needles) n where strpos(p_text, n) > 0)

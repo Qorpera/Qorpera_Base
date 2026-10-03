@@ -1,6 +1,6 @@
 # Company folder core: erasure (slice P18)
 
-Status: design, for review (round 5). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
+Status: design ratified 3 October 2026 (#732, §8's decisions as proposed); P18a built (§10); P18b to come. Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
 F2 on 3 October 2026). Rules: contract 5.6 ("Permanent erasure"), 14.1 (an agent's permanent deletion), the
 2026-10-02 amendment "work for people" item 3, core §8 ("Erasure"), C1D §9.4 (when a root ends). Evidence:
 `~/work/qorpera-folder-core-tools/reports/P18-erasure-inventory.md` (every column, reader and lock erasure meets) and
@@ -300,3 +300,28 @@ delete is refused in practice by older links the structured-file hook writes (20
 - Races (dblink): the request against a commit creating under a root, against a commit deleting a file under it, and
   against the vault writing a connection file at a root;
   the drain against folder GC's claim and finish; the drain against the company purge (core §8's erasure race).
+
+## 10. Built (P18a, migration 20260930009200, tests 883 and 884)
+
+- **The request** `qorpera_folder_erase(environment, actor, paths, operation_key)` follows §3 step by step. It refuses
+  `agents/`, `rules/` and `tables/` (0A000) until P18b. A history that runs on at other paths is refused with 22023
+  and a detail `{add, live}`: the topmost paths to add (at most 20), and any live file the history moved into. The
+  reply is `qorpera.folder-erasure/v1`: `erasureId`, `asOfSeq`, each root's count of versions, and up to 20 `copies`.
+- **The drain** `qorpera_folder_erasure_step(p_versions 1000, p_commits 1000, p_hashes 2000)` does one step of one
+  erasure per call, in the phases of §4.3. An erasure left only with live runs or bytes GC cannot take yet is
+  `waiting` and is looked at again an hour later. A `done` erasure keeps its counts and no path: its roots, needles and
+  request digest go, and its stored reply loses `roots` and `copies` (a replay answers that).
+  `qorpera_schedule_folder_erasure()` asks pg_cron for the 5-second job and its daily log cleanup; with no pg_cron
+  (1.5 or later) the migration still applies, and says so.
+- **Status** `qorpera_folder_erasure_status(environment, actor, erasure_id)` answers owners and admins.
+- **Inert** until the member route (C4) calls the request: nothing makes an erasure before that.
+- **Tests:** 883 (refusals; a deleted contact with its index row, change sets and bytes; lives at a path; histories
+  through moves, a moved folder included; the units scrub, a stem alone never blanking; status, grants and the lock
+  text; path permissions; a company being deleted; connection rows; copies; the step's bound) and 884 (dblink: a
+  request waits for a commit holding its root and keeps the life it made; a commit creating a held root waits for the
+  request and is a new life the drain keeps; the drain skips a company its purge holds without waiting; receipts and
+  reviewed cards scrubbed only once the run has ended and the card is answered).
+- **§9 cases with no test yet:** the QRC01 re-read (a contact or task row retired between the request's first read and
+  its path locks), the vault writing a connection file at a root during a request, and the drain against folder GC's
+  claim and finish. They are left for a follow-up (the first needs a committed fixture with contacts, which 884's
+  fixture lacks).
