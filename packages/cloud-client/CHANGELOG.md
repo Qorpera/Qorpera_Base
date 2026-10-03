@@ -85,6 +85,7 @@
 
 ### Changed
 
+- `parseTableFile` reads a choice as the folder hook checks it (RUNTIME-INTERFACES.md §6.1 rule 1; F2's P16a): 1–60 code points rather than UTF-16 units, and a choice holding a direction character (U+202A–U+202E, U+2066–U+2069) or a broken character is refused. Before, such a `table.toml` passed the client and was refused at commit.
 - The worker brief and results parses (`WorkerBriefFile`, `WorkerResultsFile`) give their body's sections (F2-5b-1) in place of the whole body: `brief` and `report` are gone. Nothing wrote or read them yet.
 - `CloudRunnerJob.substrateVersionId` is optional: a folder-v2 run has no Company File substrate (folder core C3, P23).
 - `cloudAgentFolder(companyId, staffAgentId, place?)` takes where the company keeps its agents' folders (`CloudAgentFolderPlace`): `agents/<staffAgentId>` for a snapshot-v1 company (`CLOUD_AGENT_FOLDER_BY_ID`, the default) and `agents/<handle>` for a folder-v2 company, the handle checked against the company folder's naming rule. `isCloudAgentFolder(path)` tells such a folder from other paths.

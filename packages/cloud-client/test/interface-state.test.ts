@@ -93,6 +93,19 @@ describe("rows typed against their definition, as the save check's port must typ
 		expect(fits.problems).toEqual([]);
 	});
 
+	it("reads a choice as the folder hook does: 1–60 code points, one line, no direction character", () => {
+		const choices = (list: string) => {
+			const parsed = parseTableFile(TYPES_TABLE.replace('choices = ["open", "done"]', `choices = [${list}]`));
+			return parsed.ok ? [] : parsed.problems.map((p) => `${p.code}:${p.key}`);
+		};
+		expect(choices(`"${"😀".repeat(60)}"`)).toEqual([]);
+		expect(choices(`"${"😀".repeat(61)}"`)).not.toEqual([]);
+		expect(choices('"open\u202e"')).not.toEqual([]);
+		expect(choices('"open\u2066x\u2069"')).not.toEqual([]);
+		expect(choices('"open\u2028"')).not.toEqual([]);
+		expect(choices('"a, b"')).not.toEqual([]);
+	});
+
 	it("refuses a number as a key column, which keys differently in JS and SQL", () => {
 		for (const type of ["number", "money", "percent"]) {
 			const text = TYPES_TABLE.replace('key = ["name", "at"]', 'key = ["name", "count"]').replace(
