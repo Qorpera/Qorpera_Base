@@ -562,8 +562,8 @@ conversation `FOR UPDATE` before the review row, because the review row's foreig
 ### 5.8 Moved to C3 and C4, and what stays closed
 
 - The runner broker's describe and input-object checks. Their legacy bodies read the substrate and company snapshot,
-  and the runner accepts only the two legacy runtimes (`cloud-runner-broker.ts:1042`). C1c-1's refusals stay until C3
-  gives `folder-v2` runs their substrate model.
+  and the runner accepted only the two legacy runtimes. C3 gives `folder-v2` runs their model (§5.10, P23). The
+  input-object check keeps C1c-1's refusal: a `folder-v2` run has no input objects (images refuse since 3a).
 - `companySeq` pins on runs and wakes (C4's schema).
 - Renewal's move to `FOR NO KEY UPDATE`: done in C3's first part (P23, migration 20260930002200, test 825; 648 C).
   - On `folder-v2`, `qorpera_renew_runner_job` takes the job `FOR NO KEY UPDATE`, and so does the native lease renewal.
@@ -665,6 +665,32 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   A and B for a send and a release in flight, 659 C for a tool call during completion; a `folder-v2` job never
   reaches `before_path_runtime`, shown by its `company_file.runtime`), plus the handoff (658 §7) and recovery (658
   §6).
+
+### 5.10 C3: the runner broker's model of a `folder-v2` run (P23, migration 20260930002210, test 829)
+
+- **The description.** The broker describes a `folder-v2` run in the path lane's shape (`company_runtime:
+  'company-path-v1'`: the runtime does not name the core, §5.6) with no substrate anywhere: no version, snapshot,
+  proposal snapshot, artifact index or Company File output limits, and null substrate and snapshot ids on the job and
+  the run. `qorpera_folder_runner_broker_describe` keeps the legacy body's checks that still apply: the run is the
+  job's, the sponsor and the connection are active and the company's, the assignment is accepted. A proposal review
+  needs a proposal snapshot and refuses (0A000).
+- **No fall-through to the whole-tree lane.** The runtime's parsers accept the absence only as the path lane's, with
+  version, snapshot and output limits absent together and no substrate named on the job or the run. Every reader of a
+  substrate refuses ("This run has no Company File substrate"): resolve, operations, the output and Company File
+  publishers, revisions, and the whole-tree runner itself. The broker names the job's company. An older runner refuses
+  such a description at its Company File output limits, before it reads anything else.
+- **Lists.** `list_operations` and `list_artifacts` refuse `folder-v2` with 0A000, where a null substrate gave P0002,
+  so the reason is named. Over HTTP nothing changes: the broker maps both to 503, which the runner retries for 360 s
+  (so does a proposal review's refusal). No runner asks: this runtime refuses before it calls, and an older one
+  refuses the description first.
+- **Completion needs no change.** The folder lane writes the runner's client substrate id (a deterministic id per job,
+  never null) into the results row, never the job's. A result naming no substrate passes its check against a job with
+  none, since null is not distinct from null. So a run with no substrate completes once P28 lets one exist (829 shows
+  the round trip with today's job).
+- **The gate.** Nothing reaches this lane before P28: jobs and runs still require both ids, and the materializer skips
+  `folder-v2`. P28's switch-on requires every host to run parsers that read it: the runner orchestrator, the LXD
+  providers and the shared execution guests (#709's list), and the runtime and cloud-client builds of this PR.
+- **Wakes.** A wake's `pins.companySnapshotId` may be null; C4's `companySeq` replaces it.
 
 ## 6. C1c-3: the remaining company-row locks and the activation checks
 

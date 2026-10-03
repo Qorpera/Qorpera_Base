@@ -202,7 +202,9 @@ export interface CloudWakeEnvelope {
 	readonly policy: CloudWakePolicy;
 	readonly time: Readonly<{ utc: string; local: string; timeZone: string }>;
 	readonly pins: Readonly<{
-		companySnapshotId: string;
+		/** Null for a folder-v2 run, which pins no Company File snapshot (folder core C3, P23; C4's companySeq
+		 * follows). */
+		companySnapshotId: string | null;
 		staffVersion: number;
 		wakeSchema: typeof CLOUD_WAKE_SCHEMA;
 		runtimeBundleVersion: null;
@@ -302,7 +304,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 	const actorUserId = nullableUuid(wake.actorUserId);
 	const parentRunId = nullableUuid(wake.parentRunId);
 	uuid(source.id);
-	uuid(pins.companySnapshotId);
+	nullableUuid(pins.companySnapshotId);
 	uuid(causal.rootId);
 	// Messages coworkers left for this agent with priority false since it last
 	// ran ride on any wake as data; the per-kind payload rules see the rest.
