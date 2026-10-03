@@ -132,6 +132,7 @@ export type InterfaceProblemCode =
 	| "unknown_column"
 	| "unknown_button"
 	| "unknown_target"
+	| "outside_value"
 	| "row"
 	| "claim";
 
@@ -772,6 +773,29 @@ function readQuery(reader: Reader, bag: Bag, path: string): InterfaceQuery {
 	return { where, since, order, limit, latestBy };
 }
 
+/** The columns of each source that carry outside content (RUNTIME-INTERFACES.md §4; contract 11.1), apart from a
+ * `file:` source's text under `hooks/` or `human-tasks/`, which `interfaceOutsideColumns` adds. */
+export const INTERFACE_OUTSIDE_COLUMNS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+	mail: Object.freeze(["from_name", "from_address", "subject"]),
+});
+
+/** The sources whose outside values can travel as a quote (the contract's closed quote list: the 2026-10-02
+ * amendment "quoted outside content in a member's message", item 1). */
+export const INTERFACE_QUOTE_SOURCES: readonly string[] = Object.freeze(["mail"]);
+
+/** At most this many outside values in one message button's text (RUNTIME-INTERFACES.md §3.3). */
+export const INTERFACE_OUTSIDE_VALUES_MAX = 16;
+
+/** The columns of a source that carry outside content. A `file:` source's text is outside content under `hooks/`
+ * (saved events) or `human-tasks/` (what a contact sent back), found by folder key as the folder finds files. */
+export function interfaceOutsideColumns(source: string): readonly string[] {
+	if (source.startsWith("file:")) {
+		const key = companyPathKey(source.slice("file:".length));
+		return key.startsWith("hooks/") || key.startsWith("human-tasks/") ? ["text"] : [];
+	}
+	return INTERFACE_OUTSIDE_COLUMNS[source] ?? [];
+}
+
 /** The `{column}` names a text uses; null when its braces are malformed. */
 export function interfaceTemplateColumns(text: string): string[] | null {
 	const out: string[] = [];
@@ -945,6 +969,29 @@ export function parseInterfaceFile(text: string): InterfaceParseResult<Interface
 			for (const id of block.buttons) {
 				if (!buttonIds.has(id) && !(INTERFACE_BUILT_IN_BUTTONS as readonly string[]).includes(id)) {
 					reader.add(`${path}.buttons`, "unknown_button", `No button has the id "${clip(id)}".`);
+				}
+			}
+			// A message button fills its text from the block's rows. A value from outside content must travel as a
+			// quote, which only the quote list's sources can do, and at most 16 of them (RUNTIME-INTERFACES.md §3.3).
+			const source = block.from.length === 1 ? (block.from[0] ?? "") : "";
+			const outside = interfaceOutsideColumns(source);
+			if (outside.length > 0) {
+				for (const id of block.buttons) {
+					const button = buttons.find((candidate) => candidate.id === id);
+					if (button?.verb !== "message" || button.text === null) continue;
+					const named = (interfaceTemplateColumns(button.text) ?? []).filter((column) => outside.includes(column));
+					if (named.length > 0 && !INTERFACE_QUOTE_SOURCES.includes(source))
+						reader.add(
+							`${path}.buttons`,
+							"outside_value",
+							`The button "${clip(id)}" fills in ${clip(source)}'s outside content, which can't travel as a quote.`,
+						);
+					else if (named.length > INTERFACE_OUTSIDE_VALUES_MAX)
+						reader.add(
+							`${path}.buttons`,
+							"outside_value",
+							`The button "${clip(id)}" fills in more than ${INTERFACE_OUTSIDE_VALUES_MAX} values from outside content.`,
+						);
 				}
 			}
 			const opens = [block.opens, ...block.parts.map((part) => part.opens)].filter(

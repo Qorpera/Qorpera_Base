@@ -28,6 +28,7 @@ import {
 	INTERFACE_SOURCE_COLUMNS,
 	type InterfaceProblem,
 	interfaceInstant,
+	interfaceOutsideColumns,
 	interfacePathProblems,
 	interfaceStatePath,
 	interfaceTemplateColumns,
@@ -298,6 +299,59 @@ to = "someone"
 		expect(interfaceTemplateColumns("Ask {kept_by} about {number}")).toEqual(["kept_by", "number"]);
 		expect(interfaceTemplateColumns("no braces")).toEqual([]);
 		for (const bad of ["{x", "x}", "{X}", "{}", "{a b}", "}{a}"]) expect(interfaceTemplateColumns(bad)).toBeNull();
+	});
+});
+
+describe("values from outside content in a message button", () => {
+	const withButton = (from: string, text: string, verb = "message") => `format = "qorpera.interface/v0"
+
+[interface]
+id = "5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21"
+name = "Outside"
+
+[[view]]
+name = "Now"
+
+[[view.block]]
+kind = "list"
+from = "${from}"
+line = "${from === "mail" ? "{subject}" : "{text}"}"
+buttons = ["ask"]
+
+[[button]]
+id = "ask"
+verb = "${verb}"
+label = "Ask"
+${verb === "message" ? 'to = "co-founder"\n' : 'target = "interface:pulse"\n'}text = ${JSON.stringify(text)}
+`;
+	const problems = (from: string, text: string, verb?: string) =>
+		codes(parseInterfaceFile(withButton(from, text, verb)).problems);
+
+	it("refuses a saved event's or a contact's text, which can't travel as a quote, by folder key", () => {
+		for (const from of [
+			"file:hooks/stripe/2026-10/evt_1.md",
+			"file:Hooks/stripe/evt_1.md",
+			"file:ｈｏｏｋｓ/stripe/evt_1.md",
+			"file:human-tasks/sign-lease/reply.md",
+		])
+			expect(problems(from, "Please file this: {text}")).toEqual(["outside_value"]);
+		expect(interfaceOutsideColumns("file:HUMAN-TASKS/x/reply.md")).toEqual(["text"]);
+	});
+
+	it("lets the company's own files and the quote list's sources through", () => {
+		expect(problems("file:docs/plan.md", "About {text}")).toEqual([]);
+		expect(problems("mail", 'About "{subject}" from {from_name}')).toEqual([]);
+		expect(problems("file:hooks/stripe/evt_1.md", "Have a look at the event, please")).toEqual([]);
+	});
+
+	it("refuses more than 16 outside values in one button", () => {
+		expect(problems("mail", "{subject} ".repeat(16))).toEqual([]);
+		expect(problems("mail", "{subject} ".repeat(17))).toEqual(["outside_value"]);
+	});
+
+	it("keeps the library's Mailbox valid", () => {
+		const mailbox = INTERFACE_LIBRARY.find((entry) => entry.name === "mailbox");
+		expect(mailbox && parseInterfaceFile(mailbox.interface).ok).toBe(true);
 	});
 });
 
