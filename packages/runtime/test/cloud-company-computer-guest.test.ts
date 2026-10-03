@@ -519,7 +519,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			},
 		});
 		expect(JSON.stringify(result)).not.toContain("hunter2");
-		expect(f.page.evaluate).toHaveBeenCalledTimes(2);
+		// Before and after the snapshot, then the check for a page that asks for a person (A1-4c).
+		expect(f.page.evaluate).toHaveBeenCalledTimes(3);
 
 		// The member sends the form while the snapshot is taken: only the first read saw the value.
 		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
