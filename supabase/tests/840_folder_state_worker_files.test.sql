@@ -426,7 +426,7 @@ begin
 	-- A finished worker's folder goes, and retires its row; a restore brings it back whole, finished, with the same bytes.
 	w := pg_temp.worker_row(f);
 	r := pg_temp.commit(m, 'f2b-guard-0006', jsonb_build_array(jsonb_build_object('op','delete','path',f,
-		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'))));
+		'expectedVersion',pg_temp.f2_version(f),'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020'))));
 	perform pg_temp.expect(r, 1, 'saved');
 	if (select folder_retired_at from public.qorpera_runtime_workers where id = w.id) is null then raise exception 'Not retired'; end if;
 	-- A folder alone, the brief alone, or other bytes: refused.
