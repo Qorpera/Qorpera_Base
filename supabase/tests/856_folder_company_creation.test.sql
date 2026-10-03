@@ -796,7 +796,7 @@ begin
 end $$;
 
 -- 7. Snapshot-v1 (and P22a's claim) keep their text: each body with its patch reversed is the definition before this
--- migration -----------
+-- migration (structured_apply's as F2-5b-2, 20260930003000, which sorts before it, leaves it) -----------
 
 do $$
 declare v_case record; v_definition text;
@@ -812,7 +812,7 @@ $n$,
 			$o$				perform public.qorpera_company_state_index_agent(p_environment_id, v_profile, p_commit_id, v_user, v_file.path,
 					v_version, v_entry -> 'parse', v_actor);
 $o$,
-			'9bbc1e5e8784ac576bdd90bbe0b1d03b'),
+			'2c3412290af3c199d5b07f3f3d27eb50'),
 		('public.qorpera_list_hosted_profiles()',
 			$n$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
 		-- 20260930010000 (P14a): a folder-v2 company shows once its creation is completed.

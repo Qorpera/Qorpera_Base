@@ -2,6 +2,7 @@
 // it refuses, and when it starts the orchestrator (rolling updates, step 3). Nothing reaches LXD or a database.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,7 +22,14 @@ case "$1" in
 	image) exit 0;;
 	query) echo '{"status":"Running","config":{},"devices":{"identity-1":{}}}'; exit 0;;
 	stop|rebuild|start) exit 0;;
-	file) exit 0;;
+	file)
+		# The host's own credential: kept, to check that only its hash went to the database.
+		args=("$@")
+		if [[ \${args[$#-1]} == */qorpera-execution-host ]]; then
+			cp "\${args[$#-2]}" "$S/pushed-host-credential"
+			echo "\${args[$#-2]}" > "$S/pushed-host-credential-source"
+		fi
+		exit 0;;
 	exec)
 		while [[ $1 != "--" ]]; do shift; done; shift
 		cmd="$*"
@@ -45,13 +53,18 @@ case "$1" in
 esac
 `;
 const CURL = `#!/usr/bin/env bash
-cat > /dev/null
+body=$(cat)
+printf '%s\n' "$@" >> "$STUB_STATE/curl-args"
 for arg in "$@"; do
 	case "$arg" in */rpc/*) echo "curl \${arg##*/rpc/}" >> "$STUB_STATE/log";; esac
 done
 for arg in "$@"; do
 	case "$arg" in
 		*qorpera_register_runner_orchestrator) echo '{"status":"active"}'; exit 0;;
+		*qorpera_bind_execution_host_credential)
+			printf '%s' "$body" > "$STUB_STATE/bind-body"
+			if [[ -n \${STUB_BIND_REFUSED:-} ]]; then echo '{"code":"42501"}'; else echo '{"hostId":"qorpera-exec-node02","providerAdapter":"native-b","orchestratorId":"o"}'; fi
+			exit 0;;
 		*qorpera_declare_runner_orchestrator_bundle) echo '{"runtimeBundleSha256":"'"\${STUB_BUNDLE}"'"}'; exit 0;;
 	esac
 done
@@ -77,7 +90,7 @@ function setup({ runners = "", hosts = "", journals = "" } = {}) {
 	for (const file of ["qorpera-shared-execution-service.mjs", "install-shared-execution-guest.sh", "manifest.json"]) writeFileSync(join(pkg, file), "");
 	writeFileSync(
 		join(staging, "shared-execution.env"),
-		"QORPERA_SHARED_EXECUTION_SLOTS=2\nQORPERA_SUPABASE_URL=https://db.example\nQORPERA_RUNNER_PROVIDER_ADAPTER=native-b\nQORPERA_NATIVE_CODEX_FENCE_SHA256=0\n",
+		"QORPERA_SHARED_EXECUTION_SLOTS=2\nQORPERA_SHARED_EXECUTION_HOST_ID=qorpera-exec-node02\nQORPERA_SUPABASE_URL=https://db.example\nQORPERA_RUNNER_PROVIDER_ADAPTER=native-b\nQORPERA_NATIVE_CODEX_FENCE_SHA256=0\n",
 	);
 	writeFileSync(join(staging, "runner-orchestrator.env"), "QORPERA_RUNNER_ORCHESTRATOR_ID=o\nQORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=t\n");
 	for (const file of ["qorpera-runner-provider", "qorpera-supabase-service-key"]) writeFileSync(join(staging, "credentials", file), "x");
@@ -213,6 +226,57 @@ test("the flags take 1 or nothing, and a new host never starts its orchestrator"
 	}
 	const create = readFileSync(join(root, "deploy/shared-execution/create-exec-host.sh"), "utf8");
 	assert.match(create, /^unset .*\bEXEC_CLEAR_PARKED\b.*\bEXEC_START_ORCHESTRATOR\b/m, "create-exec-host.sh never passes the flags on");
+});
+
+test("every rebuild mints the host's own credential, binds only its hash, and pushes it into the host (G2-3e)", { skip: linux === true ? false : linux }, () => {
+	let fixture = setup();
+	try {
+		const result = rebuild(fixture);
+		assert.equal(result.status, 0, result.stderr);
+		const credential = readFileSync(join(fixture.state, "pushed-host-credential"), "utf8");
+		assert.match(credential, /^[A-Za-z0-9_-]{43}$/);
+		const sha256 = createHash("sha256").update(credential).digest("hex");
+		assert.deepEqual(JSON.parse(readFileSync(join(fixture.state, "bind-body"), "utf8")), {
+			p_host_id: "qorpera-exec-node02",
+			p_provider_adapter: "native-b",
+			p_orchestrator_id: "o",
+			p_credential_sha256: sha256,
+		});
+		// The plaintext reaches the host's file only: never the database, a command line or the output.
+		for (const text of [
+			result.stdout,
+			result.stderr,
+			result.log,
+			readFileSync(join(fixture.state, "bind-body"), "utf8"),
+			readFileSync(join(fixture.state, "curl-args"), "utf8"),
+		])
+			assert.ok(!text.includes(credential));
+		// Its private temporary directory is gone, and the host has its credential before the service starts.
+		assert.ok(!existsSync(readFileSync(join(fixture.state, "pushed-host-credential-source"), "utf8").trim()));
+		assert.match(result.stdout, new RegExp(`The host credential is bound \\(sha256 ${sha256}\\)`));
+		const order = [
+			"curl qorpera_register_runner_orchestrator",
+			"curl qorpera_bind_execution_host_credential",
+			"qorpera-execution-host",
+			"systemctl enable --now qorpera-shared-execution.service",
+		].map(
+			(line) => result.log.indexOf(line),
+		);
+		assert.ok(order.every((at, index) => at >= 0 && (index === 0 || order[index - 1] < at)), result.log);
+		assert.ok(!existsSync(join(fixture.staging, "credentials", "qorpera-execution-host")), "never staged");
+	} finally {
+		rmSync(fixture.dir, { recursive: true, force: true });
+	}
+	fixture = setup();
+	try {
+		const result = rebuild(fixture, { STUB_BIND_REFUSED: "1" });
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /Binding the host credential failed/);
+		assert.ok(!existsSync(join(fixture.state, "pushed-host-credential")), "nothing pushed");
+		assert.doesNotMatch(result.log, /systemctl enable --now qorpera-shared-execution.service/);
+	} finally {
+		rmSync(fixture.dir, { recursive: true, force: true });
+	}
 });
 
 test("the script still parses", () => {
