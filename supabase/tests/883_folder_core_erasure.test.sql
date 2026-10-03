@@ -48,6 +48,17 @@ begin
 	end;
 	raise exception 'Expected a refusal: %', p_sql;
 end $$;
+-- The message a statement fails with ('ok' when it does not), its changes undone.
+create function pg_temp.message(p_sql text) returns text language plpgsql as $$
+declare v_message text;
+begin
+	begin
+		execute p_sql;
+		raise exception using errcode = 'P0883';
+	exception when sqlstate 'P0883' then return 'ok';
+	when others then get stacked diagnostics v_message = message_text; return v_message;
+	end;
+end $$;
 create function pg_temp.mv(p_from text, p_to text) returns jsonb language sql as $$
 	select jsonb_build_object('op','move','from',p_from,'to',p_to,'expectedVersion',pg_temp.version(public.qorpera_folder_key(p_from)),
 		'asOfSeq',pg_temp.seq())
@@ -68,12 +79,15 @@ begin
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['agents/nora'], 'erase-0004')$q$), '0A000',
 		'agents/ waits for P18b');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['rules/x.md'], 'erase-0005')$q$), '0A000', 'rules/ too');
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['tables/t'], 'erase-0005b')$q$), '0A000', 'and tables/');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts', 'contacts/no-mail.md'], 'erase-0006')$q$),
 		'22023', 'a root inside another');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['members/70700000-0000-4000-8000-000000000002/private'], 'erase-0007')$q$),
 		'42501', 'another member''s private paths');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/maria.md'], 'erase-0008')$q$), '22023',
-		'a live root with no earlier life has nothing to erase');
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['members/70700000-0000-4000-8000-000000000002'], 'erase-0007b')$q$),
+		'42501', 'and a root above them');
+	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['contacts/maria.md'], 'erase-0008')$q$),
+		'Nothing to erase at contacts/maria.md', 'a live root with no earlier life has nothing to erase');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/no-mail.md'], 'bad key')$q$), '22023',
 		'the operation key');
 	if exists (select 1 from public.qorpera_folder_erasures) then raise exception 'A refusal recorded an erasure'; end if;
@@ -166,8 +180,8 @@ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-case-1', jsonb_build_array(pg_temp.put('docs/Case.md', 'case'))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-case-2', jsonb_build_array(pg_temp.mv('docs/Case.md', 'docs/case.md'))),
 		1, 'saved');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['docs/case.md'], 'erase-case-x')$q$), '22023',
-		'a case-renamed live file has nothing to erase');
+	perform pg_temp.is(pg_temp.message($q$select pg_temp.erase(array['docs/case.md'], 'erase-case-x')$q$),
+		'Nothing to erase at docs/case.md', 'a case-renamed live file has nothing to erase');
 	perform pg_temp.is(pg_temp.versions_at('docs/case.md')::text, '3', 'and keeps its history');
 	-- A delete and a re-create in one change set split at the re-create's unit.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-z-1', jsonb_build_array(pg_temp.put('docs/z.md', 'z one'))), 1, 'saved');
@@ -331,14 +345,23 @@ begin
 	perform pg_temp.is((pg_temp.drain(v_id)).state, 'done', 'drained once the deletion is gone');
 	perform pg_temp.is(pg_temp.versions_at('docs/k.md')::text, '0', 'its versions are gone');
 
-	-- A copy: another file with the erased bytes is named in the reply, not followed.
+	-- Copies: other paths whose history holds the erased bytes, live or deleted, are named in the reply, not followed;
+	-- the bytes a live copy roots get no side row.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-c-1', jsonb_build_array(pg_temp.put('docs/c1.md', 'copied text'),
-		pg_temp.put('docs/c2.md', 'copied text'))), 2, 'saved');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-c-2', jsonb_build_array(pg_temp.del('docs/c1.md'))), 1, 'saved');
+		pg_temp.put('docs/c2.md', 'copied text'), pg_temp.put('docs/c3.md', 'copied text'))), 3, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-c-2', jsonb_build_array(pg_temp.del('docs/c1.md'),
+		pg_temp.del('docs/c3.md'))), 2, 'saved');
 	r := pg_temp.erase(array['docs/c1.md'], 'erase-c-3');
-	if r -> 'copies' <> '["docs/c2.md"]'::jsonb then raise exception 'The copy is named: %', r; end if;
+	if r -> 'copies' <> jsonb_build_array(
+			jsonb_build_object('environmentId', '70700000-0000-4000-8000-000000000020', 'path', 'docs/c2.md', 'live', true),
+			jsonb_build_object('environmentId', '70700000-0000-4000-8000-000000000020', 'path', 'docs/c3.md', 'live', false)) then
+		raise exception 'The copies are named: %', r; end if;
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
 	perform pg_temp.is(pg_temp.versions_at('docs/c2.md')::text, '1', 'the copy stays');
+	if exists (select 1 from public.qorpera_folder_object_gc g join public.qorpera_folder_path_versions v
+			on v.manifest_sha256 = g.sha256 and v.environment_id = '70700000-0000-4000-8000-000000000020'
+			where g.profile_id = '70700000-0000-4000-8000-000000000010' and public.qorpera_folder_key(v.path) = 'docs/c2.md') then
+		raise exception 'Bytes a copy roots get no side row'; end if;
 
 	-- A moved folder, then deleted: the refusal names the old folder alone, not each key under it.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-s-1', jsonb_build_array(pg_temp.mkdir('docs/s'),
@@ -357,6 +380,118 @@ begin
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
 	if pg_temp.versions_at('docs/s') + pg_temp.versions_at('docs/s/a.md') + pg_temp.versions_at('docs/t')
 		+ pg_temp.versions_at('docs/t/a.md') <> 0 then raise exception 'The moved folder''s whole history goes'; end if;
+end $$;
+
+-- 8. A live root keeps its current life; histories through reused paths; the key index -------------------------------
+
+do $$
+declare r jsonb; d jsonb; v_old uuid; v_live uuid; v_plan text; v_fn regprocedure;
+begin
+	-- A live folder root: its earlier life (the folder and every key under it) goes, its current descendants stay.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-g-1', jsonb_build_array(pg_temp.mkdir('docs/g'),
+		pg_temp.put('docs/g/old.md', 'old g'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-g-2', jsonb_build_array(pg_temp.del('docs/g'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-g-3', jsonb_build_array(pg_temp.mkdir('docs/g'),
+		pg_temp.put('docs/g/new.md', 'new g'))), 2, 'saved');
+	r := pg_temp.erase(array['docs/g'], 'erase-g-4');
+	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '4', 'the first folder, its file and the subtree delete''s two rows');
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+	perform pg_temp.is(pg_temp.versions_at('docs/g/old.md')::text, '0', 'the earlier life''s file goes');
+	perform pg_temp.is(pg_temp.versions_at('docs/g')::text || pg_temp.versions_at('docs/g/new.md')::text, '11',
+		'the current folder and its file stay');
+
+	-- A contact deleted and saved again at one path in one change set: the earlier contact's index row goes with its
+	-- life; the live contact keeps its row, its version and its unit.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-k2-1', jsonb_build_array(pg_temp.save('contacts/split.md',
+		pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e1","email":null}')))), 1, 'saved');
+	r := pg_temp.commit(pg_temp.owner(), 'erase-k2-2', jsonb_build_array(pg_temp.del('contacts/split.md'),
+		pg_temp.write('contacts/split.md', 'contact', pg_temp.state_text(pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e2","email":null}')),
+			pg_temp.contact('{"id":"88300000-0000-4000-8000-0000000000e2","email":null}'), null)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	v_live := pg_temp.version('contacts/split.md');
+	if not exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e1' and retired_at is not null)
+		or not exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e2' and retired_at is null) then
+		raise exception 'Fixture: one retired and one live contact at the path'; end if;
+	r := pg_temp.erase(array['contacts/split.md'], 'erase-k2-3');
+	if exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e1') then
+		raise exception 'The earlier contact''s row goes'; end if;
+	if not exists (select 1 from public.qorpera_folder_contact_index where id = '88300000-0000-4000-8000-0000000000e2'
+			and retired_at is null and folder_path_version = v_live) then raise exception 'The live contact keeps its row'; end if;
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+	if pg_temp.versions_at('contacts/split.md') <> 1 or not exists (select 1 from public.qorpera_folder_path_versions where version = v_live)
+		or (select units -> 1 ->> 'path' from public.qorpera_folder_commits where operation_key = 'erase-k2-2') <> 'contacts/split.md' then
+		raise exception 'The live contact keeps its version and its unit'; end if;
+
+	-- A history through a path that now holds another file: that path's past life is added, not refused as live.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-p-1', jsonb_build_array(pg_temp.put('docs/p.md', 'p one'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-p-2', jsonb_build_array(pg_temp.mv('docs/p.md', 'docs/q.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-p-3', jsonb_build_array(pg_temp.put('docs/p.md', 'p two'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-p-4', jsonb_build_array(pg_temp.del('docs/q.md'))), 1, 'saved');
+	v_live := pg_temp.version('docs/p.md');
+	d := pg_temp.detail($q$select pg_temp.erase(array['docs/q.md'], 'erase-p-5')$q$);
+	if d -> 'add' <> '["docs/p.md"]'::jsonb or d -> 'live' <> '[]'::jsonb then raise exception 'Add the reused path''s past: %', d; end if;
+	r := pg_temp.erase(array['docs/q.md', 'docs/p.md'], 'erase-p-6');
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+	if pg_temp.versions_at('docs/q.md') <> 0 or pg_temp.versions_at('docs/p.md') <> 1
+		or not exists (select 1 from public.qorpera_folder_path_versions where version = v_live) then
+		raise exception 'The history goes; the current p.md stays'; end if;
+
+	-- A move partner gone already (as an earlier erasure leaves it) counts as closed.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-w-1', jsonb_build_array(pg_temp.put('docs/w1.md', 'w'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-w-2', jsonb_build_array(pg_temp.mv('docs/w1.md', 'docs/w2.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-w-3', jsonb_build_array(pg_temp.del('docs/w2.md'))), 1, 'saved');
+	delete from public.qorpera_folder_path_versions where environment_id = '70700000-0000-4000-8000-000000000020'
+		and public.qorpera_folder_key(path) = 'docs/w1.md';
+	r := pg_temp.erase(array['docs/w2.md'], 'erase-w-4');
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+	perform pg_temp.is(pg_temp.versions_at('docs/w2.md')::text, '0', 'erased with its partner gone');
+
+	-- A move partner under a named live root, in its current life, is the history going on there: refused as live,
+	-- not offered as a path to add.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-h-1', jsonb_build_array(pg_temp.mkdir('docs/h'),
+		pg_temp.put('docs/h/a.md', 'h a'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-h-2', jsonb_build_array(pg_temp.del('docs/h'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-h-3', jsonb_build_array(pg_temp.mkdir('docs/h'),
+		pg_temp.put('docs/h/z.md', 'z'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-h-4', jsonb_build_array(pg_temp.mv('docs/h/z.md', 'docs/hx.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-h-5', jsonb_build_array(pg_temp.del('docs/hx.md'))), 1, 'saved');
+	d := pg_temp.detail($q$select pg_temp.erase(array['docs/h', 'docs/hx.md'], 'erase-h-6')$q$);
+	if d -> 'add' <> '[]'::jsonb or d -> 'live' <> '["docs/h/z.md"]'::jsonb then
+		raise exception 'A partner in a named root''s current life is live: %', d; end if;
+
+	-- A step that fails marks its erasure and leaves it waiting an hour; the next step goes on with another one.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-e-1', jsonb_build_array(pg_temp.put('docs/e1.md', 'e1'),
+		pg_temp.put('docs/e2.md', 'e2'))), 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-e-2', jsonb_build_array(pg_temp.del('docs/e1.md'),
+		pg_temp.del('docs/e2.md'))), 2, 'saved');
+	v_old := (pg_temp.erase(array['docs/e1.md'], 'erase-e-3') ->> 'erasureId')::uuid;
+	v_live := (pg_temp.erase(array['docs/e2.md'], 'erase-e-4') ->> 'erasureId')::uuid;
+	update public.qorpera_folder_erasures set roots = '[{"key":"docs/e1.md","cutoffSeq":"broken"}]' where id = v_old;
+	r := public.qorpera_folder_erasure_step(3, 3, 3);
+	if r ->> 'error' is distinct from '22P02' or (select state <> 'waiting' or revisit_at < clock_timestamp() + interval '50 minutes'
+			or last_error not like '22P02: %' from public.qorpera_folder_erasures where id = v_old) then
+		raise exception 'A failing step marks its erasure: %', r; end if;
+	perform pg_temp.is((pg_temp.drain(v_live)).state, 'done', 'the others go on');
+	if public.qorpera_folder_erasure_status('70700000-0000-4000-8000-000000000020', pg_temp.owner(), v_old) ->> 'lastError'
+			not like '22P02: %' then raise exception 'Status shows the error'; end if;
+	delete from public.qorpera_folder_erasures where id = v_old;
+
+	-- The version searches go through the key index (a SQL function with SET is never inlined, so they write the range
+	-- out): the plan of the shape names the index, and each function that searches carries the range.
+	perform set_config('enable_seqscan', 'off', true);
+	execute format($q$explain (format json) select v.version from jsonb_array_elements(%L::jsonb) r
+		join public.qorpera_folder_path_versions v on v.environment_id = %L
+			and public.qorpera_folder_key(v.path) collate "C" >= (r ->> 'key') collate "C"
+			and public.qorpera_folder_key(v.path) collate "C" < ((r ->> 'key') || '0') collate "C"
+			and public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(v.path))$q$,
+		'[{"key":"docs"}]', '70700000-0000-4000-8000-000000000020') into v_plan;
+	perform set_config('enable_seqscan', 'on', true);
+	if strpos(v_plan, 'qorpera_folder_path_versions_key_text') = 0 then raise exception 'The key index serves the range: %', v_plan; end if;
+	foreach v_fn in array array['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)',
+			'public.qorpera_folder_erasure_step(integer,integer,integer)', 'public.qorpera_folder_erasure_open_moves(uuid,jsonb)']::regprocedure[] loop
+		if (select strpos(prosrc, '|| ''0'') collate "C"') from pg_proc where oid = v_fn) = 0 then
+			raise exception '% writes the key range out', v_fn; end if;
+	end loop;
 end $$;
 
 rollback;

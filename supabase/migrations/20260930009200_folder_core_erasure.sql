@@ -43,6 +43,9 @@ create table public.qorpera_folder_erasures (
 	bytes_pending boolean not null default false,
 	-- What the request answered, for a replay.
 	reply jsonb not null,
+	-- The last step's error (SQLSTATE and message), when one failed: the erasure then waits an hour, so it never holds up
+	-- the others; cleared by the next step that goes through.
+	last_error text check (last_error is null or char_length(last_error) between 1 and 1000),
 	done_at timestamptz,
 	unique (environment_id, operation_key),
 	check ((state = 'done') = (done_at is not null)),
@@ -51,15 +54,18 @@ create table public.qorpera_folder_erasures (
 );
 create index qorpera_folder_erasures_due on public.qorpera_folder_erasures(state, revisit_at, requested_at) where done_at is null;
 
--- Each erased path's written spellings and their first 100 characters, with the cutoff of the root they lie under:
--- what phases 2 and 4 blank in text.
+-- Each root's written spellings (as named, and as each erased version spells the root's part of its path) and their
+-- first 100 characters, with the root's cutoff: what phases 2 and 4 look for in text. Every erased path starts with one
+-- of its root's spellings, so a text quoting any of them holds a needle, and the needles stay a few per root. Keyed by
+-- digest: a spelling may be longer than a btree entry.
 create table public.qorpera_folder_erasure_needles (
 	erasure_id uuid not null references public.qorpera_folder_erasures(id) on delete cascade,
 	needle text not null check (char_length(needle) between 1 and 4096),
+	needle_md5 text generated always as (md5(needle)) stored,
 	cutoff_seq bigint not null,
 	cutoff_unit integer not null,
 	cutoff_at timestamptz not null,
-	primary key (erasure_id, needle)
+	primary key (erasure_id, needle_md5)
 );
 
 -- The runs whose receipts and reviewed cards phase 4 scrubs: 'noted', then 'done', or 'pending' while the run is live
@@ -88,7 +94,8 @@ revoke all on public.qorpera_folder_erasures, public.qorpera_folder_erasure_need
 -- 2. Indexes ------------------------------------------------------------------------------------------------------------
 
 -- Versions by folded key, so a subtree's history is one range (an expression index: no table rewrite). Core §2's
--- PostgreSQL upgrade step reindexes it with the other folder keys.
+-- PostgreSQL upgrade step reindexes it with the other folder keys. A query uses it only through the range written out
+-- (key >= root and key < root || '0', then qorpera_folder_erasure_covers): a SQL function with SET is never inlined.
 create index qorpera_folder_path_versions_key_text
 	on public.qorpera_folder_path_versions(environment_id, (public.qorpera_folder_key(path)) collate "C");
 -- The manifests a chunk belongs to, read from the manifest side (the GC finish's cascade needs it too).
@@ -101,7 +108,7 @@ create index qorpera_folder_run_read_records_time on public.qorpera_folder_run_r
 -- 3. Helpers -----------------------------------------------------------------------------------------------------------
 
 -- Whether a folded key is at or under a root key. Under means after '<root>/' and before '<root>0' in byte order ('0'
--- follows '/'), a range the key index serves.
+-- follows '/'). Queries on an index write the range [root, root || '0') out beside it (see the key index).
 create function public.qorpera_folder_erasure_covers(p_root text, p_key text)
 returns boolean language sql immutable set search_path = '' as $$
 	select p_key collate "C" = p_root collate "C"
@@ -158,6 +165,8 @@ language sql stable security definer set search_path = '' as $$
 		select distinct v.op, v.commit_id, v.unit_no, v.prior_version, c.seq
 		from roots
 		join public.qorpera_folder_path_versions v on v.environment_id = p_environment_id
+			and public.qorpera_folder_key(v.path) collate "C" >= (roots.r ->> 'key') collate "C"
+			and public.qorpera_folder_key(v.path) collate "C" < ((roots.r ->> 'key') || '0') collate "C"
 			and public.qorpera_folder_erasure_covers(roots.r ->> 'key', public.qorpera_folder_key(v.path))
 		join public.qorpera_folder_commits c on c.id = v.commit_id
 		where v.op in ('move_in','move_out') and c.seq is not null
@@ -172,10 +181,14 @@ language sql stable security definer set search_path = '' as $$
 			and public.qorpera_folder_erasure_before(roots.r, m.seq, m.unit_no))
 $$;
 
--- Whether any of the needles occurs in a text.
+-- Whether a needle occurs in a text as a whole path or path prefix: the character after it must not go on with a name
+-- (a letter, a digit, '_' or '-', or a '.' before one), so 'docs/f' finds 'docs/f/one.md' and 'docs/f.' but never
+-- 'docs/finance.md'. strpos first; the pattern (every other character escaped) only where it finds one.
 create function public.qorpera_folder_erasure_hit(p_text text, p_needles text[])
 returns boolean language sql immutable set search_path = '' as $$
-	select p_text is not null and exists (select 1 from unnest(p_needles) n where strpos(p_text, n) > 0)
+	select p_text is not null and exists (select 1 from unnest(p_needles) n
+		where strpos(p_text, n) > 0
+			and p_text ~ (regexp_replace(n, '([^[:alnum:][:space:]])', '\\\1', 'g') || '(?![[:alnum:]_-]|\.[[:alnum:]])'))
 $$;
 
 -- One change set's units with erased path names gone (ERASURE.md §4.3, phase 2). A unit whose path or target lies at
@@ -258,8 +271,9 @@ begin
 		if octet_length(v_key) > c_key_bound then raise exception 'Erasure path is too long' using errcode = '22023'; end if;
 		if split_part(v_key, '/', 1) in ('agents','rules','tables') then
 			raise exception 'Erasing agents/, rules/ and tables/ is not available yet' using errcode = '0A000'; end if;
-		-- A member's private paths are that member's alone (contract 4.3).
-		if split_part(v_key, '/', 1) = 'members' and split_part(v_key, '/', 2) is distinct from v_user::text then
+		-- Another member's private paths are theirs alone (contract 4.3): a root at, under or above members/<id>/private.
+		if split_part(v_key, '/', 1) = 'members' and split_part(v_key, '/', 2) is distinct from v_user::text
+				and split_part(v_key, '/', 3) in ('', 'private') then
 			raise exception 'Another member''s private paths are theirs alone' using errcode = '42501'; end if;
 		foreach v_other in array v_keys loop
 			if public.qorpera_folder_erasure_covers(v_other, v_key) or public.qorpera_folder_erasure_covers(v_key, v_other) then
@@ -269,6 +283,11 @@ begin
 		v_spellings := v_spellings || jsonb_build_object(v_key, v_path);
 	end loop;
 	v_keys := array(select k from unnest(v_keys) k order by k collate "C");
+	-- Owners and admins erase: refused by a plain read before any lock (and before a replay answers), and checked again
+	-- under the member row's lock at rank 1.
+	select role into v_role from public.qorpera_profile_members where profile_id = v_profile and user_id = v_user;
+	if v_role is null or v_role not in ('owner','admin') then
+		raise exception 'Only owners and admins erase' using errcode = '42501'; end if;
 	v_digest := encode(extensions.digest(convert_to(jsonb_build_object('userId', v_user, 'roots', to_jsonb(v_keys))::text, 'utf8'),
 		'sha256'), 'hex');
 	-- A replay answers what the first request answered; the same key with other paths is refused, as the commit's.
@@ -280,11 +299,13 @@ begin
 	end if;
 	-- The retired human-task and contact rows under the roots, for rank 5 (a plain read; read again after the paths).
 	select coalesce(array_agg(i.id order by i.environment_id::text || ':' || i.id::text collate "C"), '{}') into v_tasks
-	from public.qorpera_folder_human_task_index i where i.environment_id = p_environment_id and i.retired_at is not null
-		and exists (select 1 from unnest(v_keys) k where public.qorpera_folder_erasure_covers(k, i.folder_key));
+	from unnest(v_keys) k join public.qorpera_folder_human_task_index i on i.environment_id = p_environment_id
+		and i.folder_key >= k and i.folder_key < k || '0' and public.qorpera_folder_erasure_covers(k, i.folder_key)
+	where i.retired_at is not null;
 	select coalesce(array_agg(i.id order by i.environment_id::text || ':' || i.id::text collate "C"), '{}') into v_contacts
-	from public.qorpera_folder_contact_index i where i.environment_id = p_environment_id and i.retired_at is not null
-		and exists (select 1 from unnest(v_keys) k where public.qorpera_folder_erasure_covers(k, i.folder_key));
+	from unnest(v_keys) k join public.qorpera_folder_contact_index i on i.environment_id = p_environment_id
+		and i.folder_key >= k and i.folder_key < k || '0' and public.qorpera_folder_erasure_covers(k, i.folder_key)
+	where i.retired_at is not null;
 
 	-- 2. Rank 0: the company row KEY SHARE; a company being deleted is purged whole.
 	perform 1 from public.qorpera_profiles where id = v_profile for key share;
@@ -322,12 +343,12 @@ begin
 	end loop;
 	-- A rank-5 row that became retired under a root since the plain read (a delete between step 1 and step 5) was not
 	-- locked at its rank: the member route asks again.
-	if exists (select 1 from public.qorpera_folder_human_task_index i where i.environment_id = p_environment_id
-			and i.retired_at is not null and not i.id = any(v_tasks)
-			and exists (select 1 from unnest(v_keys) k where public.qorpera_folder_erasure_covers(k, i.folder_key)))
-		or exists (select 1 from public.qorpera_folder_contact_index i where i.environment_id = p_environment_id
-			and i.retired_at is not null and not i.id = any(v_contacts)
-			and exists (select 1 from unnest(v_keys) k where public.qorpera_folder_erasure_covers(k, i.folder_key))) then
+	if exists (select 1 from unnest(v_keys) k join public.qorpera_folder_human_task_index i on i.environment_id = p_environment_id
+			and i.folder_key >= k and i.folder_key < k || '0' and public.qorpera_folder_erasure_covers(k, i.folder_key)
+			where i.retired_at is not null and not i.id = any(v_tasks))
+		or exists (select 1 from unnest(v_keys) k join public.qorpera_folder_contact_index i on i.environment_id = p_environment_id
+			and i.folder_key >= k and i.folder_key < k || '0' and public.qorpera_folder_erasure_covers(k, i.folder_key)
+			where i.retired_at is not null and not i.id = any(v_contacts)) then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message',
 			'Company folder changed while the erasure began; retry', 'details', null, 'hint', null)::text,
 			detail = '{"status":409,"headers":{}}';
@@ -337,6 +358,8 @@ begin
 		select count(*) into v_versions from public.qorpera_folder_path_versions v
 		join public.qorpera_folder_commits c on c.id = v.commit_id
 		where v.environment_id = p_environment_id
+			and public.qorpera_folder_key(v.path) collate "C" >= (v_root ->> 'key') collate "C"
+			and public.qorpera_folder_key(v.path) collate "C" < ((v_root ->> 'key') || '0') collate "C"
 			and public.qorpera_folder_erasure_covers(v_root ->> 'key', public.qorpera_folder_key(v.path))
 			and public.qorpera_folder_erasure_before(v_root, c.seq, v.unit_no);
 		if (v_root ->> 'live')::boolean and v_versions = 0 then
@@ -368,12 +391,24 @@ begin
 					continue;
 				end if;
 			end if;
-			if not exists (select 1 from jsonb_array_elements(v_work) w where w ->> 'key' = v_open.partner_key) then
-				v_work := v_work || jsonb_build_array(public.qorpera_folder_erasure_cutoff(p_environment_id, v_open.partner_key,
-					v_as_of, v_as_of_at));
-				v_added := v_added || jsonb_build_array(v_open.partner_path);
-				v_grew := true;
+			-- A root added this round may cover the partner before its cutoff: closed.
+			if exists (select 1 from jsonb_array_elements(v_work) w
+					where public.qorpera_folder_erasure_covers(w ->> 'key', v_open.partner_key)
+						and public.qorpera_folder_erasure_before(w, v_open.seq, v_open.unit_no)) then
+				continue;
 			end if;
+			-- A partner at or under a root, not before its cutoff, is in that root's current life: the history goes on in a
+			-- live file, which naming it would not change.
+			if exists (select 1 from jsonb_array_elements(v_work) w
+					where public.qorpera_folder_erasure_covers(w ->> 'key', v_open.partner_key)) then
+				if not v_live @> jsonb_build_array(v_open.partner_path) then
+					v_live := v_live || jsonb_build_array(v_open.partner_path); end if;
+				continue;
+			end if;
+			v_work := v_work || jsonb_build_array(public.qorpera_folder_erasure_cutoff(p_environment_id, v_open.partner_key,
+				v_as_of, v_as_of_at));
+			v_added := v_added || jsonb_build_array(v_open.partner_path);
+			v_grew := true;
 		end loop;
 		exit when not v_grew or jsonb_array_length(v_added) >= 50;
 	end loop;
@@ -387,25 +422,46 @@ begin
 					limit 20) t),
 				'live', v_live)::text;
 	end if;
-	-- Copies: other files with an erased manifest (the empty file left out), so the member can name them too.
-	select coalesce(jsonb_agg(distinct e.path), '[]'::jsonb) into v_copies from (
-		select e.path from public.qorpera_folder_path_versions v
-		join public.qorpera_folder_commits c on c.id = v.commit_id
-		join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(v.path))
-			and public.qorpera_folder_erasure_before(r, c.seq, v.unit_no)
-		join public.qorpera_folder_entries e on e.environment_id = p_environment_id and e.kind = 'file'
-			and e.manifest_sha256 = v.manifest_sha256 and e.bytes > 0
-		where v.environment_id = p_environment_id and v.manifest_sha256 is not null
-			and not exists (select 1 from jsonb_array_elements(v_roots) r2
-				where public.qorpera_folder_erasure_covers(r2 ->> 'key', e.key_text))
-		limit 20) e;
-	-- 7. Connection rows, where the commit's apply takes them (after its paths).
+	-- Copies (§2.3): other paths, live or deleted, in any folder-v2 environment of the company, whose versions hold an
+	-- erased manifest (the empty file left out): their history keeps those bytes, so the member may name them too. The
+	-- erased versions through the key range, then the others through the manifest index; up to 20 paths.
+	select coalesce(jsonb_agg(jsonb_build_object('environmentId', t.environment_id, 'path', t.path, 'live', t.live)
+			order by t.environment_id, t.path), '[]'::jsonb) into v_copies
+	from (
+		select d.environment_id, d.path, exists (select 1 from public.qorpera_folder_entries e
+				where e.environment_id = d.environment_id and e.key_sha256 = extensions.digest(d.key, 'sha256') and e.kind <> 'claim') as live
+		from (
+			select distinct on (o.environment_id, public.qorpera_folder_key(o.path)) o.environment_id, o.path,
+				public.qorpera_folder_key(o.path) as key
+			from (
+				select distinct v.manifest_sha256 from jsonb_array_elements(v_roots) r
+				join public.qorpera_folder_path_versions v on v.environment_id = p_environment_id
+					and public.qorpera_folder_key(v.path) collate "C" >= (r ->> 'key') collate "C"
+					and public.qorpera_folder_key(v.path) collate "C" < ((r ->> 'key') || '0') collate "C"
+					and public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(v.path))
+				join public.qorpera_folder_commits c on c.id = v.commit_id
+				where v.manifest_sha256 is not null and v.bytes > 0 and public.qorpera_folder_erasure_before(r, c.seq, v.unit_no)) m
+			join public.qorpera_company_files f on f.profile_id = v_profile and f.core = 'folder-v2'
+			join public.qorpera_folder_path_versions o on o.environment_id = f.environment_id and o.manifest_sha256 = m.manifest_sha256
+			where not (o.environment_id = p_environment_id and exists (select 1 from jsonb_array_elements(v_roots) r2
+				where public.qorpera_folder_erasure_covers(r2 ->> 'key', public.qorpera_folder_key(o.path))))
+			order by o.environment_id, public.qorpera_folder_key(o.path), o.created_at desc) d
+		order by d.environment_id, d.path
+		limit 20) t;
+	-- 7. Connection rows, where the commit's apply takes them (after its paths): read, locked in id order, then read
+	-- again under the lock with the same three conditions (a row moved or restored meanwhile stays).
 	select coalesce(array_agg(i.secret_id order by i.secret_id), '{}') into v_connections
 	from public.qorpera_folder_connection_index i
 	join public.qorpera_folder_commits c on c.id = i.commit_id
 	join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(i.folder_path))
 	where i.environment_id = p_environment_id and i.retired_at is not null and c.seq <= (r ->> 'cutoffSeq')::bigint;
 	perform 1 from public.qorpera_folder_connection_index where secret_id = any(v_connections) order by secret_id for update;
+	select coalesce(array_agg(i.secret_id order by i.secret_id), '{}') into v_connections
+	from public.qorpera_folder_connection_index i
+	join public.qorpera_folder_commits c on c.id = i.commit_id
+	join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(i.folder_path))
+	where i.secret_id = any(v_connections) and i.environment_id = p_environment_id and i.retired_at is not null
+		and c.seq <= (r ->> 'cutoffSeq')::bigint;
 
 	-- 8. Writes: the erasure and its needles, then the index rows, then the claims go.
 	v_reply := jsonb_build_object('schema', 'qorpera.folder-erasure/v1', 'erasureId', v_id, 'asOfSeq', v_as_of,
@@ -413,7 +469,20 @@ begin
 	insert into public.qorpera_folder_erasures(id, environment_id, profile_id, operation_key, request_sha256,
 		requested_by_user_id, as_of_seq, as_of_at, roots, reply)
 	values (v_id, p_environment_id, v_profile, p_operation_key, v_digest, v_user, v_as_of, v_as_of_at,
-		(select jsonb_agg(r - 'live') from jsonb_array_elements(v_roots) r), v_reply);
+		(select jsonb_agg(r - 'live') from jsonb_array_elements(v_roots) r), v_reply)
+	on conflict (environment_id, operation_key) do nothing;
+	if not found then
+		-- A request with this key committed while this one waited on the roots: its reply answers (other paths are
+		-- refused), and this one's claims go.
+		delete from public.qorpera_folder_entries e
+		where e.environment_id = p_environment_id and e.kind = 'claim'
+			and e.key_sha256 = any (array(select extensions.digest(k, 'sha256') from unnest(v_claims) k));
+		select * into v_existing from public.qorpera_folder_erasures
+		where environment_id = p_environment_id and operation_key = p_operation_key;
+		if v_existing.request_sha256 is not null and v_existing.request_sha256 <> v_digest then
+			raise exception 'Operation key was used for another erasure' using errcode = '22023'; end if;
+		return v_existing.reply;
+	end if;
 	insert into public.qorpera_folder_erasure_needles(erasure_id, needle, cutoff_seq, cutoff_unit, cutoff_at)
 	select v_id, n.needle, (r ->> 'cutoffSeq')::bigint, (r ->> 'cutoffUnit')::integer, (r ->> 'cutoffAt')::timestamptz
 	from jsonb_array_elements(v_roots) r
@@ -425,7 +494,7 @@ begin
 	delete from public.qorpera_folder_contact_index i using public.qorpera_folder_commits c, jsonb_array_elements(v_roots) r
 	where i.environment_id = p_environment_id and i.id = any(v_contacts) and c.id = i.commit_id and i.retired_at is not null
 		and public.qorpera_folder_erasure_covers(r ->> 'key', i.folder_key) and c.seq <= (r ->> 'cutoffSeq')::bigint;
-	delete from public.qorpera_folder_connection_index where secret_id = any(v_connections) and retired_at is not null;
+	delete from public.qorpera_folder_connection_index where secret_id = any(v_connections);
 	delete from public.qorpera_folder_entries e
 	where e.environment_id = p_environment_id and e.kind = 'claim'
 		and e.key_sha256 = any (array(select extensions.digest(k, 'sha256') from unnest(v_claims) k));
@@ -442,15 +511,23 @@ returns jsonb language sql immutable set search_path = '' as $$
 $$;
 
 -- One bounded step of the oldest erasure that can go on (ERASURE.md §4.2, §4.3). pg_cron calls it every 5 seconds; it
--- checks no JWT role (none comes with pg_cron) and is revoked from every API role. Returns what it did.
+-- checks no JWT role (none comes with pg_cron) and is revoked from every API role. A step works for about a second at
+-- most and reads at most 4 MiB of text (both checked between rows), going on from its cursor next time. An error other
+-- than a lock wait marks its erasure and leaves it waiting an hour, so it never holds up the others. Returns what it did.
 create function public.qorpera_folder_erasure_step(p_versions integer default 1000, p_commits integer default 1000,
 	p_hashes integer default 2000)
 returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
 declare
-	v_candidate record; v_erasure public.qorpera_folder_erasures%rowtype; v_got boolean := false;
+	c_budget constant interval := interval '1 second';
+	c_bytes constant bigint := 4194304;
+	c_zero constant uuid := '00000000-0000-0000-0000-000000000000';
+	v_started timestamptz := clock_timestamp();
+	v_candidate record; v_erasure public.qorpera_folder_erasures%rowtype; v_got boolean := false; v_revisit boolean := false;
 	v_batch jsonb; v_rows integer := 0; v_count integer := 0; v_hashes text[]; v_needles jsonb; v_commit record;
-	v_units jsonb; v_cursor jsonb; v_record record; v_run record; v_ended boolean; v_left integer; v_bytes bigint := 0;
-	v_raw text[]; v_escaped text[]; v_gc boolean; v_max_seq bigint; v_max_at timestamptz; v_hit integer; v_done integer;
+	v_units jsonb; v_cursor jsonb; v_record record; v_run record; v_receipt record; v_card record; v_ended boolean;
+	v_left integer; v_bytes bigint := 0; v_out boolean := false; v_raw text[]; v_escaped text[]; v_cut timestamptz[];
+	v_applies text[]; v_applies_raw text[]; v_after_at timestamptz; v_after_id uuid; v_gc boolean; v_max_seq bigint;
+	v_max_at timestamptz; v_state text; v_message text;
 begin
 	if current_setting('transaction_isolation') <> 'read committed' then
 		raise exception 'Folder erasure runs at read committed' using errcode = '25000'; end if;
@@ -470,245 +547,300 @@ begin
 		exit;
 	end loop;
 	if not v_got then return jsonb_build_object('schema', 'qorpera.folder-erasure-step/v1', 'erasureId', null); end if;
+	-- A revisit works until the step decides to wait again.
+	if v_erasure.state = 'waiting' then
+		v_revisit := true;
+		update public.qorpera_folder_erasures set state = 'working', revisit_at = null where id = v_erasure.id
+		returning * into v_erasure;
+	end if;
 	v_cursor := v_erasure.cursor;
-	select max((r ->> 'cutoffSeq')::bigint), max((r ->> 'cutoffAt')::timestamptz) into v_max_seq, v_max_at
-	from jsonb_array_elements(v_erasure.roots) r;
 
-	if v_erasure.phase = 1 then
-		-- Versions under each root before its cutoff: their hashes, spellings and runs kept, then the rows deleted.
-		select coalesce(jsonb_agg(jsonb_build_object('version', b.version, 'path', b.path, 'commitId', b.commit_id,
-				'manifest', b.manifest_sha256, 'at', b.created_at, 'root', b.root)), '[]'::jsonb)
-		into v_batch from (
-			select v.version, v.path, v.commit_id, v.manifest_sha256, v.created_at, r as root
-			from jsonb_array_elements(v_erasure.roots) r
-			join public.qorpera_folder_path_versions v on v.environment_id = v_erasure.environment_id
-				and public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(v.path))
-			join public.qorpera_folder_commits c on c.id = v.commit_id
-			where public.qorpera_folder_erasure_before(r, c.seq, v.unit_no)
-			limit p_versions) b;
-		v_rows := jsonb_array_length(v_batch);
-		insert into public.qorpera_folder_erasure_hashes(erasure_id, sha256)
-		select distinct v_erasure.id, h from (
-			select b ->> 'manifest' as h from jsonb_array_elements(v_batch) b where b ->> 'manifest' is not null
-			union
-			select ch.chunk_sha256 from jsonb_array_elements(v_batch) b
-			join public.qorpera_folder_file_chunks ch on ch.profile_id = v_erasure.profile_id and ch.manifest_sha256 = b ->> 'manifest'
-		) x
-		on conflict do nothing;
-		insert into public.qorpera_folder_erasure_needles(erasure_id, needle, cutoff_seq, cutoff_unit, cutoff_at)
-		select distinct on (n.needle) v_erasure.id, n.needle, (b -> 'root' ->> 'cutoffSeq')::bigint,
-			(b -> 'root' ->> 'cutoffUnit')::integer, (b -> 'root' ->> 'cutoffAt')::timestamptz
-		from jsonb_array_elements(v_batch) b
-		cross join lateral (values (b ->> 'path'), (left(b ->> 'path', 100))) n(needle)
-		order by n.needle
-		on conflict do nothing;
-		insert into public.qorpera_folder_erasure_runs(erasure_id, run_id)
-		select distinct v_erasure.id, c.run_id from jsonb_array_elements(v_batch) b
-		join public.qorpera_folder_commits c on c.id = (b ->> 'commitId')::uuid where c.run_id is not null
-		on conflict do nothing;
-		delete from public.qorpera_folder_path_versions v
-		where v.version in (select (b ->> 'version')::uuid from jsonb_array_elements(v_batch) b);
-		update public.qorpera_folder_erasures set
-			first_erased_at = least(coalesce(first_erased_at, 'infinity'::timestamptz),
-				coalesce((select min((b ->> 'at')::timestamptz) from jsonb_array_elements(v_batch) b), 'infinity'::timestamptz)),
-			phase = case when v_rows < p_versions then 2 else 1 end,
-			counts = jsonb_set(counts, '{versions}', to_jsonb(coalesce((counts ->> 'versions')::bigint, 0) + v_rows))
-		where id = v_erasure.id;
-		update public.qorpera_folder_erasures set first_erased_at = null
-		where id = v_erasure.id and first_erased_at = 'infinity'::timestamptz;
+	begin
+		select max((r ->> 'cutoffSeq')::bigint), max((r ->> 'cutoffAt')::timestamptz) into v_max_seq, v_max_at
+		from jsonb_array_elements(v_erasure.roots) r;
+		if v_erasure.phase = 1 then
+			-- Versions under each root before its cutoff, through the key range: their hashes, their root's spellings and
+			-- their runs kept, then the rows deleted.
+			select coalesce(jsonb_agg(jsonb_build_object('version', b.version, 'path', b.path, 'commitId', b.commit_id,
+					'manifest', b.manifest_sha256, 'at', b.created_at, 'root', b.root)), '[]'::jsonb)
+			into v_batch from (
+				select v.version, v.path, v.commit_id, v.manifest_sha256, v.created_at, r as root
+				from jsonb_array_elements(v_erasure.roots) r
+				join public.qorpera_folder_path_versions v on v.environment_id = v_erasure.environment_id
+					and public.qorpera_folder_key(v.path) collate "C" >= (r ->> 'key') collate "C"
+					and public.qorpera_folder_key(v.path) collate "C" < ((r ->> 'key') || '0') collate "C"
+					and public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(v.path))
+				join public.qorpera_folder_commits c on c.id = v.commit_id
+				where public.qorpera_folder_erasure_before(r, c.seq, v.unit_no)
+				limit p_versions) b;
+			v_rows := jsonb_array_length(v_batch);
+			insert into public.qorpera_folder_erasure_hashes(erasure_id, sha256)
+			select distinct v_erasure.id, h from (
+				select b ->> 'manifest' as h from jsonb_array_elements(v_batch) b where b ->> 'manifest' is not null
+				union
+				select ch.chunk_sha256 from jsonb_array_elements(v_batch) b
+				join public.qorpera_folder_file_chunks ch on ch.profile_id = v_erasure.profile_id and ch.manifest_sha256 = b ->> 'manifest'
+			) x
+			on conflict do nothing;
+			-- How each version spells its root (the path's first components, as many as the root has; the whole path if
+			-- folding changed the count), and its first 100 characters.
+			insert into public.qorpera_folder_erasure_needles(erasure_id, needle, cutoff_seq, cutoff_unit, cutoff_at)
+			select distinct on (n.needle) v_erasure.id, n.needle, (b -> 'root' ->> 'cutoffSeq')::bigint,
+				(b -> 'root' ->> 'cutoffUnit')::integer, (b -> 'root' ->> 'cutoffAt')::timestamptz
+			from jsonb_array_elements(v_batch) b
+			cross join lateral (select array_to_string((string_to_array(b ->> 'path', '/'))
+				[1:array_length(string_to_array(b -> 'root' ->> 'key', '/'), 1)], '/') as prefix) p
+			cross join lateral (select case when public.qorpera_folder_key(p.prefix) = b -> 'root' ->> 'key' then p.prefix
+				else b ->> 'path' end as spelling) w
+			cross join lateral (values (w.spelling), (left(w.spelling, 100))) n(needle)
+			order by n.needle
+			on conflict do nothing;
+			insert into public.qorpera_folder_erasure_runs(erasure_id, run_id)
+			select distinct v_erasure.id, c.run_id from jsonb_array_elements(v_batch) b
+			join public.qorpera_folder_commits c on c.id = (b ->> 'commitId')::uuid where c.run_id is not null
+			on conflict do nothing;
+			delete from public.qorpera_folder_path_versions v
+			where v.version in (select (b ->> 'version')::uuid from jsonb_array_elements(v_batch) b);
+			update public.qorpera_folder_erasures set
+				first_erased_at = least(coalesce(first_erased_at, 'infinity'::timestamptz),
+					coalesce((select min((b ->> 'at')::timestamptz) from jsonb_array_elements(v_batch) b), 'infinity'::timestamptz)),
+				phase = case when v_rows < p_versions then 2 else 1 end,
+				counts = jsonb_set(counts, '{versions}', to_jsonb(coalesce((counts ->> 'versions')::bigint, 0) + v_rows))
+			where id = v_erasure.id;
+			update public.qorpera_folder_erasures set first_erased_at = null
+			where id = v_erasure.id and first_erased_at = 'infinity'::timestamptz;
 
-	elsif v_erasure.phase = 2 then
-		-- Change sets before each root's cutoff: saved ones by seq, then unsaved ones by time (§4.3 phase 2).
-		select coalesce(jsonb_agg(jsonb_build_object('needle', n.needle, 'cutoffSeq', n.cutoff_seq, 'cutoffUnit', n.cutoff_unit,
-			'cutoffAt', n.cutoff_at)), '[]'::jsonb) into v_needles
-		from public.qorpera_folder_erasure_needles n where n.erasure_id = v_erasure.id;
-		if not v_cursor ? 'unsaved' then
-			for v_commit in select c.id, c.seq, c.created_at, c.units, c.run_id from public.qorpera_folder_commits c
-				where c.environment_id = v_erasure.environment_id and c.seq is not null
-					and c.seq > coalesce((v_cursor ->> 'seq')::bigint, 0) and c.seq <= v_max_seq
-				order by c.seq limit p_commits
-			loop
-				v_units := public.qorpera_folder_erasure_units(v_commit.units, v_commit.seq, v_commit.created_at,
-					v_erasure.roots, v_needles);
-				if v_units is not null then
-					update public.qorpera_folder_commits set units = v_units where id = v_commit.id;
-					if v_commit.run_id is not null then
-						insert into public.qorpera_folder_erasure_runs(erasure_id, run_id) values (v_erasure.id, v_commit.run_id)
-						on conflict do nothing;
+		elsif v_erasure.phase = 2 then
+			-- Change sets before each root's cutoff: saved ones by seq, then unsaved ones by time (§4.3 phase 2).
+			select coalesce(jsonb_agg(jsonb_build_object('needle', n.needle, 'cutoffSeq', n.cutoff_seq, 'cutoffUnit', n.cutoff_unit,
+				'cutoffAt', n.cutoff_at)), '[]'::jsonb) into v_needles
+			from public.qorpera_folder_erasure_needles n where n.erasure_id = v_erasure.id;
+			if not v_cursor ? 'unsaved' then
+				for v_commit in select c.id, c.seq, c.created_at, c.units, c.run_id from public.qorpera_folder_commits c
+					where c.environment_id = v_erasure.environment_id and c.seq is not null
+						and c.seq > coalesce((v_cursor ->> 'seq')::bigint, 0) and c.seq <= v_max_seq
+					order by c.seq limit p_commits
+				loop
+					v_units := public.qorpera_folder_erasure_units(v_commit.units, v_commit.seq, v_commit.created_at,
+						v_erasure.roots, v_needles);
+					if v_units is not null then
+						update public.qorpera_folder_commits set units = v_units where id = v_commit.id;
+						if v_commit.run_id is not null then
+							insert into public.qorpera_folder_erasure_runs(erasure_id, run_id) values (v_erasure.id, v_commit.run_id)
+							on conflict do nothing;
+						end if;
+						v_rows := v_rows + 1;
 					end if;
-					v_rows := v_rows + 1;
+					v_count := v_count + 1;
+					v_cursor := jsonb_build_object('seq', v_commit.seq);
+					if clock_timestamp() - v_started > c_budget then v_out := true; exit; end if;
+				end loop;
+				if v_count < p_commits and not v_out then v_cursor := jsonb_build_object('unsaved', true); end if;
+			else
+				for v_commit in select c.id, c.created_at, c.units, c.run_id from public.qorpera_folder_commits c
+					where c.environment_id = v_erasure.environment_id and c.seq is null and c.created_at < v_max_at
+						and (c.created_at, c.id) > (coalesce((v_cursor ->> 'at')::timestamptz, '-infinity'::timestamptz),
+							coalesce((v_cursor ->> 'id')::uuid, c_zero))
+					order by c.created_at, c.id limit p_commits
+				loop
+					v_units := public.qorpera_folder_erasure_units(v_commit.units, null, v_commit.created_at, v_erasure.roots, v_needles);
+					if v_units is not null then
+						update public.qorpera_folder_commits set units = v_units where id = v_commit.id;
+						if v_commit.run_id is not null then
+							insert into public.qorpera_folder_erasure_runs(erasure_id, run_id) values (v_erasure.id, v_commit.run_id)
+							on conflict do nothing;
+						end if;
+						v_rows := v_rows + 1;
+					end if;
+					v_count := v_count + 1;
+					v_cursor := jsonb_build_object('unsaved', true, 'at', v_commit.created_at, 'id', v_commit.id);
+					if clock_timestamp() - v_started > c_budget then v_out := true; exit; end if;
+				end loop;
+			end if;
+			update public.qorpera_folder_erasures set
+				phase = case when v_erasure.cursor ? 'unsaved' and v_count < p_commits and not v_out then 3 else 2 end,
+				cursor = case when v_erasure.cursor ? 'unsaved' and v_count < p_commits and not v_out then '{}'::jsonb
+					else v_cursor end,
+				counts = jsonb_set(counts, '{commits}', to_jsonb(coalesce((counts ->> 'commits')::bigint, 0) + v_rows))
+			where id = v_erasure.id;
+
+		elsif v_erasure.phase = 3 then
+			-- The runs that read an erased version: read records from the first erased version's time to the cutoff's.
+			for v_record in select rr.run_id, rr.release_id, rr.resource_id, rr.created_at, rr.reads
+				from public.qorpera_folder_run_read_records rr
+				where v_erasure.first_erased_at is not null and rr.environment_id = v_erasure.environment_id
+					and rr.created_at >= v_erasure.first_erased_at and rr.created_at < v_max_at
+					and (rr.created_at, rr.run_id, rr.release_id, rr.resource_id) >
+						(coalesce((v_cursor ->> 'at')::timestamptz, '-infinity'::timestamptz), coalesce((v_cursor ->> 'run')::uuid, c_zero),
+						 coalesce((v_cursor ->> 'release')::uuid, c_zero), coalesce((v_cursor ->> 'resource')::uuid, c_zero))
+				order by rr.created_at, rr.run_id, rr.release_id, rr.resource_id
+				limit p_commits
+			loop
+				if exists (select 1 from jsonb_array_elements(v_record.reads) rd join jsonb_array_elements(v_erasure.roots) r
+						on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(rd ->> 'path'))
+						and v_record.created_at < (r ->> 'cutoffAt')::timestamptz) then
+					insert into public.qorpera_folder_erasure_runs(erasure_id, run_id) values (v_erasure.id, v_record.run_id)
+					on conflict do nothing;
 				end if;
 				v_count := v_count + 1;
-				v_cursor := jsonb_build_object('seq', v_commit.seq);
+				v_bytes := v_bytes + octet_length(v_record.reads::text);
+				v_cursor := jsonb_build_object('at', v_record.created_at, 'run', v_record.run_id, 'release', v_record.release_id,
+					'resource', v_record.resource_id);
+				if v_bytes > c_bytes or clock_timestamp() - v_started > c_budget then v_out := true; exit; end if;
 			end loop;
-			if v_count < p_commits then v_cursor := jsonb_build_object('unsaved', true); end if;
-		else
-			for v_commit in select c.id, c.created_at, c.units, c.run_id from public.qorpera_folder_commits c
-				where c.environment_id = v_erasure.environment_id and c.seq is null and c.created_at < v_max_at
-					and (c.created_at, c.id) > (coalesce((v_cursor ->> 'at')::timestamptz, '-infinity'::timestamptz),
-						coalesce((v_cursor ->> 'id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid))
-				order by c.created_at, c.id limit p_commits
+			update public.qorpera_folder_erasures set
+				phase = case when v_count < p_commits and not v_out then 4 else 3 end,
+				cursor = case when v_count < p_commits and not v_out then '{}'::jsonb else v_cursor end
+			where id = v_erasure.id;
+		end if;
+
+		if v_erasure.phase = 4 or (v_erasure.phase >= 5 and (v_revisit or v_cursor <> '{}'::jsonb)) then
+			-- The noted runs' receipts and reviewed cards (§6), in run order: in phase 4 the noted runs, on a revisit the
+			-- pending ones too. A text counts against a needle only when it was made before that needle's cutoff (a live
+			-- root's current life keeps its own). A run still live, a row locked meanwhile (run-owned rows: SKIP LOCKED) or
+			-- a card still open leaves the run pending, revisited hourly. The cursor holds the run in progress, where its
+			-- receipts stopped and what they left, or the last run done.
+			select coalesce(array_agg(n.needle order by n.needle_md5), '{}'),
+				coalesce(array_agg(substr(to_jsonb(n.needle)::text, 2, char_length(to_jsonb(n.needle)::text) - 2) order by n.needle_md5), '{}'),
+				coalesce(array_agg(n.cutoff_at order by n.needle_md5), '{}')
+			into v_raw, v_escaped, v_cut from public.qorpera_folder_erasure_needles n where n.erasure_id = v_erasure.id;
+			for v_run in select er.run_id from public.qorpera_folder_erasure_runs er
+				where er.erasure_id = v_erasure.id and (er.state = 'noted' or (er.state = 'pending' and v_erasure.phase >= 5))
+					and er.run_id > coalesce((v_cursor ->> 'after')::uuid, c_zero)
+					and er.run_id >= coalesce((v_cursor ->> 'run')::uuid, c_zero)
+				order by er.run_id
 			loop
-				v_units := public.qorpera_folder_erasure_units(v_commit.units, null, v_commit.created_at, v_erasure.roots, v_needles);
-				if v_units is not null then
-					update public.qorpera_folder_commits set units = v_units where id = v_commit.id;
-					if v_commit.run_id is not null then
-						insert into public.qorpera_folder_erasure_runs(erasure_id, run_id) values (v_erasure.id, v_commit.run_id)
-						on conflict do nothing;
-					end if;
-					v_rows := v_rows + 1;
+				v_ended := exists (select 1 from public.qorpera_execution_runs r join public.qorpera_runner_jobs j on j.id = r.job_id
+					where r.id = v_run.run_id and j.status not in ('queued','leased'));
+				if v_run.run_id = (v_cursor ->> 'run')::uuid then
+					v_after_at := (v_cursor ->> 'at')::timestamptz; v_after_id := (v_cursor ->> 'id')::uuid;
+					v_left := coalesce((v_cursor ->> 'left')::integer, 0);
+				else
+					v_after_at := '-infinity'; v_after_id := c_zero; v_left := 0;
 				end if;
-				v_count := v_count + 1;
-				v_cursor := jsonb_build_object('unsaved', true, 'at', v_commit.created_at, 'id', v_commit.id);
+				if v_ended then
+					for v_receipt in select o.id, o.created_at, o.result -> 'content' as content
+						from public.qorpera_run_operation_receipts o
+						where o.run_id = v_run.run_id and o.status = 'completed' and (o.created_at, o.id) > (v_after_at, v_after_id)
+						order by o.created_at, o.id
+					loop
+						v_bytes := v_bytes + coalesce(octet_length(v_receipt.content::text), 0);
+						v_applies := array(select x.e from unnest(v_escaped, v_cut) x(e, c) where v_receipt.created_at < x.c);
+						if v_receipt.content is distinct from '{"kind":"text","value":"[erased]"}'::jsonb
+							and public.qorpera_folder_erasure_hit(v_receipt.content::text, v_applies) then
+							perform 1 from public.qorpera_run_operation_receipts where id = v_receipt.id for no key update skip locked;
+							if found then
+								update public.qorpera_run_operation_receipts
+								set result = jsonb_set(result, '{content}', '{"kind":"text","value":"[erased]"}'::jsonb)
+								where id = v_receipt.id;
+								v_count := v_count + 1;
+							else
+								v_left := v_left + 1;
+							end if;
+						end if;
+						if v_bytes > c_bytes or clock_timestamp() - v_started > c_budget then
+							v_cursor := jsonb_build_object('run', v_run.run_id, 'at', v_receipt.created_at, 'id', v_receipt.id, 'left', v_left);
+							v_out := true;
+							exit;
+						end if;
+					end loop;
+					exit when v_out;
+					-- An open card (or an allow not yet used) is what a member or a woken agent still reads: left pending.
+					-- An answered one loses each field that names an erased path, keeping its JSON type.
+					for v_card in select a.id, a.created_at, a.action, a.reason,
+							not (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null) as open
+						from public.qorpera_action_reviews a where a.run_id = v_run.run_id
+					loop
+						v_bytes := v_bytes + octet_length(v_card.action::text) + coalesce(octet_length(v_card.reason), 0);
+						v_applies := array(select x.e from unnest(v_escaped, v_cut) x(e, c) where v_card.created_at < x.c);
+						v_applies_raw := array(select x.n from unnest(v_raw, v_cut) x(n, c) where v_card.created_at < x.c);
+						if public.qorpera_folder_erasure_hit(v_card.action::text, v_applies)
+							or public.qorpera_folder_erasure_hit(v_card.reason, v_applies_raw) then
+							if v_card.open then
+								v_left := v_left + 1;
+							else
+								perform 1 from public.qorpera_action_reviews where id = v_card.id for no key update skip locked;
+								if found then
+									update public.qorpera_action_reviews a
+									set action = a.action || coalesce((select jsonb_object_agg(k, public.qorpera_folder_erasure_blank(a.action -> k))
+											from unnest(array['title','target','details','arguments']) k
+											where a.action ? k and public.qorpera_folder_erasure_hit((a.action -> k)::text, v_applies)), '{}'::jsonb),
+										reason = case when public.qorpera_folder_erasure_hit(a.reason, v_applies_raw) then 'Erased.' else a.reason end
+									where a.id = v_card.id;
+									v_count := v_count + 1;
+								else
+									v_left := v_left + 1;
+								end if;
+							end if;
+						end if;
+					end loop;
+				end if;
+				update public.qorpera_folder_erasure_runs set state = case when v_ended and v_left = 0 then 'done' else 'pending' end
+				where erasure_id = v_erasure.id and run_id = v_run.run_id;
+				v_cursor := jsonb_build_object('after', v_run.run_id);
+				if v_bytes > c_bytes or clock_timestamp() - v_started > c_budget then v_out := true; exit; end if;
 			end loop;
+			update public.qorpera_folder_erasures set
+				phase = case when phase = 4 and not v_out and not exists (select 1 from public.qorpera_folder_erasure_runs
+					where erasure_id = v_erasure.id and state = 'noted') then 5 else phase end,
+				cursor = case when v_out then v_cursor else '{}'::jsonb end,
+				counts = jsonb_set(counts, '{scrubbed}', to_jsonb(coalesce((counts ->> 'scrubbed')::bigint, 0) + v_count))
+			where id = v_erasure.id;
 		end if;
-		update public.qorpera_folder_erasures set
-			phase = case when v_cursor ? 'unsaved' and (v_count < p_commits) and (v_erasure.cursor ? 'unsaved') then 3 else 2 end,
-			cursor = case when v_cursor ? 'unsaved' and (v_count < p_commits) and (v_erasure.cursor ? 'unsaved') then '{}'::jsonb
-				else v_cursor end,
-			counts = jsonb_set(counts, '{commits}', to_jsonb(coalesce((counts ->> 'commits')::bigint, 0) + v_rows))
-		where id = v_erasure.id;
 
-	elsif v_erasure.phase = 3 then
-		-- The runs that read an erased version: read records from the first erased version's time to the cutoff's.
-		for v_record in select rr.run_id, rr.release_id, rr.resource_id, rr.created_at, rr.reads
-			from public.qorpera_folder_run_read_records rr
-			where v_erasure.first_erased_at is not null and rr.environment_id = v_erasure.environment_id
-				and rr.created_at >= v_erasure.first_erased_at and rr.created_at < v_max_at
-				and (rr.created_at, rr.run_id, rr.release_id, rr.resource_id) >
-					(coalesce((v_cursor ->> 'at')::timestamptz, '-infinity'::timestamptz),
-					 coalesce((v_cursor ->> 'run')::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
-					 coalesce((v_cursor ->> 'release')::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
-					 coalesce((v_cursor ->> 'resource')::uuid, '00000000-0000-0000-0000-000000000000'::uuid))
-			order by rr.created_at, rr.run_id, rr.release_id, rr.resource_id
-			limit p_commits
-		loop
-			if exists (select 1 from jsonb_array_elements(v_record.reads) rd join jsonb_array_elements(v_erasure.roots) r
-					on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(rd ->> 'path'))
-					and v_record.created_at < (r ->> 'cutoffAt')::timestamptz) then
-				insert into public.qorpera_folder_erasure_runs(erasure_id, run_id) values (v_erasure.id, v_record.run_id)
-				on conflict do nothing;
+		select * into v_erasure from public.qorpera_folder_erasures where id = v_erasure.id;
+		if v_erasure.phase = 5 and not v_out then
+			-- Bytes (C1D §9.4), in a statement after the deletes: side rows for hashes nothing roots now, where a catalog row
+			-- exists, when folder GC serves the company; otherwise they wait (bytes_pending).
+			v_gc := public.qorpera_folder_gc_company(v_erasure.profile_id);
+			if v_gc then
+				select coalesce(array_agg(h.sha256 order by h.sha256 collate "C"), '{}') into v_hashes from (
+					select sha256 from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id
+					order by sha256 collate "C" limit p_hashes) h;
+				insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
+				select v_erasure.profile_id, h, clock_timestamp() from unnest(v_hashes) h
+				where exists (select 1 from public.qorpera_profile_objects o where o.profile_id = v_erasure.profile_id and o.sha256 = h)
+					and not public.qorpera_folder_object_rooted(v_erasure.profile_id, h)
+				order by h collate "C"
+				on conflict (profile_id, sha256) do update
+				set unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);
+				delete from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id and sha256 = any(v_hashes);
 			end if;
-			v_count := v_count + 1;
-			v_bytes := v_bytes + pg_column_size(v_record.reads);
-			v_cursor := jsonb_build_object('at', v_record.created_at, 'run', v_record.run_id, 'release', v_record.release_id,
-				'resource', v_record.resource_id);
-			exit when v_bytes > 4194304;
-		end loop;
-		update public.qorpera_folder_erasures set
-			phase = case when v_count < p_commits and v_bytes <= 4194304 then 4 else 3 end,
-			cursor = case when v_count < p_commits and v_bytes <= 4194304 then '{}'::jsonb else v_cursor end
-		where id = v_erasure.id;
-	end if;
-
-	if v_erasure.phase = 4 or v_erasure.state = 'waiting' then
-		-- The noted runs' receipts and reviewed cards (§6): one pass over the noted runs (and, on a revisit, the pending
-		-- ones). A run still live, a row locked meanwhile (run-owned rows: SKIP LOCKED) or a card still open leaves the
-		-- run pending, revisited hourly. Receipts keep their envelope; cards keep each field's JSON type.
-		select coalesce(array_agg(n.needle), '{}'),
-			coalesce(array_agg(substr(to_jsonb(n.needle)::text, 2, char_length(to_jsonb(n.needle)::text) - 2)), '{}')
-		into v_raw, v_escaped from public.qorpera_folder_erasure_needles n where n.erasure_id = v_erasure.id;
-		v_count := 0;
-		for v_run in select er.run_id from public.qorpera_folder_erasure_runs er
-			where er.erasure_id = v_erasure.id and (er.state = 'noted' or (er.state = 'pending' and v_erasure.state = 'waiting'))
-			order by er.run_id limit 200
-		loop
-			v_ended := exists (select 1 from public.qorpera_execution_runs r join public.qorpera_runner_jobs j on j.id = r.job_id
-				where r.id = v_run.run_id and j.status not in ('queued','leased'));
-			v_left := 0;
-			if v_ended and cardinality(v_raw) > 0 then
-				select count(*) into v_hit from public.qorpera_run_operation_receipts o
-				where o.run_id = v_run.run_id and o.status = 'completed' and o.created_at < v_max_at
-					and public.qorpera_folder_erasure_hit((o.result -> 'content')::text, v_escaped)
-					and o.result -> 'content' is distinct from '{"kind":"text","value":"[erased]"}'::jsonb;
-				with locked as (
-					select o.id from public.qorpera_run_operation_receipts o
-					where o.run_id = v_run.run_id and o.status = 'completed' and o.created_at < v_max_at
-						and public.qorpera_folder_erasure_hit((o.result -> 'content')::text, v_escaped)
-						and o.result -> 'content' is distinct from '{"kind":"text","value":"[erased]"}'::jsonb
-					for no key update skip locked)
-				update public.qorpera_run_operation_receipts o
-				set result = jsonb_set(o.result, '{content}', '{"kind":"text","value":"[erased]"}'::jsonb)
-				from locked where o.id = locked.id;
-				get diagnostics v_done = row_count;
-				v_count := v_count + v_done;
-				v_left := v_left + greatest(v_hit - v_done, 0);
-				-- An open card (or an allow not yet used) is what a member or a woken agent still reads: left pending.
-				select count(*) into v_hit from public.qorpera_action_reviews a
-				where a.run_id = v_run.run_id and a.created_at < v_max_at
-					and not (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null)
-					and (public.qorpera_folder_erasure_hit(a.action::text, v_escaped) or public.qorpera_folder_erasure_hit(a.reason, v_raw));
-				v_left := v_left + v_hit;
-				select count(*) into v_hit from public.qorpera_action_reviews a
-				where a.run_id = v_run.run_id and a.created_at < v_max_at
-					and (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null)
-					and (public.qorpera_folder_erasure_hit(a.action::text, v_escaped) or public.qorpera_folder_erasure_hit(a.reason, v_raw));
-				with locked as (
-					select a.id from public.qorpera_action_reviews a
-					where a.run_id = v_run.run_id and a.created_at < v_max_at
-						and (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null)
-						and (public.qorpera_folder_erasure_hit(a.action::text, v_escaped) or public.qorpera_folder_erasure_hit(a.reason, v_raw))
-					for no key update skip locked)
-				update public.qorpera_action_reviews a
-				set action = a.action || coalesce((select jsonb_object_agg(k, public.qorpera_folder_erasure_blank(a.action -> k))
-						from unnest(array['title','target','details','arguments']) k
-						where a.action ? k and public.qorpera_folder_erasure_hit((a.action -> k)::text, v_escaped)), '{}'::jsonb),
-					reason = case when public.qorpera_folder_erasure_hit(a.reason, v_raw) then 'Erased.' else a.reason end
-				from locked where a.id = locked.id;
-				get diagnostics v_done = row_count;
-				v_count := v_count + v_done;
-				v_left := v_left + greatest(v_hit - v_done, 0);
-			end if;
-			update public.qorpera_folder_erasure_runs set state = case when v_ended and v_left = 0 then 'done' else 'pending' end
-			where erasure_id = v_erasure.id and run_id = v_run.run_id;
-		end loop;
-		update public.qorpera_folder_erasures set
-			phase = case when phase = 4 and not exists (select 1 from public.qorpera_folder_erasure_runs
-				where erasure_id = v_erasure.id and state = 'noted') then 5 else phase end,
-			counts = jsonb_set(counts, '{scrubbed}', to_jsonb(coalesce((counts ->> 'scrubbed')::bigint, 0) + v_count))
-		where id = v_erasure.id;
-	end if;
-
-	select * into v_erasure from public.qorpera_folder_erasures where id = v_erasure.id;
-	if v_erasure.phase = 5 then
-		-- Bytes (C1D §9.4), in a statement after the deletes: side rows for hashes nothing roots now, where a catalog row
-		-- exists, when folder GC serves the company; otherwise they wait (bytes_pending).
-		v_gc := public.qorpera_folder_gc_company(v_erasure.profile_id);
-		if v_gc then
-			select coalesce(array_agg(h.sha256 order by h.sha256 collate "C"), '{}') into v_hashes from (
-				select sha256 from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id
-				order by sha256 collate "C" limit p_hashes) h;
-			insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
-			select v_erasure.profile_id, h, clock_timestamp() from unnest(v_hashes) h
-			where exists (select 1 from public.qorpera_profile_objects o where o.profile_id = v_erasure.profile_id and o.sha256 = h)
-				and not public.qorpera_folder_object_rooted(v_erasure.profile_id, h)
-			order by h collate "C"
-			on conflict (profile_id, sha256) do update
-			set unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);
-			delete from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id and sha256 = any(v_hashes);
+			update public.qorpera_folder_erasures set
+				phase = case when not exists (select 1 from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id)
+					then 6 else 5 end,
+				bytes_pending = not v_gc and exists (select 1 from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id)
+			where id = v_erasure.id;
 		end if;
-		update public.qorpera_folder_erasures set
-			phase = case when not exists (select 1 from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id)
-				then 6 else 5 end,
-			bytes_pending = not v_gc and exists (select 1 from public.qorpera_folder_erasure_hashes where erasure_id = v_erasure.id)
-		where id = v_erasure.id;
-	end if;
 
-	select * into v_erasure from public.qorpera_folder_erasures where id = v_erasure.id;
-	if v_erasure.phase = 6 and not exists (select 1 from public.qorpera_folder_erasure_runs
-			where erasure_id = v_erasure.id and state <> 'done') then
-		-- Done: the roots, the needles and the request digest go; the counts stay.
-		delete from public.qorpera_folder_erasure_needles where erasure_id = v_erasure.id;
-		delete from public.qorpera_folder_erasure_runs where erasure_id = v_erasure.id;
-		update public.qorpera_folder_erasures set state = 'done', done_at = clock_timestamp(), revisit_at = null,
-			roots = null, request_sha256 = null, cursor = '{}'::jsonb, reply = reply - 'roots' - 'copies'
-		where id = v_erasure.id;
-	elsif v_erasure.phase in (5, 6) and (v_erasure.bytes_pending or exists (select 1 from public.qorpera_folder_erasure_runs
-			where erasure_id = v_erasure.id and state = 'pending')) then
-		-- Waiting for pending runs or bytes: revisited once an hour, so it never holds up the others.
-		update public.qorpera_folder_erasures set state = 'waiting', revisit_at = clock_timestamp() + interval '1 hour'
-		where id = v_erasure.id;
-	end if;
+		select * into v_erasure from public.qorpera_folder_erasures where id = v_erasure.id;
+		if v_erasure.phase = 6 and v_erasure.cursor = '{}'::jsonb and not exists (select 1 from public.qorpera_folder_erasure_runs
+				where erasure_id = v_erasure.id and state <> 'done') then
+			-- Done: the roots, the needles and the request digest go; the counts stay.
+			delete from public.qorpera_folder_erasure_needles where erasure_id = v_erasure.id;
+			delete from public.qorpera_folder_erasure_runs where erasure_id = v_erasure.id;
+			update public.qorpera_folder_erasures set state = 'done', done_at = clock_timestamp(), revisit_at = null,
+				roots = null, request_sha256 = null, cursor = '{}'::jsonb, reply = reply - 'roots' - 'copies'
+			where id = v_erasure.id;
+		elsif v_erasure.cursor = '{}'::jsonb and ((v_erasure.phase = 6 and exists (select 1 from public.qorpera_folder_erasure_runs
+				where erasure_id = v_erasure.id and state = 'pending')) or (v_erasure.phase = 5 and v_erasure.bytes_pending)) then
+			-- Only pending runs, or bytes GC does not take yet, are left: revisited once an hour, so it never holds up the
+			-- others. Bytes GC does take keep it working.
+			update public.qorpera_folder_erasures set state = 'waiting', revisit_at = clock_timestamp() + interval '1 hour'
+			where id = v_erasure.id;
+		end if;
+		update public.qorpera_folder_erasures set last_error = null where id = v_erasure.id and last_error is not null;
+	exception
+		when lock_not_available then
+			-- A row someone else holds: this step's work is undone, and the next tick goes on.
+			return jsonb_build_object('schema', 'qorpera.folder-erasure-step/v1', 'erasureId', v_erasure.id, 'contended', true);
+		when others then
+			get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
+			update public.qorpera_folder_erasures set state = 'waiting', revisit_at = clock_timestamp() + interval '1 hour',
+				last_error = left(v_state || ': ' || v_message, 1000)
+			where id = v_erasure.id;
+			return jsonb_build_object('schema', 'qorpera.folder-erasure-step/v1', 'erasureId', v_erasure.id, 'error', v_state);
+	end;
 	select * into v_erasure from public.qorpera_folder_erasures where id = v_erasure.id;
 	return jsonb_build_object('schema', 'qorpera.folder-erasure-step/v1', 'erasureId', v_erasure.id, 'state', v_erasure.state,
 		'phase', v_erasure.phase);
@@ -732,7 +864,7 @@ begin
 	return jsonb_build_object('schema', 'qorpera.folder-erasure-status/v1', 'erasureId', v_erasure.id, 'state', v_erasure.state,
 		'phase', v_erasure.phase, 'counts', v_erasure.counts, 'bytesPending', v_erasure.bytes_pending,
 		'pendingRuns', (select count(*) from public.qorpera_folder_erasure_runs where erasure_id = v_erasure.id and state = 'pending'),
-		'requestedAt', v_erasure.requested_at, 'doneAt', v_erasure.done_at);
+		'lastError', v_erasure.last_error, 'requestedAt', v_erasure.requested_at, 'doneAt', v_erasure.done_at);
 end $$;
 
 -- 7. Grants and the schedule ---------------------------------------------------------------------------------------------
@@ -755,13 +887,11 @@ create function public.qorpera_schedule_folder_erasure()
 returns jsonb language plpgsql set search_path = '' as $$
 declare v_step bigint; v_clean bigint;
 begin
-	if to_regnamespace('cron') is null then
+	if to_regnamespace('cron') is null or to_regprocedure('cron.schedule(text,text,text)') is null then
+		raise notice 'Folder erasure was not scheduled: pg_cron is not installed here';
 		return jsonb_build_object('schema', 'qorpera.folder-erasure-schedule/v1', 'scheduled', false);
 	end if;
 	begin
-		if to_regprocedure('cron.schedule(text,text,text)') is null then
-			return jsonb_build_object('schema', 'qorpera.folder-erasure-schedule/v1', 'scheduled', false);
-		end if;
 		v_step := cron.schedule('qorpera-folder-erasure', '5 seconds', 'select public.qorpera_folder_erasure_step()');
 		v_clean := cron.schedule('qorpera-folder-erasure-log', '17 3 * * *',
 			$q$delete from cron.job_run_details where jobid = (select jobid from cron.job where jobname = 'qorpera-folder-erasure')

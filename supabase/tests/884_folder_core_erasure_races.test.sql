@@ -110,10 +110,41 @@ begin
 	perform pg_temp.drain(current_setting('qorpera_test.erase_c')::uuid);
 end $$;
 
--- E4. The receipts and reviewed cards of a run that wrote an erased path: scrubbed once the run has ended and the card
--- is answered, each keeping its format; a receipt that does not name the path is left.
+-- E4. The receipts and reviewed cards of a run that wrote an erased path, and of a run that only read it: scrubbed once
+-- the run has ended and the card is answered, each keeping its format; a receipt that does not name the path is left.
+-- The same request names a live root (er/live.md lived, was deleted and lives again): a receipt quoting it from its
+-- earlier life is scrubbed, one from its current life is left.
 select pg_temp.saved(pg_temp.commit(pg_temp.actor('run_one'), 'erace-run-write', jsonb_build_array(
 	jsonb_build_object('op','write','path','er/r.md','file',pg_temp.stage('the run''s file')))));
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-live-1', jsonb_build_array(
+	jsonb_build_object('op','write','path','er/live.md','file',pg_temp.stage('live one')))));
+select pg_temp.fx(format($q$
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, status, result, completed_at) values
+		('88400000-0000-4000-8000-0000000000c3', %1$L, %2$L, %3$L, 'read-live-1', 'company_read', repeat('a', 64), repeat('e', 64), 'completed',
+			jsonb_build_object('schema','qorpera.cloud-tool-operation-result/v1','inputSha256',repeat('a', 64),
+				'content',jsonb_build_object('kind','text','value','er/live.md was: old words')), clock_timestamp());
+	insert into public.qorpera_folder_run_read_records(run_id, release_id, environment_id, resource_id, reads, output_sha256) values
+		(%4$L, '88400000-0000-4000-8000-0000000000e1', '63500000-0000-4000-8000-000000000020', '88400000-0000-4000-8000-0000000000e2',
+			'[{"path":"er/r.md"}]', repeat('0', 64));
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, status, result, completed_at) values
+		('88400000-0000-4000-8000-0000000000c5', %4$L, %5$L, %6$L, 'read-r-two', 'company_read', repeat('b', 64), repeat('e', 64), 'completed',
+			jsonb_build_object('schema','qorpera.cloud-tool-operation-result/v1','inputSha256',repeat('b', 64),
+				'content',jsonb_build_object('kind','text','value','a reader saw er/r.md')), clock_timestamp())$q$,
+	pg_temp.actor('run_one') ->> 'runId', pg_temp.actor('run_one') ->> 'jobId', pg_temp.actor('run_one') ->> 'assignmentId',
+	pg_temp.actor('run_two') ->> 'runId', pg_temp.actor('run_two') ->> 'jobId', pg_temp.actor('run_two') ->> 'assignmentId'));
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-live-2', jsonb_build_array(
+	jsonb_build_object('op','delete','path','er/live.md','expectedVersion',pg_temp.vers('er/live.md')))));
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-live-3', jsonb_build_array(
+	jsonb_build_object('op','write','path','er/live.md','file',pg_temp.stage('live two')))));
+select pg_temp.fx(format($q$
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, status, result, completed_at) values
+		('88400000-0000-4000-8000-0000000000c4', %1$L, %2$L, %3$L, 'read-live-2', 'company_read', repeat('c', 64), repeat('e', 64), 'completed',
+			jsonb_build_object('schema','qorpera.cloud-tool-operation-result/v1','inputSha256',repeat('c', 64),
+				'content',jsonb_build_object('kind','text','value','er/live.md is: new words')), clock_timestamp())$q$,
+	pg_temp.actor('run_one') ->> 'runId', pg_temp.actor('run_one') ->> 'jobId', pg_temp.actor('run_one') ->> 'assignmentId'));
 select pg_temp.fx(format($q$
 	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
 		input_sha256, downstream_idempotency_sha256, status, result, completed_at) values
@@ -135,7 +166,7 @@ select pg_temp.fx(format($q$
 select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-del-r', jsonb_build_array(
 	jsonb_build_object('op','delete','path','er/r.md','expectedVersion',pg_temp.vers('er/r.md')))));
 select set_config('qorpera_test.erase_r', public.qorpera_folder_erase('63500000-0000-4000-8000-000000000020', pg_temp.member(1),
-	'["er/r.md"]', 'erace-erase-r') ->> 'erasureId', false);
+	'["er/r.md", "er/live.md"]', 'erace-erase-r') ->> 'erasureId', false);
 do $$
 declare v public.qorpera_folder_erasures%rowtype; v_id uuid := current_setting('qorpera_test.erase_r')::uuid;
 	v_receipt jsonb; v_card jsonb;
@@ -148,8 +179,12 @@ begin
 	if (select result -> 'content' ->> 'value' from public.qorpera_run_operation_receipts where id = '88400000-0000-4000-8000-0000000000c1')
 		<> 'er/r.md says: the secret' then raise exception 'A live run''s receipt is left'; end if;
 	-- The run ends; the open card is still open: the run stays pending, the final card and the receipt are scrubbed.
+	if not exists (select 1 from public.qorpera_folder_erasure_runs where erasure_id = v_id
+			and run_id = (pg_temp.actor('run_two') ->> 'runId')::uuid and state = 'pending') then
+		raise exception 'The run that only read the file is noted, and waits while live'; end if;
 	perform pg_temp.fx(format($q$update public.qorpera_runner_jobs set status = 'failed', lease_token_sha256 = null,
-		lease_expires_at = null, finished_at = clock_timestamp(), last_error = 'test' where id = %L$q$, pg_temp.actor('run_one') ->> 'jobId'));
+		lease_expires_at = null, finished_at = clock_timestamp(), last_error = 'test' where id in (%L, %L)$q$,
+		pg_temp.actor('run_one') ->> 'jobId', pg_temp.actor('run_two') ->> 'jobId'));
 	update public.qorpera_folder_erasures set revisit_at = clock_timestamp() - interval '1 second' where id = v_id;
 	perform public.qorpera_folder_erasure_step();
 	select result into v_receipt from public.qorpera_run_operation_receipts where id = '88400000-0000-4000-8000-0000000000c1';
@@ -158,6 +193,14 @@ begin
 		raise exception 'The receipt keeps its envelope: %', v_receipt; end if;
 	if (select result -> 'content' ->> 'value' from public.qorpera_run_operation_receipts where id = '88400000-0000-4000-8000-0000000000c2')
 		<> 'shared/a.txt says: alpha' then raise exception 'A receipt that does not name the path is left'; end if;
+	if (select result -> 'content' ->> 'value' from public.qorpera_run_operation_receipts where id = '88400000-0000-4000-8000-0000000000c3')
+		<> '[erased]' then raise exception 'A receipt from the live root''s earlier life is scrubbed'; end if;
+	if (select result -> 'content' ->> 'value' from public.qorpera_run_operation_receipts where id = '88400000-0000-4000-8000-0000000000c4')
+		<> 'er/live.md is: new words' then raise exception 'A receipt from the live root''s current life is left'; end if;
+	if (select result -> 'content' ->> 'value' from public.qorpera_run_operation_receipts where id = '88400000-0000-4000-8000-0000000000c5')
+		<> '[erased]' or not exists (select 1 from public.qorpera_folder_erasure_runs where erasure_id = v_id
+			and run_id = (pg_temp.actor('run_two') ->> 'runId')::uuid and state = 'done') then
+		raise exception 'The reader''s receipt is scrubbed and its run done'; end if;
 	select action into v_card from public.qorpera_action_reviews where id = '88400000-0000-4000-8000-0000000000d1';
 	if v_card <> jsonb_build_object('title','Erased.','target','Erased.','details','{}'::jsonb,'arguments','Erased.')
 		or (select reason from public.qorpera_action_reviews where id = '88400000-0000-4000-8000-0000000000d1') <> 'Looks fine.' then
@@ -176,6 +219,65 @@ begin
 		raise exception 'The answered card: only the field that named the path'; end if;
 	select * into v from public.qorpera_folder_erasures where id = v_id;
 	if v.state <> 'done' then raise exception 'Done once no run is pending: %', v; end if;
+end $$;
+
+-- E5. Two requests with one key: the second waits on the roots, then answers the first one's reply (no 23505).
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-setup-d', jsonb_build_array(
+	jsonb_build_object('op','write','path','er/d.md','file',pg_temp.stage('d')))));
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-setup-d2', jsonb_build_array(
+	jsonb_build_object('op','delete','path','er/d.md','expectedVersion',pg_temp.vers('er/d.md')))));
+do $$
+declare r jsonb; r2 jsonb;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	select x into r from dblink('auth_one', pg_temp.erase_sql(array['er/d.md'], 'erace-erase-d')) as t(x jsonb);
+	perform dblink_send_query('auth_two', pg_temp.erase_sql(array['er/d.md'], 'erace-erase-d'));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second request waits on the root'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	r2 := pg_temp.result('auth_two');
+	if r2 is distinct from r then raise exception 'The second request answers the first one''s reply: % / %', r2, r; end if;
+	if exists (select 1 from public.qorpera_folder_entries where environment_id = '63500000-0000-4000-8000-000000000020'
+			and kind = 'claim') then raise exception 'No claim outlives either request'; end if;
+	perform pg_temp.drain((r ->> 'erasureId')::uuid);
+end $$;
+
+-- E6. A step reads at most 4 MiB of receipts: a run with more goes on from where the last step stopped, and none is missed.
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-big-1', jsonb_build_array(
+	jsonb_build_object('op','write','path','er/big.md','file',pg_temp.stage('big')))));
+select pg_temp.fx(format($q$
+	insert into public.qorpera_folder_run_read_records(run_id, release_id, environment_id, resource_id, reads, output_sha256) values
+		(%1$L, '88400000-0000-4000-8000-0000000000e3', '63500000-0000-4000-8000-000000000020', '88400000-0000-4000-8000-0000000000e4',
+			'[{"path":"er/big.md"}]', repeat('0', 64));
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, status, result, completed_at)
+	select ('88400000-0000-4000-8000-' || lpad(to_hex(65536 + g), 12, '0'))::uuid, %1$L, %2$L, %3$L, 'big-' || g, 'company_read',
+		repeat('a', 64), repeat('e', 64), 'completed', jsonb_build_object('schema','qorpera.cloud-tool-operation-result/v1',
+			'inputSha256',repeat('a', 64),'content',jsonb_build_object('kind','text','value',repeat('x', 57344) || ' er/big.md')),
+		clock_timestamp()
+	from generate_series(1, 80) g$q$,
+	pg_temp.actor('run_two') ->> 'runId', pg_temp.actor('run_two') ->> 'jobId', pg_temp.actor('run_two') ->> 'assignmentId'));
+select pg_temp.saved(pg_temp.commit(pg_temp.member(1), 'erace-big-2', jsonb_build_array(
+	jsonb_build_object('op','delete','path','er/big.md','expectedVersion',pg_temp.vers('er/big.md')))));
+do $$
+declare v_id uuid; v public.qorpera_folder_erasures%rowtype; v_scrubbed integer;
+begin
+	v_id := (public.qorpera_folder_erase('63500000-0000-4000-8000-000000000020', pg_temp.member(1), '["er/big.md"]', 'erace-erase-big')
+		->> 'erasureId')::uuid;
+	for i in 1..20 loop
+		select * into v from public.qorpera_folder_erasures where id = v_id;
+		exit when v.phase >= 4;
+		perform public.qorpera_folder_erasure_step();
+	end loop;
+	perform public.qorpera_folder_erasure_step();
+	select * into v from public.qorpera_folder_erasures where id = v_id;
+	select count(*) into v_scrubbed from public.qorpera_run_operation_receipts
+	where logical_operation_key like 'big-%' and result -> 'content' ->> 'value' = '[erased]';
+	if v.phase <> 4 or not v.cursor ? 'run' or v_scrubbed not between 1 and 79 then
+		raise exception 'One step stops inside the run: % % %', v.phase, v.cursor, v_scrubbed; end if;
+	v := pg_temp.drain(v_id);
+	select count(*) into v_scrubbed from public.qorpera_run_operation_receipts
+	where logical_operation_key like 'big-%' and result -> 'content' ->> 'value' = '[erased]';
+	if v.state <> 'done' or v_scrubbed <> 80 then raise exception 'Every receipt is scrubbed: % %', v.state, v_scrubbed; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
