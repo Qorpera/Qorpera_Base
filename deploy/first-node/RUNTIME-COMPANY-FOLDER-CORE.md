@@ -1078,8 +1078,10 @@ identical nodes, and the Interfaces session.
   editors) and F2 (human-task wakes, H2c).
 - **C5:** S3 (the rewrites of §10, the reset function), F3 (the folder service
   #647 and #656 merged and deployed, and the core acceptance script), the
-  coordinator (the proof company and the acceptance) and the coordinator with
-  the Interfaces session (the switch).
+  coordinator (the proof company and the acceptance, including registering the
+  proof company's Company Computer: P38 calls `qorpera_register_runtime_office`
+  as its owner, the folder mode of C1c-3j, decided 3 October 2026) and the
+  coordinator with the Interfaces session (the switch).
 
 Before any `folder-v2` company exists, these must be fixed: #581's N1 (a join
 holds the fence before the invitee check), the read actor refusing a company

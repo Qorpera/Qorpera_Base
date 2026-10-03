@@ -333,7 +333,8 @@ closes the conversation; a restore reopens both, with the same conversation.
   operation key `connection-file:<secret>:<generation>` and the version it read (keeping the company's text below the
   settings; a member's edit meanwhile makes it read again), and finishes the claim
   (`qorpera_finish_connection_file`); a claim never waits for a vault change or a company being deleted (only,
-  briefly, for another claim's new work rows), and a writer makes one per transaction. A revoked secret or
+  briefly, for another claim's new work rows), and a writer makes one per transaction. A claim skips a company whose
+  creation has not completed (P14a, migration `20260930010000`); its marks wait until it has. A revoked secret or
   a closed account means its file is deleted. `actions` lists the operations with an active, unexpired grant; an expiry
   marks nothing, so the file shows an expired grant until the connection's next change.
   `qorpera_mark_connection_files(environment)` marks every connection due at once: an operator step, in its own
