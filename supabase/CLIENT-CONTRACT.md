@@ -700,7 +700,10 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
   Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
   thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
-  answered through `qorpera_answer_action_review` with its `reviewId`.
+  answered through `qorpera_answer_action_review` with its `reviewId`. Since 20260930000400 a waiting send the member
+  may answer also carries `sessionId`, the card's conversation: the card waits for this member, or for owners and
+  admins and the member is one, and the member can write that conversation. Without `sessionId`, show the send without
+  a way to answer it.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
