@@ -63,7 +63,7 @@ and the exit is bridged and would be refused as a private destination.
 
 ## Health and failure
 
-`X verify` exits 0 only when the namespace, the bridge (not forwarding, strict reverse-path filter, not answering ARP),
+`X verify` exits 0 only when the namespace, the bridge (not forwarding, a reverse-path filter on, not answering ARP),
 both addresses, the default route, both rule tables, DNS on 10.210.0.1:53 and a logger heartbeat younger than 30
 seconds are all there. The heartbeat is written only while both of the logger's readers are alive. If the exit is
 down, its agent road machines have no internet; nothing falls back to the platform road. E2 makes the node observer report `verify` and keeps new
@@ -100,9 +100,12 @@ guest guard, LXD and Tailscale on a real node. Those come with E2's switch-on pr
 - E2: the per-machine connection bound counts per address; E2's NIC filtering pins each machine to its address. A
   reload of the rules starts both counts again from zero. The total is one shared list in the kernel: E2's switch-on
   proof on a node measures its cost under load before Jonas decides the numbers.
-- E2: with br_netfilter the node itself tracks the bridged leg of every agent packet, refused ones included (a few
-  seconds each). E2 proves the node's own connection table keeps room under a flood of refused connections, or
-  stops the node tracking bridged `qagent0` traffic.
+- E2: with br_netfilter the node itself tracks the bridged leg of every agent packet, refused and dropped ones
+  included, for the kernel's timeouts (10 s for a refused TCP attempt, 30 s for UDP, 120 s for a SYN the exit drops
+  silently, 600 s for other protocols), and the exit's bounds do not count these. The node's table holds 262,144
+  entries (read on both nodes, 2 October). E2's flood test covers UDP, other protocols, spoofed sources and IPv6, and
+  E2 is expected to stop the node tracking bridged `qagent0` traffic (`notrack`) unless the test shows it is not
+  needed.
 - The refused-flow log: a flow is logged when it is first refused and again each time it is added back after its hour
   runs out. Refusals the exit could not keep (a machine's share spent, or a set full) are counted in
   `refused_unlogged`, and the logger writes a gap line for them.

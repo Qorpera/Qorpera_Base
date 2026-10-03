@@ -93,10 +93,18 @@ up() {
 	load_tables
 	in_exit sysctl -qw net.netfilter.nf_conntrack_acct=1
 	has_link "$BRIDGE" || ip link add "$BRIDGE" type bridge
-	# A qx-br whose peer is not this namespace's br0 (left from an earlier namespace) is replaced.
-	if has_link qx-br && ! in_exit ip link show br0 >/dev/null 2>&1; then ip link del qx-br; fi
+	# A qx-br or qx-up whose peer is not in this namespace (left from an earlier one) is replaced, and the name and
+	# log services, which may still run in the old namespace, are restarted into the new one.
+	local rebuilt=0
+	if has_link qx-br && ! in_exit ip link show br0 >/dev/null 2>&1; then
+		ip link del qx-br
+		rebuilt=1
+	fi
 	has_link qx-br || ip link add qx-br type veth peer name br0 netns "$NS"
-	if has_link qx-up && ! in_exit ip link show up0 >/dev/null 2>&1; then ip link del qx-up; fi
+	if has_link qx-up && ! in_exit ip link show up0 >/dev/null 2>&1; then
+		ip link del qx-up
+		rebuilt=1
+	fi
 	has_link qx-up || ip link add qx-up type veth peer name up0 netns "$NS"
 	host_link_settings
 	ip link set qx-br master "$BRIDGE"
@@ -110,6 +118,9 @@ up() {
 	in_exit ip link set br0 up
 	in_exit ip link set up0 up
 	in_exit ip route replace default via "$UP_NODE" dev up0
+	if ((rebuilt)) && command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+		systemctl try-restart --no-block qorpera-agent-exit-dns.service qorpera-agent-exit-log.service || true
+	fi
 	echo "qorpera-agent-exit: up"
 }
 
