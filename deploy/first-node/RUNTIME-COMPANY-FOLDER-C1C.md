@@ -1080,6 +1080,39 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   against a vault change that now locks by id it can meet in the opposite order. A follow-up locks the agent's active
   grants by id first on `folder-v2`.
 
+### 6.7 C1c-3j as built: the Company Computer's lock, creation and start (migration 20260930012000, test 893)
+
+The coordinator's P06a (plan `outputs/company-accounts/p06-office-folder-v2-plan.md`). Until now no folder-v2 office
+could exist, and every office path took the gc fence (the company row `FOR UPDATE`). On folder-v2:
+
+| Path | Before | Now (`folder-v2`) |
+|---|---|---|
+| `assert_runtime_office_provider` (33 callers: start, activation, screen heartbeats, lifecycle, reset, software, package, delete) | gc fence, office | 3f's machine fence (the folder fence and rank 0 `KEY SHARE`), office |
+| Provider set, office reservation (`reserve_runtime_machine`'s office branch, `reserve_runtime_node_machine`'s office kind) | gc fence | machine fence |
+| A member's start, cancel, withdrawal and status; the provider's reserve and check (and their wrappers, before the assertion); the fleet offer and placement | gc fence, office, then the start's member or agent | `qorpera_folder_office_enter`: machine fence, the acting member and the start's requester (rank 1), the requesting agent's staff row (rank 2), then the office |
+| `member_office_catalog` | gc fence, member | machine fence, member |
+| `register_runtime_office` (a company's first computer) | gc fence; refused (path gateway 1 only) | machine fence, the owner or admin's member row, the office rows |
+| Gates (registration, start source, guest binding, office reservation) | `path_gateway_version = 1` | also a ready folder-v2 Company File |
+| The interlock trigger | gc fence on every company-computer write | returns first: a folder-v2 company has no version-1 cutover |
+| A hire's default access (`runtime_office_default_access_for_staff`) | offices in scan order | offices by id (both cores) |
+
+- **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
+  called as the company's owner the first time the company needs its computer. Today no product path registers a
+  company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38
+  registers the proof company's (core §11). P14's creation commit makes no office.
+- **The hire-vs-start deadlock** the gc fence hid: a hire, or an agent's return, takes the agent's staff row and then,
+  through its default office access, each office's revision (the browser grant). A start took the office and then
+  shared the agent's row in its start-source check. On folder-v2 the start shares the agent's row (and the members)
+  before the office, which is the hire's order (staff rank 2 before offices). Test 893 C builds it: the start waits at
+  the staff row holding no office, and the return lands.
+- **Test 893:** registration, the catalog, start, status and cancel, each sent while another session holds the
+  company row `KEY SHARE` (a `FOR UPDATE` would wait for it); the deadlock above; a snapshot-v1 catalog still waiting
+  behind that hold (its gc fence); and the markers.
+- **Not in 3j:** screens and their events and observations, the shared surface and restart-surface gates, access
+  configuration, the adoption check (its staff and members after the office, on an office's replacement), the
+  member's agent-office call (C1c-3k); an agent's start, the descriptor and the activation-wake drain (C1c-3l). Capture
+  and export stay refused (C1d, C3).
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
