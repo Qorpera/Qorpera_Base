@@ -321,7 +321,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					if (typeof leaseId !== "string" || !UUID_PATTERN.test(leaseId))
 						throw new HttpError(400, "Cleanup authority is invalid");
 					// 200 with the outcome. 503: the NAS lanes are busy or a dependency is down, and the worker stops for
-					// this run. 409: a lock conflict on this object; the lane gave its mark up.
+					// this run. 409: a lock conflict on this object (the mark is given up, or expires if the begin met it).
 					json(response, 200, { outcome: await options.folderGc.collect(match[1]!, match[2]!, leaseId) });
 					return;
 				}

@@ -358,7 +358,8 @@ export interface FolderObjectGcResult {
 	restored: number;
 	stale: number;
 	failed: number;
-	/** The gateway's NAS lanes were busy: the rest of the claim waits for its marks to expire. */
+	/** The gateway's NAS lanes were busy, or the phase's time ran out: the rest of the claim waits for its marks to
+	 * expire. */
 	stopped: boolean;
 }
 
@@ -390,13 +391,16 @@ export function parseFolderObjectGcClaim(value: unknown, leaseId: string): Folde
 
 /** The worker's folder phase (C1D §9.10), off until its switch is on: a small sweep of expired upload intents, a
  * small claim under a new lease, then the gateway's lane for each marked object, in order. A busy gateway (503) stops
- * the phase for this run, so GC never crowds out live traffic; any other failure leaves that object's mark to expire.
- * A failed sweep or claim fails the phase; the caller keeps it apart from the other phases. */
+ * the phase for this run, so GC never crowds out live traffic, and so does the phase's time budget, so a slow gateway
+ * never leaves the worker's other phases without time; the marks not reached expire. Any other failure leaves that
+ * object's mark to expire. A failed sweep or claim fails the phase; the caller keeps it apart from the other phases. */
 export async function runFolderObjectGc(
 	store: FolderObjectGcStore,
 	leaseId: string,
-	limits: { sweep: number; claim: number } = { sweep: 25, claim: 25 },
+	limits: { sweep: number; claim: number; budgetMs: number } = { sweep: 25, claim: 25, budgetMs: 60_000 },
+	now: () => number = Date.now,
 ): Promise<FolderObjectGcResult> {
+	const deadline = now() + limits.budgetMs;
 	const result: FolderObjectGcResult = {
 		enabled: false,
 		swept: 0,
@@ -413,6 +417,10 @@ export async function runFolderObjectGc(
 	const objects = parseFolderObjectGcClaim(await store.claim(limits.claim, leaseId), leaseId);
 	result.claimed = objects.length;
 	for (const object of objects) {
+		if (now() >= deadline) {
+			result.stopped = true;
+			break;
+		}
 		let outcome: FolderObjectGcOutcome | "busy";
 		try {
 			outcome = await store.collect(object);

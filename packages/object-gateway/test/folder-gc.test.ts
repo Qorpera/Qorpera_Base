@@ -43,6 +43,8 @@ class FolderGcCloud {
 	readonly rooted = new Set<string>();
 	readonly deleting = new Set<string>();
 	readonly replicas = new Map<string, Uint8Array>();
+	/** snapshot-v1's cleanup fence on replication (20260913000200): QRC01 too, with its own message. */
+	legacyFence = false;
 	readonly calls: string[] = [];
 	/** One-shot PostgREST 500s, by RPC, with their SQLSTATE. */
 	readonly failures = new Map<string, string>();
@@ -135,6 +137,11 @@ class FolderGcCloud {
 			case "qorpera_authorize_profile_object_replication":
 				if (!this.catalog.has(key))
 					return Response.json({ code: "42501", message: "unavailable" }, { status: 403 });
+				if (this.legacyFence)
+					return Response.json(
+						{ code: "QRC01", message: "replication is fenced by cleanup", details: null, hint: null },
+						{ status: 409 },
+					);
 				// C1D §9.7: an object GC holds is the conflict envelope.
 				if (this.#live(key))
 					return Response.json(
@@ -446,6 +453,17 @@ describe("folder GC's scan", () => {
 		expect(Buffer.from(f.cloud.replicas.get(identity)!)).toEqual(bytes);
 		expect(await f.journal.read(entryKey)).toBeUndefined();
 		expect(f.gc.degraded()).toBe(false);
+	});
+
+	it("keeps snapshot-v1's cleanup fence a refusal that blocks the entry, as before", async () => {
+		const f = await fixture();
+		f.cloud.catalog.set(identity, { bytes: bytes.length, backend: "nas-object-gateway" });
+		await f.store.put(profileId, sha256, bytes);
+		await f.journal.write(entryKey, { profileId, sha256, bytes: bytes.length, state: "replicate" });
+		f.cloud.legacyFence = true;
+		await f.replication.reconcile();
+		expect(await f.journal.read(entryKey)).toMatchObject({ state: "blocked" });
+		expect(f.authority.health().api.status).toBe("healthy");
 	});
 
 	it("reports a scan that met an error as degraded health until a scan succeeds", async () => {
