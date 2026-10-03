@@ -266,7 +266,6 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_profile_object_writes_allowed(uuid)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_profile_team_info(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_promote_local_profile(uuid,text,text,integer)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
-	('public.qorpera_provision_execution_runner(uuid,uuid,text,text)', true, true, 'internal: auth.role() = service_role + token/capability hash; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_publish_company_file_revision(uuid,uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_put_profile_staff(uuid,uuid,text,text,text,text,text,text,text,text,text,text,text,text,timestamp with time zone,bigint)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_put_room_draft(uuid,uuid,bigint,text)', false, true, 'member: auth.uid() + membership/ownership'),
