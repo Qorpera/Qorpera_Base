@@ -218,15 +218,25 @@ begin
 	if v_outcome <> 'ok' then raise exception 'C: the access change lands: %', v_outcome; end if;
 end $$;
 
--- D. Access status is plain reads: with the company row held, it answers at once.
+-- D. With the company row held, access status answers at once (plain reads), and a change of Ada's access does not wait
+--    (the machine fence takes the row only KEY SHARE).
 select pg_temp.hold(pg_temp.company_hold('10'));
 do $$
 declare v_answer text := pg_temp.settled('fence_two', format('select public.qorpera_runtime_office_access_status(%L, %L)::text',
 	current_setting('qorpera_test.scope'), '64800000-0000-4000-8000-0000000000a1'));
+	v_set text;
 begin
+	if v_answer = 'WAITED' then perform pg_temp.release(); perform pg_temp.outcome('fence_two');
+		raise exception 'D: access status answers without a lock'; end if;
+	v_set := pg_temp.settled('fence_two', format('select public.qorpera_set_runtime_office_access(%L, %L, %s, true)::text',
+		current_setting('qorpera_test.low'), '64800000-0000-4000-8000-0000000000a1',
+		(select version from public.qorpera_runtime_office_access where office_id = current_setting('qorpera_test.low')::uuid
+			and staff_agent_id = '64800000-0000-4000-8000-0000000000a1')));
 	perform pg_temp.release();
-	if v_answer = 'WAITED' then perform pg_temp.outcome('fence_two'); end if;
+	if v_set = 'WAITED' then perform pg_temp.outcome('fence_two'); end if;
 	if v_answer !~ '"state": "active"' then raise exception 'D: access status answers without a lock: %', v_answer; end if;
+	if v_set = 'WAITED' or v_set !~ '"state": "active"' then
+		raise exception 'D: an access change takes the company row only KEY SHARE: %', v_set; end if;
 end $$;
 
 -- E. An agent's return takes the company's seat lock before the computers: with the seat lock held (a computer being
@@ -298,12 +308,13 @@ begin
 	perform set_config('qorpera_test.epoch', v_screen.epoch::text, false);
 end $$;
 
--- H. A private heartbeat takes the privacy owner (with the start's members) before the computer: with the owner's row
---    held, it waits there holding no computer, and then goes on (its made-up challenge is refused; never 40P01).
-select pg_temp.hold(pg_temp.member_hold('01'));
+-- H. A private heartbeat takes the privacy owner (with the start's members) before the computer: with the privacy
+--    owner's row held (the company's other member, not the start's requester), it waits there holding no computer, and
+--    then goes on (its made-up challenge is refused; never 40P01).
+select pg_temp.hold(pg_temp.member_hold('02'));
 select dblink_send_query('fence_three', format('select public.qorpera_record_runtime_screen_event(%L, %L, %L, %L)::text',
 	current_setting('qorpera_test.startup'), current_setting('qorpera_test.binding'),
-	jsonb_build_object('memberId', '64800000-0000-4000-8000-000000000001', 'screenId', current_setting('qorpera_test.binding')::jsonb -> 'screenId'),
+	jsonb_build_object('memberId', '64800000-0000-4000-8000-000000000002', 'screenId', current_setting('qorpera_test.binding')::jsonb -> 'screenId'),
 	jsonb_build_object('lifetimeId', '89500000-0000-4000-8000-0000000000c1', 'eventId', '89500000-0000-4000-8000-0000000000e1', 'sequence', 1,
 		'observedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'state', 'requested',
 		'reason', 'SCREEN_REQUESTED')));
