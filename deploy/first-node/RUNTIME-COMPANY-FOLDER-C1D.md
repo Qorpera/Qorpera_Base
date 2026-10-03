@@ -377,7 +377,8 @@ folder-v2 now (C5 early), rather than growing that path with chunk rows:
    temp table lists them), so 761, 762, 766 and 769, which test possession itself, are untouched; a race fixture takes
    possession before its races, since a race's own transaction stages nothing.
 3. **`qorpera_verify_company_path_file` refuses folder-v2** (C5 early). Then the chunk index is complete with no
-   version-1 case, and the file-hash check is not needed.
+   version-1 case, and the file-hash check is not needed. Done in slice P10 (`20260930001100`, test 821): 0A000 before
+   the gc fence, so a refused call takes no lock.
 
 Until step 3, version-1 proofs of folder-v2 companies exist only in test fixtures. C1d-2b's worker phase is not
 switched on before step 3. Manifests of manifests (core §7) will need a recursive step

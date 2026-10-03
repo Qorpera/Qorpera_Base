@@ -1,5 +1,6 @@
 # Changelog
 
+- The version-1 proof of a staged file refuses folder-v2 companies (folder core slice P10, C5 early; migration `20260930001100`, SQL test 821; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md` §9.3 step 3): `qorpera_verify_company_path_file` answers 0A000 for a folder-v2 company before it takes the gc fence, so a refused call takes no lock, and a folder-v2 company's chunk index is complete with no version-1 case. Snapshot-v1 companies are unchanged. Needs P09's fixture move (#724).
 ## [Unreleased]
 
 ### Breaking Changes
