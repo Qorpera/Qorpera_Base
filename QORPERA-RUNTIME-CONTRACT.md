@@ -548,8 +548,10 @@ agent's folder and has no file of its own.
 shared by all agents: the service, the account, its status, the actions agents
 may take with it, and who connected it and when.
 
-- Only the platform writes these fields, in the same step as the vault record.
-  A save that changes them is refused.
+- Only the platform writes these fields. A vault change marks the file due,
+  and the platform's writer then brings it to the vault's current state
+  (amended 3 October 2026, P22: `deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`
+  §3 step 4). A save that changes them is refused.
 - The vault and the operation grants (11.5) stay the authority for the secret,
   its status and what agents may do. The file shows them.
 - The body says what the connection is for and is company-authored.
