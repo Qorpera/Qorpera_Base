@@ -59,7 +59,7 @@ export class ObjectGatewayFolderGc {
 	#lastError = false;
 	#quarantineCursor: string | undefined;
 	#blockedCursor: string | undefined;
-	readonly #nextCheck = new Map<string, number>();
+	readonly #nextCheck = new Map<string, { at: number; missingSince?: string }>();
 
 	constructor(
 		store: FileSystemObjectStore,
@@ -160,11 +160,16 @@ export class ObjectGatewayFolderGc {
 	 * Bytes with no catalog row (C1D §9.9): a NAS put whose confirm never ran. Its entry ends `blocked`, because folder
 	 * replication refuses a missing row, and the gateway reports degraded for it. Under the object's lock (an upload
 	 * holds it from its put to its confirm), each blocked entry's object is checked again: once a folder-v2 object has
-	 * had no catalog row and no upload intent rooting it for the grace window from when this gateway first found it so,
-	 * its NAS file and any Storage replica are removed and the entry dropped. Entries of any other company, and of
-	 * catalogued objects, stay as they are. A pass reads up to 500 entries and checks up to `limit`, going on next time.
+	 * been `missing` (no catalog row, no upload intent rooting it) at every check, at most 10 minutes apart, for the
+	 * grace window, its NAS file and any Storage replica are removed and the entry dropped. Any other answer starts the
+	 * wait over. Entries of any other company, and of catalogued objects, stay as they are. A pass reads up to 500
+	 * entries and checks up to `limit` that are due, going on next time.
 	 */
 	async #uncatalogued(limit: number): Promise<void> {
+		// Schedules that came due are forgotten, so the map holds only entries checked within the last 10 minutes.
+		const start = this.#now();
+		for (const [key, due] of this.#nextCheck) if (due.at <= start) this.#nextCheck.delete(key);
+		if (this.#nextCheck.size > 10_000) this.#nextCheck.clear();
 		let objects: BlockedObject[];
 		try {
 			const page = await this.#replication.blockedEntries(this.#blockedCursor, limit);
@@ -176,8 +181,9 @@ export class ObjectGatewayFolderGc {
 		}
 		for (const listed of objects) {
 			const key = `${listed.profileId}/${listed.sha256}`;
-			// An entry checked lately is not asked about again before its time: most never change.
-			if ((this.#nextCheck.get(key) ?? 0) > this.#now()) continue;
+			// An entry checked lately, and unchanged since, is not asked about again before its time: most never change.
+			const due = this.#nextCheck.get(key);
+			if (due && due.at > this.#now() && due.missingSince === listed.missingSince) continue;
 			this.#nextCheck.delete(key);
 			try {
 				await this.#replication.exclusive(listed.profileId, listed.sha256, async () => {
@@ -186,8 +192,11 @@ export class ObjectGatewayFolderGc {
 					const now = this.#now();
 					if ((await this.#authority.folderCatalogState(entry.profileId, entry.sha256)) !== "missing") {
 						// The wait counts only while the object is missing all along.
-						if (entry.missingSince !== undefined) await this.#replication.markMissingLocked(entry);
-						this.#nextCheck.set(key, now + RECHECK_MS);
+						if (entry.missingSince !== undefined) {
+							await this.#replication.markMissingLocked(entry);
+							await this.#audit("folder_object_uncatalogued_cleared", entry);
+						}
+						this.#nextCheck.set(key, { at: now + RECHECK_MS });
 						return;
 					}
 					const since = entry.missingSince === undefined ? Number.NaN : Date.parse(entry.missingSince);
@@ -198,11 +207,16 @@ export class ObjectGatewayFolderGc {
 							...entry,
 							missingSince: new Date(now).toISOString(),
 						});
-						this.#nextCheck.set(key, now + UNCATALOGUED_GRACE_MS);
+						this.#nextCheck.set(key, { at: now + RECHECK_MS, missingSince: new Date(now).toISOString() });
 						return;
 					}
 					if (now - since < UNCATALOGUED_GRACE_MS) {
-						this.#nextCheck.set(key, since + UNCATALOGUED_GRACE_MS);
+						// Checked again within 10 minutes, so another answer meanwhile is seen and starts the wait over (an
+						// intent that names the object stays `listed` for the grace window past its end).
+						this.#nextCheck.set(key, {
+							at: Math.min(now + RECHECK_MS, since + UNCATALOGUED_GRACE_MS),
+							missingSince: entry.missingSince,
+						});
 						return;
 					}
 					await this.#store.remove(entry.profileId, entry.sha256);

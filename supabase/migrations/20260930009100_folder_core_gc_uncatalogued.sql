@@ -9,8 +9,8 @@ set local lock_timeout = '3s';
 
 -- What the catalog says of an object the gateway holds bytes or a blocked entry for:
 -- * 'catalogued': it has a catalog row; its entry is blocked for another reason, and folder GC leaves it;
--- * 'other': no row, in a company folder GC does not serve (snapshot-v1, mixed, or being deleted:
---   qorpera_folder_gc_company); left as it is;
+-- * 'other': no row, in a company folder GC does not serve (snapshot-v1, mixed, being deleted, or purged:
+--   qorpera_folder_gc_company); left as it is (a deleted company's leftovers are part 2's);
 -- * 'listed': no row, but an upload intent that is open, or that ended less than the grace window ago, lists it: the
 --   same window in which the intent roots its objects (qorpera_folder_object_rooted), kept here so folder GC's two
 --   views of an object's roots agree (a writer can confirm only while its intent is open);

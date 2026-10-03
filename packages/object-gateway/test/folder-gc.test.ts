@@ -798,11 +798,21 @@ describe("folder GC's bytes with no catalog row (C1D §9.9)", () => {
 				.catch(() => "refused");
 			await reached.promise;
 			const asked = f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+			// The pass has listed the entry and waits behind the upload for the object's lock before the upload goes on.
+			const queued = deferred();
+			const exclusive = f.replication.exclusive.bind(f.replication);
+			const spy = vi
+				.spyOn(f.replication, "exclusive")
+				.mockImplementation((objectProfileId, objectSha256, operation) => {
+					queued.resolve();
+					return exclusive(objectProfileId, objectSha256, operation);
+				});
 			const pass = f.gc.recover();
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await queued.promise;
 			gate.resolve();
 			await upload;
 			await pass;
+			spy.mockRestore();
 			// The entry was the upload's by the time the pass had the lock: it is not asked about, and nothing goes.
 			expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(asked);
 			expect(await f.nasBytes()).toEqual(bytes);
@@ -832,6 +842,39 @@ describe("folder GC's bytes with no catalog row (C1D §9.9)", () => {
 		f.cloud.storage = "healthy";
 		await f.gc.recover();
 		expect(await f.journal.read(entryKey)).toBeUndefined();
+	});
+
+	it("sees a break inside the day: checks come at most 10 minutes apart, and any other answer starts the wait over", async () => {
+		const f = await fixture();
+		await uncatalogued(f);
+		await f.gc.recover();
+		const first = new Date(f.cloud.wall).toISOString();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: first });
+		// Within the 10 minutes the entry is not asked about again.
+		const asked = f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+		f.cloud.wall += 9 * 60 * 1000;
+		await f.gc.recover();
+		expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(asked);
+		// Halfway, an intent lists it for a while: the next check sees it, and the wait starts over.
+		f.cloud.wall += 12 * 60 * 60 * 1000;
+		f.cloud.listed.add(identity);
+		await f.gc.recover();
+		expect(await f.journal.read(entryKey)).toEqual({ profileId, sha256, bytes: bytes.length, state: "blocked" });
+		expect(await readFile(join(f.stateRoot, "audit.jsonl"), "utf-8")).toContain("folder_object_uncatalogued_cleared");
+		f.cloud.listed.clear();
+		// A day after the first mark, missing again: marked anew, not removed.
+		f.cloud.wall += 13 * 60 * 60 * 1000;
+		await f.gc.recover();
+		const second = new Date(f.cloud.wall).toISOString();
+		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: second });
+		expect(await f.nasBytes()).toEqual(bytes);
+		// Missing at every check for a day from the new mark: removed.
+		for (let checks = 0; checks < 6 * 24; checks += 1) {
+			f.cloud.wall += 10 * 60 * 1000;
+			await f.gc.recover();
+		}
+		expect(await f.journal.read(entryKey)).toBeUndefined();
+		expect(await f.nasBytes()).toBeUndefined();
 	});
 
 	it("counts the day only while the object is missing all along, and from a sane time", async () => {
