@@ -1341,6 +1341,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// next tenant of the same account can read.
 		await rm(join(this.#slotState(slot), "runner", ".local"), { recursive: true, force: true });
 		await rm(join(this.#slotState(slot), "runner", ".cache"), { recursive: true, force: true });
+		// The runner's configuration holds its run's identity credential (G2-3); it goes with the runner.
+		await rm(join(this.#slotState(slot), "runner", "config.json"), { force: true });
 		for (const name of ["qorpera-runner-activation", "qorpera-runner-assignment"])
 			await rm(join(this.#slotRun(slot), "credentials", name), { force: true });
 	}

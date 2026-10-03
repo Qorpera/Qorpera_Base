@@ -31,8 +31,10 @@ p_name, p_args)`, the publishable key's, with authenticator's 8 s.
   whose runner holds the identity) or a login guest (a sign-in or account refresh allocation of the identity). The
   node host mints 32 random bytes (43 characters, base64url), binds the sha256 with
   `qorpera_bind_native_identity_credential(allocation, adapter, instance, kind, sha256)` right after it reserves
-  the machine, and writes the plaintext only into the guest's credential file (0600, the host's uid). Only the
-  hash leaves the node host: never the plaintext in a receipt, journal, log, observation or error.
+  the machine, and writes the plaintext only into the holder's credential file (0600, the host's uid) and, for an
+  exec slot, the slot runner's configuration (0600, the runner's account, removed with the runner), which hands it
+  to a warm host. Only the hash leaves the node host: never the plaintext in a receipt, journal, log, observation
+  or error.
 - **Rotation.** Binding the same allocation again replaces the hash, and the old credential fails at once. A hash
   is bound once (23505 otherwise), so a warm reuse, a new allocation, binds a new credential. A warm exec host's
   systemd credentials are fixed when its unit starts, so G2-3bc hands a warm host each run's credential with the run
@@ -64,8 +66,10 @@ credential, and any other database call is refused in the host. Storage and Real
   read its identity's recovery state, so the gateway reads it node side and pushes it as the credential
   `qorpera-native-identity-state` (outside the sealed bootstrap digest, which it would otherwise change); the
   bootstrap, host startup and the `/login` backup stage use that copy. A recovery started since is still caught: the
-  identity entry point refuses every call while the identity is in recovery, and the sign-in's completion carries
-  the epoch it started at (`p_recovery_epoch`), which must still be the identity's. The environment's
+  identity entry point refuses every call while the identity is in recovery, and once one has finished, the login
+  sessions' epoch trigger (migration `20260917030000`) refuses a completion at the sign-in's old epoch; the backup
+  stage itself fails closed if the recovery authority changed. The gateway pushes the state once the guest's agent
+  answers. The environment's
   `QORPERA_NATIVE_LOGIN_GUEST` (`sign_in` or `account_refresh`) tells the host which; a sign-in's host runs no
   account loop (those calls are refused for it, and the metadata arrives with the next job or refresh).
 - **Exec slots** (shared execution): the service mints one per run (a warm reuse is a new allocation, so a new

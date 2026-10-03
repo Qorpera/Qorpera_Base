@@ -222,6 +222,7 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 			"native_bridge_url",
 			"native_bridge_boundary",
 			"native_bridge_shared_gid",
+			"native_identity_credential",
 			"assignment_host",
 			"assignment_port",
 			"assignment_trusted_source",

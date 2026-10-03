@@ -209,14 +209,21 @@ export class NativeHostDispatch {
 
 	async #dispatch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
 		const url = new URL(input instanceof Request ? input.url : input);
-		// Another origin, or not a database call (Storage and Realtime, until G2-4): sent as before.
-		if (url.origin !== this.#origin || !url.pathname.startsWith("/rest/")) return this.#fetch(input, init);
+		// Another origin, or Storage on the project's (until G2-4): sent as before. Any other path of the project's
+		// is a database call through an entry point or refused, so nothing else rides on the service key.
+		if (url.origin !== this.#origin || url.pathname.startsWith("/storage/v1/")) return this.#fetch(input, init);
 		const name = RPC_PATH.exec(url.pathname)?.[1];
 		const identityCall = name !== undefined && NATIVE_HOST_IDENTITY_CALLS.has(name);
 		const budget = name === undefined || identityCall ? undefined : NATIVE_HOST_CALLS.get(name);
 		// Any other database call is a listed call through an entry point, or refused: never the service key.
 		if (name === undefined || (!identityCall && budget === undefined)) throw new Error("Not a native host call");
-		if (input instanceof Request || init?.method !== "POST" || typeof init.body !== "string" || url.search)
+		if (
+			input instanceof Request ||
+			init?.method !== "POST" ||
+			typeof init.body !== "string" ||
+			url.search ||
+			!isJsonObject(init.body)
+		)
 			throw new Error("Native host call is malformed");
 		const headers = new Headers(init.headers);
 		headers.delete("apikey");
@@ -243,6 +250,16 @@ export class NativeHostDispatch {
 		// The original arguments are spliced in as sent, so no value is re-encoded on the way.
 		const body = `{"p_job_id":${JSON.stringify(job.jobId)},"p_job_lease_token":${JSON.stringify(job.leaseToken)},"p_name":${JSON.stringify(name)},"p_args":${init.body}}`;
 		return this.#fetch(`${this.#origin}/rest/v1/rpc/${entry}`, { ...init, redirect: "error", headers, body });
+	}
+}
+
+/** The arguments are one JSON object, so splicing them in as sent adds no key to the entry point's own. */
+function isJsonObject(body: string): boolean {
+	try {
+		const value: unknown = JSON.parse(body);
+		return typeof value === "object" && value !== null && !Array.isArray(value);
+	} catch {
+		return false;
 	}
 }
 

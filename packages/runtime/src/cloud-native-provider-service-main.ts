@@ -297,7 +297,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		await systemdCredential(environment, "qorpera-native-identity"),
 		computeIdentityId,
 	);
-	if (identity.credential === bridgeToken || identity.credential === masterKey)
+	if ([bridgeToken, masterKey, serviceKey].includes(identity.credential) || identity.publishableKey === serviceKey)
 		throw new Error("The native identity credential must be independent");
 	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, serviceKey, identity });
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
@@ -353,7 +353,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			"qorpera-native-object-token",
 			"QORPERA_NATIVE_OBJECT_TOKEN",
 		);
-		if (!TOKEN_PATTERN.test(objectToken) || objectToken === masterKey || objectToken === bridgeToken)
+		if (!TOKEN_PATTERN.test(objectToken) || [masterKey, bridgeToken, identity.credential].includes(objectToken))
 			throw new Error("Native object staging requires a distinct private credential");
 		if (environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN !== undefined) {
 			throw new Error("Cloud secret broker runtime authority must use a systemd credential");
@@ -369,7 +369,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			secretBrokerOrigin &&
 			(!secretBrokerToken ||
 				!TOKEN_PATTERN.test(secretBrokerToken) ||
-				[masterKey, bridgeToken, objectToken].includes(secretBrokerToken))
+				[masterKey, bridgeToken, identity.credential, objectToken].includes(secretBrokerToken))
 		)
 			throw new Error("Cloud secret broker requires a distinct private systemd credential");
 		const computerToken = computerConfiguration
@@ -379,7 +379,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			computerConfiguration &&
 			(!computerToken ||
 				!TOKEN_PATTERN.test(computerToken) ||
-				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken].includes(computerToken))
+				[masterKey, bridgeToken, identity.credential, objectToken, serviceKey, secretBrokerToken].includes(
+					computerToken,
+				))
 		)
 			throw new Error("Company Computer requires a distinct private systemd credential");
 		const codingToken = codingConfiguration
@@ -389,7 +391,15 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			codingConfiguration &&
 			(!codingToken ||
 				!TOKEN_PATTERN.test(codingToken) ||
-				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken, computerToken].includes(codingToken))
+				[
+					masterKey,
+					bridgeToken,
+					identity.credential,
+					objectToken,
+					serviceKey,
+					secretBrokerToken,
+					computerToken,
+				].includes(codingToken))
 		)
 			throw new Error("Coding command transport requires a distinct private systemd credential");
 		const pathControl = new HttpCloudCompanyPathControl({
@@ -546,8 +556,8 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			: {
 					masterKey,
 					// The recovery state this host started with (a login guest's from its gateway). A recovery started
-					// since puts the identity in recovery, which refuses its identity calls, and moves its epoch, which
-					// the sign-in's completion (p_recovery_epoch) then refuses.
+					// since puts the identity in recovery, which refuses its identity calls, and a finished one moves its
+					// epoch, at which the sign-in's completion is refused (the login sessions' epoch trigger).
 					backupIdentityKey: async (request: NativeProviderLoginRequest) => {
 						if (!state.recoveryConfiguration)
 							throw new Error("Native login requires the current cloud recovery authority");

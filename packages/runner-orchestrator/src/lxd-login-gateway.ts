@@ -480,6 +480,26 @@ function parseResult(value: unknown, loginId: string): NativeLoginResult {
 	};
 }
 
+/** The project's publishable key, as a guest's native host accepts it: a modern `sb_publishable_` key or a legacy JWT
+ * whose role is anon (G2-3). A wrong key fails here, not at every guest's bootstrap. */
+function isPublishableKey(value: string): boolean {
+	if (/^sb_publishable_[A-Za-z0-9_-]{8,}$/.test(value)) return true;
+	const parts = value.split(".");
+	if (
+		value.length > 4096 ||
+		parts.length !== 3 ||
+		!value.startsWith("eyJ") ||
+		!parts.every((part) => /^[A-Za-z0-9_-]+$/.test(part))
+	)
+		return false;
+	try {
+		const claims: unknown = JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8"));
+		return typeof claims === "object" && claims !== null && (claims as { role?: unknown }).role === "anon";
+	} catch {
+		return false;
+	}
+}
+
 function validateConfig(config: LxdNativeLoginGatewayConfig): void {
 	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 	if (!isAbsolute(config.stateRoot)) throw new Error("LXD login state root must be absolute");
@@ -549,8 +569,7 @@ function validateConfig(config: LxdNativeLoginGatewayConfig): void {
 		url.hash ||
 		!config.supabaseServiceKey.trim() ||
 		/[\0\r\n]/.test(config.supabaseServiceKey) ||
-		!config.supabasePublishableKey.trim() ||
-		/[\0\r\n]/.test(config.supabasePublishableKey) ||
+		!isPublishableKey(config.supabasePublishableKey) ||
 		config.supabasePublishableKey === config.supabaseServiceKey ||
 		!config.codexPath.startsWith("/") ||
 		!config.claudePath.startsWith("/")
@@ -1911,6 +1930,8 @@ export class LxdNativeLoginGateway {
 		recoveryRuntimeState(state);
 		if (record(state, "Identity recovery state").computeIdentityId !== binding.computeIdentityId)
 			throw new Error("LOGIN_IDENTITY_STATE_INVALID");
+		// A new identity's guest has had no recovery step that waited for its agent.
+		await this.#waitForGuestAgent(instanceName, signal);
 		await this.#lxd.pushInstanceFile(
 			this.#config.project,
 			instanceName,

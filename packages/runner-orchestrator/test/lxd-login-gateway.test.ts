@@ -70,6 +70,8 @@ class FakeLxd implements LxdClient {
 	lostSubmission?: LxdTrackedInstanceAction["action"];
 	lostPolls = 0;
 	restoreFailures = 0;
+	/** Agent calls after the VM runs that fail before its agent answers. */
+	agentPending = 0;
 	pending = false;
 	onSubmit?: (action: LxdTrackedInstanceAction) => void;
 
@@ -165,6 +167,7 @@ class FakeLxd implements LxdClient {
 
 	async pushInstanceFile(_project: string, _name: string, path: string, content: string, mode: number): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
+		if (this.agentPending > 0 && this.agentPending--) throw new Error("fake VM agent is unavailable");
 		this.filePushes.push({ path, content, mode });
 		this.guestFiles.set(path, content);
 	}
@@ -172,6 +175,7 @@ class FakeLxd implements LxdClient {
 	guestFiles = new Map<string, string>();
 	async execInstance(_project: string, _name: string, command: readonly string[]): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
+		if (this.agentPending > 0 && this.agentPending--) throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
 		if (command[0] === "/usr/bin/test" && command[1] === "-f" && !this.guestFiles.has(command[2]!))
 			throw new Error("LXD instance command failed");
@@ -205,7 +209,7 @@ function config(root: string): LxdNativeLoginGatewayConfig {
 		adapterId: "lxd",
 		supabaseUrl: "https://example.supabase.co",
 		supabaseServiceKey: "sb_secret_private",
-		supabasePublishableKey: "sb_publishable_login",
+		supabasePublishableKey: "sb_publishable_loginTestKey",
 		stateRoot: root,
 		project: "qorpera-runners",
 		loginProfile: "qorpera-login-v1",
@@ -525,6 +529,21 @@ describe("LXD native login gateway", () => {
 		expect((await gateway.handle(request())).status).toBe(200);
 		expect(lxd.createCalls).toHaveLength(1);
 	});
+	it("refuses a publishable key that a guest's native host would refuse, at startup (G2-3)", async () => {
+		const root = await stateRoot();
+		const jwt = (role: string) =>
+			`eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ role })).toString("base64url")}.c2lnbmF0dXJl`;
+		const build = (supabasePublishableKey: string) =>
+			new LxdNativeLoginGateway(
+				{ ...config(root), supabasePublishableKey },
+				new FakeLxd(),
+				fetchBoundary([]).fetchImplementation,
+			);
+		for (const key of ["", "sb_secret_private", "publishable-key", jwt("service_role"), "sb_publishable_x\n"])
+			expect(() => build(key)).toThrow("configuration is invalid");
+		expect(() => build(jwt("anon"))).not.toThrow();
+	});
+
 	it("rejects a refresh identity mismatch before machine allocation", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),
@@ -1326,6 +1345,8 @@ describe("LXD native login gateway", () => {
 	it("admits one login allocation, then deletes its VM while preserving the identity disk", async () => {
 		const root = await stateRoot();
 		const lxd = new FakeLxd();
+		// A new identity's guest: nothing waits for its agent before the identity state is pushed but that push.
+		lxd.agentPending = 2;
 		const boundary = fetchBoundary(
 			[
 				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
@@ -1384,7 +1405,7 @@ describe("LXD native login gateway", () => {
 			schema: "qorpera.native-identity-credential/v1",
 			compute_identity_id: computeIdentityId,
 			credential: bridgeFile.identity,
-			publishable_key: "sb_publishable_login",
+			publishable_key: "sb_publishable_loginTestKey",
 		});
 		expect(bridgeFile.identity).not.toBe(bridgeFile.token);
 		// Bound by its hash to the sign-in's machine allocation as a login guest (the same bind again with each

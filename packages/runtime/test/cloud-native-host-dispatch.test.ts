@@ -260,7 +260,7 @@ it("sends a between-job call through the identity entry point with the holder's 
 	expect(JSON.stringify(sent)).not.toContain(TOKEN_A);
 });
 
-it("keeps Storage and other origins as sent, and refuses any other database call", async () => {
+it("keeps Storage and other origins as sent, and refuses any other call on the project's origin", async () => {
 	const { dispatch, sent } = dispatchFixture();
 	dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
 	const storage = { method: "GET" };
@@ -282,12 +282,30 @@ it("keeps Storage and other origins as sent, and refuses any other database call
 		"/rest/v1/qorpera_runner_jobs",
 		"/rest/v1/rpc/QORPERA_DESCRIBE_NATIVE_TOOL_AUTHORITY",
 		"/rest/v1/rpc/QORPERA_LIST_NATIVE_PROVIDER_ACCOUNT_REFRESHES",
+		// Only Storage passes on the project's origin: no other service gets the key.
+		"/graphql/v1",
+		"/auth/v1/user",
+		"/functions/v1/anything",
+		"/realtime/v1/api/broadcast",
+		"/%72est/v1/rpc/qorpera_describe_native_tool_authority",
+		"/storage/v2/object/x",
 	])
 		await expect(dispatch.fetch(`${ORIGIN}${path}`, rpc("{}"))).rejects.toThrow("Not a native host call");
 	const url = `${ORIGIN}/rest/v1/rpc/qorpera_identity_recovery_runtime_state`;
 	await expect(dispatch.fetch(url, { method: "GET" })).rejects.toThrow("malformed");
 	await expect(dispatch.fetch(`${url}?select=*`, rpc("{}"))).rejects.toThrow("malformed");
 	await expect(dispatch.fetch(new Request(url, rpc("{}")))).rejects.toThrow("malformed");
+	// The arguments are spliced in as sent, so they must be one JSON object: nothing can add a key of the entry point's.
+	for (const body of [
+		'{},"p_credential":"x"',
+		'{"a":1},"p_name":"qorpera_complete_native_provider_login"',
+		"[]",
+		"null",
+		"1",
+		"not json",
+	])
+		for (const name of ["qorpera_identity_recovery_runtime_state", "qorpera_describe_native_tool_authority"])
+			await expect(dispatch.fetch(`${ORIGIN}/rest/v1/rpc/${name}`, rpc(body))).rejects.toThrow("malformed");
 	expect(sent).toHaveLength(2);
 });
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseEphemeralCloudRunnerServiceConfig } from "../../runtime/src/cloud-runner-service.ts";
 import type { LxdNativeCompanyRuntimeConfig } from "../src/lxd-company-runtime.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
 import { ProviderAdmissionRefused } from "../src/provider-shared.ts";
@@ -549,6 +550,11 @@ describe("shared execution provider backend", () => {
 			authority_state_path: join(f.stateRoot, "slots", "0", "runner", "state", "authority.json"),
 			temporary_root: join(f.stateRoot, "slots", "0", "runner", "workspace"),
 		});
+		// The slot's runner reads what the service wrote.
+		expect(parseEphemeralCloudRunnerServiceConfig(runnerConfig)).toMatchObject({
+			nativeBridgeUrl: "http://127.0.0.1:20000/",
+			nativeIdentityCredential: identityToken,
+		});
 		expect(await journal(f)).toMatchObject({
 			physicalState: "registered",
 			slot: 0,
@@ -593,6 +599,8 @@ describe("shared execution provider backend", () => {
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
 		await expect(stat(slotRun)).rejects.toMatchObject({ code: "ENOENT" });
 		expect(await readdir(join(f.stateRoot, "slots", "0", "host"))).toEqual([]);
+		// The runner's configuration, with its run's identity credential, goes with the runner.
+		await expect(stat(runnerConfigPath)).rejects.toMatchObject({ code: "ENOENT" });
 		await f.backend.reconcile();
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
 		expect(await liveJournalNames(f)).toEqual([]);
@@ -1051,6 +1059,7 @@ describe("warm conversations", () => {
 			await readFile(join(f.stateRoot, "slots", "0", "runner", "config.json"), "utf-8"),
 		);
 		expect(runnerConfig.native_identity_credential).toBe(identityToken);
+		expect(parseEphemeralCloudRunnerServiceConfig(runnerConfig).nativeIdentityCredential).toBe(identityToken);
 		expect(JSON.parse(await readFile(join(credentials, "qorpera-native-identity"), "utf-8")).credential).toBe(
 			identityToken,
 		);
