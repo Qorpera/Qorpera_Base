@@ -82,6 +82,8 @@ select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p16-race-seed', jso
 		pg_temp.rows(array[array['Revenue','€']])),
 	pg_temp.table_folder('tables/race-d', pg_temp.def('86600000-0000-4000-8000-00000000000d', array['€','count']),
 		pg_temp.rows(array[array['Revenue','€']])),
+	pg_temp.table_folder('tables/race-g', pg_temp.def('86600000-0000-4000-8000-00000000000f', array['€','count']),
+		pg_temp.rows(array[array['Revenue','€']])),
 	jsonb_build_object('op','mkdir','path','tables/race-w'),
 	jsonb_build_object('op','new_folder','path','interfaces/one','contents',jsonb_build_array(jsonb_build_object('path','interface.toml',
 		'kind','file','file',pg_temp.stage(pg_temp.iface('86600000-0000-4000-8000-000000000001', false)::text))),
@@ -91,7 +93,7 @@ select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p16-race-seed', jso
 		'kind','file','file',pg_temp.stage(pg_temp.iface('86600000-0000-4000-8000-000000000002', false)::text))),
 		'structured',jsonb_build_array(pg_temp.entry('interfaces/two/interface.toml','interface',
 			pg_temp.iface('86600000-0000-4000-8000-000000000002', false)::text, pg_temp.iface('86600000-0000-4000-8000-000000000002', false)))))),
-	9, 'saved') \g /dev/null
+	10, 'saved') \g /dev/null
 
 -- Each race's units, staged and held by the member who commits them, committed before the blocks that drive the fences:
 -- a row this session wrote and has not committed would make the other sessions wait on it while it waits on them.
@@ -126,10 +128,21 @@ select set_config('qorpera_test.p_one', jsonb_build_array(pg_temp.w('interfaces/
 	pg_temp.iface('86600000-0000-4000-8000-000000000001', true)))::text, false) \g /dev/null
 select set_config('qorpera_test.p_two', jsonb_build_array(pg_temp.w('interfaces/two/interface.toml',
 	pg_temp.iface('86600000-0000-4000-8000-000000000002', true)))::text, false) \g /dev/null
+select set_config('qorpera_test.g_rows', jsonb_build_array(pg_temp.w('tables/race-g/rows.csv',
+	pg_temp.rows(array[array['Revenue','€'], array['Visits','count']])))::text, false) \g /dev/null
+select set_config('qorpera_test.g_move', jsonb_build_array(jsonb_build_object('op','move','from','tables/race-g','to','tables/race-h',
+	'expectedVersion',pg_temp.version('tables/race-g'),
+	'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
+	false) \g /dev/null
+-- Two new tables with one id, in two folders.
+select set_config('qorpera_test.t_one', jsonb_build_array(pg_temp.table_folder('tables/twin-one',
+	pg_temp.def('86600000-0000-4000-8000-000000000010', array['€']), pg_temp.rows(array[]::text[][])))::text, false) \g /dev/null
+select set_config('qorpera_test.t_two', jsonb_build_array(pg_temp.table_folder('tables/twin-two',
+	pg_temp.def('86600000-0000-4000-8000-000000000010', array['€']), pg_temp.rows(array[]::text[][])))::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.owner(), current_setting('qorpera_test.' || name)::jsonb)
-from unnest(array['a_def','b_def','m_move','d_delete','w_make','p_one']) name \g /dev/null
+from unnest(array['a_def','b_def','m_move','d_delete','w_make','p_one','g_move','t_one']) name \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.' || name)::jsonb)
-from unnest(array['a_rows','b_rows','m_rows','d_rows','w_rows','p_two']) name \g /dev/null
+from unnest(array['a_rows','b_rows','m_rows','d_rows','w_rows','p_two','g_rows','t_two']) name \g /dev/null
 -- (A plain README carries no structured entry.)
 select set_config('qorpera_test.w_make', (select jsonb_agg(u - case when u ->> 'path' like '%README.md' then 'structured' else '' end)
 	from jsonb_array_elements(current_setting('qorpera_test.w_make')::jsonb) u)::text, false) \g /dev/null
@@ -228,6 +241,45 @@ begin
 	if r -> 'units' -> 1 ->> 'reason' is distinct from 'version_changed' then
 		raise exception 'A rows save that holds no row of a table made meanwhile: %', r; end if;
 	if pg_temp.version('tables/race-w/rows.csv') is not null then raise exception 'The rows landed unlocked'; end if;
+end $$;
+
+-- G. A rows save holds the table's row; the table's folder moved behind it waits at that row (before its paths, so it
+-- never holds a path the save needs while waiting), then reads again ----------------------------------------------------
+do $$
+declare r jsonb;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_commit(pg_temp.member(), 'p16-race-g-rows',
+		current_setting('qorpera_test.g_rows')::jsonb)) as t(x text));
+	perform pg_temp.expect(r, 1, 'saved');
+	perform dblink_send_query('fence_two', pg_temp.sql_commit(pg_temp.owner(), 'p16-race-g-move', current_setting('qorpera_test.g_move')::jsonb));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'A table''s move must wait for a rows save in it'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_table_index'::regclass then
+		raise exception 'The move must queue on the table''s row, not on %', pg_temp.queued_on('fence_two'); end if;
+	perform dblink_exec('fence_one', 'commit');
+	r := pg_temp.result('fence_two')::jsonb;
+	if r -> 'units' -> 0 ->> 'outcome' = 'saved' then raise exception 'A move behind a rows save moved what it did not read: %', r; end if;
+	if (pg_temp.trow('tables/race-g')).rows_version is distinct from pg_temp.version('tables/race-g/rows.csv') then
+		raise exception 'The table stays with its new rows'; end if;
+end $$;
+
+-- H. Two new tables with one id, at once: both pass their checks; the second waits at the index row's key, then fails
+-- whole, and the first table keeps its row ----------------------------------------------------------------------------
+do $$
+declare r jsonb; v text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_commit(pg_temp.owner(), 'p16-race-t-one',
+		current_setting('qorpera_test.t_one')::jsonb)) as t(x text));
+	perform pg_temp.expect(r, 1, 'saved');
+	perform dblink_send_query('fence_two', pg_temp.sql_commit(pg_temp.member(), 'p16-race-t-two', current_setting('qorpera_test.t_two')::jsonb));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The second table must wait for the first'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	v := pg_temp.result('fence_two');
+	if v not like 'ERROR 23505 %' then raise exception 'The second table with one id must fail whole: %', v; end if;
+	if (pg_temp.trow('tables/twin-one')).id is distinct from '86600000-0000-4000-8000-000000000010'
+		or pg_temp.version('tables/twin-two') is not null then
+		raise exception 'The first table keeps its row and the second never lands'; end if;
 end $$;
 
 -- F. Two promotions at once, from no main: no lock orders their decisions (the second waits only at the folder's

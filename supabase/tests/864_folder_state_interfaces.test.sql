@@ -14,7 +14,7 @@ create function pg_temp.fixture(p_name text) returns jsonb language sql immutabl
 		when 'table' then $j${"kind":"table","id":"c41a90e2-6b1d-4f3a-8e57-2d9c0b4a1f68","name":"Numbers","about":"The numbers the company steers by. One row per reading; a number's newest row is its value now.","rows":"file","key":["number","at"],"holder":null,"time":"at","columns":[{"name":"number","type":"text","optional":false,"needsYes":false,"max":60,"choices":[],"currency":null,"to":null},{"name":"at","type":"time","optional":false,"needsYes":false,"max":null,"choices":[],"currency":null,"to":null},{"name":"value","type":"number","optional":false,"needsYes":false,"max":null,"choices":[],"currency":null,"to":null},{"name":"unit","type":"choice","optional":false,"needsYes":false,"max":null,"choices":["€","kr","$","%","count","minutes","hours"],"currency":null,"to":null},{"name":"target","type":"number","optional":true,"needsYes":false,"max":null,"choices":[],"currency":null,"to":null},{"name":"kept_by","type":"agent","optional":false,"needsYes":false,"max":null,"choices":[],"currency":null,"to":null}],"write":{"agents":"all","members":"all"}}$j$
 		when 'areas' then $j${"kind":"table","id":"1d6e4a57-8b3c-4f21-9e6d-0a7c5b2f8e14","name":"Areas","about":"The company's areas: whose call each one is, and who its agents answer to.","rows":"file","key":["area"],"holder":"owner","time":null,"columns":[{"name":"area","type":"text","optional":false,"needsYes":false,"max":60,"choices":[],"currency":null,"to":null},{"name":"about","type":"text","optional":true,"needsYes":false,"max":280,"choices":[],"currency":null,"to":null},{"name":"owner","type":"member","optional":true,"needsYes":true,"max":null,"choices":[],"currency":null,"to":null},{"name":"shared","type":"yes-no","optional":false,"needsYes":false,"max":null,"choices":[],"currency":null,"to":null},{"name":"supervisor","type":"member","optional":true,"needsYes":true,"max":null,"choices":[],"currency":null,"to":null},{"name":"agents","type":"agents","optional":true,"needsYes":false,"max":null,"choices":[],"currency":null,"to":null}],"write":{"agents":"all","members":"all"}}$j$
 		when 'rows' then $j${"kind":"table-rows","header":["number","at","value","unit","kept_by"],"rows":[{"line":2,"fields":["Revenue","2026-10-02T09:44Z","1200.5","€","11111111-1111-4111-8111-000000000030"]},{"line":3,"fields":["Visits, web","2026-10-02T10:00:00Z","42","count","11111111-1111-4111-8111-000000000030"]}]}$j$
-		when 'rows-empty' then $j${"kind":"table-rows","header":["title","holder"],"rows":[]}$j$
+		when 'rows-empty' then $j${"kind":"table-rows","header":["id","card","area","holder","state","added_by","todo"],"rows":[]}$j$
 	end)::jsonb
 $$;
 create function pg_temp.p16_entry(p_path text, p_parse jsonb) returns jsonb language sql as $$
@@ -57,6 +57,9 @@ $$;
 create function pg_temp.tbl(p_id uuid, p_base text default 'table') returns jsonb language sql as $$
 	select pg_temp.fixture(p_base) || jsonb_build_object('id', p_id)
 $$;
+create function pg_temp.problem(p_result jsonb, p_unit integer) returns text language sql as $$
+	select p_result -> 'units' -> (p_unit - 1) -> 'problems' -> 0 ->> 'message'
+$$;
 create function pg_temp.code(p_result jsonb, p_unit integer) returns text language sql as $$
 	select p_result -> 'units' -> (p_unit - 1) -> 'problems' -> 0 ->> 'code'
 $$;
@@ -73,6 +76,15 @@ create function pg_temp.refused_any(p_result jsonb, p_unit integer) returns void
 begin
 	if p_result -> 'units' -> (p_unit - 1) ->> 'outcome' is distinct from 'refused' then
 		raise exception 'Unit % expected refused, got %', p_unit, p_result using errcode = 'QTF01'; end if;
+end $$;
+-- One field of a table's index row damaged, then verify run on the commit that wrote it (it must raise XX000).
+create function pg_temp.damaged_verify(p_folder text, p_set text) returns void language plpgsql as $$
+declare v_commit uuid := (select commit_id from public.qorpera_folder_table_index where environment_id = '63400000-0000-4000-8000-000000000020'
+	and folder_key = p_folder and retired_at is null);
+begin
+	execute format('update public.qorpera_folder_table_index set %s where environment_id = %L and folder_key = %L and retired_at is null',
+		p_set, '63400000-0000-4000-8000-000000000020', p_folder);
+	perform public.qorpera_folder_structured_verify('63400000-0000-4000-8000-000000000020', v_commit);
 end $$;
 create function pg_temp.trow(p_folder text) returns public.qorpera_folder_table_index language sql as $$
 	select * from public.qorpera_folder_table_index where environment_id = '63400000-0000-4000-8000-000000000020'
@@ -145,7 +157,11 @@ declare v_case record;
 begin
 	for v_case in select * from (values ('interface', pg_temp.fixture('interface')), ('interface-order', pg_temp.fixture('order')),
 		('table', pg_temp.fixture('table')), ('table', pg_temp.fixture('areas')), ('table-rows', pg_temp.fixture('rows')),
-		('table-rows', pg_temp.fixture('rows-empty')), ('interface-order', '{"kind":"interface-order","ids":[]}'::jsonb)) as c(kind, parse) loop
+		('table-rows', pg_temp.fixture('rows-empty')), ('interface-order', '{"kind":"interface-order","ids":[]}'::jsonb),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,6}', '{"name":"ref","type":"link","optional":true,"needsYes":false,
+			"max":null,"choices":[],"currency":null,"to":"table:numbers"}')),
+		('interface', pg_temp.fixture('interface') || '{"access":{"members":["11111111-1111-4111-8111-000000000001"],
+			"agents":["11111111-1111-4111-8111-000000000002"],"edit":"owners"}}')) as c(kind, parse) loop
 		if public.qorpera_company_state_parse_problems(v_case.kind, v_case.parse) <> '[]'::jsonb then
 			raise exception 'A valid % parse is refused: %', v_case.kind, public.qorpera_company_state_parse_problems(v_case.kind, v_case.parse); end if;
 	end loop;
@@ -174,6 +190,17 @@ begin
 		('table', jsonb_set(pg_temp.fixture('table'), '{columns,1,name}', '"number"'), 'columns'),
 		('table', jsonb_set(pg_temp.fixture('table'), '{columns,0,type}', '"link"'), 'columns'),
 		('table', jsonb_set(pg_temp.fixture('table'), '{columns,0,to}', '"todos"'), 'columns'),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,6}', '{"name":"ref","type":"link","optional":true,"needsYes":false,
+			"max":null,"choices":[],"currency":null,"to":"table:Numbers"}'), 'columns'),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,6}', '{"name":"ref","type":"link","optional":true,"needsYes":false,
+			"max":null,"choices":[],"currency":null,"to":null}'), 'columns'),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,3,choices}', '["a\u2066b"]'), 'columns'),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,3,choices}', '["kr","kr"]'), 'columns'),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,0,currency}', '"EUR"'), 'columns'),
+		('table', jsonb_set(pg_temp.fixture('table'), '{columns,0,optional}', '"no"'), 'columns'),
+		('table', pg_temp.fixture('table') || jsonb_build_object('about', repeat('a', 281)), 'about'),
+		('table', pg_temp.fixture('table') || '{"key":["number","at","unit","kept_by"]}', 'key'),
+		('table', pg_temp.fixture('table') || '{"write":{"agents":["not-an-id"],"members":"all"}}', 'write'),
 		-- the rows: keys, header, lines, widths, size
 		('table-rows', pg_temp.fixture('rows') || '{"extra":1}', 'keys'),
 		('table-rows', pg_temp.fixture('rows') || '{"header":["number","number"]}', 'header'),
@@ -189,6 +216,8 @@ begin
 		-- the order: unique strict uuids
 		('interface-order', '{"kind":"interface-order","ids":["5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21","5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21"]}', 'ids'),
 		('interface-order', '{"kind":"interface-order","ids":["5B0E7C52-2F4E-4C1E-9D0A-7F3C1A9E6B21"]}', 'ids'),
+		('interface-order', '{"kind":"interface-order","ids":[],"extra":1}', 'keys'),
+		('table-rows', pg_temp.fixture('rows') || jsonb_build_object('header', (select jsonb_agg('c' || g) from generate_series(1, 41) g)), 'header'),
 		-- the interface: keys, the read fields, what review reads, and the rest by type
 		('interface', pg_temp.fixture('interface') - 'needs', 'keys'),
 		('interface', pg_temp.fixture('interface') || '{"main":"true"}', 'main'),
@@ -205,6 +234,9 @@ begin
 		('interface', jsonb_set(pg_temp.fixture('interface'), '{views,0,blocks,1}', '"text"'), 'views'),
 		('interface', pg_temp.fixture('interface') - 'views' || '{"views":[]}', 'views'),
 		('interface', pg_temp.fixture('interface') || '{"needs":[1]}', 'needs'),
+		('interface', pg_temp.fixture('interface') || '{"emblem":"rocket"}', 'emblem'),
+		('interface', pg_temp.fixture('interface') || '{"colour":"red"}', 'colour'),
+		('interface', pg_temp.fixture('interface') || '{"badge":"waiting"}', 'badge'),
 		('interface', pg_temp.fixture('interface') || '{"template":{"from":"qorpera/pulse"}}', 'template'),
 		('interface', pg_temp.fixture('interface') || jsonb_build_object('about', repeat('x', 1048576)), 'about'),
 		-- any kind: a parse of another kind
@@ -292,6 +324,20 @@ begin
 		or t.rows_version <> pg_temp.p16_version('tables/figures/rows.csv') or t.commit_id::text <> r ->> 'commitId'
 		or (pg_temp.trow('tables/numbers')).id is not null then
 		raise exception 'A moved table''s row: %', to_jsonb(t); end if;
+	-- Verify checks every row the commit wrote: each field damaged in turn raises.
+	perform pg_temp.raises_like(format('select pg_temp.damaged_verify(%L, %L)', 'tables/figures', set_to), 'XX000',
+		'A structured index row does not point at its file''s current version')
+	from unnest(array['definition_version = gen_random_uuid()', 'rows_version = gen_random_uuid()', 'rows_version = null',
+		'folder_path = ''tables/Figures''']) set_to;
+	-- Other files in a table's folder, and README's spelling.
+	r := pg_temp.commit(m, 'p16-place-0006b', jsonb_build_array(
+		pg_temp.p16_write(m, 'tables/figures/other.csv', '"a,b"'),
+		pg_temp.p16_folder(m, 'tables/spell', '{"ReadMe.md":"About."}'),
+		pg_temp.p16_folder(m, 'interfaces/spell', '{"Readme.md":"About."}')));
+	perform pg_temp.refused(r, 1, 'structured_rule', 'placement');
+	perform pg_temp.refused(r, 2, 'structured_rule', 'placement');
+	perform pg_temp.refused(r, 3, 'structured_rule', 'placement');
+	if pg_temp.problem(r, 2) <> 'write README.md or readme.md' then raise exception 'README''s spelling: %', r; end if;
 	-- A table folder deleted: its row retires; the same table made again from its text revives it.
 	r := pg_temp.commit(m, 'p16-place-0007', jsonb_build_array(
 		pg_temp.p16_folder(m, 'tables/scratch', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013'),
@@ -305,7 +351,7 @@ begin
 		pg_temp.p16_folder(m, 'tables/scratch-2', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000013')))));
 	perform pg_temp.expect(r, 1, 'saved');
 	t := pg_temp.trow('tables/scratch-2');
-	if t.id <> '86400000-0000-4000-8000-000000000013' or t.rows_version is not null then
+	if t.id is distinct from '86400000-0000-4000-8000-000000000013' or t.rows_version is not null then
 		raise exception 'A table made again revives its row, with no rows: %', to_jsonb(t); end if;
 end $$;
 
@@ -420,6 +466,9 @@ begin
 	r := pg_temp.commit('{"kind":"platform"}', 'p16-owners-0006', jsonb_build_array(
 		pg_temp.p16_write('{"kind":"platform"}', 'interfaces/board/README.md', '"About the board, by the platform."')));
 	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.commit(m, 'p16-owners-0006b', jsonb_build_array(
+		jsonb_build_object('op','copy','from','interfaces/board/README.md','to','drafts/board-readme.md')));
+	perform pg_temp.expect(r, 1, 'saved');
 	-- Opened to anyone by an owner: a contributor changes it again.
 	r := pg_temp.commit(o, 'p16-owners-0007', jsonb_build_array(
 		pg_temp.p16_write(o, 'interfaces/board/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000005', 'Board', false))));
@@ -437,11 +486,14 @@ begin
 			pg_temp.iface('86400000-0000-4000-8000-000000000002', 'Twin', false))),
 		pg_temp.p16_folder(m, 'tables/twin', jsonb_build_object('table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011'))),
 		pg_temp.p16_write(m, 'tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000019')),
-		pg_temp.p16_write(m, 'interfaces/third/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000009', 'Third', false))));
+		pg_temp.p16_write(m, 'interfaces/third/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000009', 'Third', false)),
+		pg_temp.p16_write(m, 'tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"key":["value"]}')));
 	perform pg_temp.refused(r, 1, 'structured_rule', 'duplicate');
 	perform pg_temp.refused(r, 2, 'structured_rule', 'duplicate');
-	perform pg_temp.refused(r, 3, 'structured_rule', 'placement');
+	perform pg_temp.refused(r, 3, 'structured_rule', 'duplicate');
+	if pg_temp.problem(r, 3) <> 'a table keeps its id; make a new folder for a new table' then raise exception 'The id rule: %', r; end if;
 	perform pg_temp.expect(r, 4, 'saved');
+	perform pg_temp.expect(r, 5, 'refused', 'structured_invalid');
 end $$;
 
 -- 8. Review (§7): what an agent's change is classed as, and save_interface through the recorder.
@@ -487,6 +539,10 @@ begin
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-2', 'allow', 'delegation', 'save_interface'),
 		jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/x'), jsonb_build_object('op','mkdir','path','agents/x'))),
+		'42501', 'This change has no approval in this run');
+	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
+		pg_temp.action(g -> 'binding', 'p16-call-4', 'allow', 'destructive', 'save_interface'),
+		jsonb_build_array(jsonb_build_object('op','mkdir','path','interfaces/y'))),
 		'42501', 'This change has no approval in this run');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', g -> 'binding',
 		pg_temp.action(g -> 'binding', 'p16-call-3', 'allow', 'delegation', 'save_interface'),

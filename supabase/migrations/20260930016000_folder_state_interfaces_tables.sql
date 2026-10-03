@@ -172,7 +172,7 @@ select pg_temp.p16_interfaces_replace('public.qorpera_company_state_path_problem
 		elsif v_kind in ('agent','routine','todo','worker-brief','worker-results') then$new$);
 select pg_temp.p16_interfaces_replace('public.qorpera_company_state_path_problems(text,boolean)'::regprocedure,
 	$old$if not p_folder and v_kind not in ('vision','sections') and v_written[array_length(v_written, 1)] !~ '\.md$' then$old$,
-	$new$if not p_folder and v_kind not in ('vision','sections','interface','table','table-rows') -- 20260930016000 (P16)
+	$new$if not p_folder and v_kind not in ('vision','sections','interface','interface-order','table','table-rows') -- 20260930016000 (P16)
 		and v_written[array_length(v_written, 1)] !~ '\.md$' then$new$);
 
 -- The parse of the four kinds is checked by its shape.
@@ -304,6 +304,7 @@ select pg_temp.p16_interfaces_replace('public.qorpera_company_state_parse_proble
 	elsif p_kind = 'interface-order' then
 		if (select array_agg(k order by k) from jsonb_object_keys(p_parse) k) is distinct from array['ids','kind'] then
 			v_bad := array_append(v_bad, 'keys'); end if;
+		-- (512 is above the about 420 lines the parser's 16 KiB allows.)
 		if not (p_parse -> 'ids' = '[]'::jsonb or public.qorpera_interface_ids(p_parse -> 'ids', 512)) then
 			v_bad := array_append(v_bad, 'ids'); end if;
 	elsif p_kind = 'interface' then
@@ -383,10 +384,11 @@ returns boolean language sql immutable set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_interface_agent_ids(text[]) from public, anon, authenticated, service_role;
 
--- Inlined into qorpera_interface_rows' one query (no search_path setting and no subquery, so the planner inlines it),
--- since it runs once for every field of a rows file; its callers run with an empty search_path.
+-- Inlined into qorpera_interface_rows' one query, since it runs once for every field of a rows file: STABLE (it calls
+-- jsonb_build_object, format and to_jsonb, which are), with no search_path setting and no subquery. Its callers run with
+-- an empty search_path.
 create function public.qorpera_interface_cell(p_column jsonb, p_raw text)
-returns jsonb language sql immutable as $$
+returns jsonb language sql stable as $$
 	select case
 		when p_raw = '' then case when p_column -> 'optional' = 'true'::jsonb then jsonb_build_object('value', null)
 			else jsonb_build_object('problem', (p_column ->> 'name') || ' is empty') end
@@ -525,35 +527,46 @@ returns jsonb language sql immutable set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_interface_refused(text, text) from public, anon, authenticated, service_role;
 
--- §6.1 rules 2 and 4, for every unit: what may leave and what may land under interfaces/ and tables/, and who may
--- change an owners-only interface. Null when the unit passes.
+-- §6.1 rules 2 and 4, for every unit whose source or target is at or under interfaces/ or tables/: what may leave and
+-- what may land there, and who may change an owners-only interface. Null when the unit passes.
 create function public.qorpera_company_state_interface_paths(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
-	p_op text, p_key text, p_to_key text, p_unit jsonb, p_eff_path text)
+	p_commit_id uuid, p_op text, p_key text, p_to_key text, p_unit jsonb, p_eff_path text, p_eff_to text)
 returns jsonb language plpgsql stable set search_path = '' as $$
-declare v_landing record; v_source_kind text; v_folder text; v_access text; v_main record;
+declare v_landing record; v_source_kind text; v_source_path text; v_folder text; v_access text; v_main record; v_name text;
 begin
+	-- Any other unit touches neither (a folder above the roots is the company root, which no unit removes or moves).
+	if p_key !~ '^(interfaces|tables)(/|$)' and coalesce(p_to_key, '') !~ '^(interfaces|tables)(/|$)' then return null; end if;
+
 	-- What leaves: a delete's or a move's source.
 	if p_op in ('delete','move') then
 		-- The main interface's folder and its interface.toml stay (the seeded roots and tables/areas/ are in the seeded list).
-		for v_main in select m.key from public.qorpera_interface_mains(p_environment_id) m
-			where m.key = p_key or m.key like public.qorpera_folder_under(p_key)
-				or public.qorpera_folder_parent_path(m.key) = p_key loop
-			return public.qorpera_interface_refused('placement',
-				'the main interface stays where it is; make another interface main first');
-		end loop;
+		if p_key ~ '^interfaces(/|$)' then
+			for v_main in select m.key from public.qorpera_interface_mains(p_environment_id) m
+				where m.key = p_key or m.key like public.qorpera_folder_under(p_key)
+					or public.qorpera_folder_parent_path(m.key) = p_key loop
+				return public.qorpera_interface_refused('placement',
+					'the main interface stays where it is; make another interface main first');
+			end loop;
+		end if;
 		if p_key ~ '^tables/[^/]+/(table\.toml|rows\.csv)$' then
 			return public.qorpera_interface_refused('placement',
 				'a table''s table.toml and rows.csv go or move only with its folder; to empty a table, save rows.csv with its header only');
 		end if;
+		-- A table row another commit wrote after this one began may not be among this commit's locks: read again (H2's guard).
+		if exists (select 1 from public.qorpera_folder_table_index i where i.environment_id = p_environment_id and i.retired_at is null
+			and (i.folder_key = p_key or i.folder_key like public.qorpera_folder_under(p_key))
+			and public.qorpera_company_state_changed_since(p_commit_id, i.commit_id)) then
+			return jsonb_build_object('ok', false, 'reason', 'version_changed');
+		end if;
 	end if;
 	-- Rule 4: an owners-only interface (its stored parse) is changed, moved or deleted only by an owner or admin, or the
-	-- platform. Every interface folder the unit's source and target are at, in or above.
+	-- platform. Every interface folder the unit changes: its target, and its source unless it is only copied.
 	for v_folder in select distinct f.folder from (
 		select public.qorpera_interface_folder(k.key) as folder
-		from unnest(array_remove(array[p_key, p_to_key], null)) k(key)
+		from unnest(array_remove(array[case when p_op <> 'copy' then p_key end, p_to_key], null)) k(key)
 		union all
 		select public.qorpera_interface_folder(e.key_text) from public.qorpera_folder_entries e
-		where p_op in ('delete','move') and e.environment_id = p_environment_id and e.kind = 'file'
+		where p_op in ('delete','move') and p_key ~ '^interfaces(/|$)' and e.environment_id = p_environment_id and e.kind = 'file'
 			and e.key_text like public.qorpera_folder_under(p_key) and e.key_text like 'interfaces/%/interface.toml') f
 		where f.folder is not null
 	loop
@@ -563,27 +576,29 @@ begin
 		end if;
 	end loop;
 
-	-- What lands: a write's file, a mkdir, a new folder and its contents, a move's or copy's target (and, for a folder,
-	-- everything under it, which the move carries).
+	-- What lands: a write's file, a mkdir, a new folder and its contents, a move's or copy's target (and, for a folder
+	-- landing under the roots, everything under it, which the move carries), each with its key and its spelling.
 	if p_op in ('move','copy') then
-		select e.kind into v_source_kind from public.qorpera_folder_entries e
+		select e.kind, e.path into v_source_kind, v_source_path from public.qorpera_folder_entries e
 		where e.environment_id = p_environment_id and e.key_sha256 = extensions.digest(p_key, 'sha256') and e.kind <> 'claim';
 	end if;
 	for v_landing in
-		select p_key as key, case when p_op in ('mkdir','new_folder') then 'folder' else 'file' end as kind
+		select p_key as key, p_eff_path as path, case when p_op in ('mkdir','new_folder') then 'folder' else 'file' end as kind
 		where p_op in ('write','mkdir','new_folder')
 		union all
-		select public.qorpera_folder_key(s.path), s.kind from public.qorpera_folder_spelled_contents(p_eff_path, p_unit -> 'contents') s
+		select public.qorpera_folder_key(s.path), s.path, s.kind from public.qorpera_folder_spelled_contents(p_eff_path, p_unit -> 'contents') s
 		where p_op = 'new_folder'
 		union all
-		select p_to_key, coalesce(v_source_kind, 'file') where p_op in ('move','copy') and p_to_key is not null
+		select p_to_key, p_eff_to, coalesce(v_source_kind, 'file') where p_op in ('move','copy') and p_to_key is not null
 		union all
-		select p_to_key || substr(e.key_text, char_length(p_key) + 1), e.kind from public.qorpera_folder_entries e
-		where p_op in ('move','copy') and v_source_kind = 'folder' and e.environment_id = p_environment_id and e.kind <> 'claim'
-			and e.key_text like public.qorpera_folder_under(p_key)
+		select p_to_key || substr(e.key_text, char_length(p_key) + 1), p_eff_to || substr(e.path, char_length(v_source_path) + 1), e.kind
+		from public.qorpera_folder_entries e
+		where p_op in ('move','copy') and v_source_kind = 'folder' and p_to_key ~ '^(interfaces|tables)/'
+			and e.environment_id = p_environment_id and e.kind <> 'claim' and e.key_text like public.qorpera_folder_under(p_key)
 	loop
-		if v_landing.key in ('interfaces','tables') and p_op in ('move','copy') then
-			return public.qorpera_interface_refused('placement', v_landing.key || '/ stays as it is; nothing moves or copies onto it');
+		v_name := regexp_replace(v_landing.path, '^.*/', '');
+		if v_landing.key in ('interfaces','tables') and (v_landing.kind = 'file' or p_op in ('move','copy')) then
+			return public.qorpera_interface_refused('placement', v_landing.key || '/ is a folder the company keeps; nothing lands on it');
 		elsif v_landing.key like 'interfaces/%' and not (
 			(v_landing.kind = 'file' and v_landing.key = 'interfaces/order.md')
 			or (v_landing.kind = 'folder' and v_landing.key ~ '^interfaces/[^/]+$' and v_landing.key <> 'interfaces/order.md')
@@ -595,11 +610,13 @@ begin
 			or (v_landing.kind = 'file' and v_landing.key ~ '^tables/[^/]+/(table\.toml|rows\.csv|readme\.md)$')) then
 			return public.qorpera_interface_refused('placement',
 				'tables/ holds one folder per table, each with table.toml, rows.csv and README.md only');
+		elsif v_landing.key ~ '^(interfaces|tables)/[^/]+/readme\.md$' and v_name not in ('README.md', 'readme.md') then
+			return public.qorpera_interface_refused('placement', 'write README.md or readme.md');
 		end if;
 	end loop;
 	return null;
 end $$;
-revoke all on function public.qorpera_company_state_interface_paths(uuid, uuid, jsonb, text, text, text, jsonb, text)
+revoke all on function public.qorpera_company_state_interface_paths(uuid, uuid, jsonb, uuid, text, text, text, jsonb, text, text)
 	from public, anon, authenticated, service_role;
 
 -- §6.1 rules 3 and 5-9, for one structured file a write or new folder saves. p_unit_parses holds the parses this unit
@@ -644,7 +661,7 @@ begin
 	if v_kind = 'table' then
 		-- A table keeps its id, and one table has an id.
 		if v_row.id is not null and v_row.id::text is distinct from p_parse ->> 'id' then
-			return public.qorpera_interface_refused('placement', 'a table keeps its id; make a new folder for a new table');
+			return public.qorpera_interface_refused('duplicate', 'a table keeps its id; make a new folder for a new table');
 		end if;
 		if exists (select 1 from public.qorpera_folder_table_index i where i.environment_id = p_environment_id
 			and i.retired_at is null and i.id::text = p_parse ->> 'id' and i.folder_key <> v_folder) then
@@ -664,7 +681,8 @@ begin
 			if jsonb_array_length(v_check -> 'problems') > 0 then
 				return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', v_check -> 'problems');
 			end if;
-			-- A claimed column (needs_yes) loses its claim, or a column gains one, only while no row holds a value in it.
+			-- A claimed column (needs_yes) loses its claim, or a column gains one, only while no row holds a value in it. (A
+			-- claimed column removed while the stored header names it is refused by the rows check above first.)
 			if exists (select 1 from jsonb_array_elements(coalesce(v_stored_definition -> 'columns', '[]'::jsonb)) old_column
 				left join lateral (select x.value from jsonb_array_elements(p_parse -> 'columns') x
 					where x.value ->> 'name' = old_column ->> 'name') new_column on true
@@ -695,7 +713,7 @@ begin
 	if not (p_unit_parses ? (v_folder || '/table.toml')) and p_actor ->> 'kind' is distinct from 'platform' then
 		if v_agent and not (v_definition -> 'write' -> 'agents' = '"all"'::jsonb
 				or (jsonb_typeof(v_definition -> 'write' -> 'agents') = 'array'
-					and (v_definition -> 'write' -> 'agents') ? (p_actor ->> 'staffAgentId'))) then
+					and coalesce((v_definition -> 'write' -> 'agents') ? (p_actor ->> 'staffAgentId'), false))) then
 			return public.qorpera_interface_refused('write', 'this table''s [write] does not let this agent write its rows');
 		elsif not v_agent and not (v_definition -> 'write' ->> 'members' = 'all'
 				or (v_definition -> 'write' ->> 'members' = 'owners' and public.qorpera_interface_owner_actor(p_profile_id, p_actor))) then
@@ -758,8 +776,8 @@ select pg_temp.p16_interfaces_replace('public.qorpera_folder_structured_decide(u
 select pg_temp.p16_interfaces_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$	-- 20260930003000 (F2-5b): workers' folders and files, for every unit.$old$,
 	$new$	-- 20260930016000 (P16): interfaces' and tables' folders and files, for every unit.
-	v_rule := public.qorpera_company_state_interface_paths(p_environment_id, v_profile, p_actor, v_op, v_key,
-		case when p_eff_to is null then null else public.qorpera_folder_key(p_eff_to) end, p_unit, p_eff_path);
+	v_rule := public.qorpera_company_state_interface_paths(p_environment_id, v_profile, p_actor, p_commit_id, v_op, v_key,
+		case when p_eff_to is null then null else public.qorpera_folder_key(p_eff_to) end, p_unit, p_eff_path, p_eff_to);
 	if v_rule is not null then return v_rule; end if;
 	-- 20260930003000 (F2-5b): workers' folders and files, for every unit.$new$);
 select pg_temp.p16_interfaces_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
@@ -792,20 +810,26 @@ create function public.qorpera_company_state_index_table(p_environment_id uuid, 
 	p_path text, p_version uuid, p_parse jsonb)
 returns void language plpgsql set search_path = '' as $$
 declare v_folder text := public.qorpera_folder_key(public.qorpera_folder_parent_path(p_path)); v_folder_path text; v_rows uuid;
+	v_count bigint;
 begin
 	select e.path into v_folder_path from public.qorpera_folder_entries e
 	where e.environment_id = p_environment_id and e.key_sha256 = extensions.digest(v_folder, 'sha256') and e.kind = 'folder';
 	-- The folder's rows.csv as it is now (a new folder's rows.csv is applied after its definition, and sets it again).
 	select e.version into v_rows from public.qorpera_folder_entries e
 	where e.environment_id = p_environment_id and e.key_sha256 = extensions.digest(v_folder || '/rows.csv', 'sha256') and e.kind = 'file';
-	-- A retired row of this id (a deleted table restored, or made again from its text) is reused.
-	insert into public.qorpera_folder_table_index(environment_id, id, profile_id, folder_path, folder_key, definition_version,
+	-- A retired row of this id (a deleted table restored, or made again from its text) is reused, and the folder's own row
+	-- moves on; a live row of another folder means another change set took the id meanwhile, so this one fails whole (as
+	-- H2's indexes do).
+	insert into public.qorpera_folder_table_index as i(environment_id, id, profile_id, folder_path, folder_key, definition_version,
 		rows_version, commit_id)
 	values (p_environment_id, (p_parse ->> 'id')::uuid, p_profile_id, coalesce(v_folder_path, v_folder), v_folder, p_version, v_rows,
 		p_commit_id)
 	on conflict (environment_id, id) do update set folder_path = excluded.folder_path, folder_key = excluded.folder_key,
 		definition_version = excluded.definition_version, rows_version = excluded.rows_version, commit_id = excluded.commit_id,
-		retired_at = null, updated_at = clock_timestamp();
+		retired_at = null, updated_at = clock_timestamp()
+	where i.retired_at is not null or i.folder_key = excluded.folder_key;
+	get diagnostics v_count = row_count;
+	if v_count = 0 then raise exception 'A table id was taken by another change set' using errcode = '23505'; end if;
 end $$;
 revoke all on function public.qorpera_company_state_index_table(uuid, uuid, uuid, text, uuid, jsonb)
 	from public, anon, authenticated, service_role;
@@ -904,8 +928,8 @@ select pg_temp.p16_interfaces_replace('public.qorpera_folder_record_review(jsonb
 			-- 20260930016000 (P16): a page or a table an agent makes or changes, only under interfaces/ and tables/.
 			or (v_action.tool_name = 'save_interface' and v_action.effect = 'delegation'
 				and not exists (select 1 from jsonb_array_elements(v_units) u
-					where not (public.qorpera_folder_key(coalesce(u ->> 'from', u ->> 'path')) ~ '^(interfaces|tables)/'
-						and (u ->> 'to' is null or public.qorpera_folder_key(u ->> 'to') ~ '^(interfaces|tables)/'))))$new$);
+					where (public.qorpera_folder_key(coalesce(u ->> 'from', u ->> 'path')) ~ '^(interfaces|tables)/'
+						and (u ->> 'to' is null or public.qorpera_folder_key(u ->> 'to') ~ '^(interfaces|tables)/')) is not true))$new$);
 
 -- The fixed paths: never deleted or moved.
 select pg_temp.p16_interfaces_replace('public.qorpera_company_state_seeded(text)'::regprocedure,
