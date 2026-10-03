@@ -182,10 +182,10 @@ in_m m1 ip addr del "$a2/32" dev eth0
 [[ -z $(new_count 10.210.9.9) ]] || fail "the exit saw a spoofed address"
 # Another MAC than its own.
 before=$(new_count "$a1")
-in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address 0e:51:0a:d2:99:99; ip link set eth0 up; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address 0e:51:0a:d2:99:99; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
 reach m1 198.51.100.1 80 && fail "a machine got out with another MAC"
 [[ $(new_count "$a1") == "$before" ]] || fail "the exit saw a machine's address from another MAC"
-in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $mac1; ip link set eth0 up; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $mac1; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
 wait_for "reach m1 198.51.100.1 80" 100
 # IPv6: none of it reaches the bridge.
 host_if=$(lx config get m1 volatile.eth0.host_name)
@@ -254,10 +254,15 @@ sleep 20
 start_plug
 wait_for "[[ \$(lease_of m3) == $a3 ]]" 600
 pass "a new machine gets nothing until the reconciler has it in the bridge rules, then its address"
+# The reconciler down and the pairs lost (as after a crash and a hand flush): nothing passes; restarted, it sets the
+# rules right within a pass.
+kill "$plug_pid"
+wait "$plug_pid" 2>/dev/null || true
 nft flush set bridge qorpera_agent_exit_bridge clients
 reach m1 198.51.100.1 80 && fail "traffic passed with the pairs flushed"
+start_plug
 wait_for "reach m1 198.51.100.1 80" 100
-pass "a flushed set is set right within a pass"
+pass "with the pairs lost nothing passes; the reconciler, restarted, sets the rules right within a pass"
 bash "$tool" up >/dev/null
 reach m1 198.51.100.1 80 || fail "an up reload cut a running machine off"
 pass "an up reload keeps the ports and pairs: running machines keep their traffic"
