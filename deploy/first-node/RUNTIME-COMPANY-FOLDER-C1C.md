@@ -1104,8 +1104,10 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   reconciler reports those after its pass. A run the kernel refuses for want of authority (42501 from the wake's pin
   trigger) undoes the admission and the insert, suspends the routine and tells its member once, as the legacy tick
   does (`suspended`).
-- The list leaves out routines the restore would only answer `ended` for (expired, or at their occurrence limit); the
-  lifecycle sweep closes those.
+- The list leaves out routines already past their expiry or at their occurrence limit (819 §8), which the lifecycle
+  sweep closes. A routine whose next retry would fall after its expiry is still listed, and answered `ended` every
+  30 s, until the sweep closes it. A raised 42501 (a missing fence or admission row) reaches the orchestrator as HTTP
+  401, which the reconciler reports like any failure; only a broken `folder-v2` company shows it.
 - **`qorpera_ensure_dynamic_routine_run`** refuses a `folder-v2` routine (0A000) as its first line. It takes no fence
   and no ranks, and none of its callers reaches `folder-v2`: the tick skips it, and the agent tools refuse it.
 - **The runner-orchestrator edge function** has two new actions, `folder_dynamic_routines` and

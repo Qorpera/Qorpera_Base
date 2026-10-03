@@ -3,8 +3,9 @@
 -- next run. The folder list names the folder-v2 dynamic routines missing their run; the per-routine restore inserts
 -- that run once (admitted, at its chosen instant), answers pending, changed, gone, not_folder and paused without one,
 -- pauses a routine whose latest run a member stopped, and suspends (and tells its member) a routine whose run the kernel
--- refuses for want of authority. The legacy path refuses folder-v2. Snapshot-v1 keeps its text. Both functions are
--- the service role's alone.
+-- refuses for want of authority, but raises admission's own refusal. The list leaves out expired and limit-reached
+-- routines. The legacy path refuses folder-v2. Snapshot-v1 keeps its text. Both functions are the service role's
+-- alone.
 
 create function pg_temp.due(p_after uuid default null, p_limit integer default 100) returns jsonb language sql as $$
 	select public.qorpera_folder_dynamic_routines_due(p_after, p_limit)
@@ -170,6 +171,37 @@ begin
 		v_after := (v_page ->> 'next_after_routine_id')::uuid;
 	end loop;
 	if not (v_first = any (v_seen) and v_second = any (v_seen)) then raise exception 'Paging must visit every routine: %', v_seen; end if;
+end $$;
+
+-- 8. The list leaves out routines the restore would only answer `ended` for: one past its expiry, and one at its
+-- occurrence limit (an earlier occurrence, cancelled, by hand).
+do $$
+declare v_expired uuid := pg_temp.routine('agent'); v_limited uuid := pg_temp.routine('agent', 1);
+begin
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.fx(format('update public.qorpera_cloud_routines set expires_at = clock_timestamp() - interval %L where id = %L',
+		'1 minute', v_expired));
+	perform pg_temp.fx(format($f$insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, routine_id,
+		routine_version, trigger_id, occurrence_key, scheduled_for, not_before, payload, status, finished_at)
+		values (extensions.gen_random_uuid(), '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', %L, 1,
+			't1', 'once:1:1', clock_timestamp(), clock_timestamp(), '{}', 'cancelled', clock_timestamp())$f$, v_limited));
+	if pg_temp.listed(v_expired) or pg_temp.listed(v_limited) then
+		raise exception 'An expired or limited routine is not listed'; end if;
+	if pg_temp.restore(v_expired) ->> 'status' <> 'ended' or pg_temp.restore(v_limited) ->> 'status' <> 'ended' then
+		raise exception 'An expired or limited routine is ended'; end if;
+end $$;
+
+-- 9. Admission's own refusal (the company has no admission row) is raised, not taken for the kernel refusing the run:
+-- the routine stays active and nobody is told. (Last: the admission row stays deleted.)
+do $$
+declare v_routine uuid := pg_temp.routine('agent');
+begin
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.fx($f$delete from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010'$f$);
+	perform pg_temp.raises_like(format('select pg_temp.restore(%L)', v_routine), '42501', 'Company folder is unavailable');
+	if (select status from public.qorpera_cloud_routines where id = v_routine) <> 'active'
+		or exists (select 1 from public.qorpera_member_notifications where dedupe_key = 'routine:' || v_routine::text) then
+		raise exception 'Admission''s own refusal must not suspend the routine'; end if;
 end $$;
 
 rollback;
