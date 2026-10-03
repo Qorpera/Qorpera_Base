@@ -1,0 +1,1059 @@
+[
+	{
+		"name": "valid interface",
+		"path": "interfaces/pulse/interface.toml",
+		"result": {
+			"ok": true,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "pulse",
+				"todo": null,
+				"worker": null
+			},
+			"file": {
+				"kind": "interface",
+				"id": "5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21",
+				"name": "Pulse",
+				"about": "Everything happening in the company now: what needs you, the numbers, the work and what's next.",
+				"emblem": "pulse",
+				"colour": "coral",
+				"main": true,
+				"status": "active",
+				"needs": [],
+				"badge": null,
+				"template": {
+					"from": "qorpera/pulse",
+					"version": "1.0.0"
+				},
+				"access": {
+					"members": "all",
+					"agents": "all",
+					"edit": "anyone"
+				},
+				"views": [
+					{
+						"name": "Now",
+						"fromView": null,
+						"where": null,
+						"blocks": [
+							{
+								"kind": "text",
+								"id": null,
+								"title": null,
+								"from": [
+									"vision"
+								],
+								"width": "full",
+								"query": {
+									"where": null,
+									"since": null,
+									"order": null,
+									"limit": null,
+									"latestBy": null
+								},
+								"buttons": [],
+								"opens": null,
+								"show": "first-paragraph",
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": null,
+								"line": null,
+								"sub": null,
+								"figure": null,
+								"status": null,
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							},
+							{
+								"kind": "list",
+								"id": null,
+								"title": "Needs you",
+								"from": [
+									"waiting"
+								],
+								"width": "full",
+								"query": {
+									"where": null,
+									"since": null,
+									"order": null,
+									"limit": 4,
+									"latestBy": null
+								},
+								"buttons": [
+									"answer"
+								],
+								"opens": null,
+								"show": null,
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": null,
+								"line": "{title}",
+								"sub": null,
+								"figure": null,
+								"status": null,
+								"chips": null,
+								"layout": "cards",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							},
+							{
+								"kind": "numbers",
+								"id": null,
+								"title": "The numbers",
+								"from": [
+									"table:numbers"
+								],
+								"width": "full",
+								"query": {
+									"where": null,
+									"since": null,
+									"order": null,
+									"limit": null,
+									"latestBy": "number"
+								},
+								"buttons": [],
+								"opens": "number",
+								"show": null,
+								"text": null,
+								"value": "value",
+								"target": "target",
+								"trend": {
+									"over": "at",
+									"weeks": 12
+								},
+								"chart": null,
+								"line": null,
+								"sub": null,
+								"figure": null,
+								"status": null,
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							},
+							{
+								"kind": "list",
+								"id": null,
+								"title": "Working now",
+								"from": [
+									"working"
+								],
+								"width": "half",
+								"query": {
+									"where": null,
+									"since": null,
+									"order": null,
+									"limit": null,
+									"latestBy": null
+								},
+								"buttons": [],
+								"opens": null,
+								"show": null,
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": null,
+								"line": "{what}",
+								"sub": null,
+								"figure": "agent",
+								"status": null,
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							},
+							{
+								"kind": "list",
+								"id": null,
+								"title": "What happened",
+								"from": [
+									"activity"
+								],
+								"width": "half",
+								"query": {
+									"where": null,
+									"since": "today",
+									"order": {
+										"column": "at",
+										"descending": true
+									},
+									"limit": null,
+									"latestBy": null
+								},
+								"buttons": [],
+								"opens": null,
+								"show": null,
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": null,
+								"line": "{line}",
+								"sub": null,
+								"figure": null,
+								"status": null,
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							},
+							{
+								"kind": "list",
+								"id": null,
+								"title": "The work",
+								"from": [
+									"todos"
+								],
+								"width": "half",
+								"query": {
+									"where": {
+										"status": [
+											"open",
+											"blocked"
+										]
+									},
+									"since": null,
+									"order": {
+										"column": "updated",
+										"descending": true
+									},
+									"limit": 5,
+									"latestBy": null
+								},
+								"buttons": [],
+								"opens": null,
+								"show": null,
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": null,
+								"line": "{title}",
+								"sub": null,
+								"figure": "agent",
+								"status": "status",
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							},
+							{
+								"kind": "calendar",
+								"id": null,
+								"title": "Coming up",
+								"from": [
+									"routines",
+									"human_tasks"
+								],
+								"width": "half",
+								"query": {
+									"where": null,
+									"since": null,
+									"order": null,
+									"limit": null,
+									"latestBy": null
+								},
+								"buttons": [],
+								"opens": null,
+								"show": null,
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": null,
+								"line": null,
+								"sub": null,
+								"figure": null,
+								"status": null,
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": 14
+							},
+							{
+								"kind": "detail",
+								"id": "number",
+								"title": null,
+								"from": [
+									"table:numbers"
+								],
+								"width": "full",
+								"query": {
+									"where": null,
+									"since": null,
+									"order": null,
+									"limit": null,
+									"latestBy": null
+								},
+								"buttons": [
+									"ask-keeper"
+								],
+								"opens": null,
+								"show": null,
+								"text": null,
+								"value": null,
+								"target": null,
+								"trend": null,
+								"chart": {
+									"type": "line",
+									"x": "at",
+									"y": "value",
+									"by": null,
+									"every": null,
+									"total": null,
+									"target": "target",
+									"weeks": 12
+								},
+								"line": null,
+								"sub": null,
+								"figure": null,
+								"status": null,
+								"chips": null,
+								"layout": "rows",
+								"columns": [],
+								"lookups": {},
+								"fields": [],
+								"lanes": null,
+								"shared": null,
+								"openPile": false,
+								"parts": [],
+								"days": null
+							}
+						]
+					}
+				],
+				"buttons": [
+					{
+						"id": "ask-keeper",
+						"verb": "message",
+						"label": "Ask {kept_by} about it",
+						"who": "all",
+						"target": null,
+						"to": "{kept_by}",
+						"text": "About {number}: ",
+						"table": null,
+						"column": null,
+						"value": null,
+						"fields": []
+					}
+				]
+			}
+		}
+	},
+	{
+		"name": "valid order",
+		"path": "interfaces/order.md",
+		"result": {
+			"ok": true,
+			"path": {
+				"kind": "interface-order",
+				"agent": null,
+				"group": null,
+				"name": null,
+				"todo": null,
+				"worker": null
+			},
+			"file": {
+				"kind": "interface-order",
+				"ids": [
+					"5b0e7c52-2f4e-4c1e-9d0a-7f3c1a9e6b21",
+					"0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e"
+				]
+			}
+		}
+	},
+	{
+		"name": "valid table",
+		"path": "tables/numbers/table.toml",
+		"result": {
+			"ok": true,
+			"path": {
+				"kind": "table",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"file": {
+				"kind": "table",
+				"id": "c41a90e2-6b1d-4f3a-8e57-2d9c0b4a1f68",
+				"name": "Numbers",
+				"about": "The numbers the company steers by. One row per reading; a number's newest row is its value now.",
+				"rows": "file",
+				"key": [
+					"number",
+					"at"
+				],
+				"holder": null,
+				"time": "at",
+				"columns": [
+					{
+						"name": "number",
+						"type": "text",
+						"optional": false,
+						"needsYes": false,
+						"max": 60,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "at",
+						"type": "time",
+						"optional": false,
+						"needsYes": false,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "value",
+						"type": "number",
+						"optional": false,
+						"needsYes": false,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "unit",
+						"type": "choice",
+						"optional": false,
+						"needsYes": false,
+						"max": null,
+						"choices": [
+							"€",
+							"kr",
+							"$",
+							"%",
+							"count",
+							"minutes",
+							"hours"
+						],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "target",
+						"type": "number",
+						"optional": true,
+						"needsYes": false,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "kept_by",
+						"type": "agent",
+						"optional": false,
+						"needsYes": false,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					}
+				],
+				"write": {
+					"agents": "all",
+					"members": "all"
+				}
+			}
+		}
+	},
+	{
+		"name": "valid areas table",
+		"path": "tables/areas/table.toml",
+		"result": {
+			"ok": true,
+			"path": {
+				"kind": "table",
+				"agent": null,
+				"group": null,
+				"name": "areas",
+				"todo": null,
+				"worker": null
+			},
+			"file": {
+				"kind": "table",
+				"id": "1d6e4a57-8b3c-4f21-9e6d-0a7c5b2f8e14",
+				"name": "Areas",
+				"about": "The company's areas: whose call each one is, and who its agents answer to.",
+				"rows": "file",
+				"key": [
+					"area"
+				],
+				"holder": "owner",
+				"time": null,
+				"columns": [
+					{
+						"name": "area",
+						"type": "text",
+						"optional": false,
+						"needsYes": false,
+						"max": 60,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "about",
+						"type": "text",
+						"optional": true,
+						"needsYes": false,
+						"max": 280,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "owner",
+						"type": "member",
+						"optional": true,
+						"needsYes": true,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "shared",
+						"type": "yes-no",
+						"optional": false,
+						"needsYes": false,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "supervisor",
+						"type": "member",
+						"optional": true,
+						"needsYes": true,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					},
+					{
+						"name": "agents",
+						"type": "agents",
+						"optional": true,
+						"needsYes": false,
+						"max": null,
+						"choices": [],
+						"currency": null,
+						"to": null
+					}
+				],
+				"write": {
+					"agents": "all",
+					"members": "all"
+				}
+			}
+		}
+	},
+	{
+		"name": "valid rows",
+		"path": "tables/numbers/rows.csv",
+		"result": {
+			"ok": true,
+			"path": {
+				"kind": "table-rows",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"file": {
+				"kind": "table-rows",
+				"header": [
+					"number",
+					"at",
+					"value",
+					"unit",
+					"kept_by"
+				],
+				"rows": [
+					{
+						"line": 2,
+						"fields": [
+							"Revenue",
+							"2026-10-02T09:44Z",
+							"1200.5",
+							"€",
+							"11111111-1111-4111-8111-000000000030"
+						]
+					},
+					{
+						"line": 3,
+						"fields": [
+							"Visits, web",
+							"2026-10-02T10:00:00Z",
+							"42",
+							"count",
+							"11111111-1111-4111-8111-000000000030"
+						]
+					}
+				]
+			}
+		}
+	},
+	{
+		"name": "valid rows, header only",
+		"path": "tables/cards/rows.csv",
+		"result": {
+			"ok": true,
+			"path": {
+				"kind": "table-rows",
+				"agent": null,
+				"group": null,
+				"name": "cards",
+				"todo": null,
+				"worker": null
+			},
+			"file": {
+				"kind": "table-rows",
+				"header": [
+					"id",
+					"card",
+					"area",
+					"holder",
+					"state",
+					"added_by",
+					"todo"
+				],
+				"rows": []
+			}
+		}
+	},
+	{
+		"name": "too_large",
+		"path": "tables/numbers/rows.csv",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "table-rows",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": null,
+					"key": null,
+					"code": "too_large",
+					"message": "The rows are larger than 64 KiB; a bigger table waits for the table store."
+				}
+			]
+		}
+	},
+	{
+		"name": "encoding",
+		"path": "interfaces/pulse/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "pulse",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": null,
+					"key": null,
+					"code": "encoding",
+					"message": "The file must be UTF-8 text without a byte order mark."
+				}
+			]
+		}
+	},
+	{
+		"name": "toml",
+		"path": "interfaces/pulse/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "pulse",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "toml",
+					"message": "A [header] ends with ]."
+				}
+			]
+		}
+	},
+	{
+		"name": "format",
+		"path": "interfaces/pulse/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "pulse",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 2,
+					"key": "format",
+					"code": "format",
+					"message": "format must be \"qorpera.interface/v0\"."
+				}
+			]
+		}
+	},
+	{
+		"name": "unknown_key",
+		"path": "interfaces/pulse/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "pulse",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 11,
+					"key": "interface.shiny",
+					"code": "unknown_key",
+					"message": "\"shiny\" is not a key here. Allowed: id, name, about, emblem, colour, main, status, needs, badge."
+				}
+			]
+		}
+	},
+	{
+		"name": "missing_key",
+		"path": "tables/numbers/table.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "table",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 4,
+					"key": "table.key",
+					"code": "missing_key",
+					"message": "table.key names 1–3 columns that make a row unique."
+				}
+			]
+		}
+	},
+	{
+		"name": "bad_value",
+		"path": "tables/numbers/table.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "table",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 8,
+					"key": "table.rows",
+					"code": "bad_value",
+					"message": "rows = \"store\" waits for the table store; use \"file\"."
+				}
+			]
+		}
+	},
+	{
+		"name": "duplicate",
+		"path": "tables/numbers/table.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "table",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 26,
+					"key": "column[3].name",
+					"code": "duplicate",
+					"message": "Two columns are called \"value\"."
+				}
+			]
+		}
+	},
+	{
+		"name": "unknown_source",
+		"path": "interfaces/outside/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "outside",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 12,
+					"key": "view[0].block[0].from",
+					"code": "unknown_source",
+					"message": "\"nowhere\" is not a source."
+				}
+			]
+		}
+	},
+	{
+		"name": "unknown_column",
+		"path": "interfaces/outside/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "outside",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 10,
+					"key": "view[0].block[0]",
+					"code": "unknown_column",
+					"message": "routines has no column \"shoe_size\". It has: id, agent, title, when, next, status."
+				}
+			]
+		}
+	},
+	{
+		"name": "unknown_button",
+		"path": "interfaces/outside/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "outside",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 14,
+					"key": "view[0].block[0].buttons",
+					"code": "unknown_button",
+					"message": "No button has the id \"ghost\"."
+				}
+			]
+		}
+	},
+	{
+		"name": "unknown_target",
+		"path": "interfaces/outside/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "outside",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 14,
+					"key": "view[0].block[0].opens",
+					"code": "unknown_target",
+					"message": "opens must name a detail or mail block in the same view, not \"nowhere\"."
+				}
+			]
+		}
+	},
+	{
+		"name": "outside_value",
+		"path": "interfaces/outside/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "outside",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 14,
+					"key": "view[0].block[0].buttons",
+					"code": "outside_value",
+					"message": "The button \"ask\" fills in file:hooks/stripe/evt_1.md's outside content, which can't travel as a quote."
+				}
+			]
+		}
+	},
+	{
+		"name": "row",
+		"path": "tables/numbers/rows.csv",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "table-rows",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 2,
+					"key": null,
+					"code": "row",
+					"message": "This row has 3 fields, not 2."
+				}
+			]
+		}
+	},
+	{
+		"name": "row header",
+		"path": "tables/numbers/rows.csv",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "table-rows",
+				"agent": null,
+				"group": null,
+				"name": "numbers",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": 1,
+					"key": null,
+					"code": "row",
+					"message": "The first line names \"number\" twice."
+				}
+			]
+		}
+	},
+	{
+		"name": "path",
+		"path": "interfaces/Bad_Name/interface.toml",
+		"result": {
+			"ok": false,
+			"path": {
+				"kind": "interface",
+				"agent": null,
+				"group": null,
+				"name": "bad_name",
+				"todo": null,
+				"worker": null
+			},
+			"problems": [
+				{
+					"line": null,
+					"key": null,
+					"code": "bad_value",
+					"message": "Folders and files here are named in lowercase plain letters, digits and hyphens."
+				}
+			]
+		}
+	},
+	{
+		"name": "plain",
+		"path": "interfaces/pulse/README.md",
+		"result": null
+	}
+]
