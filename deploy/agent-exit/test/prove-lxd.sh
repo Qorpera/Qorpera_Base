@@ -170,16 +170,27 @@ pass "port isolation: machines never reach each other, each reaches the exit"
 
 # --- Spoofing from a plugged port, on real LXD ---------------------------------------------------------------------
 exit_mac=$(ip -n qexit -br link show br0 | awk '{print $3}')
+host_if=$(lx config get m1 volatile.eth0.host_name)
 in_m m1 ip neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
 new_count() { ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -o "$1 counter packets [0-9]*" || true; }
-# Another address than its own (in the range, and another machine's).
+# LXD's own layers on each machine's port: port isolation, and its per-port MAC filter.
+for port in "$(lx config get m1 volatile.eth0.host_name)" "$(lx config get m2 volatile.eth0.host_name)"; do
+	[[ $(cat "/sys/class/net/$port/brport/isolated") == 1 ]] || fail "LXD did not isolate $port"
+	nft list table bridge lxd | grep -q "\"$port\"" || fail "LXD's bridge filter does not name $port"
+done
+# Another address than its own (in the range, and another machine's), towards the internet: the exit counts every
+# connection it forwards, so a spoofed one would show there.
+from_addr() { in_m m1 timeout 4 python3 -c 'import socket, sys; s = socket.socket(); s.settimeout(3); s.bind((sys.argv[1], 0)); s.connect(("198.51.100.1", 80))' "$1" 2>/dev/null; }
+reach m1 198.51.100.1 80 || fail "the positive control: m1 cannot reach the site from its own address"
 in_m m1 ip addr add 10.210.9.9/16 dev eth0
-in_m m1 ping -c 1 -W 2 -I 10.210.9.9 10.210.0.1 >/dev/null 2>&1 && fail "another IPv4 source got through"
+from_addr 10.210.9.9 && fail "another IPv4 source got through"
 in_m m1 ip addr del 10.210.9.9/16 dev eth0
+a2_before=$(new_count "$a2")
 in_m m1 ip addr add "$a2/32" dev eth0
-in_m m1 ping -c 1 -W 2 -I "$a2" 10.210.0.1 >/dev/null 2>&1 && fail "another machine's address got through"
+from_addr "$a2" && fail "another machine's address got through"
 in_m m1 ip addr del "$a2/32" dev eth0
-[[ -z $(new_count 10.210.9.9) ]] || fail "the exit saw a spoofed address"
+[[ -z $(new_count 10.210.9.9) ]] || fail "the exit forwarded a spoofed address"
+[[ $(new_count "$a2") == "$a2_before" ]] || fail "the exit forwarded a connection from another machine's address"
 # Another MAC than its own.
 before=$(new_count "$a1")
 in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address 0e:51:0a:d2:99:99; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
@@ -188,7 +199,6 @@ reach m1 198.51.100.1 80 && fail "a machine got out with another MAC"
 in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $mac1; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
 wait_for "reach m1 198.51.100.1 80" 100
 # IPv6: none of it reaches the bridge.
-host_if=$(lx config get m1 volatile.eth0.host_name)
 nft add table bridge qae2b_count
 # After LXD's filters and ours (forward, priority 100): nothing of a machine's IPv6 is left.
 nft add chain bridge qae2b_count seen '{ type filter hook forward priority 100; }'
@@ -213,20 +223,33 @@ if kind == "garp":
 elif kind == "frame":
     raw.send(b"\xff" * 6 + bytes.fromhex(sys.argv[2].replace(":", "")) + b"\x08\x00" + b"\x45" + b"\x00" * 45)
 elif kind == "decline":
+    # A whole frame, from the machine's own MAC and address and from port 68 (dnsmasq answers only that), to the
+    # exit's MAC (argv[5]): only the chaddr names another machine.
     zero = b"\0" * 4
     bootp = struct.pack("!BBBBIHH4s4s4s4s", 1, 1, 6, 0, 0x5150, 0, 0, zero, zero, zero, zero)
     bootp += bytes.fromhex(sys.argv[3].replace(":", "")) + b"\0" * 202 + b"\x63\x82\x53\x63"
     bootp += bytes([53, 1, 4, 50, 4]) + socket.inet_aton(sys.argv[4]) + bytes([54, 4]) + socket.inet_aton("10.210.0.1") + bytes([255])
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind((sys.argv[2], 0))
-    s.sendto(bootp, ("10.210.0.1", 67))
+    udp = struct.pack("!HHHH", 68, 67, 8 + len(bootp), 0) + bootp
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 1, 0, 64, 17, 0, socket.inet_aton(sys.argv[2]), socket.inet_aton("10.210.0.1"))
+    total = sum(struct.unpack("!10H", ip))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    ip = ip[:10] + struct.pack("!H", ~total & 0xffff) + ip[12:]
+    raw.send(bytes.fromhex(sys.argv[5].replace(":", "")) + own + b"\x08\x00" + ip + udp)
 EOF
 lx file push "$work/spoof.py" m1/root/spoof.py >/dev/null
 in_m m2 ping -c 1 -W 2 10.210.0.1 >/dev/null || fail "m2 cannot ping the exit"
 wait_for "ip -n qexit neigh show $a2 | grep -q $mac2"
 in_m m1 python3 /root/spoof.py garp "$a2"
 in_m m1 python3 /root/spoof.py garp "$a1" "$mac2"
-in_m m1 python3 /root/spoof.py decline "$a1" "$mac2" "$a2"
+# The DHCPDECLINE reaches the bridge (counted before its rules, priority -10) and goes no further: dnsmasq would log it.
+nft add table bridge qae2b_dhcp
+nft add chain bridge qae2b_dhcp seen '{ type filter hook forward priority -10; }'
+nft add rule bridge qae2b_dhcp seen iifname "$host_if" udp dport 67 counter
+in_m m1 python3 /root/spoof.py decline "$a1" "$mac2" "$a2" "$exit_mac"
+sleep 0.5
+nft list chain bridge qae2b_dhcp seen | grep -Eq 'packets [1-9]' || fail "the DHCPDECLINE never reached the bridge"
+nft delete table bridge qae2b_dhcp
 for stolen in "$mac2" "$exit_mac"; do in_m m1 python3 /root/spoof.py frame "$stolen"; done
 sleep 1
 ip -n qexit neigh show "$a2" | grep -q "$mac2" || fail "gratuitous ARP moved another machine's address: $(ip -n qexit neigh)"
@@ -235,11 +258,13 @@ grep -q DHCPDECLINE "$work/log/dns.log" && fail "a machine declined another's le
 bridge fdb show br qagent0 | grep -q "$mac2 dev $port2" || fail "another machine's MAC moved: $(bridge fdb show br qagent0)"
 bridge fdb show br qagent0 | grep -q "$exit_mac dev $host_if" && fail "the exit's MAC moved to a machine"
 pass "no gratuitous ARP for another's address, no ARP sender MAC, no DHCP naming another's MAC, no MAC theft"
+pass "LXD isolates each machine's port and filters it by MAC"
 # A frame from the exit to a MAC the bridge has forgotten reaches only that machine's port.
 nft add table bridge qae2b_flood
 nft add chain bridge qae2b_flood seen '{ type filter hook forward priority 100; }'
 nft add rule bridge qae2b_flood seen oifname "$port2" ether daddr "$mac1" counter
 bridge fdb del "$mac1" dev "$host_if" master 2>/dev/null || true
+bridge fdb show br qagent0 | grep -q "$mac1 dev $host_if" && fail "m1's MAC is still in the bridge table"
 ip netns exec qexit ping -c 1 -W 1 "$a1" >/dev/null 2>&1 || true
 nft list chain bridge qae2b_flood seen | grep -q 'packets 0 ' || fail "the exit's frame to a forgotten MAC reached another machine"
 nft delete table bridge qae2b_flood
@@ -263,9 +288,13 @@ reach m1 198.51.100.1 80 && fail "traffic passed with the pairs flushed"
 start_plug
 wait_for "reach m1 198.51.100.1 80" 100
 pass "with the pairs lost nothing passes; the reconciler, restarted, sets the rules right within a pass"
+# With the reconciler down, so only `up` itself can keep them.
+kill "$plug_pid"
+wait "$plug_pid" 2>/dev/null || true
 bash "$tool" up >/dev/null
 reach m1 198.51.100.1 80 || fail "an up reload cut a running machine off"
-pass "an up reload keeps the ports and pairs: running machines keep their traffic"
+start_plug
+pass "an up reload keeps the ports and pairs by itself: running machines keep their traffic"
 
 # --- The reconciler against LXD ------------------------------------------------------------------------------------
 in_m m1 sh -c 'nohup python3 -c "import socket, time; s = socket.create_connection((\"198.51.100.1\", 8443)); time.sleep(3600)" >/dev/null 2>&1 &'

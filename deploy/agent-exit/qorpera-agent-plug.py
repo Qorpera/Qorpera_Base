@@ -11,8 +11,9 @@ writes two files:
 - dnsmasq's static lease dhcp-hosts/<address> ("mac,address"), which dnsmasq reads by itself.
 The machine's LXD card then carries the MAC: nictype bridged, parent qagent0, hwaddr, ipv6.address none, MAC and IPv6
 filtering and port isolation; not ipv4.address (LXD 6.9 refuses it on a bridge it does not manage unless its IPv4
-filter is on: the address lives in the client map, the lease and the bridge rules), and not LXD's IPv4 filtering (its forward chain has no DHCP exception, so on
-a bridge LXD does not manage it drops every DHCP request on its way to the exit). The exit's own bridge rules
+filter is on: the address lives in the client map, the lease and the bridge rules), and not LXD's IPv4 filtering
+(its forward chain has no DHCP exception, so on a bridge LXD does not manage it drops every DHCP request on its way to
+the exit). The exit's own bridge rules
 (qorpera-agent-exit-bridge.nft) tie each port to its MAC and each MAC to its address instead: a set of LXD ports and
 their MACs, a set of MAC and address pairs, and one DHCP rule per machine (its own MAC, naming itself). Only entries
 LXD backs get into them: a claim LXD does not back gets no traffic at all.

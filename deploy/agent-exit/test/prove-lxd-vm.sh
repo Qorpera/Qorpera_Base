@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of the agent plug on a real LXD (E2b), run as root on a test machine:
 #
-#   node scripts/run-on-node.mjs --machine node02 --sudo --no-install --no-status -- \
+#   node scripts/run-on-node.mjs --machine node01 --sudo --no-install --no-status -- \
 #     bash deploy/agent-exit/test/prove-lxd-vm.sh </dev/null
 #
 # Nothing of it touches the test machine's own kernel or network. It makes a throwaway VM in the test machine's LXD,
@@ -29,7 +29,9 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
 command -v lxc >/dev/null || fail "no LXD here"
-lxc project show "$PROJECT" </dev/null >/dev/null 2>&1 && fail "LXD project $PROJECT exists: another E2b proof runs here"
+# The project first: it is this run's claim on the names (a second run stops here and removes nothing of this one).
+lxc project create "$PROJECT" -c features.images=true -c features.profiles=false -c features.storage.volumes=true \
+	</dev/null >/dev/null 2>&1 || fail "LXD project $PROJECT exists: another E2b proof runs here"
 
 # What the test machine looks like, before and after: the run must change none of it. Other runs on the machine come
 # and go meanwhile (Docker's veth and br- links, modules Docker loads), so those are left out of the comparison of
@@ -63,8 +65,9 @@ modules >"$work/modules-before"
 
 # --- What the VM needs, fetched here ----------------------------------------------------------------------------
 mkdir -p "$work/push/snaps" "$work/push/debs" "$work/push/image"
+# The nodes' and test machines' LXD revision (bootstrap-lxd-host.sh pins it).
 (cd "$work/push/snaps" && snap download snapd >/dev/null && snap download core26 >/dev/null &&
-	snap download lxd --channel=6/stable >/dev/null)
+	snap download lxd --revision=40424 >/dev/null) || fail "cannot fetch LXD 6.9 rev 40424"
 (cd "$work/push/debs" && apt-get download -q dnsmasq-base conntrack libnetfilter-conntrack3 libnetfilter-cthelper0 \
 	libnetfilter-cttimeout1 libnetfilter-queue1 libnfnetlink0 libmnl0 >/dev/null 2>&1) ||
 	fail "cannot fetch the packages"
@@ -72,8 +75,6 @@ if ! lxc storage show "$POOL" </dev/null >/dev/null 2>&1; then
 	lxc storage create "$POOL" dir </dev/null >/dev/null
 	made_pool=1
 fi
-lxc project create "$PROJECT" -c features.images=true -c features.profiles=false -c features.storage.volumes=true \
-	</dev/null >/dev/null
 lx image copy "$IMAGE" local: --vm --alias qae2b-vm >/dev/null
 lx image copy "$IMAGE" local: --alias qae2b-ct >/dev/null
 lx image export qae2b-ct "$work/push/image/" >/dev/null
