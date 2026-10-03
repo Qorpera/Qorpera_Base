@@ -262,9 +262,10 @@ in_m m2 ping -c 1 -W 2 10.210.0.1 >/dev/null || fail "m2 cannot ping the exit"
 wait_for "ip -n qexit neigh show $a2 | grep -q $mac2"
 in_m m1 python3 /root/spoof.py garp "$a2"
 in_m m1 python3 /root/spoof.py garp "$a1" "$mac2"
-# The DHCPDECLINE reaches the bridge (counted before its rules, priority -10) and goes no further: dnsmasq would log it.
+# The DHCPDECLINE reaches the bridge (counted before its rules: they hook forward at filter - 5, and the bridge
+# family's filter is -200) and goes no further: dnsmasq would log it.
 nft add table bridge qae2b_dhcp
-nft add chain bridge qae2b_dhcp seen '{ type filter hook forward priority -10; }'
+nft add chain bridge qae2b_dhcp seen '{ type filter hook forward priority -300; }'
 nft add rule bridge qae2b_dhcp seen iifname "$host_if" udp dport 67 counter
 in_m m1 python3 /root/spoof.py decline "$a1" "$mac2" "$a2" "$exit_mac"
 sleep 0.5
