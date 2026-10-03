@@ -342,6 +342,33 @@ it("stages a file's chunks and manifest under an intent, seals it, and reads it 
 	expect(Buffer.from(read).equals(content)).toBe(true);
 });
 
+it("reads a window of a file from only the chunks it falls in", async () => {
+	const { bytes, sql, gatewayCalls } = await fixture();
+	const content = randomBytes(9 * 1024 * 1024);
+	const signal = new AbortController().signal;
+	const reference = await bytes.put(content, "application/octet-stream", false, signal);
+	sql.readable.add(reference.manifestSha256);
+	const file = { ...reference, executable: false };
+	// Each object is authorized twice: as the request comes in, and again inside the gateway's lane.
+	const downloads = () =>
+		gatewayCalls.filter((call) => call === "qorpera_folder_authorize_object_download").length / 2;
+	// Across the first two chunks: the manifest and those two.
+	let before = downloads();
+	const across = await bytes.range(file, 4 * 1024 * 1024 - 2, 4, signal);
+	expect(Buffer.from(across).equals(content.subarray(4 * 1024 * 1024 - 2, 4 * 1024 * 1024 + 2))).toBe(true);
+	expect(downloads() - before).toBe(3);
+	// Inside the last chunk, cut at the file's end: the manifest and that chunk.
+	before = downloads();
+	const tail = await bytes.range(file, content.byteLength - 3, 4096, signal);
+	expect(Buffer.from(tail).equals(content.subarray(content.byteLength - 3))).toBe(true);
+	expect(downloads() - before).toBe(2);
+	// Past the end, nothing is fetched.
+	before = downloads();
+	expect((await bytes.range(file, content.byteLength, 4, signal)).byteLength).toBe(0);
+	expect(downloads() - before).toBe(0);
+	await expect(bytes.range(file, -1, 4, signal)).rejects.toThrow("Invalid Company folder byte range");
+});
+
 it("gives the same reference for the same file, putting only what the run may not already read", async () => {
 	const { bytes, sql, puts } = await fixture();
 	const signal = new AbortController().signal;

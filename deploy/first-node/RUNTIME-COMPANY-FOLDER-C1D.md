@@ -372,7 +372,10 @@ folder-v2 now (C5 early), rather than growing that path with chunk rows:
 2. **The fixtures switch to it**, with no change in behaviour: F3 moves 630–665 (the coordinator's plan of 2 October 2026), F2 its own (700–709 and the rest).
    F2's 700–709 (and 750, on 707's fixture) keep their `pg_temp.stage(text[, profile])`: the platform stages, and the
    commit helpers first take possession for their actor (`pg_temp.possess`, which seals the same manifest as that
-   actor). 763 is on F1's 634 fixture and moves with it.
+   actor). 763 is on F1's 634 fixture and moves with it. F1's 630–665 moved too (P09): 630, 631, 632, 634, 635 and
+   648 keep `pg_temp.stage(text)`, and their `pg_temp.possess` takes possession only of files `pg_temp.stage` made (a
+   temp table lists them), so 761, 762, 766 and 769, which test possession itself, are untouched; a race fixture takes
+   possession before its races, since a race's own transaction stages nothing.
 3. **`qorpera_verify_company_path_file` refuses folder-v2** (C5 early). Then the chunk index is complete with no
    version-1 case, and the file-hash check is not needed.
 

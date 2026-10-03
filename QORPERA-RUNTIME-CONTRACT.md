@@ -779,7 +779,10 @@ subscriptions, which self-limit.
 >   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
 >   coding or agent's machine awake, unless it hangs inside a model request:
 >   a run with no progress for 15 minutes is idle (changed in place, by the
->   2026-10-03 amendment "one idle rule for every machine");
+>   2026-10-03 amendment "one idle rule for every machine"). A run with no
+>   progress for 15 minutes, also one inside a model request, is shown as one
+>   with no progress, and a member is told (2026-10-03, session-buildup audit
+>   gap 4); nothing stops it;
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
@@ -4696,7 +4699,11 @@ while Azure backup/overflow remains disabled.
 1. One always-on cloud Company File remains readable and mutable through its
    service while every member application and Company Computer is stopped.
 2. Two human members with separate identities, permissions, private paths, and
-   provider sponsors work over that same company without scope leakage.
+   provider sponsors work over that same company without scope leakage. On the
+   company folder (`folder-v2`), private paths are folders shared with only
+   some agents (the 2026-10-02 amendment "light threads", item 4; decided
+   3 October 2026): it has no `members/` folder (the 2026-09-17 amendment's
+   "No member-private conversations").
 3. Creating a company atomically seeds its Company File schema, one Co-Founder
    agent, synchronized enforcement projections, and one silent first-run wake.
 4. Creating an agent seeds exactly one startup wake, creates no template
