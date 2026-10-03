@@ -235,3 +235,7 @@
 :root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
 :root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
 :root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }
+
+/* ---- Company File on folder-v2 (company-folder.css) ------------------------------------ */
+:root[data-theme="dark"] .files-page { --files-folder: #e2ad55; --files-code: rgba(255, 255, 255, 0.045); }
+:root[data-theme="dark"] .files-search-input { border-color: rgba(255, 255, 255, 0.14); background: #1f1f1e; }

@@ -112,6 +112,6 @@ may not select it an "unauthorized" event per change, which would show anyone th
 | P27a | the caller check; the six member functions; history | `20260930013000`, SQL tests 833 (reads, list, bytes check), 834 (history, changes) |
 | P27b | the object gateway's member folder route and the member company gateway's route; cloud-client's member folder client (parsers tested against real SQL output) | none |
 | P30 | the hint trigger, topic and policy; cloud-client's hint subscription | `20260930013100`, SQL test 835 |
-| P33 | the web file page and history on folder-v2 | none |
+| P33 | the web file page and history on folder-v2 (#386's approved file browser, read only); the member's file mode says `folder`; the hint's subscription in cloud-client | `20260930013200`, SQL test 836 |
 
 Each is inert until a folder-v2 company exists.

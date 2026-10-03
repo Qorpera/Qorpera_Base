@@ -822,10 +822,10 @@ subscriptions, which self-limit.
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
 > leaves through the agent exit", section 19, item 9). It also holds the
-> exit's connection bounds, decided on 3 October: at most 16,384 open
-> connections per machine through the exit and 98,304 per node, an
-> infrastructure guard for the node's connection table, not a limit on the
-> work (item 4).
+> exit's connection bounds (decided by the runtime coordinator on 3 October;
+> Jonas may change them): at most 16,384 open connections per machine through
+> the exit and 98,304 per node, an infrastructure guard for the node's
+> connection table, not a limit on the work (item 4).
 
 ## 8. Wake bus
 
@@ -4740,23 +4740,24 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    Each machine holds at most 16,384 open connections through the exit at once, and the exit on a node at most
    98,304 in all (decided by the runtime coordinator on 3 October; Jonas may change them). They are an
    infrastructure guard for the node's connection table, far above normal use, and not a limit on the work.
-   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October), and in phase 1 each
-     agent connection takes two of them (the bridged leg and the masqueraded leg). The total bounds open connections
-     only: a closed connection stays in both tables for a while (120 seconds by default), and so does a refused
-     attempt (10 seconds for TCP, 30 for UDP, 600 for other protocols). Step E2's proof on a node measures the table
-     under such floods, and the total's cost, before any node is switched on.
+   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October). In phase 1 each agent
+     connection takes one entry in the exit's own table and one, the masqueraded leg, in the node's; the node does
+     not track the bridged leg (step E2). The total bounds open connections only: a closed connection stays in both
+     tables for a while (120 seconds by default), and a refused attempt in the exit's (10 seconds for TCP, 30 for
+     UDP, 600 for other protocols). Step E2's proof on LXD measures the tables under such floods, and the total's
+     cost, before any node is switched on.
    - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
      bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
    - One company with six busy machines on a node could reach the node's total; until its connections close, every
      other company's new connections on that node are refused.
 5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
    (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
-   - On an execution host, the existing model relay carries them.
-   - In a coding machine, a provider door carries them. It is a new node service for coding machines only. It
-     passes a connection only when the server name in its TLS handshake is one of the providers' names. It reads
-     nothing else. In a coding machine every connection to a provider's name goes through the door, an agent's
-     own included.
-   - On every other agent road machine, a call to an AI service is agent traffic like any other.
+   - On an execution host, the existing model relay carries them. A coding turn's model program runs there too
+     (`deploy/coding-worker/README.md`); its coding machine only runs commands.
+   - No agent road machine runs one of our model programs today, so none needs a door of its own. If one ever
+     does, a provider door for it (a pass-through that reads only the TLS server name) is designed and built
+     before that machine moves to the exit (corrected 3 October, step E2a; design §5).
+   - On an agent road machine, a call to an AI service is agent traffic like any other, an agent's own included.
 6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
    addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
    stay a person's task in the person's own browser (`deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md`). Once the block
@@ -4824,7 +4825,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
     - a Company Computer's browser and one of its shells (with a non-HTTP connection), an agent's machine and a coding
       machine each reach a website through the exit, and the exit's log names their company;
     - the NAS, the nodes, Tailscale and cloud metadata stay unreachable from them, and TCP port 25 is refused;
-    - a coding turn's model traffic leaves through the provider door and is absent from the exit's log;
+    - a coding turn's model traffic leaves through the execution host's model relay and is absent from the exit's
+      log;
     - with the exit failed, none of them reaches the internet; a Company Computer whose agent network card is gone
       does not reach it through its own network either, and its agents cannot change that;
     - a company's block list refuses a name for that company and for no other;
