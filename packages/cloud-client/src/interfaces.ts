@@ -786,6 +786,10 @@ export const INTERFACE_QUOTE_SOURCES: readonly string[] = Object.freeze(["mail"]
 /** At most this many outside values in one message button's text (RUNTIME-INTERFACES.md §3.3). */
 export const INTERFACE_OUTSIDE_VALUES_MAX = 16;
 
+/** A client cuts each outside value to this many characters before it fills it in, the longest a quote may be
+ * (RUNTIME-INTERFACES.md §3.3; the quote provenance amendment, item 1). */
+export const INTERFACE_OUTSIDE_VALUE_MAX_CHARS = 2000;
+
 /** The columns of a source that carry outside content. A `file:` source's text is outside content under `hooks/`
  * (saved events) or `human-tasks/` (what a contact sent back), found by folder key as the folder finds files. */
 export function interfaceOutsideColumns(source: string): readonly string[] {

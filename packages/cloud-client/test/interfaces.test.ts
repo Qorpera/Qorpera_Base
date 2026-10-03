@@ -25,6 +25,7 @@ import {
 } from "../src/interface-query.ts";
 import {
 	decodeInterfaceFile,
+	INTERFACE_OUTSIDE_VALUE_MAX_CHARS,
 	INTERFACE_SOURCE_COLUMNS,
 	type InterfaceProblem,
 	interfaceInstant,
@@ -322,8 +323,7 @@ buttons = ["ask"]
 id = "ask"
 verb = "${verb}"
 label = "Ask"
-${verb === "message" ? 'to = "co-founder"\n' : 'target = "interface:pulse"\n'}text = ${JSON.stringify(text)}
-`;
+${verb === "message" ? `to = "co-founder"\ntext = ${JSON.stringify(text)}\n` : 'target = "interface:pulse"\n'}`;
 	const problems = (from: string, text: string, verb?: string) =>
 		codes(parseInterfaceFile(withButton(from, text, verb)).problems);
 
@@ -347,6 +347,26 @@ ${verb === "message" ? 'to = "co-founder"\n' : 'target = "interface:pulse"\n'}te
 	it("refuses more than 16 outside values in one button", () => {
 		expect(problems("mail", "{subject} ".repeat(16))).toEqual([]);
 		expect(problems("mail", "{subject} ".repeat(17))).toEqual(["outside_value"]);
+	});
+
+	it("checks only what a message button sends, and every source a block reads", () => {
+		// An open button sends nothing; its label is shown, never sent.
+		expect(problems("file:hooks/stripe/evt_1.md", "", "open")).toEqual([]);
+		// A calendar reads several sources: a hook file among them is checked too.
+		const calendar = withButton("routines", "File {text}").replace(
+			'kind = "list"\nfrom = "routines"\nline = "{text}"',
+			'kind = "calendar"\nfrom = ["routines", "file:hooks/stripe/evt_1.md"]',
+		);
+		expect(calendar).toContain('from = ["routines", "file:hooks/stripe/evt_1.md"]');
+		expect(codes(parseInterfaceFile(calendar).problems)).toContain("outside_value");
+		expect(codes(parseInterfaceFile(calendar.replace("File {text}", "File {title}")).problems)).not.toContain(
+			"outside_value",
+		);
+		// A source named like an object's own property is an unknown source, never a crash.
+		expect(() => parseInterfaceFile(withButton("constructor", "About {text}"))).not.toThrow();
+		expect(codes(parseInterfaceFile(withButton("constructor", "About {text}")).problems)).toContain("unknown_source");
+		expect(interfaceOutsideColumns("constructor")).toEqual([]);
+		expect(INTERFACE_OUTSIDE_VALUE_MAX_CHARS).toBe(2000);
 	});
 
 	it("keeps the library's Mailbox valid", () => {

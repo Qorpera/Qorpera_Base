@@ -8,11 +8,6 @@
 
 ### Added
 
-- The interface parser refuses a `message` button that would fill in outside content it can't quote (`outside_value`; `RUNTIME-INTERFACES.md` §3.3, §4 and §6; Interfaces step I5d part 4a). `interfaceOutsideColumns(source)` gives a source's outside-content columns:
-  - `mail`'s `from_name`, `from_address` and `subject`;
-  - a `file:` source's `text` under `hooks/` or `human-tasks/`, by folder key.
-
-  A button whose text names such a column of a source outside the quote list (`INTERFACE_QUOTE_SOURCES`: `mail`), or more than 16 of them, is refused. F2's I6 save check needs this before interface files are saved in the folder.
 - Worker briefs and results with sections (F2's F2-5b-1, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §8 "Plan (F2-5b)"): a `brief.md` body is `## Goal`, `## Done when`, `## Context`, `## Sources` (`- <path>` items), the platform's `## Authority`, `## Output`, `## Cancellation` and `## Completion`, and `## Follow-up` (the latest), with the new settings `follow_ups` and `followed_up_at`; a `results.md` body is the summary, `## Needs` exactly when blocked, and `## Files`. Their parses give each section (`goal`, `doneWhen`, `context`, `sources`, …, `followUp`; `summary`, `needs`, `files`) in place of the whole body, within today's tool bounds. `writeWorkerBriefFile` and `writeWorkerResultsFile` write them and refuse model text that would start a section (`workerTextHeading`); `appendWorkerFollowUp` adds a follow-up; `workerStandingTexts` gives the platform's texts; `workerKeyProblem` holds a worker key to the folder naming rule. Nothing writes worker files yet.
 - `CompanyComputerEffectContext.fill`: a company account fill's box, sealed to the computer's boot key, carried beside a `vault_fill` action (company accounts A1-3b); `CompanyComputerActionNotStartedError` takes `ACCOUNT_FILL_UNAVAILABLE`, `ACCOUNT_FILL_UNOPENED` and `ACCOUNT_FILL_EXPIRED`.
 - Human tasks on the folder core, the TS side (F2's H2a, `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §8 "Plan (H2)"): `companyStateSeedTree` seeds the fixed folders `human-tasks/` and `contacts/` (Jonas, 2 October; contract 5.6) and the company skill `skills/human-task/SKILL.md` (`COMPANY_STATE_HUMAN_TASK_SKILL`); `COMPANY_STATE_SEEDED_PATHS` names the two folders; `humanTaskFolder`, `humanTaskProofPath` and `humanTaskNotePath` name a task's folder, proof (`proof/<kind>-<n>.<ext>`) and note; `humanTaskPersonChange` makes the person's change (one tick, done or declined) as every writer must. Inert until the database knows the rules (H2b) and a writer uses them (H3, H5).
@@ -78,6 +73,12 @@
 
 - `companyStateSeedTree` lists a new company's seeded folder (vision, sections, the Co-Founder's `agent.md` with its first job, and the empty `agents/groups/`, `connections/`, `skills/`, `rules/`), with `COMPANY_STATE_SEEDED_PATHS`, `COMPANY_STATE_COFOUNDER_HANDLE` and `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`. The founding table's `vision`, `founders` (a `- name: role` line each under "How we work") and `firstTodo` (at `COMPANY_STATE_FIRST_TODO_PATH`) go in too; it throws rather than seed a file that would not parse.
 - An agent's instructions refuse control characters other than tab and line breaks.
+
+- The interface parser refuses a `message` button that would fill in outside content it can't quote (`outside_value`; `RUNTIME-INTERFACES.md` §3.3, §4 and §6; Interfaces step I5d part 4a). `interfaceOutsideColumns(source)` gives a source's outside-content columns:
+  - `mail`'s `from_name`, `from_address` and `subject`;
+  - a `file:` source's `text` under `hooks/` or `human-tasks/`, by folder key.
+
+  A button whose text names such a column of a source outside the quote list (`INTERFACE_QUOTE_SOURCES`: `mail`), or more than 16 of them, is refused, for every source a block reads. A client cuts each outside value to `INTERFACE_OUTSIDE_VALUE_MAX_CHARS` (2,000) before it fills it in. F2's I6 save check needs this before interface files are saved in the folder.
 
 ### Changed
 
