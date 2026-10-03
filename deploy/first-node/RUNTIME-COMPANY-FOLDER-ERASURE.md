@@ -131,7 +131,8 @@ zero versions and still has its units scrubbed), and §2.3's copy warning.
 ### 4.1 Tables and indexes (P18a's migration)
 - `qorpera_folder_erasures(id, environment_id → folder clock cascade, profile_id → profiles cascade, operation_key,
   request_sha256, requested_by_user_id, requested_at, as_of_seq, as_of_at, roots jsonb ({key, cutoffSeq, cutoffUnit, cutoffAt}),
-  state, counters, cursors, bytes_pending boolean, done_at)`; unique (environment_id, operation_key).
+  state (`working`, `waiting`, `done`), revisit_at, counters, cursors, bytes_pending boolean, done_at)`; unique
+  (environment_id, operation_key).
 - `qorpera_folder_erasure_needles(erasure_id → cascade, needle, cutoff_seq, cutoff_unit, cutoff_at)`: each root's and
   each erased version's written path, and its first 100 characters, with the root's cutoff (phases 2 and 4).
 - `qorpera_folder_erasure_runs(erasure_id → cascade, run_id, state)`: the runs phase 4 scrubs, kept while a run is
@@ -141,16 +142,18 @@ zero versions and still has its units scrubbed), and §2.3's copy warning.
 - Indexes: `qorpera_folder_path_versions (environment_id, (qorpera_folder_key(path)) collate "C")` (an expression
   index: no table rewrite); `qorpera_folder_file_chunks (profile_id, manifest_sha256)` (missing today, which the GC
   finish's cascade also needs); `qorpera_folder_commits (environment_id, created_at) where seq is null`;
-  `qorpera_folder_run_read_records (environment_id, created_at)`; `qorpera_folder_erasures (requested_at) where
-  done_at is null` (the idle check).
+  `qorpera_folder_run_read_records (environment_id, created_at)`; `qorpera_folder_erasures (state, revisit_at,
+  requested_at) where done_at is null` (the idle check).
 - The expression index depends on the Unicode tables behind `qorpera_folder_key`: core §2's PostgreSQL upgrade step
   gains a `REINDEX` of it, like the generated keys.
 
 ### 4.2 Running it
 `qorpera_folder_erasure_step(p_versions integer, p_commits integer, p_hashes integer)` does one bounded step in one
-transaction (2 s lock budget). Candidates, by a plain read in `requested_at` order: unfinished erasures of companies
-with no `qorpera_company_deletions` row (a company being deleted is purged with its erasures; one in deletion for days
-never stalls the others), and `bytes_pending` ones only on the hourly revisit. For each candidate in turn: its company
+transaction (2 s lock budget). Candidates, by a plain read in `requested_at` order: erasures in state `working` of
+companies with no `qorpera_company_deletions` row (a company being deleted is purged with its erasures; one in
+deletion for days never stalls the others), then erasures in state `waiting` (only pending runs or pending bytes left)
+whose `revisit_at` has passed. A step that leaves an erasure `waiting` sets `revisit_at` an hour on. The partial index
+is on `(state, revisit_at, requested_at) where done_at is null`. For each candidate in turn: its company
 row `FOR KEY SHARE SKIP LOCKED` (the purge's `FOR UPDATE` makes it skip), then the erasure row `FOR UPDATE SKIP
 LOCKED`, re-read; on a skip it goes to the next candidate (the skipped company's `KEY SHARE` is held to the end of the
 step, which is harmless). pg_cron runs it every 5 seconds (`'5 seconds'`, one `select
@@ -158,7 +161,9 @@ public.qorpera_folder_erasure_step(1000, 1000, 2000)` per tick; no procedure, si
 security definer nor carry `set`). Like the repo's other cron functions it checks no JWT role and is revoked from
 `public, anon, authenticated, service_role` (20260930002600:141-197). Seconds schedules need pg_cron 1.5 or later
 (checked in production before the cut). It writes about 17,000 `cron.job_run_details` rows a day; P18a's migration
-schedules their cleanup (a daily delete of this job's rows older than a day), since `cron.log_run` is cluster-wide. A large agent folder (50,000 versions, 1,000 per
+schedules their cleanup (a daily delete of this job's rows older than a day), since `cron.log_run` is cluster-wide.
+Both jobs follow the repo's optional-pg_cron pattern (20260930002600:199-225), so the migration applies where pg_cron
+is absent. A large agent folder (50,000 versions, 1,000 per
 step) takes about four minutes; the commit scan of a large environment takes longer (§4.3), and status shows it.
 
 `qorpera_folder_erasure_status(p_environment_id, p_actor, p_erasure_id)` (service role, through the member route, for
@@ -193,7 +198,7 @@ step works on the first unfinished one:
 5. **Bytes (C1D §9.4).** When the company is one folder GC serves, up to `p_hashes` of the hash table, in
    `sha256 collate "C"` order, in a statement after the deletes: upsert `qorpera_folder_object_gc(profile, hash,
    now())` with `greatest`, where a catalog row exists and `qorpera_folder_object_rooted` is false; the hash rows go.
-   When it is not (a mixed company; folder GC switched off), the hashes stay and the erasure ends with `bytes_pending`;
+   When it is not (a mixed company; folder GC switched off), the hashes stay and the erasure waits with `bytes_pending`;
    the drain revisits such erasures once an hour and enqueues them once folder GC serves the company.
    The shared helper also serves the git-object exception (core §2), the other pruner of versions.
 6. **Done**, once no noted run is pending and no byte is pending. Until then the erasure is revisited once an hour
