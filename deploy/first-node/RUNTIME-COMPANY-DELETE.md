@@ -53,7 +53,8 @@ Rollback: `select cron.unschedule('qorpera-company-deletions')`. Requests then w
 | Agent machines (#419) | executor, once the machine is set `deleted` | #531 adds them to `qorpera_stop_company_work`; until it lands their allocations hold the purge |
 | Company Computers | office provider: power off (works), delete and release (D3), then its NAS workbench (D5b) | D3 live since v150; D5b once its provider build is rolled |
 | Sign-in identity volumes on the nodes and their exec host devices | LXD provider's login gateway (D4) | D4; live once the LXD provider build is rolled |
-| Run recovery volumes (`user.qorpera.profile_id`), identity volumes from before node demands (8 Sep) | operator runbook: a run's recovery volume only once its journal is archived (a day after it settles; the provider still requires it before) | last |
+| Run recovery volumes (`user.qorpera.profile_id`) | LXD provider: deleted when the run's journal is archived, a day after it settles (session-buildup audit gap 7) | once the LXD provider build carrying it is rolled; volumes of runs archived before that: operator runbook below |
+| Identity volumes from before node demands (8 Sep) | operator runbook | last |
 | Company File and folder objects (Storage, NAS) | artifact GC worker, deleted-profile phase (catalog rows outlive the purge) | exists; runs once the worker is deployed (not deployed on 29 Sep) |
 | Credential capsules and recovery backups in Storage | artifact GC worker, from `qorpera_company_storage_deletions` (D5a) | D5a; same worker |
 | Recovery backups on the recovery service's NAS and journal | operator runbook (a per-company service) | last |
@@ -174,7 +175,10 @@ records what it waits for.
   `insert into public.qorpera_runtime_identity_retirements (node_id, compute_identity_id, provider_id,
   volume, device) values ('<node>', '<identity>', '<provider id>', 'absent', 'absent');`
   Not covered, for the operator runbook: volumes from before node demands existed (8 September), and
-  run recovery volumes. An execution-host rebuild that runs while a device is retired stops with "lost
+  recovery volumes of runs whose journals were archived before the LXD provider deleted them at archive
+  (gap 7): on each node, a volume `<recovery prefix><acquisition id>` whose journal is in the provider's
+  `<state root>/archive/` (never one whose journal is still in the state root) carries the run's
+  `user.qorpera.*` authority and can be deleted. An execution-host rebuild that runs while a device is retired stops with "lost
   Compute Identity devices": check the volume is gone (retired), then run it again.
   Rollout: the LXD provider build on every node (node-agent `provider` role) after the release carrying
   the migration is live. Before that, the due list 404s (logged once a minute) and a company with node

@@ -141,6 +141,9 @@ interface LxdProviderJournal {
 	capacityRegistered?: true;
 	/** Written only after the control plane confirms the exact release; the release is never sent again. */
 	capacityReleased?: true;
+	/** Written by a settled journal's archive before it deletes the run's recovery volume, which is then no longer
+	 * demanded back (session-buildup audit gap 7). */
+	recoveryVolumeRetired?: true;
 	/** Exact node binding retained after the node reservation commits. */
 	nodeCapacity?: NativeNodePlacement;
 	guestAddress?: string;
@@ -393,6 +396,10 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
 		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
 		(input.capacityReleased !== undefined && input.capacityReleased !== true) ||
+		(input.recoveryVolumeRetired !== undefined &&
+			(input.recoveryVolumeRetired !== true ||
+				input.schema !== COMPANY_JOURNAL_SCHEMA ||
+				!["stopped", "lost"].includes(String(input.physicalState)))) ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -522,6 +529,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		...(input.deletionConfirmed === true ? { deletionConfirmed: true } : {}),
 		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
 		...(input.capacityReleased === true ? { capacityReleased: true } : {}),
+		...(input.recoveryVolumeRetired === true ? { recoveryVolumeRetired: true } : {}),
 		...(input.nodeCapacity !== undefined ? { nodeCapacity: nodePlacement(input.nodeCapacity) } : {}),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
 		...(typeof input.assignmentId === "string" ? { assignmentId: input.assignmentId } : {}),
@@ -960,7 +968,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (settledAt !== undefined) this.#settled.set(acquisitionId, settledAt);
 		}
 		const settledAt = this.#settled.get(acquisitionId);
-		if (settledAt !== undefined && Date.now() - settledAt >= SETTLED_JOURNAL_RETENTION_MS)
+		if (
+			settledAt !== undefined &&
+			Date.now() - settledAt >= SETTLED_JOURNAL_RETENTION_MS &&
+			(await this.#retireRecoveryVolume(acquisitionId, signal))
+		)
 			await this.#archive(acquisitionId);
 	}
 
@@ -1324,7 +1336,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	/** A job guest serves exactly one run. Once it is done the guest has no further
 	 * purpose: the canonical transcript and the provider session live in the cloud
 	 * and on the identity host, so the guest is deleted rather than left behind.
-	 * Retained custom volumes (identity, recovery) are devices and survive. */
+	 * Retained custom volumes (identity, recovery) are devices and survive; a run's recovery volume goes with its
+	 * journal's archive (#retireRecoveryVolume). */
 	async #retire(current: LxdProviderJournal, status: string, signal?: AbortSignal): Promise<void> {
 		if (status !== "Stopped") {
 			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
@@ -1981,10 +1994,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		});
 	}
 
-	async #ensureRecoveryVolume(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
-		const company = journal.lxd.companyRuntime;
-		if (!company) return;
-		const expected = {
+	/** The configuration a run's recovery volume is created with; only a volume carrying all of it is the run's. */
+	#recoveryVolumeAuthority(
+		journal: LxdProviderJournal,
+		company: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>,
+	) {
+		return {
 			size: company.recoveryVolumeSize,
 			"user.qorpera.schema": RECOVERY_VOLUME_SCHEMA,
 			"user.qorpera.run_id": journal.runId ?? journal.acquisitionId,
@@ -1996,6 +2011,26 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			"user.qorpera.compute_identity_id": journal.runner.computeIdentityId,
 			"user.qorpera.provider_adapter": this.adapterId,
 		};
+	}
+
+	#isRecoveryVolume(
+		company: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>,
+		expected: Readonly<Record<string, string | undefined>>,
+		volume: LxdStorageVolumeRecord | undefined,
+	): boolean {
+		return (
+			volume !== undefined &&
+			volume.name === company.recoveryVolume &&
+			volume.type === "custom" &&
+			volume.contentType === "filesystem" &&
+			Object.entries(expected).every(([key, value]) => volume?.config[key] === value)
+		);
+	}
+
+	async #ensureRecoveryVolume(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
+		const company = journal.lxd.companyRuntime;
+		if (!company) return;
+		const expected = this.#recoveryVolumeAuthority(journal, company);
 		let volume = await this.#lxd.getStorageVolume(
 			journal.lxd.project,
 			journal.lxd.storagePool,
@@ -2003,6 +2038,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			signal,
 		);
 		if (!volume) {
+			// The settled run's archive retired it (#retireRecoveryVolume): the run never starts again.
+			if (journal.recoveryVolumeRetired) return;
 			if (journal.physicalState !== "creating") {
 				throw new Error("Native recovery volume is missing; execution cannot restart with empty recovery state");
 			}
@@ -2029,15 +2066,36 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				signal,
 			);
 		}
-		if (
-			!volume ||
-			volume.name !== company.recoveryVolume ||
-			volume.type !== "custom" ||
-			volume.contentType !== "filesystem" ||
-			Object.entries(expected).some(([key, value]) => volume?.config[key] !== value)
-		) {
+		if (!this.#isRecoveryVolume(company, expected, volume)) {
 			throw new Error("Native recovery volume drifted from immutable company and run authority");
 		}
+	}
+
+	/** A settled run never starts again, and its recovery volume (the guest's runner home) is read by nothing once
+	 * its guest is gone: it goes when its journal is archived, a day after the run settles (session-buildup audit
+	 * gap 7, 3 Oct 2026: every overflow run left one on its node until an operator removed it). Only a volume with
+	 * exactly this run's authority is deleted; one that drifted stays for an operator, and so does its journal. The
+	 * journal records the retirement before the delete, so a provider that stops between the two does not demand the
+	 * volume back. Answers whether the journal may be archived: not while its guest exists again. */
+	async #retireRecoveryVolume(acquisitionId: string, signal?: AbortSignal): Promise<boolean> {
+		const journal = await this.#readJournal(acquisitionId);
+		const company = journal?.lxd.companyRuntime;
+		if (!journal || !company) return true;
+		if (await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal)) {
+			this.#settled.delete(acquisitionId);
+			return false;
+		}
+		const { project, storagePool } = journal.lxd;
+		const volume = await this.#lxd.getStorageVolume(project, storagePool, company.recoveryVolume, signal);
+		if (!volume) return true;
+		if (!this.#isRecoveryVolume(company, this.#recoveryVolumeAuthority(journal, company), volume)) {
+			throw new Error("Native recovery volume drifted from immutable company and run authority; it is kept");
+		}
+		if (!journal.recoveryVolumeRetired) await this.#writeJournal({ ...journal, recoveryVolumeRetired: true });
+		await this.#lxd.deleteStorageVolume(project, storagePool, company.recoveryVolume, signal);
+		if (await this.#lxd.getStorageVolume(project, storagePool, company.recoveryVolume, signal))
+			throw new Error("LXD did not delete the settled run's recovery volume");
+		return true;
 	}
 
 	#assertIdentityVolumeAuthority(
