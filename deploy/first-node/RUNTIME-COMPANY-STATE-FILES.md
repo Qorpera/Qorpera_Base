@@ -333,7 +333,8 @@ closes the conversation; a restore reopens both, with the same conversation.
   operation key `connection-file:<secret>:<generation>` and the version it read (keeping the company's text below the
   settings; a member's edit meanwhile makes it read again), and finishes the claim
   (`qorpera_finish_connection_file`); a claim never waits for a vault change or a company being deleted (only,
-  briefly, for another claim's new work rows), and a writer makes one per transaction. A revoked secret or
+  briefly, for another claim's new work rows), and a writer makes one per transaction. A claim skips a company whose
+  creation has not completed (P14a, migration `20260930010000`); its marks wait until it has. A revoked secret or
   a closed account means its file is deleted. `actions` lists the operations with an active, unexpired grant; an expiry
   marks nothing, so the file shows an expired grant until the connection's next change.
   `qorpera_mark_connection_files(environment)` marks every connection due at once: an operator step, in its own
@@ -1965,9 +1966,12 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
 - `report_work` on `folder-v2` writes `results.md` the same way, under the worker run's receipt.
 - The wake shapes gain `folder-v2` paths: the output folder is the worker's folder, and the todo path is
   the todo file. A write worker still writes where its agent may (the brief's authority text).
-- The new entry joins the native host's call list (`qorpera_native_host_calls`, scope `folder`, run
-  actors only), and cancel and status join it with scope `binding`; all three join the runtime client's
-  RPC lists (test 760's pinned shapes).
+- The new entry and status join the native host's call list (`qorpera_native_host_calls`) with scope
+  `folder` (run actors only; their signatures take the environment and the actor), and cancel with scope
+  `binding`. All three join the runtime client's RPC lists (test 760's pinned shapes) and its
+  `NATIVE_HOST_CALLS` in F2-5b-4.
+- A retired worker row keeps the folder key it had: a worker's folder deleted before its agent's folder is
+  renamed comes back only at its old path.
 
 **PRs, in this order** (each with an exact-head review and node 2 `changed`):
 - **F2-5b-1, the parser** (`packages/cloud-client`, no SQL): the sections, the parses, the writers with

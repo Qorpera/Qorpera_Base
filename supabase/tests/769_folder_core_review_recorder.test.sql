@@ -199,11 +199,12 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_action_reviews set profile_id = %L where id = %L',
 		'64700000-0000-4000-8000-000000000011', v_action));
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, v_action, u), '42501', c_refused);
-	-- An approved email never stands for folder units, nor does a delegation by a tool that writes none.
+	-- An approved email never stands for folder units, nor does a delegation by a tool that writes none (a coworker
+	-- message; manage_worker writes worker files since F2-5b-2, 20260930003000).
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b, pg_temp.action(b, 'call-external', 'allow', 'external'), u),
 		'42501', c_refused);
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L)', b,
-		pg_temp.action(b, 'call-worker', 'allow', 'delegation', 'manage_worker'), u), '42501', c_refused);
+		pg_temp.action(b, 'call-coworker', 'allow', 'delegation', 'send_coworker_message'), u), '42501', c_refused);
 	-- The approval is of one call: another tool's name or another argument digest is refused.
 	v_action := pg_temp.action(b, 'call-exact');
 	perform pg_temp.raises_like(format('select pg_temp.record(%L, %L, %L, %L)', b, v_action, u, '{"tool":"create_group_chat"}'),
