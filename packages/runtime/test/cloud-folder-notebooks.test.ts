@@ -200,3 +200,68 @@ it("refuses an update_skill deletion outside the agent's own skills before anyth
 	expect(f.recordings).toHaveLength(0);
 	expect(f.files.has("skills/invoices/SKILL.md")).toBe(true);
 });
+
+it("creates a skill again after deleting it in the same run, rather than replaying the first creation", async () => {
+	const f = await fixture({ folders: ["agents/nora/skills"] });
+	const path = "agents/nora/skills/call-the-bank/SKILL.md";
+	const create = {
+		action: "create",
+		scope: "agent",
+		name: "call-the-bank",
+		description: "How to call the bank",
+		body: "Ask for the loan desk.",
+	};
+	expect(parse(await f.call("update_skill", create))).toMatchObject({ state: "created" });
+	await f.call("update_skill", {
+		action: "delete",
+		scope: "agent",
+		name: "call-the-bank",
+		version: f.files.get(path)?.version as string,
+	});
+	expect(f.files.has(path)).toBe(false);
+	const commits = f.commits.length;
+	// The same text at the same absent path, in a new call: its own receipt and commit, and the file is back.
+	expect(parse(await f.call("update_skill", create))).toMatchObject({ state: "created" });
+	expect(f.commits.length).toBeGreaterThan(commits);
+	expect(f.files.has(path)).toBe(true);
+});
+
+it("reads a notebook file that starts with a byte order mark as the legacy reader did", async () => {
+	const f = await fixture({ files: { "agents/nora/memory/profile.md": "﻿- (2026-09-01) I am Nora\n" } });
+	const memory = await composeCloudAgentMemory(
+		f.notebooks.composition,
+		"agents/nora",
+		NOW,
+		new AbortController().signal,
+	);
+	expect(memory.profile.facts).toEqual([{ date: "2026-09-01", tier: "profile", fact: "I am Nora" }]);
+});
+
+it("refuses a skill deletion with no approval before taking a receipt", async () => {
+	const f = await fixture({ folders: ["agents/nora/skills"] });
+	const path = "agents/nora/skills/call-the-bank/SKILL.md";
+	await f.call("update_skill", {
+		action: "create",
+		scope: "agent",
+		name: "call-the-bank",
+		description: "How to call the bank",
+		body: "Ask for the loan desk.",
+	});
+	const begun = f.operationControl.beginToolOperation.mock.calls.length;
+	const tool = f.tools.find((candidate) => candidate.name === "update_skill") as CloudNativeTool;
+	const { actionReviewId: _approval, ...context } = f.context;
+	const deleted = parse(
+		await tool.execute(
+			tool.parseArguments({
+				action: "delete",
+				scope: "agent",
+				name: "call-the-bank",
+				version: f.files.get(path)?.version as string,
+			}),
+			{ ...context, callId: randomUUID() },
+		),
+	);
+	expect(deleted).toMatchObject({ state: "denied", saved: false });
+	expect(f.operationControl.beginToolOperation.mock.calls.length).toBe(begun);
+	expect(f.files.has(path)).toBe(true);
+});

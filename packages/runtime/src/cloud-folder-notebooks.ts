@@ -52,7 +52,8 @@ const MAX_LISTED = 10_000;
 /** What the core records in one release; more reads go in several, all with the answer's hash. */
 const MAX_RELEASED = 10_000;
 const TOOL_VERSION = "folder-v2/1";
-const TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/** As the legacy trusted read: a leading byte order mark is not part of the text. */
+const TEXT = new TextDecoder("utf-8", { fatal: true });
 
 /** One release id per run, purpose and output (and part): the same text released again replays under the same id. */
 function releaseId(runId: string, purpose: string, outputSha256: string, part: number): string {
@@ -151,16 +152,24 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			let review: string | undefined;
 			if (operation === "delete" && changes.tool === "update_skill") {
 				const own = `${changes.agentFolder}/skills/`.toLowerCase();
-				if (!path.toLowerCase().startsWith(own) || path.length <= own.length)
-					throw new CloudCompanyPathToolRefusal();
 				review = changes.context.actionReviewId;
+				// Refused before any receipt: another library, or no approval to record.
+				if (!path.toLowerCase().startsWith(own) || path.length <= own.length || !review)
+					throw new CloudCompanyPathToolRefusal();
 			}
+			// The tools key a change by the version it replaces. An absent path has none on folder-v2 (the legacy gateway
+			// kept the version a deletion left), so creating it again later in the run, after a deletion, would replay the
+			// first creation's receipt: such a change is keyed to its tool call too, which a replay of that call repeats.
+			const operationKey =
+				input.expectedVersion === null
+					? `${input.operationKey}:${createHash("sha256").update(changes.context.callId).digest("hex").slice(0, 16)}`
+					: input.operationKey;
 			changes.changed = true;
 			const content = await changes.operations.execute({
 				operation: {
 					tool: changes.tool,
 					toolVersion: TOOL_VERSION,
-					logicalOperationKey: input.operationKey,
+					logicalOperationKey: operationKey,
 					arguments: {
 						op: operation,
 						path,
@@ -176,7 +185,7 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 				authorize: async () => {},
 				perform: async (_operation, { receiptId, signal: performSignal }) => {
 					// The commit's operation key for the tool's: fixed length, and distinct per tool.
-					const key = `${changes.tool}:${createHash("sha256").update(input.operationKey).digest("hex")}`;
+					const key = `${changes.tool}:${createHash("sha256").update(operationKey).digest("hex")}`;
 					let committed: Awaited<ReturnType<CloudCompanyFolderClient["commit"]>>;
 					if (review === undefined) committed = await folder.commit(key, [unit], { receiptId }, performSignal);
 					else {
@@ -293,7 +302,9 @@ export class CloudFolderNotebooks {
 						throw new CloudToolRefusal(
 							error.failure === "read_revoked"
 								? "READ_REVOKED: something this answer drew on may no longer be read by you, so it is not shown; try again"
-								: `COMPANY_FOLDER_UNAVAILABLE: what this answer read could not be recorded (${error.failure}), so it is not shown; try again`,
+								: error.failure === "stopped"
+									? "COMPANY_WORK_STOPPED: the company's work is stopped, so this answer is not shown"
+									: `COMPANY_FOLDER_UNAVAILABLE: what this answer read could not be recorded (${error.failure}), so it is not shown; try again`,
 						);
 					throw error;
 				}

@@ -644,8 +644,10 @@ async function fixture(
 							if (text === undefined) throw new Error("No such folder bytes in this suite");
 							return new TextEncoder().encode(text);
 						},
-						range: async () => {
-							throw new Error("No folder byte ranges in this suite");
+						range: async (file: { fileSha256: string }, offset: number, length: number) => {
+							const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+							if (text === undefined) throw new Error("No such folder bytes in this suite");
+							return new TextEncoder().encode(text).subarray(offset, offset + length);
 						},
 					}),
 				}
@@ -1269,6 +1271,28 @@ it.each([true, false])(
 			expect(tools.some((tool) => tool.name === name)).toBe(true);
 	},
 );
+
+it("releases what a folder-v2 run's composition read under the composed context, before the model starts", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	f.folderFiles.set("agents/nora/memory/profile.md", "- (2026-09-01) I am Nora, the bookkeeper\n");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const calls = f.pathCall.mock.calls;
+	const start = calls.findIndex(([method]) => method === "qorpera_begin_native_company_execution_v2");
+	const released = calls.findIndex(
+		([method, args]) =>
+			method === "qorpera_folder_record_release" &&
+			(args as { p_reads: { path: string }[] }).p_reads.some(
+				(read) => read.path === "agents/nora/memory/profile.md",
+			),
+	);
+	expect(released).toBeGreaterThanOrEqual(0);
+	expect(released).toBeLessThan(start);
+	// Under exactly the context the run starts with.
+	expect((calls[released]![1] as { p_output_sha256: string }).p_output_sha256).toBe(
+		(calls[start]![1] as { p_context_sha256: string }).p_context_sha256,
+	);
+});
 
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
 	const f = await fixture("company-dynamic", false, undefined, false, true);
