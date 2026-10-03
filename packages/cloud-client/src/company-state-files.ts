@@ -256,7 +256,19 @@ export interface WorkerBriefFile {
 	readonly access: "read" | "write";
 	readonly revival: "each" | "batch";
 	readonly dispatchedAt: string;
-	readonly brief: string;
+	/** How many follow-ups the worker has had; the body keeps the latest (F2-5b). */
+	readonly followUps: number;
+	readonly followedUpAt: string | null;
+	/** The body's sections ({@link WORKER_BRIEF_SECTIONS}), trimmed. */
+	readonly goal: string;
+	readonly doneWhen: string;
+	readonly context: string | null;
+	readonly sources: readonly string[];
+	readonly authority: string;
+	readonly output: string;
+	readonly cancellation: string;
+	readonly completion: string;
+	readonly followUp: string | null;
 }
 
 export interface WorkerResultsFile {
@@ -265,7 +277,10 @@ export interface WorkerResultsFile {
 	readonly reportedAt: string;
 	readonly decision: "accepted" | "rejected" | null;
 	readonly note: string | null;
-	readonly report: string;
+	/** The body: the summary, then `## Needs` (exactly when blocked) and `## Files` (F2-5b). */
+	readonly summary: string;
+	readonly needs: string | null;
+	readonly files: readonly string[];
 }
 
 /** One step of a human task's checklist: its line in the file, its text and whether it is ticked. */
@@ -1302,6 +1317,131 @@ function todo(split: Split, fields: Fields, problems: Problems): TodoFile | null
 	return { kind: "todo", id, title, status, requestedBy, detail };
 }
 
+/** A worker brief's body sections, in their order (F2-5b). Context, Sources and Follow-up may be
+ * missing; the others are required. */
+export const WORKER_BRIEF_SECTIONS = Object.freeze([
+	"Goal",
+	"Done when",
+	"Context",
+	"Sources",
+	"Authority",
+	"Output",
+	"Cancellation",
+	"Completion",
+	"Follow-up",
+] as const);
+/** A worker's results' body sections after the summary, in their order (F2-5b). */
+export const WORKER_RESULTS_SECTIONS = Object.freeze(["Needs", "Files"] as const);
+/** Today's bounds of the worker tools' texts (qorpera_manage_agent_worker, report_work), kept. */
+export const WORKER_TEXT_MAX_BYTES = Object.freeze({
+	goal: 4000,
+	doneWhen: 2000,
+	context: 4000,
+	source: 512,
+	sources: 8,
+	followUp: 4000,
+	summary: 4000,
+	needs: 1000,
+	files: 4,
+	standing: 2000,
+});
+
+interface WorkerSection {
+	readonly text: string;
+	readonly line: number;
+}
+
+/** The body cut at lines that are exactly one of `names` as a `## ` heading (as `## Steps` is read),
+ * in their order; any other line is text. `lead` is the text before the first of them. */
+function workerSections(
+	split: Split,
+	problems: Problems,
+	names: readonly string[],
+	what: string,
+): { lead: WorkerSection; parts: Map<string, WorkerSection> } {
+	const lines = split.body.split("\n");
+	const cuts: { name: string | null; line: number; from: number }[] = [{ name: null, line: split.bodyLine, from: 0 }];
+	let last = -1;
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index] ?? "";
+		const name = line.startsWith("## ") ? headingText(line.slice(2)) : null;
+		const at = name === null ? -1 : names.indexOf(name);
+		if (at < 0) continue;
+		if (at <= last)
+			problems.add(
+				"body",
+				split.bodyLine + index,
+				null,
+				`${what}'s sections come once each, in this order: ${names.map((n) => `## ${n}`).join(", ")}`,
+			);
+		last = Math.max(last, at);
+		cuts.push({ name: names[at] ?? null, line: split.bodyLine + index, from: index + 1 });
+	}
+	const parts = new Map<string, WorkerSection>();
+	let lead: WorkerSection = { text: "", line: split.bodyLine };
+	cuts.forEach((cut, at) => {
+		const to = at + 1 < cuts.length ? (cuts[at + 1]?.from ?? lines.length) - 1 : lines.length;
+		const section = { text: lines.slice(cut.from, to).join("\n").trim(), line: cut.line };
+		if (cut.name === null) lead = section;
+		else if (!parts.has(cut.name)) parts.set(cut.name, section);
+	});
+	return { lead, parts };
+}
+
+/** A section's text, held to its bounds: one that must be there is not empty, and none is longer
+ * than `max` bytes. */
+function workerSectionText(
+	parts: Map<string, WorkerSection>,
+	name: string,
+	required: boolean,
+	max: number,
+	problems: Problems,
+	fallbackLine: number,
+): string | null {
+	const part = parts.get(name);
+	if (!part || !part.text) {
+		if (required || part)
+			problems.add("body", part?.line ?? fallbackLine, null, `write the ${name.toLowerCase()} under ## ${name}`);
+		return null;
+	}
+	if (encoder.encode(part.text).byteLength > max)
+		problems.add("body", part.line, null, `## ${name} is longer than ${max} bytes`);
+	return part.text;
+}
+
+/** A section's `- <path>` items: paths in the company folder, each listed once (compared by key). */
+function workerPaths(part: WorkerSection | undefined, name: string, max: number, problems: Problems): string[] {
+	if (!part) return [];
+	const paths: string[] = [];
+	const seen = new Set<string>();
+	const lines = part.text.split("\n");
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index] ?? "";
+		if (!line.trim()) continue;
+		const number = part.line + 1 + index;
+		const path = line.startsWith("- ") ? trimSpaces(line.slice(2)) : "";
+		if (
+			!path ||
+			NOT_ONE_LINE.test(path) ||
+			encoder.encode(path).byteLength > WORKER_TEXT_MAX_BYTES.source ||
+			!holdablePath(path)
+		)
+			problems.add(
+				"body",
+				number,
+				null,
+				`each line under ## ${name} is "- " and a path in the company folder, like sales/q3-draft.pdf`,
+			);
+		else if (seen.has(companyPathKey(path))) problems.add("body", number, null, `${shown(path)} is listed twice`);
+		else {
+			seen.add(companyPathKey(path));
+			paths.push(path);
+		}
+	}
+	if (paths.length > max) problems.add("body", part.line, null, `## ${name} lists at most ${max} paths`);
+	return paths;
+}
+
 function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBriefFile | null {
 	const id = fields.id("id", true);
 	const title = fields.text("title", true, 200, { bytes: true });
@@ -1309,11 +1449,76 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 	const access = fields.choice("access", true, ["read", "write"] as const);
 	const revival = fields.choice("revival", true, ["each", "batch"] as const);
 	const dispatchedAt = fields.instant("dispatched_at", true);
+	const followUps = fields.whole("follow_ups", true, 0, 2147483646);
+	const followedUpAt = fields.instant("followed_up_at", false);
+	if (followUps !== null && followUps > 0 && !fields.has("followed_up_at"))
+		problems.add("missing", null, "followed_up_at", "followed_up_at is required after a follow-up");
+	if (followUps === 0 && fields.has("followed_up_at"))
+		problems.add("value", fields.line("followed_up_at"), "followed_up_at", "followed_up_at goes with a follow-up");
 	const brief = body(split, problems, "the brief", true, 32768);
 	fields.close("a worker's brief");
-	if (problems.list.length || !id || !title || !species || !access || !revival || !dispatchedAt || brief === null)
+	const { lead, parts } = workerSections(split, problems, WORKER_BRIEF_SECTIONS, "the brief");
+	if (lead.text) problems.add("body", lead.line, null, "the brief starts with ## Goal");
+	const at = split.bodyLine;
+	const max = WORKER_TEXT_MAX_BYTES;
+	const goal = workerSectionText(parts, "Goal", true, max.goal, problems, at);
+	const doneWhen = workerSectionText(parts, "Done when", true, max.doneWhen, problems, at);
+	const context = workerSectionText(parts, "Context", false, max.context, problems, at);
+	const sources = workerPaths(parts.get("Sources"), "Sources", max.sources, problems);
+	if (parts.has("Sources") && !sources.length && !problems.list.length)
+		problems.add("body", parts.get("Sources")?.line ?? at, null, "## Sources lists at least one path");
+	const authority = workerSectionText(parts, "Authority", true, max.standing, problems, at);
+	const output = workerSectionText(parts, "Output", true, max.standing, problems, at);
+	const cancellation = workerSectionText(parts, "Cancellation", true, max.standing, problems, at);
+	const completion = workerSectionText(parts, "Completion", true, max.standing, problems, at);
+	const followUp = workerSectionText(parts, "Follow-up", false, max.followUp, problems, at);
+	if (followUps !== null && followUps > 0 !== (followUp !== null) && !problems.list.length)
+		problems.add(
+			"body",
+			parts.get("Follow-up")?.line ?? at,
+			null,
+			followUps > 0
+				? "write the latest follow-up under ## Follow-up"
+				: "## Follow-up goes with follow_ups of 1 or more",
+		);
+	if (
+		problems.list.length ||
+		!id ||
+		!title ||
+		!species ||
+		!access ||
+		!revival ||
+		!dispatchedAt ||
+		followUps === null ||
+		brief === null ||
+		!goal ||
+		!doneWhen ||
+		!authority ||
+		!output ||
+		!cancellation ||
+		!completion
+	)
 		return null;
-	return { kind: "worker-brief", id, title, species, access, revival, dispatchedAt, brief };
+	return {
+		kind: "worker-brief",
+		id,
+		title,
+		species,
+		access,
+		revival,
+		dispatchedAt,
+		followUps,
+		followedUpAt,
+		goal,
+		doneWhen,
+		context,
+		sources,
+		authority,
+		output,
+		cancellation,
+		completion,
+		followUp,
+	};
 }
 
 function workerResults(split: Split, fields: Fields, problems: Problems): WorkerResultsFile | null {
@@ -1325,8 +1530,26 @@ function workerResults(split: Split, fields: Fields, problems: Problems): Worker
 		problems.add("value", fields.line("note"), "note", "a note goes with a decision");
 	const report = body(split, problems, "the report", true, 32768);
 	fields.close("a worker's results");
-	if (problems.list.length || !outcome || !reportedAt || report === null) return null;
-	return { kind: "worker-results", outcome, reportedAt, decision, note, report };
+	const { lead, parts } = workerSections(split, problems, WORKER_RESULTS_SECTIONS, "the report");
+	const summary = lead.text;
+	if (!summary) problems.add("body", lead.line, null, "write the summary first, above any ## heading");
+	else if (encoder.encode(summary).byteLength > WORKER_TEXT_MAX_BYTES.summary)
+		problems.add("body", lead.line, null, `the summary is longer than ${WORKER_TEXT_MAX_BYTES.summary} bytes`);
+	const needs = workerSectionText(parts, "Needs", false, WORKER_TEXT_MAX_BYTES.needs, problems, split.bodyLine);
+	if (outcome && (outcome === "blocked") !== (needs !== null) && !problems.list.length)
+		problems.add(
+			"body",
+			parts.get("Needs")?.line ?? split.bodyLine,
+			null,
+			outcome === "blocked"
+				? "a blocked worker writes what it needs under ## Needs"
+				: "## Needs is only for a blocked worker",
+		);
+	const files = workerPaths(parts.get("Files"), "Files", WORKER_TEXT_MAX_BYTES.files, problems);
+	if (parts.has("Files") && !files.length && !problems.list.length)
+		problems.add("body", parts.get("Files")?.line ?? split.bodyLine, null, "## Files lists at least one path");
+	if (problems.list.length || !outcome || !reportedAt || report === null || !summary) return null;
+	return { kind: "worker-results", outcome, reportedAt, decision, note, summary, needs, files };
 }
 
 /** The checklist of a task's body: the lines of the first section whose heading is exactly
@@ -1891,7 +2114,70 @@ export function writeTodoFile(file: Omit<TodoFile, "kind">, requesterName?: stri
 	);
 }
 
+/** The line of `text` that the worker files' parser would read as one of their section headings,
+ * or null. The worker tools refuse such model text before they write anything (F2-5b). */
+export function workerTextHeading(text: string): string | null {
+	for (const line of text.split("\n")) {
+		if (!line.startsWith("## ")) continue;
+		const name = headingText(line.slice(2));
+		if (name !== null && ([...WORKER_BRIEF_SECTIONS, ...WORKER_RESULTS_SECTIONS] as string[]).includes(name))
+			return `## ${name}`;
+	}
+	return null;
+}
+
+function workerText(what: string, text: string): string {
+	const heading = workerTextHeading(text);
+	if (heading) throw new Error(`${what} has a line "${heading}", which starts a section of the worker's file`);
+	return text.trim();
+}
+
+/** The platform's standing texts of a brief (contract 13), as `qorpera_manage_agent_worker` writes
+ * them today; the database checks a brief's against its own copy. */
+export function workerStandingTexts(worker: {
+	readonly species: "in-house" | "coding";
+	readonly access: "read" | "write";
+	readonly revival: "each" | "batch";
+}): { authority: string; output: string; cancellation: string; completion: string } {
+	return {
+		authority:
+			worker.species === "coding"
+				? "Work only in the repository and branch the cloud selected. Company File sources are read-only context. Publication is a draft PR through the trusted path."
+				: worker.access === "write"
+					? "Read what this agent may read. Write only inside outputFolder, or where this agent already holds a write grant."
+					: "Read what this agent may read. Write nothing.",
+		output:
+			worker.species === "coding"
+				? "Finish through coding_finish with the commit to publish, or ask the owner through coding_ask when a decision is theirs."
+				: "Report once through report_work: outcome, a summary the parent can act on, and the files you wrote.",
+		cancellation: "Ends with its todo, or when the parent cancels it. A cancelled worker cannot report.",
+		completion:
+			worker.revival === "each"
+				? "The parent is revived as soon as you report."
+				: "The parent is revived once every worker it dispatched together has reported, or at once when you are blocked.",
+	};
+}
+
+/** A worker's key on `folder-v2`: its folder's name, so the folder naming rule (§1 "Names"), which
+ * leaves no reserved name. Null when it may be used. */
+export function workerKeyProblem(key: string): string | null {
+	return isCompanyStateName(key)
+		? null
+		: `"${shown(key)}" cannot name a worker's folder: use lowercase letters a-z, digits and single hyphens, at most ${COMPANY_STATE_NAME_MAX_CHARS} characters`;
+}
+
 export function writeWorkerBriefFile(file: Omit<WorkerBriefFile, "kind">): string {
+	const sections: [string, string | null][] = [
+		["Goal", workerText("The goal", file.goal)],
+		["Done when", workerText("What done is", file.doneWhen)],
+		["Context", file.context === null ? null : workerText("The context", file.context)],
+		["Sources", file.sources.length ? file.sources.map((path) => `- ${path}`).join("\n") : null],
+		["Authority", workerText("The authority", file.authority)],
+		["Output", workerText("The output", file.output)],
+		["Cancellation", workerText("The cancellation", file.cancellation)],
+		["Completion", workerText("The completion", file.completion)],
+		["Follow-up", file.followUp === null ? null : workerText("The follow-up", file.followUp)],
+	];
 	return document(
 		[
 			["id", file.id],
@@ -1900,12 +2186,20 @@ export function writeWorkerBriefFile(file: Omit<WorkerBriefFile, "kind">): strin
 			["access", file.access],
 			["revival", file.revival],
 			["dispatched_at", file.dispatchedAt],
+			["follow_ups", String(file.followUps)],
+			["followed_up_at", file.followedUpAt],
 		],
-		file.brief,
+		sections
+			.filter((section): section is [string, string] => section[1] !== null && section[1] !== "")
+			.map(([name, text]) => `## ${name}\n${text}`)
+			.join("\n\n"),
 	);
 }
 
 export function writeWorkerResultsFile(file: Omit<WorkerResultsFile, "kind">): string {
+	const parts = [workerText("The summary", file.summary)];
+	if (file.needs !== null) parts.push(`## Needs\n${workerText("What it needs", file.needs)}`);
+	if (file.files.length) parts.push(`## Files\n${file.files.map((path) => `- ${path}`).join("\n")}`);
 	return document(
 		[
 			["outcome", file.outcome],
@@ -1913,8 +2207,18 @@ export function writeWorkerResultsFile(file: Omit<WorkerResultsFile, "kind">): s
 			["decision", file.decision],
 			["note", file.note === null ? null : companyStateValue(file.note)],
 		],
-		file.report,
+		parts.join("\n\n"),
 	);
+}
+
+/** A brief with one more follow-up: `follow_ups` counts it, `followed_up_at` is `at`, and
+ * `## Follow-up` holds only `text` (the file's history keeps the earlier ones). Throws unless the
+ * brief parses. */
+export function appendWorkerFollowUp(briefPath: string, briefText: string, text: string, at: string): string {
+	const parsed = parseCompanyStateFile(briefPath, briefText);
+	if (!parsed?.ok || parsed.file.kind !== "worker-brief") throw new Error("The worker's brief does not parse");
+	const { kind: _kind, ...brief } = parsed.file;
+	return writeWorkerBriefFile({ ...brief, followUps: brief.followUps + 1, followedUpAt: at, followUp: text });
 }
 
 /** `names` puts the member's, contact's and asking agent's names beside their ids, for reading. */

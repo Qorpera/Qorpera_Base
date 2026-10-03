@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
+	appendWorkerFollowUp,
 	COMPANY_STATE_HUMAN_TASK_SKILL_PATH,
 	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
@@ -24,6 +25,11 @@ import {
 	parseCompanyStateFile,
 	type RoutineFile,
 	setCompanyStateSettings,
+	WORKER_BRIEF_SECTIONS,
+	type WorkerBriefFile,
+	workerKeyProblem,
+	workerStandingTexts,
+	workerTextHeading,
 	writeAgentFile,
 	writeConnectionFile,
 	writeContactFile,
@@ -741,14 +747,21 @@ describe("connections, rules, todos and worker files", () => {
 	});
 
 	it("reads a worker's brief and results", () => {
-		const brief = {
+		const brief: Omit<WorkerBriefFile, "kind"> = {
 			id: ID,
 			title: "Collect clinic prices",
-			species: "in-house" as const,
-			access: "write" as const,
-			revival: "each" as const,
+			species: "in-house",
+			access: "write",
+			revival: "each",
 			dispatchedAt: "2026-09-28T10:00:00.123Z",
-			brief: "## Goal\nCollect prices.",
+			followUps: 0,
+			followedUpAt: null,
+			goal: "Collect prices.",
+			doneWhen: "Ten clinics, each with a source.",
+			context: null,
+			sources: [],
+			...workerStandingTexts({ species: "in-house", access: "write", revival: "each" }),
+			followUp: null,
 		};
 		expect(ok("agents/a/todos/t/w1/brief.md", writeWorkerBriefFile(brief))).toEqual({
 			kind: "worker-brief",
@@ -759,7 +772,9 @@ describe("connections, rules, todos and worker files", () => {
 			reportedAt: "2026-09-28T11:00:00Z",
 			decision: "accepted" as const,
 			note: "Good: #1 source",
-			report: "## Summary\nDone.",
+			summary: "Done.",
+			needs: null,
+			files: [],
 		};
 		expect(ok("agents/a/todos/t/w1/results.md", writeWorkerResultsFile(results))).toEqual({
 			kind: "worker-results",
@@ -772,6 +787,189 @@ describe("connections, rules, todos and worker files", () => {
 			)[0]?.key,
 		).toBe("note");
 		expect(refused("agents/a/todos/T/w1/brief.md", writeWorkerBriefFile(brief))[0]?.code).toBe("name");
+	});
+
+	describe("worker files' sections (F2-5b)", () => {
+		const PATH = "agents/a/todos/t/w1/brief.md";
+		const RESULTS = "agents/a/todos/t/w1/results.md";
+		const standing = workerStandingTexts({ species: "in-house", access: "read", revival: "batch" });
+		const brief: Omit<WorkerBriefFile, "kind"> = {
+			id: ID,
+			title: "Compare suppliers",
+			species: "in-house",
+			access: "read",
+			revival: "batch",
+			dispatchedAt: "2026-10-03T08:00:00Z",
+			followUps: 0,
+			followedUpAt: null,
+			goal: "Find three suppliers of 4 TB NVMe disks.\n\n# Notes\n- price, delivery",
+			doneWhen: "Three suppliers with prices.",
+			context: "Node 2 needs a second disk.",
+			sources: ["ops/node-2/storage-alert.md", "notes/suppliers.md"],
+			...standing,
+			followUp: null,
+		};
+		const front = (lines: string) =>
+			`---\nid: ${ID}\ntitle: T\nspecies: in-house\naccess: read\nrevival: batch\ndispatched_at: 2026-10-03T08:00:00Z\n${lines}\n---\n`;
+		const sections = (follow = "") =>
+			`## Goal\nG\n## Done when\nD\n## Authority\nA\n## Output\nO\n## Cancellation\nC\n## Completion\nX\n${follow}`;
+
+		it("round-trips a brief, its sections in order, and a follow-up", () => {
+			const text = writeWorkerBriefFile(brief);
+			expect(text).toContain("follow_ups: 0\n");
+			expect(text).not.toContain("followed_up_at");
+			expect(text.indexOf("## Goal")).toBeLessThan(text.indexOf("## Sources"));
+			expect(text).toContain("## Sources\n- ops/node-2/storage-alert.md\n- notes/suppliers.md");
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...brief });
+			const once = appendWorkerFollowUp(PATH, text, "Add a fourth supplier.", "2026-10-03T09:00:00Z");
+			const twice = appendWorkerFollowUp(PATH, once, "Only Danish ones.", "2026-10-03T10:00:00Z");
+			expect(ok(PATH, twice)).toEqual({
+				kind: "worker-brief",
+				...brief,
+				followUps: 2,
+				followedUpAt: "2026-10-03T10:00:00Z",
+				followUp: "Only Danish ones.",
+			});
+			expect(twice).not.toContain("fourth");
+			expect(() => appendWorkerFollowUp(PATH, "nope", "x", "2026-10-03T10:00:00Z")).toThrow("does not parse");
+		});
+
+		it("refuses a brief's missing, misplaced and unbalanced sections", () => {
+			expect(ok(PATH, `${front("follow_ups: 0")}${sections()}`)).toMatchObject({
+				goal: "G",
+				context: null,
+				sources: [],
+			});
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("## Done when\nD\n", "")}`)[0]?.message,
+			).toBe("write the done when under ## Done when");
+			expect(refused(PATH, `${front("follow_ups: 0")}Hello\n${sections()}`)[0]?.message).toBe(
+				"the brief starts with ## Goal",
+			);
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 0")}${sections().replace("## Goal\nG\n## Done when\nD", "## Done when\nD\n## Goal\nG")}`,
+				)[0]?.message,
+			).toContain("come once each, in this order: ## Goal, ## Done when");
+			expect(refused(PATH, `${front("follow_ups: 1")}${sections("## Follow-up\nF\n")}`)[0]?.key).toBe(
+				"followed_up_at",
+			);
+			expect(
+				refused(PATH, `${front("follow_ups: 1\nfollowed_up_at: 2026-10-03T09:00:00Z")}${sections()}`)[0]?.message,
+			).toBe("write the latest follow-up under ## Follow-up");
+			expect(refused(PATH, `${front("follow_ups: 0")}${sections("## Follow-up\nF\n")}`)[0]?.message).toBe(
+				"## Follow-up goes with follow_ups of 1 or more",
+			);
+			expect(
+				refused(PATH, `${front("follow_ups: 0\nfollowed_up_at: 2026-10-03T09:00:00Z")}${sections()}`)[0]?.key,
+			).toBe("followed_up_at");
+			expect(refused(PATH, `${front("")}${sections()}`)[0]?.key).toBe("follow_ups");
+			expect(refused(PATH, `${front("follow_ups: -1")}${sections()}`)[0]?.key).toBe("follow_ups");
+			// Another heading is text, so a goal may hold its own headings.
+			expect(
+				ok(PATH, `${front("follow_ups: 0")}${sections().replace("G\n", "G\n## Steps\n- one\n")}`),
+			).toMatchObject({
+				goal: "G\n## Steps\n- one",
+			});
+		});
+
+		it("holds sources and sections to today's bounds", () => {
+			const at = (paths: string[]) =>
+				`${front("follow_ups: 0")}${sections().replace("## Authority", `## Sources\n${paths.map((p) => `- ${p}`).join("\n")}\n## Authority`)}`;
+			expect(ok(PATH, at(["a.md", "b/c.md"]))).toMatchObject({ sources: ["a.md", "b/c.md"] });
+			expect(refused(PATH, at(Array.from({ length: 9 }, (_, i) => `s${i}.md`)))[0]?.message).toBe(
+				"## Sources lists at most 8 paths",
+			);
+			expect(refused(PATH, at(["a.md", "A.md"]))[0]?.message).toContain("is listed twice");
+			expect(refused(PATH, at(["../x"]))[0]?.message).toContain('each line under ## Sources is "- " and a path');
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 0")}${sections().replace("## Authority", "## Sources\n\n## Authority")}`,
+				)[0]?.message,
+			).toBe("## Sources lists at least one path");
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("G\n", `${"g".repeat(4001)}\n`)}`)[0]?.message,
+			).toBe("## Goal is longer than 4000 bytes");
+		});
+
+		it("reads a report's summary, needs and files", () => {
+			const report = (lines: string, body: string) =>
+				`---\noutcome: ${lines}\nreported_at: 2026-10-03T11:00:00Z\n---\n${body}`;
+			expect(ok(RESULTS, report("blocked", "Stuck.\n\n## Needs\nA login.\n\n## Files\n- out/a.md"))).toMatchObject({
+				summary: "Stuck.",
+				needs: "A login.",
+				files: ["out/a.md"],
+			});
+			expect(refused(RESULTS, report("blocked", "Stuck."))[0]?.message).toBe(
+				"a blocked worker writes what it needs under ## Needs",
+			);
+			expect(refused(RESULTS, report("succeeded", "Done.\n## Needs\nx"))[0]?.message).toBe(
+				"## Needs is only for a blocked worker",
+			);
+			expect(refused(RESULTS, report("succeeded", "## Files\n- a.md"))[0]?.message).toBe(
+				"write the summary first, above any ## heading",
+			);
+			expect(
+				refused(
+					RESULTS,
+					report("failed", `Nope.\n## Files\n${["a", "b", "c", "d", "e"].map((x) => `- ${x}.md`).join("\n")}`),
+				)[0]?.message,
+			).toBe("## Files lists at most 4 paths");
+			expect(refused(RESULTS, report("failed", `${"s".repeat(4001)}`))[0]?.message).toBe(
+				"the summary is longer than 4000 bytes",
+			);
+			const file = {
+				outcome: "blocked" as const,
+				reportedAt: "2026-10-03T11:00:00Z",
+				decision: null,
+				note: null,
+				summary: "S",
+				needs: "N",
+				files: ["x/y.md"],
+			};
+			expect(ok(RESULTS, writeWorkerResultsFile(file))).toEqual({ kind: "worker-results", ...file });
+		});
+
+		it("refuses model text that would start a section", () => {
+			expect(workerTextHeading("Plan:\n## Files\n- a")).toBe("## Files");
+			expect(workerTextHeading("## Goal ##")).toBe("## Goal");
+			expect(workerTextHeading("### Goal\n## Notes\n#Goal")).toBeNull();
+			expect(() => writeWorkerBriefFile({ ...brief, goal: "x\n## Sources\n- y" })).toThrow(
+				'The goal has a line "## Sources"',
+			);
+			expect(() =>
+				writeWorkerResultsFile({
+					outcome: "succeeded",
+					reportedAt: "2026-10-03T11:00:00Z",
+					decision: null,
+					note: null,
+					summary: "a\n## Needs",
+					needs: null,
+					files: [],
+				}),
+			).toThrow('The summary has a line "## Needs"');
+			expect(WORKER_BRIEF_SECTIONS.at(-1)).toBe("Follow-up");
+		});
+
+		it("gives today's standing texts and the folder key rule", () => {
+			expect(workerStandingTexts({ species: "in-house", access: "read", revival: "batch" })).toEqual({
+				authority: "Read what this agent may read. Write nothing.",
+				output:
+					"Report once through report_work: outcome, a summary the parent can act on, and the files you wrote.",
+				cancellation: "Ends with its todo, or when the parent cancels it. A cancelled worker cannot report.",
+				completion:
+					"The parent is revived once every worker it dispatched together has reported, or at once when you are blocked.",
+			});
+			expect(workerStandingTexts({ species: "in-house", access: "write", revival: "each" }).completion).toBe(
+				"The parent is revived as soon as you report.",
+			);
+			expect(workerKeyProblem("price-check-2")).toBeNull();
+			expect(workerKeyProblem("price.check")).toContain("cannot name a worker's folder");
+			expect(workerKeyProblem("a--b")).not.toBeNull();
+			expect(workerKeyProblem("a".repeat(65))).not.toBeNull();
+		});
 	});
 });
 
