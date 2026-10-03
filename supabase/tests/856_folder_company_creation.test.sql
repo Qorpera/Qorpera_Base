@@ -900,6 +900,12 @@ $n$,
 $o$,
 			'6447847d7aa0ffc3ab138d82a8de7e51')) as c(signature, inserted, original, md5) loop
 		v_definition := pg_get_functiondef(v_case.signature::regprocedure);
+		-- C1c-3g (20260930015000) patches stop_company_work after P14a: reverse that patch here first.
+		if v_case.signature = 'public.qorpera_stop_company_work(uuid)' then
+			v_definition := replace(v_definition,
+				E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n',
+				E'\tif found then\n');
+		end if;
 		if position(v_case.inserted in v_definition) = 0
 			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then
 			raise exception 'The patch of % is not the only change', v_case.signature; end if;

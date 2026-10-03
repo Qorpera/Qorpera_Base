@@ -305,7 +305,8 @@ is never upgraded. The steps:
      persistent row that admission and effects lock" (20260907000700:1-3).
      Admission itself is serialized on its own row (step 10).
    - The profile row is never locked `FOR UPDATE` or `NOWAIT` on any
-     `folder-v2` path (§9).
+     `folder-v2` path (§9), except deletion's finisher and purge, after
+     the fence `FOR UPDATE` (C1C §6.10).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
    0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
@@ -903,7 +904,10 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 keys point at `qorpera_profiles`, so a function that locked the profile row
 `FOR UPDATE` and then the fence would deadlock against them (the pattern in
 20260927150000:4-9). So on a `folder-v2` company, no path takes the profile
-row `FOR UPDATE` or `NOWAIT`, whether new or old. That covers:
+row `FOR UPDATE` or `NOWAIT`, whether new or old. The one exception is
+deletion's finisher and purge (C1C §6.10): they take the fence `FOR UPDATE`
+first, so no effect holds the row while they wait, and the purge deletes
+the row. That covers:
 - `qorpera_lock_profile_gc_fence` (20260907000700:7,14), which about 79
   migrations call;
 - the direct sites: 20260926130000:204,806, 20260907000200:15,
