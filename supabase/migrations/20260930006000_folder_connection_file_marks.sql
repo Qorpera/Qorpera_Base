@@ -1,8 +1,9 @@
 -- Company folder core C3, P22a: the vault marks a connection file due (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
 -- §2 "connections/<name>.md" and §8 "Plan (A1-7)"; the coordinator's audit P22, approved 3 October 2026).
 --
--- On a folder-v2 company every company-owned connection, website accounts included, has a file connections/<name>.md
--- whose settings only the platform writes. The vault cannot write it in its own transaction (SQL makes no file bytes,
+-- On a folder-v2 company every company-owned connection of a catalog connector (Gmail, Drive, GitHub …) and every
+-- website account has a file connections/<name>.md whose settings only the platform writes. A hook's signing secret and
+-- a secret card have none (the event intake describes hooks itself). The vault cannot write it in its own transaction (SQL makes no file bytes,
 -- and a refused or retried commit would undo the vault change), so the vault only marks the connection due, and a
 -- writer in the object gateway (P22b) brings the file to the vault's current state after the vault commits, as core
 -- §3 "After the commit" converges other side effects. The vault stays the authority: every tool that acts reads the
@@ -15,14 +16,19 @@
 --   foreign key is the company row's, which every vault change on folder-v2 already holds KEY SHARE (#660's rank 0).
 -- * Work: qorpera_folder_connection_file_work, one row per secret ever due (kept, so each claim's generation and
 --   operation key is new), touched only by the writers' two functions.
---   qorpera_claim_connection_file creates the work rows of marked secrets (in secret order, so two claims never wait on
---   each other's new rows), takes one due row with SKIP LOCKED, consumes the marks it can see, and answers what the file
---   should say. Marks committed later stay and make the secret due again, so a change is never lost to a mark that
+--   qorpera_claim_connection_file never waits: it creates the work rows of marked secrets (in secret order, and only
+--   for companies whose row it can key-share at once, so a company held for deletion is skipped), takes one due row
+--   and the marks it can see with SKIP LOCKED, and answers what the file should say. A writer makes one claim per
+--   transaction (one RPC call). Marks committed later stay and make the secret due again, so a change is never lost to a mark that
 --   commits out of order. qorpera_finish_connection_file closes the claim (or backs it off with a problem code) only for
 --   the writer holding the current generation; a writer whose lease another took is told so.
 -- * What the file says is built from an allow-list of fields (id, service, account, status, actions, connected_by,
 --   connected_at, and for a website account site, two_step, opened_for): never a secret, an envelope, a key id, a
 --   capability, a sign-in host or the vault's own purpose text. A revoked secret or a closed account says "no file".
+--   `actions` lists the operations with an active, unexpired grant; a grant's expiry marks nothing, so the file shows
+--   it until the connection's next change (the vault refuses the expired grant either way).
+-- * qorpera_mark_connection_files(environment) marks every connection of an environment due at once, for a company
+--   whose vault held connections before it became folder-v2 (the core's reset, C5).
 --
 -- Inert until P22b's writer runs: no folder-v2 company exists yet, and nothing claims.
 
@@ -66,6 +72,16 @@ revoke all on public.qorpera_folder_connection_file_work from public, anon, auth
 
 -- 3. The triggers -------------------------------------------------------------------------------------------------------
 
+-- The connections that have a file: the catalog's connectors (Gmail, Drive, GitHub …) and website accounts. A hook's
+-- signing secret (event_hook) and a secret card (vault) are not connections here: the event intake describes its hooks
+-- itself (RUNTIME-EVENT-INTAKE.md, connections/hook-<name>.md).
+create function public.qorpera_folder_connection_has_file(p_connector_id text)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select p_connector_id = 'website' or exists (select 1 from public.qorpera_cloud_connector_operations as operation
+		where operation.connector_id = p_connector_id)
+$$;
+revoke all on function public.qorpera_folder_connection_has_file(text) from public, anon, authenticated, service_role;
+
 -- One mark for a company-owned secret in a folder-v2 environment. Plain reads only; never a row lock.
 create function public.qorpera_folder_connection_file_mark()
 returns trigger language plpgsql security definer set search_path = '' as $$
@@ -73,12 +89,14 @@ declare v_secret uuid; v_profile uuid; v_environment uuid;
 begin
 	-- 20260930006000 (P22a): the vault marks a connection file due; a writer converges the file later.
 	if tg_table_name = 'qorpera_cloud_secrets' then
-		if new.owner_kind <> 'company' then return null; end if;
+		if new.owner_kind <> 'company' or not public.qorpera_folder_connection_has_file(new.connector_id) then
+			return null; end if;
 		v_secret := new.id; v_profile := new.profile_id; v_environment := new.environment_id;
 	else
 		v_secret := new.secret_id; v_profile := new.profile_id; v_environment := new.environment_id;
 		if not exists (select 1 from public.qorpera_cloud_secrets as secret
-			where secret.id = new.secret_id and secret.owner_kind = 'company') then return null; end if;
+			where secret.id = new.secret_id and secret.owner_kind = 'company'
+				and public.qorpera_folder_connection_has_file(secret.connector_id)) then return null; end if;
 	end if;
 	if not public.qorpera_environment_is_folder_v2(v_environment) then return null; end if;
 	insert into public.qorpera_folder_connection_file_marks(secret_id, profile_id, environment_id)
@@ -128,7 +146,7 @@ returns text language sql immutable set search_path = '' as $$
 	select to_char(p_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS')
 		|| coalesce('.' || nullif(rtrim(to_char(p_at at time zone 'UTC', 'US'), '0'), ''), '') || 'Z'
 $$;
-revoke all on function public.qorpera_company_state_instant_text(timestamptz) from public, anon, authenticated;
+revoke all on function public.qorpera_company_state_instant_text(timestamptz) from public, anon, authenticated, service_role;
 
 -- The file a connection should have, from the vault's current rows (plain reads): `present` false for a revoked secret,
 -- a closed or missing website account, a member's own secret or one outside folder-v2; otherwise the settings, by an
@@ -146,6 +164,7 @@ begin
 		select account.* into v_account from public.qorpera_company_accounts as account where account.secret_id = p_secret_id;
 	end if;
 	v_present := v_secret.id is not null and v_secret.owner_kind = 'company' and v_secret.status = 'active'
+		and public.qorpera_folder_connection_has_file(v_secret.connector_id)
 		and public.qorpera_environment_is_folder_v2(v_secret.environment_id)
 		and (v_secret.connector_id <> 'website' or (v_account.site is not null and v_account.status <> 'closed'));
 	if v_present then
@@ -157,7 +176,8 @@ begin
 			'status', case when v_secret.connector_id = 'website' then v_account.status else 'connected' end,
 			'actions', (select coalesce(jsonb_agg(op.operation_id order by op.operation_id collate "C"), '[]'::jsonb)
 				from (select distinct grant_row.operation_id from public.qorpera_cloud_secret_operation_grants as grant_row
-					where grant_row.secret_id = p_secret_id and grant_row.status = 'active') as op),
+					where grant_row.secret_id = p_secret_id and grant_row.status = 'active'
+						and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())) as op),
 			'connectedBy', case when v_secret.connector_id = 'website'
 				then coalesce(v_account.opened_by_staff_agent_id, v_account.opened_by_user_id) else v_secret.created_by_user_id end,
 			'connectedAt', public.qorpera_company_state_instant_text(case when v_secret.connector_id = 'website'
@@ -194,18 +214,25 @@ create function public.qorpera_claim_connection_file(p_worker uuid, p_lease_seco
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_work public.qorpera_folder_connection_file_work%rowtype; v_consumed bigint;
 begin
-	-- 20260930006000 (P22a): only the work rows are locked, SKIP LOCKED; the vault is read plainly.
+	-- 20260930006000 (P22a): a claim never waits. It locks only work rows, the marks it consumes and the key share of
+	-- the companies it creates work rows for, each SKIP LOCKED; the vault is read plainly.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_worker is null or p_lease_seconds is null or p_lease_seconds not between 30 and 900 then
 		raise exception 'Connection file claim is invalid' using errcode = '22023'; end if;
-	-- A marked secret with no work row yet gets one, in secret order: two claims may wait for each other's new rows
-	-- only in that one order, never in a cycle. An existing row is left alone (an insert that met it would wait for a
-	-- writer holding it).
+	-- A marked secret with no work row yet gets one, in secret order (two claims may wait for each other's new rows only
+	-- in that one order, never in a cycle), and only when its company's row can be key-shared at once: the insert's key
+	-- check needs it, and a company held for deletion is skipped until its purge ends, so no claim waits behind one. An
+	-- existing work row is left alone (an insert that met it would wait for a writer holding it).
 	insert into public.qorpera_folder_connection_file_work(secret_id, profile_id, environment_id)
 	select distinct on (mark.secret_id) mark.secret_id, mark.profile_id, mark.environment_id
 	from public.qorpera_folder_connection_file_marks as mark
 	where not exists (select 1 from public.qorpera_folder_connection_file_work as work where work.secret_id = mark.secret_id)
+		and mark.profile_id in (select company.id from public.qorpera_profiles as company
+			where company.id in (select pending.profile_id from public.qorpera_folder_connection_file_marks as pending
+				where not exists (select 1 from public.qorpera_folder_connection_file_work as work
+					where work.secret_id = pending.secret_id))
+			for key share skip locked)
 	order by mark.secret_id
 	on conflict (secret_id) do nothing;
 	select work.* into v_work from public.qorpera_folder_connection_file_work as work
@@ -219,8 +246,10 @@ begin
 	for update skip locked;
 	if v_work.secret_id is null then return null; end if;
 	-- The marks this statement sees are covered by the state read below (their transactions committed); a mark that
-	-- commits later stays and makes the secret due again.
-	delete from public.qorpera_folder_connection_file_marks where secret_id = v_work.secret_id;
+	-- commits later stays and makes the secret due again. A mark another transaction holds (a purge) is skipped.
+	delete from public.qorpera_folder_connection_file_marks where id in (
+		select mark.id from public.qorpera_folder_connection_file_marks as mark where mark.secret_id = v_work.secret_id
+		for update skip locked);
 	get diagnostics v_consumed = row_count;
 	update public.qorpera_folder_connection_file_work
 	set generation = generation + 1, dirty = true, lease_owner = p_worker,
@@ -274,3 +303,27 @@ begin
 end $$;
 revoke all on function public.qorpera_finish_connection_file(uuid, uuid, bigint, text) from public, anon, authenticated;
 grant execute on function public.qorpera_finish_connection_file(uuid, uuid, bigint, text) to service_role;
+
+-- 6. Every connection due at once ----------------------------------------------------------------------------------------
+
+-- Marks every connection of a folder-v2 environment that has a file: for a company whose vault already held connections
+-- when it became folder-v2 (the core's reset, C5), since only later changes mark them. Service role; returns the count.
+create function public.qorpera_mark_connection_files(p_environment_id uuid)
+returns integer language plpgsql security definer set search_path = '' as $$
+declare v_count integer;
+begin
+	-- 20260930006000 (P22a): plain inserts, as the triggers'.
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	if p_environment_id is null or not public.qorpera_environment_is_folder_v2(p_environment_id) then
+		raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
+	insert into public.qorpera_folder_connection_file_marks(secret_id, profile_id, environment_id)
+	select secret.id, secret.profile_id, secret.environment_id from public.qorpera_cloud_secrets as secret
+	where secret.environment_id = p_environment_id and secret.owner_kind = 'company' and secret.status = 'active'
+		and public.qorpera_folder_connection_has_file(secret.connector_id)
+	order by secret.id;
+	get diagnostics v_count = row_count;
+	return v_count;
+end $$;
+revoke all on function public.qorpera_mark_connection_files(uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_mark_connection_files(uuid) to service_role;

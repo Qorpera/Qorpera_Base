@@ -147,6 +147,65 @@ begin
 	if not pg_temp.finish_on('fence_three', 'bb', c) then raise exception 'R3: B finishes'; end if;
 end $$;
 
+-- R4 (review round 1). A purge holds the company row and its marks (as qorpera_purge does, before the work rows): a
+--     claim of a due connection never waits for the marks it cannot take (SKIP LOCKED); the purge's next lock, the work
+--     rows, then finds the claim done. Before, the claim waited for the marks while holding the work row: a deadlock.
+select dblink_exec('fence_two', pg_temp.label('a2', 'b-purge@example.test'));
+select dblink_exec('fence_one', 'begin');
+select * from dblink('fence_one', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+	for update$q$) as t(x integer);
+select count(*) from dblink('fence_one', $q$select 1 from public.qorpera_folder_connection_file_marks
+	where profile_id = '64800000-0000-4000-8000-000000000010' for update$q$) as t(x integer);
+select dblink_send_query('fence_three', pg_temp.sql_claim('bb'));
+do $$
+declare c jsonb;
+begin
+	if not pg_temp.settles('fence_three') then
+		perform dblink_exec('fence_one', 'rollback'); raise exception 'R4: a claim must not wait for a purge''s marks'; end if;
+	c := pg_temp.answer('fence_three');
+	if c ->> 'secretId' <> '85300000-0000-4000-8000-0000000000a2' or (c ->> 'marks')::integer <> 0 then
+		perform dblink_exec('fence_one', 'rollback'); raise exception 'R4: the claim skips the held mark: %', c; end if;
+	perform count(*) from dblink('fence_one', $q$select 1 from public.qorpera_folder_connection_file_work
+		where profile_id = '64800000-0000-4000-8000-000000000010' for update$q$) as t(x integer);
+	perform dblink_exec('fence_one', 'rollback');
+	if not pg_temp.finish_on('fence_three', 'bb', c) then raise exception 'R4: the claim finishes'; end if;
+	-- The mark it could not take keeps a2 due.
+	c := pg_temp.claim_on('fence_three', 'bb');
+	if c ->> 'secretId' <> '85300000-0000-4000-8000-0000000000a2' or (c ->> 'marks')::integer <> 1 then
+		raise exception 'R4: the held mark is consumed later: %', c; end if;
+	if not pg_temp.finish_on('fence_three', 'bb', c) then raise exception 'R4: finished'; end if;
+end $$;
+
+-- R5 (review round 1). A company held for deletion (its row FOR UPDATE) never stalls the claims of other companies:
+--     a new connection of the held company gets no work row until the hold ends, and the other company's is claimed.
+insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id, connector_id,
+	secret_name, purpose, current_version, created_by_user_id, account_label)
+values ('85300000-0000-4000-8000-0000000000a4', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+	'85300000-0000-4000-8000-0000000000b0', 'company', null, 'github', 'primary', 'Code', 1, '64800000-0000-4000-8000-000000000001',
+	'code@example.test');
+-- The other company's mark, as its own folder-v2 change would leave it.
+insert into public.qorpera_folder_connection_file_marks(secret_id, profile_id, environment_id)
+values ('85300000-0000-4000-8000-0000000000a9', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021');
+select dblink_exec('fence_one', 'begin');
+select * from dblink('fence_one', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+	for update$q$) as t(x integer);
+select dblink_send_query('fence_three', pg_temp.sql_claim('bb'));
+do $$
+declare c jsonb;
+begin
+	if not pg_temp.settles('fence_three') then
+		perform dblink_exec('fence_one', 'rollback'); raise exception 'R5: a claim must not wait for a company held for deletion'; end if;
+	c := pg_temp.answer('fence_three');
+	perform dblink_exec('fence_one', 'rollback');
+	if c ->> 'secretId' <> '85300000-0000-4000-8000-0000000000a9'
+		or exists (select 1 from public.qorpera_folder_connection_file_work where secret_id = '85300000-0000-4000-8000-0000000000a4') then
+		raise exception 'R5: the other company''s connection is claimed, the held one waits: %', c; end if;
+	if not pg_temp.finish_on('fence_three', 'bb', c) then raise exception 'R5: finished'; end if;
+	c := pg_temp.claim_on('fence_three', 'bb');
+	if c ->> 'secretId' <> '85300000-0000-4000-8000-0000000000a4' then raise exception 'R5: after the hold, a4 is claimed: %', c; end if;
+	if not pg_temp.finish_on('fence_three', 'bb', c) then raise exception 'R5: finished'; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 850 does).

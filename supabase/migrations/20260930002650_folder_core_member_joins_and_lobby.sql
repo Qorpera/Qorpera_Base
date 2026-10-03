@@ -1,5 +1,5 @@
 -- Company folder core, C1c-3d-1: joins, the founding lobby and the member triggers on the folder fence
--- (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.5).
+-- (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.6).
 --
 -- Changes only folder-v2 behaviour; snapshot-v1 keeps every path.
 -- * Joining by invitation (#581 N1): the prelude runs only for the invitee of a live invitation (its email and expiry
@@ -23,7 +23,7 @@
 --   removal does; a new member's row (a join's or a seat's) is an insert after them.
 -- * The thread refresh skips the conversation update when its title and status do not change, so a member change
 --   writes no conversation state operation (and takes no operation clock) for the agent threads.
--- Each inserted text names this migration (20260930000200), for deploy guards.
+-- Each inserted text names this migration (20260930002650), for deploy guards.
 
 set local lock_timeout = '3s';
 
@@ -43,7 +43,7 @@ do $$
 begin
 	perform pg_temp.c1c3d1_replace('public.qorpera_folder_member_change_enter(uuid,uuid,text)',
 		E'\tif p_mode is null or p_mode not in (''remove'',''role'',''join'') then\n',
-		E'\t-- 20260930000200: ''jobs'' takes only the jobs a removal ends, for a caller that takes the fence itself next (the\n'
+		E'\t-- 20260930002650: ''jobs'' takes only the jobs a removal ends, for a caller that takes the fence itself next (the\n'
 		|| E'\t-- founding lobby removing a founder).\n'
 		|| E'\tif p_mode is null or p_mode not in (''remove'',''role'',''join'',''jobs'') then\n', 1);
 	perform pg_temp.c1c3d1_replace('public.qorpera_folder_member_change_enter(uuid,uuid,text)',
@@ -55,7 +55,7 @@ begin
 		|| E'\tif p_mode = ''jobs'' then return; end if;\n', 1);
 	perform pg_temp.c1c3d1_replace('public.qorpera_folder_member_change_enter(uuid,uuid,text)',
 		E'\tif p_mode = ''join'' then return; end if;\n',
-		E'\t-- 20260930000200: a join takes the joiner''s member row if it exists (rank 1: an existing member accepting an\n'
+		E'\t-- 20260930002650: a join takes the joiner''s member row if it exists (rank 1: an existing member accepting an\n'
 		|| E'\t-- invitation updates it), then the agent thread rooms (rank 4) and their conversations (rank 11), before its\n'
 		|| E'\t-- invitation or seat; the thread trigger then finds them held (its NOWAIT refuses only rows no prelude took).\n'
 		|| E'\tif p_mode = ''join'' then\n'
@@ -79,7 +79,7 @@ begin
 		E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
 		|| E'\tfrom public.qorpera_profile_invitations as invitation\n'
 		|| E'\twhere invitation.id = p_invitation_id and public.qorpera_company_is_folder_v2(invitation.profile_id);\n',
-		E'\t-- 20260930000200: only the invitee of a live invitation (the select below refuses anyone else) takes the fence.\n'
+		E'\t-- 20260930002650: only the invitee of a live invitation (the select below refuses anyone else) takes the fence.\n'
 		|| E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
 		|| E'\tfrom public.qorpera_profile_invitations as invitation\n'
 		|| E'\twhere invitation.id = p_invitation_id and invitation.email = v_email and invitation.expires_at > statement_timestamp()\n'
@@ -93,7 +93,7 @@ begin
 	-- Every lobby function: the fence and the company row FOR NO KEY UPDATE, then the founding row (as before).
 	perform pg_temp.c1c3d1_replace('public.qorpera_lock_company_founding(uuid)',
 		E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n',
-		E'\t-- 20260930000200: on folder-v2 the folder fence FOR NO KEY UPDATE, where member changes serialize (a seat taken or\n'
+		E'\t-- 20260930002650: on folder-v2 the folder fence FOR NO KEY UPDATE, where member changes serialize (a seat taken or\n'
 		|| E'\t-- given up is one), then the company row FOR NO KEY UPDATE (the table''s name is the company''s), not FOR UPDATE.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform 1 from public.qorpera_folder_fences where profile_id = p_profile_id for no key update;\n'
@@ -105,7 +105,7 @@ begin
 	-- Opening a table (or its repeat): the same two locks.
 	perform pg_temp.c1c3d1_replace('public.qorpera_open_company_founding(uuid,text)',
 		E'\tperform 1 from public.qorpera_profiles where id = v_profile for update;\n',
-		E'\t-- 20260930000200: on folder-v2 the folder fence and the company row FOR NO KEY UPDATE, as every lobby function.\n'
+		E'\t-- 20260930002650: on folder-v2 the folder fence and the company row FOR NO KEY UPDATE, as every lobby function.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(v_profile) then\n'
 		|| E'\t\tperform 1 from public.qorpera_folder_fences where profile_id = v_profile for no key update;\n'
 		|| E'\t\tif not found then raise exception ''Company folder is unavailable'' using errcode = ''42501''; end if;\n'
@@ -117,7 +117,7 @@ begin
 	-- caller the checks under the lock let through (read here without a lock).
 	perform pg_temp.c1c3d1_replace('public.qorpera_remove_company_founder(uuid,uuid)',
 		E'\tv_f := public.qorpera_lock_company_founding(p_profile_id);\n',
-		E'\t-- 20260930000200: on folder-v2 the jobs a joined founder''s removal ends, before the fence, as removing a member.\n'
+		E'\t-- 20260930002650: on folder-v2 the jobs a joined founder''s removal ends, before the fence, as removing a member.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) and public.qorpera_company_founding_seated(p_profile_id)\n'
 		|| E'\t\tand exists (select 1 from public.qorpera_company_founder_seats as seat\n'
 		|| E'\t\t\tjoin public.qorpera_company_foundings as founding on founding.profile_id = seat.profile_id\n'
@@ -130,7 +130,7 @@ begin
 	-- Start makes every founder at the table an owner: the thread rooms and conversations first, as a join takes them.
 	perform pg_temp.c1c3d1_replace('public.qorpera_start_company_founding(uuid,bigint,uuid)',
 		E'\tupdate public.qorpera_profile_members member set role = ''owner'' where member.profile_id = p_profile_id\n',
-		E'\t-- 20260930000200: on folder-v2 the member rows the role changes write (and the starter''s) in key order (rank 1),\n'
+		E'\t-- 20260930002650: on folder-v2 the member rows the role changes write (and the starter''s) in key order (rank 1),\n'
 		|| E'\t-- then the thread rooms and their conversations as a join takes them (the fence and the company row are held), so\n'
 		|| E'\t-- the role changes'' thread trigger finds them held.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
@@ -145,7 +145,7 @@ begin
 	-- Taking a seat: the thread rooms and their conversations, as a join takes them, before the member row.
 	perform pg_temp.c1c3d1_replace('public.qorpera_respond_company_founding(uuid,boolean)',
 		E'\tinsert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)\n',
-		E'\t-- 20260930000200: on folder-v2 the thread rooms and their conversations, as a join takes them (the fence and the\n'
+		E'\t-- 20260930002650: on folder-v2 the thread rooms and their conversations, as a join takes them (the fence and the\n'
 		|| E'\t-- company row are held).\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
 		|| E'\t\tperform public.qorpera_folder_member_change_enter(p_profile_id, auth.uid(), ''join'');\n'
@@ -161,7 +161,7 @@ begin
 	perform pg_temp.c1c3d1_replace('public.qorpera_cascade_provider_connection_unavailability()',
 		E'\tif old.status = new.status or new.status = ''active'' then return new; end if;\n',
 		E'\tif old.status = new.status or new.status = ''active'' then return new; end if;\n'
-		|| E'\t-- 20260930000200: on folder-v2, when the login''s owner is no longer a member (its departure, earlier in this\n'
+		|| E'\t-- 20260930002650: on folder-v2, when the login''s owner is no longer a member (its departure, earlier in this\n'
 		|| E'\t-- transaction), the jobs to end FOR UPDATE NOWAIT first, in id order. The departure''s prelude holds them already;\n'
 		|| E'\t-- one it did not take (queued after its read) and held elsewhere refuses the change as a retryable conflict, never\n'
 		|| E'\t-- a wait behind a run that may wait for this change''s rows. Any other status change (a Disconnect, a switch-off)\n'
@@ -192,7 +192,7 @@ begin
 		|| E'\t\twhere profile_id = p_profile_id and bound_staff_agent_id is not null) order by id for update;\n'
 		|| E'end',
 		E'begin\n'
-		|| E'\t-- 20260930000200: NOWAIT. A member change''s prelude holds these rows already; a row it did not take (an account\n'
+		|| E'\t-- 20260930002650: NOWAIT. A member change''s prelude holds these rows already; a row it did not take (an account\n'
 		|| E'\t-- deletion runs no prelude) and held elsewhere refuses the change as a retryable conflict.\n'
 		|| E'\tperform 1 from public.qorpera_company_rooms where profile_id = p_profile_id and bound_staff_agent_id is not null\n'
 		|| E'\t\torder by id for update nowait;\n'
@@ -208,7 +208,7 @@ begin
 	perform pg_temp.c1c3d1_replace('public.qorpera_ensure_agent_thread_internal(uuid,uuid,uuid,uuid)',
 		E'\t\t\ttitle = v_staff.display_name, updated_at = statement_timestamp() where id = v_session;\n',
 		E'\t\t\ttitle = v_staff.display_name, updated_at = statement_timestamp() where id = v_session\n'
-		|| E'\t\t\t-- 20260930000200: on folder-v2 only when the title or the status changes.\n'
+		|| E'\t\t\t-- 20260930002650: on folder-v2 only when the title or the status changes.\n'
 		|| E'\t\t\tand (not public.qorpera_company_is_folder_v2(p_profile_id)\n'
 		|| E'\t\t\t\tor status is distinct from (case when v_active then ''open'' else ''closed'' end)::public.qorpera_session_status\n'
 		|| E'\t\t\t\tor title is distinct from v_staff.display_name);\n', 1);

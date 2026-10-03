@@ -17,23 +17,64 @@ values ('64800000-0000-4000-8000-000000000020','64800000-0000-4000-8000-00000000
 select set_config('request.jwt.claims', '{"role":"service_role"}', false) \g /dev/null
 select public.qorpera_folder_enable('64800000-0000-4000-8000-000000000020') \g /dev/null
 
--- Verified bytes for a text, and the agent file helpers, as in 701.
-create function pg_temp.stage(p_text text) returns jsonb language plpgsql security definer as $$
-declare v_hash text := encode(extensions.digest(convert_to(p_text,'utf8'),'sha256'),'hex'); v_manifest text; v_manifest_hash text;
+-- Verified version-2 bytes for a text, as the object gateway leaves them: the platform stages them (C1D §9.3). These and
+-- the agent file helpers as in 701.
+create function pg_temp.manifest_v2(p_text text) returns text language sql immutable as $$
+	select format('{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"%s","bytes":%s,"mediaType":"text/markdown","executable":false,"chunks":[%s]}',
+		encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'), octet_length(convert_to(p_text, 'utf8')),
+		case when p_text = '' then '' else format('{"sha256":"%s","bytes":%s}', encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex'),
+			octet_length(convert_to(p_text, 'utf8'))) end)
+$$;
+-- Opens an intent for a manifest as the actor, confirms each object the open did not report present (the manifest's
+-- chunks and the manifest itself, by hash and size, as the gateway does once it has stored them), and seals it.
+create function pg_temp.seal_v2(p_env uuid, p_actor jsonb, p_manifest text) returns jsonb language plpgsql as $$
+declare v_open jsonb := public.qorpera_folder_open_upload(p_env, p_actor, p_manifest); v_object jsonb;
 begin
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects','64800000-0000-4000-8000-000000000010/' || v_hash,
-		jsonb_build_object('size',octet_length(p_text))) on conflict do nothing;
-	v_manifest := jsonb_build_object('schema','qorpera.cloud-file-manifest/v1','fileSha256',v_hash,
-		'bytes',octet_length(p_text),'mediaType','application/octet-stream','chunks',case when p_text = '' then '[]'::jsonb
-		else jsonb_build_array(jsonb_build_object('sha256',v_hash,'bytes',octet_length(p_text))) end)::text;
-	v_manifest_hash := encode(extensions.digest(convert_to(v_manifest,'utf8'),'sha256'),'hex');
-	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects','64800000-0000-4000-8000-000000000010/' || v_manifest_hash,
-		jsonb_build_object('size',octet_length(v_manifest))) on conflict do nothing;
-	perform public.qorpera_verify_company_path_file('64800000-0000-4000-8000-000000000010',v_manifest);
-	return jsonb_build_object('manifestSha256',v_manifest_hash,'fileSha256',v_hash,'bytes',octet_length(p_text),
-		'mediaType','text/markdown','executable',false);
+	for v_object in select c from jsonb_array_elements(p_manifest::jsonb -> 'chunks') c
+		union all select jsonb_build_object('sha256', encode(extensions.digest(convert_to(p_manifest, 'utf8'), 'sha256'), 'hex'),
+			'bytes', octet_length(convert_to(p_manifest, 'utf8'))) loop
+		if not (v_open -> 'present') ? (v_object ->> 'sha256') then
+			perform public.qorpera_folder_confirm_object(p_env, p_actor, (v_open ->> 'intentId')::uuid, v_object ->> 'sha256',
+				(v_object ->> 'bytes')::bigint);
+		end if;
+	end loop;
+	return public.qorpera_folder_seal_upload(p_env, p_actor, (v_open ->> 'intentId')::uuid);
+end $$;
+-- The files pg_temp.stage made, which were version 1 before C5 and so exempt from possession.
+create temp table fixture_files(manifest_sha256 text primary key, manifest_text text not null);
+-- The platform stages the text in each folder-v2 environment of the company (an intent is one environment's).
+create function pg_temp.stage(p_text text) returns jsonb language plpgsql as $$
+declare v_env uuid; v_seal jsonb; v_manifest text := pg_temp.manifest_v2(p_text);
+begin
+	for v_env in select environment_id from public.qorpera_company_files where profile_id = '64800000-0000-4000-8000-000000000010'
+		and core = 'folder-v2' order by environment_id loop
+		v_seal := pg_temp.seal_v2(v_env, '{"kind":"platform"}', v_manifest);
+		if v_seal ->> 'state' is distinct from 'sealed' then raise exception 'Fixture staging: %', v_seal; end if;
+	end loop;
+	if v_seal is null then raise exception 'Fixture staging: the company has no folder-v2 environment'; end if;
+	insert into pg_temp.fixture_files values (v_seal -> 'file' ->> 'manifestSha256', v_manifest) on conflict do nothing;
+	return v_seal -> 'file';
+end $$;
+-- A version-2 file is held to possession (C1D §3): before an actor other than the platform commits units, it stages
+-- each of their files pg_temp.stage made itself, as its own upload would, unless it holds an unexpired sealed intent
+-- for it already. A file a test stages any other way is left alone. An actor that may not stage (42501) or a stopped
+-- company (55000) is left to the commit's own refusal; any other error is a fixture defect and surfaces.
+create function pg_temp.possess(p_env uuid, p_actor jsonb, p_units jsonb) returns void language plpgsql as $$
+declare v_manifest text;
+begin
+	if p_actor ->> 'kind' is not distinct from 'platform' or jsonb_typeof(p_units) is distinct from 'array' then return; end if;
+	for v_manifest in select distinct s.manifest_text from jsonb_array_elements(p_units) u
+		cross join lateral (select u -> 'file' as f union all select c -> 'file' from jsonb_array_elements(
+			case when jsonb_typeof(u -> 'contents') = 'array' then u -> 'contents' else '[]'::jsonb end) c) refs
+		join pg_temp.fixture_files s on s.manifest_sha256 = refs.f ->> 'manifestSha256'
+		where not exists (select 1 from public.qorpera_folder_upload_intents i where i.environment_id = p_env
+			and i.manifest_sha256 = s.manifest_sha256 and i.state = 'sealed' and i.expires_at > clock_timestamp()
+			and i.actor_kind = p_actor ->> 'kind' and i.scope_id = public.qorpera_folder_upload_scope(p_actor)) loop
+		begin
+			perform pg_temp.seal_v2(p_env, p_actor, v_manifest);
+		exception when insufficient_privilege or object_not_in_prerequisite_state then null;
+		end;
+	end loop;
 end $$;
 create function pg_temp.entry(p_path text, p_kind text, p_text text, p_parse jsonb) returns jsonb language sql as $$
 	select jsonb_build_object('path', p_path, 'kind', p_kind, 'text', p_text, 'parse', p_parse, 'parserVersion', 1)
@@ -60,9 +101,11 @@ create function pg_temp.hire(p_handle text, p_id uuid, p_name text, p_kind text 
 		'structured', jsonb_build_array(pg_temp.entry('agents/' || p_handle || '/agent.md', 'agent',
 			pg_temp.agent_text(p_id, p_name, p_kind), pg_temp.agent_parse(p_id, p_name, p_kind))))
 $$;
-create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language sql as $$
-	select public.qorpera_folder_commit('64800000-0000-4000-8000-000000000020', p_actor, p_key, p_units)
-$$;
+create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.possess('64800000-0000-4000-8000-000000000020', p_actor, p_units);
+	return public.qorpera_folder_commit('64800000-0000-4000-8000-000000000020', p_actor, p_key, p_units);
+end $$;
 create function pg_temp.expect(p_result jsonb, p_unit integer, p_outcome text) returns jsonb language plpgsql as $$
 declare v jsonb := p_result -> 'units' -> (p_unit - 1);
 begin
@@ -212,19 +255,27 @@ select set_config('qorpera_test.binding', jsonb_build_object('leaseId','64800000
 -- The run check works before any race.
 select (public.qorpera_native_tool_locked_run(current_setting('qorpera_test.binding')::jsonb)).id \g /dev/null
 
--- Two agent.md rewrites. Their bytes are staged now: staging inside a save's own transaction would lock the company
--- row. Each save names the file's version current when it is sent.
+-- Two agent.md rewrites. Their bytes are staged now, and the owner who saves them takes possession of them now (C1D
+-- §3): staging inside a save's own transaction would lock the company row, and the other connections see only what is
+-- committed. Each save names the file's version current when it is sent.
 select set_config('qorpera_test.file_' || n, pg_temp.stage(pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada ' || n))::text,
 	false) from generate_series(1, 2) n \g /dev/null
-create function pg_temp.sql_rename(p_n integer) returns text language sql as $$
-	select format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '64800000-0000-4000-8000-000000000020',
-		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'fence-rename-000' || p_n,
-		jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md',
-			'file', current_setting('qorpera_test.file_' || p_n)::jsonb, 'expectedVersion', pg_temp.version('agents/ada/agent.md'),
-			'structured', jsonb_build_array(pg_temp.entry('agents/ada/agent.md', 'agent',
-				pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada ' || p_n),
-				pg_temp.agent_parse('64800000-0000-4000-8000-0000000000a1', 'Ada ' || p_n)))))::text)
-$$;
+select pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
+	jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md', 'file', current_setting('qorpera_test.file_' || n)::jsonb)))
+from generate_series(1, 2) n \g /dev/null
+-- The save's SQL for another connection, after taking possession of its file in this one (held already: a no-op).
+create function pg_temp.sql_rename(p_n integer) returns text language plpgsql as $$
+declare v_units jsonb := jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md',
+	'file', current_setting('qorpera_test.file_' || p_n)::jsonb, 'expectedVersion', pg_temp.version('agents/ada/agent.md'),
+	'structured', jsonb_build_array(pg_temp.entry('agents/ada/agent.md', 'agent',
+		pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada ' || p_n),
+		pg_temp.agent_parse('64800000-0000-4000-8000-0000000000a1', 'Ada ' || p_n)))));
+begin
+	perform pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
+		v_units);
+	return format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '64800000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', 'fence-rename-000' || p_n, v_units::text);
+end $$;
 
 create function pg_temp.sql_tool() returns text language sql as $$
 	select format('select (public.qorpera_native_tool_locked_run(%L)).id::text', current_setting('qorpera_test.binding'))
@@ -325,48 +376,27 @@ begin
 		lease_expires_at = clock_timestamp() + interval '1 hour' where id = '64800000-0000-4000-8000-0000000000f2';
 end $$;
 
--- C. A job lease renewal is not starved by the run's tool calls. While a tool call is in flight, the next one waits at
--- the mutex, never beside it at the job, so the renewal waits for the call in flight. When that call commits, the
--- renewal and the next call race for the job row: the renewal usually wins (it only re-reads the row), and at worst it
--- waits for that one call. It never waits for anything else.
+-- C. A job lease renewal is never starved by the run's tool calls (P23, migration 20260930002200): it takes the job FOR NO
+-- KEY UPDATE, which a tool call's KEY SHARE does not block, so it runs beside the call in flight. A second tool call
+-- waits at the mutex, never beside the first at the job.
 do $$
-declare v_state text; v_blockers integer[]; v_three_done boolean := false; v_until timestamptz;
-	c_two constant integer := current_setting('qorpera_test.pid_fence_two')::integer;
-	c_three constant integer := current_setting('qorpera_test.pid_fence_three')::integer;
+declare v_state text;
 begin
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', pg_temp.sql_tool()) as t(x text);
 	perform dblink_send_query('fence_two', pg_temp.sql_renew());
-	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The renewal must wait for the tool call in flight'; end if;
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'The renewal must not wait for the tool call in flight'; end if;
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'The renewal: %', v_state; end if;
 	perform dblink_exec('fence_three', 'begin');
 	perform dblink_send_query('fence_three', pg_temp.sql_tool());
 	if not pg_temp.waits_for('fence_three', 'fence_one') then raise exception 'The second tool call must wait for the first'; end if;
 	if pg_temp.queued_on('fence_three') is distinct from 'public.qorpera_execution_run_budgets'::regclass then
 		raise exception 'The second tool call must wait at the mutex, not beside the first at the job'; end if;
 	perform dblink_exec('fence_one', 'commit');
-	v_until := clock_timestamp() + interval '60 seconds';
-	loop
-		exit when dblink_is_busy('fence_two') = 0;
-		v_blockers := pg_blocking_pids(c_two);
-		if exists (select 1 from unnest(v_blockers) b where b <> c_three) then
-			raise exception 'The renewal must wait for nothing but the tool calls of its run (blocked by %)', v_blockers; end if;
-		-- The second call won the job row: it holds it until it commits, and then the renewal goes.
-		if not v_three_done and c_three = any (v_blockers) and dblink_is_busy('fence_three') = 0 then
-			v_state := pg_temp.outcome('fence_three');
-			if v_state <> 'ok' then raise exception 'The second tool call: %', v_state; end if;
-			perform dblink_exec('fence_three', 'commit');
-			v_three_done := true;
-		end if;
-		if clock_timestamp() > v_until then raise exception 'The renewal did not finish'; end if;
-		perform pg_sleep(0.02);
-	end loop;
-	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' then raise exception 'The renewal: %', v_state; end if;
-	if not v_three_done then
-		v_state := pg_temp.outcome('fence_three');
-		if v_state <> 'ok' then raise exception 'The second tool call after the renewal: %', v_state; end if;
-		perform dblink_exec('fence_three', 'commit');
-	end if;
+	v_state := pg_temp.outcome('fence_three');
+	if v_state <> 'ok' then raise exception 'The second tool call: %', v_state; end if;
+	perform dblink_exec('fence_three', 'commit');
 end $$;
 
 -- D. The stop: a tool call waiting at the mutex when the stop comes refuses; the drain waits for the tool call in
@@ -573,6 +603,10 @@ begin
 		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020')
 		or exists (select 1 from public.qorpera_profile_staff where profile_id = '64800000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_runners where profile_id = '64800000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_runners where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from storage.objects where name like '64800000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '64800000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

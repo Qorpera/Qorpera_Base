@@ -51,9 +51,12 @@ $$;
 create function pg_temp.vactor(p_view jsonb) returns jsonb language sql as $$
 	select jsonb_build_object('kind','view','viewId',p_view ->> 'viewId','pass',p_view ->> 'pass')
 $$;
-create function pg_temp.vcommit(p_view jsonb, p_key text, p_units jsonb, p_review uuid default null) returns jsonb language sql as $$
-	select public.qorpera_folder_commit('63200000-0000-4000-8000-000000000020', pg_temp.vactor(p_view), p_key, p_units, p_review)
-$$;
+-- A commit as the view, which takes possession of its files first (632's pg_temp.possess).
+create function pg_temp.vcommit(p_view jsonb, p_key text, p_units jsonb, p_review uuid default null) returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.possess('63200000-0000-4000-8000-000000000020', pg_temp.vactor(p_view), p_units);
+	return public.qorpera_folder_commit('63200000-0000-4000-8000-000000000020', pg_temp.vactor(p_view), p_key, p_units, p_review);
+end $$;
 create function pg_temp.last_commit(p_result jsonb) returns public.qorpera_folder_commits language sql as $$
 	select * from public.qorpera_folder_commits where id = (p_result ->> 'commitId')::uuid
 $$;

@@ -391,6 +391,98 @@ begin
 		raise exception 'Underscores become single hyphens: %', v_state ->> 'path'; end if;
 end $$;
 
+-- 7c. Review round 1: instants, which connections have files, website states, expiries, back-off and marking all -------
+
+do $$
+declare v_state jsonb; w public.qorpera_folder_connection_file_work; c jsonb; v_op0 text; v_op1 text; v_count integer;
+begin
+	-- The parser's one instant form, by value.
+	if public.qorpera_company_state_instant_text('2026-10-03 08:00:00.5+00') <> '2026-10-03T08:00:00.5Z'
+		or public.qorpera_company_state_instant_text('2026-10-03 10:00:00+02') <> '2026-10-03T08:00:00Z'
+		or public.qorpera_company_state_instant_text('2026-10-03 08:00:00.000001+00') <> '2026-10-03T08:00:00.000001Z' then
+		raise exception 'Instants are written in the parser''s form'; end if;
+	-- A hook's signing secret and a secret card are not connections with a file: no mark, no file.
+	insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,connector_id,secret_name,purpose,
+		status,current_version,created_by_user_id) values
+		('85200000-0000-4000-8000-0000000000f8','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','company','event_hook','hook-orders','Hook','active',1,'70400000-0000-4000-8000-000000000001'),
+		('85200000-0000-4000-8000-0000000000f9','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','company','vault','card','Card','active',1,'70400000-0000-4000-8000-000000000001');
+	if pg_temp.marks('85200000-0000-4000-8000-0000000000f8') + pg_temp.marks('85200000-0000-4000-8000-0000000000f9') <> 0
+		or public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000f8') ->> 'present' <> 'false'
+		or public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000f9') ->> 'present' <> 'false' then
+		raise exception 'Only catalog connectors and website accounts have files'; end if;
+	-- An agent's connected website account: the agent connected it, when the account says, for its todo.
+	insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,connector_id,secret_name,purpose,
+		status,current_version,created_by_user_id) values
+		('85200000-0000-4000-8000-0000000000ef','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','company','website','agent-portal','Portal','active',1,'70400000-0000-4000-8000-000000000001'),
+		('85200000-0000-4000-8000-0000000000fa','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','company','website','closed-portal','Portal','active',1,'70400000-0000-4000-8000-000000000001');
+	insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, status, opened_by_user_id,
+		created_at, connected_at, closed_at) values
+		('85200000-0000-4000-8000-0000000000ef','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020',
+			'agent.example.com', 'agents+agent.example.com@nordlys.test', 'connected', '70400000-0000-4000-8000-000000000001',
+			'2026-10-02T09:00:00Z', '2026-10-02T09:30:00.25Z', null),
+		('85200000-0000-4000-8000-0000000000fa','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020',
+			'closed.example.com', 'ops+closed@nordlys.test', 'closed', '70400000-0000-4000-8000-000000000001',
+			'2026-10-02T09:00:00Z', null, '2026-10-02T10:00:00Z');
+	-- The agent who opened it, for its todo (set after the insert: the tagged-login rule of an agent's insert is A1-4b's,
+	-- and 813 tests it).
+	update public.qorpera_company_accounts set opened_for_todo_id = '85200000-0000-4000-8000-0000000000d7',
+		opened_by_staff_agent_id = '70400000-0000-4000-8000-0000000000c0', opened_receipt_id = '85200000-0000-4000-8000-0000000000d8'
+	where secret_id = '85200000-0000-4000-8000-0000000000ef';
+	v_state := public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000ef');
+	if v_state -> 'settings' ->> 'connectedBy' <> '70400000-0000-4000-8000-0000000000c0'
+		or v_state -> 'settings' ->> 'connectedAt' <> '2026-10-02T09:30:00.25Z'
+		or v_state -> 'settings' ->> 'openedFor' <> '85200000-0000-4000-8000-0000000000d7'
+		or v_state -> 'settings' ->> 'status' <> 'connected' or v_state ->> 'path' <> 'connections/agent-example-com.md' then
+		raise exception 'An agent''s connected account: %', v_state; end if;
+	-- A closed account on a secret not yet revoked has no file.
+	if public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000fa') ->> 'present' <> 'false' then
+		raise exception 'A closed account has no file'; end if;
+	-- An expired grant is not among the actions.
+	v_op0 := (pg_temp.operation('google_drive', 0)).operation_id; v_op1 := (pg_temp.operation('google_drive', 1)).operation_id;
+	insert into public.qorpera_cloud_secret_operation_grants(id, profile_id, environment_id, secret_id, staff_agent_id, connector_id,
+		operation_id, operation_version, tool_name, issued_by_user_id, expires_at)
+	select g.id, '70400000-0000-4000-8000-000000000010', '70400000-0000-4000-8000-000000000020', '85200000-0000-4000-8000-0000000000ed',
+		'70400000-0000-4000-8000-0000000000c0', op.connector_id, op.operation_id, op.version, op.tool_name,
+		'70400000-0000-4000-8000-000000000001', g.expires_at
+	from (values ('85200000-0000-4000-8000-0000000000fb'::uuid, 0, statement_timestamp() + interval '1 millisecond'),
+			('85200000-0000-4000-8000-0000000000fc'::uuid, 1, null::timestamptz)) as g(id, position, expires_at)
+	cross join lateral pg_temp.operation('google_drive', g.position) as op;
+	perform pg_sleep(0.01);
+	if public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000ed') -> 'settings' -> 'actions'
+		<> jsonb_build_array(v_op1) then
+		raise exception 'Only unexpired grants are actions: %', public.qorpera_folder_connection_file_state('85200000-0000-4000-8000-0000000000ed'); end if;
+	-- Back-off: 2^attempts seconds after a problem, at most ten minutes.
+	update public.qorpera_folder_connection_file_marks set created_at = '2000-01-01' where secret_id = '85200000-0000-4000-8000-0000000000ef';
+	c := pg_temp.claim();
+	if c ->> 'secretId' <> '85200000-0000-4000-8000-0000000000ef' then raise exception 'The oldest mark is claimed first: %', c; end if;
+	perform pg_temp.finish(c, 'unavailable');
+	w := pg_temp.work('85200000-0000-4000-8000-0000000000ef');
+	if w.not_before - w.updated_at not between interval '1.9 seconds' and interval '2.1 seconds' then
+		raise exception 'A first problem backs off two seconds: %', w.not_before - w.updated_at; end if;
+	-- Due again first (older than every mark of this block), with many attempts behind it.
+	update public.qorpera_folder_connection_file_work set not_before = clock_timestamp() - interval '1 second',
+		updated_at = '2000-01-01' where secret_id = '85200000-0000-4000-8000-0000000000ef';
+	c := pg_temp.claim();
+	if c ->> 'secretId' <> '85200000-0000-4000-8000-0000000000ef' then raise exception 'The retry is claimed: %', c; end if;
+	update public.qorpera_folder_connection_file_work set attempts = 20 where secret_id = '85200000-0000-4000-8000-0000000000ef';
+	perform pg_temp.finish(c, 'unavailable');
+	w := pg_temp.work('85200000-0000-4000-8000-0000000000ef');
+	if w.not_before - w.updated_at not between interval '599.9 seconds' and interval '600.1 seconds' then
+		raise exception 'A back-off is at most ten minutes: %', w.not_before - w.updated_at; end if;
+	-- Marking every connection of an environment due at once: the active company connections that have files.
+	select count(*) into v_count from public.qorpera_cloud_secrets as secret
+	where secret.environment_id = '70400000-0000-4000-8000-000000000020' and secret.owner_kind = 'company' and secret.status = 'active'
+		and (secret.connector_id = 'website' or secret.connector_id in ('gmail','github','google_drive'));
+	if public.qorpera_mark_connection_files('70400000-0000-4000-8000-000000000020') <> v_count or v_count < 4
+		or pg_temp.marks('85200000-0000-4000-8000-0000000000f8') <> 0 then
+		raise exception 'Every connection with a file is marked once'; end if;
+	begin
+		perform public.qorpera_mark_connection_files('70400000-0000-4000-8000-000000000022');
+		raise exception 'Only a folder-v2 environment' using errcode = 'QTF01';
+	exception when insufficient_privilege then null;
+	end;
+end $$;
+
 -- 8. Nothing but the allow-list ever leaves the vault, and the company's purge removes marks and work ---------------------
 
 do $$
