@@ -702,7 +702,9 @@ function memberText(text: string): string {
 						return part.type === "text" && typeof part.text === "string" ? [part.text] : [];
 					})
 				: [];
-			return texts.length ? [texts.join("\n"), ...quoteNotes(entry.qorperaQuotes)].join("\n") : withoutQuoteWords(text);
+			return texts.length
+				? [texts.join("\n"), ...quoteNotes(entry.qorperaQuotes)].join("\n")
+				: withoutQuoteWords(text);
 		}
 		body = record(entry.data ?? null);
 	}
