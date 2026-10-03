@@ -1,6 +1,6 @@
 # Company folder core: file-change wakes (slice P29)
 
-Status: design, for review. Owner: the folder GC and erasure session (P29 moved from Q1 on 4 October 2026). Rules:
+Status: design, decided 4 October 2026 (§13); review running. Owner: the folder GC and erasure session (P29 moved from Q1 on 4 October 2026). Rules:
 core §6 "Wakes" and §9 ("a file change wakes a listener exactly once"), WAKE-BUS.md (today's listener contract),
 STATE-FILES.md §8 "Plan (H2)" item 9 (H2c builds on this). Builds on P28 (#756, the folder-v2 materializer).
 Evidence: `~/work/qorpera-folder-core-tools/reports/P29-inventory.md`. Q1 and F2 answered the questions on the
@@ -41,7 +41,7 @@ is the seq of the commit that last wrote the routine row (`folder_commit_id`):
 - a new routine or a new version listens from the change set that saved it, so that change never wakes it;
 - a resume, which is a save, starts again from the resume;
 - a change the drain had not reached when the routine was edited is not delivered to the edited routine, as today's
-  version cursor drops it (WAKE-BUS.md).
+  version cursor drops it (WAKE-BUS.md). STATE-FILES.md's routine section says so, so agents know.
 
 No activation trigger runs inside the commit:
 - today's `qorpera_cloud_routine_listener_activation` and `_status` take the gc fence and read a snapshot head, and
@@ -129,7 +129,7 @@ bounded.
 
 **What the agent may read:** a matched path counts only if the routine's agent, with its requester, may read it. If none
 of a change's matched paths may be read, there is no wake. The listener never reveals that an unreadable path changed,
-as the feed leaves such a change out.
+as the feed leaves such a change out: an unreadable path is never named, and never counted in `more`.
 
 ## 6. The wake
 
@@ -177,8 +177,13 @@ lock targets taken at their ranks before admission. P29 ships two functions with
   (step 8).
   - `commit` is `{commitId, seq, actor: {kind, id}, runId, units: [{unit, op, path, from?, version, priorVersion}]}`,
     read from the path versions.
-  - It runs in a subtransaction. A failure is caught and the change set counted as done, never failing the step: H2c
-    keeps its own markers and dedupes, so at-least-once is fine (F2).
+  - It runs in a subtransaction. A failure never fails the step, never holds the cursor and never blocks other
+    companies, but it is not dropped either (coordinator, 4 October: a human task's answer must not get lost).
+    - The failure is recorded in `qorpera_folder_listener_hook_failures(environment_id, commit_id, seq, error,
+      attempts, last_attempt_at)`.
+    - Each later step first calls the hook again for the environment's recorded failures, oldest seq first and a few
+      a step, and deletes a row once its call succeeds.
+    - H2c keeps its own markers and dedupes, so calling it again is safe (F2).
   - The `human-tasks/*.md` pre-filter is H2c's.
 
 ## 9. Scheduling
@@ -240,12 +245,13 @@ cutoff time (by `created_at`, with a cursor and the step's budget). Each matched
 - the drain against the materializer;
 - lock order: no wait from a commit on a drain's lease.
 
-## 13. For the coordinator
+## 13. Decisions (coordinator, 4 October 2026)
 
-1. One cursor per environment with activation seqs on the routines (§2, §3), not per-listener cursors.
-2. Activation is future-only from the saving commit; an edit drops changes not yet drained (as today).
-3. A paused company's file wakes are recorded cancelled and not replayed (as today).
-4. Unreadable paths: no wake, and never named (§5).
-5. The payload is bounded to 20 changes and 8 KiB, with `more`, and erasure scrubs it (§6, §10).
-6. H2c's hook: two no-op functions P31 replaces, and a hook failure never fails the step (§8).
-7. The split: P29a SQL and orchestrator, P29b runtime, in one release (§11).
+1. One cursor per company; each routine listens from the change set that saved it.
+2. Editing a routine drops the changes the drain had not reached; the routine docs say so.
+3. A paused company's file wakes are recorded as cancelled and not replayed after resume.
+4. A path the agent may not read gives no wake and is never named, nor counted in `more`.
+5. 20 changes and 8 KiB with `more`; erasure scrubs the paths. The agent lists a whole change set with its folder tools.
+6. Two hook functions for H2c. A hook failure never blocks the drain or other companies, and is recorded and called
+   again until it succeeds (§8).
+7. P29a (SQL and the orchestrator step) and P29b (the runtime parser), in the same release, both on master after #756.
