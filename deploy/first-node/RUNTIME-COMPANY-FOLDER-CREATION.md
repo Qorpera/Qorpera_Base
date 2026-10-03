@@ -370,9 +370,9 @@ reversal test (as #705's 817 §1):
 - **P14b, the worker** (TS, object gateway), on A1's P22b module (#730), after P14a and #730.
 - **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
   The worker's unit builder (`creationUnits`) then needs: their parse through `parseCompanyStateFile` once it
-  dispatches to `parseInterfaceStateFile`; each table as one `new_folder` unit (its `table.toml` and `rows.csv`
-  together, since rows are checked against their definition); and the media type by extension (`text/plain` for
-  `.toml` and `.csv`, as the runtime writes them).
+  dispatches to the interface parser P16 adds (Interfaces' entry point over `interfaces.ts`); each table as one
+  `new_folder` unit (its `table.toml` and `rows.csv` together, since rows are checked against their definition); and
+  the media type by extension (`text/plain` for `.toml` and `.csv`, as the runtime writes them).
   P16 lands before the proof company (P38), so no `folder-v2` company exists without them; the coordinator records
   that dependency in the audit. P16 also redeploys the gateway.
 

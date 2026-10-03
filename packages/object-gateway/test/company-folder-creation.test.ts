@@ -287,8 +287,9 @@ describe("CompanyFolderCreator", () => {
 		});
 	});
 
-	it("releases on a database error, paused or deleting included", async () => {
-		const { creator, named } = database({ claims: [claim()], createThrows: new ObjectDependencyError(409) });
+	it("releases on a database error, a paused or deleting company included", async () => {
+		// A pause or a deletion reaches the gateway as 423 (55000), a lock conflict as 409: both back off.
+		const { creator, named } = database({ claims: [claim()], createThrows: new ObjectDependencyError(423) });
 		expect(await creator.createOne()).toBe(true);
 		expect(named("qorpera_folder_company_creation_release")).toHaveLength(1);
 		expect(named("qorpera_folder_company_creation_fail")).toHaveLength(0);

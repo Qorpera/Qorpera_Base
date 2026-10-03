@@ -98,7 +98,8 @@ async function main() {
 		const nothingMade = () =>
 			assert.equal(query(`select count(*) from public.qorpera_folder_entries where environment_id = '${environmentId}'`), "0");
 
-		// 0a. A paused company: the create refuses (55000), the worker releases the claim with a back-off, nothing is made.
+		// 0a. A paused company: its first staging call refuses (55000) before any create, the worker releases the claim with
+		// a back-off, and nothing is made.
 		query(`insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id, reason)
 			values ('${profileId}', '${owner}', 'Creation script pause')`);
 		assert.equal(await creator.createDue(5), 1);
