@@ -8,14 +8,6 @@
 -- One line set before the early returns: a plain read of the company's deletion row, no lock (the read path takes
 -- none, test 632). Folder-v2 only in effect: every caller is a folder-v2 function. The body carries the marker
 -- 20260930001000 for release guards.
---
--- Also (found by #714's review, decided by F3 on 3 October 2026): qorpera_folder_view_renew closed a view that no
--- longer matched its anchor under the FOR NO KEY UPDATE it renews with, which never waits for a commit's KEY SHARE on
--- the view. C1B §4 says closing takes the view FOR UPDATE and waits out the view's commit in flight, so that once a
--- view is closed nothing more lands through it; C1B is right, and the renewal now takes the view FOR UPDATE before it
--- closes it. A renewal that renews still takes only FOR NO KEY UPDATE. Upgrading the lock it holds cannot deadlock: no
--- other transaction holds FOR NO KEY UPDATE on the row beside it, and the commits it waits for take nothing it holds.
--- Folder-v2 only and inert. The body carries the same marker.
 
 set local lock_timeout = '3s';
 
@@ -37,12 +29,4 @@ $anchor$,
 	if p_actor ->> 'kind' in ('platform', 'member') and exists (select 1 from public.qorpera_company_files f
 		join public.qorpera_company_deletions d on d.profile_id = f.profile_id where f.environment_id = p_environment_id) then
 		raise exception 'Company is being deleted' using errcode = '55000'; end if;
-$statement$);
-
-select pg_temp.p01_insert_before('public.qorpera_folder_view_renew(uuid,text,timestamp with time zone)',
-	$anchor$		update public.qorpera_folder_views set state = 'closed', closed_at = clock_timestamp(),
-			close_reason = case when v_view.lease_until <= clock_timestamp() then 'expired' else 'ended' end
-$anchor$,
-	$statement$		-- Closing waits out the view's commit in flight (C1B §4, 20260930001000): renewal alone never waits.
-		perform 1 from public.qorpera_folder_views where id = v_view.id for update;
 $statement$);
