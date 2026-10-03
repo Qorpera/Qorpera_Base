@@ -1,7 +1,8 @@
 # Qorpera agent exit (E1): the rules inside the exit's own network namespace, qexit. Agent road machines on the
 # bridge qagent0 reach the exit's br0 (10.210.0.1/16); the exit sends their traffic out of up0 from its own address.
 # It refuses our own networks and TCP port 25 at once, drops IPv6, foreign sources and invalid packets, bounds each
-# machine to 16,384 connections, counts new connections and refusals per machine, keeps each refused flow an hour
+# machine to 16,384 connections and the exit to 196,608 (proposed, pending Jonas), counts new connections and
+# refusals per machine, keeps each refused flow an hour
 # for the log, and answers names and DHCP itself (dnsmasq on 10.210.0.1). Plain DNS a machine sends elsewhere is
 # redirected to it.
 #
@@ -73,6 +74,9 @@ table inet qorpera_agent_exit {
 	counter refused_open_limit {
 	}
 
+	counter refused_unlogged {
+	}
+
 	counter refused_spoofed {
 	}
 
@@ -101,14 +105,19 @@ table inet qorpera_agent_exit {
 		update @new_by_client { ip saddr counter }
 		ip daddr @internal4 counter name "refused_internal" goto refuse
 		tcp dport 25 counter name "refused_mail" goto refuse
+		ct count over 196608 counter name "refused_open_limit" goto refuse
 		add @open_by_client { ip saddr ct count over 16384 } counter name "refused_open_limit" goto refuse
 		accept
 	}
 
 	chain refuse {
 		update @refused_by_client { ip saddr counter }
-		meta l4proto { tcp, udp } update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_flows { ip saddr . ip daddr . meta l4proto . th dport }
-		meta l4proto != { tcp, udp } update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_other { ip saddr . ip daddr . meta l4proto }
+		# Only a flow not yet kept spends the machine's share; one that still is not kept (share spent, set full) is
+		# counted as unlogged, and the logger turns that count into a gap line.
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport != @refused_flows update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_flows { ip saddr . ip daddr . meta l4proto . th dport }
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th dport != @refused_flows counter name "refused_unlogged"
+		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto != @refused_other update @refusal_rate { ip saddr limit rate 600/hour burst 100 packets } add @refused_other { ip saddr . ip daddr . meta l4proto }
+		meta l4proto != { tcp, udp } ip saddr . ip daddr . meta l4proto != @refused_other counter name "refused_unlogged"
 		meta l4proto tcp reject with tcp reset
 		reject with icmpx admin-prohibited
 	}
@@ -118,10 +127,17 @@ table inet qorpera_agent_exit {
 		type filter hook input priority filter; policy drop;
 		iifname "lo" accept
 		ct state established,related accept
-		iifname "br0" udp sport 68 udp dport 67 accept
+		iifname "br0" ip saddr { 0.0.0.0, 10.210.0.0/16 } udp sport 68 udp dport 67 accept
 		iifname "br0" ip saddr 10.210.0.0/16 ip daddr 10.210.0.1 udp dport 53 accept
 		iifname "br0" ip saddr 10.210.0.0/16 ip daddr 10.210.0.1 tcp dport 53 accept
 		iifname "br0" ip saddr 10.210.0.0/16 ip daddr 10.210.0.1 icmp type echo-request accept
+	}
+
+	# The exit's own answers (DNS, DHCP) never leave by the uplink, so a forged source cannot bounce them outward.
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "up0" udp sport { 53, 67 } drop
+		oifname "up0" tcp sport 53 drop
 	}
 
 	chain postrouting {

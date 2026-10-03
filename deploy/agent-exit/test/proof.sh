@@ -303,10 +303,10 @@ assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in 
 
 EOF
 for _ in $(seq 1 50); do
-	grep -q '"dst":"192.168.1.40","event":"refused"' "$log_file" && break
+	grep -q '"dst":"192.168.1.40","event":"refused".*"rule":"our_networks"' "$log_file" && break
 	sleep 0.2
 done
-grep -q '"dst":"192.168.1.40","event":"refused"' "$log_file" || fail "no refused flow in the log.
+grep -q '"dst":"192.168.1.40","event":"refused".*"rule":"our_networks"' "$log_file" || fail "no refused flow (with its rule) in the log.
 logger: $(cat "$work/log.out")
 set: $(ip netns exec qexit nft -j list set inet qorpera_agent_exit refused_flows 2>&1)
 log: $(cat "$log_file")"

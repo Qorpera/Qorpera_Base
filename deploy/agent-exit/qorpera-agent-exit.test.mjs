@@ -98,9 +98,36 @@ describe("the connection logger", () => {
 			],
 		});
 		assert.deepEqual(run("--parse-set", set), [
-			["10.210.0.10", "192.168.1.40", "tcp", 2049],
-			["10.210.0.11", "1.1.1.1", "tcp", 25],
-			["10.210.0.10", "192.168.1.40", "253"],
+			[["10.210.0.10", "192.168.1.40", "tcp", 2049], 3590],
+			[["10.210.0.11", "1.1.1.1", "tcp", 25], null],
+			[["10.210.0.10", "192.168.1.40", "253"], 3500],
+		]);
+	});
+
+	test("a refused flow is logged when new or added again, with the rule that refused it", () => {
+		const nas = ["10.210.0.10", "192.168.1.40", "tcp", 2049];
+		const mail = ["10.210.0.10", "1.1.1.1", "tcp", 25];
+		const other = ["10.210.0.10", "192.168.1.40", "253"];
+		const busy = ["10.210.0.11", "8.8.4.4", "tcp", 443];
+		const diff = run(
+			"--diff-sets",
+			JSON.stringify({
+				previous: [
+					[nas, 1200],
+					[busy, 900],
+				],
+				current: [
+					[nas, 1195],
+					[mail, 3600],
+					[other, 3600],
+					[busy, 3599],
+				],
+			}),
+		);
+		assert.deepEqual(diff, [
+			[mail, "mail"],
+			[other, "our_networks"],
+			[busy, "open_limit"],
 		]);
 	});
 });

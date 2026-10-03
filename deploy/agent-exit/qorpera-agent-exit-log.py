@@ -10,7 +10,8 @@ with the client map and the DNS log.
 
   qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE
   qorpera-agent-exit-log.py --parse-conntrack   (stdin: conntrack -E lines; stdout: JSON lines)
-  qorpera-agent-exit-log.py --parse-set         (stdin: nft -j list set; stdout: one JSON key per element)
+  qorpera-agent-exit-log.py --parse-set         (stdin: nft -j list set; stdout: [key, expires] per element)
+  qorpera-agent-exit-log.py --diff-sets         (stdin: {previous, current}; stdout: [key, rule] per flow to log)
 """
 
 import argparse
@@ -26,6 +27,13 @@ AGENTS = ipaddress.ip_network("10.210.0.0/16")
 # The exit's own address on the agents' bridge: its DHCP replies are not agent connections.
 GATEWAY = ipaddress.ip_address("10.210.0.1")
 SETS = ("refused_flows", "refused_other")
+INTERNAL = [
+    ipaddress.ip_network(n)
+    for n in (
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+        "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4", "93.164.62.162/32",
+    )
+]
 # conntrack's own warning when the kernel drops events because the reader is behind.
 LOST = ("ENOBUFS", "losing events")
 
@@ -78,15 +86,42 @@ def parse_conntrack(line):
 
 
 def parse_set(text):
-    """`nft -j list set` output to a list of keys: (src, dst, proto) or (src, dst, proto, dport), proto as text."""
-    keys = []
+    """`nft -j list set` output to {key: expires}: key (src, dst, proto) or (src, dst, proto, dport), proto as text;
+    expires in seconds, or None when the element has no timeout."""
+    keys = {}
     for item in json.loads(text).get("nftables", []):
         for elem in item.get("set", {}).get("elem", []) or []:
-            value = elem.get("elem", {}).get("val", elem) if isinstance(elem, dict) else elem
+            inner = elem.get("elem") if isinstance(elem, dict) and "elem" in elem else None
+            value = inner.get("val") if inner else elem
             concat = value.get("concat") if isinstance(value, dict) else None
             if concat and len(concat) in (3, 4):
-                keys.append((str(concat[0]), str(concat[1]), str(concat[2]), *concat[3:]))
+                keys[(str(concat[0]), str(concat[1]), str(concat[2]), *concat[3:])] = inner.get("expires") if inner else None
     return keys
+
+
+def new_refusals(previous, current):
+    """Keys to log: new since the last poll, or added again (an element's expiry only ever counts down, so a larger
+    one means it expired and was added back between two polls)."""
+    fresh = []
+    for key, expires in current.items():
+        if key not in previous:
+            fresh.append(key)
+        elif expires is not None and previous[key] is not None and expires > previous[key]:
+            fresh.append(key)
+    return sorted(fresh, key=lambda k: tuple(str(part) for part in k))
+
+
+def rule_for(key):
+    """Which of the exit's refusals a refused flow came from."""
+    dst, proto = key[1], key[2]
+    try:
+        if any(ipaddress.ip_address(dst) in network for network in INTERNAL):
+            return "our_networks"
+    except ValueError:
+        return "unknown"
+    if proto == "tcp" and len(key) == 4 and str(key[3]) == "25":
+        return "mail"
+    return "open_limit"
 
 
 class Writer:
@@ -103,8 +138,11 @@ class Writer:
             with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
-    def gap(self, reason):
-        self.write({"ts": time.time(), "event": "gap", "reason": reason})
+    def gap(self, reason, since=None):
+        record = {"ts": time.time(), "event": "gap", "reason": reason}
+        if since is not None:
+            record["since"] = since
+        self.write(record)
 
 
 def follow_conntrack(netns, writer):
@@ -130,27 +168,42 @@ def follow_conntrack(netns, writer):
     writer.gap(f"conntrack stopped with {process.wait()}")
 
 
+def nft_json(netns, *what):
+    result = subprocess.run(
+        ["ip", "netns", "exec", netns, "nft", "-j", "list", *what], capture_output=True, text=True, check=True
+    )
+    return result.stdout
+
+
+def unlogged_count(text):
+    for item in json.loads(text).get("nftables", []):
+        counter = item.get("counter")
+        if counter:
+            return int(counter.get("packets", 0))
+    return 0
+
+
 def poll_refused(netns, writer, interval):
-    seen = set()
+    seen = {}
+    unlogged = None
     failing = False
     while True:
         try:
-            current = set()
+            current = {}
             for name in SETS:
-                result = subprocess.run(
-                    ["ip", "netns", "exec", netns, "nft", "-j", "list", "set", "inet", "qorpera_agent_exit", name],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                current.update(parse_set(result.stdout))
-            for key in sorted(current - seen, key=lambda k: tuple(str(part) for part in k)):
-                record = {"ts": time.time(), "event": "refused", "src": key[0], "dst": key[1], "proto": key[2]}
+                current.update(parse_set(nft_json(netns, "set", "inet", "qorpera_agent_exit", name)))
+            for key in new_refusals(seen, current):
+                record = {"ts": time.time(), "event": "refused", "src": key[0], "dst": key[1], "proto": key[2],
+                          "rule": rule_for(key)}
                 if len(key) == 4:
                     record["dport"] = key[3]
                 writer.write(record)
-            # A flow that expired from the set and comes back is logged again.
             seen = current
+            # Refusals the exit could not add to its sets (a machine's share spent, or a set full) are a gap.
+            count = unlogged_count(nft_json(netns, "counter", "inet", "qorpera_agent_exit", "refused_unlogged"))
+            if unlogged is not None and count > unlogged:
+                writer.gap(f"{count - unlogged} refused packets of unlogged flows")
+            unlogged = count
             failing = False
         except Exception as error:  # noqa: BLE001 - a failed read is a gap, never the end of the logger
             if not failing:
@@ -168,6 +221,7 @@ def main():
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--parse-conntrack", action="store_true")
     parser.add_argument("--parse-set", action="store_true")
+    parser.add_argument("--diff-sets", action="store_true")
     args = parser.parse_args()
     if args.parse_conntrack:
         for line in sys.stdin:
@@ -176,14 +230,26 @@ def main():
                 print(json.dumps(record, separators=(",", ":"), sort_keys=True))
         return
     if args.parse_set:
-        for key in parse_set(sys.stdin.read()):
-            print(json.dumps(list(key)))
+        for key, expires in parse_set(sys.stdin.read()).items():
+            print(json.dumps([list(key), expires]))
+        return
+    if args.diff_sets:
+        # Test mode: stdin {"previous": [[key, expires], ...], "current": [...]}; prints each key to log, with its rule.
+        both = json.load(sys.stdin)
+        previous = {tuple(k): e for k, e in both["previous"]}
+        current = {tuple(k): e for k, e in both["current"]}
+        for key in new_refusals(previous, current):
+            print(json.dumps([list(key), rule_for(key)]))
         return
     if not (args.netns and args.log_dir and args.heartbeat):
         parser.error("--netns, --log-dir and --heartbeat are required")
     os.makedirs(args.log_dir, mode=0o750, exist_ok=True)
     writer = Writer(args.log_dir)
-    writer.gap("logger started")
+    try:
+        last_beat = os.stat(args.heartbeat).st_mtime
+    except OSError:
+        last_beat = None
+    writer.gap("logger started", since=last_beat)
     threads = [
         threading.Thread(target=follow_conntrack, args=(args.netns, writer), daemon=True),
         threading.Thread(target=poll_refused, args=(args.netns, writer, args.interval), daemon=True),

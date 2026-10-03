@@ -114,7 +114,12 @@ compare_bridges() {
 		if [[ $bridge == qagent0 ]]; then
 			# The agent exit's bridge (deploy/agent-exit): its machines reach only the exit, which guards them. Listing
 			# it here would refuse their bridged traffic to the exit.
-			echo "bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here"
+			if [[ -n ${guarded[$bridge]:-} ]]; then
+				echo "MISMATCH bridge qagent0 is listed in the rules; it is the agent exit's bridge and must never be"
+				status=1
+			else
+				echo "bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here"
+			fi
 			continue
 		fi
 		if [[ -z ${guarded[$bridge]:-} ]]; then

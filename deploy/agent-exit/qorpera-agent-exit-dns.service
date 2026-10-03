@@ -2,6 +2,8 @@
 Description=Qorpera agent exit: DHCP and DNS for agent road machines (dnsmasq in the exit's namespace)
 Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
 After=qorpera-agent-exit.service
+# At shutdown LXD stops the machines first, so they lose names and the log only after they are gone.
+Before=snap.lxd.daemon.service
 ConditionPathExists=/run/netns/qexit
 
 [Service]

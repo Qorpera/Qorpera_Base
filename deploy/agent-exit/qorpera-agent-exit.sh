@@ -84,13 +84,17 @@ host_link_settings() {
 up() {
 	install -d -m 0755 "$run_dir" "$state_dir" "$state_dir/dhcp-hosts"
 	install -d -m 0750 "$log_dir"
-	[[ $(cat /proc/sys/net/ipv4/ip_forward) == 1 ]] || die "the node does not forward IPv4 (net.ipv4.ip_forward=0)"
+	# The exit starts before LXD, which would otherwise turn forwarding on. Turning it on resets every interface's own
+	# forwarding to 1, so the agents' bridge is set back to 0 below, after it.
+	[[ $(cat /proc/sys/net/ipv4/ip_forward) == 1 ]] || sysctl -qw net.ipv4.ip_forward=1
 	has_ns || ip netns add "$NS"
 	in_exit sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
 	# Rules first: links, addresses and routes come up only behind them.
 	load_tables
 	in_exit sysctl -qw net.netfilter.nf_conntrack_acct=1
 	has_link "$BRIDGE" || ip link add "$BRIDGE" type bridge
+	# A qx-br whose peer is not this namespace's br0 (left from an earlier namespace) is replaced.
+	if has_link qx-br && ! in_exit ip link show br0 >/dev/null 2>&1; then ip link del qx-br; fi
 	has_link qx-br || ip link add qx-br type veth peer name br0 netns "$NS"
 	has_link qx-up || ip link add qx-up type veth peer name up0 netns "$NS"
 	host_link_settings
@@ -124,9 +128,10 @@ down() {
 		for _ in $(seq 1 25); do [[ -z $(ip netns pids "$NS") ]] && break; sleep 0.2; done
 		for pid in $(ip netns pids "$NS"); do kill -9 "$pid" 2>/dev/null || true; done
 	fi
-	if nft list table $HOST_TABLE >/dev/null 2>&1; then nft delete table $HOST_TABLE; fi
 	if has_ns; then ip netns del "$NS"; fi
 	for link in qx-br qx-up "$BRIDGE"; do if has_link "$link"; then ip link del "$link"; fi; done
+	# The node's rules go last, after the links they guard.
+	if nft list table $HOST_TABLE >/dev/null 2>&1; then nft delete table $HOST_TABLE; fi
 	echo "qorpera-agent-exit: down"
 }
 
@@ -142,7 +147,7 @@ dns() {
 		--dhcp-range="${AGENTS%/*},static,255.255.0.0,$LEASE" --dhcp-authoritative --dhcp-ignore-names
 		--dhcp-hostsdir="$state_dir/dhcp-hosts" --dhcp-leasefile="$run_dir/dnsmasq.leases"
 		--dhcp-option=option:router,"$GATEWAY" --dhcp-option=option:dns-server,"$GATEWAY"
-		--log-queries=extra --log-dhcp --log-facility="$log_dir/dns.log" --log-async=50)
+		--log-queries=extra --log-facility="$log_dir/dns.log" --log-async=50)
 	if inside_exit; then exec "${command[@]}"; else exec ip netns exec "$NS" "${command[@]}"; fi
 }
 
@@ -158,7 +163,7 @@ verify() {
 	has_ns || problems+=("no namespace $NS")
 	has_link "$BRIDGE" || problems+=("no bridge $BRIDGE")
 	if has_link "$BRIDGE"; then
-		for setting in forwarding=0 arp_ignore=8; do
+		for setting in forwarding=0 rp_filter=1 arp_ignore=8; do
 			[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/${setting%=*}") == "${setting#*=}" ]] ||
 				problems+=("$BRIDGE ${setting%=*} is not ${setting#*=}")
 		done
