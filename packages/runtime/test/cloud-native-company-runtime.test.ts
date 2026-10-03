@@ -1215,7 +1215,13 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
-	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_folder_list")).toHaveLength(1);
+	// The routine writer lists the routines folder once (composition lists the notebook and skills, P20).
+	expect(
+		f.pathCall.mock.calls.filter(
+			([method, args]) =>
+				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+		),
+	).toHaveLength(1);
 	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(1);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -1297,7 +1303,13 @@ it("has a folder-v2 dynamic routine run find its file by the woken routine's id"
 		),
 	).toBe(true);
 	expect(f.folderReleases).toHaveLength(1);
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_folder_list")).toBe(false);
+	// Found by the routine's id, without listing the routines folder (composition lists the notebook and skills, P20).
+	expect(
+		f.pathCall.mock.calls.some(
+			([method, args]) =>
+				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+		),
+	).toBe(false);
 });
 
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {

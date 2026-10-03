@@ -40,6 +40,10 @@ describe("which calls are reviewed", () => {
 		["ask_member", {}, "internal"],
 		["update_memory", {}, "internal"],
 		["company_delete", {}, "destructive"],
+		// Deleting a skill is a deletion; creating or changing one stays internal (P20).
+		["update_skill", { action: "delete", name: "call-the-bank" }, "destructive"],
+		["update_skill", { action: "create", name: "call-the-bank" }, "internal"],
+		["update_skill", { action: "update", name: "call-the-bank" }, "internal"],
 		["computer_shell", { action: { kind: "shell", command: "ls" } }, "external"],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],

@@ -1111,7 +1111,13 @@ For `folder-v2` companies:
     each read or listing is fitted to one tool result before its release, and
     `company_delete` records the automatic review's approval of its call (C2
     R1) and deletes a file or an empty folder.
-- The memory, skills, todo, routine and hiring writers write files. The
+- The memory, skills, todo, routine and hiring writers write files. Memory
+  and skills: slice P20 (`packages/runtime/src/cloud-folder-notebooks.ts`)
+  runs the same composition and tools over a folder-v2 form of the trusted
+  gateway. Each tool call releases its reads under its answer; composition's
+  reads are released once under the composed context, before the first model
+  request. A skill deletion is denied on folder-v2 until the review recorder
+  takes `update_skill`. The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
 - The vault writes connection files.
