@@ -959,6 +959,16 @@ today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
 under the 4-second result fence (`cloud-native-result-fence.ts`).
 
+**As built (C1e, P24):** `scripts/load-folder-core.mjs` and `.sql`, a new
+script rather than an extension of the snapshot-era one. It covers everything
+above on 648's fixture, except three things. The post-commit worker is not
+built yet (C2's queue). A message's wake stays queued until C4's
+materializer, so on `folder-v2` admission is only the admission row's count.
+Machine admission is not driven. `--probe-only --big-paths N` times one run
+whose read set holds N paths, alone, with function statistics. Its first
+finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
+later slices").
+
 ## 10. What goes, and when
 
 Because of the clean reset, nothing is migrated. `snapshot-v1` companies use

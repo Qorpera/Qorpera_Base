@@ -39,11 +39,11 @@ language sql stable security definer set search_path = '' as $$
 		from public.qorpera_company_path_resources r where r.environment_id = p_environment_id),
 	shared as materialized (select resources.key from resources group by resources.key having count(*) > 1),
 	paths as materialized (
-		select distinct given.path, public.qorpera_folder_key(given.path) as key
-		from unnest(p_paths) as given(path) where given.path is not null),
-	-- Each path's candidates: the root, every ancestor folder's key, and its own key.
+		select distinct given.path, public.qorpera_folder_key(given.path) as key from unnest(p_paths) as given(path)),
+	-- Each path's candidates: the root, every ancestor folder's key, and its own key. A null path has none, so it has no
+	-- resource and nobody may read it.
 	candidates as (
-		select paths.path, paths.key, '' as candidate from paths
+		select paths.path, paths.key, '' as candidate from paths where paths.key is not null
 		union all
 		select paths.path, paths.key, array_to_string(parts.part[1:depth.n], '/')
 		from paths
@@ -88,7 +88,8 @@ language sql stable security definer set search_path = '' as $$
 		case when (covered.resource).id is not null then jsonb_build_object('resourceId', (covered.resource).id,
 			'resourceRevision', (covered.resource).authority_revision, 'grantId', (decided.agent_grant).id,
 			'grantRevision', (decided.agent_grant).revision) end
-	from covered join decided on (decided.resource).id is not distinct from (covered.resource).id
+	-- A path with no resource joins nothing: unreadable, no receipt. Equality keeps the join hashable.
+	from covered left join decided on (decided.resource).id = (covered.resource).id
 $$;
 
 revoke all on function public.qorpera_folder_paths_resources(uuid, text[]),

@@ -299,7 +299,13 @@ async function agentRun(runRow, others, gcTexts) {
 				"refused",
 			]);
 			// A read the actor may not make finds nothing (found: false), as for a path that is not there.
-			restrictedReads.push({ agent: runRow.agent, startedAt: sample.sample.startedAt, ok: sample.value?.found === true });
+			restrictedReads.push({
+				agent: runRow.agent,
+				// The read's statement began after its connection came from the pool, and ended by endedAt.
+				began: sample.sample.startedAt + sample.sample.queueMs,
+				endedAt: sample.sample.endedAt,
+				ok: sample.value?.found === true,
+			});
 		}
 		if (round % 7 === 0) await subtree(runRow, round);
 		if (round % 11 === 0 && others.length)
@@ -309,7 +315,8 @@ async function agentRun(runRow, others, gcTexts) {
 				"select public.qorpera_send_coworker_message($1::jsonb, $2::uuid, $3, $4, true) as value",
 				[runRow.binding, pick(others).agent, `load-${runRow.n}-${round}`, `Load message ${round}.`],
 				TOOL_DEADLINE,
-				{ expected: ["paused", "busy"] },
+				// A recipient that may not read what the sender read is refused (C1B-2 §4).
+				{ expected: ["paused", "busy", "refused"] },
 			);
 		await sleep(Math.random() * 20);
 	}
@@ -433,22 +440,24 @@ async function aclClient(runs, restrictedId) {
 			}
 			await sleep(100);
 		}
+		if (entry.revoked === Number.POSITIVE_INFINITY && !running()) entry.revoked = performance.now();
 		await sleep(200);
 	}
 }
 
-/** A restricted read leaks when it began after the agent's grant was revoked (committed) and before its next grant. */
+/** A restricted read leaks when it found the file although no grant of its agent could have been live while it ran:
+ * its [statement began, ended] overlaps no [grant began, revoke committed] window. */
 function leaks() {
 	let count = 0;
 	for (const probe of restrictedReads) {
 		if (!probe.ok) continue;
 		const history = grants.get(probe.agent) ?? [];
-		const covered = history.some((entry) => probe.startedAt >= entry.grantBegan && probe.startedAt <= entry.revoked);
-		// No grant ever, or the read began outside every grant's [grant began, revoke committed] window.
-		if (!covered) count += 1;
+		if (!history.some((entry) => probe.endedAt >= entry.grantBegan && probe.began <= entry.revoked)) count += 1;
 	}
 	return count;
 }
+/** Grants whose revoke never landed (twenty tries): their window stays open, so they fail the check. */
+const stuckGrants = () => [...grants.values()].flat().filter((entry) => entry.revoked === Number.POSITIVE_INFINITY).length;
 
 async function wakeAdmitter() {
 	while (running()) {
@@ -795,6 +804,14 @@ try {
 			bigRow.binding,
 			[],
 		]);
+		quiet.readSetPaths = Number(
+			(
+				await client.query(
+					"select count(distinct x ->> 'path') as n from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x where rec.run_id = $1::uuid",
+					[JSON.parse(bigRow.binding).runId],
+				)
+			).rows[0].n,
+		);
 		// A release of up to 10,000 reads (the runtime's cap) with current receipts, then one whose receipts a re-grant
 		// made stale (each path is re-resolved).
 		const releaseSize = Math.min(10_000, options.bigPaths);
@@ -821,10 +838,6 @@ try {
 		const staleReads = await entries();
 		await regrant();
 		quiet.releaseStaleMs = await release(staleReads);
-		quiet.readSetPaths = Number(
-			(await client.query("select coalesce(sum(jsonb_array_length(reads)), 0) as n from public.qorpera_folder_run_read_records where run_id = $1::uuid", [JSON.parse(bigRow.binding).runId]))
-				.rows[0].n,
-		);
 		await client.end();
 	}
 
@@ -861,9 +874,12 @@ try {
 	const leaked = leaks();
 	const drains = stops.map((stop) => stop.drainMs);
 	const all = [...stats.entries()].flatMap(([kind, samples]) => samples.map((sample) => ({ kind, ...sample })));
-	const unexpected = all.filter((sample) => sample.failure && UNEXPECTED.has(sample.failure.name)).length;
-	const slowTools = all.filter((sample) => RUN_KINDS.has(sample.kind) && !sample.failure && sample.totalMs > RESULT_FENCE_MS).length;
-	const slowBig = all.filter((sample) => sample.kind.startsWith("big-fence") && !sample.failure && sample.totalMs > FENCE_CALL_MS).length;
+	// Unexpected: a failure no call listed as expected (a deadlock, a statement timeout, a lock wait that ran out are
+	// never listed).
+	const unexpected = all.filter((sample) => sample.failure && (!sample.failure.expected || UNEXPECTED.has(sample.failure.name))).length;
+	const slowTools = all.filter((sample) => RUN_KINDS.has(sample.kind) && sample.totalMs > RESULT_FENCE_MS).length;
+	const slowBig = all.filter((sample) => sample.kind.startsWith("big-fence") && sample.totalMs > FENCE_CALL_MS).length;
+	const stuck = stuckGrants();
 	const bigFailed = all.filter((sample) => sample.kind.startsWith("big-fence") && sample.failure && sample.failure.name !== "paused").length;
 
 	process.stdout.write(
@@ -918,10 +934,18 @@ try {
 		missingParents ? `${missingParents} entries without their parent` : "",
 		lostBytes ? `${lostBytes} files whose bytes are gone` : "",
 		slowTools ? `${slowTools} run calls over the 4 s result fence` : "",
+		stuck ? `${stuck} revokes never landed` : "",
 		slowBig ? `${slowBig} big-run context fences over the 3.5 s call budget` : "",
 		bigFailed ? `${bigFailed} big-run context fences failed` : "",
 		bigRow && quiet.fenceAfterRegrantMs > FENCE_CALL_MS
 			? `the big run's context fence after a re-grant took ${quiet.fenceAfterRegrantMs} ms alone (budget ${FENCE_CALL_MS} ms)`
+			: "",
+		// C1e's target for the re-resolution itself (the coordinator's, 3 Oct): under 1 s at 25,000 paths.
+		bigRow && quiet.readSetCheckAfterRegrantMs > 1000
+			? `one read-set check after a re-grant took ${quiet.readSetCheckAfterRegrantMs} ms alone (target 1,000 ms)`
+			: "",
+		bigRow && quiet.releaseStaleMs > PATH_DEADLINE
+			? `a release of ${quiet.releasePaths} stale reads took ${quiet.releaseStaleMs} ms alone (deadline ${PATH_DEADLINE} ms)`
 			: "",
 	].filter(Boolean);
 	if (options.check && problems.length) {

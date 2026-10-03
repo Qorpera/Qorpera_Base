@@ -29,6 +29,9 @@ begin
 	where (select c.resource from public.qorpera_folder_paths_resources('63400000-0000-4000-8000-000000000020', v_paths) c where c.path = p)
 		is distinct from public.qorpera_folder_path_resource('63400000-0000-4000-8000-000000000020', p);
 	if v_bad is not null then raise exception 'A: covering resources differ for %', v_bad; end if;
+	-- A null path has no resource (and so nobody reads it), as a path the one-path lookup refuses.
+	if (select count(*) from public.qorpera_folder_paths_resources('63400000-0000-4000-8000-000000000020', array['a.md', null]) c
+		where c.path is null and c.resource is null) <> 1 then raise exception 'A: a null path has no resource'; end if;
 	if (select count(*) from public.qorpera_folder_paths_resources('63400000-0000-4000-8000-000000000020', v_paths))
 		<> (select count(distinct p) from unnest(v_paths) p) then raise exception 'A: one row per distinct path'; end if;
 	-- The cases the rules decide are really there: no resource, the exact one, the nested one.
@@ -51,7 +54,7 @@ select public.qorpera_folder_grant('63400000-0000-4000-8000-000000000020', pg_te
 do $$
 declare
 	v_paths text[] := array['a.md', 'teams/sales/a.md', 'teams/sales/q1', 'teams/sales/q1/x.md', 'TEAMS/Sales/b.md', 'docs/deep/a/b/c.md',
-		'credentials/x.md', 'Østen/f.md', 'members/63400000-0000-4000-8000-000000000002/private/n.md'];
+		'credentials/x.md', 'Østen/f.md', 'members/63400000-0000-4000-8000-000000000002/private/n.md', 'rules/r.md'];
 	v_run jsonb; v_actor jsonb; v_actor_a jsonb; v_actor_b jsonb; v_bad text[]; v_staff uuid;
 begin
 	-- A run is built in one statement and resolved in the next (a stable function reads its statement's snapshot).
@@ -179,8 +182,10 @@ end $$;
 -- F. The new functions are internal, and every patched body carries the marker.
 do $$
 begin
-	if has_function_privilege('service_role', 'public.qorpera_folder_paths_resources(uuid,text[])', 'execute')
-		or has_function_privilege('authenticated', 'public.qorpera_folder_paths_authority(uuid,uuid,jsonb,text[])', 'execute') then
+	if exists (select 1 from unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r,
+			unnest(array['public.qorpera_folder_paths_resources(uuid,text[])',
+				'public.qorpera_folder_paths_authority(uuid,uuid,jsonb,text[])']) f
+		where has_function_privilege(r, f, 'execute')) then
 		raise exception 'F: the set-based lookups must be internal'; end if;
 	if exists (select 1 from unnest(array['public.qorpera_folder_run_reads_current(uuid,uuid,jsonb)',
 			'public.qorpera_folder_view_reads_current(uuid,uuid,uuid,jsonb)', 'public.qorpera_folder_release_pairs(uuid,uuid,jsonb,jsonb)',

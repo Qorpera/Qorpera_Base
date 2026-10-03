@@ -665,10 +665,13 @@ end $$;
 do $$
 begin
 	if exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and provolatile = 'v'
-		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant')) then
+		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant',
+			'qorpera_folder_paths_resources', 'qorpera_folder_paths_authority')) then
 		raise exception 'The read receipt helpers must stay stable'; end if;
+	-- P24b (20260930019500): the set-based twins give the receipts of a re-resolution now.
 	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace
-		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant')) <> 3 then
+		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant',
+			'qorpera_folder_paths_resources', 'qorpera_folder_paths_authority')) <> 5 then
 		raise exception 'The read receipt helpers are missing'; end if;
 end $$;
 
