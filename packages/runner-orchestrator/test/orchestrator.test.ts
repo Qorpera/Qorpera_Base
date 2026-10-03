@@ -1385,7 +1385,12 @@ describe("cloud runner orchestrator", () => {
 			Object.entries(claim().work).filter(([key]) => key !== "substrateVersionId" && key !== "companySnapshotId"),
 		) as CloudRunnerWork;
 
-		await expect(answer({ substrate_version_id: null, company_snapshot_id: null })).resolves.toEqual({
+		await expect(answer({ substrate_version_id: null, company_snapshot_id: null })).resolves.toStrictEqual({
+			...claim(),
+			work: folderWork,
+		});
+		// Keys left out entirely parse the same.
+		await expect(answer({ substrate_version_id: undefined, company_snapshot_id: undefined })).resolves.toStrictEqual({
 			...claim(),
 			work: folderWork,
 		});

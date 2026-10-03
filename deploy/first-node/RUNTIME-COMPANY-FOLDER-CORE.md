@@ -1118,7 +1118,7 @@ For `folder-v2` companies:
   (RUNTIME-COMPANY-STATE-FILES.md, "What H2b without H2c means").
 - Tolerant readers and writers go out first:
   - the runner orchestrator accepts runs without snapshot or substrate ids
-    (`orchestrator.ts:640-641`);
+    (`parseRunnerWork` and `validateCloudRunnerWork` in `orchestrator.ts`; done in #709);
   - the object gateway serves `folder-v2` without tree manifests
     (`member-company-file.ts:794`, `company-bootstrap.ts:252`);
   - the edge functions handle `folder-v2` (runner-broker's verifier call
