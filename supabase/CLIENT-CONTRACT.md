@@ -774,7 +774,8 @@ answers 42501 "Company folder is unavailable" for a caller who is not a member o
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
 looks absent in every answer. Reads only: member writes come with P31.
 
-- `qorpera_member_folder_read(environment, path)`: `qorpera.folder-read/v1`, `{asOfSeq, found, entry}`; an entry has
+- `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
+  `entry` null when not found; an entry has
   `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
   `fileSha256`, `bytes`, `mediaType`, `executable`.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
@@ -785,8 +786,10 @@ looks absent in every answer. Reads only: member writes come with P31.
   `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
   `before`.
 - `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
-  first (1 to 50 examined a page), each `{seq, at, by, paths, more}`: at most 20 readable paths (`path`, `op`, `kind`,
-  `version`), `more` when there are others. `next` is a seq to pass as `before`.
+  first (1 to 50 examined a page), each `{seq, at, by, paths, more}`: the first 20 readable paths in unit order
+  (`path`, `op`, `kind`, `version`), `more` when there are others or more than 1,000 versions. A change set none of
+  whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
+  `before`.
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
   core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
   again from the top.

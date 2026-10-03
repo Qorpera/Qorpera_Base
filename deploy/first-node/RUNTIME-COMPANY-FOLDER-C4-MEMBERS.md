@@ -67,12 +67,15 @@ Both answer `{schema, asOfSeq, items, next}`, newest first; `next` continues an 
   path.
 - **The change sets:** `qorpera_member_folder_history(p_environment_id uuid, p_before bigint, p_limit integer)`
   (`qorpera.folder-history/v1`, at most 50 a page), from the journal. Each item: `seq`, `at`, `by`, and the paths in
-  it the member may read (`path`, `op`, `kind`, `version`), at most 20, with `more` when the change set has others
-  they may read or more than the call examined. A change set with no readable path is left out, and so are
-  authority rows. Work per call is bounded: at most `p_limit` change sets, and 200 path versions of each, are
-  examined. `p_before` and `next` are a seq.
-- **`by`:** `{kind: "member", userId}`, `{kind: "agent", staffAgentId, requesterUserId}` or `{kind: "platform"}`,
-  from the commit's attribution columns. The client shows names from the members and agents it already has.
+  it the member may read (`path`, `op`, `kind`, `version`): the first 20 in unit order, with `more` when it has
+  others they may read or more than 1,000 versions. A change set's versions are examined in unit order until a 21st
+  readable one, and at most 1,000 of them. A change set none of whose first 1,000 versions the member may read is
+  left out, like one with no readable path; the feed and a path's history still show its changes. Authority rows
+  are left out. Work per call is bounded: at most `p_limit` change sets, and 10,000 versions in all; a change set the
+  remaining budget can't examine whole goes to the next page. `p_before` and `next` are a seq.
+- **`by`:** `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`, from the commit's
+  attribution columns. The member who asked an agent is not shown: the conversation may be private to them. The
+  client shows names from the members and agents it already has.
 
 ### Positions in the feed for members
 
@@ -106,7 +109,7 @@ may not select it an "unauthorized" event per change, which would show anyone th
 
 | Slice | Contents | Migration, tests |
 | --- | --- | --- |
-| P27a | the caller check; the five member functions; history | `20260930013000`, SQL tests 833 (reads, list, bytes check), 834 (history, changes) |
+| P27a | the caller check; the six member functions; history | `20260930013000`, SQL tests 833 (reads, list, bytes check), 834 (history, changes) |
 | P27b | the object gateway's member folder route and the member company gateway's route; cloud-client's member folder client (parsers tested against real SQL output) | none |
 | P30 | the hint trigger, topic and policy; cloud-client's hint subscription | `20260930013100`, SQL test 835 |
 | P33 | the web file page and history on folder-v2 | none |
