@@ -151,8 +151,9 @@ export interface ResolvedCloudRunnerExecutionRun {
 	sourceId: string;
 	sessionId?: string;
 	jobId: string;
-	substrateVersionId: string;
-	companySnapshotId: string;
+	/** Both or neither: a folder-v2 run has no Company File substrate, and this lane refuses it. */
+	substrateVersionId?: string;
+	companySnapshotId?: string;
 	staffAgentId: string;
 	staffVersion: number;
 	inputIds: readonly string[];
@@ -720,8 +721,12 @@ async function materializeInput(
 	limits: CloudRunnerSandboxLimits,
 ): Promise<MaterializedCloudRunnerInput> {
 	const { job } = options;
+	// The whole-tree lane copies a Company File substrate. A folder-v2 run has none (folder core C3, P23) and is never
+	// this lane's: refused before anything is resolved.
+	const substrateVersionId = job.substrateVersionId;
+	if (substrateVersionId === undefined) throw new Error("The whole-tree runner needs a Company File substrate; this run has none");
 	const [resolvedSubstrate, execution] = await Promise.all([
-		options.substrate.resolve(job.substrateVersionId),
+		options.substrate.resolve(substrateVersionId),
 		options.substrate.resolveExecution(job),
 	]);
 	const { version, snapshot, artifactIndex } = resolvedSubstrate;

@@ -552,6 +552,16 @@ describe("cloud runner execution sandboxes", () => {
 		expect(fixture.substrate.resolveCalls).toBe(0);
 	});
 
+	it("refuses a folder-v2 run, which has no Company File substrate, before resolving anything", async () => {
+		const fixture = await sandboxFixture();
+		delete fixture.job.substrateVersionId;
+		const backend = new TestSandboxBackend(async () => ({ status: "not-run" }));
+		await expect(executeCloudRunnerJob({ ...fixture, backend, allowTestBackend: true })).rejects.toThrow(
+			"needs a Company File substrate",
+		);
+		expect(fixture.substrate.resolveCalls).toBe(0);
+	});
+
 	it("creates a disposable host-only broker directory without putting credentials in the sandbox request", async () => {
 		const fixture = await sandboxFixture();
 		let brokerRoot = "";

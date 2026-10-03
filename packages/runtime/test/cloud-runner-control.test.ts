@@ -223,6 +223,33 @@ describe("disposable cloud runner", () => {
 		expect(JSON.stringify(runner.snapshot())).not.toContain(pairing.activationToken);
 	});
 
+	it("keeps a folder-v2 job with no Company File substrate across restarts and completes it (folder core C3, P23)", async () => {
+		const pairing = createCloudRunnerPairingSecret();
+		const store = new MemoryAuthorityStore();
+		const completions: CloudRunnerControlRequest[] = [];
+		const transport: CloudRunnerControlTransport = {
+			request: vi.fn(async (_token, body) => {
+				if (body.action === "activate") return runnerRecord();
+				if (body.action === "accept") return { ...jobRecord("leased"), substrate_version_id: null };
+				if (body.action === "complete") {
+					completions.push(body);
+					return { ...jobRecord("completed"), substrate_version_id: null };
+				}
+				throw new Error("unexpected runner action");
+			}),
+		};
+		let runner = await DisposableCloudRunner.open(transport, runnerId, store, pairing.activationToken);
+		await runner.activate("linux-x64", "0.1.0");
+		await runner.acceptAssignment({ assignmentId, jobId, capability: assignmentCapability });
+		runner = await DisposableCloudRunner.open(transport, runnerId, store);
+		const [leased] = runner.leasedJobs();
+		expect(leased?.jobId).toBe(jobId);
+		expect(leased).not.toHaveProperty("substrateVersionId");
+		await expect(runner.complete(jobId, { outcome: "ok" })).resolves.toMatchObject({ jobId, status: "completed" });
+		// The client substrate id is the runner's own deterministic id, never the job's: completion writes no null.
+		expect(completions[0]).toMatchObject({ action: "complete", clientSubstrateVersionId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+	});
+
 	it("recovers heartbeat authority after the previous-token grace period", async () => {
 		const pairing = createCloudRunnerPairingSecret();
 		const attempts: Array<{ token: string; body: CloudRunnerControlRequest }> = [];
