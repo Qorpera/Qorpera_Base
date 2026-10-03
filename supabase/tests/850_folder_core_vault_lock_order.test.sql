@@ -1,7 +1,7 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
 -- Company folder core C1c-3d-2 (20260930003500): on a folder-v2 company the vault's own changes take rank 8's inner
 -- order (tickets, grants, secrets) and the member row before them, so they never meet an agent's tool call or a member
--- change in a cycle. In each case a holder keeps one row so the two others queue behind it in the order that deadlocked
+-- change in a cycle. In each case a holder keeps one row so the others queue behind it in the order that deadlocked
 -- before: the change must wait where the order puts it (and leave the secret free), and once the holder ends both land.
 -- 648's committed fixture (Ada's leased run), plus a broker authority, secrets, grants and capture tickets of the company,
 -- an admin and a second contributor; all removed at the end.
@@ -265,6 +265,162 @@ begin
 		or exists (select 1 from public.qorpera_cloud_secret_capture_tickets where secret_id = '85000000-0000-4000-8000-0000000000a5'
 			and status = 'pending') then
 		raise exception 'E: the start % and the removal %', v_start, v_removal; end if;
+end $$;
+
+-- G–J (review round 1): a refusal before any lock, the seal of a first capture, and the NOWAIT re-checks.
+-- Every Gmail grant of the company is withdrawn first, so the new connection C' (a7) holds Ada's only two: cf for
+-- get_profile and c5 for read_message, whose ids run against their operations. D'' (d6) is a first capture of the
+-- company's Gmail "primary" (a6), and a9 is a Gmail connection of the other company.
+set session_replication_role = replica;
+update public.qorpera_cloud_secret_operation_grants set status = 'revoked', revoked_at = clock_timestamp(),
+	revoked_by_user_id = '64800000-0000-4000-8000-000000000001'
+where profile_id = '64800000-0000-4000-8000-000000000010' and connector_id = 'gmail' and status = 'active';
+insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id, connector_id,
+	secret_name, purpose, current_version, created_by_user_id)
+values
+	('85000000-0000-4000-8000-0000000000a7', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+		'85000000-0000-4000-8000-0000000000b0', 'company', null, 'gmail', 'c', 'Mail C', 1, '64800000-0000-4000-8000-000000000001'),
+	('85000000-0000-4000-8000-0000000000a9', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021',
+		'85000000-0000-4000-8000-0000000000b0', 'company', null, 'gmail', 'primary', 'Other company', 1,
+		'64800000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope, envelope_sha256,
+	created_by_user_id)
+values ('85000000-0000-4000-8000-0000000000a7', 1, '85000000-0000-4000-8000-0000000000b0', 'test', decode('abcd', 'hex'), repeat('b', 64),
+	'64800000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secret_operation_grants(id, profile_id, environment_id, secret_id, staff_agent_id, connector_id,
+	operation_id, operation_version, tool_name, issued_by_user_id)
+select grant_row.id, '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+	'85000000-0000-4000-8000-0000000000a7', '64800000-0000-4000-8000-0000000000a1', operation.connector_id, operation.operation_id,
+	operation.version, operation.tool_name, '64800000-0000-4000-8000-000000000001'
+from (values ('85000000-0000-4000-8000-0000000000cf'::uuid, 'get_profile'), ('85000000-0000-4000-8000-0000000000c5'::uuid, 'read_message'))
+	as grant_row(id, operation_id)
+join public.qorpera_cloud_connector_operations as operation on operation.connector_id = 'gmail'
+	and operation.operation_id = grant_row.operation_id and operation.status = 'active';
+insert into public.qorpera_cloud_secret_capture_tickets(id, profile_id, environment_id, broker_authority_id, key_id, secret_id,
+	target_version, owner_kind, owner_user_id, connector_id, secret_name, purpose, capture_capability_sha256, created_by_user_id,
+	expires_at)
+values ('85000000-0000-4000-8000-0000000000d6', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+	'85000000-0000-4000-8000-0000000000b0', 'test', '85000000-0000-4000-8000-0000000000a6', 1, 'company', null, 'gmail', 'primary',
+	'Mail', repeat('7', 64), '64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 hour');
+set session_replication_role = origin;
+create function pg_temp.sql_grant(p_grant uuid) returns text language sql as $$
+	select format('select 1 from public.qorpera_cloud_secret_operation_grants where id = %L for update', p_grant)
+$$;
+-- Waits up to ten seconds for a connection's query to end.
+create function pg_temp.settles(p_conn text) returns boolean language plpgsql as $$
+declare v_until timestamptz := clock_timestamp() + interval '10 seconds';
+begin
+	while dblink_is_busy(p_conn) = 1 loop
+		if clock_timestamp() > v_until then return false; end if;
+		perform pg_sleep(0.02);
+	end loop;
+	return true;
+end $$;
+
+-- H. A share of another company's secret is refused before any lock: it never queues behind an agent's grant. Before,
+--    its pre-lock took this company's grants of the secret's connector first, and waited behind any of them.
+select pg_temp.hold(pg_temp.sql_grant('85000000-0000-4000-8000-0000000000cf'));
+select pg_temp.claims('fence_three', '85000000-0000-4000-8000-000000000003');
+select dblink_send_query('fence_three', format('select public.qorpera_grant_cloud_connector(%L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', '85000000-0000-4000-8000-0000000000a9'));
+do $$
+begin
+	if not pg_temp.settles('fence_three') then
+		perform pg_temp.release(); raise exception 'H: the refused share must not wait at a grant'; end if;
+	if pg_temp.outcome('fence_three') not like 'P0002 %' then raise exception 'H: the share is refused as before'; end if;
+end $$;
+select pg_temp.release();
+
+-- I. The broker seals D'''s first capture (the company's Gmail, shared on sealing) while the owner disconnects C', whose
+--    two grants of Ada's the share replaces. The Disconnect takes them by id (c5, then cf); the holder plays one that has
+--    taken c5. The seal now takes them by id too, so it waits at c5 holding nothing. Before, it took Ada's grants by
+--    operation (cf before c5), held cf while it waited for c5, and the Disconnect's next lock closed the cycle.
+select pg_temp.claims('fence_one', '64800000-0000-4000-8000-000000000001');
+select pg_temp.hold(pg_temp.sql_grant('85000000-0000-4000-8000-0000000000c5'));
+select dblink_exec('fence_three', 'set session authorization qorpera_secret_broker');
+select dblink_send_query('fence_three', pg_temp.sql_seal('85000000-0000-4000-8000-0000000000d6'));
+do $$
+begin
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secret_operation_grants') then
+		raise exception 'I: the seal must wait at the grant'; end if;
+	if not pg_temp.row_free(pg_temp.sql_grant('85000000-0000-4000-8000-0000000000cf')) then
+		raise exception 'I: the seal must take the grants by id, holding none while it waits for c5'; end if;
+end $$;
+do $$
+declare v_disconnect text := 'ok';
+begin
+	begin
+		perform * from dblink('fence_one', format('select public.qorpera_revoke_cloud_secret(%L, %L)::text',
+			'64800000-0000-4000-8000-000000000010', '85000000-0000-4000-8000-0000000000a7')) as t(r text);
+	exception when others then v_disconnect := sqlstate || ' ' || sqlerrm;
+	end;
+	if v_disconnect <> 'ok' then perform pg_temp.release(); raise exception 'I: the Disconnect %', v_disconnect; end if;
+end $$;
+select pg_temp.release();
+do $$
+declare v_seal text := pg_temp.outcome('fence_three');
+begin
+	if v_seal <> 'ok'
+		or (select status from public.qorpera_cloud_secrets where id = '85000000-0000-4000-8000-0000000000a6') is distinct from 'active'
+		or (select status from public.qorpera_cloud_secrets where id = '85000000-0000-4000-8000-0000000000a7') <> 'revoked' then
+		raise exception 'I: the seal %', v_seal; end if;
+end $$;
+select dblink_exec('fence_three', 'reset session authorization');
+
+-- J. A share of B against a grant it did not pre-lock: while the share waits for B, a grant of Ada's on the new Gmail
+--    connection (a6) commits and a holder keeps it, as an agent call would. The share takes it NOWAIT and is refused,
+--    retryably, at once. Before, it waited for any grant on another secret.
+update public.qorpera_cloud_secret_operation_grants set status = 'revoked', revoked_at = clock_timestamp(),
+	revoked_by_user_id = '64800000-0000-4000-8000-000000000001'
+where secret_id = '85000000-0000-4000-8000-0000000000a6' and staff_agent_id = '64800000-0000-4000-8000-0000000000a1'
+	and operation_id in ('get_profile', 'read_message') and status = 'active';
+select pg_temp.hold(pg_temp.sql_secret('85000000-0000-4000-8000-0000000000a2'));
+select pg_temp.claims('fence_three', '64800000-0000-4000-8000-000000000001');
+select dblink_send_query('fence_three', format('select public.qorpera_grant_cloud_connector(%L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', '85000000-0000-4000-8000-0000000000a2'));
+do $$ begin if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secrets') then raise exception 'J: the share must wait at B'; end if; end $$;
+create function pg_temp.sql_new_grant(p_id uuid, p_operation text) returns text language sql as $$
+	select format($q$insert into public.qorpera_cloud_secret_operation_grants(id, profile_id, environment_id, secret_id, staff_agent_id,
+		connector_id, operation_id, operation_version, tool_name, issued_by_user_id)
+	select %L, %L, %L, %L, %L, operation.connector_id, operation.operation_id, operation.version, operation.tool_name, %L
+	from public.qorpera_cloud_connector_operations as operation
+	where operation.connector_id = 'gmail' and operation.operation_id = %L and operation.status = 'active'$q$,
+		p_id, '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', '85000000-0000-4000-8000-0000000000a6',
+		'64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-000000000001', p_operation)
+$$;
+select dblink_exec('fence_four', pg_temp.sql_new_grant('85000000-0000-4000-8000-0000000000c8', 'get_profile'));
+select dblink_exec('fence_two', 'begin');
+select * from dblink('fence_two', $q$select 1 from public.qorpera_cloud_secret_operation_grants
+	where id = '85000000-0000-4000-8000-0000000000c8' for share$q$) as t(x integer);
+select pg_temp.release();
+do $$
+declare v_settled boolean := pg_temp.settles('fence_three'); v_share text;
+begin
+	perform dblink_exec('fence_two', 'rollback');
+	v_share := pg_temp.outcome('fence_three');
+	if not v_settled or v_share not like '55P03 %' then raise exception 'J: the share must be refused at once: %', v_share; end if;
+end $$;
+
+-- G. A Disconnect of a6 against a grant created on it while the Disconnect waited for the secret (the holder keeps a6
+--    FOR NO KEY UPDATE, so the new grant's key check passes): an agent call takes that grant and queues for a6. The
+--    Disconnect's re-check takes it NOWAIT once it holds a6 and is refused, retryably; the call lands. Before, the
+--    Disconnect waited for the call's grant while the call waited for a6.
+select dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
+select pg_temp.hold(format('select 1 from public.qorpera_cloud_secrets where id = %L for no key update',
+	'85000000-0000-4000-8000-0000000000a6'));
+select dblink_send_query('fence_three', format('select public.qorpera_revoke_cloud_secret(%L, %L)::text',
+	'64800000-0000-4000-8000-000000000010', '85000000-0000-4000-8000-0000000000a6'));
+do $$ begin if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secrets') then raise exception 'G: the Disconnect must wait at a6'; end if; end $$;
+select dblink_exec('fence_four', pg_temp.sql_new_grant('85000000-0000-4000-8000-0000000000c9', 'read_message'));
+select dblink_send_query('fence_two', pg_temp.sql_call('85000000-0000-4000-8000-0000000000c9'));
+do $$ begin if not pg_temp.waits_at('fence_two', 'public.qorpera_cloud_secrets') then raise exception 'G: the call must wait at a6'; end if; end $$;
+select pg_temp.release();
+do $$
+declare v_disconnect text := pg_temp.outcome('fence_three'); v_call text := pg_temp.outcome('fence_two');
+begin
+	if v_disconnect not like '55P03 %' or v_call <> 'ok'
+		or (select status from public.qorpera_cloud_secrets where id = '85000000-0000-4000-8000-0000000000a6') <> 'active' then
+		raise exception 'G: the Disconnect % and the call %', v_disconnect, v_call; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
