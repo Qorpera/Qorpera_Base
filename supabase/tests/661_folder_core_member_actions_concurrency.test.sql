@@ -251,11 +251,15 @@ create function pg_temp.edit_group(p_handle text, p_id uuid, p_name text, p_agen
 	select pg_temp.write('agents/groups/' || p_handle || '/group.md', 'group', pg_temp.group_text(p_id, p_name, p_agents, p_people),
 		pg_temp.group_parse(p_id, p_name, p_agents, p_people), pg_temp.version('agents/groups/' || p_handle || '/group.md'))
 $$;
--- A save's statement, built before a race starts (staging a file takes the company row).
-create function pg_temp.sql_save(p_key text, p_units jsonb) returns text language sql as $$
-	select format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
-		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', p_key, p_units)
-$$;
+-- A save's statement, built before a race starts (staging a file takes the company row), after the owner takes
+-- possession of its files in this session (648's pg_temp.possess), committed before the race too.
+create function pg_temp.sql_save(p_key text, p_units jsonb) returns text language plpgsql as $$
+begin
+	perform pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
+		p_units);
+	return format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', p_key, p_units);
+end $$;
 create function pg_temp.sql_group_post(p_room uuid, p_text text) returns text language sql as $$
 	select format('select public.qorpera_post_company_room_message(%L, %L, %L, %L, 1)::text', p_room, extensions.gen_random_uuid(),
 		jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', p_text), '64800000-0000-4000-8000-0000000000b1')
@@ -491,6 +495,10 @@ begin
 	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
 			'64800000-0000-4000-8000-000000000021'))
 		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_wake_occurrences where profile_id = '64800000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_wake_occurrences where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from storage.objects where name like '64800000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '64800000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;
