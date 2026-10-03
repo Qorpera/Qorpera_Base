@@ -962,7 +962,7 @@ Decisions:
   - `stop_company_work`'s machine stop, under deletion's gc fence (3g).
   - `record_company_machine_error` updates one machine row and takes no company lock, on either core.
 
-### 6.6 C1c-3d-1 as built (migration 20260930002250, tests 817 and 818)
+### 6.6 C1c-3d-1 as built (migration 20260930002650, tests 817 and 818)
 
 - **Joining by invitation** (#581 N1). The join's prelude runs only for the invitee of a live invitation: its email and
   expiry are in the prelude's `WHERE`, as in the select that follows, so a caller the join refuses (P0002) takes no
