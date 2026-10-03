@@ -741,10 +741,17 @@ export class CloudMemberFolderHints {
 			else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
 				this.#channel = undefined;
 				this.#onState?.(false);
-				void withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined);
-				this.#retry = setTimeout(() => this.#join(), 10_000);
+				void this.#rejoin(channel);
 			}
 		});
+	}
+
+	/** Joins again once the old channel is gone: the client hands back a channel it still holds for the same topic,
+	 * and that one never subscribes again. Until it is removed, removing is tried again every 10 s. */
+	async #rejoin(old: RealtimeChannel): Promise<void> {
+		const removed = await withCloudDeadline(() => this.#client.removeChannel(old), 2000).catch(() => "error");
+		if (this.#closed) return;
+		this.#retry = setTimeout(() => (removed === "ok" ? this.#join() : void this.#rejoin(old)), 10_000);
 	}
 
 	async close(): Promise<void> {

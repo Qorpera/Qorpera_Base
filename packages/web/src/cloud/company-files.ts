@@ -18,6 +18,7 @@ export class WebCompanyFiles {
 	readonly signal: AbortSignal;
 	readonly #options: ConstructorParameters<typeof CloudMemberCompanyFileClient>[0];
 	readonly #current: () => void;
+	#mode?: Promise<CloudMemberCompanyMode["mode"]>;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -89,8 +90,17 @@ export class WebCompanyFiles {
 		this.current();
 		return new CloudMemberCompanyFileReader({ ...this.#options, snapshotId });
 	}
-	/** How this company's files are read: governed (the path gateway), a folder-v2 company's folder, or legacy. */
-	async mode(): Promise<CloudMemberCompanyMode["mode"]> {
+	/** How this company's files are read: governed (the path gateway), a folder-v2 company's folder, or legacy. One
+	 * answer serves this page's lifetime (a company's mode never changes under it); a failed read is asked again. */
+	mode(): Promise<CloudMemberCompanyMode["mode"]> {
+		this.current();
+		this.#mode ??= this.#readMode().catch((error: unknown) => {
+			this.#mode = undefined;
+			throw error;
+		});
+		return this.#mode;
+	}
+	async #readMode(): Promise<CloudMemberCompanyMode["mode"]> {
 		this.current();
 		// The SDK validates endpoint origins before even the mode request can carry a token.
 		new CloudMemberCompanyFileClient(this.#options);

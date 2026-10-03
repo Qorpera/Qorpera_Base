@@ -33,6 +33,8 @@ export const COMPANY: Record<string, string> = {
 	View: "Vis",
 	"and more": "og flere",
 	"{name} is no longer in this folder.": "{name} er ikke længere i denne mappe.",
+	"{size}: too large to download here.": "{size}: for stor til at hente her.",
+	"View the version from {when}": "Vis versionen fra {when}",
 	// Company File: snapshots and proposals (app/views/companyfile.ts)
 	"Selected snapshot file is unavailable.": "Filen i det valgte øjebliksbillede er ikke tilgængelig.",
 	"(binary, {size})": "(binær, {size})",

@@ -144,6 +144,7 @@ function folderFake() {
 	return {
 		client,
 		contents,
+		folders,
 		changes,
 		bump(seq: number) {
 			asOfSeq = seq;
@@ -359,6 +360,79 @@ describe("a folder-v2 company's Company File", () => {
 		await vi.advanceTimersByTimeAsync(1100);
 		await settle();
 		expect(fake.client.list.mock.calls.length).toBe(before + 2);
+	});
+
+	it("offers no download over 8 MiB, and says why", async () => {
+		const { fake, host } = await opened();
+		const huge = { ...entry("huge.zip", "x"), file: { ...file("x"), bytes: 9 * 1024 * 1024 } };
+		fake.client.list.mockResolvedValueOnce({ asOfSeq: 4, entries: [huge], next: null });
+		await click(row(host, "big"));
+		await click(row(host, "huge.zip"));
+		const actions = visibleText(host.querySelector(".files-preview-actions"));
+		expect(actions).not.toContain("Download");
+		expect(actions).toContain("too large to download here");
+		expect(fake.client.readFile).not.toHaveBeenCalled();
+	});
+
+	it("follows again after a reset whose reload failed", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host } = await opened();
+		fake.changes.push({ asOfSeq: 5, resync: true, events: [], next: null, more: false });
+		fake.client.list.mockRejectedValueOnce(new Error("offline"));
+		src.hint(5);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(visibleText(host.querySelector(".files-status"))).toContain("could not be read just now");
+		const lists = fake.client.list.mock.calls.length;
+		src.hint(6);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(fake.client.list.mock.calls.length).toBe(lists + 1);
+		expect(visibleText(host.querySelector(".files-status"))).toBe("");
+	});
+
+	it("goes to the nearest folder still there when the open one is deleted", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host } = await opened();
+		await click(row(host, "notes"));
+		fake.folders.delete("notes");
+		fake.contents.delete("notes/log.txt");
+		fake.contents.delete("notes/plan.md");
+		fake.changes.push({
+			asOfSeq: 5,
+			resync: false,
+			events: [
+				{
+					kind: "change_set",
+					seq: 5,
+					commitId: id(301),
+					at,
+					by: { kind: "member", userId: other },
+					changes: [
+						{ unitNo: 1, op: "delete", kind: "file", path: "notes/log.txt", version: id(107), priorVersion: null, updatedAt: null, file: null },
+					],
+				},
+			],
+			next: { afterSeq: 5, cursor: null },
+			more: false,
+		});
+		src.hint(5);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(rows(host)).toEqual(["big", "logo.png", "readme.txt"]);
+	});
+
+	it("reads the folder again rather than follow more than five pages", async () => {
+		vi.useFakeTimers();
+		const { fake, src } = await opened();
+		for (let page = 0; page < 6; page++)
+			fake.changes.push({ asOfSeq: 20, resync: false, events: [], next: { afterSeq: 5 + page, cursor: null }, more: true });
+		const lists = fake.client.list.mock.calls.length;
+		src.hint(20);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(fake.client.changes).toHaveBeenCalledTimes(5);
+		expect(fake.client.list.mock.calls.length).toBe(lists + 1);
 	});
 
 	it("says so when the folder can't be read, and tries again", async () => {

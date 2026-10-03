@@ -50,6 +50,8 @@ const HISTORY_PAGE = 50;
 /** Text larger than this only downloads. */
 const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
+/** The browser hands out at most this much in one download (member-web's WebFileDownloads). */
+const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 const IMAGE_TYPES: Record<string, string> = {
@@ -267,11 +269,16 @@ export class CompanyFolderBrowser {
 		this.#dir = dir;
 		this.#items = append ? [...this.#items, ...page.entries] : [...page.entries];
 		this.#next = page.next;
+		// The listing is current as of asOfSeq: the feed is followed from there. Changes in between are not examined,
+		// so an open file is read again when the position moves.
+		const jumped =
+			!append && this.#position !== null && page.asOfSeq > this.#position.afterSeq && this.#opened !== null;
 		if (!append && (this.#position === null || page.asOfSeq > this.#position.afterSeq))
 			this.#position = { afterSeq: page.asOfSeq, cursor: null };
 		if (moved) this.#search.value = "";
 		this.#drawCrumbs();
 		this.#drawList(!append);
+		if (jumped) await this.#refreshOpened();
 	}
 
 	async #enter(dir: string): Promise<void> {
@@ -375,16 +382,24 @@ export class CompanyFolderBrowser {
 	/** Asks the feed what changed since the page was read, and redraws what it touched. */
 	async #sync(): Promise<void> {
 		let position = this.#position;
-		if (!position) return;
+		// No position: the last reset's reload failed. Reading the folder again sets one.
+		if (!position) {
+			await this.#reload();
+			return;
+		}
 		let touchedFolder = false,
-			touchedFile = false;
+			touchedFile = false,
+			reset = false;
 		for (let pages = 0; ; pages++) {
+			// At most five pages a sync: past that, reading the folder again is cheaper than following.
+			if (pages === 5) {
+				reset = true;
+				break;
+			}
 			const page = await this.#client!.changes(position, 500, this.#signal());
 			this.#live();
-			if (page.resync || !page.next || pages >= 5) {
-				this.#position = null;
-				touchedFolder = true;
-				touchedFile = this.#opened !== null;
+			if (page.resync || !page.next) {
+				reset = true;
 				break;
 			}
 			for (const event of page.events) {
@@ -403,17 +418,47 @@ export class CompanyFolderBrowser {
 			this.#position = position;
 			if (!page.more) break;
 		}
-		if (touchedFolder) await this.#load(this.#dir);
-		const opened = this.#opened;
-		if (touchedFile && opened && !opened.version) {
-			const read = await this.#client!.read(opened.path, this.#signal());
-			this.#live();
-			if (read.entry?.file) await this.#open(read.entry, true);
-			else {
-				this.#close();
-				this.#say(t("{name} is no longer in this folder.", { name: baseName(opened.path) }));
-			}
+		if (reset) {
+			this.#position = null;
+			await this.#reload();
+			return;
 		}
+		if (touchedFolder) await this.#reloadFolder();
+		if (touchedFile) await this.#refreshOpened();
+	}
+
+	/** Reads the open folder and the open file again, from a fresh position. */
+	async #reload(): Promise<void> {
+		await this.#reloadFolder();
+		await this.#refreshOpened();
+	}
+
+	/** The open folder again, or its nearest folder that is still there when it was deleted or moved. */
+	async #reloadFolder(): Promise<void> {
+		let dir = this.#dir;
+		while (dir) {
+			const read = await this.#client!.read(dir, this.#signal());
+			this.#live();
+			if (read.entry?.kind === "folder") break;
+			dir = parentOf(dir);
+		}
+		if (dir !== this.#dir) this.#close();
+		await this.#load(dir);
+	}
+
+	/** The open file at its latest version, when it changed; an earlier version on screen stays. */
+	async #refreshOpened(): Promise<void> {
+		const opened = this.#opened;
+		if (!opened || opened.version) return;
+		const read = await this.#client!.read(opened.path, this.#signal());
+		this.#live();
+		if (!read.entry?.file) {
+			this.#close();
+			this.#say(t("{name} is no longer in this folder.", { name: baseName(opened.path) }));
+			return;
+		}
+		if (read.entry.file.fileSha256 !== opened.file.fileSha256 || read.entry.file.bytes !== opened.file.bytes)
+			await this.#open(read.entry, true);
 	}
 
 	// ---- the preview ------------------------------------------------------------
@@ -508,10 +553,16 @@ export class CompanyFolderBrowser {
 				h("small", null, fmtBytes(opened.file.bytes)),
 			);
 		const actions: HTMLElement[] = [
-			button(
-				[icon("download"), t("Download")],
-				() => void this.#run(() => this.#download(opened.path, opened.file)),
-			),
+			opened.file.bytes <= MAX_DOWNLOAD_BYTES
+				? button(
+						[icon("download"), t("Download")],
+						() => void this.#run(() => this.#download(opened.path, opened.file)),
+					)
+				: h(
+						"span",
+						{ class: "files-note" },
+						t("{size}: too large to download here.", { size: fmtBytes(opened.file.bytes) }),
+					),
 			button([icon("clock"), t("History")], () => void this.#run(() => this.#showHistory(opened.path))),
 		];
 		if (opened.version) {
@@ -546,7 +597,7 @@ export class CompanyFolderBrowser {
 	}
 
 	async #download(path: string, file: CloudMemberFolderFile): Promise<void> {
-		const bytes = await this.#client!.readFile(file, this.#signal());
+		const bytes = await this.#client!.readFile(file, this.#signal(), MAX_DOWNLOAD_BYTES);
 		this.#live();
 		this.#downloads!.offer(path, bytes);
 		this.#say(t("Downloading {name}.", { name: baseName(path) }));
@@ -599,16 +650,7 @@ export class CompanyFolderBrowser {
 					h("span", null, this.#what(version)),
 					h("small", null, `${this.#who(version.by)} · ${this.#when.format(new Date(version.at))}`),
 				),
-				version.file
-					? button(
-							t("View"),
-							() => {
-								const file = version.file!;
-								void this.#run(() => this.#show({ path, file, version }));
-							},
-							{ small: true },
-						)
-					: null,
+				version.file ? this.#viewButton(path, version, version.file) : null,
 			),
 		);
 		const title = t("History of {name}", { name: baseName(path) });
@@ -623,6 +665,18 @@ export class CompanyFolderBrowser {
 					})
 				: null,
 		);
+	}
+
+	/** Opens an earlier version in place of the latest; its name says which. */
+	#viewButton(path: string, version: CloudMemberFolderVersion, file: CloudMemberFolderFile): HTMLButtonElement {
+		const control = button(t("View"), () => void this.#run(() => this.#show({ path, file, version })), {
+			small: true,
+		});
+		control.setAttribute(
+			"aria-label",
+			t("View the version from {when}", { when: this.#when.format(new Date(version.at)) }),
+		);
+		return control;
 	}
 
 	/** The company's change sets, newest first, with the files in each this member may read. */
