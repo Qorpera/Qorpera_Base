@@ -3,7 +3,7 @@ import { companyStateSeedTree } from "@qorpera/cloud-client/company-state-files"
 import { describe, expect, it } from "vitest";
 import { CompanyFolderCreator, creationUnits, parseCompanyCreationClaim } from "../src/company-folder-creation.ts";
 import { ObjectDependencyError } from "../src/dependency.ts";
-import { PlatformFolderProblem, type PlatformFileReference } from "../src/platform-folder-writer.ts";
+import { type PlatformFileReference, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
 
 const workerId = "34000000-0000-4000-8000-00000000000a";
 const creationId = "34000000-0000-4000-8000-0000000000c1";

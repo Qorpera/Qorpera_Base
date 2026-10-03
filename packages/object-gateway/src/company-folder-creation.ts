@@ -70,8 +70,10 @@ export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim 
 	if (value === null) return null;
 	const claim = record(value, CLAIM_KEYS, "claim_invalid");
 	const input = record(claim.input, INPUT_KEYS, "claim_invalid");
-	const uuid = (field: unknown) =>
-		typeof field === "string" && UUID.test(field) ? field : platformFolderProblem("claim_invalid");
+	const founders = Array.isArray(input.founders)
+		? input.founders.map((entry) => record(entry, FOUNDER_KEYS, "claim_invalid"))
+		: platformFolderProblem("claim_invalid");
+	const ids = [claim.creationId, claim.profileId, claim.environmentId, claim.cofounderId, claim.firstTodoId];
 	if (
 		claim.schema !== "qorpera.company-creation-claim/v1" ||
 		input.schema !== "qorpera.company-seed-input/v1" ||
@@ -80,27 +82,34 @@ export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim 
 		claim.operationKey !== `company-create:${claim.creationId}` ||
 		typeof input.companyName !== "string" ||
 		typeof input.vision !== "string" ||
-		!Array.isArray(input.founders) ||
-		(claim.kickoffRequestedBy !== null && uuid(claim.kickoffRequestedBy) !== input.kickoffRequestedBy)
+		// The kickoff member is the input's (null when their account was deleted).
+		(claim.kickoffRequestedBy !== null && claim.kickoffRequestedBy !== input.kickoffRequestedBy) ||
+		![...ids, ...(claim.kickoffRequestedBy === null ? [] : [claim.kickoffRequestedBy])].every(
+			(id) => typeof id === "string" && UUID.test(id),
+		) ||
+		founders.some(
+			(founder) =>
+				typeof founder.userId !== "string" ||
+				!UUID.test(founder.userId) ||
+				typeof founder.displayName !== "string" ||
+				typeof founder.role !== "string",
+		)
 	)
 		platformFolderProblem("claim_invalid");
-	const founders = (input.founders as unknown[]).map((entry) => {
-		const founder = record(entry, FOUNDER_KEYS, "claim_invalid");
-		if (typeof founder.displayName !== "string" || typeof founder.role !== "string")
-			platformFolderProblem("claim_invalid");
-		return { userId: uuid(founder.userId), displayName: founder.displayName as string, role: founder.role as string };
-	});
-	uuid(claim.profileId);
 	return {
-		creationId: uuid(claim.creationId),
-		environmentId: uuid(claim.environmentId),
+		creationId: claim.creationId as string,
+		environmentId: claim.environmentId as string,
 		generation: claim.generation as number,
-		cofounderId: uuid(claim.cofounderId),
-		firstTodoId: uuid(claim.firstTodoId),
-		kickoffRequestedBy: claim.kickoffRequestedBy === null ? null : uuid(claim.kickoffRequestedBy),
+		cofounderId: claim.cofounderId as string,
+		firstTodoId: claim.firstTodoId as string,
+		kickoffRequestedBy: claim.kickoffRequestedBy as string | null,
 		companyName: input.companyName as string,
 		vision: input.vision as string,
-		founders,
+		founders: founders.map((founder) => ({
+			userId: founder.userId as string,
+			displayName: founder.displayName as string,
+			role: founder.role as string,
+		})),
 	};
 }
 
