@@ -1112,9 +1112,12 @@ describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 	it("carries a folder-v2 run's companySeq, never beside a snapshot (P28)", async () => {
 		const folder = folderDescriptionRecord();
 		const run = folder.run as Record<string, unknown>;
-		// A description from before P28 has no pin at all.
-		const unsequenced = await folderBroker({ ...folder, run: { ...run, company_seq: null } }).broker.describe();
-		expect(unsequenced.run).not.toHaveProperty("companySeq");
+		// A description from before P28 has no key; a run with no pin sends null.
+		const { company_seq: _seq, ...withoutKey } = run;
+		for (const unpinned of [withoutKey, { ...run, company_seq: null }]) {
+			const described = await folderBroker({ ...folder, run: unpinned }).broker.describe();
+			expect(described.run).not.toHaveProperty("companySeq");
+		}
 		for (const companySeq of [-1, 1.5, "7"]) {
 			await expect(
 				folderBroker({ ...folder, run: { ...run, company_seq: companySeq } }).broker.describe(),

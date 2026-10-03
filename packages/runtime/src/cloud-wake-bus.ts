@@ -204,7 +204,8 @@ export interface CloudWakeEnvelope {
 		/** Null for a folder-v2 run, which pins no Company File snapshot (folder core C3, P23). */
 		companySnapshotId: string | null;
 		/** A folder-v2 run's pin instead: the folder clock's last_seq when it was materialized, so it was composed as of
-		 * at least that commit (folder core C4, P28). Absent until the database sends it; never beside a snapshot. */
+		 * at least that commit (folder core C4, P28). Absent until the database sends it, and then a number: the database
+		 * leaves the key out rather than send null. Never beside a snapshot. */
 		companySeq?: number;
 		staffVersion: number;
 		wakeSchema: typeof CLOUD_WAKE_SCHEMA;
