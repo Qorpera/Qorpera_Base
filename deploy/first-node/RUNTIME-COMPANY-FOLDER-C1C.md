@@ -941,6 +941,39 @@ Decisions:
     (23503): a login's owner or creator, a private conversation's member, anyone who ran, posted or connected. An
     account close function that runs the prelude per company, one company per transaction, is the fix.
 
+### 6.6 C1c-3d-2 as built: the vault's order (migration 20260930003500, test 850)
+
+On `folder-v2` an agent's tool call takes the company row only `KEY SHARE` (rank 0), so #660's key share orders nothing
+there: a vault change and a tool call, or a vault change and a member change, met in the vault rows and could
+deadlock. Rank 8 now has an inner order, the one the tool call (`native_connector_locked_grant`: its grant, then the
+grant's secret) and the member change's prelude (tickets, grants, secrets) already take: **capture tickets, then
+grants, then secrets**, each by id, with the member row (rank 1) and the agent's staff row (rank 2) before them. Each
+change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snapshot-v1 keeps its order (800).
+
+| Change | Before | Now (`folder-v2`) | Test 850 |
+|---|---|---|---|
+| Disconnect (`revoke_cloud_secret`) | secret, then its grants | its active grants, then the secret | A |
+| Grant one operation (`grant_cloud_secret_operation`) | secret, then the agent's staff row | staff row, then the secret | F |
+| Share (`grant_cloud_connector`) | secret, then the (agent, tool) grants it replaces | those grants, then the secret | B |
+| Seal (`complete_cloud_secret_capture`) | ticket, then the creator's member row; for a company rotation the secret, then (sharing) the grants | the creator's member row, then the ticket; for a company rotation the grants, then the secret | C, D |
+| Rotation start (`begin_cloud_secret_capture`) | secret and stale tickets, then the insert trigger's member check | the caller's member row, then the stale tickets, then the secret | E |
+
+`share_company_connection` is left as it is: the seal is its only caller and already holds the grants it writes.
+
+- **Test 850** builds each deadlock deterministically on 648's committed fixture: a holder keeps one row (a grant, the
+  agent's staff row, a ticket, a secret) so the two others queue behind it in the order that deadlocked before. The
+  change must wait where the order puts it and leave the secret free (a `NOWAIT` probe), and once the holder commits
+  both land (no 40P01): A Disconnect against an agent call, F one grant against the staff row, B a share against an
+  agent call, C a company rotation's seal against an agent call, D a first capture's seal against the owner demoting
+  its creator, E a member's rotation start against the owner removing them.
+- **Grants created while a change waited.** A change locks the grants it will write before the secret; a grant
+  created on that secret meanwhile (its creator held the secret) is taken `NOWAIT` once the secret is held, since an
+  agent call may hold it and wait for the secret: 55P03, retryable (never 40001: test 361). A grant on another secret
+  is waited for: its holder never waits for this secret. Not raced (the window needs a grant committed between two
+  statements of the change).
+- **Body markers:** every patched function names `20260930003500` in a comment, for the deploy guard.
+- Not in 3d-2: an account's own rows (`company_account_*`) stay refused on `folder-v2` until A1-7 (P22).
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
