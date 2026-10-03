@@ -366,6 +366,54 @@ describe("company notices", () => {
 		expect(thread.workerRuns.workerRunControl).not.toHaveBeenCalled();
 		expect(thread.view.el.querySelector('[data-action="stop-worker-run"]')).toBeNull();
 	});
+
+	it("while a Stop runs, Dismiss waits, and the finished Stop dismisses the notice it stopped (gap 4b)", async () => {
+		const stalled: MemberNotification = {
+			...item(76),
+			kind: "run_no_progress",
+			subject: {
+				schema: "qorpera.member-notification.run-no-progress/v1",
+				runId: id(86),
+				staffAgentId: id(83),
+				sessionId: null,
+				since: timestamp,
+				minutes: 15,
+				worker: true,
+			},
+		};
+		const client = {
+			listNotifications: vi.fn(async () => [stalled, item(70)]),
+			acknowledgeNotification: vi.fn(async (notificationId: string) => ({
+				...(notificationId === stalled.notificationId ? stalled : item(70)),
+				acknowledgedAt: timestamp,
+			})),
+		};
+		const pending = deferred<{ runId: string; status: "cancelled"; canCancel: boolean }>();
+		const workerRuns = {
+			workerRunControl: vi.fn(async (runId: string) => ({ runId, status: "leased" as const, canCancel: true })),
+			stopWorkerRun: vi.fn(() => pending.promise),
+		};
+		const lifetime = new AbortController();
+		const view = new ExecutionNotices(client, lifetime.signal, undefined, undefined, undefined, workerRuns);
+		document.body.append(view.el);
+		cleanup.push(() => view.dispose());
+		await settle();
+		action("stop-worker-run").click();
+		await settle();
+		// Dismiss and Escape wait while the Stop runs.
+		expect(action("dismiss-notification").getAttribute("aria-disabled")).toBe("true");
+		action("dismiss-notification").click();
+		const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+		view.el.querySelector(".company-notice")!.dispatchEvent(escape);
+		await settle();
+		expect(client.acknowledgeNotification).not.toHaveBeenCalled();
+		pending.resolve({ runId: id(86), status: "cancelled", canCancel: false });
+		await settle();
+		// Only the stopped notice is dismissed; the next one shows.
+		expect(client.acknowledgeNotification).toHaveBeenCalledTimes(1);
+		expect(client.acknowledgeNotification).toHaveBeenCalledWith(id(76), expect.any(AbortSignal));
+		expect(view.el.querySelector("p")?.textContent).toBe(FULL);
+	});
 });
 
 it("reads notices for the company workspace without any popup, also across an account change", async () => {

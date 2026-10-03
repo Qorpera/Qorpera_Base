@@ -184,7 +184,7 @@ begin
 		E'\n\t\t\t\tor (stalled.worker and member.role = ''contributor'' and member.user_id = stalled.created_by_user_id) end',
 		E' end'),
 		E', ''worker'', told.worker),', E'),');
-	perform pg_temp.wake_assert(md5(v_text) = 'af06208fad40cbd62ee34f15fa9fc514', 'F: the sweep''s text changed: ' || md5(v_text));
+	perform pg_temp.wake_assert(md5(v_text) = 'cc900e6a469da45c89dfe36b632b96b5', 'F: the sweep''s text changed: ' || md5(v_text));
 end
 $$;
 
