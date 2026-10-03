@@ -15,6 +15,7 @@ import type {
 	MemberCompanyObjectAuthority,
 	MemberCompanyObjectIdentity,
 } from "./member-company-objects.ts";
+import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
 import type { NativeCompanyObjectAuthority } from "./native-objects.ts";
 import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
@@ -108,7 +109,8 @@ export class SupabaseObjectAuthority
 		NativeCompanyObjectAuthority,
 		FolderObjectAuthority,
 		FolderGcAuthority,
-		MemberCompanyObjectAuthority
+		MemberCompanyObjectAuthority,
+		MemberFolderObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -447,6 +449,35 @@ export class SupabaseObjectAuthority
 		)) as Record<string, unknown> | null;
 		if (
 			!value ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: value.profileId, bytes: value.bytes as number };
+	}
+
+	/** A member's byte check for one object of a folder-v2 company (folder core C4, P27a/P27b), with the member's own
+	 * token. The database derives the member and the company; a refusal is the member's, never the circuit's. */
+	async authorizeMemberFolderObject(
+		userToken: string,
+		environmentId: string,
+		sha256: string,
+	): Promise<{ profileId: string; bytes: number }> {
+		const value = (await this.#rpc(
+			"qorpera_member_folder_object",
+			{ p_environment_id: environmentId, p_sha256: sha256 },
+			userToken,
+			this.#publishableKey,
+			"folder",
+		)) as Record<string, unknown> | null;
+		if (
+			!value ||
+			typeof value !== "object" ||
+			Object.keys(value).length !== 3 ||
 			value.schema !== "qorpera.folder-object-download/v1" ||
 			typeof value.profileId !== "string" ||
 			!UUID_PATTERN.test(value.profileId) ||

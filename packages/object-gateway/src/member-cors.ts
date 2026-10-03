@@ -4,6 +4,7 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const OBJECT = new RegExp(`^/v1/member-company(?:-snapshot)?-objects/${UUID}/${UUID}/[0-9a-f]{64}$`);
 const UPLOAD = new RegExp(`^/v1/member-company-file/${UUID}/uploads$`);
 const EXPORT = new RegExp(`^/v1/member-file-exports/${UUID}/${UUID}/[0-9a-f]{64}$`);
+const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const FILE = new RegExp(
 	`^/v1/member-company-file/${UUID}/(edits|proposals)(?:/(${UUID}))?(?:/(review|content|file))?$`,
@@ -13,6 +14,7 @@ const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${
 function route(url: string): { method: string; headers: string[] } | undefined {
 	if (PRESENCE.test(url)) return { method: "POST", headers: ["authorization", "content-type"] };
 	if (EXPORT.test(url)) return { method: "GET", headers: ["authorization"] };
+	if (FOLDER_OBJECT.test(url)) return { method: "GET", headers: ["authorization"] };
 	if (UPLOAD.test(url))
 		return { method: "PUT", headers: ["authorization", "content-type", "x-qorpera-company-upload"] };
 	if (OBJECT.test(url)) return { method: "GET", headers: ["authorization", "x-qorpera-company-path"] };

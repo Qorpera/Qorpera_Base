@@ -9,6 +9,7 @@ import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./m
 import { serveMemberCompanyPresence } from "./member-company-presence.ts";
 import { createMemberCors } from "./member-cors.ts";
 import { serveMemberFileExport } from "./member-file-exports.ts";
+import { type MemberFolderObjectAuthority, serveMemberFolderObject } from "./member-folder-objects.ts";
 import {
 	MEMBER_OBSERVATIONS_PATH,
 	type MemberCompanyObservations,
@@ -40,6 +41,8 @@ export interface ObjectGatewayServiceOptions {
 	folderGc?: ObjectGatewayFolderGc;
 	nativeObjects?: NativeCompanyObjectOptions;
 	memberObjects?: MemberCompanyObjectAuthority;
+	/** A member's bytes of a folder-v2 company (folder core C4, P27b). */
+	memberFolderObjects?: MemberFolderObjectAuthority;
 	memberFiles?: MemberCompanyAuthority;
 	memberPresence?: MemberCompanyAuthority;
 	memberObservations?: MemberCompanyObservations;
@@ -150,7 +153,8 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		try {
 			if (
 				request.url?.startsWith("/v1/member-company-objects/") ||
-				request.url?.startsWith("/v1/member-company-snapshot-objects/")
+				request.url?.startsWith("/v1/member-company-snapshot-objects/") ||
+				request.url?.startsWith("/v1/member-folder-objects/")
 			)
 				observation = options.memberObservations?.start("object_read");
 			else if (request.url?.startsWith("/v1/member-company-file/"))
@@ -295,6 +299,11 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				) {
 					if (!options.memberObjects) throw new HttpError(404, "Not found");
 					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
+					return;
+				}
+				if (request.url?.startsWith("/v1/member-folder-objects/")) {
+					if (!options.memberFolderObjects) throw new HttpError(404, "Not found");
+					await serveMemberFolderObject(request, response, options.memberFolderObjects, options.store, observation);
 					return;
 				}
 				if (request.url?.startsWith("/v1/folder-objects/")) {
