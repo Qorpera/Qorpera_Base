@@ -351,11 +351,11 @@ the bundle pin and the Codex fence): as root on the node host,
 sandbox runs, rebuilds the instance in place, reinstalls the package, takes
 the fence digest from the image, pushes the staged configuration and starts
 the service; the orchestrator is started by hand once the cut is live.
-With `EXEC_HOST_CREDENTIAL=1` (G2-3e, after migration `20260930011000`) it also
-mints the host's own credential, binds its sha256 with the staged service key and
-pushes it into the host, so the service's own database calls stop using the
-service key (`deploy/first-node/RUNTIME-NATIVE-HOST-KEY.md` "G2-3e"); the slots
-still receive the key until G2-5.
+It also mints the host's own credential (G2-3e, migration `20260930011000`),
+binds its sha256 to the host's adapter and orchestrator with the staged service
+key and pushes it into the host: the service's own database calls use it, never
+the service key (`deploy/first-node/RUNTIME-NATIVE-HOST-KEY.md` "G2-3e"); the
+slots still receive the key until G2-5.
 
 When the policy lists the host exactly, the node's inventory observer pins the
 host's configuration digest (it includes the `image.*` keys), so a rebuild makes

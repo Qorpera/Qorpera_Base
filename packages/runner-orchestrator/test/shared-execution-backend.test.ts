@@ -29,6 +29,8 @@ const secretBrokerCa = readFileSync(
 );
 const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const token = (): string => randomBytes(32).toString("base64url");
+/** The execution host's own credential (G2-3e): every database call of the service goes through its entry points. */
+const hostCredential = token();
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -255,9 +257,7 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
-		...(options.executionHostCredential === undefined
-			? {}
-			: { executionHostCredential: options.executionHostCredential }),
+		executionHostCredential: options.executionHostCredential ?? hostCredential,
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -426,6 +426,7 @@ describe("shared execution provider backend", () => {
 
 	it("refuses an execution host credential that is not 32 base64url bytes (G2-3e)", async () => {
 		await expect(fixture({ executionHostCredential: "short" })).rejects.toThrow("Execution host credential is invalid");
+		await expect(fixture({ executionHostCredential: "" })).rejects.toThrow("Execution host credential is invalid");
 	});
 
 	it("hands the sandbox the coding command gateway when the host is configured for it", async () => {

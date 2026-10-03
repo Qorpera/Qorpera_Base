@@ -15,7 +15,6 @@ import {
 	record,
 	runAttemptAcquisitionId,
 	sha256,
-	supabaseServiceHeaders,
 	token,
 	workSha256,
 } from "./provider-shared.ts";
@@ -99,11 +98,11 @@ export interface SharedExecutionProviderConfig {
 	supabaseServiceKey: string;
 	supabasePublishableKey: string;
 	/**
-	 * G2-3e: the execution host's own credential, which the node host bound to `hostId`. With it the service's own
-	 * database calls go through the execution host's entry points with the publishable key, never the service key;
-	 * the service key then only reaches the slots, until G2-5.
+	 * G2-3e: the execution host's own credential, which the node host bound to `hostId`. The service's own database
+	 * calls go through the execution host's entry points with it and the publishable key, never the service key, which
+	 * only reaches the slots, until G2-5.
 	 */
-	executionHostCredential?: string;
+	executionHostCredential: string;
 	/** Journals and per-slot scratch state (disk). */
 	stateRoot: string;
 	/** Per-slot credentials and environment for PID 1 (tmpfs). */
@@ -339,8 +338,7 @@ async function systemAccount(name: string): Promise<SharedExecutionAccount> {
 function validateConfig(config: SharedExecutionProviderConfig): void {
 	if (!ADAPTER_PATTERN.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 	if (!/^[a-z][a-z0-9-]{0,62}$/.test(config.hostId)) throw new Error("Execution host id is invalid");
-	if (config.executionHostCredential !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(config.executionHostCredential))
-		throw new Error("Execution host credential is invalid");
+	if (!/^[A-Za-z0-9_-]{43}$/.test(config.executionHostCredential)) throw new Error("Execution host credential is invalid");
 	for (const [label, path] of [
 		["State root", config.stateRoot],
 		["Run root", config.runRoot],
@@ -486,31 +484,20 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		validateConfig(config);
 		this.adapterId = config.adapterId;
 		this.#config = { ...config, nativeCompanyRuntime: structuredClone(config.nativeCompanyRuntime) };
-		const baseFetch = dependencies.fetch ?? fetch;
-		const runScoped = config.executionHostCredential !== undefined;
-		this.#fetch =
-			config.executionHostCredential === undefined
-				? baseFetch
-				: executionHostFetch(
-						config.supabaseUrl,
-						{
-							hostId: config.hostId,
-							credential: config.executionHostCredential,
-							publishableKey: config.supabasePublishableKey,
-						},
-						baseFetch,
-					);
+		this.#fetch = executionHostFetch(
+			config.supabaseUrl,
+			{
+				hostId: config.hostId,
+				credential: config.executionHostCredential,
+				publishableKey: config.supabasePublishableKey,
+			},
+			dependencies.fetch ?? fetch,
+		);
 		this.#units = dependencies.units ?? new SystemctlUnitControl();
 		this.#identityAuthority =
-			dependencies.identityAuthority ??
-			supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, config.supabaseServiceKey, this.#fetch, {
-				runScoped,
-			});
+			dependencies.identityAuthority ?? supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, this.#fetch);
 		this.#loginCustody =
-			dependencies.loginCustody ??
-			supabaseSharedExecutionLoginCustody(config.supabaseUrl, config.supabaseServiceKey, this.#fetch, {
-				runScoped,
-			});
+			dependencies.loginCustody ?? supabaseSharedExecutionLoginCustody(config.supabaseUrl, this.#fetch);
 		this.#account = dependencies.account ?? systemAccount;
 		this.#now = dependencies.now ?? Date.now;
 		this.#requireIdentityMount = dependencies.requireIdentityMount;
@@ -1599,7 +1586,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			{
 				method: "POST",
 				redirect: "error",
-				headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ p_runner_ids: runnerIds }),
 				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 			},
@@ -1633,7 +1620,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
 			method: "POST",
 			redirect: "error",
-			headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 		});

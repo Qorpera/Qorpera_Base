@@ -94,36 +94,24 @@ describe("execution host calls (G2-3e)", () => {
 		);
 	});
 
-	it("names the run an identity is read for only through the entry point", async () => {
-		const { fetch, sent } = recording(() =>
-			Response.json({
-				companyId: "30000000-0000-4000-8000-000000000004",
-				computeIdentityId,
-				epoch: 1,
-				blocked: false,
-				keySha256: null,
-				canInitialize: false,
-			}),
-		);
-		const signal = new AbortController().signal;
-		await supabaseSharedExecutionLoginCustody(supabaseUrl, "service-key", async (input, init) => {
+	it("names the run an identity is read for, through the host's fetch", async () => {
+		const sent: Sent[] = [];
+		const hostFetch = executionHostFetch(supabaseUrl, host, async (input, init) => {
 			sent.push({ url: String(input), init });
 			return Response.json(false);
-		})(computeIdentityId, signal, runId);
-		await supabaseSharedExecutionLoginCustody(
-			supabaseUrl,
-			"service-key",
-			async (input, init) => {
-				sent.push({ url: String(input), init });
-				return Response.json(false);
-			},
-			{ runScoped: true },
-		)(computeIdentityId, signal, runId);
-		expect(sent.map((call) => JSON.parse(String(call.init?.body)))).toEqual([
-			{ p_compute_identity_id: computeIdentityId },
-			{ p_compute_identity_id: computeIdentityId, p_run_id: runId },
-		]);
-		const authority = supabaseSharedExecutionIdentityAuthority(supabaseUrl, "service-key", fetch, { runScoped: true });
+		});
+		const signal = new AbortController().signal;
+		expect(await supabaseSharedExecutionLoginCustody(supabaseUrl, hostFetch)(computeIdentityId, signal, runId)).toBe(false);
+		expect(sent.map((call) => call.url)).toEqual([`${supabaseUrl}/rest/v1/rpc/qorpera_execution_host_call`]);
+		expect(JSON.parse(String(sent[0]?.init?.body))).toEqual({
+			p_host_id: host.hostId,
+			p_credential: credential,
+			p_name: "qorpera_compute_identity_login_in_vault",
+			p_args: { p_compute_identity_id: computeIdentityId, p_run_id: runId },
+		});
+		const authority = supabaseSharedExecutionIdentityAuthority(supabaseUrl, hostFetch);
 		await expect(authority(computeIdentityId, signal, "not-a-run")).rejects.toThrow("Run id is invalid");
+		await expect(authority("not-an-identity", signal, runId)).rejects.toThrow("Compute Identity id is invalid");
+		expect(sent).toHaveLength(1);
 	});
 });

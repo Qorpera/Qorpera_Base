@@ -8,7 +8,7 @@
 set -euo pipefail
 
 EXPECTED_SERVICE_SHA256="1b002fa8d0bf6132c636e359171fbcc9c9e96c314426f0b0926f9f84064f2021"
-EXPECTED_SERVICE_UNIT_SHA256="0409222a4be053b9702ceb8a574cabb43366745e79031563e6409a2eca66b975"
+EXPECTED_SERVICE_UNIT_SHA256="10ae874ab6602babdd0f8eff1e84280e03d8b9d2c8a143066f7558b1eafd62d8"
 EXPECTED_HOST_UNIT_SHA256="3283540be2bcf180c7afca1b56ecd5cfc8b097cf7f010192e713087f361f37c9"
 EXPECTED_RUNNER_UNIT_SHA256="826b7d6046771334d712df85c13b2052ef4adfe1ecff26778593d2bf50b508ef"
 EXPECTED_ENV_EXAMPLE_SHA256="b7042964ee5d65f398945f83d3cdeefc2a795973c578bb47b8efff1a775582a6"
@@ -101,9 +101,6 @@ fi
 
 install -d -o root -g root -m 0755 /etc/qorpera "${INSTALL_ROOT}" "${ORCHESTRATOR_ROOT}"
 install -d -o root -g root -m 0700 /etc/qorpera/shared-execution-credentials "${STATE_ROOT}/journals" "${IDENTITY_ROOT}"
-# G2-3e: the service's unit always loads the host credential; empty until the node host binds one.
-[[ -e /etc/qorpera/shared-execution-credentials/qorpera-execution-host ]] \
-	|| install -o root -g root -m 0600 /dev/null /etc/qorpera/shared-execution-credentials/qorpera-execution-host
 # Slot accounts traverse the state root to their own scratch; journals stay root-only.
 install -d -o root -g root -m 0711 "${STATE_ROOT}" "${STATE_ROOT}/slots"
 install -d -o qorpera-orchestrator -g qorpera-orchestrator -m 0700 /var/lib/qorpera-orchestrator

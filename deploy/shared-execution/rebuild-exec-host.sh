@@ -40,13 +40,6 @@
 #                    the node takes runs again. Unset: it is left stopped, as for a
 #                    paused cut. Never with EXEC_FRESH (a new host stays stopped until
 #                    it is enrolled).
-#   EXEC_HOST_CREDENTIAL=1  give the host its own credential (G2-3e; needs migration
-#                    20260930011000): mint it here, bind its sha256 to the host's
-#                    adapter and co-located orchestrator with the staged service key,
-#                    and push it straight into the host, so the service's
-#                    own database calls stop using the service key. Every rebuild mints
-#                    a new one (the old one fails at once). Unset: the host's credential
-#                    file is empty and the service uses the service key as before.
 #   EXEC_PREFLIGHT_ONLY=1  check the inputs, change nothing, exit
 #   EXEC_FRESH=1     set only by create-exec-host.sh: the host was just created
 #                    from this image and never started, so there is nothing to
@@ -86,7 +79,7 @@ if [[ ! ${SLOTS} =~ ^[1-9][0-9]?$ ]] || ((SLOTS > 64)); then
 	echo "EXEC_SLOTS must be 1-64." >&2
 	exit 1
 fi
-for name in EXEC_CLEAR_PARKED EXEC_START_ORCHESTRATOR EXEC_HOST_CREDENTIAL; do
+for name in EXEC_CLEAR_PARKED EXEC_START_ORCHESTRATOR; do
 	[[ -z ${!name:-} || ${!name} == 1 ]] || { echo "${name} must be 1 or unset." >&2; exit 1; }
 done
 if [[ -n ${FRESH} && -n ${EXEC_START_ORCHESTRATOR:-} ]]; then
@@ -245,38 +238,35 @@ for name in "${STAGING}"/credentials/*; do
 	push "${name}" "/etc/qorpera/shared-execution-credentials/$(basename "${name}")" "${mode}"
 done
 exec_in chmod 700 /etc/qorpera/shared-execution-credentials
-# G2-3e: the host's own credential. Minted here, bound by its sha256 only, written into the host straight from a
-# private temporary directory: never into staging, onto a command line or into this script's output.
-if [[ -n ${EXEC_HOST_CREDENTIAL:-} ]]; then
-	host_id=$(sed -n 's/^QORPERA_SHARED_EXECUTION_HOST_ID=//p' "${STAGING}/shared-execution.env")
-	[[ ${host_id} =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "${STAGING}/shared-execution.env has no valid QORPERA_SHARED_EXECUTION_HOST_ID." >&2; exit 1; }
-	credential_dir=$(mktemp -d)
-	head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' > "${credential_dir}/token"
-	if [[ $(tr -d '\n' < "${credential_dir}/token" | wc -c | tr -d ' ') != 43 ]]; then
-		rm -rf "${credential_dir}"
-		echo "The host credential was not minted." >&2
-		exit 1
-	fi
-	host_sha256=$(sha256sum "${credential_dir}/token" | cut -d' ' -f1)
-	service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
-	bound=$(printf '{"p_host_id":"%s","p_provider_adapter":"%s","p_orchestrator_id":"%s","p_credential_sha256":"%s"}' \
-		"${host_id}" "${adapter}" "${orchestrator_id}" "${host_sha256}" |
-		curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_bind_execution_host_credential" \
-			-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
-			--data-binary @-) || bound=""
-	unset service_key
-	if [[ ${bound} != *'"providerAdapter"'* ]]; then
-		rm -rf "${credential_dir}"
-		echo "Binding the host credential failed." >&2
-		exit 1
-	fi
-	push "${credential_dir}/token" /etc/qorpera/shared-execution-credentials/qorpera-execution-host 0600
+# G2-3e: the host's own credential (migration 20260930011000), for the service's own database calls. Minted here at
+# every rebuild (the old one fails at once), bound by its sha256 to the host's adapter and orchestrator, written into
+# the host straight from a private temporary directory: never into staging, onto a command line or into this
+# script's output.
+host_id=$(sed -n 's/^QORPERA_SHARED_EXECUTION_HOST_ID=//p' "${STAGING}/shared-execution.env")
+[[ ${host_id} =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { echo "${STAGING}/shared-execution.env has no valid QORPERA_SHARED_EXECUTION_HOST_ID." >&2; exit 1; }
+credential_dir=$(mktemp -d)
+head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' > "${credential_dir}/token"
+if [[ $(tr -d '\n' < "${credential_dir}/token" | wc -c | tr -d ' ') != 43 ]]; then
 	rm -rf "${credential_dir}"
-	echo "The host credential is bound (sha256 ${host_sha256})."
-else
-	# The unit always loads the file: empty means no host credential.
-	exec_in sh -c ': > /etc/qorpera/shared-execution-credentials/qorpera-execution-host && chmod 0600 /etc/qorpera/shared-execution-credentials/qorpera-execution-host'
+	echo "The host credential was not minted." >&2
+	exit 1
 fi
+host_sha256=$(sha256sum "${credential_dir}/token" | cut -d' ' -f1)
+service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
+bound=$(printf '{"p_host_id":"%s","p_provider_adapter":"%s","p_orchestrator_id":"%s","p_credential_sha256":"%s"}' \
+	"${host_id}" "${adapter}" "${orchestrator_id}" "${host_sha256}" |
+	curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_bind_execution_host_credential" \
+		-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
+		--data-binary @-) || bound=""
+unset service_key
+if [[ ${bound} != *'"providerAdapter"'* ]]; then
+	rm -rf "${credential_dir}"
+	echo "Binding the host credential failed." >&2
+	exit 1
+fi
+push "${credential_dir}/token" /etc/qorpera/shared-execution-credentials/qorpera-execution-host 0600
+rm -rf "${credential_dir}"
+echo "The host credential is bound (sha256 ${host_sha256})."
 exec_in systemctl enable --now qorpera-shared-execution.service >/dev/null
 sleep 2
 status=$(exec_in systemctl is-active qorpera-shared-execution.service)
