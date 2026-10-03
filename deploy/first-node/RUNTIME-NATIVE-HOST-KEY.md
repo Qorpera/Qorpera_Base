@@ -116,7 +116,8 @@ switch, G2-3d and G2-4 are on; G2-5 removes that copy, and only then does the VM
   database request of its own; identity reads name the run they are read for. The unit always loads the file (the
   installer creates it empty). `rebuild-exec-host.sh` (and `create-exec-host.sh`, which runs it) with
   `EXEC_HOST_CREDENTIAL=1`, on the node host, which keeps the key: mints the credential (32 random bytes) in a private
-  temporary directory, binds its sha256 to the host's adapter and co-located orchestrator with the staged key and pushes it straight into the VM's credentials directory
+  temporary directory, binds its sha256 to the host's adapter and co-located orchestrator with the staged key and
+  pushes it straight into the VM's credentials directory
   (root, 0600), never into staging, onto a command line or into its output; every rebuild mints a new one. Without the
   switch the file is empty and nothing changes. The orchestrator's registration and the bundle declaration stay on the
   node host with its key. Minting the provider token and copying the node-level tokens from the node host's own files
