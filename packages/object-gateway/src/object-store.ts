@@ -16,6 +16,8 @@ export type ObjectWriteResult = "exists" | "stored";
  * when the object had no NAS file, a marker that its Storage replica is the only copy (`replica`). `bytes` is the
  * object's size: the file's, or the one the marker's name holds. */
 export interface QuarantinedObject {
+	/** `<profileId>/<file name>`, where a later listing goes on from. */
+	name: string;
 	profileId: string;
 	sha256: string;
 	leaseId: string;
@@ -135,16 +137,20 @@ export class FileSystemObjectStore {
 		const source = this.#objectPath(profileId, sha256);
 		const target = this.#quarantinePath(profileId, sha256, leaseId);
 		return this.#io(source, async () => {
-			// The scan may remove an empty company folder between the mkdir and the rename: then the rename is asked
-			// once more, so a NAS file that is still there is never taken for an absent one.
+			// The scan may remove an empty company folder between its mkdir (or the mkdir's sync) and the rename: then
+			// both are asked once more, so a NAS file that is still there is never taken for an absent one.
 			for (let attempt = 1; ; attempt++) {
-				await this.#directories(dirname(target));
 				try {
+					await this.#directories(dirname(target));
 					await rename(source, target);
 					break;
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-					if (!(await this.#exists(source))) return (await this.#exists(target)) ? "moved" : "absent";
+					if (!(await this.#exists(source))) {
+						if (!(await this.#exists(target))) return "absent";
+						// This lease moved it before; that lane may have stopped before its syncs.
+						break;
+					}
 					if (attempt === 2) throw error;
 				}
 			}
@@ -163,8 +169,8 @@ export class FileSystemObjectStore {
 		const marker = `${this.#quarantinePath(profileId, sha256, leaseId)}.${bytes}.replica`;
 		await this.#io(marker, async () => {
 			for (let attempt = 1; ; attempt++) {
-				await this.#directories(dirname(marker));
 				try {
+					await this.#directories(dirname(marker));
 					const handle = await open(marker, "w", 0o600);
 					try {
 						await handle.sync();
@@ -221,9 +227,10 @@ export class FileSystemObjectStore {
 		});
 	}
 
-	/** Up to `limit` quarantine entries, by company and name. A company folder found empty is removed (a lane that
-	 * meets the removal asks its rename again); a name that is not an entry is left alone. */
-	async listQuarantine(limit: number): Promise<QuarantinedObject[]> {
+	/** Up to `limit` quarantine entries, by company and name, after `after` (an entry's `<profileId>/<name>`). A
+	 * company folder found empty is removed (a lane that meets the removal asks its rename again); a name that is not
+	 * an entry is left alone. */
+	async listQuarantine(limit: number, after?: string): Promise<QuarantinedObject[]> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
 			throw new Error("Quarantine batch limit is invalid");
 		const root = resolve(this.#root, QUARANTINE);
@@ -236,7 +243,10 @@ export class FileSystemObjectStore {
 				throw error;
 			}
 			const found: QuarantinedObject[] = [];
-			for (const profileId of companies.filter((name) => UUID_PATTERN.test(name)).sort()) {
+			const [afterCompany, afterName] = after === undefined ? [] : after.split("/");
+			for (const profileId of companies
+				.filter((name) => UUID_PATTERN.test(name) && (afterCompany === undefined || name >= afterCompany))
+				.sort()) {
 				const folder = resolve(root, profileId);
 				let names: string[];
 				try {
@@ -250,6 +260,7 @@ export class FileSystemObjectStore {
 					continue;
 				}
 				for (const name of names.sort()) {
+					if (profileId === afterCompany && afterName !== undefined && name <= afterName) continue;
 					const match = QUARANTINED_NAME.exec(name);
 					if (!match) continue;
 					const [, sha256, leaseId, markerBytes] = match;
@@ -265,6 +276,7 @@ export class FileSystemObjectStore {
 					}
 					if (bytes > MAX_QUARANTINED_BYTES) continue;
 					found.push({
+						name: `${profileId}/${name}`,
 						profileId,
 						sha256: sha256!,
 						leaseId: leaseId!,

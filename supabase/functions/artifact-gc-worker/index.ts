@@ -117,7 +117,7 @@ Deno.serve(async (request) => {
 	const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");
 	const gatewayControlToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN")?.trim();
 	// Folder-v2 objects (C1D §9.10), behind their own switch and before the phases that return early, so a failure
-	// there never holds this one up, and none here holds them up.
+	// there never holds this one up; its own time budget (60 s) keeps a slow gateway from holding them up.
 	let folderObjects: FolderObjectGcResult | { error: true };
 	try {
 		folderObjects = await runFolderObjectGc(

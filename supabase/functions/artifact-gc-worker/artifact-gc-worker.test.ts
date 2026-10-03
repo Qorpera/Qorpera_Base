@@ -550,7 +550,7 @@ describe("folder object cleanup (C1D §9.10)", () => {
 			objects: [claimed(firstSha256), claimed(secondSha256), claimed("c".repeat(64)), claimed("d".repeat(64))],
 			answers: ["removed", new Error("lane failed"), "restored", "stale"],
 		});
-		assert.deepEqual(await runFolderObjectGc(fake.store, folderLease, { sweep: 5, claim: 6 }), {
+		assert.deepEqual(await runFolderObjectGc(fake.store, folderLease, { sweep: 5, claim: 6, budgetMs: 60_000 }), {
 			enabled: true,
 			swept: 3,
 			claimed: 4,
@@ -584,6 +584,22 @@ describe("folder object cleanup (C1D §9.10)", () => {
 			fake.calls.filter((call) => call.startsWith("collect")),
 			[`collect a ${folderLease}`, `collect b ${folderLease}`],
 		);
+	});
+
+	it("stops for this run once its time budget is spent", async () => {
+		const fake = fakeFolder({ objects: [claimed(firstSha256), claimed(secondSha256), claimed("c".repeat(64))] });
+		let clock = 0;
+		const store: FolderObjectGcStore = {
+			...fake.store,
+			collect: async (object) => {
+				clock += 30_000;
+				return fake.store.collect(object);
+			},
+		};
+		const result = await runFolderObjectGc(store, folderLease, { sweep: 25, claim: 25, budgetMs: 60_000 }, () => clock);
+		assert.equal(result.stopped, true);
+		assert.equal(result.removed, 2);
+		assert.equal(fake.calls.filter((call) => call.startsWith("collect")).length, 2);
 	});
 
 	it("fails the phase on an unreadable claim, before any lane", async () => {

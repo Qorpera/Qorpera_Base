@@ -631,18 +631,20 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   up to 50 quarantine entries per pass, each under the object's lock, re-checked to still exist there (a lane may have
   settled it while the scan waited), then `live` leaves it, `restore` and `remove` as above, `remove` always removing
   the replica too. A company folder found empty is removed. Names that are not entries are left alone.
-- **Replication:** a QRC01 409 from `authorize_replication` (an object GC holds) is a lock conflict to the reconciler
-  (`ObjectLockConflict`, 503): the entry stays pending, not `blocked`, and the circuit is left alone.
+- **Replication:** folder GC's QRC01 409 from `authorize_replication` (an object GC holds, told apart by its message) is
+  a lock conflict to the reconciler (`ObjectLockConflict`, 503): the entry stays pending, not `blocked`, and the circuit
+  is left alone. snapshot-v1's cleanup fence also answers QRC01, with another message, and keeps its 409; no other RPC
+  changes.
 - **Runtime:** `cloudCompanyFolderFailure` reads QRC01 as `contended` (after a commit's or a release's own retries),
-  so open, seal and renew refusing an object GC holds are `contended`, as the gateway's 409 already was.
+  so open and seal refusing an object GC holds are `contended`, as the gateway's 409 (authorize, confirm) already was.
 - **The worker's folder phase** (`runFolderObjectGc` in `supabase/functions/artifact-gc-worker`): its own try/catch,
   before the phases that return early. It asks `qorpera_folder_gc_enabled()` (and runs only with the gateway
   configured), sweeps 25 intents, claims 25 objects under a new lease, and calls the lane for each in order; a 503, an
   unreachable gateway or 20 s without an answer stops it for this run; any other failure leaves that mark to expire.
   Its result is `folderObjects` in the worker's answer. The worker's test now runs in the node plan's functions step.
-- **The switch** (`qorpera_folder_gc_settings`, off): switching it on is refused (55000) while
-  `qorpera_verify_company_path_file` has no folder-v2 branch, which P10 adds (§9.3 step 3); the worker's question
-  checks that again. The coordinator turns it on after P10 is live: `update public.qorpera_folder_gc_settings set
+- **The switch** (`qorpera_folder_gc_settings`, off): switching it on is refused (55000) until
+  `qorpera_verify_company_path_file`'s body carries P10's marker text `folder-v2 refuses version 1` (§9.3 step 3; a
+  refusal written without it keeps the phase off); the worker's question checks that again. The coordinator turns it on after P10 is live: `update public.qorpera_folder_gc_settings set
   enabled = true;`. The worker is still not deployed (RUNTIME-COMPANY-DELETE.md).
 - **Tests:** gateway `test/folder-gc.test.ts` (the lane and the scan on a real NAS store and journal, with the folder
   core's GC SQL simulated: each outcome, a stop between each step, a restore with re-replication, a stale lease, a put

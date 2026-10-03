@@ -4,9 +4,10 @@
 --
 -- Off. It can be switched on only once qorpera_verify_company_path_file refuses folder-v2 (C1D §9.3, "C5 early"; slice
 -- P10): until then a folder-v2 company may hold version-1 proofs, whose chunks the chunk index does not list, so the
--- root check would miss them. The function has no folder-v2 branch before P10 (last defined in 20260905000100), and
--- P10's refusal is one. The read checks it again, so a later definition of that function without a folder-v2 branch
--- turns the phase off by itself.
+-- root check would miss them. P10's refusal carries the marker text 'folder-v2 refuses version 1' in that function's
+-- body, which nothing before it does (last defined in 20260913000200). The read checks it again, so a later definition
+-- of that function without the marker turns the phase off by itself; a refusal written without it keeps the phase off
+-- (fail-safe).
 --
 -- The coordinator switches it on with:
 --   update public.qorpera_folder_gc_settings set enabled = true;
@@ -26,11 +27,11 @@ comment on table public.qorpera_folder_gc_settings is
 	'The artifact GC worker''s folder phase (C1D §9.10). Refused on while qorpera_verify_company_path_file accepts folder-v2. '
 	'The coordinator turns it on with: update public.qorpera_folder_gc_settings set enabled = true;';
 
--- Whether version-1 proofs are refused for folder-v2: qorpera_verify_company_path_file has a folder-v2 branch, or no
+-- Whether version-1 proofs are refused for folder-v2: qorpera_verify_company_path_file carries P10's marker, or no
 -- longer exists (C6). Plain catalog reads.
 create function public.qorpera_folder_gc_version1_refused()
 returns boolean language sql stable security definer set search_path = '' as $$
-	select coalesce((select pg_get_functiondef(p.oid) ~ 'folder[-_]v2' from pg_catalog.pg_proc p
+	select coalesce((select strpos(pg_get_functiondef(p.oid), 'folder-v2 refuses version 1') > 0 from pg_catalog.pg_proc p
 		where p.oid = to_regprocedure('public.qorpera_verify_company_path_file(uuid,text)')), true)
 $$;
 
@@ -38,8 +39,8 @@ create function public.qorpera_folder_gc_settings_guard()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
 	if new.enabled and not public.qorpera_folder_gc_version1_refused() then
-		raise exception 'Folder GC stays off while qorpera_verify_company_path_file accepts folder-v2 (C1D §9.3)'
-			using errcode = '55000';
+		raise exception 'Folder GC stays off until qorpera_verify_company_path_file refuses folder-v2 (its marker '
+			'''folder-v2 refuses version 1'', C1D §9.3)' using errcode = '55000';
 	end if;
 	new.updated_at := statement_timestamp();
 	return new;

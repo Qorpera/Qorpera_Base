@@ -3,6 +3,7 @@ import {
 	ObjectDependency,
 	ObjectDependencyError,
 	ObjectLockConflict,
+	postgrestError,
 	postgrestErrorCode,
 	readBoundedObjectResponse,
 	unavailableStateFailure,
@@ -20,6 +21,8 @@ import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
+/** `qorpera_folder_object_collecting()`'s message (migration 20260928349860). */
+const FOLDER_OBJECT_COLLECTING = "Company folder object is being collected; retry";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -626,6 +629,7 @@ export class SupabaseObjectAuthority
 			{ p_profile_id: profileId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
+			"replication",
 		);
 		if (value !== true) throw new ObjectDependencyError(403);
 	}
@@ -732,14 +736,14 @@ export class SupabaseObjectAuthority
 	 * `"folder"`, a folder core byte RPC, also reads its 400s, with `folderStateFailure` (and 413). Profile,
 	 * replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication reconciler
 	 * blocks an object on any other refusal, and a profile read drops its member's read leases on one), so theirs
-	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone, and so is
-	 * the folder core's QRC01 409. */
+	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone.
+	 * `"replication"` is read the same way, and also reads folder GC's conflict as a lock conflict. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
-		companyState: boolean | "folder" = false,
+		companyState: boolean | "folder" | "replication" = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -756,15 +760,18 @@ export class SupabaseObjectAuthority
 				if (companyState === "folder" && (response.status === 500 || response.status === 400))
 					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
 				if (response.status === 500)
-					throw (companyState ? companyStateFailure : unavailableStateFailure)(
+					throw (companyState === true ? companyStateFailure : unavailableStateFailure)(
 						await postgrestErrorCode(response, signal),
 					);
-				// The folder core's conflict envelope (QRC01, 409): an object folder GC holds (C1D §9.7). To the
-				// replication reconciler it is a lock conflict, so a folder entry stays pending, not blocked.
-				if (response.status === 409 && !companyState)
-					throw (await postgrestErrorCode(response, signal)) === "QRC01"
+				// Replication meeting an object folder GC holds (C1D §9.7): the folder core's conflict envelope with its
+				// own message. To the reconciler it is a lock conflict, so the folder entry stays pending, not blocked.
+				// snapshot-v1's cleanup fence answers QRC01 too, with another message, and keeps its 409 (core §8 G3).
+				if (response.status === 409 && companyState === "replication") {
+					const error = await postgrestError(response, signal);
+					throw error.code === "QRC01" && error.message === FOLDER_OBJECT_COLLECTING
 						? new ObjectLockConflict()
 						: new ObjectDependencyError(409);
+				}
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}

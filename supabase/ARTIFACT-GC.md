@@ -85,7 +85,7 @@ Folder-v2 GC state, without object names:
 ```sql
 select (select enabled from public.qorpera_folder_gc_settings) as folder_phase_on,
 	count(*) filter (where lease_expires_at > now()) as marked,
-	count(*) filter (where lease_id is null and unreferenced_since < now() - interval '24 hours') as due
+	count(*) filter (where (lease_id is null or lease_expires_at <= now()) and unreferenced_since < now() - interval '24 hours') as due
 from public.qorpera_folder_object_gc;
 ```
 

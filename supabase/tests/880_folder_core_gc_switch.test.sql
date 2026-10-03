@@ -1,6 +1,6 @@
 -- Company folder core, C1d-2b (migration 20260930009000): the artifact GC worker's folder phase is switched off, and
 -- cannot be switched on while qorpera_verify_company_path_file accepts folder-v2 (C1D §9.3, "C5 early"). The read asks
--- again, so a later definition of that function without its folder-v2 branch turns the phase off. Each state of the
+-- again, so a later definition of that function without P10's marker turns the phase off. Each state of the
 -- function is made in a subtransaction that is rolled back.
 begin;
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
@@ -12,7 +12,7 @@ begin
 	if (select count(*) from public.qorpera_folder_gc_settings) <> 1 or (select enabled from public.qorpera_folder_gc_settings) then
 		raise exception 'The folder phase starts off, in one row'; end if;
 	if public.qorpera_folder_gc_enabled() then raise exception 'Off reads as off'; end if;
-	if public.qorpera_folder_gc_version1_refused() is distinct from (v_body ~ 'folder[-_]v2') then
+	if public.qorpera_folder_gc_version1_refused() is distinct from (strpos(v_body, 'folder-v2 refuses version 1') > 0) then
 		raise exception 'The guard reads the verify function as it is'; end if;
 	begin
 		update public.qorpera_folder_gc_settings set enabled = true;
@@ -36,12 +36,13 @@ begin
 		'as %L', pg_get_function_arguments(v_fn), pg_get_function_result(v_fn), p_body);
 end $$;
 
--- 2. While version 1 is accepted (no folder-v2 branch): switching on is refused, and a row set on behind the guard's
--- back reads as off.
+-- 2. While version 1 is accepted (no marker, even with a folder-v2 branch of another kind): switching on is refused, and
+-- a row set on behind the guard's back reads as off.
 do $$
 begin
 	begin
-		perform pg_temp.verify_as('begin raise exception ''version 1 accepted''; end');
+		perform pg_temp.verify_as('begin if public.qorpera_company_is_folder_v2(p_profile_id) then '
+			'raise notice ''folder-v2 chunk rows''; end if; end');
 		begin
 			update public.qorpera_folder_gc_settings set enabled = true;
 			raise exception 'Switched on while version 1 is accepted';
@@ -64,7 +65,7 @@ begin
 		begin
 			if v_case = 'refuses' then
 				perform pg_temp.verify_as('begin if public.qorpera_company_is_folder_v2(p_profile_id) then '
-					'raise exception ''folder-v2 refuses version 1'' using errcode = ''42501''; end if; end');
+					'raise exception ''Company file proof: folder-v2 refuses version 1'' using errcode = ''42501''; end if; end');
 			else
 				drop function public.qorpera_verify_company_path_file(uuid, text);
 			end if;

@@ -21,7 +21,7 @@
 
 ### Changed
 
-- The replication reconciler reads the folder core's conflict envelope (QRC01, 409) from `qorpera_authorize_profile_object_replication`, which an object folder GC holds answers, as a lock conflict: the entry stays pending instead of `blocked`, and the database circuit is left alone.
+- The replication reconciler reads folder GC's conflict (`qorpera_authorize_profile_object_replication` answering QRC01 409 with the folder core's "being collected" message, for an object folder GC holds) as a lock conflict: the entry stays pending instead of `blocked`, and the database circuit is left alone. snapshot-v1's cleanup fence, which also answers QRC01, keeps its 409, and no other RPC's answer changes.
 - The folder route answers the folder core's storage allowance refusal (23514, which PostgREST sends as 400) with 413, so the runtime can tell a full company from a failed request.
 
 ### Fixed

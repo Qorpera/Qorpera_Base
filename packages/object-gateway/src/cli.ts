@@ -90,10 +90,11 @@ if (process.argv[2] === "migrate") {
 		try {
 			await Promise.all([
 				authority.probeHealth(),
-				store.probe(),
-				// Folder GC's quarantine first, so a replicate entry the scan writes finds its object back in place.
-				folderGc
-					.recover()
+				// One after another, so the probe and the scan never take both NAS slots at once; folder GC's quarantine
+				// before the reconcile, so a replicate entry the scan writes finds its object back in place.
+				store
+					.probe()
+					.then(() => folderGc.recover())
 					.then(() => replication.reconcile()),
 				readLeases?.prune(),
 				companyBootstrap.provisionOne(),

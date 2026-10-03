@@ -53,6 +53,7 @@ export class ObjectGatewayFolderGc {
 	readonly #now: () => number;
 	#running = false;
 	#lastError = false;
+	#quarantineCursor: string | undefined;
 	#blockedCursor: string | undefined;
 
 	constructor(
@@ -125,7 +126,10 @@ export class ObjectGatewayFolderGc {
 
 	async #quarantined(limit: number): Promise<void> {
 		try {
-			for (const entry of await this.#store.listQuarantine(limit)) {
+			// From where the last scan stopped, so entries that stay (a live lease, a failure) never starve the rest.
+			const entries = await this.#store.listQuarantine(limit, this.#quarantineCursor);
+			this.#quarantineCursor = entries.length < limit ? undefined : entries.at(-1)?.name;
+			for (const entry of entries) {
 				try {
 					await this.#replication.exclusive(entry.profileId, entry.sha256, async () => {
 						// A lane of this object that held the lock meanwhile has settled the entry itself.
