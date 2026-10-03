@@ -1026,7 +1026,7 @@ and the machine-side session F3, on #408):
 **Owners from 2 October 2026** (the coordinator's plan). The sessions are
 named as in the bundle registry: F1 the storage core, F2 structured files, F3
 the folder on every machine, Q1 event intake, A1 company accounts, S3
-stateless compute, and the Interfaces session.
+identical nodes, and the Interfaces session.
 - **C1b-3b** (computer shell commands and test machines) is F3's, in the
   mount's build steps 4 and 6 (RUNTIME-COMPANY-FOLDER.md, "Build order"):
   light threads gives each shell command on the company machine its own
@@ -1038,11 +1038,12 @@ stateless compute, and the Interfaces session.
   machines) and F3 (the activation checks).
 - **C1d-2b and C1d-2c** (the gateway's GC lane, the worker's folder phase,
   bytes with no catalog row, a deleted company's leftovers) are F2's.
-- **C1, early:** F3 moves the old v1-proof fixtures to `folder-v2` staging,
-  makes `qorpera_verify_company_path_file` refuse `folder-v2`, and makes the
-  read actor refuse a company being deleted.
+- **C5 early** (C1D, "C5 early"): F3 moves the SQL test fixtures to version-2
+  staging and makes `qorpera_verify_company_path_file` refuse `folder-v2`. F3
+  also makes the read actor refuse a company being deleted for members and
+  the platform too (runs are refused already).
 - **C2:** F2, with the Interfaces session for the interface and table kinds.
-  F3 keeps conflict copies on receipts, with their GC root.
+  F3 builds conflict copies on receipts, with their GC root.
 - **C3:** F3 (the Company File tools), F2 (memory, skills, worker files), A1
   (the vault writes connection files) and S3 (the runner broker's substrate
   model for `folder-v2`).
@@ -1051,14 +1052,15 @@ stateless compute, and the Interfaces session.
   orchestrator), the Interfaces session (the web file page, history and
   editors) and F2 (human-task wakes, H2c).
 - **C5:** S3 (the rewrites of §10, the reset function), F3 (the folder service
-  #647 and #656 merged and deployed, and the core acceptance script), and the
-  coordinator with the Interfaces session (the proof company, the acceptance
-  and the switch).
+  #647 and #656 merged and deployed, and the core acceptance script), the
+  coordinator (the proof company and the acceptance) and the coordinator with
+  the Interfaces session (the switch).
 
 Before any `folder-v2` company exists, these must be fixed: #581's N1 (a join
 holds the fence before the invitee check), the read actor refusing a company
-being deleted, F1's six follow-ups on #613, and the vault's grant and secret
-order against Disconnect and share (#660's follow-up).
+being deleted, F1's six follow-ups on #613, and the vault's lock order on
+`folder-v2` (#660's follow-up: grants and secrets against Disconnect and
+share, and capture, rotation and seal against a member change).
 
 ### C2. Structured files, seeding and erasure
 
@@ -1077,9 +1079,9 @@ order against Disconnect and share (#660's follow-up).
   - R1 (#613) records the review of tool calls. The restricted hire is a card
     on that record (W4a, #621), not a parked proposal.
   - R2 reviews change sets that no tool call carried, and adds
-    `qorpera_folder_proposals`. Until it exists, agents change interfaces and
-    tables only with `save_interface`, which joins R1's tools ("interfaces",
-    item 7).
+    `qorpera_folder_proposals`. Until it exists, agents make the interface
+    and table changes that "interfaces" item 7 counts as delegation only with
+    `save_interface`, which joins R1's tools.
 - Erasure. "Work for people" item 3, still pending the founder's approval,
   would widen it from a deleted agent's folder to any deleted path (a
   contact's file too).
@@ -1146,9 +1148,9 @@ For `folder-v2` companies:
 **Core acceptance (C5).** On a new company:
 - the seeded tree exists, and creation wrote exactly one first-run wake;
 - agents read, list, search and write through change sets, and disjoint
-  writes never conflict. Search is `company_search` on the node's folder
-  service ("light threads", item 2), so the folder service is live before the
-  proof;
+  writes never conflict (search is `company_search` on the node's folder
+  service, "light threads" item 2, so the folder service is live before the
+  proof);
 - a same-path conflict keeps a conflict copy;
 - a move and a subtree delete work, and a subtree delete refuses a change it
   did not see;
