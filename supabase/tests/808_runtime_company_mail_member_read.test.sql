@@ -389,11 +389,18 @@ values ('30000000-0000-4000-8000-000000000010', (current_setting('qorpera_test.r
 	'call-card-3', '30000000-0000-4000-8000-000000000030', 'send_mail', 'external', repeat('a', 64),
 	'{"title":"Send an email","arguments":"{not json"}', 'ask', 'none', 'A person decides', 'reviewer-fixture',
 	'owners_admins');
+-- The conversation a card was raised in, where it is answered (20260930002660): the first card has one, the new email's
+-- card none.
+insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, audience_kind)
+values ('80800000-0000-4000-8000-0000000000c5', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000020',
+	'Agent', '30000000-0000-4000-8000-000000000001', 'company');
+update public.qorpera_action_reviews set card_session_id = '80800000-0000-4000-8000-0000000000c5'
+where id = current_setting('qorpera_test.card')::uuid;
 select pg_temp.member();
 select pg_temp.wake_assert(pg_temp.listed(current_setting('qorpera_test.quote_thread')) ->> 'state' = 'waiting',
 	'A thread with an open send is waiting');
 select pg_temp.wake_assert(detail -> 'waiting' = jsonb_build_array(jsonb_build_object('reviewId', current_setting('qorpera_test.card'),
-		'staffAgent', '{"staffAgentId":"30000000-0000-4000-8000-000000000030","name":"Agent"}'::jsonb,
+		'sessionId', '80800000-0000-4000-8000-0000000000c5', 'staffAgent', '{"staffAgentId":"30000000-0000-4000-8000-000000000030","name":"Agent"}'::jsonb,
 		'to', '["bob@acme.test"]'::jsonb, 'subject', 'Re: Your quote', 'text', 'Here it is.',
 		'createdAt', (select created_at from public.qorpera_action_reviews where id = current_setting('qorpera_test.card')::uuid))),
 	'The thread shows its waiting send: ' || (detail -> 'waiting')::text)
@@ -401,9 +408,48 @@ from (select pg_temp.thread(current_setting('qorpera_test.quote_thread')) as det
 select pg_temp.wake_assert(jsonb_array_length(waiting) = 2
 		and waiting #>> '{0,reviewId}' = current_setting('qorpera_test.card_new') and not waiting -> 0 ? 'thread'
 		and waiting #>> '{0,address}' = 'support@mail.example.test'
-		and waiting #>> '{1,thread}' = current_setting('qorpera_test.quote_thread'),
+		and waiting #>> '{1,thread}' = current_setting('qorpera_test.quote_thread')
+		and waiting #>> '{1,sessionId}' = '80800000-0000-4000-8000-0000000000c5' and not waiting -> 0 ? 'sessionId',
 	'Every open send, newest first, a new email without a thread: ' || waiting::text)
 from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
+-- Only a member who may answer a card gets its conversation (20260930002660): a contributor gets none for the owners'
+-- and admins' card; once the card waits for that contributor, the contributor gets it and the owner none; a card
+-- waiting for a viewer (who cannot write the conversation) names it to nobody.
+select pg_temp.path_claims('service_role');
+insert into auth.users(id, email) values ('80800000-0000-4000-8000-0000000000c6', 'mail-contributor@example.test');
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+values ('30000000-0000-4000-8000-000000000010', '80800000-0000-4000-8000-0000000000c6', 'mail-contributor@example.test',
+	'Contributor', 'contributor');
+select pg_temp.member('80800000-0000-4000-8000-0000000000c6');
+select pg_temp.wake_assert(jsonb_array_length(waiting) = 2 and not waiting -> 1 ? 'sessionId'
+		and not pg_temp.thread(current_setting('qorpera_test.quote_thread')) #> '{waiting,0}' ? 'sessionId',
+	'A contributor gets no conversation for the owners'' and admins'' card: ' || waiting::text)
+from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
+select pg_temp.path_claims('service_role');
+update public.qorpera_action_reviews set approver_scope = 'member', approver_user_id = '80800000-0000-4000-8000-0000000000c6'
+where id = current_setting('qorpera_test.card')::uuid;
+select pg_temp.member('80800000-0000-4000-8000-0000000000c6');
+select pg_temp.wake_assert(waiting #>> '{1,sessionId}' = '80800000-0000-4000-8000-0000000000c5'
+		and pg_temp.thread(current_setting('qorpera_test.quote_thread')) #>> '{waiting,0,sessionId}'
+			= '80800000-0000-4000-8000-0000000000c5',
+	'The member a card waits for gets its conversation: ' || waiting::text)
+from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
+select pg_temp.member();
+select pg_temp.wake_assert(not waiting -> 1 ? 'sessionId', 'The owner gets none for a card waiting for another member: '
+	|| waiting::text)
+from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
+select pg_temp.path_claims('service_role');
+update public.qorpera_action_reviews set approver_user_id = '30000000-0000-4000-8000-000000000003'
+where id = current_setting('qorpera_test.card')::uuid;
+select pg_temp.member('30000000-0000-4000-8000-000000000003');
+select pg_temp.wake_assert(jsonb_array_length(waiting) = 2 and not waiting -> 1 ? 'sessionId'
+		and not pg_temp.thread(current_setting('qorpera_test.quote_thread')) #> '{waiting,0}' ? 'sessionId',
+	'A viewer the card waits for cannot write its conversation and gets none: ' || waiting::text)
+from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
+select pg_temp.path_claims('service_role');
+update public.qorpera_action_reviews set approver_scope = 'owners_admins', approver_user_id = null
+where id = current_setting('qorpera_test.card')::uuid;
+select pg_temp.member();
 -- Another environment of the company sees none of this one's mail.
 insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 select '80800000-0000-4000-8000-000000000021', profile_id, 'Second', contract_version, created_by_user_id
@@ -571,8 +617,9 @@ select pg_temp.wake_assert((pg_temp.outbox(current_setting('qorpera_test.late_re
 	and (select count(*) = 3 and count(*) filter (where item -> 'textCleared' = 'true'::jsonb) = 2
 		and bool_or(item ->> 'subject' = 'Where is my order?')
 		from jsonb_array_elements(detail -> 'messages') as entry(item) where item ->> 'kind' = 'received')
-	and detail #>> '{waiting,0,reviewId}' = current_setting('qorpera_test.late_card'),
-	'After the purge the thread reads whole: ' || detail::text)
+	and detail #>> '{waiting,0,reviewId}' = current_setting('qorpera_test.late_card')
+	and not detail #> '{waiting,0}' ? 'sessionId',
+	'After the purge the thread reads whole (its card has no conversation): ' || detail::text)
 from (select pg_temp.thread(current_setting('qorpera_test.thread')) as detail) as answer;
 select pg_temp.wake_assert(pg_temp.listed(current_setting('qorpera_test.thread')) ->> 'state' = 'waiting'
 	and not pg_temp.listed(pg_temp.thread_of(current_setting('qorpera_test.code2')::uuid)) ? 'subject',

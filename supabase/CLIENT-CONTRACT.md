@@ -570,6 +570,22 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - The transcript entry shows the text as sent and carries the list as `qorperaQuotes`.
 - A desktop's `qorpera_claim_session_turn` answers `{claimed: false, reason: "quotes-need-a-cloud-run"}` while a
   quoted message waits: only a cloud run fences one.
+- A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
+  (`mentionFold`) folds each quote to its placeholder first.
+- Quotes are refused (22023) in a company whose runs can't fence them: an environment that is neither folder-v2 nor
+  on the company path (`20260930008000_member_draft_quotes`).
+- Room drafts keep their quotes: `qorpera_put_room_draft(p_room_id, p_owner_user_id, p_base_revision, p_body,
+  p_quotes?)` checks `p_quotes` as a message's quotes and stores them, and `qorpera.room-draft/v1` carries `quotes`
+  when the draft has any. Once a draft holds quotes, a save that keeps a quote's words without its record (in their
+  marks, at that place), or changes them, is refused (22023); removing a quote whole is an ordinary save, and the
+  member's own guillemets stay theirs.
+  - A client that knows quotes and has none left sends `p_quotes = []`, which the draft stores as none (only the
+    draft call takes an empty list). So removing the last quote and writing the member's own marks in one save is
+    ordinary.
+  - The server finds a kept quote by its words: own marks around the same words as a quote need that quote's record
+    too, so a composer records both or folds its own marks.
+  - A client that sends four arguments still reaches the function, but such a text-only save may bring no newly
+    marked words while the draft holds quotes.
 
 ### Computer hours (20260928248000_runtime_computer_hours_meter)
 
@@ -720,7 +736,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `qorpera_member_mail_waiting(p_environment_id)` and `qorpera_mark_mail_thread_read(p_environment_id, p_thread)`.
   Answers are camelCase JSON and empty while mail is off; a non-member gets 42501 and an unknown thread 22023. A
   thread id is 43 base64url characters. Account mail carries `account` (`{accountId, site, lastUsedBy, lastUsedAt}`, or `{unknown: true}` while the account lookup fails) and no subject, text, recipients or attachments. A waiting send is
-  answered through `qorpera_answer_action_review` with its `reviewId`.
+  answered through `qorpera_answer_action_review` with its `reviewId`. Since 20260930002660 a waiting send the member
+  may answer also carries `sessionId`, the card's conversation: the card waits for this member, or for owners and
+  admins and the member is one, and the member can write that conversation. Without `sessionId`, show the send without
+  a way to answer it. With it, the answer can still be refused (a closed conversation, a paused company, a folder-v2
+  card outside an agent thread); show that error.
 
 ### ChatGPT plan reads (20260928369970_runtime_chatgpt_plan_member_reads)
 
@@ -774,12 +794,13 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   `20260928000500_room_shared_drafts`): a room member's unsent message, which
   the room's other members see and edit live. Private broadcast channel, event
   `draft`, payload `qorpera.room-draft/v1` (`ownerUserId`, `body`, `revision`,
-  `editorUserId`, `contributors`, `updatedAt`). Members of the room receive it
+  `editorUserId`, `contributors`, `updatedAt`, and `quotes` when the draft has
+  any). Members of the room receive it
   (RLS on `realtime.messages` via `qorpera_can_share_room_draft`); nobody
   publishes: only `qorpera_put_room_draft` sends, through `realtime.send`, so a
   change always names the editor the token did. Lossy: `qorpera_list_room_drafts`
   re-reads, and a write from a stale revision returns the current draft.
-  `qorpera_put_room_draft(room, owner, base revision, body)` writes only from the
+  `qorpera_put_room_draft(room, owner, base revision, body, quotes?)` writes only from the
   current revision (0 starts the caller's own draft; only the owner starts one);
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
