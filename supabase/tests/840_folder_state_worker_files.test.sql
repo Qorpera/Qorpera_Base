@@ -10,7 +10,7 @@ create function pg_temp.f2_entry(p_path text, p_parse jsonb) returns jsonb langu
 $$;
 create function pg_temp.f2_version(p_path text) returns uuid language sql as $$
 	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020' and key_text = p_path
-		and kind <> 'claim'
+		and kind is distinct from 'claim'
 $$;
 -- A structured file's write, staged by the actor that commits it.
 create function pg_temp.f2_write(p_actor jsonb, p_path text, p_parse jsonb) returns jsonb language sql as $$
@@ -149,23 +149,23 @@ begin
 	r := pg_temp.wc(p, 'f2b-dispatch-0001', u, pg_temp.dispatch_request(f, b), pg_temp.reviewed(ada, 'f2b-call-0001', u));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	w := pg_temp.worker_row(f);
-	if w.id is distinct from '84000000-0000-4000-8000-000000000101'::uuid or w.state <> 'active' or w.sequence <> 1
-		or w.occurrence_id is not null or w.species <> 'in-house' or w.access <> 'write' or w.revival <> 'each' or w.worker_key <> 'price-check'
-		or w.title <> 'Compare suppliers' or w.staff_agent_id <> '84000000-0000-4000-8000-0000000000e1'
-		or w.requested_by_user_id <> '63400000-0000-4000-8000-000000000002' or w.steering_run_id <> (p ->> 'runId')::uuid
-		or w.todo_id <> (select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/call-the-bank.md')
-		or w.folder_path <> f or w.folder_brief_version is distinct from pg_temp.f2_version(f || '/brief.md')
-		or w.folder_results_version is not null or w.folder_commit_id <> (r ->> 'commitId')::uuid
+	if w.id is distinct from '84000000-0000-4000-8000-000000000101'::uuid or w.state is distinct from 'active' or w.sequence is distinct from 1
+		or w.occurrence_id is not null or w.species is distinct from 'in-house' or w.access is distinct from 'write' or w.revival is distinct from 'each' or w.worker_key is distinct from 'price-check'
+		or w.title is distinct from 'Compare suppliers' or w.staff_agent_id is distinct from '84000000-0000-4000-8000-0000000000e1'
+		or w.requested_by_user_id is distinct from '63400000-0000-4000-8000-000000000002' or w.steering_run_id is distinct from (p ->> 'runId')::uuid
+		or w.todo_id is distinct from (select id from public.qorpera_runtime_agent_todos where folder_path = 'agents/ada/todos/call-the-bank.md')
+		or w.folder_path is distinct from f or w.folder_brief_version is distinct from pg_temp.f2_version(f || '/brief.md')
+		or w.folder_results_version is not null or w.folder_commit_id is distinct from (r ->> 'commitId')::uuid
 		or w.dispatch is distinct from jsonb_build_object('goal','Find three suppliers.','definitionOfDone','Three suppliers with prices.',
 			'context','','sources','["agents/ada/todos/call-the-bank.md"]'::jsonb,'followUp',null)
 			|| public.qorpera_company_state_worker_standing('in-house','write','each') then
 		raise exception 'The dispatched row: %', to_jsonb(w); end if;
 	select * into e from public.qorpera_runtime_worker_events where worker_id = w.id;
-	if e.kind <> 'dispatched' or e.sequence <> 1 or e.run_id <> (p ->> 'runId')::uuid or e.body <> w.dispatch then
+	if e.kind is distinct from 'dispatched' or e.sequence is distinct from 1 or e.run_id is distinct from (p ->> 'runId')::uuid or e.body is distinct from w.dispatch then
 		raise exception 'The dispatched event: %', to_jsonb(e); end if;
 	-- The commit is the run's, under the review of the call.
-	if (select actor_kind from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid) <> 'staff_agent'
-		or (select run_id from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid) <> (p ->> 'runId')::uuid then
+	if (select actor_kind from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid) is distinct from 'staff_agent'
+		or (select run_id from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid) is distinct from (p ->> 'runId')::uuid then
 		raise exception 'The commit is the run''s'; end if;
 	-- The setting is cleared after the commit.
 	if public.qorpera_folder_worker_request() is not null then raise exception 'The request outlived its commit'; end if;
@@ -193,6 +193,18 @@ begin
 	perform set_config('qorpera.folder_worker', (pg_temp.dispatch_request(f, b) || jsonb_build_object('environmentId',
 		'63400000-0000-4000-8000-000000000020','runId',p ->> 'runId','operationKey','another-key-0001'))::text, true);
 	r := pg_temp.commit(p, 'f2b-forged-0001', u, pg_temp.reviewed(ada, 'f2b-call-0003', u));
+	perform set_config('qorpera.folder_worker', '', true);
+	perform pg_temp.refused(r, 1, 'does not belong to this change');
+	-- ... or another run, or another company.
+	perform set_config('qorpera.folder_worker', (pg_temp.dispatch_request(f, b) || jsonb_build_object('environmentId',
+		'63400000-0000-4000-8000-000000000020','runId',current_setting('qorpera_test.ben')::jsonb -> 'actor' ->> 'runId',
+		'operationKey','f2b-forged-0002'))::text, true);
+	r := pg_temp.commit(p, 'f2b-forged-0002', u, pg_temp.reviewed(ada, 'f2b-call-0003b', u));
+	perform set_config('qorpera.folder_worker', '', true);
+	perform pg_temp.refused(r, 1, 'does not belong to this change');
+	perform set_config('qorpera.folder_worker', (pg_temp.dispatch_request(f, b) || jsonb_build_object('environmentId',
+		'63400000-0000-4000-8000-0000000000ff','runId',p ->> 'runId','operationKey','f2b-forged-0003'))::text, true);
+	r := pg_temp.commit(p, 'f2b-forged-0003', u, pg_temp.reviewed(ada, 'f2b-call-0003c', u));
 	perform set_config('qorpera.folder_worker', '', true);
 	perform pg_temp.refused(r, 1, 'does not belong to this change');
 	-- A worker change that holds another unit: that unit is refused (a change set is not atomic, so the dispatch lands).
@@ -271,13 +283,16 @@ begin
 		pg_temp.results(p_files => jsonb_build_array(f || '/suppliers.md')))), q);
 	perform pg_temp.expect(r, 1, 'saved');
 	w := pg_temp.worker_row(f);
-	if w.state <> 'succeeded' or w.completion_state <> 'waiting' or w.reported_at is null
+	if w.state is distinct from 'succeeded' or w.completion_state is distinct from 'waiting' or w.reported_at is null
 		or w.folder_results_version is distinct from pg_temp.f2_version(f || '/results.md')
 		or w.result is distinct from jsonb_build_object('outcome','succeeded','summary','Done.','needs',null,
 			'outputs',jsonb_build_array(jsonb_build_object('path',f || '/suppliers.md')),'runId',(p ->> 'runId')::uuid,'sequence',1) then
 		raise exception 'The reported row: %', to_jsonb(w); end if;
-	if (select kind from public.qorpera_runtime_worker_events where worker_id = w.id order by created_at desc, id desc limit 1) <> 'reported' then
-		raise exception 'The reported event'; end if;
+	if (select kind from public.qorpera_runtime_worker_events where worker_id = w.id order by created_at desc, id desc limit 1)
+			is distinct from 'reported'
+		or (select body from public.qorpera_runtime_worker_events where worker_id = w.id order by created_at desc, id desc limit 1)
+			is distinct from w.result then
+		raise exception 'The reported event carries the report'; end if;
 	-- Once per sequence: the report ended the work.
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-report-0006', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
 		pg_temp.results())), q), 1, 'only the worker''s own run reports, while it works');
@@ -292,6 +307,13 @@ declare
 begin
 	perform pg_temp.expect(pg_temp.wc(ada -> 'actor', 'f2b-dispatch-0002', u, pg_temp.dispatch_request(f, b),
 		pg_temp.reviewed(ada, 'f2b-call-0012', u)), 1, 'saved');
+	-- Before its own run starts (no wake yet), nobody else reports for it: not the parent's run, not another worker's.
+	perform pg_temp.refused(pg_temp.wc(ada -> 'actor', 'f2b-early-0001', jsonb_build_array(pg_temp.f2_write(ada -> 'actor',
+		f || '/results.md', pg_temp.results())), q), 1, 'only the worker''s own run reports');
+	r := pg_temp.wc(current_setting('qorpera_test.price_check')::jsonb -> 'actor', 'f2b-early-0002', jsonb_build_array(
+		pg_temp.f2_write(current_setting('qorpera_test.price_check')::jsonb -> 'actor', f || '/results.md', pg_temp.results())), q);
+	if coalesce(r -> 'units' -> 0 ->> 'outcome', '') not in ('refused','denied') or pg_temp.f2_version(f || '/results.md') is not null then
+		raise exception 'Another worker''s run reported for this one: %', r; end if;
 	x := pg_temp.worker_run(ada, (pg_temp.worker_row(f)).id); p := x -> 'actor';
 	-- A plain write is denied to a read-only worker; so is a report that holds another unit.
 	perform pg_temp.expect(pg_temp.commit(p, 'f2b-reader-0001', jsonb_build_array(jsonb_build_object('op','write',
@@ -300,7 +322,7 @@ begin
 		jsonb_build_object('op','write','path',f || '/notes.md','file',pg_temp.stage('Notes.', p))), q);
 	perform pg_temp.refused(r, 2, 'holds only its own files');
 	perform pg_temp.expect(r, 1, 'saved');
-	if (pg_temp.worker_row(f)).state <> 'blocked' or (pg_temp.worker_row(f)).result ->> 'needs' <> 'A login.' then
+	if (pg_temp.worker_row(f)).state is distinct from 'blocked' or (pg_temp.worker_row(f)).result ->> 'needs' is distinct from 'A login.' then
 		raise exception 'The blocked report'; end if;
 end $$;
 
@@ -319,13 +341,18 @@ begin
 			where v.version = pg_temp.f2_version('agents/ada/todos/call-the-bank/reader/results.md')) || '{"decision":"accepted"}')),
 		jsonb_build_object('action','decide','folder','agents/ada/todos/call-the-bank/reader','decision','accepted','note',null)),
 		1, 'only a finished, successful result');
+	-- No report, no decision.
+	perform pg_temp.refused(pg_temp.wc(p, 'f2b-decide-0004', jsonb_build_array(pg_temp.f2_write(p,
+		'agents/ada/todos/call-the-bank/extra/results.md', base || '{"decision":"rejected"}')),
+		jsonb_build_object('action','decide','folder','agents/ada/todos/call-the-bank/extra','decision','rejected','note',null)),
+		1, 'without a report there is none');
 	r := pg_temp.wc(p, 'f2b-decide-0003', jsonb_build_array(pg_temp.f2_write(p, f || '/results.md',
 		base || '{"decision":"accepted","note":"Good sources."}')), jsonb_build_object('action','decide','folder',f,'decision','accepted',
 		'note','Good sources.'));
 	perform pg_temp.expect(r, 1, 'saved');
 	w := pg_temp.worker_row(f);
-	if w.acceptance <> 'accepted' or w.acceptance_note <> 'Good sources.' or w.accepted_by_run_id <> (p ->> 'runId')::uuid
-		or w.completion_state <> 'suppressed' or w.folder_results_version is distinct from pg_temp.f2_version(f || '/results.md') then
+	if w.acceptance is distinct from 'accepted' or w.acceptance_note is distinct from 'Good sources.' or w.accepted_by_run_id is distinct from (p ->> 'runId')::uuid
+		or w.completion_state is distinct from 'suppressed' or w.folder_results_version is distinct from pg_temp.f2_version(f || '/results.md') then
 		raise exception 'The decided row: %', to_jsonb(w); end if;
 end $$;
 
@@ -351,8 +378,8 @@ begin
 	r := pg_temp.wc(p, 'f2b-followup-0002', u, q, pg_temp.reviewed(ada, 'f2b-call-0014', u));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	w := pg_temp.worker_row(f);
-	if w.sequence <> 2 or w.state <> 'active' or w.result is not null or w.acceptance is not null or w.completion_state <> 'none'
-		or w.occurrence_id is not null or w.steering_run_id <> (p ->> 'runId')::uuid or w.dispatch ->> 'followUp' <> 'Add a fourth.'
+	if w.sequence is distinct from 2 or w.state is distinct from 'active' or w.result is not null or w.acceptance is not null or w.completion_state is distinct from 'none'
+		or w.occurrence_id is not null or w.steering_run_id is distinct from (p ->> 'runId')::uuid or w.dispatch ->> 'followUp' is distinct from 'Add a fourth.'
 		or w.folder_results_version is not null or w.folder_brief_version is distinct from pg_temp.f2_version(f || '/brief.md') then
 		raise exception 'The followed-up row: %', to_jsonb(w); end if;
 	-- At work again: a second follow-up waits for its report.
@@ -360,6 +387,19 @@ begin
 		next || jsonb_build_object('followUps', 2, 'followUp', 'More.'))), jsonb_build_object('action','followup','folder',f,'text','More.'),
 		pg_temp.reviewed(ada, 'f2b-call-0015', jsonb_build_array(pg_temp.f2_write(p, f || '/brief.md',
 			next || jsonb_build_object('followUps', 2, 'followUp', 'More.'))))), 1, 'still working');
+	-- A follow-up that keeps the old results.md: the row no longer points at it, so verify refuses the whole change set.
+	declare rb jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
+			where v.version = pg_temp.f2_version('agents/ada/todos/call-the-bank/reader/brief.md'));
+		ru jsonb;
+	begin
+		ru := jsonb_build_array(pg_temp.f2_write(p, 'agents/ada/todos/call-the-bank/reader/brief.md', rb || jsonb_build_object('followUps', 1,
+			'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Try again.')));
+		perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L, %L)', p, 'f2b-followup-0004', ru,
+			jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/reader','text','Try again.'),
+			pg_temp.reviewed(ada, 'f2b-call-0016', ru)), 'XX000');
+		if (pg_temp.worker_row('agents/ada/todos/call-the-bank/reader')).state is distinct from 'blocked' then
+			raise exception 'A refused follow-up changed the reader'; end if;
+	end;
 	-- A todo with a worker at work is not done.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'f2b-done-0001', jsonb_build_array(pg_temp.f2_todo(pg_temp.member(2),
 		'agents/ada/todos/call-the-bank.md', 'Call the bank', 'done'))), 1, 'refused', 'structured_rule');
@@ -370,7 +410,7 @@ do $$
 declare ada jsonb := current_setting('qorpera_test.ada')::jsonb; r jsonb;
 begin
 	r := public.qorpera_folder_agent_workers('63400000-0000-4000-8000-000000000020', ada -> 'actor', '{"todoKey":"call-the-bank"}');
-	if r ->> 'schema' <> 'qorpera.folder-agent-workers/v1' or jsonb_array_length(r -> 'workers') <> 3
+	if r ->> 'schema' is distinct from 'qorpera.folder-agent-workers/v1' or jsonb_array_length(r -> 'workers') is distinct from 3
 		or (select jsonb_agg(w ->> 'folder' order by w ->> 'folder') from jsonb_array_elements(r -> 'workers') w)
 			is distinct from '["agents/ada/todos/call-the-bank/extra","agents/ada/todos/call-the-bank/price-check","agents/ada/todos/call-the-bank/reader"]' then
 		raise exception 'Status: %', r; end if;
@@ -393,12 +433,25 @@ begin
 		'Looking at the todos.', 'progress');
 	r := public.qorpera_folder_cancel_agent_worker(ada -> 'binding', jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0001'));
 	w := pg_temp.worker_row(f);
-	if r ->> 'action' <> 'cancel' or w.state <> 'cancelled' or w.completion_state <> 'suppressed' or w.result ->> 'reason' <> 'parent_cancelled'
+	if r ->> 'action' is distinct from 'cancel' or w.state is distinct from 'cancelled' or w.completion_state is distinct from 'suppressed' or w.result ->> 'reason' is distinct from 'parent_cancelled'
 		or w.folder_results_version is not null or pg_temp.f2_version(f || '/results.md') is not null then
 		raise exception 'The cancelled row: %', to_jsonb(w); end if;
 	-- A replay answers the same; a cancelled in-house worker cannot continue.
-	if public.qorpera_folder_cancel_agent_worker(ada -> 'binding', jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0001')) <> r then
+	if public.qorpera_folder_cancel_agent_worker(ada -> 'binding', jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0001'))
+		is distinct from r then
 		raise exception 'The cancel replay'; end if;
+	declare cb jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v where v.version = pg_temp.f2_version(f || '/brief.md'));
+		cu jsonb;
+	begin
+		cu := jsonb_build_array(pg_temp.f2_write(ada -> 'actor', f || '/brief.md', cb || jsonb_build_object('followUps', 2,
+			'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Again.')));
+		perform pg_temp.refused(pg_temp.wc(ada -> 'actor', 'f2b-followup-0005', cu,
+			jsonb_build_object('action','followup','folder',f,'text','Again.'), pg_temp.reviewed(ada, 'f2b-call-0017', cu)),
+			1, 'cannot continue');
+	end;
+	-- A folder with no worker: nothing to cancel (never a retry).
+	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)', ada -> 'binding',
+		jsonb_build_object('folder', 'agents/ada/todos/call-the-bank/nobody', 'operationKey', 'f2b-cancel-0004')), 'P0002');
 	-- Ben's run cannot cancel Ada's worker.
 	perform pg_temp.raises(format('select public.qorpera_folder_cancel_agent_worker(%L, %L)', current_setting('qorpera_test.ben')::jsonb -> 'binding',
 		jsonb_build_object('folder', f, 'operationKey', 'f2b-cancel-0002')), '42501');
@@ -423,6 +476,19 @@ begin
 	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0005', jsonb_build_array(jsonb_build_object('op','move',
 		'from','agents/ada/todos/call-the-bank.md','to','agents/ada/todos/call-the-banks.md','expectedVersion',
 		pg_temp.f2_version('agents/ada/todos/call-the-bank.md')))), 1, 'this todo has workers');
+	-- Nothing arrives at a worker's place by a move or a copy, nor in a subtree that would put a folder there.
+	perform pg_temp.expect(pg_temp.commit(m, 'f2b-guard-0013', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/ada/drafts'),
+		jsonb_build_object('op','mkdir','path','stuff'), jsonb_build_object('op','mkdir','path','stuff/inside'))), 3, 'saved');
+	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0014', jsonb_build_array(jsonb_build_object('op','move',
+		'from','agents/ada/drafts','to','agents/ada/todos/call-the-bank/fake','expectedVersion',pg_temp.f2_version('agents/ada/drafts'),
+		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020')))),
+		1, 'made by manage_worker''s dispatch');
+	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0015', jsonb_build_array(jsonb_build_object('op','copy',
+		'from','agents/ada/drafts','to','agents/ada/todos/call-the-bank/fake'))), 1, 'made by manage_worker''s dispatch');
+	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0016', jsonb_build_array(jsonb_build_object('op','move',
+		'from','stuff','to','agents/ada/todos/fresh-todo','expectedVersion',pg_temp.f2_version('stuff'),
+		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020')))),
+		1, 'made by manage_worker''s dispatch');
 	-- A finished worker's folder goes, and retires its row; a restore brings it back whole, finished, with the same bytes.
 	w := pg_temp.worker_row(f);
 	r := pg_temp.commit(m, 'f2b-guard-0006', jsonb_build_array(jsonb_build_object('op','delete','path',f,
@@ -437,7 +503,7 @@ begin
 		1, 'only manage_worker and report_work');
 	r := pg_temp.commit(m, 'f2b-guard-0010', jsonb_build_array(pg_temp.restore(m, f, w, true)));
 	perform pg_temp.expect(r, 1, 'saved');
-	if (pg_temp.worker_row(f)).id is distinct from w.id or (pg_temp.worker_row(f)).state <> 'blocked'
+	if (pg_temp.worker_row(f)).id is distinct from w.id or (pg_temp.worker_row(f)).state is distinct from 'blocked'
 		or (pg_temp.worker_row(f)).folder_brief_version is distinct from pg_temp.f2_version(f || '/brief.md')
 		or (pg_temp.worker_row(f)).folder_results_version is distinct from pg_temp.f2_version(f || '/results.md') then
 		raise exception 'The restored row: %', to_jsonb(pg_temp.worker_row(f)); end if;
@@ -447,6 +513,11 @@ begin
 			where environment_id = '63400000-0000-4000-8000-000000000020')))), 1, 'still at work');
 	perform public.qorpera_folder_cancel_agent_worker(current_setting('qorpera_test.ada')::jsonb -> 'binding',
 		jsonb_build_object('folder', 'agents/ada/todos/call-the-bank/extra', 'operationKey', 'f2b-cancel-0003'));
+	-- Workers move only with their agent's whole folder: not with its todos folder, even when none is at work.
+	perform pg_temp.refused(pg_temp.commit(m, 'f2b-guard-0017', jsonb_build_array(jsonb_build_object('op','move',
+		'from','agents/ada/todos','to','stuff/todos','expectedVersion',pg_temp.f2_version('agents/ada/todos'),
+		'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020')))),
+		1, 'workers move only with their agent''s folder');
 	r := pg_temp.commit(m, 'f2b-guard-0012', jsonb_build_array(jsonb_build_object('op','move',
 		'from','agents/ada','to','agents/adele','expectedVersion',pg_temp.f2_version('agents/ada'),'asOfSeq',(select last_seq from public.qorpera_folder_clocks
 			where environment_id = '63400000-0000-4000-8000-000000000020'))));
@@ -454,7 +525,7 @@ begin
 	if (pg_temp.worker_row('agents/adele/todos/call-the-bank/reader')).id is distinct from w.id
 		or (pg_temp.worker_row('agents/adele/todos/call-the-bank/reader')).folder_brief_version
 			is distinct from pg_temp.f2_version('agents/adele/todos/call-the-bank/reader/brief.md')
-		or (pg_temp.worker_row('agents/adele/todos/call-the-bank/price-check')).folder_path <> 'agents/adele/todos/call-the-bank/price-check'
+		or (pg_temp.worker_row('agents/adele/todos/call-the-bank/price-check')).folder_path is distinct from 'agents/adele/todos/call-the-bank/price-check'
 		or exists (select 1 from public.qorpera_runtime_workers where folder_key like 'agents/ada/%' and folder_retired_at is null) then
 		raise exception 'The moved workers'; end if;
 end $$;
@@ -463,8 +534,8 @@ end $$;
 do $$
 declare b jsonb := pg_temp.brief('84000000-0000-4000-8000-000000000109'); v_n integer;
 begin
-	if jsonb_array_length(public.qorpera_company_state_parse_problems('worker-brief', b)) <> 0
-		or jsonb_array_length(public.qorpera_company_state_parse_problems('worker-results', pg_temp.results('blocked'))) <> 0 then
+	if jsonb_array_length(public.qorpera_company_state_parse_problems('worker-brief', b)) is distinct from 0
+		or jsonb_array_length(public.qorpera_company_state_parse_problems('worker-results', pg_temp.results('blocked'))) is distinct from 0 then
 		raise exception 'Good parses refused'; end if;
 	if jsonb_array_length(public.qorpera_company_state_parse_problems('worker-brief', b - 'goal')) = 0
 		or jsonb_array_length(public.qorpera_company_state_parse_problems('worker-brief', b || '{"followUps":1}')) = 0
@@ -488,7 +559,7 @@ begin
 		'qorpera_company_state_checked','qorpera_folder_structured_targets','qorpera_folder_structured_lock',
 		'qorpera_folder_structured_decide','qorpera_folder_structured_apply','qorpera_folder_structured_verify',
 		'qorpera_folder_structured_review_class','qorpera_folder_record_review','qorpera_folder_actor_resource_allowed');
-	if v_n <> 10 then raise exception 'The deploy guard''s markers: % of 10', v_n; end if;
+	if v_n is distinct from 10 then raise exception 'The deploy guard''s markers: % of 10', v_n; end if;
 	if not exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_folder_worker_commit' and scope = 'folder')
 		or not exists (select 1 from public.qorpera_native_host_calls where name = 'qorpera_folder_cancel_agent_worker' and scope = 'binding') then
 		raise exception 'The native host''s calls'; end if;

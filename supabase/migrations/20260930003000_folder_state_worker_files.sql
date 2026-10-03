@@ -31,8 +31,8 @@ do $$ begin
 		raise exception 'F2-5b-2 (20260930003000) is already applied'; end if;
 end $$;
 
--- 1. The index columns. Nullable and without defaults, so adding them rewrites nothing; the check is validated apart,
--- under a lock that leaves reads and writes alone.
+-- 1. The index columns. Nullable and without defaults, so adding them rewrites nothing. The table stays locked until
+-- this migration commits (the 3 s lock_timeout bounds only the wait for that lock).
 alter table public.qorpera_runtime_workers
 	add column folder_environment_id uuid,
 	add column folder_path text,
@@ -122,7 +122,8 @@ begin
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
--- 3. The guard, for every unit (§2, §3a): which units may touch a worker's folder and files. Returns a refusal or null.
+-- 3. The guard, for every unit the core's own checks let through (§2, §3a): which units may touch a worker's folder and
+-- files. Returns a refusal or null.
 create function public.qorpera_company_state_worker_paths(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_commit_id uuid, p_op text, p_key text, p_to_key text, p_unit jsonb, p_eff_path text)
 returns jsonb language plpgsql stable set search_path = '' as $$
@@ -148,8 +149,9 @@ begin
 					or (v_action = 'followup' and ((p_op = 'write' and p_key = v_folder || '/brief.md')
 						-- A change set is not atomic: the results go only after this commit's brief landed.
 						or (p_op = 'delete' and p_key = v_folder || '/results.md'
-							and (public.qorpera_company_state_worker_at(p_environment_id, v_folder)).folder_commit_id = p_commit_id)))
-					or (v_action in ('report','decide') and p_op = 'write' and p_key = v_folder || '/results.md')) then
+							and (public.qorpera_company_state_worker_at(p_environment_id, v_folder)).folder_commit_id is not distinct from p_commit_id)))
+					or (v_action in ('report','decide') and p_op = 'write' and p_key = v_folder || '/results.md'
+					and v_kind = 'worker-results')) then
 				v_problem := 'a worker''s change holds only its own files';
 			end if;
 		end if;
@@ -187,6 +189,19 @@ begin
 			v_problem := 'a worker''s folder moves only with its agent''s folder';
 		elsif p_op = 'move' and public.qorpera_company_state_workers_under(p_environment_id, p_key, true) then
 			v_problem := 'a worker here is still at work; cancel it first';
+		-- Only a whole agent's folder carries workers along (apply repoints their rows): anything else that holds workers
+		-- stays where it is.
+		elsif p_op = 'move' and p_key !~ '^agents/[^/]+$'
+			and public.qorpera_company_state_workers_under(p_environment_id, p_key, false) then
+			v_problem := 'workers move only with their agent''s folder';
+		-- Nothing arrives at a worker's place by a move or a copy: a folder there would have no worker row. An agent's folder
+		-- moved whole is the one exception, since its workers come with it.
+		elsif p_to_key is not null and not (p_op = 'move' and p_key ~ '^agents/[^/]+$' and p_to_key ~ '^agents/[^/]+$')
+			and exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
+				and e.kind = 'folder' and (e.key_text = p_key or e.key_text like public.qorpera_folder_under(p_key))
+				and public.qorpera_company_state_worker_folder(p_to_key || substr(e.key_text, char_length(p_key) + 1))
+					= p_to_key || substr(e.key_text, char_length(p_key) + 1)) then
+			v_problem := 'a worker''s folder is made by manage_worker''s dispatch';
 		elsif p_op = 'move' and ((v_kind = 'todo' and public.qorpera_company_state_workers_under(p_environment_id,
 					regexp_replace(p_key, '[.]md$', ''), false))
 				or (p_key ~ '^agents/[^/]+/todos/[^/]+$' and public.qorpera_company_state_workers_under(p_environment_id, p_key, false))) then
@@ -216,6 +231,8 @@ begin
 		-- Only a restore of a retired worker's files, byte for byte as its row records them.
 		if v_worker.id is null or v_worker.folder_retired_at is null
 			or p_file ->> 'fileSha256' is distinct from (select v.file_sha256 from public.qorpera_folder_path_versions v
+				where v.version = case when v_brief then v_worker.folder_brief_version else v_worker.folder_results_version end)
+			or p_parse is distinct from (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
 				where v.version = case when v_brief then v_worker.folder_brief_version else v_worker.folder_results_version end) then
 			v_problem := 'only manage_worker and report_work write a worker''s files';
 		end if;
@@ -250,8 +267,11 @@ begin
 			elsif p_parse ->> 'species' is distinct from 'in-house' then
 				v_problem := 'coding workers come to the company folder with coding machines';
 			elsif exists (select 1 from public.qorpera_runtime_workers w where w.id = (p_parse ->> 'id')::uuid
-				or (w.todo_id = v_todo.id and w.worker_key = split_part(v_folder, '/', 5))) then
+				or (w.todo_id = v_todo.id and w.worker_key = split_part(v_folder, '/', 5) and w.folder_retired_at is null)) then
 				v_problem := 'this worker already exists; steer it with a follow-up instead of a second dispatch';
+			elsif exists (select 1 from public.qorpera_runtime_workers w where w.todo_id = v_todo.id
+				and w.worker_key = split_part(v_folder, '/', 5)) then
+				v_problem := 'this worker name was used before in this todo; choose another';
 			elsif p_parse ->> 'title' is distinct from v_request ->> 'title' or p_parse ->> 'access' is distinct from v_request ->> 'access'
 				or p_parse ->> 'revival' is distinct from v_request ->> 'revival' or p_parse ->> 'goal' is distinct from v_request ->> 'goal'
 				or p_parse ->> 'doneWhen' is distinct from v_request ->> 'doneWhen'
@@ -294,8 +314,10 @@ begin
 			-- Once per sequence: the report ends the work. A results.md left from before a follow-up is overwritten.
 			if v_brief then
 				v_problem := 'a report writes the worker''s results';
-			elsif v_worker.state <> 'active' or v_worker.occurrence_id is distinct from (select w.id from public.qorpera_wake_occurrences w
-				where w.run_id = v_run.id and w.wake_kind = 'agent' and w.source_kind = 'worker-dispatch' and w.source_id = v_worker.id) then
+			-- The worker's own run: the wake that started this sequence is this run's (there is none before the drain starts it).
+			elsif v_worker.state <> 'active' or v_worker.occurrence_id is null or not exists (select 1
+				from public.qorpera_wake_occurrences w where w.id = v_worker.occurrence_id and w.run_id = v_run.id
+					and w.wake_kind = 'agent' and w.source_kind = 'worker-dispatch' and w.source_id = v_worker.id) then
 				v_problem := 'only the worker''s own run reports, while it works';
 			elsif p_parse ->> 'outcome' = 'cancelled' or jsonb_typeof(p_parse -> 'decision') is distinct from 'null' then
 				v_problem := 'a report is succeeded, blocked or failed, without a decision';
@@ -308,7 +330,7 @@ begin
 						join public.qorpera_folder_commits c on c.id = v.commit_id
 						where v.environment_id = p_environment_id
 							and v.key_sha256 = extensions.digest(public.qorpera_folder_key(v_file #>> '{}'), 'sha256')
-							and c.run_id = v_run.id) then
+							and v.kind = 'file' and v.op in ('write','move_in','copy') and c.run_id = v_run.id) then
 						v_problem := 'this run did not write ' || left(v_file #>> '{}', 100); exit;
 					end if;
 				end loop;
@@ -345,7 +367,7 @@ declare
 	v_request jsonb := public.qorpera_folder_worker_request(); v_action text := v_request ->> 'action';
 	v_folder_path text := regexp_replace(p_path, '/[^/]+$', ''); v_folder text; v_brief boolean := p_parse ->> 'kind' = 'worker-brief';
 	v_commit public.qorpera_folder_commits%rowtype; v_worker public.qorpera_runtime_workers%rowtype; v_dispatch jsonb;
-	v_todo uuid; v_count bigint;
+	v_todo uuid; v_count bigint; v_report jsonb;
 begin
 	v_folder := public.qorpera_folder_key(v_folder_path);
 	select * into v_commit from public.qorpera_folder_commits where id = p_commit_id;
@@ -376,7 +398,8 @@ begin
 		update public.qorpera_runtime_workers set sequence = sequence + 1, state = 'active', result = null, reported_at = null,
 			acceptance = null, acceptance_note = null, accepted_by_run_id = null, accepted_at = null, completion_state = 'none',
 			completion_occurrence_id = null, occurrence_id = null, dispatch = v_dispatch, steering_run_id = v_commit.run_id,
-			folder_brief_version = p_version, folder_commit_id = p_commit_id, updated_at = clock_timestamp()
+			folder_brief_version = p_version, folder_results_version = null, folder_commit_id = p_commit_id,
+			updated_at = clock_timestamp()
 		where id = v_worker.id and folder_retired_at is null and state <> 'active'
 		returning * into v_worker;
 		get diagnostics v_count = row_count;
@@ -384,23 +407,26 @@ begin
 		insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body)
 		values (v_worker.id, v_worker.sequence, 'followup', v_commit.run_id, jsonb_build_object('text', p_parse ->> 'followUp'));
 	elsif v_action = 'report' then
+		-- The report as today's: kept on the row and, whole, in its event (a followed-up worker reads its earlier reports there).
+		v_report := jsonb_build_object('outcome', p_parse ->> 'outcome', 'summary', p_parse ->> 'summary', 'needs', p_parse -> 'needs',
+			'outputs', coalesce((select jsonb_agg(jsonb_build_object('path', f #>> '{}')) from jsonb_array_elements(p_parse -> 'files') f),
+				'[]'::jsonb), 'runId', v_commit.run_id, 'sequence', v_worker.sequence);
 		update public.qorpera_runtime_workers set state = p_parse ->> 'outcome', reported_at = clock_timestamp(),
 			completion_state = 'waiting', updated_at = clock_timestamp(), folder_results_version = p_version,
-			folder_commit_id = p_commit_id,
-			result = jsonb_build_object('outcome', p_parse ->> 'outcome', 'summary', p_parse ->> 'summary', 'needs', p_parse -> 'needs',
-				'outputs', coalesce((select jsonb_agg(jsonb_build_object('path', f #>> '{}')) from jsonb_array_elements(p_parse -> 'files') f),
-					'[]'::jsonb), 'runId', v_commit.run_id, 'sequence', sequence)
+			folder_commit_id = p_commit_id, result = v_report
 		where id = v_worker.id and folder_retired_at is null and state = 'active';
 		get diagnostics v_count = row_count;
 		if v_count <> 1 then raise exception 'A worker''s report found no row at work' using errcode = 'XX000'; end if;
 		insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body)
-		values (v_worker.id, v_worker.sequence, 'reported', v_commit.run_id, jsonb_build_object('outcome', p_parse ->> 'outcome'));
+		values (v_worker.id, v_worker.sequence, 'reported', v_commit.run_id, v_report);
 	elsif v_action = 'decide' then
 		update public.qorpera_runtime_workers set acceptance = p_parse ->> 'decision', acceptance_note = p_parse ->> 'note',
 			accepted_by_run_id = v_commit.run_id, accepted_at = clock_timestamp(),
 			completion_state = case when completion_state = 'waiting' then 'suppressed' else completion_state end,
 			folder_results_version = p_version, folder_commit_id = p_commit_id, updated_at = clock_timestamp()
 		where id = v_worker.id and folder_retired_at is null;
+		get diagnostics v_count = row_count;
+		if v_count <> 1 then raise exception 'A worker''s decision found no row' using errcode = 'XX000'; end if;
 		insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body)
 		values (v_worker.id, v_worker.sequence, p_parse ->> 'decision', v_commit.run_id, jsonb_build_object('note', p_parse ->> 'note'));
 	else
@@ -410,6 +436,8 @@ begin
 			folder_results_version = case when v_brief then folder_results_version else p_version end,
 			folder_commit_id = p_commit_id, updated_at = clock_timestamp()
 		where id = v_worker.id;
+		get diagnostics v_count = row_count;
+		if v_count <> 1 then raise exception 'A worker''s restore found no row' using errcode = 'XX000'; end if;
 	end if;
 end $$;
 revoke all on function public.qorpera_company_state_index_worker(uuid, uuid, uuid, text, uuid, jsonb)
@@ -427,7 +455,8 @@ begin
 	if v_profile is null then return; end if;
 	v_key := public.qorpera_folder_key(case when v_op in ('move','copy') then p_unit ->> 'from' else p_unit ->> 'path' end);
 	if v_request is not null and jsonb_typeof(v_request -> 'folder') = 'string' then
-		-- A worker change: its worker, the todo it works on (or joins), and a new worker's claimed id.
+		-- A worker change: its worker, and the todo it works on (or joins). A new worker's id is locked only when a row of this
+		-- company already has it (the dispatch then refuses); a missing row locks nothing, and the primary key claims it.
 		v_folder := public.qorpera_folder_key(v_request ->> 'folder');
 		for v_row in select w.id, w.todo_id from public.qorpera_runtime_workers w
 			where w.folder_environment_id = p_environment_id and w.folder_key = v_folder and w.folder_retired_at is null loop
@@ -442,7 +471,10 @@ begin
 				then p_unit -> 'structured' else '[]'::jsonb end) e
 			where e.value ->> 'kind' = 'worker-brief' and coalesce(e.value -> 'parse' ->> 'id', '') ~ c_uuid loop
 			rank := 0; tbl := 'qorpera_profiles'; key := v_profile::text; mode := 'keyshare'; return next;
-			rank := 5; tbl := 'qorpera_runtime_workers'; key := v_entry -> 'parse' ->> 'id'; mode := 'nokeyupdate'; return next;
+			if exists (select 1 from public.qorpera_runtime_workers w where w.id = (v_entry -> 'parse' ->> 'id')::uuid
+				and w.profile_id = v_profile) then
+				rank := 5; tbl := 'qorpera_runtime_workers'; key := v_entry -> 'parse' ->> 'id'; mode := 'nokeyupdate'; return next;
+			end if;
 		end loop;
 	end if;
 	if v_op in ('write','new_folder') then
@@ -450,7 +482,8 @@ begin
 				then p_unit -> 'structured' else '[]'::jsonb end) e loop
 			-- A todo file's own row, which apply rewrites.
 			if v_entry ->> 'kind' = 'todo' and coalesce(v_entry -> 'parse' ->> 'id', '') ~ c_uuid then
-				for v_row in select t.id from public.qorpera_runtime_agent_todos t where t.id = (v_entry -> 'parse' ->> 'id')::uuid loop
+				for v_row in select t.id from public.qorpera_runtime_agent_todos t where t.id = (v_entry -> 'parse' ->> 'id')::uuid
+					and t.folder_environment_id = p_environment_id loop
 					rank := 5; tbl := 'qorpera_runtime_agent_todos'; key := v_row.id::text; mode := 'nokeyupdate'; return next;
 				end loop;
 			-- A worker file restored without a request: its worker and its todo.
@@ -467,7 +500,8 @@ begin
 		-- The todos and workers at or under the key, which apply retires or repoints.
 		for v_row in select t.id from public.qorpera_runtime_agent_todos t where t.folder_environment_id = p_environment_id
 			and t.folder_retired_at is null
-			and (t.folder_path = v_key collate "C" or (t.folder_path > (v_key || '/') collate "C" and t.folder_path < (v_key || '0') collate "C")) loop
+			and (public.qorpera_folder_key(t.folder_path) = v_key
+					or public.qorpera_folder_key(t.folder_path) like public.qorpera_folder_under(v_key)) loop
 			rank := 5; tbl := 'qorpera_runtime_agent_todos'; key := v_row.id::text; mode := 'nokeyupdate'; return next;
 		end loop;
 		for v_row in select w.id from public.qorpera_runtime_workers w where w.folder_environment_id = p_environment_id
@@ -489,7 +523,7 @@ select pg_temp.f25b_worker_files_replace('public.qorpera_company_state_parse_pro
 	$new$	end if;
 	-- 20260930003000 (F2-5b): a worker's brief and results (§1).
 	if p_kind = 'worker-brief' then
-		if (select array_agg(k order by k) from jsonb_object_keys(p_parse) k) is distinct from
+		if (select array_agg(k order by k collate "C") from jsonb_object_keys(p_parse) k) is distinct from
 			array['access','authority','cancellation','completion','context','dispatchedAt','doneWhen','followUp','followUps',
 				'followedUpAt','goal','id','kind','output','revival','sources','species','title'] then
 			v_bad := array_append(v_bad, 'keys'); end if;
@@ -525,7 +559,7 @@ select pg_temp.f25b_worker_files_replace('public.qorpera_company_state_parse_pro
 				<> jsonb_array_length(p_parse -> 'sources') then
 			v_bad := array_append(v_bad, 'sources'); end if;
 	elsif p_kind = 'worker-results' then
-		if (select array_agg(k order by k) from jsonb_object_keys(p_parse) k) is distinct from
+		if (select array_agg(k order by k collate "C") from jsonb_object_keys(p_parse) k) is distinct from
 			array['decision','files','kind','needs','note','outcome','reportedAt','summary'] then
 			v_bad := array_append(v_bad, 'keys'); end if;
 		if coalesce(p_parse ->> 'outcome', '') not in ('succeeded','blocked','failed','cancelled') then
@@ -707,7 +741,9 @@ $old$,
 	$new$	if p_actor ->> 'kind' is distinct from 'staff_agent' then return false; end if;
 	-- 20260930003000 (F2-5b): the worker's own report through report_work.
 	if p_permission = 'write' and public.qorpera_folder_worker_request() ->> 'action' = 'report'
-		and public.qorpera_folder_worker_request() ->> 'runId' = p_actor ->> 'runId' then return true; end if;
+		and public.qorpera_folder_worker_request() ->> 'runId' = p_actor ->> 'runId'
+		and (public.qorpera_run_worker((p_actor ->> 'runId')::uuid)).folder_key
+			= public.qorpera_folder_key(public.qorpera_folder_worker_request() ->> 'folder') then return true; end if;
 $new$);
 
 -- 8. The entry, cancel and status ---------------------------------------------------------------------------------
@@ -731,8 +767,10 @@ begin
 		when 'decide' then array['action','decision','folder','note']
 		when 'report' then array['action','folder'] end;
 	if jsonb_typeof(p_request) is distinct from 'object' or v_keys is null
-		or (select array_agg(k order by k) from jsonb_object_keys(p_request) k) is distinct from (select array_agg(k order by k) from unnest(v_keys) k)
+		or (select array_agg(k order by k collate "C") from jsonb_object_keys(p_request) k)
+			is distinct from (select array_agg(k order by k collate "C") from unnest(v_keys) k)
 		or jsonb_typeof(p_request -> 'folder') is distinct from 'string' or (p_request ->> 'folder') !~ c_path
+		or public.qorpera_company_state_worker_folder(p_request ->> 'folder') is distinct from (p_request ->> 'folder')
 		or (v_action = 'dispatch' and (jsonb_typeof(p_request -> 'title') <> 'string' or jsonb_typeof(p_request -> 'goal') <> 'string'
 			or jsonb_typeof(p_request -> 'doneWhen') <> 'string' or jsonb_typeof(p_request -> 'context') not in ('string','null')
 			or jsonb_typeof(p_request -> 'sources') <> 'array' or jsonb_typeof(p_request -> 'access') <> 'string'
@@ -761,9 +799,10 @@ declare
 	c_path constant text := '^agents/[a-z0-9]+(-[a-z0-9]+)*/todos/[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*$';
 begin
 	if jsonb_typeof(p_request) is distinct from 'object'
-		or (select array_agg(k order by k) from jsonb_object_keys(p_request) k) is distinct from array['folder','operationKey']
+		or (select array_agg(k order by k collate "C") from jsonb_object_keys(p_request) k) is distinct from array['folder','operationKey']
 		or coalesce(p_request ->> 'operationKey', '') !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$'
-		or coalesce(p_request ->> 'folder', '') !~ c_path then
+		or coalesce(p_request ->> 'folder', '') !~ c_path
+		or public.qorpera_company_state_worker_folder(p_request ->> 'folder') is distinct from (p_request ->> 'folder') then
 		raise exception 'Worker request is invalid' using errcode = '22023'; end if;
 	v_folder := p_request ->> 'folder';
 	-- The targets, from an unlocked read of the run's company and the worker.
@@ -789,6 +828,7 @@ begin
 	if v_tool -> 'resolved' -> 'audience' ->> 'kind' is distinct from 'company' or (public.qorpera_run_worker(v_run.id)).id is not null
 		or not exists (select 1 from public.qorpera_profile_staff s where s.profile_id = v_run.profile_id
 			and s.staff_agent_id = v_run.staff_agent_id and s.folder_environment_id = v_run.environment_id and s.folder_retired_at is null
+			and s.deleted_at is null
 			and public.qorpera_folder_key(public.qorpera_folder_parent_path(s.folder_path)) = array_to_string((string_to_array(v_folder, '/'))[1:2], '/')) then
 		raise exception 'Worker authority is unavailable' using errcode = '42501'; end if;
 	v_digest := encode(extensions.digest(convert_to(jsonb_build_object('schema', 'qorpera.folder-worker-cancel/v1',
@@ -798,6 +838,8 @@ begin
 	if v_begun ->> 'state' = 'completed' then return v_begun -> 'result'; end if;
 	if v_begun ->> 'receipt_id' is distinct from v_receipt_id::text or v_begun ->> 'state' is distinct from 'executing' then
 		raise exception 'Worker operation needs reconciliation' using errcode = '55000'; end if;
+	-- No worker at the folder: there is nothing to cancel (never a retry).
+	if v_worker.id is null then raise exception 'Worker is unavailable' using errcode = 'P0002'; end if;
 	-- Read again under the locks: the worker the targets named, still at its folder.
 	select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id;
 	if v_worker.id is null or v_worker.folder_retired_at is not null or v_worker.folder_environment_id <> v_run.environment_id
@@ -836,7 +878,8 @@ begin
 	v_folder := public.qorpera_company_state_run_folder(p_environment_id, v_staff, '{}'::uuid[]) ->> 'agent';
 	select * into v_todo from public.qorpera_runtime_agent_todos t where t.folder_environment_id = p_environment_id
 		and t.folder_retired_at is null and t.staff_agent_id = v_staff
-		and t.folder_path = ('agents/' || v_folder || '/todos/' || (p_request ->> 'todoKey') || '.md') collate "C";
+		and public.qorpera_folder_key(t.folder_path)
+			= public.qorpera_folder_key('agents/' || v_folder || '/todos/' || (p_request ->> 'todoKey') || '.md');
 	if v_folder is null or v_todo.id is null
 		or not public.qorpera_folder_actor_allowed(p_environment_id, v_profile, v_auth, v_todo.folder_path, 'read') then
 		raise exception 'Todo is unavailable' using errcode = 'P0002'; end if;

@@ -2,8 +2,8 @@
 -- Company state files, F2-5b-2 under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (F2-5b)" §5):
 -- a worker change holds its todo FOR SHARE and a todo save holds it FOR NO KEY UPDATE, so a dispatch and a todo's done
 -- wait for each other and the second reads what the first wrote. A dispatch behind a done meets a closed todo; a done
--- behind a dispatch meets a worker at work. Without the rank-5 locks both would read the old rows and save, leaving a
--- done todo with a worker at work. 648's committed fixture (Ada, her run f1 and its binding), removed at the end. Waits
+-- behind a dispatch meets a worker at work; a move of the agent's whole folder behind a dispatch meets the worker too.
+-- Without the rank-5 locks both would read the old rows and save, leaving a done todo with a worker at work. 648's committed fixture (Ada, her run f1 and its binding), removed at the end. Waits
 -- are detected with pg_blocking_pids, never by wall-clock time.
 
 create function pg_temp.member() returns jsonb language sql as $$
@@ -73,9 +73,10 @@ update public.qorpera_provider_connection_versions set allow_autonomous = true w
 update public.qorpera_execution_sponsor_versions set allow_autonomous = true where binding_id = '64800000-0000-4000-8000-0000000000b1';
 set session_replication_role = origin;
 
--- Two open todos of Ada's, committed.
+-- Three open todos of Ada's, committed.
 select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'f2b-race-todos', jsonb_build_array(
-	pg_temp.todo('agents/ada/todos/race-one.md', 'open'), pg_temp.todo('agents/ada/todos/race-two.md', 'open'))), 2, 'saved') \g /dev/null
+	pg_temp.todo('agents/ada/todos/race-one.md', 'open'), pg_temp.todo('agents/ada/todos/race-two.md', 'open'),
+	pg_temp.todo('agents/ada/todos/race-three.md', 'open'))), 3, 'saved') \g /dev/null
 
 -- Each race's staged files, its done and its recorded review, committed before the block that drives the fences: a
 -- row this session wrote and has not committed would make the other sessions wait on it while it waits on them.
@@ -95,6 +96,11 @@ select set_config('qorpera_test.r2', pg_temp.reviewed('f2b-race-call-2', current
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u2')::jsonb) \g /dev/null
 select set_config('qorpera_test.d2', jsonb_build_array(pg_temp.todo('agents/ada/todos/race-two.md', 'done'))::text, false) \g /dev/null
 select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.d2')::jsonb) \g /dev/null
+select set_config('qorpera_test.b3', pg_temp.brief('84100000-0000-4000-8000-000000000103')::text, false) \g /dev/null
+select set_config('qorpera_test.u3', pg_temp.dispatch('agents/ada/todos/race-three/worker', current_setting('qorpera_test.b3')::jsonb)::text,
+	false) \g /dev/null
+select set_config('qorpera_test.r3', pg_temp.reviewed('f2b-race-call-3', current_setting('qorpera_test.u3')::jsonb)::text, false) \g /dev/null
+select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.ada(), current_setting('qorpera_test.u3')::jsonb) \g /dev/null
 
 -- A. A done holds the todo; a dispatch on it waits at the todo's row, then meets a closed todo -------------------------
 do $$
@@ -116,6 +122,38 @@ begin
 		raise exception 'A dispatch behind a done: %', r; end if;
 	if exists (select 1 from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000101') then
 		raise exception 'A done todo has a worker'; end if;
+end $$;
+
+-- C. A dispatch holds its todo; a member's move of the agent's whole folder waits at the todo, then meets the new worker at
+-- work and is refused (it never carries a worker it did not see) --------------------------------------------------------
+select set_config('qorpera_test.mv', jsonb_build_array(jsonb_build_object('op','move','from','agents/ada','to','agents/adele',
+	'expectedVersion',(select version from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020'
+		and key_text = 'agents/ada'),
+	'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
+	false) \g /dev/null
+do $$
+declare
+	f text := 'agents/ada/todos/race-three/worker'; b jsonb := current_setting('qorpera_test.b3')::jsonb;
+	u jsonb := current_setting('qorpera_test.u3')::jsonb; v_review uuid := current_setting('qorpera_test.r3')::uuid;
+	mv jsonb := current_setting('qorpera_test.mv')::jsonb; r jsonb;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_dispatch('f2b-race-dispatch-3', f, b, u, v_review)) as t(x text));
+	perform pg_temp.expect(r, 2, 'saved');
+	perform dblink_send_query('fence_two', pg_temp.sql_done('f2b-race-move-3', mv));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'An agent''s folder move must wait for a dispatch in it'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	r := pg_temp.result('fence_two')::jsonb;
+	-- Refused by the guard (a worker at work), or by the core first (a change under the folder after the move's asOfSeq).
+	if not ((r -> 'units' -> 0 ->> 'outcome' = 'refused'
+			and coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') like 'a worker here is still at work%')
+		or (r -> 'units' -> 0 ->> 'outcome' = 'conflict' and r -> 'units' -> 0 ->> 'reason' = 'unseen_change')) then
+		raise exception 'A move behind a dispatch: %', r; end if;
+	if (select folder_key from public.qorpera_runtime_workers where id = '84100000-0000-4000-8000-000000000103')
+			is distinct from 'agents/ada/todos/race-three/worker'
+		or exists (select 1 from public.qorpera_folder_entries where environment_id = '64800000-0000-4000-8000-000000000020'
+			and key_text = 'agents/adele') then
+		raise exception 'The agent''s folder moved with a worker it did not see'; end if;
 end $$;
 
 -- B. A dispatch holds the todo; a done of it waits, then meets the worker at work ----------------------------------------
