@@ -115,9 +115,18 @@ begin
 			E'  and not exists (select 1 from public.qorpera_execution_runs parent\n'
 			|| E'   where parent.id = qorpera_runtime_office_start_waiters.parent_run_id and public.qorpera_company_is_folder_v2(parent.profile_id))\n',
 			'')) <> '84d0aeb8230aac17df23f3135f59eb4d'
-		or md5(replace(pg_get_functiondef('public.qorpera_drain_worker_wakes(integer)'::regprocedure),
+		-- Gap 4b (20260930002800) adds the member_stopped reason; reversed beside this slice's line.
+		or md5(replace(replace(replace(pg_get_functiondef('public.qorpera_drain_worker_wakes(integer)'::regprocedure),
 			E'where (state = ''active'' or completion_state = ''waiting'')\n\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n',
-			E'where state = ''active'' or completion_state = ''waiting''\n')) <> '5c07d21a200ca25b3c287d333d9657c3'
+			E'where state = ''active'' or completion_state = ''waiting''\n'),
+			E'''reason'', case when public.qorpera_worker_run_member_stopped(v_worker.occurrence_id)\n'
+			|| E'\t\t\t\t\t\t\t\t\tthen ''member_stopped'' -- gap 4b (20260930002800)\n'
+			|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
+			E'''reason'', case when v_wake_status'),
+			E'''summary'', case when public.qorpera_worker_run_member_stopped(v_worker.occurrence_id)\n'
+			|| E'\t\t\t\t\t\t\t\t\tthen ''A member stopped the background work.'' -- gap 4b (20260930002800)\n'
+			|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
+			E'''summary'', case when v_wake_status')) <> '5c07d21a200ca25b3c287d333d9657c3'
 		or md5(replace(pg_get_functiondef('public.qorpera_drain_machine_wakes(integer)'::regprocedure),
 			E'\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '321660ab090981a2d9c00a465fcee245'
 		or md5(replace(pg_get_functiondef('public.qorpera_drain_company_file_wakes_before_lifecycle(integer)'::regprocedure),
