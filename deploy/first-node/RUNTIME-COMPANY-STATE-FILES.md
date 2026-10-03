@@ -1707,6 +1707,145 @@ do not overlap. SQL test 801 (on 704's fixture): the platform saves a website fi
 member changes only its text (and an old gmail file's text, whose shape is unchanged), the shapes, and which rule
 each refusal names; 13 of 13 mutants caught (the review's two survivors included).
 
+**Plan (F2-5b): worker briefs and results on the folder core** (core C3; the coordinator's slice P21 of
+2 October). On a `folder-v2` company, `manage_worker` and `report_work` work again, and a worker's brief and
+results are the two files of §2. In-house workers only: coding workers on `folder-v2` wait for their machines
+(C1c-3h and 3i), and their dispatch refuses `0A000` until then.
+
+What exists (inventory of 3 October, master 041ad1c15):
+- A worker is a row, `qorpera_runtime_workers`, with its follow-ups in `qorpera_runtime_worker_events`. The
+  row holds the brief (`dispatch`), the result, the decision and the runtime state (state, sequence, epoch,
+  the wake, revival). Nothing writes `brief.md` or `results.md` today.
+- Every worker writer (`qorpera_manage_agent_worker`, `qorpera_report_worker_result`) goes through the
+  old actor, which refuses `folder-v2` (55000). `manage_worker` is still offered to `folder-v2` runs.
+- The worker drain (dispatch failures, revival) skips `folder-v2` companies, and so does the wake
+  materializer, until C4 gives `folder-v2` real runs (P28).
+- The hook knows the two kinds by path and checks their names, and nothing else: anyone who may write
+  the agent's folder can save a `brief.md`, and a worker folder can be deleted or moved under a running
+  worker.
+- F2-5a refuses `done` on a todo while a worker is active, but nothing locks the todo row, so a dispatch
+  can race it.
+- A commit carries a run's receipt and review only when the run is its actor; the platform actor carries
+  neither. The run's receipt and review rows are locked inside the commit (after rank 9), so a tool call's
+  effect cannot wrap a platform commit without breaking the lock order.
+
+**1. The files are the worker's brief and its report.**
+- `brief.md` is the source of the dispatch: title, species, access, revival, the instant, and the body (goal,
+  what done is, context, sources, then the standing texts on authority, output, cancellation and
+  completion). A follow-up appends `## Follow-up <n>` with its instant and text, so the brief keeps the
+  whole history, as the events table does today. It stays within 32 KiB: a follow-up that would pass it is
+  refused ("this worker's brief is full; dispatch a new worker").
+- `results.md` is the worker's report: `outcome` (succeeded, blocked or failed), `reported_at`, and the body
+  (the summary, then `## Needs` when blocked, then `## Files` listing what it made). The parent's decision
+  rewrites it with `decision` and `note`. A follow-up removes it, and the next report writes it again (the
+  folder's history keeps every earlier report).
+- Outcomes the platform decides without a report stay runtime state in the row and write no file: a
+  cancel, a worker that ended or never started without reporting, a stopped parent. `cancelled` stays a
+  valid value in the parser but no writer writes it.
+- The parser gains the body's parts: the results parse adds `summary`, `needs` and `files` (each line of
+  `## Files` a folder path), read from the body as a human task's `steps` are. The brief parse adds
+  `followUps` (their count). `writeWorkerBriefFile` and `writeWorkerResultsFile` build the bodies, and
+  `appendWorkerFollowUp` adds one.
+- On `folder-v2` a worker key and a todo key follow the folder naming rule (§1 "Names"), stricter than
+  today's key rule (no `.`, `_` or `--`): the worker's folder is named by its key.
+
+**2. Who writes them.** Contract 13: "The platform writes the brief when the worker is dispatched and the
+results when it reports … including coding workers, whose view of `agents/` is read-only." Here the platform
+is the worker tools, never the model's file tools and never a member:
+- One entry, `qorpera_folder_worker_commit(environment, actor, operationKey, units, request, receipt,
+  review)` (service role and the native host), carries the tool's request into the commit: it checks the
+  request's shape, sets a transaction setting with it, calls `qorpera_folder_commit`, and clears it. The
+  commit's actor is the run, so the commit carries the tool call's receipt and review in their places, and
+  the history shows which run dispatched or reported.
+- The hook refuses every unit on a worker file or folder (write, delete, move, copy, a subtree delete or
+  move that holds one) that no carried request names, and every other unit in a commit that carries one.
+  Two exceptions, without a request: a whole agent folder's move carries its worker files along (their
+  index rows are repointed), and a delete of a todo's folder or an agent's folder retires its workers'
+  rows; both only when none of those workers is active.
+- The read-only worker's write ban (C1b-3a, `qorpera_folder_actor_resource_allowed`) lets through exactly
+  one write: a carried `report` by that worker's own run. The hook then allows only its own `results.md`.
+- The commit's actor is the run, not `platform {}`, because the tool call's receipt and review must be
+  locked inside the commit. The files are still the platform's in the contract's sense: only these tools
+  write them, and a read-only view does not stop a report. A coding worker's report comes from its
+  executor, with no run, and becomes a platform commit when coding reaches `folder-v2`.
+
+**3. The actions** (the units, and the hook's rules from the carried request and the locked rows):
+- `dispatch`, by the todo owner's own company run, never a worker's: the todo's folder (`mkdir`, when it is
+  missing), then `new_folder <todo>/<worker>` holding `brief.md`. The todo is open or blocked and not
+  retired; the worker key is free in that todo; the brief's `id` is new (the runtime derives it from the
+  run and the operation key, as hiring does); the brief agrees with the request (title, access, revival,
+  `in-house`); `dispatched_at` is within five minutes of the commit; and the member who started the chain
+  pays for background work (today's check). Review: delegation.
+- `followup`, by the same agent's company run: `write brief.md` at its version, the same settings and the
+  old body followed by one new follow-up; and `delete results.md` at its version when it exists. The
+  worker is not active, and an in-house worker that was cancelled cannot continue. Review: delegation.
+- `report`, by the worker's own run (its wake's worker, at the worker's current sequence): `write
+  results.md` while the worker is active, with an outcome other than `cancelled` and no decision. Plain.
+- `decide`, by the agent's company run: `write results.md` at its version with only `decision` and `note`
+  changed; `accepted` only when the outcome is `succeeded`. Plain.
+- `cancel`: no file. A folder run effect, like a coworker message: `qorpera_folder_tool_run` with the todo
+  and the worker at rank 5, then the receipt and today's cancel on the row (its queued wake cancelled).
+- `status`: a plain read of the rows, as W1's todo list; it reads no file.
+- `archive` is for coding sessions and refuses on `folder-v2` with them.
+
+**4. The index.** The row stays the worker's index and keeps its runtime state. On `folder-v2` the hook
+writes it in the same transaction as the files:
+- dispatch: the row (id from the brief; `dispatch` from the brief's parse; `occurrence_id` empty), the
+  `dispatched` event, the todo's revision;
+- followup: the sequence, `active`, the result and decision cleared, `occurrence_id` empty, the event;
+- report: the state, `result` from the parse (summary, needs, files, the run, the sequence),
+  `reported_at`, `completion_state = waiting`, the event;
+- decide: the acceptance columns, a waiting completion suppressed, the event.
+New columns on the row, as the roster's: `folder_environment_id`, `folder_path` (the worker's folder),
+`folder_brief_version`, `folder_results_version`, `folder_commit_id` and `folder_retired_at`. A retired
+row keeps its history; runs that reference it keep working. The check step (core §3 step 9) confirms the
+versions point at the current files.
+
+**5. Locks.** Rank 5 gains two tables, after the routines: `qorpera_runtime_agent_todos`, then
+`qorpera_runtime_workers`, by id.
+- A worker commit takes its todo and its worker `FOR NO KEY UPDATE` (a new worker's row is inserted with a
+  claimed id).
+- A todo save that closes, deletes or moves its todo, and a delete or move of a folder holding todos,
+  takes those todos `FOR NO KEY UPDATE`, and the workers it retires or repoints too. Every change to a
+  worker's state (a worker commit, cancel, the drain) holds its todo the same way, so F2-5a's "no `done`
+  while a worker is active" holds against a dispatch. This patches F2-6's targets, with a body marker.
+- No company-wide lock, and no new lock outside rank 5.
+
+**6. Wakes: the folder-v2 worker drain.** The commit never inserts a wake (admission is the last lock
+before the folder clock, core §3 step 10). A dispatch or follow-up leaves its row active with no
+occurrence, and the drain starts it.
+- `qorpera_folder_drain_worker_wakes(environment, limit)`: one company per transaction. The fence `KEY
+  SHARE` and the pause read again; the due workers' todos and workers at rank 5; the parent's agent row;
+  admission; then the wakes. It does today's drain work in `folder-v2` form: the dispatch wake of a row
+  with none; a worker that ended or never started without a report becomes failed; a stopped parent
+  cancels its workers; and revival, with today's rules (`each`, `batch`, at most four results, one revival
+  of a parent at a time).
+- `qorpera_folder_worker_wakes_due()` lists the companies with due work, for the caller's loop.
+- Nothing calls them until C4's `folder-v2` materializer (P28), so a worker dispatched before then waits
+  in its row. C1C §6.1 left the owner of this drain to C1c-3f/3j; F2 proposes to build it here, since it is
+  worker semantics.
+
+**7. The runtime.**
+- `manage_worker` on `folder-v2`: dispatch, follow-up and decide build the files with the shared writers,
+  stage them, and commit through the entry under the call's receipt (and, for dispatch and follow-up, the
+  automatic review's record). Cancel and status call their functions. Review: dispatch and follow-up stay
+  delegation; the review recorder (R1) accepts `manage_worker` for them.
+- `report_work` on `folder-v2` writes `results.md` the same way, under the worker run's receipt.
+- The wake shapes gain `folder-v2` paths: the dispatch's output folder is the worker's folder, and its
+  todo path is the todo file. A write worker still writes where its agent may (the brief's authority
+  text); this plan does not confine it to its folder.
+
+**PRs, in this order:**
+- **F2-5b-1, the parser** (`packages/cloud-client`, no SQL): the parts of §1, the writers and the key rule.
+  Live on every writer before F2-5b-2.
+- **F2-5b-2, the database** (migration 20260930NNNNNN): the hook (shape, rules, index, locks), the commit
+  entry, cancel, status, the write-ban exception, the new columns, R1's tool. SQL tests, and a race test
+  of dispatch against `done`.
+- **F2-5b-3, the drain** (its own migration): §6, with its tests.
+- **F2-5b-4, the runtime** (TS): §7.
+
+Open for the coordinator: who owns the `folder-v2` worker drain (§6), and whether P28 calls it.
+
 ## 9. The seeded tree
 
 `companyStateSeedTree({companyName, cofounderId, vision?, founders?, firstTodo?})` lists what a new
