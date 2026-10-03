@@ -1,5 +1,5 @@
 -- Company folder core, C1c-3k part 1 (the coordinator's audit P06b): the Company Computer's screens, restarts and
--- power-off on the folder fence (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.9; plan
+-- power-off on the folder fence (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.11; plan
 -- outputs/company-accounts/p06-office-folder-v2-plan.md). Builds on C1c-3j (20260930012000).
 --
 -- Folder-v2 only (the founder's decision of 3 October): each patch is a folder-v2 branch, and the statement that was
