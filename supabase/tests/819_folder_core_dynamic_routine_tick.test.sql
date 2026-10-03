@@ -120,19 +120,24 @@ end $$;
 -- 5. A run the kernel refuses for want of authority (the agent archived): no run, no admission; the routine is suspended
 -- and its member told once.
 do $$
-declare v_routine uuid := pg_temp.routine('agent'); v_admitted bigint;
+declare v_routine uuid := pg_temp.routine('agent'); v_admitted bigint; v_result jsonb;
 begin
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.fx($f$update public.qorpera_profile_staff set employment_status = 'archived'
 		where profile_id = '63400000-0000-4000-8000-000000000010' and staff_agent_id = '63400000-0000-4000-8000-0000000000a1'$f$);
 	select admitted into v_admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010';
-	if pg_temp.restore(v_routine) ->> 'status' <> 'suspended'
+	v_result := pg_temp.restore(v_routine);
+	if v_result ->> 'status' <> 'suspended'
 		or exists (select 1 from public.qorpera_wake_occurrences where routine_id = v_routine)
 		or (select admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010')
 			<> v_admitted
 		or (select status || '/' || pause_reason from public.qorpera_cloud_routines where id = v_routine) <> 'paused/authorization_failed'
 		or (select count(*) from public.qorpera_member_notifications where dedupe_key = 'routine:' || v_routine::text) <> 1 then
-		raise exception 'A refused run suspends its routine and tells its member'; end if;
+		raise exception 'A refused run suspends its routine and tells its member: % / % / % / %', v_result,
+			(select status || '/' || coalesce(pause_reason, '') from public.qorpera_cloud_routines where id = v_routine),
+			(select count(*) from public.qorpera_member_notifications where dedupe_key = 'routine:' || v_routine::text),
+			(select admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010')
+				- v_admitted; end if;
 	perform pg_temp.fx($f$update public.qorpera_profile_staff set employment_status = 'active'
 		where profile_id = '63400000-0000-4000-8000-000000000010' and staff_agent_id = '63400000-0000-4000-8000-0000000000a1'$f$);
 end $$;
