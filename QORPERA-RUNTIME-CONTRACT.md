@@ -4552,7 +4552,10 @@ while Azure backup/overflow remains disabled.
 1. One always-on cloud Company File remains readable and mutable through its
    service while every member application and Company Computer is stopped.
 2. Two human members with separate identities, permissions, private paths, and
-   provider sponsors work over that same company without scope leakage.
+   provider sponsors work over that same company without scope leakage. On the
+   company folder (`folder-v2`), private paths are folders shared with only
+   some agents (the 2026-10-02 amendment "light threads", item 4; decided
+   3 October 2026): it has no `members/` folder.
 3. Creating a company atomically seeds its Company File schema, one Co-Founder
    agent, synchronized enforcement projections, and one silent first-run wake.
 4. Creating an agent seeds exactly one startup wake, creates no template
