@@ -541,10 +541,8 @@ order go away.
 ### Explicit resources and bases
 
 Every basis becomes an explicit resource or named basis, seeded when the
-company or member is created:
+company is created:
 - the root, with the default agent read/write grant (2026-09-26);
-- on `snapshot-v1` only, `members/<id>/private`, which is an implicit rule
-  there. `folder-v2` has no `members/` folder (open question 3);
 - `rules/`: owners and admins write it, every member and agent reads it;
 - the code rules, each becoming a named basis that follows the agent's folder
   by `id`:
@@ -553,6 +551,9 @@ company or member is created:
   - the hiring rule, whose create-only basis is the precondition "absent";
 - **by session kind:** in a coding session, `agents/**` and `rules/**` are
   read-only (contract 5.6).
+
+`snapshot-v1`'s implicit `members/<id>/private` rule is not carried over:
+`folder-v2` has no `members/` folder (open question 3).
 
 ### Review in SQL
 
@@ -849,10 +850,12 @@ company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 ### Erasure
 
 Permanent erasure (contract 5.6) is an owner or admin operation on a deleted
-agent's folder. It removes that folder's path versions and the conflict copies
-of its paths, clears the retired index rows' pointers to them, and marks the
-commits' units erased, keeping their attribution. The bytes then lose their roots, and
-GC collects them.
+path: a deleted agent's folder, or any other deleted path, such as a contact's
+file (contract, the 2026-10-02 amendment "work for people", item 3). It
+removes that path's versions and the conflict copies of its paths, clears the
+retired index rows' pointers to them, and marks the commits' units erased,
+keeping their attribution. The bytes then lose their roots, and GC collects
+them.
 
 ### Tests
 
@@ -1063,9 +1066,9 @@ being deleted, F1's six follow-ups on #613, and the vault's lock order on
 `folder-v2` (#660's follow-up: grants and secrets against Disconnect and
 share, and capture, rotation and seal against a member change).
 
-Two decisions stay with Jonas: the reset's scope (C5 step 4), and the key of
-the artifact GC worker (step 6b of the mail go-live). Nothing else in this
-plan waits on him.
+Two things stay with Jonas: the reset's scope (C5 step 4), and the artifact GC
+worker's key, a secret he creates (RUNTIME-COMPANY-DELETE.md, "Switching the
+worker on"). Nothing else in this plan waits on him.
 
 ### C2. Structured files, seeding and erasure
 
@@ -1200,8 +1203,9 @@ After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
    Jonas's request): `folder-v2` has no `members/` folder. The company comes
    first (Jonas, 24 September 2026): a member's personal settings stay in the
    database, and the implicit `members/<id>/private` rule is not carried into
-   `folder-v2`. The `folder-v2` resolver's branch for it (C1a, C1b) is unused,
-   and a later change removes it.
+   `folder-v2`. The `folder-v2` resolver and its key and grant checks (C1a,
+   C1b) still keep a path under `members/<id>/private` from everyone but the
+   platform, and nothing on `folder-v2` creates such a resource.
 4. **"Delete company" in the product.** Decided by the founder on
    28 September 2026: the C5 reset procedure becomes the product's delete for
    `folder-v2` companies. The old `qorpera_delete_hosted_profile`

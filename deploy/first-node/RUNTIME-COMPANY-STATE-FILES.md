@@ -1411,9 +1411,9 @@ saved), no seeding. Two PRs, released in this order:
   companies can have one) can then only be replaced by a file that parses, moved within its root,
   or deleted: a move out is a kind change. H2 says how it treats a structured key whose current
   version has no parse.
-- **Contract:** the proposed amendment of 2 October (work for people) writes Jonas's decisions 4
-  and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's own text changes when it is
-  approved. The seeding code is H2's.
+- **Contract:** the amendment of 2 October (work for people, approved 3 October) writes Jonas's
+  decisions 4 and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's and 16.1's text
+  carry it since 3 October. The seeding code is H2's.
 - **Tests:** the parser's cases and round trips; the comparison lists, both kept by hand
   (`supabase/tests/700_folder_state_vision_agents.test.sql` §7 and the kinds test in
   `packages/cloud-client/test/company-state-files.test.ts`), with the new spellings; and SQL test
