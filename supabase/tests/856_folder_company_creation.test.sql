@@ -678,6 +678,52 @@ begin
 	end loop;
 end $$;
 
+-- Names: one heading line the seed tree can write. Open refuses a line break, a line separator and a name of spaces
+-- only; seed refuses a name the lobby's rename let through (a tab).
+select pg_temp.refused($$select public.qorpera_folder_company_open('85600000-0000-4000-8000-000000000003',
+	'85600000-0000-4000-8000-000000000130', E'Nordlys\nKaffe')$$, '22023');
+select pg_temp.refused(format('select public.qorpera_folder_company_open(%L, %L, %L)', '85600000-0000-4000-8000-000000000003',
+	'85600000-0000-4000-8000-000000000131', 'Nordlys' || chr(8232) || 'Kaffe'), '22023');
+select pg_temp.refused(format('select public.qorpera_folder_company_open(%L, %L, %L)', '85600000-0000-4000-8000-000000000003',
+	'85600000-0000-4000-8000-000000000132', chr(160) || chr(12288)), '22023');
+do $$
+declare v_profile uuid := (public.qorpera_folder_company_open('85600000-0000-4000-8000-000000000003',
+	'85600000-0000-4000-8000-000000000133', 'Tabbed') ->> 'profile_id')::uuid;
+begin
+	update public.qorpera_profiles set name = E'Tab\tbed' where id = v_profile;
+	begin
+		perform public.qorpera_folder_company_seed(v_profile, pg_temp.seed_input(jsonb_build_object('companyName', E'Tab\tbed')));
+		raise exception 'Seed took a name with a tab' using errcode = 'QTF01';
+	exception when sqlstate '22023' then null;
+	end;
+	if exists (select 1 from public.qorpera_folder_company_creations where profile_id = v_profile) then
+		raise exception 'A refused name wrote a creation'; end if;
+end $$;
+
+-- The connection-file claim skips a company whose creation is not made yet, and takes it once it is (work rows made by
+-- hand: the vault's marks are 852's).
+do $$
+declare v_waiting uuid := pg_temp.open_seeded(19, 'Connections later'); v_ready uuid := current_setting('qorpera_test.table')::uuid;
+	v_claim jsonb;
+begin
+	insert into public.qorpera_folder_connection_file_work(secret_id, profile_id, environment_id, dirty, updated_at) values
+		('85600000-0000-4000-8000-0000000005c1', v_waiting,
+			(select environment_id from public.qorpera_company_files where profile_id = v_waiting), true, clock_timestamp() - interval '1 hour'),
+		('85600000-0000-4000-8000-0000000005c2', v_ready,
+			(select environment_id from public.qorpera_company_files where profile_id = v_ready), true, clock_timestamp());
+	perform pg_temp.as_service();
+	v_claim := public.qorpera_claim_connection_file('85600000-0000-4000-8000-0000000005f1', 60);
+	if v_claim ->> 'secretId' is distinct from '85600000-0000-4000-8000-0000000005c2' then
+		raise exception 'The claim did not skip a company being created: %', v_claim; end if;
+	if public.qorpera_claim_connection_file('85600000-0000-4000-8000-0000000005f1', 60) is not null then
+		raise exception 'The claim took a company being created'; end if;
+	update public.qorpera_folder_company_creations set state = 'completed', input = null, completed_at = clock_timestamp(),
+		commit_id = extensions.gen_random_uuid(), result = '{}' where profile_id = v_waiting;
+	v_claim := public.qorpera_claim_connection_file('85600000-0000-4000-8000-0000000005f1', 60);
+	if v_claim ->> 'secretId' is distinct from '85600000-0000-4000-8000-0000000005c1' then
+		raise exception 'The claim still skips a company once created: %', v_claim; end if;
+end $$;
+
 -- 6. The guards -----------------------------------------------------------------------------------------------------------
 
 -- The member who started a creation stays until it is made; another owner may go.
@@ -735,7 +781,9 @@ declare v_profile uuid := pg_temp.open_seeded(14, 'Deleted'); v_creation public.
 begin
 	perform public.qorpera_request_company_deletion(v_profile, '85600000-0000-4000-8000-000000000003');
 	v_creation := pg_temp.creation(v_profile);
-	if v_creation.state is distinct from 'blocked' then raise exception 'Delete did not block the creation: %', to_jsonb(v_creation); end if;
+	if v_creation.state is distinct from 'blocked' or v_creation.input is not null
+		or public.qorpera_folder_company_setup(v_profile) is distinct from 'failed' then
+		raise exception 'Delete did not block the creation: %', to_jsonb(v_creation); end if;
 	if pg_temp.claim('85600000-0000-4000-8000-0000000000f6') ->> 'profileId' = v_profile::text then
 		raise exception 'A blocked creation was claimed'; end if;
 	v_result := public.qorpera_folder_company_create('85600000-0000-4000-8000-0000000000f6', v_creation.id, 1, '[{}]');
@@ -747,7 +795,8 @@ begin
 	end;
 end $$;
 
--- 7. Snapshot-v1 keeps its text: each body with its patch reversed is the definition before this migration -----------
+-- 7. Snapshot-v1 (and P22a's claim) keep their text: each body with its patch reversed is the definition before this
+-- migration -----------
 
 do $$
 declare v_case record; v_definition text;
@@ -837,7 +886,18 @@ $o$,
 			-- 20260930010000 (P14a): pending, ready or failed.
 			'companySetup',public.qorpera_folder_company_setup(p_profile_id)) end);$n$,
 			$o$'companyReady',public.qorpera_folder_company_ready(p_profile_id)) end);$o$,
-			'ea4506f6503174c2d7a28f904afacb4f')) as c(signature, inserted, original, md5) loop
+			'ea4506f6503174c2d7a28f904afacb4f'),
+		('public.qorpera_claim_connection_file(uuid,integer)',
+			$n$		and (work.lease_until is null or work.lease_until < clock_timestamp())
+		and (work.not_before is null or work.not_before <= clock_timestamp())
+		-- 20260930010000 (P14a): not while the company's folder-v2 creation is not made yet.
+		and not exists (select 1 from public.qorpera_folder_company_creations as creation
+			where creation.profile_id = work.profile_id and creation.state is distinct from 'completed')
+$n$,
+			$o$		and (work.lease_until is null or work.lease_until < clock_timestamp())
+		and (work.not_before is null or work.not_before <= clock_timestamp())
+$o$,
+			'6447847d7aa0ffc3ab138d82a8de7e51')) as c(signature, inserted, original, md5) loop
 		v_definition := pg_get_functiondef(v_case.signature::regprocedure);
 		if position(v_case.inserted in v_definition) = 0
 			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then

@@ -133,7 +133,7 @@ begin
 	-- The worker finds it.
 	perform pg_temp.as_service();
 	if public.qorpera_folder_company_creation_claim('85800000-0000-4000-8000-0000000000f1', 60) ->> 'creationId'
-		<> v_creation.id::text then
+		is distinct from v_creation.id::text then
 		raise exception 'The worker does not claim the operator''s creation'; end if;
 	perform set_config('request.jwt.claims', '', true);
 end $$;

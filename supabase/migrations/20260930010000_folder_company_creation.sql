@@ -128,9 +128,10 @@ declare v_name text := btrim(p_name); v_request public.qorpera_company_creation_
 	v_account auth.users%rowtype; v_email text; v_profile uuid; v_environment uuid;
 begin
 	-- 20260930010000 (P14a): C2's open.
-	-- A name is one heading line (the seed tree's vision.md refuses controls and line separators).
+	-- A name is one heading line (the seed tree's vision.md refuses controls and line separators, and a name its
+	-- writer's trim leaves empty).
 	if p_user_id is null or p_client_creation_id is null or v_name is null or char_length(v_name) not between 1 and 120
-		or v_name ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]' then
+		or v_name ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]' or v_name ~ '^[\s\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*$' then
 		raise exception 'Company details are invalid' using errcode = '22023'; end if;
 	insert into public.qorpera_company_creation_requests(created_by_user_id, client_creation_id, profile_name, contract_version)
 	values (p_user_id, p_client_creation_id, v_name, 2)
@@ -189,6 +190,7 @@ begin
 		or char_length(btrim(p_input ->> 'companyName')) not between 1 and 120
 		or p_input ->> 'companyName' is distinct from (select name from public.qorpera_profiles where id = p_profile_id)
 		or (p_input ->> 'companyName') ~ '[\x01-\x1f\x7f-\x9f\u2028\u2029]'
+		or (p_input ->> 'companyName') ~ '^[\s\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]*$'
 		or jsonb_typeof(p_input -> 'vision') is distinct from 'string' or octet_length(p_input ->> 'vision') > 16384
 		or coalesce(p_input ->> 'kickoffRequestedBy', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 		or jsonb_typeof(p_input -> 'founders') is distinct from 'array'
@@ -661,6 +663,20 @@ $o$'companyReady',public.qorpera_folder_company_ready(p_profile_id)) end);$o$,
 $n$'companyReady',public.qorpera_folder_company_ready(p_profile_id),
 			-- 20260930010000 (P14a): pending, ready or failed.
 			'companySetup',public.qorpera_folder_company_setup(p_profile_id)) end);$n$);
+
+-- The connection-file claim (P22a, 20260930006000, #727 merged first, so P14a carries the skip): a company whose
+-- folder-v2 creation is not made yet is skipped, since its creation commit writes connections/. Read in the claim's
+-- WHERE clause only: no creation row is locked, and the claim never waits for one.
+select pg_temp.p14a_creation_replace('public.qorpera_claim_connection_file(uuid,integer)'::regprocedure,
+$o$		and (work.lease_until is null or work.lease_until < clock_timestamp())
+		and (work.not_before is null or work.not_before <= clock_timestamp())
+$o$,
+$n$		and (work.lease_until is null or work.lease_until < clock_timestamp())
+		and (work.not_before is null or work.not_before <= clock_timestamp())
+		-- 20260930010000 (P14a): not while the company's folder-v2 creation is not made yet.
+		and not exists (select 1 from public.qorpera_folder_company_creations as creation
+			where creation.profile_id = work.profile_id and creation.state is distinct from 'completed')
+$n$);
 
 -- qorpera_folder_enable: a role check around qorpera_folder_enable_internal (which adds the bootstrap-job refusal). The
 -- body it replaces is the 20260928259260 text; anything else refuses this migration.

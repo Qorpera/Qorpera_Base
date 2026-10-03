@@ -83,7 +83,9 @@ In short:
    - Start reaches it once; a second call finds the row and returns its id (a safety net). The insert adds no lock
      another session holds in a conflicting mode.
 3. **The creation worker** (object gateway; P14b):
-   - It claims a queued creation with a lease token (`qorpera_folder_company_creation_claim`).
+   - It claims a queued creation with a lease token (`qorpera_folder_company_creation_claim`). The claim's
+     `kickoffRequestedBy` can be null (that member's account was deleted); the worker still calls create, which
+     answers `failed` (`kickoff_member_left`).
    - It builds `companyStateSeedTree({companyName, cofounderId, vision, founders, firstTodo: {id, requestedBy:
      kickoffRequestedBy}})` with the ids the claim returns from the creation row, so a retry builds the same tree, and
      parses each structured file with the shared parser.
@@ -338,7 +340,7 @@ reversal test (as #705's 817 §1):
 - `qorpera_folder_enable` (a role check around the new `qorpera_folder_enable_internal`, with the bootstrap-job
   refusal);
 - `qorpera_company_founding_json` (`start.companySetup`);
-- `qorpera_claim_connection_file(uuid,integer)` (the creation skip), only if #727 is on master first (§4);
+- `qorpera_claim_connection_file(uuid,integer)` (the creation skip): #727 merged first, so P14a carries it (§4);
 - the three stubs (`create or replace`; still revoked from every API role).
 
 **PRs:**
@@ -363,8 +365,8 @@ reversal test (as #705's 817 §1):
       thread); a leave against a creation (they meet at the fence); a company delete during a creation, with the
       deletion path named: before P08 the creation may still finish on a company being deleted (harmless: it stays
       hidden and is purged); after P08 the fence drain stops it.
-  - P14a builds on #705 (P02) and #715 (P03), both on master: Start's real-seed tests need #705's prelude. With
-    #727 it is whichever lands second (§4).
+  - P14a builds on #705 (P02), #715 (P03) and #727 (P22a), all on master: Start's real-seed tests need #705's
+    prelude, and P14a carries the connection claim's skip (§4).
 - **P14b, the worker** (TS, object gateway), on A1's P22b module (#730), after P14a and #730.
 - **`interfaces/` and `tables/`** (contract 5.6, 2 October): P16 adds them to the seed tree and the SQL seeded list.
   P16 lands before the proof company (P38), so no `folder-v2` company exists without them; the coordinator records

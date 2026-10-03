@@ -504,7 +504,8 @@ charged before it (20260930010000).
   `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
   `companySetup`) once started. `companySetup` is `pending` while the company
   is set up, `ready` once it is (then `companyReady` is true), or `failed` when
-  setup stopped and waits for Qorpera; a failed setup keeps the company hidden.
+  setup stopped and waits for Qorpera, or the company was deleted before it was
+  set up; a failed setup keeps the company hidden.
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and
