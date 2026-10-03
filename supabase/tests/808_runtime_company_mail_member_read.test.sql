@@ -389,7 +389,7 @@ values ('30000000-0000-4000-8000-000000000010', (current_setting('qorpera_test.r
 	'call-card-3', '30000000-0000-4000-8000-000000000030', 'send_mail', 'external', repeat('a', 64),
 	'{"title":"Send an email","arguments":"{not json"}', 'ask', 'none', 'A person decides', 'reviewer-fixture',
 	'owners_admins');
--- The conversation a card was raised in, where it is answered (20260930000400): the first card has one, the new email's
+-- The conversation a card was raised in, where it is answered (20260930002260): the first card has one, the new email's
 -- card none.
 insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, audience_kind)
 values ('80800000-0000-4000-8000-0000000000c5', '30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000020',
@@ -412,7 +412,7 @@ select pg_temp.wake_assert(jsonb_array_length(waiting) = 2
 		and waiting #>> '{1,sessionId}' = '80800000-0000-4000-8000-0000000000c5' and not waiting -> 0 ? 'sessionId',
 	'Every open send, newest first, a new email without a thread: ' || waiting::text)
 from (select public.qorpera_member_mail_waiting('30000000-0000-4000-8000-000000000020') as waiting) as answer;
--- Only a member who may answer a card gets its conversation (20260930000400): a contributor gets none for the owners'
+-- Only a member who may answer a card gets its conversation (20260930002260): a contributor gets none for the owners'
 -- and admins' card; once the card waits for that contributor, the contributor gets it and the owner none; a card
 -- waiting for a viewer (who cannot write the conversation) names it to nobody.
 select pg_temp.path_claims('service_role');
