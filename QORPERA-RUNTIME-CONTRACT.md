@@ -779,7 +779,10 @@ subscriptions, which self-limit.
 >   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
 >   coding or agent's machine awake, unless it hangs inside a model request:
 >   a run with no progress for 15 minutes is idle (changed in place, by the
->   2026-10-03 amendment "one idle rule for every machine");
+>   2026-10-03 amendment "one idle rule for every machine"). A run with no
+>   progress for 15 minutes, also one inside a model request, is shown as one
+>   with no progress, and a member is told (2026-10-03, session-buildup audit
+>   gap 4); nothing stops it;
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
