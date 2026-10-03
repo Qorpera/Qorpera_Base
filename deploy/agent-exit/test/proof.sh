@@ -409,7 +409,7 @@ sleep 1.5
 ip -n agent neigh show 192.168.1.42 | grep -q lladdr && fail "the node answered ARP on the agents' bridge: $(ip -n agent neigh show 192.168.1.42)"
 ip -n agent route del 192.168.1.42/32
 pass "the node does not answer ARP on the agents' bridge"
-ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -Eq '10\.210\.0\.10 counter packets [1-9]' ||
+ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -Eq '10\.210\.1\.1 counter packets [1-9]' ||
 	fail "new connections are not counted per client: $(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)"
 pass "new connections are counted per client"
 
