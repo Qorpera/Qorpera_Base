@@ -1,6 +1,6 @@
 # Company folder core: erasure (slice P18)
 
-Status: design, for review (round 5). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
+Status: design ratified 3 October 2026 (#732, §8's decisions as proposed); P18a built (§10); P18b to come. Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
 F2 on 3 October 2026). Rules: contract 5.6 ("Permanent erasure"), 14.1 (an agent's permanent deletion), the
 2026-10-02 amendment "work for people" item 3, core §8 ("Erasure"), C1D §9.4 (when a root ends). Evidence:
 `~/work/qorpera-folder-core-tools/reports/P18-erasure-inventory.md` (every column, reader and lock erasure meets) and
@@ -122,7 +122,7 @@ web's "Erase" is the Interfaces session's). In order:
 8. **Writes.** The erasure row and its needles (§4.1); §5's index rows; the claims step 5 inserted are deleted. No
    clock lock, no journal row, no fence (member commits take none; core §9 "reads and GC never").
 
-It returns `{erasureId, asOfSeq, roots: [{path, cutoffSeq, cutoffUnit, versions}], copies: [path]}`: the per-root count of versions
+It returns `{erasureId, asOfSeq, roots: [{path, cutoffSeq, cutoffUnit, versions}], copies: [{environmentId, path, live}]}`: the per-root count of versions
 to erase, so a mistyped root shows as zero rather than completing silently (a root named only by refused saves has
 zero versions and still has its units scrubbed), and §2.3's copy warning.
 
@@ -300,3 +300,70 @@ delete is refused in practice by older links the structured-file hook writes (20
 - Races (dblink): the request against a commit creating under a root, against a commit deleting a file under it, and
   against the vault writing a connection file at a root;
   the drain against folder GC's claim and finish; the drain against the company purge (core §8's erasure race).
+
+## 10. Built (P18a, migration 20260930009200, tests 883 and 884)
+
+- **The request** `qorpera_folder_erase(environment, actor, paths, operation_key)` follows §3 step by step.
+  - The owner-or-admin check is a plain read before any lock (and before a replay answers). It is checked again under
+    rank 1.
+  - It refuses `agents/`, `rules/` and `tables/` (0A000) until P18b. It refuses another member's `members/<id>/private`
+    subtree, and any root above it.
+  - A history that runs on at other paths is refused with 22023 and a detail `{add, live}`: the topmost paths to add
+    (at most 20), and any live file the history moved into, including a file in a named live root's current life.
+  - The reply is `qorpera.folder-erasure/v1`: `erasureId`, `asOfSeq`, and each root's count of versions. Its `copies`
+    are up to 20 other paths, live or deleted, in any folder-v2 environment of the company, whose versions hold an
+    erased manifest.
+  - The erasure row is inserted `on conflict do nothing`. A request with the same key that committed while this one
+    waited on the roots answers with its reply, and this one's claims go.
+- **Every version search writes the key range out:** `key >= root and key < root || '0'`, then
+  `qorpera_folder_erasure_covers`. A SQL function with `SET` is never inlined, so the range is the only way the new
+  key index serves the search. This covers the count, the move check, the copies and phase 1. 883 checks the plan and
+  each function's body.
+- **The drain** `qorpera_folder_erasure_step(p_versions 1000, p_commits 1000, p_hashes 2000)` does one step of one
+  erasure per call, in the phases of §4.3.
+  - **Bounds:** each step works for about a second at most and reads at most 4 MiB of text, checked between rows. It
+    goes on from its cursor next time. In phase 4 the cursor holds the run in progress: where its receipts stopped,
+    and what they left.
+  - **Needles** are a few per root: the root as named, and as each erased version spells the root's part of its path,
+    with their first 100 characters. A needle matches only as a whole path or path prefix, so `docs/f` never matches
+    `docs/finance.md`.
+  - **Phase 4** tests each text against each needle with that needle's own cutoff time, so a live root's current life
+    keeps its receipts and cards.
+  - **Errors:** an error other than a lock wait records `last_error` and leaves the erasure waiting an hour, so it never
+    holds up the others. A lock wait undoes the step, and the next tick goes on.
+  - **Waiting:** an erasure left only with live runs, or with bytes GC does not take yet, is `waiting` and is looked at
+    again an hour later. Bytes GC does take keep it working.
+  - **Done:** a `done` erasure keeps its counts and no path. Its roots, needles and request digest go, and its stored
+    reply loses `roots` and `copies` (a replay answers that).
+  - `qorpera_schedule_folder_erasure()` asks pg_cron for the 5-second job and its daily log cleanup. With no pg_cron
+    (1.5 or later) the migration still applies, with a notice.
+- **Status** `qorpera_folder_erasure_status(environment, actor, erasure_id)` answers owners and admins, with
+  `lastError`.
+- **Inert** until the member route (C4) calls the request: nothing makes an erasure before that.
+- **Tests:**
+  - 883 covers:
+    - refusals, with messages;
+    - a deleted contact with its index row, change sets and bytes;
+    - lives at a path: a reused path, a case-only rename, a split change set, a live folder root, and a contact deleted
+      and saved again in one change set, keeping the live row;
+    - histories through moves: a moved folder, a reused path's past life added, a partner already gone, a partner in a
+      named root's current life;
+    - the units scrub;
+    - status, grants and the lock text;
+    - path permissions; a company being deleted; connection rows; copies, live and deleted, with no side row for bytes
+      a copy roots;
+    - the step's bound; a failing step; the key index.
+  - 884 covers, over dblink:
+    - a request waiting for a commit that holds its root;
+    - a commit creating a held root;
+    - the drain skipping a company its purge holds;
+    - receipts and reviewed cards of a run that wrote and of a run that only read, in a request mixing a deleted and a
+      live root;
+    - two requests with one key;
+    - a run with more than 4 MiB of receipts, finished over several steps.
+- **§9 cases with no test yet:**
+  - the QRC01 re-read (a contact or task row retired between the request's first read and its path locks), before C4
+    wires the member route;
+  - the vault writing a connection file at a root during a request, also before C4;
+  - the drain against folder GC's claim and finish, before the GC switch goes on.
+  The first needs a committed fixture with contacts, which 884's fixture lacks.

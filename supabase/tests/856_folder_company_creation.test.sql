@@ -796,7 +796,7 @@ begin
 end $$;
 
 -- 7. Snapshot-v1 (and P22a's claim) keep their text: each body with its patch reversed is the definition before this
--- migration -----------
+-- migration (structured_apply's as F2-5b-2, 20260930003000, which sorts before it, leaves it) -----------
 
 do $$
 declare v_case record; v_definition text;
@@ -812,7 +812,7 @@ $n$,
 			$o$				perform public.qorpera_company_state_index_agent(p_environment_id, v_profile, p_commit_id, v_user, v_file.path,
 					v_version, v_entry -> 'parse', v_actor);
 $o$,
-			'9bbc1e5e8784ac576bdd90bbe0b1d03b'),
+			'2c3412290af3c199d5b07f3f3d27eb50'),
 		('public.qorpera_list_hosted_profiles()',
 			$n$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
 		-- 20260930010000 (P14a): a folder-v2 company shows once its creation is completed.
@@ -899,6 +899,12 @@ $n$,
 $o$,
 			'6447847d7aa0ffc3ab138d82a8de7e51')) as c(signature, inserted, original, md5) loop
 		v_definition := pg_get_functiondef(v_case.signature::regprocedure);
+		-- C1c-3g (20260930015000) patches stop_company_work after P14a: reverse that patch here first.
+		if v_case.signature = 'public.qorpera_stop_company_work(uuid)' then
+			v_definition := replace(v_definition,
+				E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n',
+				E'\tif found then\n');
+		end if;
 		if position(v_case.inserted in v_definition) = 0
 			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then
 			raise exception 'The patch of % is not the only change', v_case.signature; end if;

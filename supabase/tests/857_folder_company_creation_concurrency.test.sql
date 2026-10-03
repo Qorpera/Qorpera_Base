@@ -351,8 +351,8 @@ begin
 	perform dblink_exec('make_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
 end $$;
 
--- E. A company delete beside a creation in flight (before P08: the delete takes the gc fence and the pause, and skips the
--- held creation row). Whatever waits, nothing deadlocks; the creation is made and the company stays hidden.
+-- E. A company delete beside a creation in flight (since P08, 20260930015000: the delete takes the folder fence FOR NO KEY
+-- UPDATE and the pause, and skips the held creation row). Whatever waits, nothing deadlocks; the creation is made and the company stays hidden.
 do $$
 declare v_profile uuid := current_setting('qorpera_test.profile_deleted')::uuid; v_delete text;
 begin
@@ -360,7 +360,7 @@ begin
 	perform * from dblink('make_one', current_setting('qorpera_test.create_deleted') || '::text') as t(r text);
 	perform dblink_send_query('make_two', format($q$select public.qorpera_request_company_deletion(%L, '85700000-0000-4000-8000-000000000003')::text$q$,
 		v_profile));
-	-- The delete's gc fence (the company row FOR UPDATE) waits for the commit's rank-0 KEY SHARE.
+	-- The delete's folder fence (FOR NO KEY UPDATE) waits behind the creation's own NO KEY UPDATE.
 	if not pg_temp.waits_for('make_two', 'make_one') then raise exception 'A delete must wait for a creation in flight'; end if;
 	perform dblink_exec('make_one', 'commit');
 	v_delete := pg_temp.result('make_two');
