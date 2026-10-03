@@ -573,6 +573,11 @@ async function writeQueuedInputs(
 				input.body && typeof input.body === "object" && !Array.isArray(input.body)
 					? (input.body as Record<string, JsonValue>)
 					: undefined;
+			// A quoted message is fenced only where the platform builds a run's context (contract: the 2026-10-02
+			// amendment "quoted outside content in a member's message", item 4); this path can't fence one.
+			if (body !== undefined && Object.hasOwn(body, "quotes")) {
+				throw new Error("Runner queued inputs quote outside content, which only a cloud run fences");
+			}
 			const images = body?.images ?? (input.kind === "kickoff" ? [] : undefined);
 			if (!Array.isArray(images) || images.length > MAX_QUEUED_INPUT_IMAGES) {
 				throw new Error("Runner queued input images are invalid");

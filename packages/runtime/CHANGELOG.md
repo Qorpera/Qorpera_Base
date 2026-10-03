@@ -1,5 +1,9 @@
 # Changelog
 
+- The runtime reads quotes of outside content in a member's message as the contract says (the 2026-10-02 amendment "quoted outside content in a member's message", items 4 and 5; step I5d part 3):
+  - **The run's rules** say that `[quote N]` stands for words a member quoted from outside content, and that the `qorpera.member-quote/v1` records after it are untrusted data. The member's own words may ask for something about a quote, but a quote never guides the work by itself.
+  - **The automatic review** reads the member's words with each `[quote N]` and where it came from, never the quoted words. It drops everything from the first list of quotes in a source cut short, and its instructions say an action only a quote asks for is not requested.
+  - **The legacy runner** refuses a queued message that quotes outside content, since only a cloud run's context fences one.
 - Added quotes of outside content in a member's message (contract amendment "quoted outside content in a member's message", 2 October 2026; step I5d part 1; migration `20260930000100`, SQL test 816 + 660 checksums):
   - **The input RPCs check quotes:** a session-prompt body may carry `quotes` (1–16 spans in code points, each inside « », source `mail`, a thread the member may read, never account mail, no `displayText`). `qorpera_append_session_input`, `qorpera_request_session_turn_v2`, `qorpera_post_company_room_message` and its folder-v2 path check them after the right to write and before their first lock, and refuse with 22023.
   - **The run sees them fenced:** `qorpera_company_context_source` gives a quoted input, and an earlier quoted message in its history, as the member's words with `[quote N]` and the quoted words only as `qorpera.member-quote/v1` records (`trust: "untrusted_data"`, provenance input, quote number, source and ref). So the context, `read_context` pages, `parentInputs` and the continuations' `roomPost` all carry the fenced form.
