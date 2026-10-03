@@ -74,6 +74,7 @@ describe("a run with no progress for 15 minutes", () => {
 		// The minutes come with the time, or the row is refused.
 		expect(parse({ no_progress_since: timestamp })).toThrow();
 		expect(parse({ no_progress_since: timestamp, no_progress_minutes: 0 })).toThrow();
+		expect(parse({ no_progress_minutes: 15 })).toThrow();
 	});
 
 	it("says so in the agent's thread while the run works on, and stops saying it once it progresses", async () => {

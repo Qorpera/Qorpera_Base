@@ -784,7 +784,9 @@ subscriptions, which self-limit.
 >   standing counts (32 routines, 64 open todos and 4 active workers per agent,
 >   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing keeps its
->   machine until Stop, as in Codex CLI and Claude Code;
+>   machine until Stop, as in Codex CLI and Claude Code. Since 2026-10-03
+>   (gap 4) a run that made no progress for 15 minutes is shown as such and a
+>   member is told; nothing stops it;
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
