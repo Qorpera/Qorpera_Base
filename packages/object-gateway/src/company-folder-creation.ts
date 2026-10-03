@@ -70,7 +70,8 @@ export function parseCompanyCreationClaim(value: unknown): CompanyCreationClaim 
 	if (value === null) return null;
 	const claim = record(value, CLAIM_KEYS, "claim_invalid");
 	const input = record(claim.input, INPUT_KEYS, "claim_invalid");
-	const uuid = (field: unknown) => (typeof field === "string" && UUID.test(field) ? field : platformFolderProblem("claim_invalid"));
+	const uuid = (field: unknown) =>
+		typeof field === "string" && UUID.test(field) ? field : platformFolderProblem("claim_invalid");
 	if (
 		claim.schema !== "qorpera.company-creation-claim/v1" ||
 		input.schema !== "qorpera.company-seed-input/v1" ||
@@ -147,7 +148,12 @@ export function creationUnits(
 			units.push({ op: "mkdir", path: entry.path });
 		} else {
 			const parse = structured(entry);
-			units.push({ op: "write", path: entry.path, file: file(entry.path), ...(parse ? { structured: [parse] } : {}) });
+			units.push({
+				op: "write",
+				path: entry.path,
+				file: file(entry.path),
+				...(parse ? { structured: [parse] } : {}),
+			});
 		}
 	}
 	return units;
@@ -182,10 +188,10 @@ export class CompanyFolderCreator {
 
 	/** Claims one due creation and makes the company; false when nothing is due. */
 	async createOne(signal: AbortSignal = AbortSignal.timeout(120_000)): Promise<boolean> {
-		const answer = await this.#call(
-			"qorpera_folder_company_creation_claim",
-			{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
-		);
+		const answer = await this.#call("qorpera_folder_company_creation_claim", {
+			p_worker: this.#options.workerId,
+			p_lease_seconds: this.#leaseSeconds,
+		});
 		let claim: CompanyCreationClaim | null;
 		try {
 			claim = parseCompanyCreationClaim(answer);
@@ -245,10 +251,19 @@ export class CompanyFolderCreator {
 		const units = creationUnits(tree, files);
 		const answer = (await this.#options.authority.publisher(
 			"qorpera_folder_company_create",
-			{ p_worker: this.#options.workerId, p_creation_id: claim.creationId, p_generation: claim.generation, p_units: units },
+			{
+				p_worker: this.#options.workerId,
+				p_creation_id: claim.creationId,
+				p_generation: claim.generation,
+				p_units: units,
+			},
 			signal,
 		)) as { schema?: unknown; state?: unknown; problem?: unknown } | null;
-		if (answer?.schema !== "qorpera.company-creation/v1" || typeof answer.state !== "string" || !ANSWERS.has(answer.state))
+		if (
+			answer?.schema !== "qorpera.company-creation/v1" ||
+			typeof answer.state !== "string" ||
+			!ANSWERS.has(answer.state)
+		)
 			return "create_invalid";
 		// Retry: an object the commit read was being deleted; the next attempt restages it.
 		return answer.state === "retry" ? "bytes_unverified" : null;
@@ -266,10 +281,7 @@ export class CompanyFolderCreator {
 				...(fail ? { p_code: code } : { p_problem: code }),
 			},
 		)) as { schema?: unknown } | null;
-		if (
-			answer?.schema !==
-			(fail ? "qorpera.company-creation-fail/v1" : "qorpera.company-creation-release/v1")
-		)
+		if (answer?.schema !== (fail ? "qorpera.company-creation-fail/v1" : "qorpera.company-creation-release/v1"))
 			platformFolderProblem("close_invalid");
 	}
 

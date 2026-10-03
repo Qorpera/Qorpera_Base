@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
 import { companyStateSeedTree } from "@qorpera/cloud-client/company-state-files";
 import { describe, expect, it } from "vitest";
-import {
-	CompanyFolderCreator,
-	creationUnits,
-	parseCompanyCreationClaim,
-} from "../src/company-folder-creation.ts";
+import { CompanyFolderCreator, creationUnits, parseCompanyCreationClaim } from "../src/company-folder-creation.ts";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import { PlatformFolderProblem, type PlatformFileReference } from "../src/platform-folder-writer.ts";
 
@@ -49,7 +45,9 @@ function claim(overrides: Record<string, unknown> = {}, input: Record<string, un
 }
 
 /** The database and the store as the worker sees them: every call recorded; create answered from `answer`. */
-function database(options: { claims?: unknown[]; answer?: unknown; createThrows?: Error; sealIncomplete?: boolean } = {}) {
+function database(
+	options: { claims?: unknown[]; answer?: unknown; createThrows?: Error; sealIncomplete?: boolean } = {},
+) {
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const claims = [...(options.claims ?? [])];
 	const objects = new Map<string, Uint8Array>();
@@ -132,7 +130,14 @@ describe("parseCompanyCreationClaim", () => {
 	it("reads a claim as a closed record, and nothing due as null", () => {
 		expect(parseCompanyCreationClaim(null)).toBeNull();
 		const parsed = parseCompanyCreationClaim(claim());
-		expect(parsed).toMatchObject({ creationId, environmentId, generation: 2, cofounderId, firstTodoId, kickoffRequestedBy: anna });
+		expect(parsed).toMatchObject({
+			creationId,
+			environmentId,
+			generation: 2,
+			cofounderId,
+			firstTodoId,
+			kickoffRequestedBy: anna,
+		});
 		expect(parsed?.founders).toHaveLength(2);
 		// The kickoff member's account may be gone: the create answers that.
 		expect(parseCompanyCreationClaim(claim({ kickoffRequestedBy: null }))?.kickoffRequestedBy).toBeNull();
@@ -170,7 +175,13 @@ describe("creationUnits", () => {
 				.filter((entry) => entry.kind === "file")
 				.map((entry) => [
 					entry.path,
-					{ manifestSha256: digest(`m:${entry.path}`), fileSha256: digest(entry.text ?? ""), bytes: 1, mediaType: "text/markdown", executable: false },
+					{
+						manifestSha256: digest(`m:${entry.path}`),
+						fileSha256: digest(entry.text ?? ""),
+						bytes: 1,
+						mediaType: "text/markdown",
+						executable: false,
+					},
 				]),
 		);
 		const units = creationUnits(tree, files) as {
@@ -277,7 +288,10 @@ describe("CompanyFolderCreator", () => {
 	});
 
 	it("releases an answer it cannot read", async () => {
-		const { creator, named } = database({ claims: [claim()], answer: { schema: "qorpera.company-creation/v1", state: "maybe" } });
+		const { creator, named } = database({
+			claims: [claim()],
+			answer: { schema: "qorpera.company-creation/v1", state: "maybe" },
+		});
 		expect(await creator.createOne()).toBe(true);
 		expect(named("qorpera_folder_company_creation_release")[0]?.args.p_problem).toBe("create_invalid");
 	});
@@ -315,7 +329,11 @@ describe("CompanyFolderCreator", () => {
 	});
 
 	it("refuses a worker identity or lease out of range", () => {
-		const base = { authority: { publisher: async () => null }, store: { get: async () => new Uint8Array() }, replication: { uploadWithAuthority: async () => "stored" as const } };
+		const base = {
+			authority: { publisher: async () => null },
+			store: { get: async () => new Uint8Array() },
+			replication: { uploadWithAuthority: async () => "stored" as const },
+		};
 		expect(() => new CompanyFolderCreator({ ...base, workerId: "worker" })).toThrow();
 		expect(() => new CompanyFolderCreator({ ...base, workerId, leaseSeconds: 10 })).toThrow();
 	});
