@@ -113,8 +113,10 @@ One transaction, numbered with the core's steps (core §3):
     existing fence, taken once per company, so it is not a new company-wide lock.
   - Then the pause again, as every effect does.
 - **Step 1, here: the operation key.** The setting `qorpera.folder_company_create` carries the creation: the
-  environment, the creation id and the operation key `company-create:<id>`. It is set in the body and cleared after,
-  as `qorpera.folder_send` is. Apply cross-checks it against the commit's own key and the creation row it holds.
+  environment, the creation id and the operation key `company-create:<id>`. It is set in the body before the
+  exception block (a set inside the block would be undone when the block catches its error) and cleared on each of
+  the three answers, as `qorpera.folder_send` is. Apply cross-checks it against the commit's own key and the creation
+  row it holds.
   Then `qorpera_folder_commit(environment, platform, 'company-create:<id>', units)` runs, and claims the key at its
   own step 1, after the creation row and the fence.
   - This order is a named exception for P13's call-chain check. The key is only ever claimed under its creation row
@@ -143,8 +145,8 @@ One transaction, numbered with the core's steps (core §3):
     `qorpera_agent_first_runs`); and the runtime bundle row (the provenance trigger). None closes a cycle: none of
     these rows is locked more strongly by anything that also holds a lock this transaction waits for. The known
     exception, an account deletion cascading with no prelude, can meet it as one `40P01` (C1C §6 accepts that).
-- **The first run, in apply, for the Co-Founder's `agent.md`, when the setting is there.** This is the seam P28
-  consumes:
+- **The first run, in apply, for the Co-Founder's `agent.md`, when the setting is there** and the file's `id` is the
+  creation row's `cofounder_id`, so only the creation's own Co-Founder gets it. This is the seam P28 consumes:
   - **The kickoff** (`qorpera_session_inputs`):
     - `session_id` is the Co-Founder's thread (the room bound to the Co-Founder);
     - `client_input_id = md5('qorpera.folder-company-create/kickoff:' || creation_id)::uuid`;
@@ -269,10 +271,12 @@ so the create function sorts the outcome itself and answers `completed`, `failed
 
 Two functions, like the lobby. Both are revoked from every API role; the coordinator's P38 lane calls them as the
 owner role:
-- **`qorpera_folder_company_operator_open(owner_user_id, client_creation_id, name, reason)`:** Open for that
-  account. The owner's email must be confirmed. The reason is kept for `operator_start`, which stores it on the
-  creation row.
+- **`qorpera_folder_company_operator_open(owner_user_id, client_creation_id, name)`:** Open for that account. The
+  owner's email must be confirmed. It takes no reason: the P38 lane calls `operator_start` right after, and that
+  reason is stored on the creation row.
 - **`qorpera_folder_company_operator_start(profile, vision, reason)`:**
+  - It refuses a company with a founding row, so an operator never starts a lobby's company under its founders, and
+    checks that the owner is still a member with the owner role.
   - It checks the owner has a usable model login, as the lobby's Start requires of every founder. So a proof
     company's first run is paid, once Vault By Default has registered the company and the owner has connected a
     login.
@@ -332,9 +336,11 @@ reversal test (as #705's 817 §1):
     - open (repeat-safe, a reused old id, the core switched, the fence present);
     - seed (input checks, once);
     - create (the units, the Co-Founder, the kickoff's exact shape, the first-run row, the turn request with and
-      without a usable login, a replay, a stale token, all-or-nothing with the outcomes in DETAIL, the failure
-      classes);
-    - hiding and ready; the guards; the operator functions (member and anon callers refused, the reason kept).
+      without a usable login, a replay, a stale token, all-or-nothing with the three answers (a `retry` on
+      `bytes_unverified`, a final refusal kept on the row, `completed`), the setting cleared after each, an `agent.md`
+      whose id is not the row's `cofounder_id` getting no first run, the worker's failure classes);
+    - hiding and ready; the guards; the operator functions (member and anon callers refused, the reason kept, a
+      company with a founding row refused, an owner who left refused).
     - **Exactly one under a creation retry and under two racing Starts:** one creation row, one
       `qorpera_agent_first_runs` row, one kickoff.
     - Races: a join against a creation, in both orders (the second waits at the fence; the joiner ends in the
