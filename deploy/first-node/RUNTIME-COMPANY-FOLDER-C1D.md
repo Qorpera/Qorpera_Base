@@ -664,14 +664,15 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - The gateway's scan, after the quarantine, reads up to 500 journal entries per pass from a cursor and checks up to 50
   `blocked` ones, each under the object's lock (an upload holds it from its put to its confirm), re-read there. A
   `missing` object's entry first records `missingSince` (the gateway's clock; `folder_object_uncatalogued_found` in the
-  audit log); once it has been `missing` at every check, at most 10 minutes apart, for 24 hours, its NAS file and any
-  Storage replica are removed and the entry dropped (`folder_object_uncatalogued_removed`). Any other answer forgets
-  `missingSince` (`folder_object_uncatalogued_cleared`), so the wait starts over; a stored time more than 5 minutes
-  ahead of the gateway's clock is marked again. `catalogued`, `other` and `listed` leave the entry otherwise as it is.
-  An upload that puts the object again rewrites the entry (`unconfirmed`, then `replicate`), which ends the wait. An
-  entry is asked about again only when due, 10 minutes after its last check (or at the end of its 24 hours, if
-  sooner), or at once when its `missingSince` changed meanwhile; the gateway keeps these times in memory only for
-  entries checked within the last 10 minutes (at most 10,000).
+  audit log); once it has been `missing` at every check, 10 minutes apart (or as soon after as the scan comes back to
+  it, which with thousands of blocked entries can take longer; an intent stays `listed` far longer still), for 24
+  hours, its NAS file and any Storage replica are removed and the entry dropped (`folder_object_uncatalogued_removed`).
+  Any other answer forgets `missingSince` (`folder_object_uncatalogued_cleared`), so the wait starts over; a stored
+  time more than 5 minutes ahead of the gateway's clock is marked again. `catalogued`, `other` and `listed` leave the
+  entry otherwise as it is. An upload that puts the object again rewrites the entry (`unconfirmed`, then `replicate`),
+  which ends the wait. An entry is asked about again only when due, 10 minutes after its last check (or at the end of
+  its 24 hours, if sooner), or at once when its `missingSince` changed meanwhile; the gateway keeps these times in
+  memory only for entries checked within the last 10 minutes (at most 10,000).
 - A deleted or purged company's blocked entries answer `other`, and the gateway reports them degraded, until part 2
   (a deleted company's leftovers) takes them.
 - Rollout: unlike P11's lane, this pass runs from the gateway's first deploy with no switch (it is safe without one:

@@ -868,6 +868,11 @@ describe("folder GC's bytes with no catalog row (C1D §9.9)", () => {
 		const second = new Date(f.cloud.wall).toISOString();
 		expect(await f.journal.read(entryKey)).toMatchObject({ missingSince: second });
 		expect(await f.nasBytes()).toEqual(bytes);
+		// The next check comes 10 minutes after the mark.
+		const marked = f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length;
+		f.cloud.wall += 11 * 60 * 1000;
+		await f.gc.recover();
+		expect(f.cloud.calls.filter((call) => call === "qorpera_folder_gc_catalog_state").length).toBe(marked + 1);
 		// Missing at every check for a day from the new mark: removed.
 		for (let checks = 0; checks < 6 * 24; checks += 1) {
 			f.cloud.wall += 10 * 60 * 1000;

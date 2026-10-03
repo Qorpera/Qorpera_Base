@@ -160,15 +160,17 @@ export class ObjectGatewayFolderGc {
 	 * Bytes with no catalog row (C1D §9.9): a NAS put whose confirm never ran. Its entry ends `blocked`, because folder
 	 * replication refuses a missing row, and the gateway reports degraded for it. Under the object's lock (an upload
 	 * holds it from its put to its confirm), each blocked entry's object is checked again: once a folder-v2 object has
-	 * been `missing` (no catalog row, no upload intent rooting it) at every check, at most 10 minutes apart, for the
-	 * grace window, its NAS file and any Storage replica are removed and the entry dropped. Any other answer starts the
+	 * been `missing` (no catalog row, no upload intent rooting it) at every check, 10 minutes apart (or as soon after as
+	 * the scan comes back to it), for the grace window, its NAS file and any Storage replica are removed and the entry dropped. Any other answer starts the
 	 * wait over. Entries of any other company, and of catalogued objects, stay as they are. A pass reads up to 500
 	 * entries and checks up to `limit` that are due, going on next time.
 	 */
 	async #uncatalogued(limit: number): Promise<void> {
-		// Schedules that came due are forgotten, so the map holds only entries checked within the last 10 minutes.
+		// Schedules that came due are forgotten, so the map holds only entries checked within the last 10 minutes; so is
+		// one further ahead than that, which only a clock set back can leave.
 		const start = this.#now();
-		for (const [key, due] of this.#nextCheck) if (due.at <= start) this.#nextCheck.delete(key);
+		for (const [key, due] of this.#nextCheck)
+			if (due.at <= start || due.at > start + RECHECK_MS) this.#nextCheck.delete(key);
 		if (this.#nextCheck.size > 10_000) this.#nextCheck.clear();
 		let objects: BlockedObject[];
 		try {
