@@ -10,9 +10,10 @@ begin
  perform set_config('request.jwt.claims', case when p_user is null then '{"role":"service_role"}'
   else jsonb_build_object('role','authenticated','sub',p_user)::text end, true);
 end $$;
--- P28 (20260930018000): the reconcile RPC, and so the claim, no longer runs the legacy materializers. These
--- legacy cases run them here, in the old order, until A1's removal slice retires them.
-create function pg_temp.queue_materialize() returns void language plpgsql as $$
+-- LEGACY, for A1's removal sweep (after P06): P28 (20260930018000) took the legacy materializers out of the reconcile
+-- RPC, and so out of the claim. These snapshot-v1 cases call them here, in the old order, until the sweep removes the
+-- materializers and this test. Every call site is `pg_temp.queue_legacy_materialize()`.
+create function pg_temp.queue_legacy_materialize() returns void language plpgsql as $$
 begin
  perform pg_temp.queue_auth();
  perform public.qorpera_materialize_session_turn_requests(32);
@@ -185,7 +186,7 @@ declare b jsonb:=current_setting('queue.b')::jsonb; i integer;
 begin
  perform pg_temp.queue_input(b);
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  execute 'set local role service_role';
  for i in 1..3 loop
   perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),extensions.gen_random_uuid(),300);
@@ -396,7 +397,7 @@ begin
  perform pg_temp.queue_assert((select jsonb_agg(to_jsonb(request)-'admission_scan_at' order by request.id)
   is not distinct from original_requests from public.qorpera_session_turn_requests request where profile_id=(work->>'profile')::uuid),
   'rotation changed sponsorship pins');
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  set local role service_role;
  for i in 1..3 loop
   perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),extensions.gen_random_uuid(),300);
@@ -446,7 +447,7 @@ begin
  perform pg_temp.queue_auth();
  perform pg_temp.queue_assert(public.qorpera_materialize_session_execution_runs(32)='[]','ordinary materializer stole queued request');
  perform public.qorpera_materialize_session_turn_requests(32);
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
  perform pg_temp.queue_assert((select count(*)=1 and bool_and(id=(request->>'turn_request_id')::uuid
   and sponsor_binding_id=(a->>'memberSponsor')::uuid and sponsor_version=1
@@ -471,7 +472,7 @@ begin
    where id=(request->>'turn_request_id')::uuid;
  end loop;
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
  perform pg_temp.queue_assert(not exists(select 1 from public.qorpera_execution_runs),'terminal request was reclaimed');
 end $body$;
@@ -486,7 +487,7 @@ begin
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_remove_profile_member((a->>'profile')::uuid,(a->>'member')::uuid);
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),pg_temp.queue_id(335,91),300);
  perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),pg_temp.queue_id(335,91),300);
  perform pg_temp.queue_assert((select count(*)=1 from public.qorpera_runner_job_claims c join public.qorpera_execution_runs r
@@ -526,7 +527,7 @@ begin
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_remove_profile_member((a->>'profile')::uuid,(a->>'member')::uuid);
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),pg_temp.queue_id(335,91),300);
  perform pg_temp.queue_assert((select status='failed' and run_id is null from public.qorpera_session_turn_requests
   where id=(request->>'turn_request_id')::uuid),'removed requester was not retired');
@@ -545,7 +546,7 @@ begin
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_set_company_execution_pause((a->>'profile')::uuid,true,'Queue regression');
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),pg_temp.queue_id(335,91),300);
  perform pg_temp.queue_assert((select execution_run_id is null and failed_at is null from public.qorpera_session_inputs where id=input),
   'paused input changed');
@@ -567,14 +568,14 @@ begin
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_set_company_execution_pause((a->>'profile')::uuid,true,'Queue regression');
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
  perform pg_temp.queue_assert((select status='queued' and run_id is null from public.qorpera_session_turn_requests
   where id=(request->>'turn_request_id')::uuid),'pause consumed the request');
  perform pg_temp.queue_auth((a->>'owner')::uuid);
  perform public.qorpera_set_company_execution_pause((a->>'profile')::uuid,false,'Queue regression');
  perform pg_temp.queue_auth();
- perform pg_temp.queue_materialize();
+ perform pg_temp.queue_legacy_materialize();
  perform public.qorpera_reconcile_runner_orchestrator(pg_temp.queue_id(335,90));
  perform pg_temp.queue_assert((select publication_mode='review' and sponsor_binding_id=(a->>'memberSponsor')::uuid
   from public.qorpera_execution_runs where id=(request->>'turn_request_id')::uuid),'resume changed the request pins');
@@ -862,7 +863,7 @@ begin
  if p_action='completed' then
   perform pg_temp.queue_finish_recovery(work,recovery);
   perform pg_temp.queue_auth();
-  perform pg_temp.queue_materialize();
+  perform pg_temp.queue_legacy_materialize();
   for i in 1..3 loop
    perform public.qorpera_claim_runner_job_for_orchestrator(pg_temp.queue_id(335,90),extensions.gen_random_uuid(),300);
   end loop;
