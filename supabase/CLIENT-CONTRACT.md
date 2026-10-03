@@ -812,6 +812,12 @@ looks absent in every answer. Reads only: member writes come with P31.
 
 ## 3. Realtime
 
+Every private topic's policies on `realtime.messages` also require the row's
+topic to be the joined one (`realtime.messages.topic = (select realtime.topic())`;
+presence and room drafts since migration `20260930017000_realtime_topic_equality`):
+a client joined to one topic reads, and where it may publish writes, only that
+topic's rows. A new private topic's policies must do the same.
+
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
