@@ -1128,7 +1128,7 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   its stop. The stop's job pass still skips the jobs effects hold; the finisher ends them.
   - The request's stop now runs beside folder effects, where the row `FOR UPDATE` kept them apart. Its locks after
     rank 0 (jobs `SKIP LOCKED`, never waited for, and their termination: run events, wake occurrences, inputs; no
-    conversation write or operation clock; then the folder creations not yet made, `SKIP LOCKED` (P14a); then coding
+    conversation write or operation clock; then bootstrap jobs (none on `folder-v2`) and the folder creations not yet made, `SKIP LOCKED` (P14a); then coding
     todos, workers and sessions, the machine advisory lock and machines, invitations, seats, access state) come in the
     order every folder path takes them (3f's machines, 3h's coding calls, 3d-2's vault, 3c's member management); no
     cycle found (review r2 traced the job end's triggers).
@@ -1148,6 +1148,10 @@ change below takes it on `folder-v2` only (`qorpera_company_is_folder_v2`); snap
   the purge are the `folder-v2` exception to core §9's rule on the profile row (CORE §3 step 3 and §9 say so).
 - **The batch** finishes its random sample in company id order, as the node update drains and the executor give-up take
   their companies, so two batches of locks never cross.
+- **One window left (information):** a job or a folder creation (P14a) whose worker holds its row and read "not paused"
+  just before the deletion committed can ask for the fence right after the finisher's drain took it. If that pass
+  purges, the cascade locks that row `FOR UPDATE` (not `SKIP LOCKED`) while the worker waits at the fence: a 40P01 at
+  practically impossible timing. It heals: either side retries, and the next pass blocks the row.
 - **Closed:** the 40P01 windows §6.4 records for 3g (the last member's leave during the purge now waits at the fence) and
   for 3f's sweep (its fence `NOWAIT` skips a company whose purge holds the fence), and 3h's coding calls (§6.8).
 - **Snapshot-v1** keeps each statement in its `else` branch (828 C waits for a holder of its company row; 828 G reverses
