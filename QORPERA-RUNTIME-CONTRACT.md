@@ -4570,8 +4570,7 @@ amendment governs. In-place edits are marked "(changed in place)".
      that seat, the shell closes before the seat changes hands, its programs
      stop, and the agent is told, as at sleep.
    - An idle run's lease still holds its seat, so its desktop is not handed
-     to another agent while it is idle, but it does not keep the machine
-     awake.
+     to another agent while it is idle, but the machine may still sleep.
      If the machine sleeps, the run goes on without computer tools until it
      opens its computer again.
 3. **Sleep.** A machine sleeps after its quiet window with nothing keeping it
@@ -4585,7 +4584,8 @@ amendment governs. In-place edits are marked "(changed in place)".
      - A worker's program is told to its agent, in the conversation that
        dispatched the worker.
      - Work outside an agent's machine's commands, such as containers, is told
-       to the agent that started the machine.
+       to the agent that started the machine, in the conversation of the run
+       that started it.
 4. **Busy work keeps running.** A busy program keeps its machine awake for as
    long as it stays busy. The platform never stops a program for running
    long. Every other stop stays as before, for example an agent's or a
