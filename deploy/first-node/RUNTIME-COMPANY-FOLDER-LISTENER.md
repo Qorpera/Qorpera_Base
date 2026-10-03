@@ -57,8 +57,12 @@ lock per routine, and the activation seq already gives each listener its start.
 **Where a new cursor starts:** at the smallest activation seq among the environment's active listeners (or the clock's
 `last_seq` when there is none), so no change after a listener's activation is missed.
 
-**The drain's lease:** the drain takes the cursor row `FOR UPDATE SKIP LOCKED` as its first lock.
-- Only the drain locks that row; nothing in core §3 waits on it.
+**The drain's lease:** the drain takes the cursor row `FOR UPDATE SKIP LOCKED` after its ranks (§4 step 4), as a
+run-owned row.
+- Only the drain locks that row. Commits, routine firing, the materializer and erasure never touch it.
+- The company purge deletes it by cascade, after the folder fence that the drain's ranks take first (KEY SHARE). So a
+  purge and a drain meet at the fence and never in a cycle; a cursor lease taken before the fence would deadlock with
+  the purge's cascade.
 - So two drains of one company never overlap, and a commit never waits on a drain's lease.
 
 ## 4. The drain
@@ -67,21 +71,24 @@ lock per routine, and the activation seq already gives each listener its start.
 in its own transaction. It is service_role only, like the materializer's RPCs. It never runs inside
 `qorpera_folder_materialize_company`, whose admission would then come before its own ranks (Q1, F2).
 
-1. **The lease:** the cursor row `FOR UPDATE SKIP LOCKED`; a held cursor answers `busy`.
-2. **Plain reads.**
+1. **Plain reads.**
    - The journal's `change_set` rows with seq in `(processed_seq, processed_seq + p_limit]`, up to the clock's
      `last_seq`. Authority rows are passed over and count as done.
    - The active listeners.
    - For each listener and each commit after its activation seq, the matched path versions, at most 21 (§5).
-3. **Ranks:** `qorpera_folder_company_enter(env, profile, targets, refuse_paused => false)`. The targets are each matched
+2. **Ranks:** `qorpera_folder_company_enter(env, profile, targets, refuse_paused => false)`. The targets are each matched
    routine's requester (rank 1), its agent (rank 2) and the agent's execution authority (rank 3), all KEY SHARE; the
    routine FOR NO KEY UPDATE (rank 5); and the hook's targets (§8). This is the materializer's and routine firing's
    prefix (fence KEY SHARE, rank 0, ranks 1 to 5).
+3. **The lease:** the cursor row `FOR UPDATE SKIP LOCKED` (§3). A held cursor answers `busy`. If `processed_seq` moved
+   since the plain read, the step answers `raced` and the next tick reads again.
 4. **Re-checks under the locks:**
-   - each matched routine is still active;
-   - its current version is the matched one;
-   - its activation seq is below the change's seq.
-   A routine that fails is passed over for those changes.
+   - each matched routine is still active, and its current version is the matched one;
+   - its activation seq is below the change's seq;
+   - it has neither expired (`expires_at`) nor reached its occurrence limit, as the restore of a dynamic routine run
+     checks (20260930009500), so the lifecycle trigger's 55000 does not fail the step.
+   A routine that fails is passed over for those changes. Each insert also runs in a subtransaction that catches 55000
+   and skips that wake, in case the trigger refuses for a reason the re-check missed.
 5. **Sessions:** each matched routine's public session KEY SHARE (`qorpera_folder_wake_public_session`), as routine
    firing takes it before admission.
 6. **Admission:** `qorpera_folder_admit_wakes(profile)`.
@@ -184,6 +191,10 @@ It is a plain read, through the clock and the cursor.
 companies, one company per request, through new edge actions `folder_listen_due` and `folder_listen_company`. The wakes
 a step inserts are then materialized in the same pass. Commits don't nudge the orchestrator, so a file wake waits at
 most one 2 s poll.
+- **Its own pause and failures** (Q1): the listen step has its own 400 pause, since an edge function that predates its
+  actions answers 400. A listen failure goes into the pass's `RoutineWakeAdmissionErrors` aggregate. Neither ever stops
+  the materializer's list.
+- The orchestrator wiring is this slice's, added to #756's files once #756 has merged.
 
 ## 10. Erasure
 
@@ -222,7 +233,9 @@ cutoff time (by `created_at`, with a cursor and the step's budget). Each matched
 - the refusals of §7 are gone.
 
 888 (dblink):
-- two drains of one company: the second answers `busy`;
+- two drains of one company: the second answers `busy` (or `raced`);
+- a drain against the company purge: they meet at the fence, never in a cycle;
+- an expired routine, or one at its occurrence limit, is passed over without failing the step;
 - a drain against a commit that edits the routine, and against routine firing;
 - the drain against the materializer;
 - lock order: no wait from a commit on a drain's lease.
