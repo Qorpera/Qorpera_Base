@@ -105,12 +105,28 @@ it("leaves a code point cut by the window for the next one, and refuses bytes th
 		CloudToolRefusal,
 		"COMPANY_FILE_NOT_TEXT",
 	);
-	await refuses(
-		f.call("company_read", { path: "notes.md", offset: 99, limit: 4 }),
-		CloudToolArgumentRefusal,
-		"past the end",
-	);
 	expect(f.releases).toHaveLength(2);
+	// Past the end: an empty window, which still shows (and releases) the file's size and version.
+	const past = await f.call("company_read", { path: "notes.md", offset: 99, limit: 4 });
+	expect(parse(past)).toMatchObject({ offset: 99, bytesRead: 0, totalBytes: 7, text: "", nextOffset: null });
+	expect(past.companyReadId).toBe(f.releases[2]?.p_release_id);
+});
+
+it("refuses an answer that cannot reach the model whole, before releasing anything", async () => {
+	// Each & is escaped to six bytes by the fence: even the smallest answer for this path would be cut.
+	const name = `d/${"&".repeat(1300)}.md`;
+	const f = await fixture({ files: { [name]: "x" } });
+	await refuses(
+		f.call("company_read", { path: name, offset: 0, limit: 4 }),
+		CloudToolRefusal,
+		"COMPANY_FILE_ANSWER_TOO_LONG",
+	);
+	await refuses(
+		f.call("company_list", { path: "d", after: null, limit: 5 }),
+		CloudToolRefusal,
+		"COMPANY_FILE_ANSWER_TOO_LONG",
+	);
+	expect(f.releases).toHaveLength(0);
 });
 
 it("cuts a window whose answer would not fit one result, so the model sees all it is released for", async () => {
@@ -247,6 +263,7 @@ it("answers a stale version and a missing folder as not applied, with what to do
 		}),
 	);
 	expect(exists).toMatchObject({ outcome: "conflict", reason: "exists" });
+	expect(exists.next).toContain("COMPANY_FILE_EXISTS");
 	const orphan = parse(
 		await f.call("company_write", {
 			path: "none/plan.md",
@@ -258,6 +275,31 @@ it("answers a stale version and a missing folder as not applied, with what to do
 	expect(orphan).toMatchObject({ state: "not_applied", outcome: "refused", reason: "parent_missing" });
 	expect(orphan.next).toContain("COMPANY_FILE_PARENT_MISSING");
 	expect(f.text("docs/plan.md")).toBe("one");
+});
+
+it("keeps a changed file's media type and executable bit", async () => {
+	const f = await fixture({ files: { "code/run.sh": "echo one" } });
+	const stored = f.files.get("code/run.sh");
+	if (!stored) throw new Error("No seeded script");
+	stored.file = { ...stored.file, mediaType: "text/x-shellscript", executable: true };
+	const answer = parse(
+		await f.call("company_write", {
+			path: "code/run.sh",
+			operationKey: "write-1",
+			expectedVersion: stored.version,
+			text: "echo two",
+		}),
+	);
+	expect(answer).toMatchObject({ state: "applied" });
+	expect(f.commits[0]?.units[0]?.file).toMatchObject({ mediaType: "text/x-shellscript", executable: true });
+	// A new file gets the type its name gives.
+	await f.call("company_write", {
+		path: "code/new.md",
+		operationKey: "write-2",
+		expectedVersion: null,
+		text: "# New",
+	});
+	expect(f.commits[1]?.units[0]?.file).toMatchObject({ mediaType: "text/markdown", executable: false });
 });
 
 it("makes a folder, and refuses a version for one", async () => {
@@ -307,6 +349,20 @@ it("deletes an empty folder as of the listing that found it empty, and refuses a
 		"COMPANY_FOLDER_NOT_EMPTY",
 	);
 	expect(f.commits).toHaveLength(1);
+});
+
+it("answers a folder that changed after the listing that found it empty as a conflict", async () => {
+	const f = await fixture({ files: { "busy/new.md": "new" } });
+	const version = parse(await f.call("company_read", { path: "busy", offset: 0, limit: 4 })).version as string;
+	// The listing found it empty before the file came: the deletion is as of that listing.
+	vi.spyOn(f.folder, "list").mockResolvedValueOnce({ asOfSeq: 0, entries: [], next: null });
+	const answer = parse(
+		await f.call("company_delete", { path: "busy", operationKey: "delete-1", expectedVersion: version }),
+	);
+	expect(answer).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "unseen_change" });
+	expect(answer.next).toContain("COMPANY_FILE_VERSION_CHANGED");
+	expect(f.commits[0]?.units[0]).toMatchObject({ op: "delete", path: "busy", asOfSeq: 0 });
+	expect(f.files.has("busy/new.md")).toBe(true);
 });
 
 it("refuses a deletion with no approval before anything is written", async () => {

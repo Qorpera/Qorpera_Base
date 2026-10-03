@@ -58,11 +58,6 @@ function releaseId(runId: string, callId: string, outputSha256: string): string 
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** The commit's operation key for a model's change: fixed length, and distinct per tool. */
-function commitKey(tool: MutationTool, operationKey: string): string {
-	return `${tool}:${createHash("sha256").update(operationKey).digest("hex")}`;
-}
-
 function args(value: JsonValue, tool: string, keys: readonly string[]): Record<string, JsonValue> {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal(`${tool} takes an object with ${keys.join(", ")}`);
@@ -118,7 +113,9 @@ function unavailable(error: unknown, what: string): never {
 	throw new CloudToolRefusal(`COMPANY_FOLDER_UNAVAILABLE: the company folder could not be ${what} now; try again`);
 }
 
-/** Releases what an answer shows under the hash of exactly its text, and returns the text with its citation. */
+/** Releases what an answer shows under the hash of exactly its text, and returns the text with its citation. An
+ * answer that cannot reach the model whole (its smallest form is still cut by the fence) is refused before anything is
+ * released. */
 async function released(
 	folder: CloudCompanyFolderClient,
 	runId: string,
@@ -126,6 +123,10 @@ async function released(
 	text: string,
 	reads: readonly CloudCompanyFolderRelease[],
 ): Promise<CloudToolContent> {
+	if (!fitsOneResult(text))
+		throw new CloudToolRefusal(
+			"COMPANY_FILE_ANSWER_TOO_LONG: the answer for this path does not fit one tool result (its path is too long to show); nothing was read",
+		);
 	context.observation?.update({ outputBytes: Buffer.byteLength(text) });
 	if (reads.length === 0) return { kind: "text", value: text };
 	const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
@@ -165,17 +166,19 @@ function mutationText(
 			? undefined
 			: unit.outcome === "waiting_for_review"
 				? "The change waits for a member's approval: do not make it again; tell the member it is waiting for them."
-				: unit.outcome === "conflict"
-					? `COMPANY_FILE_VERSION_CHANGED: nothing was written; the path ${reason === "exists" ? "exists" : reason === "missing" ? "is gone" : "changed"} since your version. Read it again and make the change on its current version under a new operationKey.`
-					: reason === "parent_missing"
-						? "COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When a member or your assignment named it, or a category of files needs it as its home, create it with company_mkdir first (outermost first) and repeat with a new operationKey; otherwise put a single file in an existing folder where it fits."
-						: reason === "review_required"
-							? tool === "company_delete"
-								? "Nothing was deleted: the deletion needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
-								: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine), not with a file write."
-							: unit.outcome === "denied"
-								? "COMPANY_FILE_ACCESS_DENIED: you may not change this path; nothing was written."
-								: `Nothing was written (${reason || "refused"})${unit.problems.length ? ": fix the problems listed and call again with a new operationKey" : ""}.`;
+				: reason === "exists"
+					? "COMPANY_FILE_EXISTS: nothing was written; something is already at that path. Read it and change it under its version, or choose another path, with a new operationKey."
+					: unit.outcome === "conflict"
+						? `COMPANY_FILE_VERSION_CHANGED: nothing was written; the path ${reason === "missing" ? "is gone" : "changed"} since your version. Read it again and make the change on its current version under a new operationKey.`
+						: reason === "parent_missing"
+							? "COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When a member or your assignment named it, or a category of files needs it as its home, create it with company_mkdir first (outermost first) and repeat with a new operationKey; otherwise put a single file in an existing folder where it fits."
+							: reason === "review_required"
+								? tool === "company_delete"
+									? "Nothing was deleted: the deletion needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
+									: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine), not with a file write."
+								: unit.outcome === "denied"
+									? "COMPANY_FILE_ACCESS_DENIED: you may not change this path; nothing was written."
+									: `Nothing was written (${reason || "refused"})${unit.problems.length ? ": fix the problems listed and call again with a new operationKey" : ""}.`;
 	return cloudToolJsonText({
 		schema: "qorpera.company-folder-result/v1",
 		state: unit.outcome === "saved" ? "applied" : unit.outcome === "waiting_for_review" ? "proposed" : "not_applied",
@@ -231,7 +234,8 @@ export function cloudFolderFileTools(options: {
 			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
 			perform: async (_operation, { receiptId, signal }) => {
-				const key = commitKey(tool, request.operationKey);
+				// The commit's operation key for the model's: fixed length, and distinct per tool.
+				const key = `${tool}:${createHash("sha256").update(request.operationKey).digest("hex")}`;
 				let committed: Awaited<ReturnType<CloudCompanyFolderClient["commit"]>>;
 				if (review === undefined) committed = await folder.commit(key, units, { receiptId }, signal);
 				else {
@@ -297,16 +301,15 @@ export function cloudFolderFileTools(options: {
 						cloudToolJsonText({ path: entry.path, kind: "folder", version: entry.version }),
 						[cloudCompanyFolderRelease(entry)],
 					);
+				// An offset at or past the end reads an empty window, which still shows the file's size and version.
 				const total = entry.file.bytes;
-				if (input.offset > total)
-					throw new CloudToolArgumentRefusal(`offset is past the end of this file (${total} bytes)`);
 				let bytes: Uint8Array;
 				try {
 					bytes = await folder.readRange(entry, input.offset, input.limit, context.signal);
 				} catch (error) {
 					return unavailable(error, "read");
 				}
-				const atEnd = input.offset + bytes.byteLength === total;
+				const atEnd = input.offset + bytes.byteLength >= total;
 				const text = windowText(bytes, atEnd);
 				if (text === null)
 					throw new CloudToolRefusal(
@@ -448,6 +451,13 @@ export function cloudFolderFileTools(options: {
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string | null; text: string };
 				context.observation?.update({ inputBytes: Buffer.byteLength(input.text) });
+				// A change of a file keeps its media type and executable bit (a script stays runnable). Read before the receipt
+				// and changing nothing: a file at another version makes the commit a conflict anyway.
+				const current = input.expectedVersion === null ? null : await read(input.path, "written", context.signal);
+				const kept =
+					current?.kind === "file" && current.version === input.expectedVersion
+						? { mediaType: current.file.mediaType, executable: current.file.executable }
+						: {};
 				return change(
 					"company_write",
 					input,
@@ -460,7 +470,7 @@ export function cloudFolderFileTools(options: {
 						{
 							op: "write",
 							path: input.path,
-							content: { text: input.text },
+							content: { text: input.text, ...kept },
 							...(input.expectedVersion === null ? {} : { expectedVersion: input.expectedVersion }),
 						},
 					],
