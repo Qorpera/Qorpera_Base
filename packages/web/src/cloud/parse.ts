@@ -427,7 +427,7 @@ export function parseStaffList(value: unknown): HostedStaffAgent[] {
 
 /** Minutes come only with a stall time. */
 function noStallMinutes(minutes: unknown): Record<string, never> {
-	if (minutes !== undefined && minutes !== null) throw new Error("Cloud returned stall minutes without a stall time");
+	if (minutes !== undefined && minutes !== null) throw new CloudShapeError("stall minutes without a stall time");
 	return {};
 }
 

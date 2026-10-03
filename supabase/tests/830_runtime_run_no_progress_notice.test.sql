@@ -182,6 +182,12 @@ begin
 	if (pg_temp.bob() ->> 'no_progress_since')::timestamptz is distinct from (select max(ingested_at)
 		from public.qorpera_runtime_observations where run_id = pg_temp.run() and operation <> 'message_composition') then
 		raise exception 'E: writing pulses are no progress: %', pg_temp.bob(); end if;
+	-- Both halves read the same rows: a tool call in flight behind later pulses is still waited on.
+	perform pg_temp.forget(true);
+	perform pg_temp.observe('computer_shell', 'start', 18);
+	perform pg_temp.observe('message_composition', 'start', 0);
+	if pg_temp.bob() ? 'no_progress_since' then
+		raise exception 'E: a tool call in flight behind pulses is no stall: %', pg_temp.bob(); end if;
 end
 $$;
 
