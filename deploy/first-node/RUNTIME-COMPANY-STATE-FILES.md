@@ -2102,7 +2102,9 @@ KEY SHARE would come in apply), and a key index that is not unique. It holds onl
   `table.toml` (by its parse's id) or `rows.csv` (by its folder's live row), a new folder holding them, and a delete or
   move at or above a table folder (never the seeded `tables` root, which is refused anyway).
 - **The window:** a row created after this commit read its targets is locked by nobody. So a save finding a table row
-  changed by a commit after this one's `as_of_seq` answers `version_changed`, H2's guard: the caller reads again.
+  changed by a commit after this one's `as_of_seq` answers `version_changed`, H2's guard: the caller reads again. A
+  delete or move of a table folder does the same for every live table row at or under its source, so apply never
+  repoints or retires a row it did not lock.
 - **Apply** writes the row: a first `table.toml` inserts it (a retired row of that id is reused), a save moves its
   versions, a move repoints every row at or under the source to its new path and versions (counting them, and raising
   on a mismatch, as H2 and F2-5b do), and a delete retires them. **Verify** checks every row the commit wrote: its

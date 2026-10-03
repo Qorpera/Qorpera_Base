@@ -130,9 +130,10 @@ select set_config('qorpera_test.p_two', jsonb_build_array(pg_temp.w('interfaces/
 	pg_temp.iface('86600000-0000-4000-8000-000000000002', true)))::text, false) \g /dev/null
 select set_config('qorpera_test.g_rows', jsonb_build_array(pg_temp.w('tables/race-g/rows.csv',
 	pg_temp.rows(array[array['Revenue','€'], array['Visits','count']])))::text, false) \g /dev/null
+-- (An asOfSeq past every change, so the core's unseen_change never answers first and the table guard does.)
 select set_config('qorpera_test.g_move', jsonb_build_array(jsonb_build_object('op','move','from','tables/race-g','to','tables/race-h',
 	'expectedVersion',pg_temp.version('tables/race-g'),
-	'asOfSeq',(select last_seq from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
+	'asOfSeq',(select last_seq + 1000000 from public.qorpera_folder_clocks where environment_id = '64800000-0000-4000-8000-000000000020')))::text,
 	false) \g /dev/null
 -- Two new tables with one id, in two folders.
 select set_config('qorpera_test.t_one', jsonb_build_array(pg_temp.table_folder('tables/twin-one',
@@ -258,7 +259,8 @@ begin
 		raise exception 'The move must queue on the table''s row, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	r := pg_temp.result('fence_two')::jsonb;
-	if r -> 'units' -> 0 ->> 'outcome' = 'saved' then raise exception 'A move behind a rows save moved what it did not read: %', r; end if;
+	if r -> 'units' -> 0 ->> 'reason' is distinct from 'version_changed' then
+		raise exception 'A move behind a rows save reads again: %', r; end if;
 	if (pg_temp.trow('tables/race-g')).rows_version is distinct from pg_temp.version('tables/race-g/rows.csv') then
 		raise exception 'The table stays with its new rows'; end if;
 end $$;

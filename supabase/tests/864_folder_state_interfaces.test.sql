@@ -329,6 +329,12 @@ begin
 		'A structured index row does not point at its file''s current version')
 	from unnest(array['definition_version = gen_random_uuid()', 'rows_version = gen_random_uuid()', 'rows_version = null',
 		'folder_path = ''tables/Figures''']) set_to;
+	-- A file never lands on a root (only while a root folder is missing can a unit try it).
+	if public.qorpera_company_state_interface_paths('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', m,
+			null, 'write', 'tables', null, '{}'::jsonb, 'tables', null) -> 'problems' -> 0 ->> 'code' is distinct from 'placement'
+		or public.qorpera_company_state_interface_paths('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010', m,
+			null, 'mkdir', 'interfaces', null, '{}'::jsonb, 'interfaces', null) is not null then
+		raise exception 'A file on a root is refused; the root folder itself lands'; end if;
 	-- Other files in a table's folder, and README's spelling.
 	r := pg_temp.commit(m, 'p16-place-0006b', jsonb_build_array(
 		pg_temp.p16_write(m, 'tables/figures/other.csv', '"a,b"'),
