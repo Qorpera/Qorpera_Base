@@ -223,7 +223,7 @@ begin
 			return jsonb_build_object('ok', false, 'reason', 'version_changed'); end if;
 		select * into v_run from public.qorpera_execution_runs where id = (p_actor ->> 'runId')::uuid;
 		select * into v_todo from public.qorpera_runtime_agent_todos t where t.folder_environment_id = p_environment_id
-			and t.folder_retired_at is null and t.folder_path = public.qorpera_company_state_worker_todo_file(v_folder) collate "C";
+			and t.folder_retired_at is null and public.qorpera_folder_key(t.folder_path) = public.qorpera_company_state_worker_todo_file(v_folder);
 		-- A run of the folder's own agent.
 		if v_run.id is null or not exists (select 1 from public.qorpera_profile_staff s
 			where s.profile_id = p_profile_id and s.staff_agent_id = v_staff and s.folder_environment_id = p_environment_id
@@ -354,7 +354,7 @@ begin
 	end if;
 	if v_action = 'dispatch' then
 		select t.id into strict v_todo from public.qorpera_runtime_agent_todos t where t.folder_environment_id = p_environment_id
-			and t.folder_retired_at is null and t.folder_path = public.qorpera_company_state_worker_todo_file(v_folder) collate "C";
+			and t.folder_retired_at is null and public.qorpera_folder_key(t.folder_path) = public.qorpera_company_state_worker_todo_file(v_folder);
 		insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title,
 			access, revival, dispatch, requested_by_user_id, steering_run_id, folder_environment_id, folder_path, folder_key,
 			folder_brief_version, folder_commit_id)
@@ -432,7 +432,7 @@ begin
 			rank := 5; tbl := 'qorpera_runtime_agent_todos'; key := v_row.todo_id::text; mode := 'share'; return next;
 		end loop;
 		for v_row in select t.id from public.qorpera_runtime_agent_todos t where t.folder_environment_id = p_environment_id
-			and t.folder_retired_at is null and t.folder_path = public.qorpera_company_state_worker_todo_file(v_folder) collate "C" loop
+			and t.folder_retired_at is null and public.qorpera_folder_key(t.folder_path) = public.qorpera_company_state_worker_todo_file(v_folder) loop
 			rank := 5; tbl := 'qorpera_runtime_agent_todos'; key := v_row.id::text; mode := 'share'; return next;
 		end loop;
 		for v_entry in select e.value from jsonb_array_elements(case when jsonb_typeof(p_unit -> 'structured') = 'array'
