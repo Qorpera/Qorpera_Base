@@ -155,13 +155,13 @@ begin
 		|| E'\t\t\t\t\t\t\t\t\tthen ''A member stopped the background work.'' -- gap 4b (20260930002800)\n'
 		|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
 		E'''summary'', case when v_wake_status');
-	perform pg_temp.wake_assert(md5(v_text) = 'MASTER_DRAIN_MD5', 'F: the drain''s text changed: ' || md5(v_text));
+	perform pg_temp.wake_assert(md5(v_text) = 'c3eb3118b42011add23a6fb9ad47f2c1', 'F: the drain''s text changed: ' || md5(v_text));
 	v_text := replace(replace(replace(pg_get_functiondef('public.qorpera_notify_runs_without_progress()'::regprocedure),
 		E'\t\t\tpublic.qorpera_is_member_worker_run(run) as worker, -- gap 4b (20260930002800)\n', ''),
 		E'\n\t\t\t\tor (stalled.worker and member.role = ''contributor'' and member.user_id = stalled.created_by_user_id) end',
 		E' end'),
 		E', ''worker'', told.worker),', E'),');
-	perform pg_temp.wake_assert(md5(v_text) = 'GAP4_SWEEP_MD5', 'F: the sweep''s text changed: ' || md5(v_text));
+	perform pg_temp.wake_assert(md5(v_text) = 'af06208fad40cbd62ee34f15fa9fc514', 'F: the sweep''s text changed: ' || md5(v_text));
 end
 $$;
 
