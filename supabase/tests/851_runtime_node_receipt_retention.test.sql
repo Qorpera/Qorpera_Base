@@ -1,8 +1,8 @@
 begin;
 -- Node receipt retention (20260930004000): per node, the receipt its latest row names and the last seven
 -- days are kept, oldest first deleted, each receipt with its inventory row, in calls of at most 500; the
--- computer-hour meter's position holds the cut back; a node whose latest report has no inventory keeps
--- everything; pg_cron runs it every five minutes; no API role reaches it.
+-- computer-hour meter's position holds the cut back; every run records its outcome in a private status row;
+-- pg_cron runs it every five minutes, off the minutes of the other five-minute jobs; no API role reaches it.
 create function pg_temp.ok(p_value boolean, p_message text) returns void language plpgsql as $$
 begin if p_value is distinct from true then raise exception '%', p_message; end if; end $$;
 create function pg_temp.claims(p_role text) returns void language sql as $$
@@ -41,12 +41,22 @@ from unnest(array['anon', 'authenticated', 'service_role', 'qorpera_secret_broke
 cross join unnest(array['public.qorpera_purge_runtime_node_receipts(integer)',
 	'public.qorpera_run_runtime_node_receipt_retention()',
 	'public.qorpera_schedule_runtime_node_receipt_retention()']) signature;
-select pg_temp.ok((select prosecdef and proconfig = array['search_path=""'] from pg_proc
-		where oid = signature::regprocedure), signature || ' is not security definer with an empty search path')
+-- Their one-second lock limit is an attribute, restored for the caller after each call.
+select pg_temp.ok((select prosecdef and proconfig = array['search_path=""', 'lock_timeout=1s'] from pg_proc
+		where oid = signature::regprocedure), signature || ' is not security definer with an empty search path and a 1 s lock limit')
 from unnest(array['public.qorpera_purge_runtime_node_receipts(integer)',
 	'public.qorpera_run_runtime_node_receipt_retention()']) signature;
 select pg_temp.ok(not (select prosecdef from pg_proc where oid = 'public.qorpera_schedule_runtime_node_receipt_retention()'::regprocedure),
 	'The scheduling helper runs as its caller');
+-- The status row is private: row security on, no API role may read or write it.
+select pg_temp.ok((select relrowsecurity from pg_class where oid = 'public.qorpera_runtime_node_receipt_retention_status'::regclass),
+	'The retention status has no row security');
+select pg_temp.ok(not has_table_privilege(role_name, 'public.qorpera_runtime_node_receipt_retention_status', privilege),
+	'The retention status allows ' || privilege || ' to ' || role_name)
+from unnest(array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) role_name
+cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE']) privilege;
+select pg_temp.ok((select count(*) = 1 and bool_and(ran_at is null) from public.qorpera_runtime_node_receipt_retention_status),
+	'The retention status is not one empty row before the first run');
 
 -- What the purge may delete: the inventory row's foreign key is the only one into either table, and
 -- neither table has triggers. A new reference must revisit the retention before it can fail it.
@@ -77,6 +87,11 @@ begin
 		raise exception 'A lock timeout did not end the run cleanly: %', v_result; end if;
 	if v_waited < interval '0.9 seconds' or v_waited > interval '3 seconds' then
 		raise exception 'The purge waited % for a lock, not about a second', v_waited; end if;
+	-- The run is recorded all the same; with nothing purged there is no cut yet.
+	if not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
+			where ran_at >= v_started and stopped = 'lock_timeout' and calls = 0 and observations = 0 and inventories = 0
+				and cutoff is null and held_by_meter is null and held_by_meter_since is null) then
+		raise exception 'A lock-timed-out run was not recorded'; end if;
 end
 $$;
 
@@ -100,15 +115,18 @@ select pg_temp.receipt('85100000-0000-4000-8000-00000000000b', 'd' || days, now(
 from unnest(array[13, 12, 10]) days;
 select pg_temp.latest('85100000-0000-4000-8000-00000000000b',
 	pg_temp.receipt('85100000-0000-4000-8000-00000000000b', 'd9', now() - interval '9 days', true));
--- Node C's latest scan failed (no inventory): its old inventory must stay, so nothing of it goes.
+-- Node C's latest scan failed (no inventory). Nothing reads an older inventory for it, so it keeps only
+-- its latest and its last seven days like any node: 10 old receipts (5 with inventory) go, 3 recent stay.
 select pg_temp.receipt('85100000-0000-4000-8000-00000000000c', 'old-' || n, now() - interval '10 days' - n * interval '1 minute', n % 2 = 0)
 from generate_series(1, 10) n;
+select pg_temp.receipt('85100000-0000-4000-8000-00000000000c', 'recent-' || days, now() - days * interval '1 day', true)
+from generate_series(1, 3) days;
 select pg_temp.latest('85100000-0000-4000-8000-00000000000c',
 	pg_temp.receipt('85100000-0000-4000-8000-00000000000c', 'latest', now() - interval '5 seconds', false));
 
 -- One call deletes at most its limit, 1 to 500, oldest first, each receipt with its inventory row.
 do $$
-declare v_limit integer; v_result jsonb;
+declare v_limit integer; v_result jsonb; v_lock_timeout text := current_setting('lock_timeout');
 begin
 	foreach v_limit in array array[0, 501, -1] loop
 		begin
@@ -123,8 +141,7 @@ begin
 	-- The 7 oldest of node A: old-12000 down to old-11994, of which 4 have inventory.
 	v_result := pg_temp.purge(7);
 	if v_result - 'cutoff' <> jsonb_build_object('schema', 'qorpera.runtime-node-receipt-retention/v1', 'busy', false,
-			'observations', 7, 'inventories', 4, 'moreEligible', true, 'heldByMeter', false,
-			'nodesWithoutLatestInventory', 0, 'retentionDays', 7)
+			'observations', 7, 'inventories', 4, 'moreEligible', true, 'heldByMeter', false, 'retentionDays', 7)
 		or (v_result ->> 'cutoff')::timestamptz <> now() - interval '7 days' then
 		raise exception 'The first call differs: %', v_result; end if;
 	if exists (select 1 from public.qorpera_runtime_node_observation_receipts
@@ -134,9 +151,9 @@ begin
 		or pg_temp.receipts('85100000-0000-4000-8000-00000000000a') <> 12021 - 7
 		or pg_temp.inventories('85100000-0000-4000-8000-00000000000a') <> 6021 - 4 then
 		raise exception 'The first call did not delete exactly the seven oldest receipts'; end if;
-	-- The body sets the lock wait for its transaction.
-	if current_setting('lock_timeout') <> '1s' then
-		raise exception 'The purge does not limit lock waits: %', current_setting('lock_timeout'); end if;
+	-- Its one-second lock limit does not stay with the caller.
+	if current_setting('lock_timeout') <> v_lock_timeout then
+		raise exception 'The purge left lock_timeout at % for its caller', current_setting('lock_timeout'); end if;
 	v_result := pg_temp.purge(500);
 	if v_result ->> 'observations' <> '500' or v_result ->> 'inventories' <> '250' or v_result -> 'moreEligible' <> 'true'::jsonb
 		or pg_temp.receipts('85100000-0000-4000-8000-00000000000a') <> 12021 - 507 then
@@ -162,6 +179,13 @@ begin
 		or v_result -> 'heldByMeter' <> 'true'::jsonb
 		or (v_result ->> 'cutoff')::timestamptz <> now() - interval '11 days' then
 		raise exception 'One run exceeded its bound or ignored the meter: %', v_result; end if;
+	-- Recorded: the hold began when the meter fell six days behind, four days ago here.
+	if not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
+			where stopped = v_stopped and calls = (v_result ->> 'calls')::integer
+				and observations = (v_result ->> 'observations')::bigint and inventories = (v_result ->> 'inventories')::bigint
+				and cutoff = now() - interval '11 days' and held_by_meter and held_by_meter_since = now() - interval '4 days') then
+		raise exception 'The held run was not recorded: %',
+			(select to_jsonb(status) from public.qorpera_runtime_node_receipt_retention_status status); end if;
 	v_total := (v_result ->> 'observations')::integer;
 	loop
 		v_runs := v_runs + 1;
@@ -170,8 +194,9 @@ begin
 		exit when v_result ->> 'stopped' = 'done' or v_runs >= 10;
 	end loop;
 	if v_result ->> 'stopped' <> 'done' or v_total <> 7173 + 2
-		or exists (select 1 from public.qorpera_runtime_node_observation_receipts
-			where node_id <> '85100000-0000-4000-8000-00000000000c' and observed_at < now() - interval '11 days')
+		or exists (select 1 from public.qorpera_runtime_node_observation_receipts where observed_at < now() - interval '11 days')
+		or not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
+			where stopped = 'done' and held_by_meter and held_by_meter_since = now() - interval '4 days')
 		or (select count(*) from public.qorpera_runtime_node_observation_receipts where observed_at >= now() - interval '11 days') <> v_kept then
 		raise exception 'The meter''s cut was not honoured (deleted %): %', v_total, v_result; end if;
 	-- Every deleted receipt took its inventory row along, and only those: node A's even old-4322 to
@@ -181,7 +206,7 @@ begin
 end
 $$;
 
--- With the meter current, everything older than seven days goes but each node's latest; node C keeps all.
+-- With the meter current, everything older than seven days goes but each node's latest.
 update public.qorpera_computer_hour_meter set metered_until = now();
 do $$
 declare v_result jsonb; v_runs integer := 0;
@@ -192,8 +217,9 @@ begin
 		exit when v_result ->> 'stopped' = 'done' or v_runs >= 10;
 	end loop;
 	if v_result ->> 'stopped' <> 'done' or v_result -> 'heldByMeter' <> 'false'::jsonb
-		or v_result ->> 'nodesWithoutLatestInventory' <> '1' then
-		raise exception 'Retention did not finish: %', v_result; end if;
+		or not exists (select 1 from public.qorpera_runtime_node_receipt_retention_status
+			where stopped = 'done' and cutoff = now() - interval '7 days' and not held_by_meter and held_by_meter_since is null) then
+		raise exception 'Retention did not finish, or the hold was not cleared: %', v_result; end if;
 	-- Node A: its latest and its last day, every one with its inventory.
 	if pg_temp.receipts('85100000-0000-4000-8000-00000000000a') <> 21 or pg_temp.inventories('85100000-0000-4000-8000-00000000000a') <> 21
 		or exists (select 1 from public.qorpera_runtime_node_observation_receipts
@@ -204,9 +230,13 @@ begin
 			where node_id = '85100000-0000-4000-8000-00000000000b') <> array[md5('85100000-0000-4000-8000-00000000000b:d9')::uuid]
 		or pg_temp.inventories('85100000-0000-4000-8000-00000000000b') <> 1 then
 		raise exception 'A silent node lost its latest receipt or kept older ones'; end if;
-	-- Node C: everything, because its newest inventory is older than its latest report.
-	if pg_temp.receipts('85100000-0000-4000-8000-00000000000c') <> 11 or pg_temp.inventories('85100000-0000-4000-8000-00000000000c') <> 5 then
-		raise exception 'A node whose latest report has no inventory lost receipts'; end if;
+	-- Node C: its latest (no inventory) and its last seven days; its older inventory went.
+	if (select array_agg(observation_id order by observed_at) from public.qorpera_runtime_node_observation_receipts
+			where node_id = '85100000-0000-4000-8000-00000000000c') <> array[md5('85100000-0000-4000-8000-00000000000c:recent-3')::uuid,
+				md5('85100000-0000-4000-8000-00000000000c:recent-2')::uuid, md5('85100000-0000-4000-8000-00000000000c:recent-1')::uuid,
+				md5('85100000-0000-4000-8000-00000000000c:latest')::uuid]
+		or pg_temp.inventories('85100000-0000-4000-8000-00000000000c') <> 3 then
+		raise exception 'A node whose latest report has no inventory kept other than its latest and last seven days'; end if;
 	-- Nothing left: one short call, nothing deleted.
 	v_result := pg_temp.run();
 	if v_result ->> 'calls' <> '1' or v_result ->> 'observations' <> '0' or v_result ->> 'inventories' <> '0'
@@ -238,7 +268,8 @@ begin
 end
 $$;
 
--- One run at a time: another session meanwhile answers busy and deletes nothing.
+-- One run at a time: another session meanwhile answers busy and deletes nothing. Its status write waits
+-- on this session's uncommitted one, times out after a second and is only a warning: the run still answers.
 do $$
 begin
 	perform pg_advisory_xact_lock(hashtextextended('qorpera.runtime-node-receipt-retention', 0));
@@ -251,7 +282,7 @@ end
 $$;
 
 -- pg_cron is not part of the test database. A stand-in with pg_cron's schedule-by-name contract shows the
--- helper schedules one job, idempotently, every five minutes, whose command runs as its owner.
+-- helper schedules one job, idempotently, every five minutes from minute 2, whose command runs as its owner.
 do $$
 declare v_first jsonb; v_second jsonb; v_command text;
 begin
@@ -273,8 +304,8 @@ begin
 	v_second := public.qorpera_schedule_runtime_node_receipt_retention();
 	if v_first ->> 'scheduled' <> 'true' or v_second -> 'jobId' <> v_first -> 'jobId'
 		or (select count(*) from cron.job where jobname = 'qorpera-runtime-node-receipts-retention') <> 1
-		or (select schedule from cron.job where jobname = 'qorpera-runtime-node-receipts-retention') <> '*/5 * * * *' then
-		raise exception 'Node receipt retention is not scheduled exactly once every five minutes'; end if;
+		or (select schedule from cron.job where jobname = 'qorpera-runtime-node-receipts-retention') <> '2-59/5 * * * *' then
+		raise exception 'Node receipt retention is not scheduled exactly once every five minutes, at minutes 2, 7, ...'; end if;
 	select command into v_command from cron.job where jobname = 'qorpera-runtime-node-receipts-retention';
 	if v_command <> 'select public.qorpera_run_runtime_node_receipt_retention()' then
 		raise exception 'Scheduled retention runs another command: %', v_command; end if;
