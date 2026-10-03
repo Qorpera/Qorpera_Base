@@ -614,10 +614,17 @@ function parseFolderDynamicRoutinePage(value: unknown): CloudFolderDynamicRoutin
 	return {
 		items: input.items.map((value) => {
 			const item = record(value, "folder dynamic routine");
-			if (!Number.isSafeInteger(item.version) || (item.version as number) < 1 || (item.version as number) > 1_000_000) {
+			if (
+				!Number.isSafeInteger(item.version) ||
+				(item.version as number) < 1 ||
+				(item.version as number) > 1_000_000
+			) {
 				throw new Error("Runner orchestrator returned an invalid folder dynamic routine version");
 			}
-			return { routineId: responseUuid(item.routine_id, "folder dynamic routine id"), version: item.version as number };
+			return {
+				routineId: responseUuid(item.routine_id, "folder dynamic routine id"),
+				version: item.version as number,
+			};
 		}),
 		hasMore: input.has_more,
 		...(nextAfterRoutineId ? { nextAfterRoutineId } : {}),

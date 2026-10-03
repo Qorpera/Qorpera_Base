@@ -610,7 +610,9 @@ describe("cloud runner orchestrator", () => {
 			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 4 },
 			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 5 },
 		]);
-		await expect(control.listFolderDynamicRoutines("not-a-uuid", 250)).rejects.toThrow("Folder dynamic routine cursor");
+		await expect(control.listFolderDynamicRoutines("not-a-uuid", 250)).rejects.toThrow(
+			"Folder dynamic routine cursor",
+		);
 		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 0 })).rejects.toThrow(
 			"Routine version is invalid",
 		);
@@ -629,17 +631,18 @@ describe("cloud runner orchestrator", () => {
 		const second = "15151515-1515-4515-8515-151515151515";
 		const third = "16161616-1616-4616-8616-161616161616";
 		const control = controlPlane();
-		const list = vi.fn(async (after: string | undefined, _limit: number): Promise<CloudFolderDynamicRoutinePage> =>
-			after
-				? { items: [{ routineId: third, version: 1 }], hasMore: false }
-				: {
-						items: [
-							{ routineId: first, version: 2 },
-							{ routineId: second, version: 3 },
-						],
-						hasMore: true,
-						nextAfterRoutineId: second,
-					},
+		const list = vi.fn(
+			async (after: string | undefined, _limit: number): Promise<CloudFolderDynamicRoutinePage> =>
+				after
+					? { items: [{ routineId: third, version: 1 }], hasMore: false }
+					: {
+							items: [
+								{ routineId: first, version: 2 },
+								{ routineId: second, version: 3 },
+							],
+							hasMore: true,
+							nextAfterRoutineId: second,
+						},
 		);
 		const failure = new CloudRunnerOrchestratorRequestError(503);
 		const restore = vi.fn(async (routine: CloudFolderDynamicRoutine): Promise<CloudFolderDynamicRoutineRun> => {
@@ -681,9 +684,7 @@ describe("cloud runner orchestrator", () => {
 
 	it("lists the folder-v2 dynamic routines at most every 30 seconds, not on every poll", async () => {
 		const control = controlPlane();
-		const list = vi.fn(
-			async (): Promise<CloudFolderDynamicRoutinePage> => ({ items: [], hasMore: false }),
-		);
+		const list = vi.fn(async (): Promise<CloudFolderDynamicRoutinePage> => ({ items: [], hasMore: false }));
 		control.listFolderDynamicRoutines = list;
 		control.restoreFolderDynamicRoutineRun = vi.fn(
 			async (): Promise<CloudFolderDynamicRoutineRun> => ({ status: "pending" }),
