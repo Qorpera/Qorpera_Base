@@ -143,7 +143,7 @@ up() {
 	has_link "$BRIDGE" || ip link add "$BRIDGE" type bridge
 	# LLDP frames (01:80:c2:00:00:0e) would otherwise skip every bridge hook and reach the node's own stack on the
 	# machine's port device: forward them, so the bridge rules judge them like any other frame.
-	ip link set "$BRIDGE" type bridge group_fwd_mask 0x4000
+	ip link set "$BRIDGE" type bridge group_fwd_mask 0x4000 no_linklocal_learn 1 stp_state 0
 	# A qx-br or qx-up whose peer is not in this namespace (left from an earlier one) is replaced, and the name and
 	# log services, which may still run in the old namespace, are restarted into the new one.
 	local rebuilt=0
@@ -261,6 +261,9 @@ verify() {
 		[[ $(cat "/proc/sys/net/ipv4/conf/$BRIDGE/rp_filter") != 0 ]] || problems+=("$BRIDGE rp_filter is off")
 		[[ $(cat "/sys/class/net/$BRIDGE/bridge/group_fwd_mask") == 0x4000 ]] ||
 			problems+=("$BRIDGE does not forward LLDP frames through its rules")
+		[[ $(cat "/sys/class/net/$BRIDGE/bridge/no_linklocal_learn") == 1 ]] ||
+			problems+=("$BRIDGE learns MACs from link-local frames")
+		[[ $(cat "/sys/class/net/$BRIDGE/bridge/stp_state") == 0 ]] || problems+=("$BRIDGE runs STP")
 	fi
 	if has_ns; then
 		in_exit ip -o -4 addr show dev br0 2>/dev/null | grep -q " $GATEWAY/16 " || problems+=("br0 lacks $GATEWAY/16")

@@ -222,7 +222,8 @@ s.send(b"\xff" * 6 + bytes.fromhex(sys.argv[2].replace(":", "")) + b"\x08\x00" +
 EOF
 cat >"$work/lldp.py" <<'EOF'
 import socket, struct, sys
-# A UDP datagram from argv[2] to argv[3]:argv[4] in a frame to the LLDP group address, out of argv[1].
+# A UDP datagram from argv[2] to argv[3]:argv[4] in a frame to the LLDP group address, out of argv[1], from the card's
+# own MAC or argv[5].
 def csum(b):
     s = sum(struct.unpack("!%dH" % (len(b) // 2), b))
     while s >> 16:
@@ -230,6 +231,8 @@ def csum(b):
     return ~s & 0xffff
 iface, src, dst, port = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 own = bytes.fromhex(open("/sys/class/net/%s/address" % iface).read().strip().replace(":", ""))
+if len(sys.argv) > 5:
+    own = bytes.fromhex(sys.argv[5].replace(":", ""))
 udp = struct.pack("!HHHH", 40000, port, 12, 0) + b"lldp"
 ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 32, 7, 0, 64, 17, 0, socket.inet_aton(src), socket.inet_aton(dst))
 ip = ip[:10] + struct.pack("!H", csum(ip)) + ip[12:]
@@ -421,7 +424,11 @@ pass "a card outside the client map gets no address and no internet"
 ip netns exec agent python3 "$work/lldp.py" eth0 10.210.1.1 192.168.1.42 9999
 sleep 1
 [[ -s $work/node-udp ]] && fail "an LLDP-addressed frame reached the node: $(cat "$work/node-udp")"
-pass "an LLDP-addressed frame from a machine reaches nothing on the node"
+# Link-local frames would otherwise teach the bridge any MAC they carry, before any hook.
+ip netns exec agent python3 "$work/lldp.py" eth0 10.210.1.1 192.168.1.42 9999 0e:51:0a:d2:01:ee
+sleep 0.5
+bridge fdb show br qagent0 | grep -q 0e:51:0a:d2:01:ee && fail "an LLDP-addressed frame taught the bridge a MAC"
+pass "an LLDP-addressed frame from a machine reaches nothing on the node and teaches the bridge no MAC"
 ip netns exec agent python3 "$work/raw.py" 10.210.1.1 192.168.1.40 253
 connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
 pass "a refusal by another protocol (253) next to a TCP one"
@@ -599,6 +606,16 @@ sleep 0.5
 bridge fdb show br qagent0 | grep -q "0e:51:0a:d2:01:02 dev pv0" || fail "another machine's MAC moved: $(bridge fdb show br qagent0)"
 bridge fdb show br qagent0 | grep -q "$exit_mac dev va0" && fail "the exit's MAC moved to a machine: $(bridge fdb show br qagent0)"
 pass "a machine cannot take another machine's MAC, or the exit's, on the bridge"
+# A frame from the exit to a MAC the bridge has forgotten is flooded to every port; it must reach only its own.
+nft add table bridge flood_count
+nft add chain bridge flood_count seen '{ type filter hook forward priority 100; }'
+nft add rule bridge flood_count seen oifname "pv0" ether daddr 0e:51:0a:d2:01:01 counter
+bridge fdb del 0e:51:0a:d2:01:01 dev va0 master 2>/dev/null || true
+ip netns exec qexit busybox ping -c 1 -W 1 10.210.1.1 >/dev/null 2>&1 || true
+nft list chain bridge flood_count seen | grep -q 'packets 0 ' ||
+	fail "the exit's frame to a forgotten MAC reached another machine: $(nft list chain bridge flood_count seen)"
+nft delete table bridge flood_count
+pass "a frame from the exit to a MAC the bridge has forgotten reaches no other machine"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vm1:Stopped:10.210.1.2:c1:m1:u1:"
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/plug-stopped/10.210.1.2"
 ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null | grep -q 1.1.1.1 && fail "the exit kept a sleeping machine's connections"

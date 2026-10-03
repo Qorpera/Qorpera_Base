@@ -42,8 +42,14 @@ table bridge qorpera_agent_exit_bridge {
 	chain forward {
 		type filter hook forward priority filter - 5; policy accept;
 		meta ibrname != "qagent0" accept
-		# The exit's own port.
-		iifname "qx-br" accept
+		# From the exit: broadcasts to every machine, anything else only to the port of the machine it is addressed
+		# to. A frame to a MAC the bridge has forgotten is flooded to every port, and port isolation lets frames from
+		# the exit's (non-isolated) port through: without this, every machine would see it.
+		iifname "qx-br" ether daddr ff:ff:ff:ff:ff:ff accept
+		iifname "qx-br" oifname . ether daddr @ports accept
+		iifname "qx-br" counter name "dropped_unbound" drop
+		# From a machine: only to the exit (port isolation says the same; this does not depend on it).
+		oifname != "qx-br" counter name "dropped_unbound" drop
 		# Anything to a DHCP server port, from any source, is judged by the dhcp chain alone.
 		ether type ip udp dport 67 jump dhcp
 		ether type arp ether saddr . arp saddr ip @clients arp saddr ether . arp saddr ip @clients accept

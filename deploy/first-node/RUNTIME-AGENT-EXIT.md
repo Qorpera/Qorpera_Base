@@ -146,28 +146,31 @@ healthy exit (E2).
   the node's pool in `10.210.0.0/16` (outside `10.210.0.0/24`, kept for the exit's own services), and a `hwaddr`
   made from that address (`0e:51:` and the address's four bytes, a locally administered MAC). The address and MAC
   are part of the machine's config for its whole life.
-- Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge LXD
-  does not manage it drops every DHCP request on its way to the exit (seen on LXD 6.9 in a test machine, 3 October,
-  and in LXD's rule template). The exit's own bridge rules (`qorpera-agent-exit-bridge.nft`, bridge family, on the
-  node) take its place. Before the bridge learns where a MAC lives, a machine's port may send only its own MAC (a
-  set of LXD ports and MACs), so no machine can take another's MAC, or the exit's, and with it their traffic; LLDP
-  frames, which would otherwise skip the bridge's hooks, are forwarded through them (`group_fwd_mask`). Then a frame
-  passes only as ARP (its sender fields too) or IPv4 from a MAC and address pair, and DHCP only through one rule per
-  machine: its own MAC, from no address or
-  its own, naming its own MAC as the client (BOOTP chaddr). So no machine can take, release or decline another's
-  lease (dnsmasq holds back a static address for 10 minutes after a DHCPDECLINE that names it), and dnsmasq ignores
-  client ids, so a lease is the MAC's alone. Only entries LXD backs are in the sets: a card outside the map, not in
-  it yet, or claimed by an entry LXD does not back, gets no address and nothing through. With LXD's MAC filter (each port keeps its own MAC) that ties each machine to its address. The node takes
-  nothing from the bridge.
+- Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge LXD does
+  not manage it drops every DHCP request on its way to the exit (seen on LXD 6.9 in a test machine, 3 October, and in
+  LXD's rule template). The exit's own bridge rules (`qorpera-agent-exit-bridge.nft`, bridge family, on the node) take
+  its place. Before the bridge learns where a MAC lives, a machine's port may send only its own MAC (a set of LXD
+  ports and MACs), so no machine can take another's MAC, or the exit's, and with it their traffic; LLDP frames, which
+  would otherwise skip the bridge's hooks, are forwarded through them (`group_fwd_mask`), and no link-local frame
+  teaches the bridge a MAC. A machine's frames go only to the exit's port, and the exit's frames only to the port of
+  the machine they are addressed to (broadcasts to all): a frame to a MAC the bridge has forgotten is flooded to every
+  port, and port isolation does not stop frames from the exit's port. Then a frame from a machine passes only as ARP
+  (its sender fields too) or IPv4 from a MAC and address pair, and DHCP only through one rule per machine: its own
+  MAC, from no address or its own, naming its own MAC as the client (BOOTP chaddr). So no machine can take, release or
+  decline another's lease (dnsmasq holds back a static address for 10 minutes after a DHCPDECLINE that names it), and
+  dnsmasq ignores client ids, so a lease is the MAC's alone. Only entries LXD backs are in the sets: a card outside
+  the map, not in it yet, or claimed by an entry LXD does not back, gets no address and nothing through. With LXD's
+  MAC filter (each port keeps its own MAC) that ties each machine to its address. The node takes nothing from the
+  bridge.
 - The plug is part of each machine creator's own plan, not added afterwards. The creators check their machine's exact
   devices: `lxd-office-guest.ts`, `coding-machine.ts` and `company-machine.ts` each compare the NIC set they expect.
-  The node inventory also pins a machine's devices when it first sees the machine, and a card changed later makes
-  the node unavailable; so the plug goes in when a machine is made, never later. With no users and no legacy
-  machines (founder decision, 3 October: production's companies are wiped and legacy compatibility is dropped), there
-  is nothing to migrate: the creators of the new architecture plug every machine in from the start. A creator calls
-  `plug` right before each create, after the old instance (if any) is gone, and never reuses a stored address. The Company Computer keeps its first
-  card, `network` on `qorpera0`, for its own services (the passthrough finds it by that name); the plug is its
-  second card.
+  The node inventory also pins a machine's devices when it first sees the machine, and a card changed later makes the
+  node unavailable; so the plug goes in when a machine is made, never later. With no users and no legacy machines
+  (founder decision, 3 October: production's companies are wiped and legacy compatibility is dropped), there is
+  nothing to migrate: the creators of the new architecture plug every machine in from the start. A creator calls
+  `plug` right before each create, after the old instance (if any) is gone, and never reuses a stored address. The
+  Company Computer keeps its first card, `network` on `qorpera0`, for its own services (the passthrough finds it by
+  that name); the plug is its second card.
 - One shared helper, `deploy/agent-exit/qorpera-agent-plug.py plug`, run by the creators (members of the group
   `qorpera-agent-plug`) before they create a machine: it takes the lowest free address that is not in quarantine
   (each entry is created exclusively, so two creators never share one), and writes the client map entry (address,
@@ -177,7 +180,7 @@ healthy exit (E2).
   waking and deleting need no hook, and a crash cannot leak an address. It checks every entry against its machine's
   LXD config (the card, the company, the machine, the member), that a running machine's card is a port of
   `qagent0`, and that every machine on `qagent0` has an entry; anything else makes the exit unhealthy. It keeps the
-  bridge rules' sets equal to the client map.
+  bridge rules equal to the entries LXD backs and their machines' ports.
 - Creators write the entries, so an entry is a claim until the reconciler matches it with LXD. The client history,
   `clients-YYYY-MM-DD.jsonl` beside the flow log, ties an address to a company only for a matched entry
   (`plugged`, from the entry's time, then `unplugged`). An entry LXD does not back gets a `mismatch` line (the claim,
@@ -185,13 +188,14 @@ healthy exit (E2).
   on the bridge without an entry is `unattributed`. E3's lookup reads these lines, so a forged entry can never put
   another company's name on traffic, and an address stays tied to its company also after the machine is gone.
 - A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
-  never hold its connection bound. When a machine goes away (missing from two reads of LXD in a row after it was
-  seen, or never created within an hour of its plug), the reconciler unplugs it under the plug lock: its address is
+  never hold its connection bound. When a machine goes away (missing from two reads of LXD in a row after it was seen,
+  or never created within an hour of its plug), the reconciler unplugs it under the plug lock: its address is
   quarantined first, then its lease is removed (dnsmasq reloads), its connections and the exit's per-machine counts
   and refused flows are cleared, and its entry is removed. A machine made again under the same name gets its entry
-  back from `plug` with a new time, and is not unplugged in between. A flush that fails is tried again every pass,
-  and its address is not given out until it succeeds. The address stays unused for 15 minutes, longer than a DHCP lease (10 minutes), so late log
-  lines are never given to the wrong company and the address is free again before it is reused.
+  back from `plug` with a new time, and is not unplugged in between. A flush that fails is tried again every pass, and
+  its address is not given out until it succeeds. The address stays unused for 15 minutes, longer than a DHCP lease
+  (10 minutes), so late log lines are never given to the wrong company and the address is free again before it is
+  reused.
 - A flush ends the address's connections in the exit's table and their masqueraded twins in the node's (phase 1),
   found through the exit's masqueraded port. Twins of other protocols than TCP, UDP and ICMP have no port to find
   them by and end with their timeout.
@@ -353,11 +357,11 @@ allow = []             # used when mode is "only-listed"
 | E-1 | Guest guard: guests off the NAS, the nodes and unlisted tailnet services (#684) | done, enforcing since 2 October |
 | E0 | This document and the contract amendment | none |
 | E1 | The exit on a node: namespace, bridge, uplink, both rule tables, DNS and DHCP, connection log, units, `verify`; proven on the node 2 test machine; switched off | none |
-| E2 | The agent plug in each machine creator's plan, the client map, exit health in placement | none (switched off) |
+| E2 | The agent plug in each machine creator's plan, the client map, exit health in placement | none until a milestone release installs it |
 | E3 | Log shipping to the NAS, 90-day cleanup, the "who used this address" lookup | none |
-| E4 | Agents' machines use the agent plug | they start there |
-| E5 | Coding machines use the agent plug (made again with it) | they move |
-| E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | it moves |
+| E4 | Agents' machines use the agent plug | made with it |
+| E5 | Coding machines use the agent plug | made with it |
+| E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | made with it |
 | E7 | Line guard: counting, then the brake at the levels the founder decides | after his decision |
 | E8 | Company rules | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |

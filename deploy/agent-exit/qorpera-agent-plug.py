@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Qorpera agent exit (E2): the agent plug and its client map.
 
-A machine creator (the coding executor, the office units: members of group qorpera-agent-plug) calls `plug` before it
+A machine creator (the creators of agents' machines, coding machines and Company Computers: members of group
+qorpera-agent-plug) calls `plug` before it
 creates a machine that plugs into the agents' bridge qagent0. `plug` gives the machine the lowest free address in
 10.210.0.0/16 outside 10.210.0.0/24 (kept for the exit's own services) and a MAC made from all four bytes of it, and
 writes two files:
@@ -222,7 +223,7 @@ def entry_problem(entry):
         if not isinstance(entry.get(key), str) or not LXD_NAME.match(entry[key]):
             return f"{key} is not an LXD name"
     try:
-        if parse_iso(entry.get("since")) > time.time() + 300:
+        if parse_iso(entry.get("since")) > time.time() + 86400:
             return "since is in the future"
     except (TypeError, ValueError):
         return "since is not a time"
@@ -396,25 +397,34 @@ def current_ports():
         for elem in item.get("set", {}).get("elem", []) or []:
             value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
             parts = value.get("concat") if isinstance(value, dict) else None
-            if parts and len(parts) == 2:
+            if parts and len(parts) == 2 and PORT_NAME.match(str(parts[0])) and MAC.match(str(parts[1]).lower()):
                 found.add((str(parts[0]), str(parts[1]).lower()))
     return found
 
 
+PORT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+MAC = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+
+
 def host_port(instance):
-    """The node's side of a running machine's plug card, or None."""
+    """The node's side of a machine's plug card while LXD has one (running, ready or frozen), or None. The exit's own
+    links are never a machine's port."""
     nics = plug_nics(instance)
-    if len(nics) != 1 or instance.get("status") != "Running":
+    if len(nics) != 1 or instance.get("status") == "Stopped":
         return None
     key = f"volatile.{next(iter(nics))}.host_name"
     name = (instance.get("expanded_config") or {}).get(key) or (instance.get("config") or {}).get(key)
-    return name if isinstance(name, str) and re.match(r"^[A-Za-z0-9_.-]{1,15}$", name) else None
+    if not isinstance(name, str) or not PORT_NAME.match(name) or name in ("qx-br", "qx-up", BRIDGE):
+        return None
+    return name
 
 
-def backed(paths, entries, instances):
+def backed(paths, entries, instances, loaded=()):
     """The entries LXD backs (each matched once and still matching its machine, if it has one now), and the ports of
-    their running machines."""
+    their machines. A machine missing from this one read of LXD keeps the port the loaded rules give it (loaded): one
+    odd read never cuts a machine off, as it never unplugs one."""
     by_name = {(i.get("project", "default"), i["name"]): i for i in instances}
+    loaded_by_mac = {mac: port for port, mac in loaded}
     ok, ports = {}, set()
     for address, entry in entries.items():
         if not os.path.lexists(os.path.join(paths.verified, address)):
@@ -423,7 +433,7 @@ def backed(paths, entries, instances):
         if instance is not None and check_machine(entry, instance):
             continue
         ok[address] = entry
-        port = host_port(instance) if instance is not None else None
+        port = host_port(instance) if instance is not None else loaded_by_mac.get(entry["hwaddr"])
         if port:
             ports.add((port, entry["hwaddr"]))
     return ok, ports
@@ -501,7 +511,7 @@ def check_machine(entry, instance):
 
 def check_port(entry, instance):
     """A running machine's plug card must be a port of the agents' bridge (after a rebuild of the bridge it is not)."""
-    if len(plug_nics(instance)) != 1 or instance.get("status") != "Running":
+    if len(plug_nics(instance)) != 1 or instance.get("status") == "Stopped":
         return []
     host_name = host_port(instance)
     master = None
@@ -512,7 +522,8 @@ def check_port(entry, instance):
             master = None
     if master == BRIDGE:
         return []
-    return [f"{where(entry)} is running, but its network card ({host_name}) is not a port of {BRIDGE}"]
+    status = str(instance.get("status")).lower()
+    return [f"{where(entry)} is {status}, but its network card ({host_name}) is not a port of {BRIDGE}"]
 
 
 def parse_twins(text):
@@ -718,7 +729,8 @@ class Reconciler:
             remove(os.path.join(self.paths.dhcp, address))
             reload = self.run(self.args.reload_dns.split())
             if reload.returncode != 0:
-                self.problems.append(f"cannot reload the name service after unplugging {address}: {reload.stderr.strip()}")
+                why = reload.stderr.strip()[:200]
+                self.problems.append(f"cannot reload the name service after unplugging {address}: {why}")
             if self.flush(address) is None:
                 write_replace(os.path.join(self.paths.unflushed, address), now_iso() + "\n")
             self.forget(address)
@@ -740,17 +752,17 @@ class Reconciler:
         for directory in (self.paths.clients, self.paths.dhcp):
             for name in os.listdir(directory):
                 path = os.path.join(directory, name)
-                age = at - os.lstat(path).st_mtime
-                if name.startswith(".tmp-") and age > STALE_TMP_SECONDS:
-                    remove(path)
-                elif (directory == self.paths.dhcp and not name.startswith(".") and age > 60
-                      and not os.path.lexists(self.paths.entry(name))):
-                    try:
+                try:
+                    age = at - os.lstat(path).st_mtime
+                    stale_tmp = name.startswith(".tmp-") and age > STALE_TMP_SECONDS
+                    no_entry = (directory == self.paths.dhcp and not name.startswith(".") and age > 60
+                                and not os.path.lexists(self.paths.entry(name)))
+                    if stale_tmp or no_entry:
                         os.unlink(path)
-                    except IsADirectoryError:
-                        self.problems.append(f"dhcp-hosts/{name} is a folder; remove it by hand")
-                    except FileNotFoundError:
-                        pass
+                except FileNotFoundError:
+                    pass
+                except (IsADirectoryError, PermissionError):
+                    self.problems.append(f"{os.path.basename(directory)}/{name} is a folder; remove it by hand"[:300])
         for name in os.listdir(self.paths.quarantine):
             if name.startswith("."):
                 continue
@@ -777,16 +789,23 @@ class Reconciler:
                 cards = [{"hwaddr": n.get("hwaddr"), "ipv4.address": n.get("ipv4.address")}
                          for n in plug_nics(instance).values()]
                 stray = {"project": project, "instance": name}
-                self.note(f"stray-{project}-{name}", json.dumps(cards, sort_keys=True),
-                          lambda: self.history("unattributed", stray, cards=cards))
+                try:
+                    self.note(f"stray-{project}-{name}", json.dumps(cards, sort_keys=True),
+                              lambda: self.history("unattributed", stray, cards=cards))
+                except Exception as error:  # noqa: BLE001 - logged as a problem; the pass goes on
+                    self.problems.append(f"cannot log {project}/{name}: {error}"[:300])
         for address, entry in sorted(entries.items(), key=lambda item: ipaddress.ip_address(item[0])):
             try:
                 self.reconcile_entry(at, address, entry, by_name.get((entry["project"], entry["instance"])))
             except Exception as error:  # noqa: BLE001 - one entry never stops the pass for the others
                 self.problems.append(f"{where(entry)}: {type(error).__name__}: {error}"[:300])
-        self.after_entries(at, entries)
+        for stage in (lambda: self.after_entries(at, entries), lambda: self.tidy(at)):
+            try:
+                stage()
+            except Exception as error:  # noqa: BLE001 - a later stage, and the bridge rules, still run
+                self.problems.append(f"{type(error).__name__}: {error}"[:300])
         entries = read_entries(self.paths)[0]
-        ok, ports = backed(self.paths, entries, instances)
+        ok, ports = backed(self.paths, entries, instances, current_ports() if self.nft else ())
         self.sync_bridge(ok, ports)
         return self.write_status(at, entries)
 
@@ -845,7 +864,6 @@ class Reconciler:
                 self.problems.append(f"the connections of {name}, unplugged, could not be ended yet")
             else:
                 remove(os.path.join(self.paths.unflushed, name))
-        self.tidy(at)
 
     def write_status(self, at, entries):
         status = {"schema": "qorpera.agent-plug-status/v1", "at": now_iso(at), "clients": len(entries),

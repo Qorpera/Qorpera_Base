@@ -32,7 +32,7 @@ own and removes the node's masquerade.
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `verify`, `health`, `status` |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one |
-| `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled from the client map, in one transaction |
+| `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
 | `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log and plug units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
 | `qorpera-agent-exit-dns.service` | dnsmasq, run inside `qexit` (`NetworkNamespacePath=`) and sandboxed: static DHCP leases (10 minutes) from `/var/lib/qorpera-agent-exit/dhcp-hosts` (E2 writes one `mac,address` file per machine, readable by dnsmasq's unprivileged user, and reloads the unit after removing one), machines' own names ignored and never published, DNS forwarded to 9.9.9.9 and 1.1.1.1, every query logged to `/var/log/qorpera-agent-exit/dns.log` |
@@ -53,13 +53,14 @@ A machine creator (a member of the group `qorpera-agent-plug`) calls, before it 
 	--project <LXD project> --instance <LXD instance>
 ```
 
-It prints `{"address": "10.210.x.y", "hwaddr": "0e:51:0a:d2:xx:yy"}`: the lowest free address outside
-`10.210.0.0/24` (kept for the exit's own services) that is not in quarantine and not still held by a machine, and a
-MAC made from it. It writes the client map entry `/var/lib/qorpera-agent-exit/clients/<address>.json`
-(created exclusively, so two creators never share an address) and the lease `dhcp-hosts/<address>`, which dnsmasq
-reads by itself. Asked again for the same instance, it gives the same answer (with a new time when the machine it was given to has
-been seen: it is being made again); for another machine on the same instance it refuses. Files get mode 0644
-whatever the creator's umask (dnsmasq's unprivileged user reads the leases). The creator then makes the machine with this card, and nothing else on `qagent0`:
+It prints `{"address": "10.210.x.y", "hwaddr": "0e:51:0a:d2:xx:yy"}`: the lowest free address outside `10.210.0.0/24`
+(kept for the exit's own services) that is not in quarantine and not still held by a machine, and a MAC made from it.
+It writes the client map entry `/var/lib/qorpera-agent-exit/clients/<address>.json` (created exclusively, so two
+creators never share an address) and the lease `dhcp-hosts/<address>`, which dnsmasq reads by itself. Asked again for
+the same instance, it gives the same answer (with a new time when the machine it was given to has been seen: it is
+being made again); for another machine on the same instance it refuses. Files get mode 0644 whatever the creator's
+umask (dnsmasq's unprivileged user reads the leases). The creator then makes the machine with this card, and nothing
+else on `qagent0`:
 
 ```
 type: nic, nictype: bridged, parent: qagent0, name: <eth0 | eth1>, hwaddr: <hwaddr>, ipv4.address: <address>,
@@ -118,9 +119,10 @@ group; sticky, so a creator cannot remove another's).
    The exit's stop stops the name, log and plug units itself. Never stop those by name while a machine is plugged in:
    traffic would keep flowing without names and without the log, and nothing would flush or unplug machines.
 
-A machine kind is plugged in only by its own step (E4–E6): its creator's unit joins the group
-(`SupplementaryGroups=qorpera-agent-plug`), may write `clients/` and `dhcp-hosts/` under
-`/var/lib/qorpera-agent-exit`, and reads the rest of it (`plug.lock`, `quarantine/`, `seen/`).
+Each creator's unit (E2c) joins the group (`SupplementaryGroups=qorpera-agent-plug`), may write `clients/` and
+`dhcp-hosts/` under `/var/lib/qorpera-agent-exit`, and reads the rest of it (`plug.lock`, `quarantine/`, `seen/`).
+There are no switches: with no users and no legacy machines (founder decision, 3 October), every machine of the new
+architecture is made with its plug.
 
 With a machine plugged in (in the client map, running or asleep), a stop of the exit's unit fails and changes nothing:
 the exit and its name, log and plug services keep running (they are not bound to the exit's unit), `X verify` stays
@@ -130,18 +132,18 @@ is no override; a machine leaves the exit when it is deleted.
 ufw is installed on the nodes but switched off (`ENABLED=no`). If it is ever switched on, its default forward policy
 (DROP) would refuse the bridged traffic between agent road machines and the exit, and LXD's guests' traffic too.
 
-The guest guard (`deploy/guest-guard/`) must never list `qagent0`: with br_netfilter, traffic between an agent road machine
-and the exit is bridged and would be refused as a private destination.
+The guest guard (`deploy/guest-guard/`) must never list `qagent0`: with br_netfilter, traffic between an agent road
+machine and the exit is bridged and would be refused as a private destination.
 
 ## Health and failure
 
 `X verify` exits 0 only when the namespace, the bridge (not forwarding, a reverse-path filter on, not answering ARP),
-both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on 10.210.0.1:53 (from a name service in the exit's current
-namespace), a logger heartbeat younger than 30 seconds and a reconciler status younger than 30 seconds with no
-problem are all there. The heartbeat is written only while both of the logger's readers are alive. If the exit is
-down, its agent road machines have no internet; nothing falls back to the platform road. `X health` (every 10
-seconds) writes the answer for the node observer; E2d keeps new agent road machines off a node whose exit is not
-healthy.
+both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on
+10.210.0.1:53 (from a name service in the exit's current namespace), a logger heartbeat younger than 30 seconds and a
+reconciler status younger than 30 seconds with no problem are all there. The heartbeat is written only while both of
+the logger's readers are alive. If the exit is down, its agent road machines have no internet; nothing falls back to
+the platform road. `X health` (every 10 seconds) writes the answer for the node observer; E2d keeps new agent road
+machines off a node whose exit is not healthy.
 
 `up` restarts the name service when it runs in an older namespace than the exit's (after a rebuild, also one an
 earlier, interrupted `up` made); the logger notices the same by itself and exits.
@@ -169,11 +171,15 @@ on the tailnet. It checks:
 - that the node routes nothing from the agents' bridge (the bridge's own MAC as next hop towards the NAS) and does
   not answer ARP there;
 - the log's records (bytes each way, refused flows of any protocol, agent connections only);
-- the agent plug with the reconciler running: lowest free addresses, twenty plugs at once, DHCP for a plugged
-  machine, problems for a wrong identity, a machine without an entry and a card off the bridge (and `health` saying
-  so), a forged entry (unhealthy, a mismatch line, dropped and never attributed), a sleep that ends the machine's
-  TCP, UDP and ICMP connections in the exit and their twins on the node, a removal (quarantine, no more DHCP, the
-  address skipped), and plugs never created given up;
+- the bridge rules on their own (a static gateway neighbour takes ARP out of it): another address and another MAC
+  seen nowhere in the exit, gratuitous ARP for another machine's address, an ARP sender MAC, a DHCPDECLINE naming
+  another machine's MAC, another machine's MAC and the exit's taken by a machine (`bridge fdb`), an LLDP-addressed
+  frame (nothing on the node, no MAC learnt), and a frame from the exit to a forgotten MAC (no other machine sees it);
+- the agent plug with the reconciler running: lowest free addresses, twenty plugs at once, nothing for a plugged card
+  until LXD backs it, then DHCP for it, problems for a wrong identity, a machine without an entry and a card off the
+  bridge (and `health` saying so), a forged entry (unhealthy, a mismatch line, dropped and never attributed), a sleep
+  that ends the machine's TCP, UDP and ICMP connections in the exit and their twins on the node, a removal
+  (quarantine, no more DHCP, the address skipped), and plugs never created given up;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes
