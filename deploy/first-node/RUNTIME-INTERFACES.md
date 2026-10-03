@@ -128,7 +128,8 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
 - **Colours:** the `colour` names of `agent.md` (charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink,
   gray).
 - **`main`:** exactly one interface is the main one, drawn as the big card on top of the Interfaces tab. The seeded
-  Pulse is main. The save check (§6) refuses a change that would leave no main interface, or two.
+  Pulse is main. The save check refuses a change that would leave two main interfaces. Between the two steps of a
+  switch there may be none, which the web shows (§6.1 rule 3).
 - **`needs`:** the rail lists the interface only when every condition holds. The conditions are:
   - `mail`: the company has a live mailbox;
   - `team`: the company has two or more members;
@@ -281,7 +282,7 @@ id = "<uuid>"                       # required
 name = "Areas"                      # required; 1–60 characters
 about = "…"                         # optional; at most 280 characters
 rows = "file"                       # required; "file" (v0); "store" is refused until the table store exists
-key = ["area"]                      # required; 1–3 columns that make a row unique
+key = ["area"]                      # required; 1–3 columns that make a row unique; never optional, never a number
 holder = "owner"                    # optional; a needs_yes member column; the board's lanes
 time = "at"                         # optional; the column `since` and charts use
 
@@ -425,7 +426,7 @@ files (STATE-FILES §3).
 
 **The save check** (the database's `decide`, as `structured_rule` in the state files) refuses what needs other
 files or state:
-- no main interface, or two;
+- two main interfaces, decided one change at a time (§6.1 rule 3);
 - `edit = "owners"` for anyone else;
 - the rows against their definition: the header, each row (`row`, also for CSV that doesn't split into fields), two
   rows with one key (`duplicate`);
@@ -435,13 +436,172 @@ files or state:
 - `[write]`;
 - the claim rule (§5), with `claim`;
 - `tables/areas/`: its fixed columns (`owner`, `supervisor`, `agents`), the supervisor's yes for adding agents, and
-  one area per agent.
+  one area per agent;
+- two live interfaces, or two live tables, with one id (`duplicate`), and a table's id changed in place.
 
 The parser's `parseTableRows` gives the same row results to a writer that has the definition, so a tool can refuse
 early. The database decides against the definition as it is at commit.
 
 A table that loses a column a page still uses is not refused. That page's block shows which column is gone, and the
 agent that keeps the page is told.
+
+### 6.1 The save check, as the folder hook runs it (P16)
+
+Built by F2 in the folder core's hook (C2), with this session's TS side. SQL never reads TOML or CSV.
+
+**What arrives.** The committing client (a runtime tool, the web, the creation worker) calls
+`parseInterfaceStateFile(path, text)` (packages/cloud-client `interfaces.ts`). That is the result of
+`parseCompanyStateFile`'s shape for the four kinds, and null for every other path. A refused result never leaves the
+client. An accepted one is sent with its unit as `{path, kind, text, parse, parserVersion}`, where `parserVersion`
+is the state files' `COMPANY_STATE_PARSER_VERSION`, which `parseCompanyStateFile`'s dispatch sends for every kind.
+- **The parse per kind** is the TS type: `InterfaceFile` (`interface`), `InterfaceOrderFile` (`interface-order`),
+  `TableFile` (`table`) and `TableRowsFile` (`table-rows`: the header and each row's raw fields with its line, before
+  any definition).
+- **Fixtures:** `test/fixtures/interface-state.json` holds the exact answer for one valid file of each kind and one
+  file per parser code; `test/interface-state.test.ts` keeps it equal to the parser.
+- **The kind comes from the path's shape:**
+  - `interfaces/order.md`;
+  - `interfaces/*/interface.toml`;
+  - `tables/*/table.toml`;
+  - `tables/*/rows.csv`.
+
+  A badly named folder is still that kind, and its name is a parse problem, so no interface or table file is ever
+  saved unchecked.
+
+**The database checks, in this order.** Each refusal is `{line, key, code, message}`: `structured_invalid` with the
+parser's codes for (1), `structured_rule` with these codes for the rest.
+
+1. **The parse's shape**, in `qorpera_company_state_parse_problems`, and the text hashing to the staged file:
+   - **`table`** and **`interface-order`**: in full, closed key sets, types and bounds as the TS types and fixtures give
+     them;
+   - **`table-rows`**, in full:
+     - `header` holds 1–40 unique names matching `^[a-z][a-z0-9_]{0,39}$`;
+     - `rows` is an array of `{line, fields}`, with `line` an integer of at least 2, strictly increasing;
+     - `fields` holds strings, as many as the header has names, and none holds U+0000;
+     - at most 32,768 rows, and at most 65,536 bytes of fields in all.
+
+     A file within 64 KiB never exceeds these, so the client and the database answer the same bytes the same way;
+   - **`interface`**, shallow (agreed with F2, 3 October): closed top-level keys, with `kind`, `id`, `name`, `main`
+     and `access.edit` typed, and the rest by JSON type and size. SQL can't prove a parse came from its text, so the
+     readers never trust the stored parse (§10, I7 and I8), and a later slice that reads or indexes a field adds its
+     full check.
+2. **Placement** (`placement`), for every unit under `interfaces/` or `tables/`:
+   - **Allowed paths:**
+     - `interfaces/`, `interfaces/order.md`, `interfaces/<name>/`, `interfaces/<name>/interface.toml` and
+       `interfaces/<name>/README.md`;
+     - `tables/`, `tables/<name>/`, `tables/<name>/table.toml`, `tables/<name>/rows.csv` and
+       `tables/<name>/README.md`.
+   - **Names:** `<name>` matches `^[a-z0-9]+(-[a-z0-9]+)*$`, is at most 64 characters, and is written as its key.
+     `README.md` may be written `README.md` or `readme.md`.
+   - **Never deleted or moved:** `interfaces/`, `interfaces/order.md`, the main interface's folder and its
+     `interface.toml`, `tables/`, and `tables/areas/` with its files.
+   - **Tables move whole:** `table.toml` or `rows.csv` is deleted or moved only with its folder. A `rows.csv` needs a
+     `table.toml` in its folder at commit.
+   - **Ids** (`duplicate`): one live interface per `[interface] id`, and one live table per `[table] id`. A table's
+     id never changes: a `table.toml` save that changes it is refused, and its folder keeps it when it moves.
+   - **Coding sessions** change nothing under `interfaces/`, and no `table.toml`, so they make or remove no table
+     folder either (the 2026-10-02 interfaces amendment, items 7 and 12). They may write a `rows.csv` under rule 5,
+     as an agent.
+3. **One main interface** (`main`). Decide sees one unit at a time, and a change set isn't atomic, so this is a
+   per-unit rule:
+   - a unit whose `interface.toml` has `main = true` is refused while another stored interface has `main = true`;
+   - zero is allowed in between, and the web shows that state (§10, I7);
+   - the main interface's folder can't be deleted or moved while it is main.
+
+   It reads the stored mains without a lock (the core takes no new company-wide lock). So two promotions at the same
+   moment, from a state with none, can both pass and leave two. The web shows that state, and the next save of
+   either is refused until one is set to `false`.
+
+   A switch is two units, in this order: the old main set to `false`, then the new one set to `true`.
+   `save_interface` and the web send them so. In the other order the new main's unit is refused (it would leave two),
+   the old main's unit lands, and none is left. The seed has
+   exactly one main (Pulse).
+4. **Owners-only interfaces** (`owners`): while an interface's stored parse has `access.edit = "owners"`, only an owner
+   or admin (or the platform) changes, moves or deletes anything in its folder: `interface.toml`, `README.md` and the
+   folder itself. An agent never may. Creating an interface with `edit = "owners"` is open to anyone who may create
+   one.
+5. **Who writes rows** (`write`): a save of `rows.csv` by a member passes only under the stored table parse's
+   `write.members`:
+   - `all`;
+   - `owners` (owners and admins only);
+   - `none` (nobody).
+
+   A save by an agent passes only under `write.agents`: `all`, `none`, or a list holding its staff id. The platform
+   always passes (seeding, and clearing a leaving member's cells). `[write]` governs `rows.csv` only. Changing
+   `table.toml` or deleting the table's folder is any member's, and an agent's under review (§7).
+
+   A new table's first rows, in the same unit as its `table.toml` (one new folder), are its maker's: no `[write]`
+   check. They are checked against that unit's definition (rule 6), and each claimed cell they set must be a take
+   (rule 8).
+6. **The rows against the definition at commit** (`row`, `duplicate`): the port of `parseTableRows`.
+   - **Header:** each name is a column of the stored table parse, and every column without `optional` is named. A
+     header that fails refuses the whole file with that one problem (line 1), and no row is read.
+   - **Fields:** a column the header leaves out reads as empty.
+   - **Each field** (raw text from `TableRowsFile.rows[i].fields` at the header's position) by its column:
+     - **empty:** only in an `optional` column, and its value is null;
+     - **`text`:** at most `max` code points (default 500), with no U+0000–U+0008, U+000B, U+000C or U+000E–U+001F and
+       no lone surrogate;
+     - **`number`, `money`, `percent`:** at most 30 characters, matching `^-?(?:0|[1-9][0-9]{0,14})(?:\.[0-9]{1,8})?$`;
+       the value is the number;
+     - **`time`:** at most 25 characters, matching `^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?Z$`, a real
+       calendar date in the years 0100–9999, hour at most 23, minute and second at most 59. The value is the text
+       with `:00` added when seconds are left out, so two spellings of one time are one key;
+     - **`date`:** exactly 10 characters, `YYYY-MM-DD`, a real calendar date in the years 0100–9999;
+     - **`choice`:** exactly one of `choices`;
+     - **`yes-no`:** `yes` (true) or `no` (false);
+     - **`member`, `agent`, `id`:** `^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, lowercase
+       (the strict `UUID_PATTERN`, for every uuid in the four parses; not the state files' looser check);
+     - **`agents`:** split on single spaces into 1–50 such ids, with no repeats;
+     - **`link`:** at most 200 code points, with no U+0000–U+001F, U+007F–U+009F, U+2028 or U+2029.
+   - **A row that doesn't fit** is `row`, with its line: one problem per row, for the first column in the
+     definition's order that fails. A row of the wrong width is `row` too. Row problems are capped at 50, then one
+     closing line "and K more problems".
+   - **The key** is the JSON array of the `key` columns' values, in `key` order (a key column is never optional).
+     Key columns are text, time, date, choice, yes-no, member, agent, agents or id, never a number: `parseTableFile`
+     refuses number, money and percent keys, since 1.10 and 1.1 key differently in JS and SQL. Strings compare
+     case-sensitively, and times in their canonical text. Two rows with one key are `duplicate`, on the later row.
+   - **Fixtures:** `test/fixtures/table-rows-typed.json` holds `parseTableRows`'s answer for a table with a column of
+     every type: its valid rows typed (a time's canonical text, a number's value, null for empty) and one row that
+     fails each type's rule.
+7. **A definition change** (a `table.toml` save while its folder holds rows):
+   - the stored rows at commit must still fit the new definition, by rule 6 (`row`);
+   - a `needs_yes` column may lose `needs_yes`, be renamed or be removed only while no row holds a value in it
+     (`claim`);
+   - a column may gain `needs_yes` only while it is empty in every row (`claim`).
+
+   This is `tableDefinitionProblems`.
+8. **The claim rule** (`claim`), on a `rows.csv` save: the port of `tableClaimProblems`.
+   - **Columns checked:** every `needs_yes` column, and, for an agent, `tables/areas/`'s `owner`, `supervisor` and
+     `agents` whatever their flags.
+   - **The platform** passes only when it clears cells: a leaving member's (the 2026-10-02 interfaces amendment,
+     item 6, "Leaving").
+   - **Rows compared:** the stored rows against the new ones, by key. A row that's gone clears its cells. A cell
+     changes when its value's JSON text differs (so reordering the ids in `agents` is a change).
+   - **For each cell that changes:**
+     - an agent changing an areas member-only column is refused;
+     - *self* is the member, or for an agent its supervisor: the area's supervisor with a live consent record, for the
+       area whose `agents` holds it (§5.1). Until supervision is built (I9b), an agent has none, so it changes no
+       claimed cell;
+     - no *self*: refused;
+     - otherwise the change passes only as one of:
+       - **take:** it was empty and is now *self*;
+       - **release:** it was *self* and is now empty;
+       - **accept:** a member putting *self* where an open offer names that row key, that column and *self*; the
+         offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
+
+       Offers are request cards the platform keeps. Until they exist, accept never passes.
+9. **`tables/areas/`** (`areas`):
+   - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
+     (`agents`), each `optional`, by name and type;
+   - after a rows save, no agent id is in more than one row's `agents` (one area per agent);
+   - the supervisor's yes for adding agents waits for consent records (I9b).
+
+**Index effects:** none until I7. Decide reads the stored parses on the path versions: the main interface, a table's
+definition and its rows. F2's per-table index row (keyed by the table's id) is the lock a rows save and a definition
+change take, so each sees the other's commit. A file with no stored parse reads as not main and open to anyone, or,
+for a `table.toml`, as no definition; none exists, since the folder core starts empty. The review recorder (C2 R1,
+F2's) gains `save_interface`, classified as §7 says, for a call whose units are all at or under `interfaces/` or
+`tables/`.
 
 ## 7. Who changes what, and review
 
@@ -517,8 +677,8 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I5c | the Mailbox page, dark until mail is switched on | Interfaces | I5a, I5b, I5d |
 | I5d | quotes: the input checks, the fence and the review, the composer and drafts | Interfaces, with the runtime | I5a, I5b |
 | I6 | the interface and table kinds in the save hook; seeding | F2, with Interfaces | C2's founding seed, I2, I5d's `outside_value` check in the parser |
-| I7 | the web client reads definitions and tables from the folder, live | Interfaces | C4, I6 |
-| I8 | `interface_read`, `table_read`, `table_write`, `save_interface`; the review recorder takes `save_interface` | Interfaces, with F2 | C3, C2's recorder, I6 |
+| I7 | the web client reads definitions and tables from the folder, live. It parses each file's text itself and never trusts a stored parse (§6.1 rule 1); a text that doesn't parse is a broken page whose buttons never render; zero or two `main = true` among the texts it reads picks none, shows the problem and tells the owners (§6.1 rule 3) | Interfaces | C4, I6 |
+| I8 | `interface_read`, `table_read`, `table_write`, `save_interface`; the review recorder takes `save_interface`. The read tools parse the text, never a stored parse; `save_interface` sends a main switch as two units, old to false first (§6.1 rule 3) | Interfaces, with F2 | C3, C2's recorder, I6 |
 | I9 | Members | Interfaces | I6, I7, C4 member writes |
 | I9b | supervision: consent records; for work alone, the supervisor as payer and card recipient (§5.1) | S2 | I9 |
 | I10 | pages made by agents: the review card with a live preview, Undo | Interfaces | I6, I8 |
