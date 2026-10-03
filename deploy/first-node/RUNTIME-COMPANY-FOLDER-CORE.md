@@ -1045,7 +1045,9 @@ identical nodes, and the Interfaces session.
   agent starting the computer), S3 (the compute fence; deletion; coding
   machines) and F3 (the activation checks).
 - **C1d-2b and C1d-2c** (the gateway's GC lane, the worker's folder phase,
-  bytes with no catalog row, a deleted company's leftovers) are F2's.
+  bytes with no catalog row, a deleted company's leftovers) were F2's; from
+  3 October 2026 they, and erasure (C2), are the folder GC session's
+  (slices P11, P12 and P18).
 - **C5 early** (C1D, "C5 early"): F3 moves the SQL test fixtures to version-2
   staging and makes `qorpera_verify_company_path_file` refuse `folder-v2`. F3
   also makes the read actor refuse a company being deleted for members and

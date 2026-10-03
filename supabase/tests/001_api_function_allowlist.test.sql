@@ -269,7 +269,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_provision_execution_runner(uuid,uuid,text,text)', true, true, 'internal: auth.role() = service_role + token/capability hash; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_publish_company_file_revision(uuid,uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_put_profile_staff(uuid,uuid,text,text,text,text,text,text,text,text,text,text,text,text,timestamp with time zone,bigint)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
-	('public.qorpera_put_room_draft(uuid,uuid,bigint,text)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_put_room_draft(uuid,uuid,bigint,text,jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_put_staff_provider_model(uuid,uuid,text,text,bigint)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_quarantine_session_turn(uuid,uuid,uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_read_coding_session(uuid,bigint,integer)', false, true, 'member: auth.uid() + membership/ownership'),
