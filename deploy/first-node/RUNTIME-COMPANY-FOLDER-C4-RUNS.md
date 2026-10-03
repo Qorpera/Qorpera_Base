@@ -1,0 +1,143 @@
+# Runs on the folder core (C4, P28)
+
+Status: part 1 built (§2, §3; migration `20260930018000`), part 2 (§4, §5) and the runtime (§6) designed; 4 October
+2026 (Q1, the coordinator's slice P28). The founder decided on 3 October that production's companies are wiped and the
+legacy (`snapshot-v1`) implementation gets no compatibility. So this builds `folder-v2` runs only, with no else-branch
+for the old core.
+
+**First milestone,** with F2's P14b: a new company whose Co-Founder answers. Creation writes the Co-Founder's kickoff and
+its turn request, and no wake (RUNTIME-COMPANY-FOLDER-CREATION.md "The first run"). Before part 1 nothing turned that
+into a run, and nothing answered a founder's post in a thread either: posts, answers, coworker messages and routine
+firing insert queued wakes, and the wake materializer skips `folder-v2`.
+
+## 1. Why the old materializers cannot serve the folder core
+
+The orchestrator's 2 s reconcile lane calls one RPC, `qorpera_reconcile_runner_orchestrator`. That RPC runs the turn,
+session, wake and proposal-review materializers in one transaction across every company. Each of them:
+- takes the profile row `FOR UPDATE NOWAIT` (`qorpera_serialize_wake_admission`) and the Company File row, both of which
+  core §9 forbids on `folder-v2`;
+- needs the head snapshot and a substrate, which `folder-v2` never has;
+- writes the job's and the run's substrate and snapshot ids, which are `NOT NULL`.
+
+Wake admission must also handle exactly one company per transaction (core §3 step 10), because the admission mark holds
+one company. So the folder materializer is new code, run once per company, each time in its own transaction.
+
+## 2. Schema
+
+- `qorpera_runner_jobs.substrate_version_id`, `qorpera_execution_runs.substrate_version_id` and
+  `qorpera_execution_runs.company_snapshot_id` become nullable. Their foreign keys stay; dropping the columns is C6.
+- `qorpera_execution_runs.company_seq bigint`: the folder clock's `last_seq` for the run's environment when it is
+  materialized. The run was composed as of at least this commit (core §6, "The pin"); reads stay live.
+- The check `qorpera_execution_runs_company_pin`: a run has its substrate and snapshot together, and exactly one of
+  the snapshot and `company_seq`.
+- The broker's description (`qorpera_folder_runner_broker_describe`) adds `company_seq` to the run's JSON. That
+  parser is an open record.
+
+## 3. The materializer (P28 part 1, migration `20260930018000`, SQL test 874)
+
+**`qorpera_folder_materialize_due(after, limit)`** (service role) lists the companies with due work, paged by profile id,
+without a lock. A company is due when it is `folder-v2`, not paused, not at zero hours, and has either:
+- a queued turn request whose conversation is open and whose input is pending; or
+- a queued wake whose `not_before` has passed.
+
+**`qorpera_folder_materialize_company(profile, limit ≤ 16)`** (service role) handles one company, in the caller's
+transaction, in core §3's order:
+1. **The work, read without a lock:** at most `limit` queued turn requests and due wakes, oldest scan first. This only
+   names the rows to lock.
+2. **The fence and ranks 0 to 5,** through `qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, the pause
+   again (paused: the answer `paused`, nothing written), the company row `KEY SHARE`, then:
+   - rank 1: each requester's member row `KEY SHARE`;
+   - rank 2: each agent's staff row `KEY SHARE`;
+   - rank 3: each wake's agent's execution authority `KEY SHARE`;
+   - rank 4: a room wake's room `FOR SHARE`, as posting takes it;
+   - rank 5: a routine wake's routine `FOR NO KEY UPDATE`, as firing takes it (the wake's status trigger updates its
+     authorization count).
+3. **The work rows** `FOR UPDATE SKIP LOCKED`, still queued. Each moves to the back of the scan order.
+4. **The model logins** (connections, then their versions) `FOR UPDATE`, as the reservation locks them, and the compute
+   identities `FOR SHARE NOWAIT`. A busy or recovering identity leaves its items queued.
+5. **The conversations** `FOR UPDATE`, then the turn inputs `FOR UPDATE`, in id order.
+6. **Each item, in its own subtransaction:**
+   - the old materializers' checks: one turn at a time per conversation, the author's access, the agent, the sponsor
+     binding and connection, the payer, the computer, the native capsule, or for a wake its authority, sponsor,
+     computer and compute;
+   - the job and run with no substrate or snapshot, `company_seq` from the clock, and the run's insert triggers;
+   - `qorpera_reserve_execution_sponsor_authority` (reservation, budget, model policy);
+   - for a turn: the input claimed, its transcript events (the operation clock), the request `materialized`;
+   - for a wake: the wake `materialized`. A room post's events were appended when it was posted;
+   - `qorpera_folder_admit_wakes`, once per transaction, then the run's `queued` event. For a turn, the event's trigger
+     inserts the `first-run` or `human` wake under that admission.
+7. **Refusals,** as the old materializers made them:
+   - a turn request fails with its input, for a reason found before any write;
+   - a wake is cancelled for missing authority or compute, or left queued with its reason for a missing computer or a
+     busy identity;
+   - a full reservation (`QFM01`) undoes the item's subtransaction: the request fails, or the wake waits with its
+     reason;
+   - the run's own refusals (42501: no model authority, the payer, the audience; 23505: a first run already woken;
+     P0002) undo the item and fail the request or cancel the wake;
+   - a stop or zero hours that arrives meanwhile (55000) or a busy row undoes the item and leaves it queued.
+
+It answers `{state: done, run_ids, failed, cancelled, blocked, skipped}`, or `idle`, `paused`, `at_zero`,
+`not_folder` with nothing written. The subtransactions stay under the 64 the snapshot cache holds: one for the
+enter, one per identity and one per item, each at most 16.
+
+**Model logins and identities** have no rank in core §3 (C1C deferred them to C3). Here they come after the ranks
+and before the conversations. That matches the reservation's own order, the login consent (the member, then the
+connection) and the runner's native lease (the job, then the connection). The old materializers took the
+conversation first. They do not run on `folder-v2`.
+
+**The orchestrator:**
+- The runner-orchestrator edge function gets the actions `folder_materialize_due` and `folder_materialize_company`.
+- `CloudFolderRunMaterializer`, in the reconcile lane by default, calls them on every pass (2 s). It sends each
+  company its own request, so each runs in its own transaction, before `reconcile` and the claim.
+- An edge function that predates them answers 400. The lane reports it and asks again after ten minutes, as for
+  C1c-3e.
+
+**The legacy materializers** stay in `reconcile`; they skip `folder-v2`. The cleanup pass removes them with the rest
+of `snapshot-v1`.
+
+**Known gaps:**
+- A run's model: `agent.md`'s `model` does not reach runs yet (F2-1b). A login that is not a native subscription
+  needs a `qorpera_staff_provider_models` row, or the run's insert refuses 42501 and the item fails. The first run
+  uses the founder's ChatGPT login, which answers `provider-default`.
+- At zero hours the company is not listed, and its queued wakes show no reason.
+
+## 4. Plain conversations (P28 part 2)
+
+`qorpera_append_session_input`, `qorpera_request_session_turn` and its v2 refuse `folder-v2` today (C1c-3a). They get
+`folder-v2` bodies in the folder order:
+1. the fence and rank 0;
+2. the member at rank 1;
+3. the conversation `FOR UPDATE`;
+4. the input;
+5. the turn request, or the binding's pending input, which the materializer picks up.
+
+Images and attachments stay refused until C1d gives conversations folder bytes.
+
+## 5. The first run's dead request (P28 part 2)
+
+`qorpera_queue_agent_first_run` returns an existing request whatever its status, so a failed first run cannot be started
+again. `qorpera_start_agent_first_run` gets a `folder-v2` order (the fence, then the pause) and replaces a dead request
+for the same kickoff.
+
+## 6. Runtime (separate PR, P28b)
+
+- **The wake envelope's `pins`** are parsed as closed, with exactly four keys. The runtime must accept `companySeq`
+  before SQL sends it. So the run's `company_seq` reaches the runtime through the run JSON first. `pins.companySeq`
+  follows once that runtime is live.
+- **The Co-Founder's overlay** points it at `organization/agents` and `organization/formation.json`, which do not exist
+  on `folder-v2`. It needs the `agents/` and `vision/` wording, or the Co-Founder's first answer will be lost on missing
+  files.
+
+## 7. Not in P28
+
+- F2's worker drain (F2-5b-3). Once on master, F2 adds a call to it at the start of `qorpera_folder_materialize_company`
+  (core C4).
+- The listener (P29/P31).
+- Machine events (C1c-3i), the observability views (P32), and the edge functions (P26).
+
+## 8. Switch-on
+
+- Every host must run the #709 builds first: the orchestrator, the LXD providers and the shared execution guests (C1C
+  §5.10).
+- Then the runtime of P28b.
+- Then creation (P39).
