@@ -79,6 +79,8 @@ composition is covered by `scripts/test-member-company-file-upload.mjs`.
 
 The vault's connection-file writer (P22b) is off by default. With `QORPERA_CONNECTION_FILE_WRITER=1` it writes, every 15 s in a loop of its own, up to ten due `connections/<name>.md` files of folder-v2 companies as the platform, from the vault's allow-listed settings only (`qorpera_claim_connection_file` / `qorpera_finish_connection_file`); `QORPERA_CONNECTION_FILE_WORKER_ID` names the worker (a random id otherwise). The vault stays the authority: no tool reads these files to act.
 
+Company creation's worker (P14b) is off by default. With `QORPERA_COMPANY_FOLDER_CREATOR=1` it claims, every 15 s in a loop of its own, up to five creations a founding table started (`qorpera_folder_company_creation_claim`), builds each company's seeded tree from the founders' input, stages its files as the platform and calls `qorpera_folder_company_create` once: the creation commit, the Co-Founder and its silent first run in one transaction. It releases a claim with a back-off on any other problem, and fails it only for a seed tree the parser or a writer refuses, or a staging refusal (`stage_invalid`). `QORPERA_COMPANY_FOLDER_CREATOR_WORKER_ID` names the worker (a random id otherwise).
+
 After the schema is deployed and the NAS mount is validated, run
 `qorpera-object-gateway migrate` under the same configuration. The command
 pages legacy `supabase-storage` catalog rows, downloads and rehashes each
