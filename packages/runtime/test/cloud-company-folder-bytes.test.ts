@@ -349,7 +349,9 @@ it("reads a window of a file from only the chunks it falls in", async () => {
 	const reference = await bytes.put(content, "application/octet-stream", false, signal);
 	sql.readable.add(reference.manifestSha256);
 	const file = { ...reference, executable: false };
-	const downloads = () => gatewayCalls.filter((call) => call === "qorpera_folder_authorize_object_download").length;
+	// Each object is authorized twice: as the request comes in, and again inside the gateway's lane.
+	const downloads = () =>
+		gatewayCalls.filter((call) => call === "qorpera_folder_authorize_object_download").length / 2;
 	// Across the first two chunks: the manifest and those two.
 	let before = downloads();
 	const across = await bytes.range(file, 4 * 1024 * 1024 - 2, 4, signal);

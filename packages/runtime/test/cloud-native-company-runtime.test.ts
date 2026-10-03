@@ -644,6 +644,9 @@ async function fixture(
 							if (text === undefined) throw new Error("No such folder bytes in this suite");
 							return new TextEncoder().encode(text);
 						},
+						range: async () => {
+							throw new Error("No folder byte ranges in this suite");
+						},
 					}),
 				}
 			: {}),

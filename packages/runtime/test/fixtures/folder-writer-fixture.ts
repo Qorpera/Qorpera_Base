@@ -272,7 +272,10 @@ export async function folderWriterFixture(
 					}
 					if (!folders.has(parent)) return { ...base, outcome: "refused", reason: "parent_missing" };
 					const current = files.get(path);
-					if (unit.expectedVersion === undefined ? current : current?.version !== unit.expectedVersion)
+					// A write without a version creates the file, and meets one that is there as SQL does.
+					if (unit.expectedVersion === undefined && current)
+						return { ...base, outcome: "conflict", reason: "exists" };
+					if (unit.expectedVersion !== undefined && current?.version !== unit.expectedVersion)
 						return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
 					// The structured hook: a parse with problems is refused with them (nulls stripped, as the commit does).
 					const structured = (unit.structured as { problems?: Record<string, unknown>[] }[] | undefined)?.[0];
