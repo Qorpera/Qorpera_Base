@@ -3,6 +3,7 @@ import type { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { button, h, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
+import { CompanyFolderBrowser, type CompanyFolderPeople } from "./company-folder.ts";
 
 /** Product presentation of the shared governed File interaction. */
 export class LiveCompanyFileView {
@@ -23,6 +24,8 @@ export class LiveCompanyFileView {
 		profileId: string,
 		authorityKey: string,
 		reload?: () => void,
+		/** Who a folder-v2 company's changes are shown by (its members and agents). */
+		people: () => CompanyFolderPeople = () => ({ me: "", members: [], staff: [] }),
 	) {
 		this.#stop = stop;
 		this.routeHash = location.hash;
@@ -82,6 +85,27 @@ export class LiveCompanyFileView {
 			replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
 			replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 			try {
+				// A folder-v2 company reads through the folder core (folder core C4, P33): its own read-only page.
+				if ((await company.mode()) === "folder") {
+					current();
+					const own = [...this.el.childNodes];
+					// The governed panel's styles stay off the folder page's own.
+					this.el.classList.remove("company-file", "live-company-file");
+					const browser = new CompanyFolderBrowser(this.el, company, people);
+					this.#close = () => browser.dispose();
+					try {
+						await browser.open();
+					} catch (error) {
+						// The retry below belongs to this page: put it back for it.
+						browser.dispose();
+						this.#close = undefined;
+						this.el.classList.remove("files-page", "folder-page", "has-preview");
+						this.el.classList.add("company-file", "live-company-file");
+						this.el.replaceChildren(...own);
+						throw error;
+					}
+					return;
+				}
 				const close = await showFilePanel({
 					root: this.#root,
 					company,

@@ -22,7 +22,8 @@ function comparePathBytes(left: string, right: string): number {
 export interface CloudMemberCompanyMode {
 	companyId: string;
 	environmentId: string;
-	mode: "governed" | "legacy";
+	/** `folder`: a folder-v2 company, read through the folder core's member functions (folder core C4, P33). */
+	mode: "governed" | "legacy" | "folder";
 }
 
 export interface CloudMemberCompanyCommand {
@@ -146,7 +147,7 @@ function plan(value: unknown): CloudCompanyPathPlan {
 
 export function parseCloudMemberCompanyMode(value: unknown, companyId: string): CloudMemberCompanyMode {
 	const input = record(value, ["companyId", "environmentId", "mode"]);
-	if (input.companyId !== companyId || (input.mode !== "governed" && input.mode !== "legacy"))
+	if (input.companyId !== companyId || (input.mode !== "governed" && input.mode !== "legacy" && input.mode !== "folder"))
 		throw new Error("Company File mode is unavailable");
 	return { companyId: uuid(input.companyId), environmentId: uuid(input.environmentId), mode: input.mode };
 }

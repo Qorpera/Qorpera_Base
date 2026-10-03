@@ -1,8 +1,10 @@
 import {
 	CloudMemberCompanyFileClient,
+	type CloudMemberCompanyMode,
 	parseCloudMemberCompanyMode,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
 import { CloudMemberCompanyFileReader } from "@qorpera/cloud-client/cloud-member-company-file";
+import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-client/cloud-member-folder";
 import { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
@@ -87,10 +89,11 @@ export class WebCompanyFiles {
 		this.current();
 		return new CloudMemberCompanyFileReader({ ...this.#options, snapshotId });
 	}
-	async files(): Promise<CloudMemberCompanyFileClient> {
+	/** How this company's files are read: governed (the path gateway), a folder-v2 company's folder, or legacy. */
+	async mode(): Promise<CloudMemberCompanyMode["mode"]> {
 		this.current();
 		// The SDK validates endpoint origins before even the mode request can carry a token.
-		const client = new CloudMemberCompanyFileClient(this.#options);
+		new CloudMemberCompanyFileClient(this.#options);
 		const mode = await withCloudDeadline(
 			async (signal) => {
 				const token = await this.#options.accessToken(signal);
@@ -130,16 +133,45 @@ export class WebCompanyFiles {
 			10000,
 			this.signal,
 		);
-		if (mode.environmentId !== this.#options.environmentId || mode.mode !== "governed")
-			throw new Error("This company does not have a governed File interface.");
+		if (mode.environmentId !== this.#options.environmentId)
+			throw new Error("Company File access could not be confirmed.");
+		return mode.mode;
+	}
+	async files(): Promise<CloudMemberCompanyFileClient> {
+		const client = new CloudMemberCompanyFileClient(this.#options);
+		if ((await this.mode()) !== "governed") throw new Error("This company does not have a governed File interface.");
 		return client;
+	}
+	/** A folder-v2 company's folder, read only (folder core C4, P27). Call after `mode()` answered `folder`. */
+	folder(): CloudMemberFolderClient {
+		this.current();
+		return new CloudMemberFolderClient({
+			environmentId: this.#options.environmentId,
+			supabaseUrl: this.#options.supabaseUrl,
+			objectGatewayUrl: this.#options.objectGatewayUrl,
+			publishableKey: this.#options.publishableKey,
+			accessToken: this.#options.accessToken,
+			fetch: this.#options.fetch,
+		});
+	}
+	/** The folder's hint (folder core C4, P30): `onHint(seq)` when it changed. Closes with this company's signal. */
+	folderHints(onHint: (seq: number) => void): CloudMemberFolderHints {
+		this.current();
+		return new CloudMemberFolderHints({
+			environmentId: this.#options.environmentId,
+			client: this.#realtime(),
+			signal: this.signal,
+			onHint,
+		});
 	}
 	presence(onChange: (view: CompanyPathPresenceView) => void): CloudMemberCompanyPresence {
 		this.current();
-		const client = createClient(this.#options.supabaseUrl, this.#options.publishableKey, {
+		return new CloudMemberCompanyPresence({ ...this.#options, client: this.#realtime(), signal: this.signal, onChange });
+	}
+	#realtime() {
+		return createClient(this.#options.supabaseUrl, this.#options.publishableKey, {
 			auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 			accessToken: () => withCloudDeadline((signal) => this.#options.accessToken(signal), 2000, this.signal),
 		});
-		return new CloudMemberCompanyPresence({ ...this.#options, client, signal: this.signal, onChange });
 	}
 }

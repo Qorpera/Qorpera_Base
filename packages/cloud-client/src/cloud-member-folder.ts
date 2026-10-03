@@ -1,4 +1,5 @@
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
@@ -676,5 +677,82 @@ export class CloudMemberFolderClient {
 		if ((declared !== null && Number(declared) !== bytes.length) || (await cloudFileBytesSha256(bytes)) !== sha256)
 			throw new CloudMemberFolderError("Company folder object failed integrity verification");
 		return bytes;
+	}
+}
+
+/** The private Realtime topic of a folder-v2 company's hint (folder core C4, P30). */
+export function cloudMemberFolderHintTopic(environmentId: string): string {
+	if (!isUuid(environmentId)) throw new CloudMemberFolderError("Invalid company folder configuration");
+	return `qorpera-folder-${environmentId}`;
+}
+
+/** A hint's seq, or null for anything that is not exactly `{schema: "qorpera.folder-hint/v1", seq}`. */
+export function parseCloudMemberFolderHint(value: unknown): number | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const hint = value as Record<string, unknown>;
+	if (Object.keys(hint).length !== 2 || hint.schema !== "qorpera.folder-hint/v1" || !Number.isSafeInteger(hint.seq))
+		return null;
+	return (hint.seq as number) >= 1 ? (hint.seq as number) : null;
+}
+
+/**
+ * The members' hint for a folder-v2 company (folder core C4, P30): `onHint(seq)` when the folder's clock reached seq.
+ * A nudge only: the caller asks the feed what changed, and keeps a slow poll for hints missed while disconnected. A
+ * failed or closed join is tried again after 10 s until `close()` or the signal ends it.
+ */
+export class CloudMemberFolderHints {
+	readonly #client: Pick<SupabaseClient, "channel" | "removeChannel">;
+	readonly #topic: string;
+	readonly #signal: AbortSignal;
+	readonly #onHint: (seq: number) => void;
+	readonly #onState?: (connected: boolean) => void;
+	#channel: RealtimeChannel | undefined;
+	#retry: ReturnType<typeof setTimeout> | undefined;
+	#closed = false;
+
+	constructor(options: {
+		environmentId: string;
+		client: Pick<SupabaseClient, "channel" | "removeChannel">;
+		signal: AbortSignal;
+		onHint(seq: number): void;
+		onState?(connected: boolean): void;
+	}) {
+		this.#topic = cloudMemberFolderHintTopic(options.environmentId);
+		this.#client = options.client;
+		this.#signal = options.signal;
+		this.#onHint = options.onHint;
+		this.#onState = options.onState;
+		this.#signal.addEventListener("abort", () => void this.close(), { once: true });
+		if (!this.#signal.aborted) this.#join();
+	}
+
+	#join(): void {
+		if (this.#closed || this.#channel) return;
+		const channel = this.#client.channel(this.#topic, { config: { private: true } });
+		this.#channel = channel;
+		channel.on("broadcast", { event: "folder" }, (message: { payload?: unknown }) => {
+			if (this.#closed || this.#channel !== channel) return;
+			const seq = parseCloudMemberFolderHint(message.payload);
+			if (seq !== null) this.#onHint(seq);
+		});
+		channel.subscribe((status: string) => {
+			if (this.#closed || this.#channel !== channel) return;
+			if (status === "SUBSCRIBED") this.#onState?.(true);
+			else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+				this.#channel = undefined;
+				this.#onState?.(false);
+				void withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined);
+				this.#retry = setTimeout(() => this.#join(), 10_000);
+			}
+		});
+	}
+
+	async close(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
+		clearTimeout(this.#retry);
+		const channel = this.#channel;
+		this.#channel = undefined;
+		if (channel) await withCloudDeadline(() => this.#client.removeChannel(channel), 2000).catch(() => undefined);
 	}
 }
