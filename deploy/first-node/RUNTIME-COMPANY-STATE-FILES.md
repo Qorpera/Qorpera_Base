@@ -2026,7 +2026,7 @@ deletes a table folder either; it writes `rows.csv` under `[write]` and the rule
   `{line, fields}` with `line` at least 2 and strictly increasing, fields as wide as the header, at most 32,768 rows
   and 65,536 bytes of fields) and `interface-order` (unique strict uuids).
 - **Shallow** for `interface`: closed top-level keys, and typed `kind`, `id`, `name`, `main` and `access` (an object of
-  exactly `members`, `agents` and `edit`). The fields review reads are typed too: `buttons` is an array of objects
+  exactly `members`, `agents` and `edit`, each with its parser's values). The fields review reads are typed too: `buttons` is an array of objects
   with a string `id`, and `views` an array of objects whose `blocks` is an array of objects whose `buttons` is an array
   of strings. The rest by JSON type and size. Three conditions keep this safe (Interfaces):
   - readers (I7's web, I8's `interface_read`) parse the text themselves and never trust the stored parse, so the
@@ -2042,18 +2042,19 @@ deletes a table folder either; it writes `rows.csv` under `[write]` and the rule
 applied). Placement and the owners rule run for every unit, structured or not (`structured_rule` with §6.1's codes):
 - **Placement** (rule 2): every path a unit lands, a moved folder's descendants included, is one §6.1 allows: under
   `interfaces/` only `order.md` and one folder per interface holding `interface.toml` and `README.md`; under `tables/`
-  one folder per table holding `table.toml`, `rows.csv` and `README.md` (`README.md` in either case). So a file
+  one folder per table holding `table.toml`, `rows.csv` and `README.md` (written `README.md` or `readme.md`). So a file
   `tables/foo` is refused and a folder `tables/foo` allowed. `interfaces/`, `interfaces/order.md`, `tables/`,
   `tables/areas/`, its `table.toml` and its `rows.csv` join the seeded paths, never deleted or moved. So do the main
   interface's folder and `interface.toml`, while it is main. A table's two files go or move only with their folder,
   and a `rows.csv` needs a `table.toml` in its folder: stored, or in the same unit.
-- **Main** (rule 3): a unit that would leave two interfaces with `main = true` is refused. A change set is not
-  atomic and a refusal is per unit, so this is §6.1's per-unit rule (#751): a switch is two units, the old main set to
+- **Main** (rule 3): a unit whose `interface.toml` has `main = true` is refused while another live one has it (so,
+  during a double main, saves that keep `main = false` still pass). A change set is not atomic and a refusal is per
+  unit, so this is §6.1's per-unit rule (#751): a switch is two units, the old main set to
   false first, then the new one to true, and `save_interface` and the web send them so; the seed has exactly one main
   (Pulse). What this gives up, recorded with Interfaces' yes:
   - zero mains can last: a demotion with no promotion after it leaves none until someone saves one;
   - contract 5.6's "the main interface can be changed but not deleted" holds while it is main: an interface is
-    demoted, then deleted;
+    demoted, then deleted (put to Jonas through the coordinator, since the contract governs);
   - **no lock** serializes two promotions. Rule 3 reads the stored mains, and two units that each make a different
     interface main, decided at the same time while there is none, both pass. This takes no new company-wide lock (the
     rule of 27 September), at the price of a rare double main, which the web shows (I7) and which the next save of
@@ -2064,7 +2065,8 @@ applied). Placement and the owners rule run for every unit, structured or not (`
   platform) changes, moves or deletes anything in its folder, or lands anything in it. An agent never does. Creating
   an interface with `edit = "owners"` is open to anyone who may create one (Interfaces).
 - **Write** (rule 5): a `rows.csv` save under the stored definition's `[write]`. The platform passes. A table's first
-  rows, in the unit that brings its definition, are its maker's.
+  rows, in the unit that brings its definition, are its maker's (beyond #751's rule 5, which reads a stored
+  definition; asked of Interfaces).
 - **Rows** (rule 6): the port of `parseTableRows`, set-based SQL (no loop per field or row). The header against the
   definition (a header that fails refuses the file at line 1); each field by its column type with §6.1's patterns and
   bounds (a time in its canonical text; years 0100–9999); one `row` problem per row, for the first column in the
@@ -2077,11 +2079,14 @@ applied). Placement and the owners rule run for every unit, structured or not (`
   commit; a cell changes when its value's JSON text differs. *Self* is the member. An agent has no self until I9b,
   so it changes no claimed cell, and accept never passes until offers exist. The platform passes only changes that
   clear a cell (a leaving member's cells, contract 5.6); seeding writes header-only rows. A new table's rows have no
-  stored rows, so each claimed cell they set is a take.
+  stored rows, so each claimed cell they set must be a take: the maker's own id.
 - **Areas** (rule 9): `tables/areas/table.toml` keeps its three columns, and after a rows save no agent is in two
   areas.
 - **Ids:** one live interface per `id`, and one live table per `id` (`duplicate`); a table folder keeps its id
-  (`placement`).
+  (`placement`), since its index row is keyed by it. An interface has no index before I7, so it may take a new id.
+  The interface check takes no lock: two interfaces made at the same time with one id can both land (I7 shows it).
+  Two tables made at the same time with one id both pass decide, and the second commit fails whole on the index
+  row's key, as H2's index does.
 
 *The index and the locks.* No index is read before I7, but the rules read a table's definition when its rows change,
 and its rows when its definition changes, and their path locks don't conflict (each holds `tables/<t>` KEY SHARE and
@@ -2115,7 +2120,8 @@ review recorder (C2 R1) gains `save_interface`, only for change sets whose every
 
 *Cost.* A `rows.csv` parse is stored with its version and sent with its request: at 64 KiB of CSV it is up to about
 1 MB. 865 times the worst case (64 KiB of rows against a 40-column definition, a definition change over them, and the
-claim rule over every row) against the core's 4-second tool bound.
+claim rule over every row) against the core's 4-second tool bound, and reports the stored parse's bytes for the
+largest and the smallest-row 64 KiB files, the growth each saved version adds.
 
 *The seed.* `companyStateSeedTree` adds `interfaceLibraryFiles(newId)`: `interfaces/` with Pulse, Mailbox, Members
 and `order.md`, and `tables/` with `numbers`, `areas` and `cards` (header-only rows). The SQL seeded list and
