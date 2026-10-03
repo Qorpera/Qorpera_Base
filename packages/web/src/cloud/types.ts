@@ -228,6 +228,10 @@ export interface HostedStaffExecutionActivity {
 	activity: "waiting" | "working" | "needs_attention";
 	/** Expiring presentation hint; it never changes durable execution state. */
 	phase?: "working" | "writing";
+	/** A working run's last progress, when that is noProgressMinutes old (session-buildup audit gap 4, migration
+	 * 20260930002600). The run goes on; nothing stops it. The cloud sets both or neither. */
+	noProgressSince?: string;
+	noProgressMinutes?: number;
 	updatedAt: string;
 }
 
