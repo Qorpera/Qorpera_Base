@@ -478,10 +478,44 @@ describe("the Company File page", () => {
 			button.textContent?.includes("Retry opening Company File"),
 		);
 		expect(retry).toBeDefined();
+		expect(view.el.classList.contains("folder-page")).toBe(false);
+		expect(view.el.classList.contains("files-page")).toBe(false);
 		retry!.click();
 		await settle();
 		await settle();
 		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+	});
+
+	it("clears what it shows the moment its company ends, and reads nothing after", async () => {
+		vi.useFakeTimers();
+		const fake = folderFake();
+		let hint: ((seq: number) => void) | undefined;
+		const close = vi.fn(async () => {});
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockImplementation((onHint) => {
+			hint = onHint;
+			return { close } as never;
+		});
+		const f = fixture(),
+			stop = new AbortController();
+		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
+		const view = new LiveCompanyFileView(company, stop, "key", people);
+		disposers.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		await settle();
+		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
+		const lists = fake.client.list.mock.calls.length;
+		stop.abort();
+		expect(view.el.childElementCount).toBe(0);
+		expect(view.el.isConnected).toBe(false);
+		expect(view.el.classList.contains("folder-page")).toBe(false);
+		expect(close).toHaveBeenCalledTimes(1);
+		hint?.(9);
+		await vi.advanceTimersByTimeAsync(120_000);
+		await settle();
+		expect(fake.client.list.mock.calls.length).toBe(lists);
+		expect(fake.client.changes).not.toHaveBeenCalled();
 	});
 
 	it("is the company's folder, with no other File page to choose", async () => {

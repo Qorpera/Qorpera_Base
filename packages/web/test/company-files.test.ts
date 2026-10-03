@@ -18,29 +18,15 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
-async function setup(offerProposal = false, useBridge = true) {
+async function setup(useBridge = true) {
 	const f = fixture(),
 		stop = new AbortController();
 	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
 	if (useBridge)
 		f.cloud.config.memberCompanyGatewayUrl = `${f.cloud.config.projectUrl}/functions/v1/member-company-gateway`;
-	let contents = "Original text",
-		version = id(40),
-		exists = true;
+	const contents = "Original text",
+		version = id(40);
 	const objects = new Map<string, Uint8Array>();
-	const proposal = {
-		proposalId: id(44),
-		plan: {
-			schema: "qorpera.company-path-mutation/v1",
-			operationKey: "fixture-proposal",
-			path: "notes.txt",
-			expectedVersion: version,
-			entry: null,
-		},
-		planSha256: "b".repeat(64),
-		state: "open",
-		snapshotId: null,
-	};
 	const reference = async () => {
 		const bytes = new TextEncoder().encode(contents),
 			hash = await cloudFileBytesSha256(bytes);
@@ -89,24 +75,14 @@ async function setup(offerProposal = false, useBridge = true) {
 		if (method === "qorpera_list_company_paths")
 			return Response.json({
 				snapshotId: id(41),
-				items: exists
-					? [{ path: "notes.txt", version, kind: "file", bytes: new TextEncoder().encode(contents).length }]
-					: [],
+				items: [{ path: "notes.txt", version, kind: "file", bytes: new TextEncoder().encode(contents).length }],
 				hasMore: false,
 				nextAfter: null,
 			});
-		if (method === "qorpera_list_company_path_proposals" && offerProposal)
-			return Response.json({ items: [proposal], nextAfter: null });
 		if (["qorpera_list_member_company_path_commands", "qorpera_list_company_path_proposals"].includes(method))
 			return Response.json({ items: [], nextAfter: null });
-		if (url.pathname.endsWith(`/proposals/${proposal.proposalId}/review`)) {
-			expect(body).toEqual({ planSha256: proposal.planSha256, decision: "approve" });
-			offerProposal = false;
-			exists = false;
-			return Response.json({ ...proposal, state: "applied", snapshotId: id(41) });
-		}
 		if (method === "qorpera_read_company_path") {
-			if (!exists || body.p_path !== "notes.txt")
+			if (body.p_path !== "notes.txt")
 				return Response.json({
 					companyId: profileA.profileId,
 					path: body.p_path,
@@ -128,41 +104,6 @@ async function setup(offerProposal = false, useBridge = true) {
 			if (!bytes) throw new Error("Unknown fixture object");
 			return new Response(Uint8Array.from(bytes), { headers: { "x-qorpera-access-mode": "live-path-authority" } });
 		}
-		if (method === "edits" || method === "uploads") {
-			const uploadHeader = new Headers(init?.headers).get("x-qorpera-company-upload");
-			const intent = uploadHeader ? JSON.parse(Buffer.from(uploadHeader, "base64url").toString("utf8")) : body;
-			if (method === "uploads") {
-				expect(init?.method).toBe("PUT");
-				expect(init?.body).toBeInstanceOf(Uint8Array);
-			}
-			expect(intent.expectedVersion).toBe(version);
-			contents = method === "uploads" ? new TextDecoder().decode(init?.body as Uint8Array) : body.text;
-			version = id(42);
-			exists = body.operation !== "delete";
-			const ref = await reference();
-			return Response.json({
-				commandId: id(43),
-				companyId: profileA.profileId,
-				environmentId: profileA.environmentId,
-				plan: {
-					schema: "qorpera.company-path-mutation/v1",
-					path: intent.path,
-					operationKey: intent.operationKey,
-					expectedVersion: intent.expectedVersion,
-					entry: exists ? { path: intent.path, kind: "file", executable: false, file: ref.file } : null,
-				},
-				planSha256: "a".repeat(64),
-				state: "applied",
-				expiresAt: "2030-01-01T00:00:00Z",
-				result: {
-					state: "applied",
-					path: intent.path,
-					operationKey: intent.operationKey,
-					version,
-					snapshotId: id(41),
-				},
-			});
-		}
 		throw new Error(`Unexpected fixture endpoint: ${url.pathname}`);
 	});
 	vi.stubGlobal("fetch", fetch);
@@ -173,7 +114,7 @@ async function setup(offerProposal = false, useBridge = true) {
 }
 describe("the product's member File transport", () => {
 	it("keeps the configured direct transport until bridge activation", async () => {
-		const f = await setup(false, false);
+		const f = await setup(false);
 		const client = await f.company.files();
 		await client.read("notes.txt", new AbortController().signal);
 		const objects = f.fetch.mock.calls.filter(([url]) => String(url).includes("/v1/member-company-objects/"));
