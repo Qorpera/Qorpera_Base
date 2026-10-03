@@ -25,6 +25,7 @@ alter table public.qorpera_company_rooms add column folder_erased_at timestamptz
 alter table public.qorpera_runtime_agent_todos add column folder_erased_at timestamptz;
 alter table public.qorpera_cloud_routines add column folder_erased_at timestamptz;
 alter table public.qorpera_review_rules add column folder_erased_at timestamptz;
+alter table public.qorpera_runtime_workers add column folder_erased_at timestamptz;
 
 -- Each check an erased row meets gains its own branch; every other row meets the old one, which is kept as it was.
 alter table public.qorpera_profile_staff drop constraint qorpera_profile_staff_folder_complete,
@@ -87,6 +88,15 @@ alter table public.qorpera_review_rules drop constraint qorpera_review_rules_fol
 			and (folder_path is null) = (folder_path_version is null)
 			and (folder_path is null) = (folder_commit_id is null)
 			and (folder_path is null or (scope = 'company' and created_via = 'folder'))));
+alter table public.qorpera_runtime_workers drop constraint qorpera_runtime_workers_folder_check,
+	add constraint qorpera_runtime_workers_folder_check check (
+		(folder_erased_at is not null and folder_path is null and folder_environment_id is null and folder_key is null
+			and folder_brief_version is not null and folder_commit_id is not null and folder_retired_at is not null)
+		or (folder_erased_at is null
+			and (folder_path is null) = (folder_environment_id is null) and (folder_path is null) = (folder_key is null)
+			and (folder_path is null) = (folder_brief_version is null) and (folder_path is null) = (folder_commit_id is null)
+			and (folder_path is not null or (folder_results_version is null and folder_retired_at is null))));
+
 -- The erasure's agents (ids and the chats' placeholder titles) and how far phase 6 walked the operations log; phase 7.
 alter table public.qorpera_folder_erasures add column agents jsonb check (agents is null or jsonb_typeof(agents) = 'object'),
 	drop constraint qorpera_folder_erasures_phase_check,
@@ -106,6 +116,18 @@ create index qorpera_cloud_routines_folder_key on public.qorpera_cloud_routines(
 create index qorpera_review_rules_folder_key on public.qorpera_review_rules(folder_environment_id,
 	(public.qorpera_folder_key(folder_path)) collate "C") where folder_path is not null;
 create index qorpera_cloud_secret_operation_grants_staff on public.qorpera_cloud_secret_operation_grants(profile_id, staff_agent_id);
+-- A worker's folder key in byte order (its own index keeps the column's collation).
+create index qorpera_runtime_workers_folder_key_c on public.qorpera_runtime_workers(folder_environment_id, (folder_key collate "C"))
+	where folder_path is not null;
+
+-- An object with each value blanked in its own JSON type (qorpera_folder_erasure_blank): a worker's dispatch, result
+-- and events keep their keys, so every reader still parses them, and lose what the files said.
+create function public.qorpera_folder_erasure_blank_object(p_value jsonb)
+returns jsonb language sql immutable set search_path = '' as $$
+	select case when jsonb_typeof(p_value) = 'object' then coalesce((select jsonb_object_agg(e.key,
+		public.qorpera_folder_erasure_blank(e.value)) from jsonb_each(p_value) e), '{}'::jsonb) else p_value end
+$$;
+revoke all on function public.qorpera_folder_erasure_blank_object(jsonb) from public, anon, authenticated, service_role;
 
 -- Whether an index row built from a file under a root lies before the root's cutoff (§5): its retire commit comes before
 -- the cutoff's commit, or is that commit and the row's last written version lies before the cutoff position. A row made
@@ -156,7 +178,7 @@ declare
 	v_work jsonb; v_added jsonb; v_live jsonb; v_open record; v_start record; v_grew boolean;
 	v_counts jsonb := '[]'::jsonb; v_versions bigint; v_copies jsonb; v_reply jsonb; v_id uuid := extensions.gen_random_uuid();
 	v_staff_ids uuid[]; v_rooms uuid[]; v_threads uuid[]; v_routines uuid[]; v_todos uuid[]; v_rules uuid[]; v_sessions uuid[];
-	v_targets jsonb; v_changes jsonb; v_erased jsonb; v_env uuid; v_journal jsonb := '{}'::jsonb; v_pairs uuid[];
+	v_targets jsonb; v_changes jsonb; v_erased jsonb; v_env uuid; v_journal jsonb := '{}'::jsonb; v_pairs uuid[]; v_workers uuid[];
 begin
 	-- 1. Checks, before any lock (ERASURE.md §3).
 	if auth.role() is distinct from 'service_role' then
@@ -215,8 +237,8 @@ begin
 	from unnest(v_keys) k join public.qorpera_folder_contact_index i on i.environment_id = p_environment_id
 		and i.folder_key >= k and i.folder_key < k || '0' and public.qorpera_folder_erasure_covers(k, i.folder_key)
 	where i.retired_at is not null;
-	-- P18b: the retired agents, group chats and routines built from files under the roots, for ranks 2, 4 and 5 (a plain
-	-- read; read again after the paths). An environment holds few of each.
+	-- P18b: the retired agents, group chats, routines, todos and workers built from files under the roots, for ranks 2, 4
+	-- and 5 (a plain read, through each kind's folded-key index; read again after the paths).
 	select coalesce(array_agg(s.staff_agent_id order by s.staff_agent_id), '{}') into v_staff_ids
 	from unnest(v_keys) k join public.qorpera_profile_staff s on s.folder_environment_id = p_environment_id and s.folder_path is not null
 		and public.qorpera_folder_key(s.folder_path) collate "C" >= k collate "C"
@@ -235,6 +257,18 @@ begin
 			and public.qorpera_folder_key(r.folder_path) collate "C" < (k || '0') collate "C"
 		and public.qorpera_folder_erasure_covers(k, public.qorpera_folder_key(r.folder_path))
 	where r.folder_retired_at is not null;
+	select coalesce(array_agg(t.id order by t.id), '{}') into v_todos
+	from unnest(v_keys) k join public.qorpera_runtime_agent_todos t on t.folder_environment_id = p_environment_id
+		and t.folder_path is not null and public.qorpera_folder_key(t.folder_path) collate "C" >= k collate "C"
+			and public.qorpera_folder_key(t.folder_path) collate "C" < (k || '0') collate "C"
+		and public.qorpera_folder_erasure_covers(k, public.qorpera_folder_key(t.folder_path))
+	where t.folder_retired_at is not null and t.profile_id = v_profile;
+	select coalesce(array_agg(w.id order by w.id), '{}') into v_workers
+	from unnest(v_keys) k join public.qorpera_runtime_workers w on w.folder_environment_id = p_environment_id
+		and w.folder_path is not null and w.folder_key collate "C" >= k collate "C"
+			and w.folder_key collate "C" < (k || '0') collate "C"
+		and public.qorpera_folder_erasure_covers(k, w.folder_key)
+	where w.folder_retired_at is not null and w.profile_id = v_profile;
 	v_threads := array(select r.id from public.qorpera_company_rooms r
 		where r.profile_id = v_profile and r.bound_staff_agent_id = any(v_staff_ids) order by r.id);
 
@@ -246,8 +280,9 @@ begin
 	v_role := public.qorpera_folder_mutator_role(v_profile, p_actor);
 	if v_role not in ('owner','admin') then raise exception 'Only owners and admins erase' using errcode = '42501'; end if;
 	-- 4. Ranks 2 to 5 through the commit's own locks, in its table and key order: the agents (rank 2, NO KEY UPDATE),
-	-- their execution authorities (rank 3, deleted), the group chats and the agents' threads (rank 4), the routines (rank 5,
-	-- FOR UPDATE: their tombstone key changes), then the human-task and contact rows to delete.
+	-- their execution authorities (rank 3, deleted), the group chats and the agents' threads (rank 4), the routines, todos
+	-- and workers (rank 5, FOR UPDATE: their tombstone keys change; the commit locks todos and workers there since F2-5b),
+	-- then the human-task and contact rows to delete.
 	select coalesce(jsonb_agg(x.t), '[]'::jsonb) into v_targets from (
 		select jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'key', v_profile::text || ':' || s::text,
 			'mode', 'nokeyupdate') as t from unnest(v_staff_ids) s
@@ -256,7 +291,11 @@ begin
 		union all select jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', r::text, 'mode', 'nokeyupdate')
 		from unnest(v_rooms || v_threads) r
 		union all select jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines', 'key', r::text, 'mode', 'update')
-		from unnest(v_routines) r) x;
+		from unnest(v_routines) r
+		union all select jsonb_build_object('rank', 5, 'tbl', 'qorpera_runtime_agent_todos', 'key', t::text, 'mode', 'update')
+		from unnest(v_todos) t
+		union all select jsonb_build_object('rank', 5, 'tbl', 'qorpera_runtime_workers', 'key', w::text, 'mode', 'update')
+		from unnest(v_workers) w) x;
 	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 2::smallint, 2::smallint);
 	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 3::smallint);
 	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 4::smallint, 5::smallint);
@@ -337,7 +376,17 @@ begin
 			and r.folder_path is not null and public.qorpera_folder_key(r.folder_path) collate "C" >= k collate "C"
 			and public.qorpera_folder_key(r.folder_path) collate "C" < (k || '0') collate "C"
 			and public.qorpera_folder_erasure_covers(k, public.qorpera_folder_key(r.folder_path))
-			where r.folder_retired_at is not null and not r.id = any(v_routines)) then
+			where r.folder_retired_at is not null and not r.id = any(v_routines))
+		or exists (select 1 from unnest(v_keys) k join public.qorpera_runtime_agent_todos t on t.folder_environment_id = p_environment_id
+			and t.folder_path is not null and public.qorpera_folder_key(t.folder_path) collate "C" >= k collate "C"
+			and public.qorpera_folder_key(t.folder_path) collate "C" < (k || '0') collate "C"
+			and public.qorpera_folder_erasure_covers(k, public.qorpera_folder_key(t.folder_path))
+			where t.folder_retired_at is not null and t.profile_id = v_profile and not t.id = any(v_todos))
+		or exists (select 1 from unnest(v_keys) k join public.qorpera_runtime_workers w on w.folder_environment_id = p_environment_id
+			and w.folder_path is not null and w.folder_key collate "C" >= k collate "C"
+			and w.folder_key collate "C" < (k || '0') collate "C"
+			and public.qorpera_folder_erasure_covers(k, w.folder_key)
+			where w.folder_retired_at is not null and w.profile_id = v_profile and not w.id = any(v_workers)) then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message',
 			'Company folder changed while the erasure began; retry', 'details', null, 'hint', null)::text,
 			detail = '{"status":409,"headers":{}}';
@@ -452,7 +501,7 @@ begin
 		and public.qorpera_folder_erasure_row_before(r, i.commit_id, i.folder_path_version);
 	-- P18b: of the rows locked at their ranks, those that lie before their root's cutoff (qorpera_folder_erasure_row_before);
 	-- the threads, pair conversations and sessions of those; then, after the paths as the commit's apply takes them, the
-	-- retired todos and rules under the roots (through the folded-key index) and the erased routines' versions.
+	-- workers' events, the retired rules under the roots (through the folded-key index) and the erased routines' versions.
 	v_staff_ids := array(select s.staff_agent_id from public.qorpera_profile_staff s
 		join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(s.folder_path))
 		where s.profile_id = v_profile and s.staff_agent_id = any(v_staff_ids) and s.folder_retired_at is not null
@@ -473,14 +522,15 @@ begin
 		order by ss.id);
 	v_sessions := array(select x.id from (select m.session_id as id from public.qorpera_company_rooms m
 		where m.id = any(v_rooms || v_threads) and m.session_id is not null union select unnest(v_pairs)) x order by x.id);
-	v_todos := array(select t.id from jsonb_array_elements(v_roots) r
-		join public.qorpera_runtime_agent_todos t on t.folder_environment_id = p_environment_id and t.folder_path is not null
-			and public.qorpera_folder_key(t.folder_path) collate "C" >= (r ->> 'key') collate "C"
-			and public.qorpera_folder_key(t.folder_path) collate "C" < ((r ->> 'key') || '0') collate "C"
-			and public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(t.folder_path))
-		where t.profile_id = v_profile and t.folder_retired_at is not null
+	v_todos := array(select t.id from public.qorpera_runtime_agent_todos t
+		join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', public.qorpera_folder_key(t.folder_path))
+		where t.id = any(v_todos) and t.folder_retired_at is not null
 			and public.qorpera_folder_erasure_row_before(r, t.folder_commit_id, t.folder_path_version) order by t.id);
-	perform 1 from public.qorpera_runtime_agent_todos where id = any(v_todos) order by id for update;
+	v_workers := array(select w.id from public.qorpera_runtime_workers w
+		join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', w.folder_key)
+		where w.id = any(v_workers) and w.folder_retired_at is not null
+			and public.qorpera_folder_erasure_row_before(r, w.folder_commit_id, w.folder_brief_version) order by w.id);
+	perform 1 from public.qorpera_runtime_worker_events where worker_id = any(v_workers) order by id for update;
 	v_rules := array(select u.id from jsonb_array_elements(v_roots) r
 		join public.qorpera_review_rules u on u.folder_environment_id = p_environment_id and u.folder_path is not null
 			and public.qorpera_folder_key(u.folder_path) collate "C" >= (r ->> 'key') collate "C"
@@ -491,7 +541,8 @@ begin
 	perform 1 from public.qorpera_review_rules where id = any(v_rules) order by id for update;
 	perform 1 from public.qorpera_cloud_routine_versions where routine_id = any(v_routines) order by routine_id, version for no key update;
 	v_erased := jsonb_build_object('agents', cardinality(v_staff_ids), 'groupChats', cardinality(v_rooms),
-		'todos', cardinality(v_todos), 'routines', cardinality(v_routines), 'rules', cardinality(v_rules));
+		'todos', cardinality(v_todos), 'workers', cardinality(v_workers), 'routines', cardinality(v_routines),
+		'rules', cardinality(v_rules));
 
 	-- 8. Writes: the erasure and its needles, then the index rows, then the claims go.
 	v_reply := jsonb_build_object('schema', 'qorpera.folder-erasure/v1', 'erasureId', v_id, 'asOfSeq', v_as_of,
@@ -554,6 +605,14 @@ begin
 		folder_path = null, folder_environment_id = null, folder_erased_at = clock_timestamp(), revision = revision + 1,
 		updated_at = clock_timestamp()
 	where id = any(v_todos);
+	-- A worker keeps its row, its state and its JSON shapes: what its brief, results and decision said goes.
+	update public.qorpera_runtime_workers set title = 'Erased', worker_key = 'erased.' || replace(id::text, '-', ''),
+		dispatch = public.qorpera_folder_erasure_blank_object(dispatch), result = public.qorpera_folder_erasure_blank_object(result),
+		acceptance_note = case when acceptance_note is not null then 'Erased.' end, folder_path = null, folder_key = null,
+		folder_environment_id = null, folder_erased_at = clock_timestamp(), updated_at = clock_timestamp()
+	where id = any(v_workers);
+	update public.qorpera_runtime_worker_events set body = public.qorpera_folder_erasure_blank_object(body)
+	where worker_id = any(v_workers);
 	update public.qorpera_cloud_routines set routine_key = 'erased.' || replace(id::text, '-', ''), folder_path = null,
 		folder_environment_id = null, folder_erased_at = clock_timestamp(), updated_at = statement_timestamp()
 	where id = any(v_routines);

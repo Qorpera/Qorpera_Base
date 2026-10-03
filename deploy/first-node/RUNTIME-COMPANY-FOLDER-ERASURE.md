@@ -243,7 +243,7 @@ unlike P18a, writes a journal row). P18b's per-move-unit check of §2.3 and its
 lock placement (todos and rules after the paths, step 7) follow this design. P18b states each of these as a decision
 for the coordinator.
 
-When F2-5b lands, worker rows (`folder_brief_version`, `folder_results_version`) join; when P17 lands, conflict copies
+Worker rows (`folder_brief_version`, `folder_results_version`, F2-5b) joined in P18b (§11); when P17 lands, conflict copies
 on receipts are erased with their path; I6's interface and table indexes, H5's link and delivery rows and the C4
 listener's file-change wakes join before they hold paths.
 
@@ -415,6 +415,11 @@ What it does:
   `qorpera_folder_authority_journal`, as the folder clock is taken last, so live runs' rechecks see them go.
 - **The thread trigger** leaves an erased agent's thread to the erasure. Otherwise its own rename would re-add members
   and append a second title.
+- **Workers and todos at rank 5** (review r2): since F2-5b (20260930003000), the commit locks todos and workers at rank 5,
+  after the routines, so the request does too, before the paths (FOR UPDATE: their tombstone keys change). A retired
+  worker under a root keeps its row and state. Its title becomes `Erased` and its key `erased.<id>`. Its dispatch,
+  result and events keep their keys, with each value blanked in its own JSON type
+  (`qorpera_folder_erasure_blank_object`). Its acceptance note becomes `Erased.`.
 - **Agent pairs' conversations** (review r1): a conversation between an erased agent and another is retitled as the
   pair function titles it, with `Erased agent` for the erased side (`Erased agent & Otto`); its earlier titles are
   scrubbed with the others.
@@ -447,11 +452,15 @@ What it does:
   - all five kinds refused afterwards, with their messages;
   - the operations-log scrub, with every row's hash matching its fields and Otto's and Nova's rows unchanged;
   - two offices revoked;
-  - the key ranges.
+  - the key ranges and the todo range's plan;
+  - a worker and its events;
+  - the row cutoff's keep branch, unit by unit.
 - **Not tested yet, before C4 wires the member route:**
   - P18b's request against a concurrent commit that restores or edits an agent, a chat or a routine under a root, or
     that revokes its grants;
   - its QRC01 re-read for agents, chats and routines;
   - phase 6 over several steps;
   - the hourly wait while an office row is in use;
-  - a member-made routine's erasure.
+  - a member-made routine's erasure;
+  - an office added while phase 6 runs, which can leave an erased agent's new access row active (inferred, rare: the
+    agent is archived and cannot run).
