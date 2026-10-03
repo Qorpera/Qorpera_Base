@@ -1,5 +1,5 @@
 import type { FileSystemObjectStore } from "./object-store.ts";
-import type { ObjectGatewayReplication } from "./replication.ts";
+import type { BlockedObject, ObjectGatewayReplication } from "./replication.ts";
 import type { ObjectBackend } from "./supabase-authority.ts";
 
 /** The folder core's GC calls the unlink lane makes (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md §9.8), all under
@@ -28,6 +28,10 @@ export interface FolderGcAuthority {
 /** How long a folder-v2 object's bytes stay after the gateway first found them with no catalog row (C1D §9.9), as
  * GC's own grace (§9.4). */
 const UNCATALOGUED_GRACE_MS = 24 * 60 * 60 * 1000;
+/** How soon a blocked entry the database answered about otherwise is asked about again. */
+const RECHECK_MS = 10 * 60 * 1000;
+/** How far ahead a stored time may be before it counts as a clock that ran ahead. */
+const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 export type FolderGcOutcome = "removed" | "restored" | "stale";
 
@@ -55,6 +59,7 @@ export class ObjectGatewayFolderGc {
 	#lastError = false;
 	#quarantineCursor: string | undefined;
 	#blockedCursor: string | undefined;
+	readonly #nextCheck = new Map<string, number>();
 
 	constructor(
 		store: FileSystemObjectStore,
@@ -160,7 +165,7 @@ export class ObjectGatewayFolderGc {
 	 * catalogued objects, stay as they are. A pass reads up to 500 entries and checks up to `limit`, going on next time.
 	 */
 	async #uncatalogued(limit: number): Promise<void> {
-		let objects: Awaited<ReturnType<ObjectGatewayReplication["blockedEntries"]>>["objects"];
+		let objects: BlockedObject[];
 		try {
 			const page = await this.#replication.blockedEntries(this.#blockedCursor, limit);
 			objects = page.objects;
@@ -170,17 +175,39 @@ export class ObjectGatewayFolderGc {
 			return;
 		}
 		for (const listed of objects) {
+			const key = `${listed.profileId}/${listed.sha256}`;
+			// An entry checked lately is not asked about again before its time: most never change.
+			if ((this.#nextCheck.get(key) ?? 0) > this.#now()) continue;
+			this.#nextCheck.delete(key);
 			try {
 				await this.#replication.exclusive(listed.profileId, listed.sha256, async () => {
 					const entry = await this.#replication.blockedLocked(listed.profileId, listed.sha256);
 					if (!entry) return;
-					if ((await this.#authority.folderCatalogState(entry.profileId, entry.sha256)) !== "missing") return;
-					if (entry.missingSince === undefined) {
-						await this.#replication.markMissingLocked(entry, new Date(this.#now()).toISOString());
+					const now = this.#now();
+					if ((await this.#authority.folderCatalogState(entry.profileId, entry.sha256)) !== "missing") {
+						// The wait counts only while the object is missing all along.
+						if (entry.missingSince !== undefined) await this.#replication.markMissingLocked(entry);
+						this.#nextCheck.set(key, now + RECHECK_MS);
 						return;
 					}
-					if (this.#now() - Date.parse(entry.missingSince) < UNCATALOGUED_GRACE_MS) return;
+					const since = entry.missingSince === undefined ? Number.NaN : Date.parse(entry.missingSince);
+					// A time from a clock that ran ahead would hold the bytes off for good: it is marked again.
+					if (Number.isNaN(since) || since > now + CLOCK_SKEW_MS) {
+						await this.#replication.markMissingLocked(entry, new Date(now).toISOString());
+						await this.#audit("folder_object_uncatalogued_found", {
+							...entry,
+							missingSince: new Date(now).toISOString(),
+						});
+						this.#nextCheck.set(key, now + UNCATALOGUED_GRACE_MS);
+						return;
+					}
+					if (now - since < UNCATALOGUED_GRACE_MS) {
+						this.#nextCheck.set(key, since + UNCATALOGUED_GRACE_MS);
+						return;
+					}
 					await this.#store.remove(entry.profileId, entry.sha256);
+					// No Storage-first writer exists for a folder-v2 company (C1D §9.3), so a replica of an object with no
+					// catalog row can only be one this gateway wrote: it goes too.
 					await this.#authority.removeReplica(entry.profileId, entry.sha256);
 					await this.#replication.forgetLocked(entry.profileId, entry.sha256);
 					await this.#audit("folder_object_uncatalogued_removed", entry);
@@ -222,7 +249,10 @@ export class ObjectGatewayFolderGc {
 		await this.#replication.forgetLocked(object.profileId, object.sha256);
 	}
 
-	async #audit(event: string, object: { profileId: string; sha256: string; leaseId?: string }): Promise<void> {
+	async #audit(
+		event: string,
+		object: { profileId: string; sha256: string; leaseId?: string; bytes?: number; missingSince?: string },
+	): Promise<void> {
 		// The outcome stands; a lost audit line is reported as degraded, not as a failed lane.
 		await this.#replication
 			.audit({
@@ -231,6 +261,8 @@ export class ObjectGatewayFolderGc {
 				profileId: object.profileId,
 				sha256: object.sha256,
 				...(object.leaseId === undefined ? {} : { leaseId: object.leaseId }),
+				...(object.bytes === undefined || object.leaseId !== undefined ? {} : { bytes: object.bytes }),
+				...(object.missingSince === undefined ? {} : { missingSince: object.missingSince }),
 			})
 			.catch(() => {
 				this.#lastError = true;

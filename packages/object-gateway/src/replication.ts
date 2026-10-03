@@ -180,9 +180,16 @@ export class ObjectGatewayReplication {
 		};
 	}
 
-	/** With the object's lock held: a blocked entry notes when its object was first found with no catalog row. */
-	async markMissingLocked(object: LegacyObjectMigrationItem, since: string): Promise<void> {
-		await this.#journal.write(key(object), { ...object, state: "blocked", missingSince: since });
+	/** With the object's lock held: a blocked entry notes when its object was first found with no catalog row, or,
+	 * with no time, forgets it. */
+	async markMissingLocked(object: LegacyObjectMigrationItem, since?: string): Promise<void> {
+		await this.#journal.write(key(object), {
+			profileId: object.profileId,
+			sha256: object.sha256,
+			bytes: object.bytes,
+			state: "blocked",
+			...(since === undefined ? {} : { missingSince: since }),
+		});
 	}
 
 	async audit(event: Record<string, unknown>): Promise<void> {

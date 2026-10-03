@@ -11,8 +11,9 @@ set local lock_timeout = '3s';
 -- * 'catalogued': it has a catalog row; its entry is blocked for another reason, and folder GC leaves it;
 -- * 'other': no row, in a company folder GC does not serve (snapshot-v1, mixed, or being deleted:
 --   qorpera_folder_gc_company); left as it is;
--- * 'listed': no row, but an upload intent that expired less than the grace window ago lists it, so its writer may
---   still confirm it (the intent clause of qorpera_folder_object_rooted);
+-- * 'listed': no row, but an upload intent that is open, or that ended less than the grace window ago, lists it: the
+--   same window in which the intent roots its objects (qorpera_folder_object_rooted), kept here so folder GC's two
+--   views of an object's roots agree (a writer can confirm only while its intent is open);
 -- * 'missing': none of these.
 -- Service role only; plain reads through the catalog key and the intent objects' hash index; no locks.
 create function public.qorpera_folder_gc_catalog_state(p_profile_id uuid, p_sha256 text)
