@@ -1,6 +1,6 @@
 # Company folder core: erasure (slice P18)
 
-Status: design ratified 3 October 2026 (#732, §8's decisions as proposed); P18a built (§10); P18b to come. Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
+Status: design ratified 3 October 2026 (#732, §8's decisions as proposed); P18a built (§10); P18b built (§11). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
 F2 on 3 October 2026). Rules: contract 5.6 ("Permanent erasure"), 14.1 (an agent's permanent deletion), the
 2026-10-02 amendment "work for people" item 3, core §8 ("Erasure"), C1D §9.4 (when a root ends). Evidence:
 `~/work/qorpera-folder-core-tools/reports/P18-erasure-inventory.md` (every column, reader and lock erasure meets) and
@@ -367,3 +367,57 @@ delete is refused in practice by older links the structured-file hook writes (20
   - the vault writing a connection file at a root during a request, also before C4;
   - the drain against folder GC's claim and finish, before the GC switch goes on.
   The first needs a committed fixture with contacts, which 884's fixture lacks.
+- **Two behaviours for the member route** (P18a review r2):
+  - A refusal's `live` list can name a move partner that has since moved on, such as a file moved out of a named live
+    root's current life. The way out is to drop that root from the request, name the other path, and erase the root
+    on its own.
+  - A needle also matches a name that goes on after a space or other punctuation (`docs/f notes.md`, `docs/f(1).md`).
+    That only scrubs more text, never less.
+
+## 11. Built (P18b, migration 20260930009300, test 885)
+
+Decisions (coordinator, 3 October 2026, as proposed):
+- speaker names on past messages stay, like transcripts;
+- `staff_state` and `session_state` rows in the operations log are scrubbed to the placeholders, and each changed row's
+  `content_sha256` is recomputed from its own fields. Rows are not chained: the hash covers the row's type, entity,
+  version and payload, and substrate versions bind only a sequence number. 885 checks every row's hash after the drain;
+- office access and browser grants are revoked (state `revoked`), not deleted: screens point at them.
+
+What it does:
+- **The request** no longer refuses `agents/` and `rules/`; `tables/` waits for I6.
+- **Locks:** it takes the commit's own locks in its rank order:
+  - rank 2: the retired agents under the roots, NO KEY UPDATE (`qorpera_folder_structured_lock`);
+  - rank 3: their execution authorities, FOR UPDATE (`qorpera_folder_lock_commit_rank`);
+  - rank 4: the retired group chats and the agents' threads;
+  - rank 5: the retired routines, FOR UPDATE (their tombstone key changes);
+  - then P18a's task and contact rows;
+  - ranks 6 and 7: the resources of the agents' live path grants, and the grants;
+  - rank 8: their connector grants;
+  - rank 11: the chats' sessions;
+  - the paths;
+  - after the paths, as the commit's apply takes them: the retired todos and rules, and the routines' versions.
+- **Which rows:** a row is erased when its retire commit lies at or before its root's cutoff, as P18a's index rows are.
+  A row that retired under a root between the first plain read and its lock answers QRC01.
+- **Placeholders:**
+  - agent: `Erased agent` / `Erased` / `Erased.`, version bumped;
+  - group chat: `Erased group chat` / `Erased.`, no subtitle;
+  - an agent's thread and the chats' sessions: renamed;
+  - todo: `Erased`, empty detail, key `erased.<id>`;
+  - routine: key `erased.<id>`; each version gets `Erased` / `Erased.` and its hash recomputed;
+  - rule: `Erased.`.
+  Each erased row also gets `folder_erased_at`, and its path and environment are cleared. Bare version and commit ids
+  stay. Each check those rows meet gains its own branch for an erased row. An erased id never comes back: each kind's
+  rule refuses an id whose row is outside the folder, and 885 checks all five kinds.
+- **Contract 14.1:** the execution authority and the connector grants are deleted. The path grants are revoked through
+  `qorpera_folder_authority_journal`, as the folder clock is taken last, so live runs' rechecks see them go.
+- **The thread trigger** leaves an erased agent's thread to the erasure. Otherwise its own rename would re-add members
+  and append a second title.
+- **The drain's phase 6:**
+  - It walks the company's operations log by sequence, 5,000 a step, up to where the log stood at the request, and
+    scrubs the earlier names, charters and chat titles.
+  - It then revokes the office access and browser grants, SKIP LOCKED. A row in use leaves the erasure waiting an hour.
+  - Phase 7 is P18a's old phase 6.
+- **P18a review r2 nits:** the card loop has its own cursor and budget check, a failing step raises a warning, and 883
+  counts the key ranges in each function.
+- **Not tested yet:** P18b's request against a concurrent commit that restores or edits an agent, a chat or a routine
+  under a root, or that revokes its grants. As with P18a's §10 list, this comes before C4 wires the member route.

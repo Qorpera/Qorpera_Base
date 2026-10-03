@@ -382,7 +382,7 @@ end $$;
 -- 8. A live root keeps its current life; histories through reused paths; the key index -------------------------------
 
 do $$
-declare r jsonb; d jsonb; v_old uuid; v_live uuid; v_plan text; v_fn regprocedure;
+declare r jsonb; d jsonb; v_old uuid; v_live uuid; v_plan text; v_fn text; v_ranges text; v_pair text[];
 begin
 	-- A live folder root: its earlier life (the folder and every key under it) goes, its current descendants stay.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'erase-g-1', jsonb_build_array(pg_temp.mkdir('docs/g'),
@@ -484,10 +484,13 @@ begin
 		'[{"key":"docs"}]', '70700000-0000-4000-8000-000000000020') into v_plan;
 	perform set_config('enable_seqscan', 'on', true);
 	if strpos(v_plan, 'qorpera_folder_path_versions_key_text') = 0 then raise exception 'The key index serves the range: %', v_plan; end if;
-	foreach v_fn in array array['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)',
-			'public.qorpera_folder_erasure_step(integer,integer,integer)', 'public.qorpera_folder_erasure_open_moves(uuid,jsonb)']::regprocedure[] loop
-		if (select strpos(prosrc, '|| ''0'') collate "C"') from pg_proc where oid = v_fn) = 0 then
-			raise exception '% writes the key range out', v_fn; end if;
+	-- The request's count and copies, phase 1, and the move search: each version search writes the range out.
+	foreach v_pair slice 1 in array array[['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)', '2'],
+			['public.qorpera_folder_erasure_step(integer,integer,integer)', '1'], ['public.qorpera_folder_erasure_open_moves(uuid,jsonb)', '1']] loop
+		v_fn := v_pair[1]; v_ranges := v_pair[2];
+		if (select (length(prosrc) - length(replace(prosrc, '|| ''0'') collate "C"', ''))) / length('|| ''0'') collate "C"')
+				from pg_proc where oid = v_fn::regprocedure) < v_ranges::integer then
+			raise exception '% writes the key range out in each version search', v_fn; end if;
 	end loop;
 end $$;
 
