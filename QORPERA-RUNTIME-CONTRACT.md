@@ -4736,8 +4736,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    Proposed, pending Jonas: each machine holds at most 16,384 connections through the exit at once, and the exit on
    a node at most 98,304 in all. Like 7.4's storage bounds, they protect the node and are not a limit on the work.
    - The node's own connection table holds 262,144 entries, and in phase 1 each agent connection takes two of them
-     (the bridged leg and the masqueraded leg), so the total keeps agent traffic from filling the table our own
-     traffic needs.
+     (the bridged leg and the masqueraded leg), so the total keeps the connections the exit passes from filling the
+     table our own traffic needs. The node also tracks refused attempts for a few seconds each; step E2's proof on a
+     node measures the table under such a flood, and the total's cost, before Jonas decides.
    - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
      bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
    - One company with six busy machines on a node could reach the node's total and slow every other company there.

@@ -73,9 +73,12 @@ agent road machine only ever uses the exit of the node it runs on.
   per hour, not refreshed on every hit; only a new flow spends a machine's share of the log, so repeats cannot hide
   other refusals).
 - Pending Jonas (contract item 4): each client holds at most 16,384 connections through the exit at once, and the
-  exit at most 98,304 in all. In phase 1 each agent connection takes two entries in the node's connection table
-  (262,144), so the total keeps room for our own traffic. A Company Computer machine's computers share one 16,384.
-  A reload of the rules starts both counts from zero; connections already open are not counted until they end.
+  exit at most 98,304 in all; the per-machine bound is checked first. In phase 1 each agent connection takes two
+  entries in the node's connection table (262,144), so the total keeps room for our own traffic. A Company Computer
+  machine's computers share one 16,384. A reload of the rules starts both counts from zero; connections already
+  open are not counted until they end. With br_netfilter the node also tracks refused attempts for a few seconds
+  each; E2's proof on a node measures the table under such a flood and the cost of the shared total, and if needed
+  stops the node tracking bridged `qagent0` traffic.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
