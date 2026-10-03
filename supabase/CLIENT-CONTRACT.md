@@ -553,7 +553,7 @@ wake), so no agent runs and nothing is charged before it.
   caller's mentions in a conversation seen. The author is never told about
   their own post.
 
-### Quotes in a member's message (20260930000100_member_message_quotes)
+### Quotes in a member's message (20260928459100_member_message_quotes)
 
 Contract: the 2026-10-02 amendment "quoted outside content in a member's message" (step I5d, part 1).
 

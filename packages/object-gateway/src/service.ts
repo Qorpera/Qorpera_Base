@@ -203,7 +203,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						const age = Date.now() - Date.parse(dependency.checkedAt ?? "");
 						return dependency.status === "healthy" && age >= 0 && age < 60_000;
 					};
-					// Folder GC's last scan met an error: something it left in quarantine waits for a later one.
+					// Folder GC's last scan met an error: something in quarantine, or a blocked entry, waits for a later one.
 					const folderGcDegraded = options.folderGc?.degraded() ?? false;
 					const healthy =
 						Object.values(dependencies).every(recentHealthy) && !replication.degraded && !folderGcDegraded;
