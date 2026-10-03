@@ -636,17 +636,17 @@ begin
 				-- An open card (or an allow not yet used) is what a member or a woken agent still reads: left pending.
 				select count(*) into v_hit from public.qorpera_action_reviews a
 				where a.run_id = v_run.run_id and a.created_at < v_max_at
-					and not (a.decision <> 'ask' or a.answer = 'deny' or a.consumed_at is not null)
+					and not (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null)
 					and (public.qorpera_folder_erasure_hit(a.action::text, v_escaped) or public.qorpera_folder_erasure_hit(a.reason, v_raw));
 				v_left := v_left + v_hit;
 				select count(*) into v_hit from public.qorpera_action_reviews a
 				where a.run_id = v_run.run_id and a.created_at < v_max_at
-					and (a.decision <> 'ask' or a.answer = 'deny' or a.consumed_at is not null)
+					and (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null)
 					and (public.qorpera_folder_erasure_hit(a.action::text, v_escaped) or public.qorpera_folder_erasure_hit(a.reason, v_raw));
 				with locked as (
 					select a.id from public.qorpera_action_reviews a
 					where a.run_id = v_run.run_id and a.created_at < v_max_at
-						and (a.decision <> 'ask' or a.answer = 'deny' or a.consumed_at is not null)
+						and (a.decision <> 'ask' or a.answer is not distinct from 'deny' or a.consumed_at is not null)
 						and (public.qorpera_folder_erasure_hit(a.action::text, v_escaped) or public.qorpera_folder_erasure_hit(a.reason, v_raw))
 					for no key update skip locked)
 				update public.qorpera_action_reviews a
