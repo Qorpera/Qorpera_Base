@@ -399,7 +399,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		(input.recoveryVolumeRetired !== undefined &&
 			(input.recoveryVolumeRetired !== true ||
 				input.schema !== COMPANY_JOURNAL_SCHEMA ||
-				!["stopped", "lost"].includes(String(input.physicalState)))) ||
+				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -829,6 +829,8 @@ const RESERVING_RETIREMENT_MS = 10 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
+/** A settled journal whose recovery volume cannot be retired yet is named in the log at most this often. */
+const RECOVERY_RETIREMENT_REPORT_MS = 60 * 60_000;
 /** Journals one reconcile pass works on side by side. */
 const RECONCILE_CONCURRENCY = 8;
 /** A guest waiting this long for (or on) its one assignment is asked about at most once per
@@ -880,6 +882,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
 	readonly #settled = new Map<string, number>();
+	/** When each settled journal whose recovery volume could not be retired was last named in the log. */
+	readonly #retirementReported = new Map<string, number>();
 	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
@@ -968,12 +972,27 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (settledAt !== undefined) this.#settled.set(acquisitionId, settledAt);
 		}
 		const settledAt = this.#settled.get(acquisitionId);
-		if (
-			settledAt !== undefined &&
-			Date.now() - settledAt >= SETTLED_JOURNAL_RETENTION_MS &&
-			(await this.#retireRecoveryVolume(acquisitionId, signal))
-		)
+		if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) return;
+		// Housekeeping never fails the pass (a failed pass stops the node's claims): a volume that is in use or drifted
+		// keeps its journal for an operator, named in the log at most once an hour, and is tried again each pass.
+		let retired: boolean;
+		try {
+			retired = await this.#retireRecoveryVolume(acquisitionId, signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			const reportedAt = this.#retirementReported.get(acquisitionId);
+			if (reportedAt === undefined || Date.now() - reportedAt >= RECOVERY_RETIREMENT_REPORT_MS) {
+				this.#retirementReported.set(acquisitionId, Date.now());
+				console.error(
+					`recovery volume kept: acquisition=${acquisitionId} reason=${error instanceof Error ? error.message : "unknown"}`,
+				);
+			}
+			return;
+		}
+		if (retired) {
 			await this.#archive(acquisitionId);
+			this.#retirementReported.delete(acquisitionId);
+		}
 	}
 
 	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
@@ -2074,14 +2093,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	/** A settled run never starts again, and its recovery volume (the guest's runner home) is read by nothing once
 	 * its guest is gone: it goes when its journal is archived, a day after the run settles (session-buildup audit
 	 * gap 7, 3 Oct 2026: every overflow run left one on its node until an operator removed it). Only a volume with
-	 * exactly this run's authority is deleted; one that drifted stays for an operator, and so does its journal. The
-	 * journal records the retirement before the delete, so a provider that stops between the two does not demand the
-	 * volume back. Answers whether the journal may be archived: not while its guest exists again. */
+	 * exactly this run's authority is deleted; one that drifted or that LXD will not delete (in use) stays for an
+	 * operator, and so does its journal (the caller logs it and goes on). The journal records the retirement before
+	 * the delete, so a provider that stops between the two does not demand the volume back. Answers whether the
+	 * journal may be archived: not while it is no longer settled (its guest exists again, say). */
 	async #retireRecoveryVolume(acquisitionId: string, signal?: AbortSignal): Promise<boolean> {
 		const journal = await this.#readJournal(acquisitionId);
 		const company = journal?.lxd.companyRuntime;
 		if (!journal || !company) return true;
-		if (await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal)) {
+		// Still settled: stopped or lost, its capacity released, and no guest (one LXD call, as when it settled).
+		if ((await this.#settledAt(acquisitionId, signal)) === undefined) {
 			this.#settled.delete(acquisitionId);
 			return false;
 		}

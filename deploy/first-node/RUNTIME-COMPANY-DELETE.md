@@ -176,9 +176,11 @@ records what it waits for.
   volume, device) values ('<node>', '<identity>', '<provider id>', 'absent', 'absent');`
   Not covered, for the operator runbook: volumes from before node demands existed (8 September), and
   recovery volumes of runs whose journals were archived before the LXD provider deleted them at archive
-  (gap 7): on each node, a volume `<recovery prefix><acquisition id>` whose journal is in the provider's
-  `<state root>/archive/` (never one whose journal is still in the state root) carries the run's
-  `user.qorpera.*` authority and can be deleted. An execution-host rebuild that runs while a device is retired stops with "lost
+  (gap 7). On each node, a volume `<recovery prefix><acquisition id>` may be deleted only when its journal is in
+  the provider's `<state root>/archive/` (never one whose journal is still in the state root), its `used_by` is
+  empty, and its `user.qorpera.run_id`, `profile_id`, `runner_id` and `compute_identity_id` match that archived
+  journal. A volume the provider kept (in use or drifted) is named in its log as `recovery volume kept:
+  acquisition=…` once an hour; its journal stays in the state root until the volume can go. An execution-host rebuild that runs while a device is retired stops with "lost
   Compute Identity devices": check the volume is gone (retired), then run it again.
   Rollout: the LXD provider build on every node (node-agent `provider` role) after the release carrying
   the migration is live. Before that, the due list 404s (logged once a minute) and a company with node
