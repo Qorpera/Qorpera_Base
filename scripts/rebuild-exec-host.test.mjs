@@ -25,7 +25,10 @@ case "$1" in
 	file)
 		# The host's own credential: kept, to check that only its hash went to the database.
 		args=("$@")
-		if [[ \${args[$#-1]} == */qorpera-execution-host ]]; then cp "\${args[$#-2]}" "$S/pushed-host-credential"; fi
+		if [[ \${args[$#-1]} == */qorpera-execution-host ]]; then
+			cp "\${args[$#-2]}" "$S/pushed-host-credential"
+			echo "\${args[$#-2]}" > "$S/pushed-host-credential-source"
+		fi
 		exit 0;;
 	exec)
 		while [[ $1 != "--" ]]; do shift; done; shift
@@ -51,6 +54,7 @@ esac
 `;
 const CURL = `#!/usr/bin/env bash
 body=$(cat)
+printf '%s\n' "$@" >> "$STUB_STATE/curl-args"
 for arg in "$@"; do
 	case "$arg" in */rpc/*) echo "curl \${arg##*/rpc/}" >> "$STUB_STATE/log";; esac
 done
@@ -239,13 +243,26 @@ test("every rebuild mints the host's own credential, binds only its hash, and pu
 			p_credential_sha256: sha256,
 		});
 		// The plaintext reaches the host's file only: never the database, a command line or the output.
-		for (const text of [result.stdout, result.stderr, result.log, readFileSync(join(fixture.state, "bind-body"), "utf8")])
+		for (const text of [
+			result.stdout,
+			result.stderr,
+			result.log,
+			readFileSync(join(fixture.state, "bind-body"), "utf8"),
+			readFileSync(join(fixture.state, "curl-args"), "utf8"),
+		])
 			assert.ok(!text.includes(credential));
+		// Its private temporary directory is gone, and the host has its credential before the service starts.
+		assert.ok(!existsSync(readFileSync(join(fixture.state, "pushed-host-credential-source"), "utf8").trim()));
 		assert.match(result.stdout, new RegExp(`The host credential is bound \\(sha256 ${sha256}\\)`));
-		const order = ["curl qorpera_register_runner_orchestrator", "curl qorpera_bind_execution_host_credential", "qorpera-execution-host"].map(
+		const order = [
+			"curl qorpera_register_runner_orchestrator",
+			"curl qorpera_bind_execution_host_credential",
+			"qorpera-execution-host",
+			"systemctl enable --now qorpera-shared-execution.service",
+		].map(
 			(line) => result.log.indexOf(line),
 		);
-		assert.ok(order.every((at) => at >= 0) && order[0] < order[1] && order[1] < order[2], result.log);
+		assert.ok(order.every((at, index) => at >= 0 && (index === 0 || order[index - 1] < at)), result.log);
 		assert.ok(!existsSync(join(fixture.staging, "credentials", "qorpera-execution-host")), "never staged");
 	} finally {
 		rmSync(fixture.dir, { recursive: true, force: true });

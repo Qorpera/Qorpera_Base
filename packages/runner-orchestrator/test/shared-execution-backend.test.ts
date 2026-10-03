@@ -276,6 +276,11 @@ async function fixture(
 				});
 				name = String(body.p_name);
 				body = body.p_args as Record<string, unknown>;
+				if (headers.get("apikey") !== "publishable-key" || headers.get("authorization") !== null)
+					return new Response("not the publishable key", { status: 401 });
+			} else {
+				// The service never calls the database but through the execution host's entry points (G2-3e).
+				return new Response("a direct database call", { status: 403 });
 			}
 			state.rpc.push({ name, body });
 			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);

@@ -61,6 +61,16 @@ describe("execution host calls (G2-3e)", () => {
 		}
 	});
 
+	it("never follows a redirect with the credential, whatever the caller asked", async () => {
+		const { fetch, sent } = recording();
+		await executionHostFetch(supabaseUrl, host, fetch)(`${supabaseUrl}/rest/v1/rpc/qorpera_runtime_ended_runners`, {
+			method: "POST",
+			redirect: "follow",
+			body: "{}",
+		});
+		expect(sent[0]?.init?.redirect).toBe("error");
+	});
+
 	it("refuses any other database request and passes requests to other origins through", async () => {
 		const { fetch, sent } = recording();
 		const hostFetch = executionHostFetch(supabaseUrl, host, fetch);
@@ -78,6 +88,10 @@ describe("execution host calls (G2-3e)", () => {
 		await expect(
 			hostFetch(`${supabaseUrl}/rest/v1/rpc/qorpera_runtime_ended_runners?select=*`, post),
 		).rejects.toThrow("Execution host call is malformed");
+		for (const body of ["[]", "null", '{"p_runner_ids":[]},"p_credential":"x"', "not json"])
+			await expect(
+				hostFetch(`${supabaseUrl}/rest/v1/rpc/qorpera_runtime_ended_runners`, { method: "POST", body }),
+			).rejects.toThrow("Execution host call is malformed");
 		expect(sent).toEqual([]);
 		await hostFetch("http://127.0.0.1:20001/v1/assignment", { method: "POST", body: "{}" });
 		expect(sent.map((call) => call.url)).toEqual(["http://127.0.0.1:20001/v1/assignment"]);

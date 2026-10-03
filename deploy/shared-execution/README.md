@@ -339,7 +339,8 @@ lxc exec qorpera-exec-node02 --project qn25b2 -- \
 Then, inside the host: write `/etc/qorpera/shared-execution.env` from
 `shared-execution.env.example`, place the service key, a fresh provider token,
 the object-gateway token, the secret-broker runtime token and CA and the
-office routes under `/etc/qorpera/shared-execution-credentials/`, write
+office routes under `/etc/qorpera/shared-execution-credentials/` (the host's own
+`qorpera-execution-host` credential is minted and bound by `rebuild-exec-host.sh`, G2-3e), write
 `/etc/qorpera/runner-orchestrator.env` for an orchestrator enrolled with the
 node's native adapter id, and enable `qorpera-shared-execution.service` and
 `qorpera-runner-orchestrator.service`. Stop the node host's own orchestrator
