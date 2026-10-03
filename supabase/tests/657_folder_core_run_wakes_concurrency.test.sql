@@ -112,9 +112,13 @@ from (select current_setting('qorpera_test.cofounder')::jsonb b) x \g /dev/null
 insert into auth.users(id,email) values ('65700000-0000-4000-8000-000000000004','wakes-race-member@example.test');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values ('64800000-0000-4000-8000-000000000010',
 	'65700000-0000-4000-8000-000000000004','wakes-race-member@example.test','Removable','contributor');
--- Ada's agent.md archived and active again, staged now: staging inside a save's own transaction would lock the company row.
+-- Ada's agent.md archived and active again, staged now, and taken into the owner's possession now (C1D §3): staging
+-- inside a save's own transaction would lock the company row, and the other connections see only what is committed.
 select set_config('qorpera_test.ada_' || s, pg_temp.stage(replace(pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada'),
 	'status: active', 'status: ' || s))::text, false) from unnest(array['archived', 'active']) s \g /dev/null
+select pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
+	jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'agents/ada/agent.md', 'file', current_setting('qorpera_test.ada_' || s)::jsonb)))
+from unnest(array['archived', 'active']) s \g /dev/null
 
 create function pg_temp.sql_cw(p_binding text, p_to uuid, p_key text) returns text language sql as $$
 	select format('select public.qorpera_send_coworker_message(%L, %L, %L, %L, true)::text', current_setting(p_binding), p_to, p_key,
@@ -141,10 +145,14 @@ create function pg_temp.ada_units(p_status text) returns jsonb language sql as $
 			replace(pg_temp.agent_text('64800000-0000-4000-8000-0000000000a1', 'Ada'), 'status: active', 'status: ' || p_status),
 			pg_temp.agent_parse('64800000-0000-4000-8000-0000000000a1', 'Ada') || jsonb_build_object('status', p_status)))))
 $$;
-create function pg_temp.sql_ada_status(p_status text, p_key text) returns text language sql as $$
-	select format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
-		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', p_key, pg_temp.ada_units(p_status))
-$$;
+-- Its SQL for another connection, after taking possession of its file in this one (held already: a no-op).
+create function pg_temp.sql_ada_status(p_status text, p_key text) returns text language plpgsql as $$
+begin
+	perform pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}',
+		pg_temp.ada_units(p_status));
+	return format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"64800000-0000-4000-8000-000000000001"}', p_key, pg_temp.ada_units(p_status));
+end $$;
 -- The connections a waiting connection waits for, once it waits for any.
 create function pg_temp.blockers(p_conn text) returns integer[] language plpgsql as $$
 declare v_until timestamptz := clock_timestamp() + interval '60 seconds'; v integer[];
@@ -457,10 +465,16 @@ begin
 	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
 end $$;
 
--- E2. A member joins while a message runs. The member trigger re-ensures every agent thread; on folder-v2 it first takes
--- every thread room FOR UPDATE in id order, then every thread conversation, before any of those writes, so it never
--- holds one room and waits for another that a message holds KEY SHARE (review r1, S2).
-insert into auth.users(id,email) values ('65700000-0000-4000-8000-000000000005','wakes-race-joiner@example.test');
+-- E2. A member joins while a message runs. A join takes every thread room FOR UPDATE in id order, then every thread
+-- conversation, before any of those writes (since C1c-3d-1 in its prelude, before the invitation; the member trigger
+-- then finds them held), so it never holds one room and waits for another that a message holds KEY SHARE (review r1,
+-- S2). A member row written with no prelude (as an account deletion writes one) takes them NOWAIT in the trigger and
+-- refuses at once, retryably.
+insert into auth.users(id,email,email_confirmed_at) values ('65700000-0000-4000-8000-000000000005','wakes-race-joiner@example.test',
+	clock_timestamp());
+insert into public.qorpera_profile_invitations(id, profile_id, email, role, invited_by_user_id, expires_at)
+values ('65700000-0000-4000-8000-0000000000e5', '64800000-0000-4000-8000-000000000010', 'wakes-race-joiner@example.test', 'contributor',
+	'64800000-0000-4000-8000-000000000001', clock_timestamp() + interval '1 day');
 do $$
 declare v_join text; v_message text; c_cf constant uuid := '64800000-0000-4000-8000-0000000000c0';
 	v_first_session uuid;
@@ -471,10 +485,17 @@ begin
 	perform dblink_exec('fence_three', 'begin');
 	perform * from dblink('fence_three', format('select 1 from public.qorpera_shared_sessions where id = %L for update', v_first_session))
 		as t(x integer);
-	perform dblink_exec('fence_two', 'begin');
 	perform dblink_send_query('fence_two', $q$insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 		values ('64800000-0000-4000-8000-000000000010','65700000-0000-4000-8000-000000000005','wakes-race-joiner@example.test','Joiner','contributor')
 		returning 'ok'::text$q$);
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_three') then
+		raise exception 'A member row written with no prelude must not wait at the held conversation'; end if;
+	v_join := pg_temp.outcome('fence_two');
+	if v_join not like 'PGRST %"QRC01"%An agent thread is busy; try again%' then
+		raise exception 'A member row written with no prelude: %', v_join; end if;
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"authenticated","sub":"65700000-0000-4000-8000-000000000005","email":"wakes-race-joiner@example.test"}'$q$);
+	perform dblink_exec('fence_two', 'begin');
+	perform dblink_send_query('fence_two', $q$select public.qorpera_accept_profile_invitation('65700000-0000-4000-8000-0000000000e5')::text$q$);
 	if not pg_temp.waits_for('fence_two', 'fence_three') then raise exception 'The join must wait at the held conversation'; end if;
 	-- By then the join holds both thread rooms: the message waits at the first room, holding no room.
 	perform dblink_send_query('fence_one', pg_temp.sql_cw('qorpera_test.binding', c_cf, 'while-joining'));
@@ -484,6 +505,7 @@ begin
 	perform dblink_exec('fence_three', 'rollback');
 	v_join := pg_temp.outcome('fence_two');
 	perform dblink_exec('fence_two', 'commit');
+	perform dblink_exec('fence_two', $q$set request.jwt.claims = '{"role":"service_role"}'$q$);
 	v_message := pg_temp.outcome('fence_one');
 	if v_join <> 'ok' or v_message <> 'ok' then raise exception 'A member joining beside a message: % / %', v_join, v_message; end if;
 end $$;
@@ -598,6 +620,10 @@ begin
 			'64800000-0000-4000-8000-000000000021'))
 		or exists (select 1 from public.qorpera_wake_occurrences where profile_id = '64800000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_cloud_routines where profile_id = '64800000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_cloud_routines where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from storage.objects where name like '64800000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '64800000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;
