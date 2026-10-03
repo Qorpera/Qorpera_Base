@@ -1,12 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const QUARANTINE = ".quarantine";
+const QUARANTINED_NAME =
+	/^([0-9a-f]{64})\.([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\.(0|[1-9][0-9]{0,6})\.replica)?$/;
+const MAX_QUARANTINED_BYTES = 8 * 1024 * 1024;
 
 export type ObjectWriteResult = "exists" | "stored";
+
+/** One entry of folder GC's quarantine (C1D §9.8), under a GC lease: an object's NAS file moved aside (`file`), or,
+ * when the object had no NAS file, a marker that its Storage replica is the only copy (`replica`). `bytes` is the
+ * object's size: the file's, or the one the marker's name holds. */
+export interface QuarantinedObject {
+	profileId: string;
+	sha256: string;
+	leaseId: string;
+	bytes: number;
+	kind: "file" | "replica";
+}
 
 function digest(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
@@ -62,13 +77,7 @@ export class FileSystemObjectStore {
 			if (!(error instanceof Error) || error.message !== "Object not found") throw error;
 		}
 		const temporary = `${path}.${randomUUID()}.tmp`;
-		const created = await mkdir(parent, { recursive: true, mode: 0o700 });
-		if (created) {
-			for (let directory = parent; ; directory = dirname(directory)) {
-				await this.#sync(directory);
-				if (directory === dirname(created)) break;
-			}
-		}
+		await this.#directories(parent);
 		try {
 			const handle = await open(temporary, "wx", 0o600);
 			try {
@@ -119,6 +128,156 @@ export class FileSystemObjectStore {
 		});
 	}
 
+	/** Folder GC's quarantine (C1D §9.8): the object's NAS file moves to `<root>/.quarantine/<profileId>/
+	 * <sha256>.<leaseId>`, one rename on the same file system, and both directories are synced. `moved` also when this
+	 * lease moved it before (a lane sent again); `absent` when there is no NAS file. */
+	async quarantine(profileId: string, sha256: string, leaseId: string): Promise<"moved" | "absent"> {
+		const source = this.#objectPath(profileId, sha256);
+		const target = this.#quarantinePath(profileId, sha256, leaseId);
+		return this.#io(source, async () => {
+			// The scan may remove an empty company folder between the mkdir and the rename: then the rename is asked
+			// once more, so a NAS file that is still there is never taken for an absent one.
+			for (let attempt = 1; ; attempt++) {
+				await this.#directories(dirname(target));
+				try {
+					await rename(source, target);
+					break;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					if (!(await this.#exists(source))) return (await this.#exists(target)) ? "moved" : "absent";
+					if (attempt === 2) throw error;
+				}
+			}
+			await this.#sync(dirname(source));
+			await this.#sync(dirname(target));
+			return "moved";
+		});
+	}
+
+	/** Before the finish of an object with no NAS file: an empty marker `<sha256>.<leaseId>.<bytes>.replica` in the
+	 * quarantine directory says its Storage replica is the only copy, so a lane that stops after the finish leaves
+	 * the scan something to find. The name is the whole record, so creating it is one atomic step. */
+	async markReplicaOnly(profileId: string, sha256: string, leaseId: string, bytes: number): Promise<void> {
+		if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_QUARANTINED_BYTES)
+			throw new Error("Object size is invalid");
+		const marker = `${this.#quarantinePath(profileId, sha256, leaseId)}.${bytes}.replica`;
+		await this.#io(marker, async () => {
+			for (let attempt = 1; ; attempt++) {
+				await this.#directories(dirname(marker));
+				try {
+					const handle = await open(marker, "w", 0o600);
+					try {
+						await handle.sync();
+					} finally {
+						await handle.close();
+					}
+					break;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT" || attempt === 2) throw error;
+				}
+			}
+			await this.#sync(dirname(marker));
+		});
+	}
+
+	/** Puts a quarantined object back: its file is renamed to the object's NAS path (replacing a copy put there since,
+	 * which has the same bytes) and both directories are synced; its marker, if any, is removed. */
+	async restoreQuarantined(profileId: string, sha256: string, leaseId: string, bytes: number): Promise<void> {
+		const source = this.#quarantinePath(profileId, sha256, leaseId);
+		const target = this.#objectPath(profileId, sha256);
+		await this.#io(target, async () => {
+			await this.#directories(dirname(target));
+			let moved = true;
+			try {
+				await rename(source, target);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				moved = false;
+			}
+			if (moved) await this.#sync(dirname(target));
+			await rm(`${source}.${bytes}.replica`, { force: true });
+			await this.#sync(dirname(source)).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+			});
+		});
+	}
+
+	/** Whether a quarantine entry is still there. */
+	async isQuarantined(entry: QuarantinedObject): Promise<boolean> {
+		const path = this.#quarantinePath(entry.profileId, entry.sha256, entry.leaseId);
+		const name = entry.kind === "file" ? path : `${path}.${entry.bytes}.replica`;
+		return this.#io(name, () => this.#exists(name));
+	}
+
+	/** Removes a quarantined object's file and marker for good. */
+	async removeQuarantined(profileId: string, sha256: string, leaseId: string, bytes: number): Promise<void> {
+		const path = this.#quarantinePath(profileId, sha256, leaseId);
+		await this.#io(path, async () => {
+			await rm(path, { force: true });
+			await rm(`${path}.${bytes}.replica`, { force: true });
+			await this.#sync(dirname(path)).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+			});
+		});
+	}
+
+	/** Up to `limit` quarantine entries, by company and name. A company folder found empty is removed (a lane that
+	 * meets the removal asks its rename again); a name that is not an entry is left alone. */
+	async listQuarantine(limit: number): Promise<QuarantinedObject[]> {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+			throw new Error("Quarantine batch limit is invalid");
+		const root = resolve(this.#root, QUARANTINE);
+		return this.#io(root, async () => {
+			let companies: string[];
+			try {
+				companies = await readdir(root);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+				throw error;
+			}
+			const found: QuarantinedObject[] = [];
+			for (const profileId of companies.filter((name) => UUID_PATTERN.test(name)).sort()) {
+				const folder = resolve(root, profileId);
+				let names: string[];
+				try {
+					names = await readdir(folder);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+					throw error;
+				}
+				if (names.length === 0) {
+					await rmdir(folder).catch(() => undefined);
+					continue;
+				}
+				for (const name of names.sort()) {
+					const match = QUARANTINED_NAME.exec(name);
+					if (!match) continue;
+					const [, sha256, leaseId, markerBytes] = match;
+					let bytes: number;
+					if (markerBytes !== undefined) bytes = Number(markerBytes);
+					else {
+						const info = await stat(resolve(folder, name)).catch((error: NodeJS.ErrnoException) => {
+							if (error.code === "ENOENT") return undefined;
+							throw error;
+						});
+						if (!info?.isFile()) continue;
+						bytes = info.size;
+					}
+					if (bytes > MAX_QUARANTINED_BYTES) continue;
+					found.push({
+						profileId,
+						sha256: sha256!,
+						leaseId: leaseId!,
+						bytes,
+						kind: markerBytes === undefined ? "file" : "replica",
+					});
+					if (found.length >= limit) return found;
+				}
+			}
+			return found;
+		});
+	}
+
 	async #io<T>(key: string, operation: () => Promise<T>): Promise<T> {
 		// A timed-out hard-NFS syscall can remain in the OS. Keep its slot until
 		// it actually settles: no unbounded queue, no delete overtaking a late
@@ -133,6 +292,26 @@ export class FileSystemObjectStore {
 		return boundedObjectOperation(() => pending, this.#timeoutMs);
 	}
 
+	/** Creates a directory and its missing parents, syncing each new name into its parent. */
+	async #directories(path: string): Promise<void> {
+		const created = await mkdir(path, { recursive: true, mode: 0o700 });
+		if (!created) return;
+		for (let directory = path; ; directory = dirname(directory)) {
+			await this.#sync(directory);
+			if (directory === dirname(created)) break;
+		}
+	}
+
+	async #exists(path: string): Promise<boolean> {
+		try {
+			await stat(path);
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+	}
+
 	async #sync(path: string): Promise<void> {
 		if (process.platform === "win32") return;
 		const directory = await open(path, "r");
@@ -141,6 +320,12 @@ export class FileSystemObjectStore {
 		} finally {
 			await directory.close();
 		}
+	}
+
+	#quarantinePath(profileId: string, sha256: string, leaseId: string): string {
+		this.#objectPath(profileId, sha256);
+		if (!UUID_PATTERN.test(leaseId)) throw new Error("GC lease is invalid");
+		return resolve(this.#root, QUARANTINE, profileId, `${sha256}.${leaseId}`);
 	}
 
 	#objectPath(profileId: string, sha256: string): string {

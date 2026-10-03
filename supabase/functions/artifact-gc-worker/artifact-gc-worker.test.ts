@@ -7,10 +7,12 @@ import {
 	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
 	parseCompanyStorageDeletions,
+	parseFolderObjectGcClaim,
 	resolveArtifactGcWorkerAuthorization,
 	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
 	runCompanyStorageDeletions,
+	runFolderObjectGc,
 	reconcileAuthorizedArtifactGcWorkerObjects,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerJob,
@@ -18,6 +20,8 @@ import {
 	type CompanyObjectGcWorkerStore,
 	type CompanyStorageDeletion,
 	type CompanyStorageDeletionStore,
+	type FolderObjectGcClaim,
+	type FolderObjectGcStore,
 } from "./artifact-gc-worker.ts";
 
 const planId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
@@ -462,5 +466,129 @@ describe("a deleted company's Storage objects (company delete D5a)", () => {
 			},
 		});
 		assert.deepEqual(blank.completed, [{ path: capsule.path, error: "Storage cleanup failed" }]);
+	});
+});
+
+describe("folder object cleanup (C1D §9.10)", () => {
+	const folderLease = "64dc6943-b71c-4ba4-a38d-78da0861e0dc";
+	const claimed = (sha: string, extra: Record<string, unknown> = {}) => ({
+		profileId,
+		sha256: sha,
+		bytes: 7,
+		backend: "nas-object-gateway",
+		leaseId: folderLease,
+		leaseExpiresAt: "2026-10-03T06:00:00.000Z",
+		...extra,
+	});
+	const claim = (...objects: Record<string, unknown>[]) => ({ schema: "qorpera.folder-object-gc-claim/v1", objects });
+	function fakeFolder(options: {
+		enabled?: boolean;
+		answers?: Array<"removed" | "restored" | "stale" | "busy" | Error>;
+		objects?: Record<string, unknown>[];
+	}) {
+		const calls: string[] = [];
+		const answers = [...(options.answers ?? [])];
+		const store: FolderObjectGcStore = {
+			enabled: async () => {
+				calls.push("enabled");
+				return options.enabled ?? true;
+			},
+			sweep: async (limit) => {
+				calls.push(`sweep ${limit}`);
+				return 3;
+			},
+			claim: async (limit, leaseId) => {
+				calls.push(`claim ${limit} ${leaseId}`);
+				return claim(...(options.objects ?? []));
+			},
+			collect: async (object: FolderObjectGcClaim) => {
+				calls.push(`collect ${object.sha256.slice(0, 1)} ${object.leaseId}`);
+				const answer = answers.shift() ?? "removed";
+				if (answer instanceof Error) throw answer;
+				return answer;
+			},
+		};
+		return { store, calls };
+	}
+
+	it("reads the claim: NAS-backed objects under this run's lease, each once", () => {
+		assert.deepEqual(parseFolderObjectGcClaim(claim(claimed(firstSha256)), folderLease), [
+			{ profileId, sha256: firstSha256, bytes: 7, leaseId: folderLease },
+		]);
+		assert.deepEqual(parseFolderObjectGcClaim(claim(), folderLease), []);
+		for (const bad of [
+			{ schema: "qorpera.folder-object-gc-claim/v2", objects: [] },
+			{ ...claim(), extra: true },
+			claim(claimed(firstSha256, { leaseId: leaseId })),
+			claim(claimed(firstSha256, { backend: "supabase-storage" })),
+			claim(claimed(firstSha256), claimed(firstSha256)),
+			claim(claimed("A".repeat(64))),
+			claim(claimed(firstSha256, { bytes: 8 * 1024 * 1024 + 1 })),
+			claim(claimed(firstSha256, { profileId: "not-a-company" })),
+			claim(...Array.from({ length: 101 }, (_, index) => claimed(index.toString(16).padStart(64, "0")))),
+		])
+			assert.throws(() => parseFolderObjectGcClaim(bad, folderLease));
+	});
+
+	it("does nothing while its switch is off", async () => {
+		const fake = fakeFolder({ enabled: false, objects: [claimed(firstSha256)] });
+		assert.deepEqual(await runFolderObjectGc(fake.store, folderLease), {
+			enabled: false,
+			swept: 0,
+			claimed: 0,
+			removed: 0,
+			restored: 0,
+			stale: 0,
+			failed: 0,
+			stopped: false,
+		});
+		assert.deepEqual(fake.calls, ["enabled"]);
+	});
+
+	it("sweeps, claims, and collects each object in order, counting each outcome; a failure leaves its mark", async () => {
+		const fake = fakeFolder({
+			objects: [claimed(firstSha256), claimed(secondSha256), claimed("c".repeat(64)), claimed("d".repeat(64))],
+			answers: ["removed", new Error("lane failed"), "restored", "stale"],
+		});
+		assert.deepEqual(await runFolderObjectGc(fake.store, folderLease, { sweep: 5, claim: 6 }), {
+			enabled: true,
+			swept: 3,
+			claimed: 4,
+			removed: 1,
+			restored: 1,
+			stale: 1,
+			failed: 1,
+			stopped: false,
+		});
+		assert.deepEqual(fake.calls, [
+			"enabled",
+			"sweep 5",
+			`claim 6 ${folderLease}`,
+			`collect a ${folderLease}`,
+			`collect b ${folderLease}`,
+			`collect c ${folderLease}`,
+			`collect d ${folderLease}`,
+		]);
+	});
+
+	it("stops for this run when the gateway is busy, leaving the rest of the claim to expire", async () => {
+		const fake = fakeFolder({
+			objects: [claimed(firstSha256), claimed(secondSha256), claimed("c".repeat(64))],
+			answers: ["removed", "busy"],
+		});
+		const result = await runFolderObjectGc(fake.store, folderLease);
+		assert.equal(result.stopped, true);
+		assert.equal(result.removed, 1);
+		assert.equal(result.claimed, 3);
+		assert.deepEqual(
+			fake.calls.filter((call) => call.startsWith("collect")),
+			[`collect a ${folderLease}`, `collect b ${folderLease}`],
+		);
+	});
+
+	it("fails the phase on an unreadable claim, before any lane", async () => {
+		const fake = fakeFolder({ objects: [claimed(firstSha256, { leaseId })] });
+		await assert.rejects(runFolderObjectGc(fake.store, folderLease), /lease/);
+		assert.equal(fake.calls.filter((call) => call.startsWith("collect")).length, 0);
 	});
 });

@@ -10,10 +10,12 @@ import {
 	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
 	runCompanyStorageDeletions,
+	runFolderObjectGc,
 	reconcileAuthorizedArtifactGcWorkerObjects,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerStore,
 	type CompanyObjectGcWorkerStore,
+	type FolderObjectGcResult,
 } from "./artifact-gc-worker.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
@@ -114,6 +116,66 @@ Deno.serve(async (request) => {
 	}
 	const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");
 	const gatewayControlToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN")?.trim();
+	// Folder-v2 objects (C1D §9.10), behind their own switch and before the phases that return early, so a failure
+	// there never holds this one up, and none here holds them up.
+	let folderObjects: FolderObjectGcResult | { error: true };
+	try {
+		folderObjects = await runFolderObjectGc(
+			{
+				enabled: async () => {
+					// No gateway, no lane: claiming would only mark objects for nothing.
+					if (!gatewayUrl || !gatewayControlToken) return false;
+					const { data, error } = await client.rpc("qorpera_folder_gc_enabled");
+					if (error || typeof data !== "boolean") throw new Error("Folder object cleanup switch is unreadable");
+					return data;
+				},
+				sweep: async (limit) => {
+					const { data, error } = await client.rpc("qorpera_folder_sweep_upload_intents", { p_limit: limit });
+					if (error || !Number.isSafeInteger(data)) throw new Error("Folder upload intent sweep failed");
+					return data as number;
+				},
+				claim: async (limit, leaseId) => {
+					const { data, error } = await client.rpc("qorpera_folder_claim_object_gc", {
+						p_limit: limit,
+						p_lease: leaseId,
+					});
+					if (error) throw new Error("Folder object cleanup claim failed");
+					return data;
+				},
+				collect: async (object) => {
+					let response: Response;
+					try {
+						response = await fetch(`${gatewayUrl}/v1/folder-gc/${object.profileId}/${object.sha256}`, {
+							method: "DELETE",
+							headers: {
+								authorization: `Bearer ${gatewayControlToken}`,
+								"x-qorpera-gc-lease-id": object.leaseId,
+							},
+							signal: AbortSignal.timeout(20_000),
+						});
+					} catch {
+						// An unreachable or hung gateway is a busy one: stop for this run.
+						return "busy";
+					}
+					if (response.status === 503) {
+						await response.body?.cancel();
+						return "busy";
+					}
+					if (!response.ok) {
+						await response.body?.cancel();
+						throw new Error("Folder object cleanup failed");
+					}
+					const outcome = ((await response.json()) as { outcome?: unknown } | null)?.outcome;
+					if (outcome !== "removed" && outcome !== "restored" && outcome !== "stale")
+						throw new Error("Folder object cleanup answer is invalid");
+					return outcome;
+				},
+			},
+			crypto.randomUUID(),
+		);
+	} catch {
+		folderObjects = { error: true };
+	}
 	const finalizeDeletion = async (input: {
 		authorizationId: string;
 		profileId: string;
@@ -361,5 +423,5 @@ Deno.serve(async (request) => {
 			deletedProfileStore,
 		);
 	}
-	return jsonResponse({ ...artifactResult, companyObjects, deletedProfileObjects, companyStorage });
+	return jsonResponse({ ...artifactResult, companyObjects, deletedProfileObjects, companyStorage, folderObjects });
 });
