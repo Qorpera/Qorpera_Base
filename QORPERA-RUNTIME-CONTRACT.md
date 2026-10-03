@@ -605,10 +605,9 @@ The automatic review (2026-09-25 amendment) is unchanged:
 **Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
 files, `group.md`, connection files, rule files, human task files and contact
 files have a fixed format (the last two: the 2026-10-02 amendment "work for
-people"). A save
-updates the file's index in the same step. A save the platform cannot read
-correctly is refused for that file, with the reason. A human, an agent's shell
-and a tool all save through this same path.
+people"). A save updates the file's index in the same step. A save the
+platform cannot read correctly is refused for that file, with the reason. A
+human, an agent's shell and a tool all save through this same path.
 
 ## 6. Mouth and visibility contract
 
@@ -4095,8 +4094,9 @@ and can still be renamed. Formats:
    to the vault, bound to the task. A task link's token is kept only as a hash,
    and an email's delivery is runtime state (5.6's list of what the database
    holds).
-5. **5.6 changes with this amendment** (written into 5.6 and 16.1 on
-   3 October 2026):
+5. **5.6 changes with this amendment** (the tree and the seeded folders were
+   written into 5.6 on 2 October 2026, the rest into 5.6 and 16.1 on
+   3 October):
    - the tree gains
 
      ```
@@ -4305,8 +4305,8 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 ### 2026-10-02 amendment: light threads
 
 Founder decisions of 2 October 2026, and item 2's write tools on 3 October
-(the coordinator, at Jonas's request). First "light threads": a chat turn has no
-shell. Then, the same day: folders shared with only some agents are worked on
+(the coordinator, at Jonas's request). First "light threads": a chat turn has
+no shell. Then, the same day: folders shared with only some agents are worked on
 from the agent's own machine (item 4); folder work runs offline (item 5); a
 company machine's reads go to the run (item 6); and the company machine's
 wake time is accepted (item 3).

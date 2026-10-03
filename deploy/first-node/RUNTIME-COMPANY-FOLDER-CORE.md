@@ -1205,7 +1205,7 @@ After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
    database, and the implicit `members/<id>/private` rule is not carried into
    `folder-v2`. The `folder-v2` resolver and its key and grant checks (C1a,
    C1b) still keep a path under `members/<id>/private` from everyone but the
-   platform, and nothing on `folder-v2` creates such a resource.
+   platform, and nothing on `folder-v2` creates a member's private resource.
 4. **"Delete company" in the product.** Decided by the founder on
    28 September 2026: the C5 reset procedure becomes the product's delete for
    `folder-v2` companies. The old `qorpera_delete_hosted_profile`
