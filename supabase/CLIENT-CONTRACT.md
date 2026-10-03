@@ -852,6 +852,13 @@ looks absent in every answer. Reads only: member writes come with P31.
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-folder-{environmentId}` — a folder-v2 company's folder changed (migration
+  `20260930013100_folder_core_member_hint`, folder core C4 P30). Private broadcast channel, event `folder`,
+  payload `{"schema":"qorpera.folder-hint/v1","seq":<n>}` and nothing else: the folder's clock reached seq `n` (a
+  change set or an authority change; the same number as the feed's seq and a run's `companySeq`). Members of the
+  company receive it (RLS on `realtime.messages` via `qorpera_folder_hint_member`); nobody publishes but the database.
+  Topic name from `qorpera_folder_hint_topic`. A nudge only: on a hint, ask `qorpera_member_folder_changes` from the
+  position you hold, at most about once a second, and keep a slow poll for hints missed while disconnected.
 - `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
   (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
   wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database

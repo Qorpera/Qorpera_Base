@@ -147,6 +147,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_ensure_staff_session(uuid,text,uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_fail_artifact_gc_plan(uuid,uuid,text)', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_find_account_by_email(text)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_folder_hint_member(text)', false, true, 'member: whether auth.uid() is a member of the topic''s folder-v2 company, for the Realtime receive policy (C4 P30)'),
 	('public.qorpera_get_account_entitlement()', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_get_artifact_index(uuid)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_get_company_file(uuid)', false, true, 'member: always raises'),
