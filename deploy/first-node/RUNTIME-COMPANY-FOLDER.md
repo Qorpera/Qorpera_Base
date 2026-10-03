@@ -49,7 +49,7 @@ design differs from it. In this document that includes:
   [How a machine reaches the folder](#how-a-machine-reaches-the-folder-founder-decision-1);
 - the 28 September build order: step 1's execution-host mount, the run box
   steps, and step 3's retirement of the five `company_*` tools (a chat turn
-  keeps them until its write tools are decided);
+  keeps them: decided 3 October 2026, "light threads" item 2);
 - section 1's execution-host mount;
 - section 4, and section 5's run box line and its shell-review bullet;
 - section 8's run box lines, and section 10's run box checks;

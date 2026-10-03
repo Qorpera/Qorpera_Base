@@ -523,9 +523,11 @@ An agent leaves in one of three ways:
   fenced, its conversations stay, and its files can be restored from the
   version history. The Co-Founder cannot be deleted. Deleting an `agent.md`
   on its own is refused; the folder is deleted instead.
-- **Permanent erasure:** purging a deleted agent's files and their stored
-  versions from the folder. This is a separate operation that only owners and
-  admins perform (14.1). Receipts and audit records keep their attribution.
+- **Permanent erasure:** purging a deleted path's files and their stored
+  versions from the folder: a deleted agent's folder, or any other deleted
+  path, such as a contact's file (the 2026-10-02 amendment "work for people",
+  item 3). This is a separate operation that only owners and admins perform
+  (14.1). Receipts and audit records keep their attribution.
 
 **`agents/sections.md`.** The sidebar's sections in order, each with its agents
 in order, listed by `id` (a name beside an id is only for reading). A section
@@ -601,10 +603,11 @@ The automatic review (2026-09-25 amendment) is unchanged:
   version history.
 
 **Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
-files, `group.md`, connection files and rule files have a fixed format. A save
-updates the file's index in the same step. A save the platform cannot read
-correctly is refused for that file, with the reason. A human, an agent's shell
-and a tool all save through this same path.
+files, `group.md`, connection files, rule files, human task files and contact
+files have a fixed format (the last two: the 2026-10-02 amendment "work for
+people"). A save updates the file's index in the same step. A save the
+platform cannot read correctly is refused for that file, with the reason. A
+human, an agent's shell and a tool all save through this same path.
 
 ## 6. Mouth and visibility contract
 
@@ -1736,7 +1739,9 @@ The constitution expresses this default judgment order:
 3. public web;
 4. office browser;
 5. office desktop;
-6. a typed request to the relevant member.
+6. a typed request to the relevant member, or, for work only a person can do,
+   a human task for a member or a contact (5.6; the 2026-10-02 amendment "work
+   for people", item 2).
 
 The kernel makes each step real through tool availability, grants, and typed
 handoffs. A broken connector is reported or repaired; it does not silently
@@ -2525,7 +2530,10 @@ removal; until it is removed it MUST NOT be reachable from any member client.
 - **No member-private conversations.** Member-private sessions and the
   member-private Co-Founder conversation are withdrawn. Members MAY hold
   member-private facts in the Company File; an agent uses them only to think
-  and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
+  and MUST NOT repeat them into a shared thread. On the company folder
+  (`folder-v2`) there is no `members/` folder, so no member-private files
+  (decided 3 October 2026, the coordinator at Jonas's request): personal
+  settings stay in the database. §14.2's separate one-to-one
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did. Team rooms (group chats) accept the same since 2026-09-27
@@ -4057,10 +4065,10 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 
 ### 2026-10-02 amendment: work for people
 
-Proposed 2 October 2026 (F2, step H1); pending founder approval, except item
-5's seeded folders, which Jonas approved on 2 October 2026. It writes
-into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
-on Qorpera", section 5) and widens 16.1's last step. The folder names
+Proposed 2 October 2026 (F2, step H1). Approved 3 October 2026 by the
+coordinator at Jonas's request; Jonas approved item 5 on 2 October. Items 1–4
+write into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page
+"Qorpera on Qorpera", section 5) and widen 16.1's last step. The folder names
 `human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
 and can still be renamed. Formats:
 `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2.
@@ -4086,7 +4094,9 @@ and can still be renamed. Formats:
    to the vault, bound to the task. A task link's token is kept only as a hash,
    and an email's delivery is runtime state (5.6's list of what the database
    holds).
-5. **5.6 changes when this is approved:**
+5. **5.6 changes with this amendment** (the tree and the seeded folders were
+   written into 5.6 on 2 October 2026, the rest into 5.6 and 16.1 on
+   3 October):
    - the tree gains
 
      ```
@@ -4294,9 +4304,10 @@ Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
 
 ### 2026-10-02 amendment: light threads
 
-Founder decisions of 2 October 2026. First "light threads": a chat turn has no
-shell. Then, the same day: folders shared with only some agents are worked on
-from the agent's own machine (item 4); folder work runs offline (item 5); a
+Founder decisions of 2 October 2026, and item 2's write tools on 3 October
+(the coordinator, at Jonas's request). First "light threads": a chat turn has
+no shell. Then, the same day: folders shared with only some agents are worked
+on from the agent's own machine (item 4); folder work runs offline (item 5); a
 company machine's reads go to the run (item 6); and the company machine's
 wake time is accepted (item 3).
 
@@ -4333,9 +4344,12 @@ amendment governs.
    - Search runs on the node's folder service, not on the execution host.
    - A turn writes through the mutation gateway with today's one-file Company
      File tools (27 September, item 4).
-   - Open: which write tools a turn has once machines publish change sets.
-     Until that is decided, 27 September item 2's retirement of the one-file
-     tools waits.
+   - Decided 3 October 2026 (the coordinator, at Jonas's request): a turn
+     keeps the one-file write tools, and each write is a change set of one
+     unit through the mutation gateway. Changes of several files, and changes
+     a command makes, come from a machine's change set. A subtree move or
+     delete goes through the member route or a machine. 27 September item
+     2's retirement of the one-file tools is cancelled.
 3. **Commands run on machines.** Scripts, spreadsheets, documents and
    conversions run on a machine the agent hands the work to:
    - the company machine, which wakes on demand (its cold start, about 17
