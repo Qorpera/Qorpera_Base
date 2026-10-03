@@ -114,7 +114,7 @@ may not select it an "unauthorized" event per change, which would show anyone th
 | P27b | the object gateway's member folder route and the member company gateway's route; cloud-client's member folder client (parsers tested against real SQL output) | none |
 | P30 | the hint trigger, topic and policy; cloud-client's hint subscription | `20260930013100`, SQL test 835 |
 | P33 | the web file page and history on folder-v2 (#386's approved file browser, read only); the member's file mode says `folder`; the hint's subscription in cloud-client | `20260930013200`, SQL test 836 |
-| P34a-1 | member writes (§5): the writer check, the state folders read, the gateway's member commit route, cloud-client's writer | `20260930021000`, SQL test 898 |
+| P34a-1 | member writes (§5): the writer check, the state folders read, the object gateway's member commit route and the member company gateway's route, cloud-client's writer | `20260930021000`, SQL test 898 |
 | P34a-2 | the web's agent, group chat and skill editors on the folder (§5) | none |
 
 Each is inert until a folder-v2 company exists.
@@ -127,22 +127,27 @@ suggestions onto the folder (the coordinator, 3 October). P34b, the other editor
 P31.
 
 **The hold** (H2; F2, 3 October). A member's save under `human-tasks/` queues a wake for the agent that only P31
-delivers. Until P31 the route refuses every unit at or under `human-tasks/`: a write, a new folder, a delete, and
-either end of a move. Everything else is open. Contacts queue no wake, and their rules already run in SQL.
+delivers. Until P31 the route refuses the whole request (403, before any byte is staged) when any unit is at or under
+`human-tasks/`: a write, a mkdir, a new folder, a delete, and either end of a move. The test is on the folder key
+(`companyPathKey`, the same fold as `qorpera_folder_key`). Everything else is open. Contacts queue no wake, and their
+rules already run in SQL.
 
 **SQL** (`20260930021000`, SQL test 898). Both are reads, without a lock.
 - `qorpera_member_folder_writer(environment)` (`authenticated`) answers the member's own actor
   `{"kind": "member", "userId": auth.uid()}` and the company's profile id. It answers only for a member of a
-  folder-v2 company that is not being deleted (55000, as for the reads). The gateway calls it with the member's
-  token, and that is how it learns who the member is. Every write then goes to the core as that actor with the service
-  key, and the core checks the member's authority on each path, as for any member.
+  folder-v2 company that is neither being deleted nor paused (55000). Staging refuses a paused company for every actor
+  while the commit does not, so the check refuses it for every member write alike; members still read while paused.
+  The gateway calls it with the member's token, and that is how it learns who the member is. Every write then goes to
+  the core as that actor with the service key, and the core checks the actor's shape, the membership row (rank 1, so a
+  member removed meanwhile is refused), each path's authority and each upload intent's owner (intents are scoped by
+  user, so no member can put into, confirm or seal another's).
 - `qorpera_member_company_state_folders(environment)` (`authenticated`) answers the live agents' and group chats'
   folders the member may read: `{agents: [{staffAgentId, path}], groups: [{roomId, path}]}`. It reads the staff and
   room rows' `folder_path` and leaves out retired rows. The web knows agents and rooms by id from its other reads, so
   this finds an id's folder without reading every `agent.md`.
 
 **The gateway route**, `POST /v1/member-folder-commits/<environment>`, sits behind the member company gateway like the
-member's other routes, with CORS.
+member's other routes (its Edge Function allows the route with a 1 MiB body), with CORS.
 - **The request** is JSON, at most 1 MiB: `{schema: "qorpera.member-folder-commit/v1", operationKey, units}`, with
   1–16 units in closed shapes:
   - `write {path, text, expectedVersion?}`;
@@ -152,24 +157,34 @@ member's other routes, with CORS.
   - `delete {path, expectedVersion?, asOfSeq?}`;
   - `move {from, to, expectedVersion?, asOfSeq?}`.
 
-  Text is UTF-8: at most 64 KiB per file (the state files' bound) and 512 KiB per request. Paths pass
-  `parseCloudCompanyPath`. The operation key is 1–128 characters of `[A-Za-z0-9._:-]`. The web sends `web:<uuid>`.
+  Text is well-formed UTF-8: at most 64 KiB per file (the state files' bound), 512 KiB and 32 files per request
+  (staged one after another, they must fit the member gateway's 25 s; a hire sends two). Paths pass
+  `parseCloudCompanyPath`. The member's operation key is 1–128 characters of `[A-Za-z0-9._:-]`; the web sends
+  `web:<uuid>`.
+- **The key's namespace.** The core gives members the platform's operation-key scope, so a member could otherwise
+  take a key a platform writer will use (`company-create:<id>`, `connection-file:<id>:<generation>`) and make that
+  commit fail. The route sends `member:<userId>:<key>`, a namespace no platform writer uses (within SQL's 8–200).
+  The same key from the same member is a replay of the same change set.
 - **The steps:**
-  1. the writer check, with the member's token (401 and 403 as on the other member routes);
-  2. the hold;
-  3. each file's bytes staged as the member: open the upload, put and confirm the objects the store lacks, then seal.
+  1. every shape, path and size, before anything else (400, 413);
+  2. the writer check, with the member's token (401 and 403 as on the other member routes);
+  3. the hold;
+  4. at most one change set in flight per member on the gateway (429);
+  5. each file's bytes staged as the member: open the upload, put and confirm the objects the store lacks, then seal.
      This is A1's `PlatformFolderWriter`, with the actor as a parameter;
-  4. each state file's entry, built from the same bytes by `parseCompanyStateFile`, as the runtime's `structured()`
-     does: its parse, or its problems, which the hook refuses with their codes;
-  5. one `qorpera_folder_commit` as the member, with the member's operation key.
+  6. each state file's entry, built from the same text by `parseCompanyStateFile`, as the runtime's `structured()`
+     does: `{path, kind, text, parse, parserVersion}`, or `{path, kind, problems}` when the parse fails (the hook
+     refuses it with those codes). `path` is the whole stored path, also for a new folder's contents;
+  7. one `qorpera_folder_commit` as the member, with the namespaced key and neither a review nor a receipt.
 - **The answer** is the core's commit answer (`qorpera.folder-commit/v1`) as it is: for each unit, `saved`, or the
-  outcome with its reason and problems. A lock conflict is 409 (try again).
+  outcome with its reason and problems. A lock conflict is 409: send the same request again, with the same key (a
+  first try that did commit replays its outcome). A company being deleted or paused is 423.
 - **Media types** are the runtime's: `text/markdown` for `.md`, `text/plain` for anything else.
 - **No review:** members' changes are never reviewed. An agent's changes go through its own tools.
 
-**cloud-client.** `CloudMemberFolderClient` gains `stateFolders()` and `commit({operationKey, units})`, with closed
-parsers for both answers. The client checks a state file with `parseCompanyStateFile` before sending it, so a member
-sees a problem without a round trip.
+**cloud-client.** `CloudMemberFolderClient` gains `stateFolders()` and `commit(operationKey, units)`, with closed
+parsers for both answers. A file's text is `read()` then `readFile()` (P27b), decoded as strict UTF-8. The web checks
+a state file with `parseCompanyStateFile` before sending it, so a member sees a problem without a round trip.
 
 **The web (P34a-2).**
 - **Agents:**
@@ -178,12 +193,25 @@ sees a problem without a round trip.
     handle comes from the name (`freeCompanyStateName` over the listed `agents/`).
   - *Edit* rewrites `agent.md`: its settings with `setCompanyStateSettings` and its body (the instructions), with
     `expectedVersion` from the read. The handle stays.
-  - *Delete* removes the folder, with `expectedVersion` from the read.
+  - *Delete* removes the folder, with the folder entry's `version` and `asOfSeq` from one read of the folder. An
+    active agent's runs write under its folder often, so a `conflict` (`unseen_change`) reads again and retries a few
+    times. The Co-Founder's folder is never deleted (the hook refuses it; the web offers no delete).
+  - *Fields:* `name`, `role`, `figure`, `colour` (the web's `qorpera-<colour>` token without its prefix, and back),
+    and the instructions as the body. `model` and `effort` stay as read. Grants, model policy, lifecycle, template and
+    department have no place in `agent.md` (grants come from the roster's defaults and path authority, placement from
+    `sections.md`), so the editor drops them. The first assignment replaces the startup instructions: the create form
+    asks for it and it becomes `todos/first-assignment.md` (`writeTodoFile`, requested by the member).
+  - *Handles:* a member's listing hides folders they may not read, so a free handle can still be taken; `exists`
+    picks the next handle with a new key.
 
   A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message.
-- **Group chats:** *create* is a `new_folder` `agents/groups/<handle>` holding `group.md` (`writeGroupFile`). *Edit*
-  rewrites `group.md`. *Delete* removes the folder, which closes the chat.
+- **Group chats:** *create* is a `new_folder` `agents/groups/<handle>` holding `group.md` (`writeGroupFile`): the
+  members' list becomes `agents` (at least two) and `people`. *Edit* rewrites `group.md` with `expectedVersion` from
+  the read; the room's version number and key go, and a lost answer is the operation key's replay. *Delete* removes
+  the folder (with `asOfSeq`), which closes the chat.
+- **Who may:** the web keeps today's owner-or-admin gates for agents and group chats, and the core's `denied` answers
+  for anything a path's authority refuses.
 - **Skill suggestions** read `skills/` and `agents/<handle>/skills/` through the folder client.
-- **What goes:** `WebCompanyFiles.files()` and `mode()`, the web's use of the governed editor client, and the agent
-  JSON document.
+- **What goes:** `WebCompanyFiles.files()` and `mode()` (these three editors are their only callers; P34b's editors
+  are written on the folder), the web's use of the governed editor client, and the agent JSON document.
 

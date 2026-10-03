@@ -784,7 +784,9 @@ Built switched off with plan logins. Show none of it while plan logins are switc
 Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call
 answers 42501 "Company folder is unavailable" for a caller who is not a member of a folder-v2 company with that
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
-looks absent in every answer. Reads only: member writes come with P31.
+looks absent in every answer. Members write through the object gateway's member commit route (P34a,
+`20260930021000_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
+a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
   `20260930013200_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
@@ -813,6 +815,12 @@ looks absent in every answer. Reads only: member writes come with P31.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
   chunk) of a file the member may read, now or in a version they may read. Clients fetch bytes from the gateway
   (P27b), not with this call.
+- `qorpera_member_company_state_folders(environment)` (P34a): `{schema: "qorpera.member-company-state-folders/v1",
+  agents: [{staffAgentId, file}], groups: [{roomId, file}]}`, the live agents' `agent.md` and group chats' `group.md`
+  the member may read, in path order. An agent's or group chat's folder is its file's parent.
+- `qorpera_member_folder_writer(environment)` (P34a): `{schema: "qorpera.member-folder-writer/v1", actor, profileId}`,
+  the caller's own actor `{kind: "member", userId}`. For the object gateway's member commit route, which calls it
+  with the member's token; clients don't call it.
 
 ## 3. Realtime
 
