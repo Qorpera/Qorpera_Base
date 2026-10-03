@@ -63,7 +63,8 @@ describe("execution host calls (G2-3e)", () => {
 
 	it("never follows a redirect with the credential, whatever the caller asked", async () => {
 		const { fetch, sent } = recording();
-		await executionHostFetch(supabaseUrl, host, fetch)(`${supabaseUrl}/rest/v1/rpc/qorpera_runtime_ended_runners`, {
+		const hostFetch = executionHostFetch(supabaseUrl, host, fetch);
+		await hostFetch(`${supabaseUrl}/rest/v1/rpc/qorpera_runtime_ended_runners`, {
 			method: "POST",
 			redirect: "follow",
 			body: "{}",
