@@ -1240,6 +1240,27 @@ it.each([
 	},
 );
 
+it.each([true, false])(
+	"gives a folder-v2 run the folder core's file tools, and other runs the legacy ones (%o)",
+	async (folder) => {
+		const f = await fixture("company-dynamic", false, undefined, false, true);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const tools = evidence.threadParameters.dynamicTools[0].tools as {
+			name: string;
+			inputSchema: { required: string[] };
+		}[];
+		const list = tools.find((tool) => tool.name === "company_list");
+		// The folder core pages a folder by its last path; the legacy listing pins a snapshot.
+		expect(list?.inputSchema.required).toEqual(
+			folder ? ["path", "after", "limit"] : ["path", "after", "snapshotId", "limit"],
+		);
+		for (const name of ["company_read", "company_write", "company_mkdir", "company_delete"])
+			expect(tools.some((tool) => tool.name === name)).toBe(true);
+	},
+);
+
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
 	const f = await fixture("company-dynamic", false, undefined, false, true);
 	f.context.folder = { agent: "nora", coworkers: {} };

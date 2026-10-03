@@ -1033,7 +1033,16 @@ and the machine-side session F3, on #408):
 ### C3. Runtime and writers
 
 For `folder-v2` companies:
-- The Company File tools use change sets.
+- The Company File tools use change sets. Built in slice P19
+  (`packages/runtime/src/cloud-folder-file-tools.ts`), as the light threads
+  amendment (2 October 2026, item 2) words it:
+  - `company_read` and `company_list` act as the run actor. Each answer is
+    fitted to one tool result, and is released against exactly the text
+    shown before the model sees it.
+  - `company_write`, `company_mkdir` and `company_delete` each commit a
+    one-unit change set under the tool call's receipt. A deletion records
+    the automatic review's approval of its call (C2 R1), and deletes a file
+    or an empty folder.
 - The memory, skills, todo, routine and hiring writers write files.
 - The vault writes connection files.
 - The tools the layout amendment retires are removed from the model's tool

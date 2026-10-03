@@ -81,6 +81,12 @@ export async function folderWriterFixture(
 	const files = new Map<string, Stored>();
 	const rowIds = new Map<string, string>();
 	const folders = new Set<string>(["agents", "agents/nora", ...(seed.folders ?? [])]);
+	// A folder keeps its version until it is deleted.
+	const folderVersions = new Map<string, string>();
+	const folderVersion = (path: string) => {
+		if (!folderVersions.has(path)) folderVersions.set(path, randomUUID());
+		return folderVersions.get(path) as string;
+	};
 	const commits: { key: string; receiptId: unknown; reviewId: unknown; units: Record<string, unknown>[] }[] = [];
 	// Recorded reviews: id → the change set's JSON, as the commit receives it.
 	const reviews = new Map<string, string>();
@@ -137,7 +143,7 @@ export async function folderWriterFixture(
 			return {
 				path,
 				kind: "folder",
-				version: randomUUID(),
+				version: folderVersion(path),
 				seq,
 				updatedAt: "2026-10-01T00:00:00+00:00",
 				authority: receipt,
@@ -155,6 +161,9 @@ export async function folderWriterFixture(
 			};
 		}),
 		get: vi.fn(async (file: CloudCompanyFolderFile) => bytesBySha.get(file.fileSha256) ?? new Uint8Array()),
+		range: vi.fn(async (file: CloudCompanyFolderFile, offset: number, length: number) =>
+			(bytesBySha.get(file.fileSha256) ?? new Uint8Array()).subarray(offset, offset + length),
+		),
 	};
 	const control: CloudCompanyPathControl = {
 		call: vi.fn(async (method, args) => {
@@ -231,15 +240,31 @@ export async function folderWriterFixture(
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (unit.op === "mkdir") {
+						if (files.has(path) || folders.has(path)) return { ...base, outcome: "conflict", reason: "exists" };
+						if (parent !== "" && !folders.has(parent))
+							return { ...base, outcome: "refused", reason: "parent_missing" };
 						folders.add(path);
+						return { ...base, outcome: "saved", version: folderVersion(path) };
+					}
+					// A folder's deletion, as SQL's subtree delete: its version, the listing it was seen at, its review.
+					if (unit.op === "delete" && folders.has(path)) {
+						if (folderVersion(path) !== unit.expectedVersion)
+							return { ...base, outcome: "conflict", reason: "version_changed" };
+						if (unit.asOfSeq === undefined) return { ...base, outcome: "refused", reason: "as_of_seq_required" };
+						const inside = (candidate: string) => candidate.startsWith(`${path}/`);
+						if ([...files.keys(), ...folders].some(inside) && (unit.asOfSeq as number) < seq)
+							return { ...base, outcome: "conflict", reason: "unseen_change" };
+						if (!reviewed(args, units)) return { ...base, outcome: "denied", reason: "review_required" };
+						folders.delete(path);
+						folderVersions.delete(path);
 						return { ...base, outcome: "saved", version: randomUUID() };
 					}
 					if (unit.op === "delete") {
 						const current = files.get(path);
 						if (current?.version !== unit.expectedVersion)
 							return { ...base, outcome: "conflict", reason: current ? "version_changed" : "missing" };
-						if (isRoutine(path) && !reviewed(args, units))
-							return { ...base, outcome: "denied", reason: "review_required" };
+						// A deletion is reviewed (C1B §6).
+						if (!reviewed(args, units)) return { ...base, outcome: "denied", reason: "review_required" };
 						files.delete(path);
 						routineStates.delete(path.slice(ROUTINES.length + 1, -3));
 						// The deletion's own version, as the commit answers it.
@@ -451,7 +476,11 @@ export async function folderWriterFixture(
 				const parent = args.p_parent as string;
 				const after = args.p_after as string | null;
 				const children = [...files.keys(), ...folders]
-					.filter((path) => path.startsWith(`${parent}/`) && !path.slice(parent.length + 1).includes("/"))
+					.filter((path) =>
+						parent === ""
+							? !path.includes("/")
+							: path.startsWith(`${parent}/`) && !path.slice(parent.length + 1).includes("/"),
+					)
 					.sort()
 					.filter((path) => after === null || path > after);
 				const page = children.slice(0, args.p_limit as number);
