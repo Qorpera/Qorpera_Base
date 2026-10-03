@@ -1397,6 +1397,19 @@ by a machine.
   keys at a dedicated anchor row that is never locked exclusively, not at
   `qorpera_company_files` (its upload quota trigger locks that row
   `FOR UPDATE`).
+- **C1e, P24b (migration 20260930019500, test 839): a read set is re-resolved
+  set-based.** The load test found re-checking a read set after a re-grant
+  quadratic: each path was re-resolved one by one (its covering resource
+  looked up against every resource, twice) and each receipt appended with
+  `jsonb ||` in a loop. A run that read 25,000 paths took 252 s for one
+  re-check, so under the 8 s statement timeout it could never make another
+  model request. `qorpera_folder_paths_resources` (the covering resource of
+  many valid paths in one hash join) and `qorpera_folder_paths_authority`
+  (each path's check and receipt in one statement, decided once per
+  resource) serve the run and view re-checks, a release's pairs and an agent
+  wake's parent-reads check. **The covering rule now has two copies:** any
+  change to `qorpera_folder_path_resource` (C2's code rules, for example)
+  must change `qorpera_folder_paths_resources` too; 839 A checks they agree.
 - **Runbook, after a PostgreSQL major upgrade** (or any change to
   `qorpera_folder_key`): besides recomputing stored keys (core §2), run
   `REINDEX INDEX qorpera_company_path_resources_folder_key`. An `update …

@@ -162,7 +162,8 @@ All tables are keyed by company environment.
     `qorpera_folder_key(path)`, and recompute them (`update ... set path =
     path`, which regenerates the keys) before the folder is served again.
     The same step reindexes the expression indexes on the folder key (the
-    resources', and the path versions' that erasure uses, P18).
+    resources', the path versions' that erasure uses, P18, and P18b's
+    `*_folder_key` indexes on staff, rooms, todos, routines and rules).
     `snapshot-v1`'s keys share the exposure.
   - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
     rows hold at most 2,704 bytes. A unit that would store a longer key, or
@@ -958,6 +959,16 @@ today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
 
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
 under the 4-second result fence (`cloud-native-result-fence.ts`).
+
+**As built (C1e, P24):** `scripts/load-folder-core.mjs` and `.sql`, a new
+script rather than an extension of the snapshot-era one. It covers everything
+above on 648's fixture, except three things. The post-commit worker is not
+built yet (C2's queue). A message's wake stays queued until C4's
+materializer, so on `folder-v2` admission is only the admission row's count.
+Machine admission is not driven. `--probe-only --big-paths N` times one run
+whose read set holds N paths, alone, with function statistics. Its first
+finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
+later slices").
 
 ## 10. What goes, and when
 
