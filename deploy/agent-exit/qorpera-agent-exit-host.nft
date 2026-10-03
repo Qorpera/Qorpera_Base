@@ -1,10 +1,11 @@
 # Qorpera agent exit (E1): the node's side. The exit's uplink qx-up (10.209.255.1/30, the exit is 10.209.255.2) may
-# reach public addresses only, and nothing on the node itself. The bridge qagent0 has no address on the node, so
-# agent machines never reach a node service. Phase 1 masquerades the exit out of the node's own uplink (the platform
-# address); phase 2 (E9) gives the exit a public address of its own and drops that rule.
+# reach public addresses only, never on port 25, and nothing on the node itself. The bridge qagent0 has no address on
+# the node, and the node routes nothing into or out of it: agent road machines reach only the exit, which sits on the
+# same bridge. Phase 1 masquerades the exit out of the node's own uplink (the platform address); phase 2 (E9) gives
+# the exit a public address of its own and drops that rule.
 #
-# Load it with qorpera-agent-exit.sh. The same file runs on every node. Bridged traffic on qagent0 (agent machine to
-# the exit's br0) is never matched here: no rule names qagent0 in forward.
+# Load it with qorpera-agent-exit.sh. The same file runs on every node. Bridged traffic on qagent0 (an agent road
+# machine and the exit's br0) has qagent0 as both input and output interface and is never matched here.
 
 table inet qorpera_agent_exit_host {
 	set internal4 {
@@ -18,20 +19,26 @@ table inet qorpera_agent_exit_host {
 
 	chain forward {
 		type filter hook forward priority filter - 5; policy accept;
+		iifname "qagent0" oifname != "qagent0" drop
+		oifname "qagent0" iifname != "qagent0" drop
+		ip saddr 10.209.255.0/30 iifname != "qx-up" drop
 		iifname "qx-up" ct state established,related return
 		iifname "qx-up" ip saddr != 10.209.255.2 drop
 		iifname "qx-up" meta nfproto ipv6 drop
+		iifname "qx-up" oifname "tailscale0" drop
 		iifname "qx-up" ip daddr @internal4 drop
+		iifname "qx-up" tcp dport 25 drop
 		oifname "qx-up" ct state != { established, related } drop
 	}
 
 	chain input {
 		type filter hook input priority filter - 5; policy accept;
 		iifname { "qx-up", "qagent0" } ct state != { established, related } drop
+		ip saddr 10.209.255.0/30 iifname != "qx-up" drop
 	}
 
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
-		ip saddr 10.209.255.2 oifname != "qx-up" masquerade
+		ip saddr 10.209.255.2 oifname != { "qx-up", "qagent0", "tailscale0", "lo" } ip daddr != @internal4 masquerade
 	}
 }

@@ -104,6 +104,47 @@ try:
 except Exception:
     print("closed")
 EOF
+cat >"$work/raw.py" <<'EOF'
+import socket, sys
+# One raw IP packet of protocol argv[3] to argv[2] (the kernel fills in the source, argv[1] is for the reader).
+s = socket.socket(socket.AF_INET, socket.SOCK_RAW, int(sys.argv[3]))
+s.sendto(b"x" * 8, (sys.argv[2], 0))
+EOF
+cat >"$work/spoofdns.py" <<'EOF'
+import socket, struct, sys
+# A DNS question for argv[3] to argv[2], sent from the forged source argv[1] (raw IP + UDP).
+def csum(b):
+    if len(b) % 2:
+        b += b"\0"
+    s = sum(struct.unpack("!%dH" % (len(b) // 2), b))
+    while s >> 16:
+        s = (s & 0xffff) + (s >> 16)
+    return ~s & 0xffff
+src, dst, name = sys.argv[1], sys.argv[2], sys.argv[3]
+q = struct.pack("!HHHHHH", 0x4242, 0x0100, 1, 0, 0, 0)
+q += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00" + struct.pack("!HH", 1, 1)
+udp = struct.pack("!HHHH", 40000, 53, 8 + len(q), 0) + q
+ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 1, 0, 64, 17, 0, socket.inet_aton(src), socket.inet_aton(dst))
+ip = ip[:10] + struct.pack("!H", csum(ip)) + ip[12:]
+r = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+r.sendto(ip + udp, (dst, 0))
+print("sent")
+EOF
+cat >"$work/udp.py" <<'EOF'
+import socket, sys
+socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"probe", (sys.argv[1], int(sys.argv[2])))
+EOF
+cat >"$work/udpseen.py" <<'EOF'
+import socket, sys
+# Writes the source of every datagram to argv[1]; listens on argv[2]:argv[3].
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[2], int(sys.argv[3])))
+print("ready", flush=True)
+while True:
+    data, peer = s.recvfrom(512)
+    with open(sys.argv[1], "a") as f:
+        f.write("%s %s\n" % (peer[0], data.decode()))
+EOF
 cat >"$work/udhcpc.sh" <<'EOF'
 #!/bin/sh
 [ "$1" = bound ] && echo "ip=$ip router=$router dns=$dns" > "$LEASE_FILE"
@@ -150,6 +191,7 @@ ip -n agent link set lo up
 background lan "$work/lan.out" python3 "$work/serve.py" "$work/lan-peers" 1.1.1.1:443 1.1.1.1:25 192.168.1.40:2049 \
 	192.168.1.1:80 192.168.1.27:22 93.164.62.162:443
 background lan "$work/resolver.out" python3 "$work/resolver.py"
+background lan "$work/udpseen.out" python3 "$work/udpseen.py" "$work/nas-udp" 192.168.1.40 9999
 background tail "$work/tail.out" python3 "$work/serve.py" "$work/tail-peers" 100.75.4.70:22
 
 # --- The exit ---------------------------------------------------------------------------------------------------
@@ -168,7 +210,7 @@ background qexit "$work/exit.out" python3 "$work/serve.py" "$work/exit-peers" 10
 
 # The agent machine, plugged in as the agent plug (E2) will: a port of qagent0 and a static lease.
 mkdir -p "$QORPERA_AGENT_EXIT_STATE_DIR/dhcp-hosts"
-echo "52:54:00:00:10:10,10.210.0.10,agent-test" >"$QORPERA_AGENT_EXIT_STATE_DIR/dhcp-hosts/agent-test"
+echo "52:54:00:00:10:10,10.210.0.10" >"$QORPERA_AGENT_EXIT_STATE_DIR/dhcp-hosts/agent-test"
 ip link add va0 type veth peer name eth0 netns agent
 ip -n agent link set eth0 address 52:54:00:00:10:10
 ip link set va0 master qagent0 up
@@ -185,7 +227,7 @@ pass "verify passes with DNS and the logger running"
 
 # --- DHCP and names -----------------------------------------------------------------------------------------------
 LEASE_FILE=$work/lease ip netns exec agent env LEASE_FILE="$work/lease" busybox udhcpc -i eth0 -n -q -f -t 5 -T 1 \
-	-s "$work/udhcpc.sh" >/dev/null 2>&1 || fail "no DHCP lease: $(tail -5 "$work/dns.out")"
+	-s "$work/udhcpc.sh" >/dev/null 2>&1 || fail "no DHCP lease: $(tail -5 "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log" 2>&1)"
 grep -q "ip=10.210.0.10 router=10.210.0.1 dns=10.210.0.1" "$work/lease" || fail "lease: $(cat "$work/lease")"
 ip -n agent addr add 10.210.0.10/16 dev eth0
 ip -n agent route add default via 10.210.0.1
@@ -193,8 +235,8 @@ pass "DHCP gives the machine its static address, the exit as router and as DNS"
 
 [[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 example.test) == 1.1.1.1 ]] || fail "DNS through the exit"
 [[ $(ip netns exec agent python3 "$work/ask.py" 8.8.8.8 other.test) == 1.1.1.1 ]] || fail "DNS to another resolver is not redirected"
-wait_for "grep -q 'query\[A\] example.test from 10.210.0.10' $work/dns.out"
-wait_for "grep -q 'query\[A\] other.test from 10.210.0.10' $work/dns.out"
+wait_for "grep -q 'query\[A\] example.test from 10.210.0.10' $QORPERA_AGENT_EXIT_LOG_DIR/dns.log"
+wait_for "grep -q 'query\[A\] other.test from 10.210.0.10' $QORPERA_AGENT_EXIT_LOG_DIR/dns.log"
 pass "names resolve through the exit, plain DNS elsewhere is redirected, and every query is logged"
 
 # --- What reaches what --------------------------------------------------------------------------------------------
@@ -216,6 +258,29 @@ ip -n agent addr add 172.20.0.5/32 dev eth0
 [[ $(ip netns exec agent python3 "$work/from.py" 172.20.0.5 1.1.1.1 443) == closed ]] || fail "a spoofed source got out"
 ip netns exec qexit nft list counter inet qorpera_agent_exit refused_spoofed | grep -Eq 'packets [1-9]' || fail "spoofed not counted"
 pass "a source outside the agent range is dropped and counted"
+ip netns exec agent python3 "$work/raw.py" 10.210.0.10 192.168.1.40 253
+connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
+pass "a refusal by another protocol (253) next to a TCP one"
+[[ $(ip netns exec agent python3 "$work/spoofdns.py" 172.20.0.5 10.210.0.1 spoofed.test) == sent ]] || fail "spoofed DNS not sent"
+sleep 1
+grep -q "spoofed.test" "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log" && fail "the exit answered DNS from a source outside the agent range"
+pass "the exit ignores DNS from a source outside the agent range"
+# Routing through the node: send to the NAS with the bridge's own MAC as the next hop. The node must not route it.
+bridge_mac=$(cat /sys/class/net/qagent0/address)
+ip -n agent neigh replace 10.210.255.254 lladdr "$bridge_mac" dev eth0 nud permanent
+ip -n agent route add 192.168.1.40/32 via 10.210.255.254 dev eth0
+ip netns exec agent python3 "$work/udp.py" 192.168.1.40 9999
+sleep 1
+[[ -s $work/nas-udp ]] && fail "the node routed a packet from the agents' bridge to the NAS: $(cat "$work/nas-udp")"
+ip -n agent route del 192.168.1.40/32
+pass "the node routes nothing from the agents' bridge (a send with the bridge as next hop never reaches the NAS)"
+# The node owns 192.168.1.42; without arp_ignore it would answer ARP for it on any interface, the bridge included.
+ip -n agent route add 192.168.1.42/32 dev eth0
+ip netns exec agent python3 "$work/udp.py" 192.168.1.42 9 >/dev/null 2>&1 || true
+sleep 1.5
+ip -n agent neigh show 192.168.1.42 | grep -q lladdr && fail "the node answered ARP on the agents' bridge: $(ip -n agent neigh show 192.168.1.42)"
+ip -n agent route del 192.168.1.42/32
+pass "the node does not answer ARP on the agents' bridge"
 ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -Eq '10\.210\.0\.10 counter packets [1-9]' ||
 	fail "new connections are not counted per client: $(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)"
 pass "new connections are counted per client"
@@ -224,12 +289,18 @@ pass "new connections are counted per client"
 ip netns exec qexit conntrack -F >/dev/null 2>&1
 wait_for "ls $QORPERA_AGENT_EXIT_LOG_DIR/flows-*.jsonl >/dev/null 2>&1 && grep -q '\"event\":\"destroy\"' $QORPERA_AGENT_EXIT_LOG_DIR/flows-*.jsonl"
 log_file=$(ls "$QORPERA_AGENT_EXIT_LOG_DIR"/flows-*.jsonl | head -1)
-python3 - "$log_file" <<'EOF' || fail "log: $(cat "$log_file")"
+for _ in $(seq 1 50); do
+	grep -q '"event":"refused","proto":"253"' "$log_file" && break
+	sleep 0.2
+done
+grep -q '"event":"refused","proto":"253"' "$log_file" || fail "no protocol-253 refusal in the log: $(cat "$log_file")"
+python3 - "$log_file" >"$work/logcheck.out" 2>&1 <<'EOF' || fail "log: $(cat "$work/logcheck.out")"
 import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 site = [r for r in records if r["event"] == "destroy" and r.get("dst") == "1.1.1.1" and r.get("dport") == 443]
 assert site and site[0]["src"] == "10.210.0.10" and site[0]["bytes_out"] > 0 and site[0]["bytes_in"] > 0, site
-assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records), "a record that is not an agent's"
+assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] != "gap"), "not an agent's"
+
 EOF
 for _ in $(seq 1 50); do
 	grep -q '"dst":"192.168.1.40","event":"refused"' "$log_file" && break
@@ -241,13 +312,30 @@ set: $(ip netns exec qexit nft -j list set inet qorpera_agent_exit refused_flows
 log: $(cat "$log_file")"
 pass "the log has each connection's end with bytes, and the refused flows, for agent machines only"
 
-# --- Fail closed ----------------------------------------------------------------------------------------------------
+# --- Fail closed -------------------------------------------------------------------------------------------------
 if bash "$tool" down 2>"$work/down.err"; then fail "down went ahead with a machine plugged in"; fi
-grep -q "agent machines are plugged in (va0" "$work/down.err" || fail "down: $(cat "$work/down.err")"
-pass "down refuses while a machine is plugged in"
-bash "$tool" down --force >/dev/null
-connects agent 1.1.1.1 443 && fail "the agent machine still reaches the internet with the exit down"
-[[ ! -e /run/netns/qexit ]] && ! ip link show qagent0 >/dev/null 2>&1 || fail "down left the namespace or the bridge"
+grep -q "agent road machines are plugged in (va0" "$work/down.err" || fail "down: $(cat "$work/down.err")"
+ip netns exec qexit true || fail "a refused down changed the exit"
+bash "$tool" verify >/dev/null || fail "a refused down left the exit unhealthy"
+pass "down refuses while a machine is plugged in and changes nothing"
+# The exit crashes: its namespace and everything in it disappear while the machine stays plugged in.
+for pid in $(ip netns pids qexit); do kill -9 "$pid"; done
+ip netns del qexit
+sleep 0.5
+connects agent 1.1.1.1 443 && fail "the machine still reaches the internet with the exit gone"
+[[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 after.test) == none ]] || fail "names still resolve with the exit gone"
+pass "with the exit gone the machine has no internet and nothing falls back"
+bash "$tool" verify 2>/dev/null && fail "verify passed with the exit gone"
+ip link del va0
+bash "$tool" up >/dev/null
+bash "$tool" dns >"$work/dns2.out" 2>&1 &
+pids+=($!)
+bash "$tool" log >"$work/log2.out" 2>&1 &
+pids+=($!)
+wait_for "ip netns exec qexit ss -lnu | grep -q '10.210.0.1:53 '"
+bash "$tool" down >/dev/null || fail "down with nothing plugged in"
+for part in qagent0 qx-br qx-up; do ip link show "$part" >/dev/null 2>&1 && fail "down left $part"; done
+[[ -e /run/netns/qexit ]] && fail "down left the namespace"
 nft list table inet qorpera_agent_exit_host >/dev/null 2>&1 && fail "down left the node's rules"
-pass "with the exit down the machine has no internet and nothing falls back; nothing is left behind"
+pass "with nothing plugged in, down removes everything, with its name and log services running"
 echo "ALL PASSED"

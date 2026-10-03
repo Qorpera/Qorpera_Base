@@ -111,6 +111,12 @@ compare_bridges() {
 		return 1
 	}
 	for bridge in $(ip -o link show type bridge | awk -F': ' '{print $2}' | cut -d@ -f1); do
+		if [[ $bridge == qagent0 ]]; then
+			# The agent exit's bridge (deploy/agent-exit): its machines reach only the exit, which guards them. Listing
+			# it here would refuse their bridged traffic to the exit.
+			echo "bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here"
+			continue
+		fi
 		if [[ -z ${guarded[$bridge]:-} ]]; then
 			echo "NOT GUARDED bridge $bridge (add it to guest_bridges, bridge_subnets and bridge_gateways)"
 			[[ $status -eq 1 ]] || status=2

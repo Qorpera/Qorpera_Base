@@ -79,7 +79,7 @@ describe("the connection logger", () => {
 		]);
 	});
 
-	test("the refused-flow set becomes one key per element, with or without timeouts", () => {
+	test("the refused-flow sets become one key per element, with or without timeouts, any protocol as text", () => {
 		const set = JSON.stringify({
 			nftables: [
 				{ metainfo: { version: "1.1.6" } },
@@ -91,6 +91,7 @@ describe("the connection logger", () => {
 						elem: [
 							{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", "tcp", 2049] }, timeout: 3600, expires: 3590 } },
 							{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 25] },
+							{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", 253] }, timeout: 3600, expires: 3500 } },
 						],
 					},
 				},
@@ -99,6 +100,7 @@ describe("the connection logger", () => {
 		assert.deepEqual(run("--parse-set", set), [
 			["10.210.0.10", "192.168.1.40", "tcp", 2049],
 			["10.210.0.11", "1.1.1.1", "tcp", 25],
+			["10.210.0.10", "192.168.1.40", "253"],
 		]);
 	});
 });
