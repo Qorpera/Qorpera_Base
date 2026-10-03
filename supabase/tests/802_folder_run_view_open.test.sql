@@ -1,5 +1,5 @@
 -- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
--- F3, the server-side folder search (20260929999970): the native host opens its run's own folder view through G2's
+-- F3, the server-side folder search (20260928439970): the native host opens its run's own folder view through G2's
 -- entry point with the job's lease token, the node lists it with each entry's receipt and renews it by its pass, and
 -- the native host releases what an answer showed with the run actor (P8), which the next model request cites. A second
 -- open in the same job supersedes the first; another job's actor, a platform actor and a job that is not current are

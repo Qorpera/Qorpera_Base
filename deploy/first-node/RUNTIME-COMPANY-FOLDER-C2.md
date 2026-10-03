@@ -258,4 +258,4 @@ change set itself:
   conversation;
 - a unit `waiting_for_review` is parked as a proposal (`qorpera_folder_proposals`, not built), and an allow applies it.
 
-F1 decides who builds R2.
+R2 is F2's (the coordinator's plan of 2 October 2026).

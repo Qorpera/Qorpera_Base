@@ -697,8 +697,9 @@ Our accountant since 2025. Files VAT every quarter.
 
 - **Personal data.** A contact who asks to be forgotten needs an erasure of any deleted path:
   core §8 today erases only a deleted agent's folder, and is not built yet (C2). That widening is
-  F1's, and lands before H5 sends any link. It covers the contact file, the folders of that
-  contact's tasks, and path names in commit units, as core §8 does for agents. It cannot find
+  F2's (the coordinator's plan of 2 October 2026), and lands before H5 sends any link. It covers
+  the contact file, the folders of that contact's tasks, and path names in commit units, as core
+  §8 does for agents. It cannot find
   free text elsewhere (task titles and bodies, `reason`, `## History` lines, agents' memory),
   which a member removes by hand. The writing skill tells agents to name a contact by id only.
 - **What H1 does not decide (H2):** that `asks` covers a task's work is the agent's judgement (the
@@ -1415,9 +1416,9 @@ saved), no seeding. Two PRs, released in this order:
   companies can have one) can then only be replaced by a file that parses, moved within its root,
   or deleted: a move out is a kind change. H2 says how it treats a structured key whose current
   version has no parse.
-- **Contract:** the proposed amendment of 2 October (work for people) writes Jonas's decisions 4
-  and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's own text changes when it is
-  approved. The seeding code is H2's.
+- **Contract:** the amendment of 2 October (work for people, approved 3 October) writes Jonas's
+  decisions 4 and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's and 16.1's text
+  carry it since 3 October. The seeding code is H2's.
 - **Tests:** the parser's cases and round trips; the comparison lists, both kept by hand
   (`supabase/tests/700_folder_state_vision_agents.test.sql` §7 and the kinds test in
   `packages/cloud-client/test/company-state-files.test.ts`), with the new spellings; and SQL test
@@ -1687,7 +1688,7 @@ choices made while building:
   final-task check into the same rule).
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
-screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
+screens; H4 the emails; H5 the contact links, after F2 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
 
 **Plan (A1-7): website accounts in connection files** (A1's request of 2 October; A1 keeps the
@@ -1698,7 +1699,7 @@ Two PRs, in this order:
   them. Another connection's parse keeps its exact shape, so the rule that a member may change
   only the text below the settings (which compares the settings with the saved version's) keeps
   working on every file saved before.
-- **A1-7b, the database** (migration 20260929999950, SQL test 801):
+- **A1-7b, the database** (migration 20260928439950, SQL test 801):
   `qorpera_company_state_parse_problems` checks the connection parse per service, with the
   vault's host rule. Nothing else changes: the platform's save still needs the vault row active
   with the connector `website`.
