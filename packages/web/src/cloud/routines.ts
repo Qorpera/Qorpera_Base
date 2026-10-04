@@ -107,7 +107,8 @@ export interface WebRoutines {
 	/** Writes a new routine's file, or an edit of one. `saveId` is the editor's: a request whose answer never came is
 	 * sent again as it was by the next save with the same id, and only an answer frees it. "unchanged" when an edit
 	 * changes nothing: nothing is written, since an unchanged save would resume a routine the platform paused. A save
-	 * whose resent request was saved is "saved". */
+	 * whose resent request was saved is "saved". A `WebRoutineChangedError` ends the save id; for a new routine it means
+	 * a resent request made the routine and someone changed it before the draft's change since was written over it. */
 	save(
 		draft: WebRoutineDraft,
 		account: WebMemberConnection | undefined,
@@ -124,7 +125,8 @@ export interface WebRoutines {
 
 /** The routine has no file this member can change, or its file is gone: nothing was written. */
 export class WebRoutineGoneError extends Error {}
-/** What the editor shows of the routine changed since it was opened: nothing was written; open it again. */
+/** What the editor shows of the routine changed since it was opened: the draft was not written; open it again (a new
+ * routine's form, the routine a lost answer's replay made). */
 export class WebRoutineChangedError extends Error {}
 /** The routine has ended (concluded, or expired): nothing was written; the list says so. */
 export class WebRoutineEndedError extends Error {}
@@ -587,8 +589,14 @@ export function createWebRoutines(
 				return replayed ? "saved" : result;
 			} catch (error) {
 				// Failed with nothing sent unanswered and nothing learned since the form opened: the next save with this
-				// id starts as a first one would, so the entry goes.
-				if (state.pending === null && state.base === (draft.opened ?? null)) saves.delete(saveId);
+				// id starts as a first one would, so the entry goes. So it does after a change to what the form shows: the
+				// editor opens the routine again from its file (a new routine too, once a lost answer's replay made it), and
+				// the base kept here could only meet that change again.
+				if (
+					state.pending === null &&
+					(error instanceof WebRoutineChangedError || state.base === (draft.opened ?? null))
+				)
+					saves.delete(saveId);
 				throw error;
 			}
 		},
