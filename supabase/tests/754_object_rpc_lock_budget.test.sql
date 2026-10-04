@@ -1,4 +1,4 @@
--- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers"
+-- @fixture 602_runtime_coding_lock_order.test.sql until "-- END COMMITTED FIXTURE"
 -- Object gateway RPCs wait at most 2 s for a lock (20260928339630_object_rpc_lock_budget). The gateway gives each
 -- call 5 s and, when one runs out, refuses every company for its cooldown; so one company's held fence must end its
 -- own calls first, with lock_not_available (55P03), which the gateway answers as that company's conflict. A third

@@ -853,14 +853,21 @@ describe("account and route ownership", () => {
 
 	it("retains creation idempotency across an ambiguous failure and controller restart", async () => {
 		const f = fixture();
-		const create = vi.spyOn(f.api, "createCompany").mockRejectedValue(new Error("Response lost"));
+		vi.mocked(f.api.companyFoundingAvailable).mockResolvedValue(true);
+		const opened: unknown[] = [];
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+			if (name !== "qorpera_open_company_founding") throw new Error(`Unexpected RPC ${name}`);
+			opened.push(args?.p_client_creation_id);
+			throw new Error("Response lost");
+		});
 		let hub = new HubController(f.api, userA.id);
 		await hub.createCompany("One company");
 		hub.dispose();
 		hub = new HubController(f.api, userA.id);
 		expect(hub.store.get().creationRetry?.name).toBe("One company");
 		await hub.createCompany("One company");
-		expect(create.mock.calls[0]?.[0]).toBe(create.mock.calls[1]?.[0]);
+		expect(opened).toHaveLength(2);
+		expect(opened[0]).toBe(opened[1]);
 		expect(new HubController(f.api, userB.id).store.get().creationRetry).toBeUndefined();
 		hub.dispose();
 	});

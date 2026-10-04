@@ -1,4 +1,4 @@
--- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers while the executor finishes"
+-- @fixture 602_runtime_coding_lock_order.test.sql until "-- END COMMITTED FIXTURE"
 -- Company accounts, A1-1: who waits for an account's rows. A second connection holds a row while a real call
 -- runs (602's committed fixture and connections; this test's rows go with its cleanup at the end).
 -- 1. A member the removal refuses (a contributor, someone outside the company) is refused at once while the

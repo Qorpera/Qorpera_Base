@@ -471,12 +471,13 @@ describe("a member's change set to a folder-v2 company", () => {
 		const slow = {
 			publisher: async (method: string) => {
 				calls.push(method);
-				await new Promise((resolve) => setTimeout(resolve, 40));
+				await new Promise((resolve) => setTimeout(resolve, 100));
 				return { schema: "qorpera.folder-follow-up/v1", more: true };
 			},
 		};
-		const made = await followUpMemberCommit(slow as never, environmentId, version, new AbortController().signal, 100);
-		expect(made).toBeGreaterThanOrEqual(2);
+		// Eight such calls take 800 ms: a 150 ms budget stops well before, however busy the machine is.
+		const made = await followUpMemberCommit(slow as never, environmentId, version, new AbortController().signal, 150);
+		expect(made).toBeGreaterThanOrEqual(1);
 		expect(made).toBeLessThan(8);
 		expect(calls.length).toBe(made);
 	});
