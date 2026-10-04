@@ -486,6 +486,9 @@ export class SessionExecutionView {
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
 		if (own && atLimit.some((connection) => connection.connectionId === own))
 			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
+		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
+		if (own && this.#keeps(own))
+			return t("This conversation's model account can't be used right now. Check it in Settings → My connections.");
 		if (atLimit.length)
 			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
 		return t("Connect a model account in Settings → My connections to send messages.");

@@ -176,6 +176,22 @@ select public.qorpera_configure_staff_execution_authority('30000000-0000-4000-80
 reset role;
 select pg_temp.wake_assert(pg_temp.p905_payer('1', pg_temp.p905('companyY')) = pg_temp.p905('companyY'),
 	'follow-up work of a run on company account Y moved to the agent''s account X');
+-- A company account that can no longer pay stops the work that follows its runs; Y, which could, never stands in.
+update public.qorpera_provider_connections set status = 'disabled'
+where id = (current_setting('qorpera_test.p905_company_connection')::jsonb ->> 'connection_id')::uuid;
+select pg_temp.wake_assert(pg_temp.p905_payer('1', pg_temp.p905('company')) is null,
+	'follow-up work of a disabled company account moved to another account');
+update public.qorpera_provider_connections set status = 'active'
+where id = (current_setting('qorpera_test.p905_company_connection')::jsonb ->> 'connection_id')::uuid;
+insert into public.qorpera_provider_connection_versions
+select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+	to_jsonb(v) || '{"version":2,"allow_autonomous":false}'::jsonb)).*
+from public.qorpera_provider_connection_versions v
+where connection_id = (current_setting('qorpera_test.p905_company_connection')::jsonb ->> 'connection_id')::uuid and version = 1;
+select pg_temp.wake_assert(pg_temp.p905_payer('1', pg_temp.p905('company')) is null,
+	'follow-up work of a company account without consent moved to another account');
+select pg_temp.wake_assert(pg_temp.p905_payer('1', pg_temp.p905('companyY')) = pg_temp.p905('companyY'),
+	'follow-up work of a run on company account Y stopped');
 update public.qorpera_native_provider_account_metadata
 set provider_account_usage = jsonb_set(provider_account_usage,'{windows,0,usedPercent}','20')
 where connection_id = pg_temp.p905('b');

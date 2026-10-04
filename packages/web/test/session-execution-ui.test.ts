@@ -706,6 +706,10 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain(
+			"This conversation's model account can't be used right now. Check it in Settings → My connections.",
+		);
+		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
 		// An account the member disconnected leaves the conversation waiting for the member's own pick.
 		const disconnected = withUsage([30, 40]);
 		disconnected.connections[0]!.connectionStatus = "revoked";
@@ -720,6 +724,22 @@ describe("conversation execution account", () => {
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.send().disabled).toBe(false);
 		expect(selector()).toBeNull();
+	});
+
+	it("names no account of the conversation once the cloud gives it none", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const f = setup(true, withUsage([80, 40]), select);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		select.mockResolvedValue(undefined);
+		f.listConnections.mockResolvedValue(withUsage([0, 0]));
+		refresh();
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain("Your model accounts have reached their usage limits.");
+		expect(f.view.el.textContent).not.toContain("This conversation's model account");
 	});
 
 	it("names the member's accounts when a new conversation finds them all exhausted", async () => {
