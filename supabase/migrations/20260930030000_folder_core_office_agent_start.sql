@@ -1,6 +1,6 @@
 -- Company folder core, C1c-3l part 1 (the coordinator's audit P06c): an agent starts the Company Computer of a folder-v2
 -- company (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.14; plan outputs/company-accounts/p06-office-folder-v2-plan.md).
--- Builds on C1c-3j (20260930012000) and C1c-3k (20260930019000, 20260930019100).
+-- Builds on C1c-3j and C1c-3k (their body markers 20260930012000, 20260930019000 and 20260930019100).
 --
 -- Folder-v2 only (the founder's decision of 3 October): each patch is a folder-v2 branch, and the statement that was
 -- there before stays untouched in its else. On a folder-v2 company:
@@ -118,7 +118,7 @@ begin
 		|| E'\t\t\t\twhere access.office_id=p_office.id and access.profile_id=p_office.profile_id\n'
 		|| E'\t\t\t\tand access.staff_agent_id=p_intent.requested_by_staff_agent_id and access.grant_id=p_intent.grant_id\n'
 		|| E'\t\t\t\tand access.version=p_intent.grant_version and access.state=''active'' and staff.employment_status=''active''\n'
-		|| E'\t\t\t\tfor share of access,staff nowait;\n'
+		|| E'\t\t\t\tfor share of access for share of staff nowait;\n'
 		|| E'\t\telse\n'
 		|| E'\t\tperform 1 from public.qorpera_runtime_office_access access\n'
 		|| E'\t\t\tjoin public.qorpera_profile_staff staff on staff.profile_id=access.profile_id and staff.staff_agent_id=access.staff_agent_id\n'
@@ -142,7 +142,7 @@ begin
 		E'\t-- C1c-3l (20260930030000): run again inside a call that already holds the computer, the prelude takes the agent of\n'
 		|| E'\t-- a start that appeared since the first run without waiting (a wait could deadlock with that agent\'s return).\n'
 		|| E'\tif v_intent.requested_by_staff_agent_id is not null\n'
-		|| E'\t\tand current_setting(''qorpera.folder_office_entered'', true) is not distinct from v_office.id::text then\n'
+		|| E'\t\tand position(v_office.id::text in coalesce(current_setting(''qorpera.folder_office_entered'', true), '''')) > 0 then\n'
 		|| E'\t\tperform 1 from public.qorpera_profile_staff as staff\n'
 		|| E'\t\twhere staff.profile_id = v_office.profile_id and staff.staff_agent_id = v_intent.requested_by_staff_agent_id\n'
 		|| E'\t\tfor share nowait;\n'
@@ -151,7 +151,11 @@ begin
 		|| E'\t\twhere staff.profile_id = v_office.profile_id and staff.staff_agent_id = v_intent.requested_by_staff_agent_id\n'
 		|| E'\t\tfor share;\n'
 		|| E'\tend if;\n'
-		|| E'\tperform set_config(''qorpera.folder_office_entered'', v_office.id::text, true);\n', 1);
+		|| E'\t-- Every computer this transaction entered, so a later prelude for any of them counts as nested.\n'
+		|| E'\tif position(v_office.id::text in coalesce(current_setting(''qorpera.folder_office_entered'', true), '''')) = 0 then\n'
+		|| E'\t\tperform set_config(''qorpera.folder_office_entered'',\n'
+		|| E'\t\t\tcoalesce(current_setting(''qorpera.folder_office_entered'', true), '''') || v_office.id::text || '','', true);\n'
+		|| E'\tend if;\n', 1);
 end $$;
 
 -- 3. The descriptor ------------------------------------------------------------------------------------------------------
@@ -166,7 +170,8 @@ begin
 		E'\t\t-- C1c-3l (20260930030000): on folder-v2 the company\'s agents KEY SHARE before the seat lock (the new computer\n'
 		|| E'\t\t-- takes them KEY SHARE again for its default access), as a member\'s new computer does.\n'
 		|| E'\t\tif public.qorpera_company_is_folder_v2(v_company) then\n'
-		|| E'\t\t\tperform 1 from public.qorpera_profile_staff where profile_id=v_company order by staff_agent_id for key share;\n'
+		|| E'\t\t\tperform 1 from public.qorpera_profile_staff where profile_id=v_company and employment_status=''active''\n'
+		|| E'\t\t\t\torder by staff_agent_id for key share;\n'
 		|| E'\t\telse\n'
 		|| E'\t\tperform public.qorpera_lock_profile_gc_fence(v_company);\n'
 		|| E'\t\tend if;\n', 1);
