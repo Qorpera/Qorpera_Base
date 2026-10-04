@@ -246,20 +246,25 @@ routine reads as read-only.
 core takes the routine's own login when it still pays for this member, else the member's newest login that pays for
 unattended work (`qorpera_company_state_routine_payer`). A new routine, a resume and any change of what a run pins need
 one; a pause does not. So on folder-v2 the editor does not offer a choice of account: it says the routine runs on the
-member's own account that works while they're away. When the member has none switched on, it offers their accounts
-that can pay (never a Claude login; a ChatGPT plan only once its member turned on work while away, and never for a
-file-change routine) and switches the chosen one on first (`qorpera_consent_provider_connection_autonomous`,
-`qorpera_create_member_execution_sponsor`), as today. Then it commits the file as the member (§5's route). An exact
-choice among several paying accounts would need the commit to take a preferred login: not in this slice.
+member's own account that works while they're away. Before every save that needs a login, the web runs today's
+idempotent consent and bind (`qorpera_consent_provider_connection_autonomous`,
+`qorpera_create_member_execution_sponsor`) on the member's first account that can pay and is switched on for
+unattended use, so that account has a binding in this company. When none is switched on, the editor offers their
+accounts that can pay (never a Claude login; a ChatGPT plan only once its member turned on work while away, and never
+for a file-change routine) and switches the chosen one on first; the switch's Resume does as today's toggle does (the
+first account that can pay); when nothing can pay, today's messages say where to connect or turn one on. Then it
+commits the file as the member (§5's route). An exact choice among several paying accounts would need the commit to
+take a preferred login: not in this slice.
 
 **The trigger, both ways.** One exported helper in cloud-client, beside `writeRoutineFile`, maps the editor's shapes
 to the file's keys and back, the inverse of the index's `qorpera_company_state_routine_trigger`, with a test pinned to
 it:
-- every N minutes (5 to 10,080) is `when: every`, `minutes`, and `starts`: now plus the interval for a new routine;
-  for an edit, the file's `starts` exactly as read (present or absent) unless the interval changed or a held start is
-  let go;
-- days at a time is `when: weekly`, `days` (`mon`…`sun`), `time` (`HH:MM`), the top-level `timezone`, and `starts`
-  (a held first run) or none;
+- every N minutes (5 to 10,080) is `when: every`, `minutes`, and `starts`: now plus the interval for a new routine
+  and for an edit that changes the interval; otherwise the file's `starts` exactly as read (present or absent), or
+  removed when a held start is let go;
+- days at a time is `when: weekly`, `days` (`mon`…`sun`), `time` (`HH:MM`), the top-level `timezone`, and `starts` as
+  read (a past one too, which today's editor keeps): a held future start moves with the time, and one that is let go
+  is removed;
 - the keys of the other `when` are removed. `timezone` stays when an edit moves to `every`: quiet hours without their
   own zone take it.
 
@@ -270,7 +275,8 @@ it:
   `effort` (`low`, as today) written out. The key comes from the title (`freeCompanyStateName` over the listed
   routines' file stems, at most 64 characters); the write's `exists` takes the next key with a new operation key,
   unless the file at that path already carries this draft's id (a lost answer: it is saved).
-- **Edit:** rewrites the file with `setCompanyStateSettings` (the title, the trigger's keys, `timezone`, `reply` from
+- **Edit:** the form is filled from the file's parse, the same read that gives the version it names. It rewrites the
+  file with `setCompanyStateSettings` (the title, the trigger's keys, `timezone`, `reply` from
   the editor's select) and `withStateBody` (the instructions). `effort`, `ends`, `runs`, quiet hours, notes and every
   other byte stay as read. When the new parse equals the one it read, nothing is written ("Nothing changed"): an
   unchanged save would resume a routine the platform paused, which only the switch does. A `version_changed` retries
