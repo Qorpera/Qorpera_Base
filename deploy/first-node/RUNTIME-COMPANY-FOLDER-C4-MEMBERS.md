@@ -237,7 +237,7 @@ folded in below.
 (`qorpera_list_cloud_routines`) reads the index and does not say where a routine's file is; adding the path there would
 show it to every reader of the company, past the path's authority. `qorpera_member_company_state_folders` also
 answers `routines: [{routineId, staffAgentId, file}]`: the routine index rows with `profile_id`, this
-`folder_environment_id`, `folder_retired_at` null, whose file the member may read (`qorpera_folder_actor_allowed`, as
+`folder_environment_id`, `folder_retired_at` null and status not `retired`, whose file the member may read (`qorpera_folder_actor_allowed`, as
 for agents), `staffAgentId` the row's owner, in path order. The web ships before the SQL (Pages deploys on merge; SQL
 at a release), so cloud-client's parser takes `routines` as optional: missing means no routine file is known and every
 routine reads as read-only.

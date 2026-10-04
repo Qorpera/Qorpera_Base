@@ -1,0 +1,211 @@
+import { describe, expect, it } from "vitest";
+import { cloudRoutineTriggerOfFile, routineFileSettings, routineFileTrigger } from "../src/cloud-routine-file.ts";
+import {
+	parseCompanyStateFile,
+	type RoutineFile,
+	setCompanyStateSettings,
+	writeRoutineFile,
+} from "../src/company-state-files.ts";
+
+const PATH = "agents/nora/routines/inbox.md";
+const id = "89900000-0000-4000-8000-0000000000e1";
+
+function file(update: Partial<Omit<RoutineFile, "kind">> = {}): RoutineFile {
+	return {
+		kind: "routine",
+		id,
+		title: "Inbox",
+		status: "active",
+		trigger: { when: "every", minutes: 30, starts: null },
+		timezone: null,
+		ends: null,
+		runs: null,
+		quiet: null,
+		effort: "low",
+		reply: "required",
+		conclusion: null,
+		instructions: "Read the inbox and say what needs an answer.",
+		...update,
+	};
+}
+const text = (routine: RoutineFile) => {
+	const { kind: _kind, ...rest } = routine;
+	return writeRoutineFile(rest);
+};
+const parse = (source: string): RoutineFile => {
+	const parsed = parseCompanyStateFile(PATH, source);
+	if (!parsed?.ok || parsed.file.kind !== "routine") throw new Error(`Not a routine: ${JSON.stringify(parsed)}`);
+	return parsed.file;
+};
+
+describe("a routine file's trigger as the routine list reads it", () => {
+	it("mirrors the index: id file, a start to the millisecond, the file's reply", () => {
+		expect(
+			cloudRoutineTriggerOfFile(file({ trigger: { when: "every", minutes: 30, starts: "2026-10-04T08:00:00Z" } })),
+		).toEqual({
+			id: "file",
+			kind: "schedule",
+			intervalMinutes: 30,
+			startAt: "2026-10-04T08:00:00.000Z",
+			replyPolicy: "required",
+		});
+		expect(
+			cloudRoutineTriggerOfFile(
+				file({
+					trigger: { when: "weekly", days: ["mon", "fri"], time: "09:30", starts: null },
+					timezone: "Europe/Copenhagen",
+					reply: "optional",
+				}),
+			),
+		).toEqual({
+			id: "file",
+			kind: "schedule",
+			intervalMinutes: 1440,
+			weekdays: ["monday", "friday"],
+			localTime: "09:30",
+			timeZone: "Europe/Copenhagen",
+			replyPolicy: "optional",
+		});
+		expect(
+			cloudRoutineTriggerOfFile(
+				file({
+					trigger: { when: "window", minutes: 60, from: "08:00", to: "17:00", days: ["mon"], months: [1, 2] },
+					timezone: "UTC",
+				}),
+			),
+		).toEqual({
+			id: "file",
+			kind: "schedule",
+			intervalMinutes: 60,
+			windowStart: "08:00",
+			windowEnd: "17:00",
+			timeZone: "UTC",
+			weekdays: ["monday"],
+			months: [1, 2],
+			replyPolicy: "required",
+		});
+		expect(
+			cloudRoutineTriggerOfFile(file({ trigger: { when: "once", at: "2026-10-05T07:00:00Z" }, timezone: "UTC" })),
+		).toEqual({ id: "file", kind: "once", at: "2026-10-05T07:00:00Z", timeZone: "UTC", replyPolicy: "required" });
+		expect(
+			cloudRoutineTriggerOfFile(file({ trigger: { when: "file-change", watch: "notes", match: "subtree" } })),
+		).toBeNull();
+	});
+});
+
+describe("what a member's editor makes, as a file's trigger", () => {
+	it("maps every N minutes and days at a time, and nothing else", () => {
+		expect(routineFileTrigger({ id: "t", kind: "schedule", intervalMinutes: 45 })).toEqual({
+			trigger: { when: "every", minutes: 45, starts: null },
+			timezone: null,
+		});
+		expect(
+			routineFileTrigger({
+				id: "t",
+				kind: "schedule",
+				intervalMinutes: 1440,
+				weekdays: ["sunday", "wednesday"],
+				localTime: "07:15",
+				timeZone: "America/New_York",
+				startAt: "2026-10-08T11:15:00.000Z",
+			}),
+		).toEqual({
+			trigger: { when: "weekly", days: ["sun", "wed"], time: "07:15", starts: "2026-10-08T11:15:00Z" },
+			timezone: "America/New_York",
+		});
+		expect(
+			routineFileTrigger({
+				id: "t",
+				kind: "schedule",
+				intervalMinutes: 60,
+				windowStart: "08:00",
+				windowEnd: "17:00",
+				timeZone: "UTC",
+			}),
+		).toBeNull();
+		expect(routineFileTrigger({ id: "t", kind: "once", at: "2026-10-05T07:00:00Z", timeZone: "UTC" })).toBeNull();
+		expect(
+			routineFileTrigger({
+				id: "t",
+				kind: "listener",
+				source: "company-file",
+				path: "notes",
+				match: "exact",
+				timeZone: "UTC",
+			}),
+		).toBeNull();
+		expect(routineFileTrigger({ id: "t", kind: "schedule", intervalMinutes: 45, startAt: "not a time" })).toBeNull();
+	});
+});
+
+describe("the settings an edit changes", () => {
+	it("is empty when the edit changes nothing, so nothing is written", () => {
+		const before = file({ trigger: { when: "every", minutes: 30, starts: "2026-10-04T08:00:00Z" } });
+		expect(
+			routineFileSettings(before, {
+				title: before.title,
+				trigger: before.trigger,
+				timezone: null,
+				reply: before.reply,
+			}),
+		).toEqual({});
+		// A start the index spells to the millisecond is the same start.
+		const mapped = routineFileTrigger({
+			id: "file",
+			kind: "schedule",
+			intervalMinutes: 30,
+			startAt: "2026-10-04T08:00:00.000Z",
+		})!;
+		expect(routineFileSettings(before, { title: before.title, ...mapped, reply: before.reply })).toEqual({});
+	});
+
+	it("rewrites only what changed, and the file reads back as the edit", () => {
+		const before = file({
+			quiet: { start: "22:00", end: "06:00", timezone: "Europe/Copenhagen" },
+			timezone: "Europe/Copenhagen",
+		});
+		const source = `${text(before).replace("---\n", "---\n# kept note\n")}`;
+		const edit = {
+			title: "Inbox, mornings",
+			trigger: { when: "weekly", days: ["mon", "tue"], time: "08:30", starts: null } as const,
+			timezone: "Europe/Copenhagen",
+			reply: "silent" as const,
+		};
+		const changes = routineFileSettings(parse(source), edit);
+		expect(changes).toEqual({
+			title: "Inbox, mornings",
+			when: "weekly",
+			minutes: null,
+			days: ["mon", "tue"],
+			time: "08:30",
+			reply: "silent",
+		});
+		const after = setCompanyStateSettings(source, changes);
+		expect(after).toContain("# kept note");
+		const read = parse(after);
+		expect(read.title).toBe(edit.title);
+		expect(read.trigger).toEqual(edit.trigger);
+		expect(read.timezone).toBe("Europe/Copenhagen");
+		expect(read.reply).toBe("silent");
+		expect(read.quiet).toEqual(before.quiet);
+		expect(read.effort).toBe(before.effort);
+		expect(read.instructions).toBe(before.instructions);
+	});
+
+	it("keeps the time zone when an edit moves to every N minutes, and removes a let-go start", () => {
+		const before = file({
+			trigger: { when: "weekly", days: ["mon"], time: "09:00", starts: "2026-10-05T07:00:00Z" },
+			timezone: "Europe/Copenhagen",
+		});
+		const changes = routineFileSettings(before, {
+			title: before.title,
+			trigger: { when: "every", minutes: 90, starts: null },
+			timezone: null,
+			reply: before.reply,
+		});
+		expect(changes).toEqual({ when: "every", minutes: 90, starts: null, days: null, time: null });
+		const read = parse(setCompanyStateSettings(text(before), changes));
+		expect(read.trigger).toEqual({ when: "every", minutes: 90, starts: null });
+		expect(read.timezone).toBe("Europe/Copenhagen");
+	});
+});
