@@ -36,8 +36,8 @@ declare one constant uuid := '84100000-0000-4000-8000-000000000101'; v_first tex
 begin
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', format($q$select public.qorpera_folder_cancel_agent_worker(%L, %L)::text$q$,
-		current_setting('qorpera_test.binding'), jsonb_build_object('action','cancel','workerKey','worker',
-			'todoPath','agents/ada/todos/race-one.md'))) as t(r text);
+		current_setting('qorpera_test.binding'), jsonb_build_object('folder','agents/ada/todos/race-one/worker',
+			'operationKey','f2b3-cancel-0001'))) as t(r text);
 	perform dblink_send_query('fence_two', current_setting('qorpera_test.drain'));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The drain must wait for the cancel at the worker'; end if;
 	perform dblink_send_query('fence_three', current_setting('qorpera_test.drain'));
