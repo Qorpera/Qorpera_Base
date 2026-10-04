@@ -3,8 +3,9 @@
 -- computer and the provider brings it up; once her turn has ended, the company is due (not while paused) and the
 -- per-company drain delivers one queued office-activation wake, waiting behind a folder stop and a member change while
 -- holding neither the waiter nor the admission; the wake's authority is plain reads and follows the computer; the woken
--- run is not refused for its kind; a failed start's waiter is cancelled. Folder-v2 only (the founder's decision of
--- 3 October). 648's committed fixture; everything is removed at the end.
+-- run is not refused for its kind; a held lock answers busy; two drains deliver once; a pause or a cancelled wake
+-- leaves the waiter waiting; an unauthorized or failed start's waiter is cancelled. Folder-v2 only (the founder's
+-- decision of 3 October). 648's committed fixture; everything is removed at the end.
 
 -- A session holds a row and waits; the fences' helpers, as 850's.
 create function pg_temp.hold(p_sql text) returns void language plpgsql as $$
@@ -167,6 +168,22 @@ $$;
 create function pg_temp.sql_drain() returns text language sql as $$
 	select format('select public.qorpera_folder_office_wakes_company(%L, 16)::text', '64800000-0000-4000-8000-000000000020')
 $$;
+-- Ada's waiter waiting again, and her office wakes gone.
+create function pg_temp.reset_waiter() returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_runtime_office_start_waiters set state = 'waiting', occurrence_id = null
+	where parent_run_id = '64800000-0000-4000-8000-0000000000f1';
+	delete from public.qorpera_wake_occurrences where source_kind = 'office-activation'
+		and parent_run_id = '64800000-0000-4000-8000-0000000000f1';
+end $$;
+create function pg_temp.wakes() returns bigint language sql as $$
+	select count(*) from public.qorpera_wake_occurrences where source_kind = 'office-activation'
+		and parent_run_id = '64800000-0000-4000-8000-0000000000f1'
+$$;
+create function pg_temp.due() returns boolean language sql as $$
+	select public.qorpera_folder_office_wakes_due(null, 100) -> 'items' @> '[{"environment_id": "64800000-0000-4000-8000-000000000020"}]'
+$$;
 
 -- Ada starts the company's computer and the provider brings it up: Ada's start (890's recipe), then the provider's
 -- reservation, preparation, readiness and activation (894's chain). Ada's turn then ends: her start's waiter waits for
@@ -208,7 +225,8 @@ begin
 	if (pg_temp.waiter()).state is distinct from 'waiting' then raise exception 'Setup: Ada''s start waits for its computer'; end if;
 end $$;
 
--- A. Nothing is due while Ada's turn runs; once it has ended the company is due, unless it is paused.
+-- A. Nothing is due while Ada's turn runs; once it has ended the company is due, unless it is paused or being deleted,
+--    or its computer is not up. A page that is not full has no next cursor; a full one names its last company.
 do $$
 declare v_due jsonb := public.qorpera_folder_office_wakes_due(null, 100);
 begin
@@ -227,6 +245,15 @@ declare v_due jsonb := public.qorpera_folder_office_wakes_due(null, 100);
 begin
 	if not v_due -> 'items' @> '[{"environment_id": "64800000-0000-4000-8000-000000000020"}]' then
 		raise exception 'A: the company is due once the turn has ended: %', v_due; end if;
+	if v_due -> 'has_more' <> 'false' or v_due -> 'next_after_environment_id' <> 'null' then
+		raise exception 'A: a page that is not full has no next cursor: %', v_due; end if;
+	v_due := public.qorpera_folder_office_wakes_due(null, 1);
+	if v_due <> jsonb_build_object('items', '[{"environment_id": "64800000-0000-4000-8000-000000000020"}]'::jsonb,
+			'has_more', true, 'next_after_environment_id', '64800000-0000-4000-8000-000000000020') then
+		raise exception 'A: a full page names its last company: %', v_due; end if;
+	if public.qorpera_folder_office_wakes_due('64800000-0000-4000-8000-000000000020', 100)
+			<> '{"items": [], "has_more": false, "next_after_environment_id": null}'::jsonb then
+		raise exception 'A: nothing after the last company'; end if;
 	set local session_replication_role = replica;
 	insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id)
 	values ('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000001');
@@ -234,6 +261,15 @@ begin
 		or public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16) ->> 'state' <> 'paused'
 		or (pg_temp.waiter()).state <> 'waiting' then raise exception 'A: a paused company is left alone'; end if;
 	delete from public.qorpera_company_execution_pauses where profile_id = '64800000-0000-4000-8000-000000000010';
+	insert into public.qorpera_company_deletions(profile_id) values ('64800000-0000-4000-8000-000000000010');
+	if pg_temp.due() or public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16) ->> 'state' <> 'deleting'
+		or (pg_temp.waiter()).state <> 'waiting' then raise exception 'A: a company being deleted is left alone'; end if;
+	delete from public.qorpera_company_deletions where profile_id = '64800000-0000-4000-8000-000000000010';
+	update public.qorpera_runtime_offices set state = 'maintenance' where id = current_setting('qorpera_test.office_id')::uuid;
+	if pg_temp.due() or public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16) ->> 'state' <> 'idle'
+		or (pg_temp.waiter()).state <> 'waiting' then raise exception 'A: a waiter whose computer is not up is not due yet'; end if;
+	update public.qorpera_runtime_offices set state = 'active' where id = current_setting('qorpera_test.office_id')::uuid;
+	if not pg_temp.due() then raise exception 'A: due again once the computer is up'; end if;
 end $$;
 
 -- B. The drain waits behind a folder stop at the fence, and behind a member change at the start's requester, holding
@@ -243,8 +279,10 @@ select pg_temp.hold($q$select 1 from public.qorpera_folder_fences where profile_
 select dblink_send_query('fence_three', pg_temp.sql_drain());
 do $$
 begin
-	if not pg_temp.waits_at('fence_three', 'public.qorpera_folder_fences') or not pg_temp.waiter_free() then
-		perform pg_temp.release(); raise exception 'B: the drain must wait at the fence holding no waiter'; end if;
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_folder_fences') or not pg_temp.waiter_free()
+		or not pg_temp.row_free($q$select 1 from public.qorpera_folder_admissions
+			where profile_id = '64800000-0000-4000-8000-000000000010' for update$q$) then
+		perform pg_temp.release(); raise exception 'B: the drain must wait at the fence holding no waiter and no admission'; end if;
 end $$;
 select pg_temp.release();
 select pg_temp.outcome('fence_three');
@@ -271,7 +309,9 @@ begin
 	if v_answer !~ '"state": "drained"' or v_answer !~ '"delivered": 1' then raise exception 'B: the drain delivers the wake: %', v_answer; end if;
 	select * into strict v_wake from public.qorpera_wake_occurrences where id = (pg_temp.waiter()).occurrence_id;
 	if v_wake.status <> 'queued' or v_wake.source_kind <> 'office-activation' or v_wake.parent_run_id <> '64800000-0000-4000-8000-0000000000f1'
-		or v_wake.staff_agent_id <> '64800000-0000-4000-8000-0000000000a1' or (pg_temp.waiter()).state <> 'delivered' then
+		or v_wake.staff_agent_id <> '64800000-0000-4000-8000-0000000000a1' or (pg_temp.waiter()).state <> 'delivered'
+		or v_wake.scheduled_for is distinct from (select activated_at from public.qorpera_runtime_office_activations
+			where intent_id = current_setting('qorpera_test.intent')::uuid and superseded_at is null) then
 		raise exception 'B: the wake is queued for Ada and the waiter delivered: %', row_to_json(v_wake); end if;
 	perform set_config('qorpera_test.wake', v_wake.id::text, false);
 	-- A second drain finds nothing to do.
@@ -340,6 +380,125 @@ delete from public.qorpera_execution_runs where id = '89200000-0000-4000-8000-00
 delete from public.qorpera_runner_jobs where id = '89200000-0000-4000-8000-0000000000c2';
 set session_replication_role = origin;
 
+-- H. A lock held past the drain's 2 s budget answers busy, and changes nothing.
+select pg_temp.reset_waiter();
+select pg_temp.hold($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+	for update$q$);
+do $$
+declare v_answer text := pg_temp.settled('fence_three', pg_temp.sql_drain());
+begin
+	perform pg_temp.release();
+	if v_answer is distinct from '{"state": "busy"}' or (pg_temp.waiter()).state <> 'waiting' or pg_temp.wakes() <> 0 then
+		raise exception 'H: a held fence answers busy: %', v_answer; end if;
+end $$;
+
+-- I. Two drains at once: the second skips the waiter the first holds instead of waiting for it, and one wake comes.
+select dblink_exec('fence_one', 'begin');
+select set_config('qorpera_test.first_drain', (select r from dblink('fence_one', pg_temp.sql_drain()) as t(r text)), false);
+do $$
+declare v_answer text := pg_temp.settled('fence_three', pg_temp.sql_drain());
+begin
+	perform pg_temp.release();
+	if v_answer is distinct from '{"state": "idle"}' or current_setting('qorpera_test.first_drain') !~ '"delivered": 1'
+		or pg_temp.wakes() <> 1 or (pg_temp.waiter()).state <> 'delivered' then
+		raise exception 'I: the second drain skips the held waiter: % then %', current_setting('qorpera_test.first_drain'), v_answer; end if;
+end $$;
+
+-- J. The drain takes the admission after the waiters, and no computer row: with the admission row held it waits there
+--    holding the waiter, and the computer stays free. A stop's pause that commits meanwhile (its first phase does not
+--    wait for the fence) leaves the waiter waiting, skipped, not cancelled; after the pause it is delivered.
+select pg_temp.reset_waiter();
+select pg_temp.hold($q$select 1 from public.qorpera_folder_admissions where profile_id = '64800000-0000-4000-8000-000000000010'
+	for update$q$);
+select dblink_send_query('fence_three', pg_temp.sql_drain());
+do $$
+begin
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_folder_admissions') or pg_temp.waiter_free() or not pg_temp.office_free() then
+		perform pg_temp.release(); raise exception 'J: the drain waits at the admission holding the waiter and no computer'; end if;
+	set local session_replication_role = replica;
+	insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id)
+	values ('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000001');
+end $$;
+select pg_temp.release();
+do $$
+declare v_answer text := pg_temp.answer('fence_three');
+begin
+	if v_answer !~ '"skipped": 1' or v_answer !~ '"cancelled": 0' or (pg_temp.waiter()).state <> 'waiting' or pg_temp.wakes() <> 0 then
+		raise exception 'J: a pause that lands during the drain leaves the waiter waiting: %', v_answer; end if;
+	set local session_replication_role = replica;
+	delete from public.qorpera_company_execution_pauses where profile_id = '64800000-0000-4000-8000-000000000010';
+end $$;
+do $$
+begin
+	if public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16) ->> 'delivered' <> '1' then
+		raise exception 'J: after the pause the waiter is delivered'; end if;
+end $$;
+
+-- K. A wake the pin cancels (a pause landing inside the insert; here a test trigger after the pin) is undone: the waiter
+--    waits, no row keeps its key, and the next pass delivers it.
+select pg_temp.reset_waiter();
+create function public.qorpera_test_892_cancel() returns trigger language plpgsql as $$
+begin
+	if new.source_kind = 'office-activation' then
+		new.status := 'cancelled'; new.finished_at := clock_timestamp(); new.blocked_reason := 'Company execution is paused';
+	end if;
+	return new;
+end $$;
+create trigger qorpera_wake_occurrence_zz_892 before insert on public.qorpera_wake_occurrences
+	for each row execute function public.qorpera_test_892_cancel();
+do $$
+declare v_answer jsonb := public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16);
+begin
+	if v_answer ->> 'skipped' is distinct from '1' or (pg_temp.waiter()).state <> 'waiting' or pg_temp.wakes() <> 0 then
+		raise exception 'K: a cancelled wake is undone: %', v_answer; end if;
+end $$;
+drop trigger qorpera_wake_occurrence_zz_892 on public.qorpera_wake_occurrences;
+drop function public.qorpera_test_892_cancel();
+do $$
+begin
+	if public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16) ->> 'delivered' is distinct from '1' then
+		raise exception 'K: the next pass delivers the waiter'; end if;
+end $$;
+
+-- L. A waiter whose authority is gone (the agent's access to the computer was revoked) is cancelled, not woken.
+select pg_temp.reset_waiter();
+set session_replication_role = replica;
+update public.qorpera_runtime_office_access set state = 'revoked'
+where office_id = current_setting('qorpera_test.office_id')::uuid and staff_agent_id = '64800000-0000-4000-8000-0000000000a1';
+set session_replication_role = origin;
+do $$
+declare v_answer jsonb := public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16);
+begin
+	if v_answer ->> 'cancelled' is distinct from '1' or (pg_temp.waiter()).state <> 'cancelled' or pg_temp.wakes() <> 0 then
+		raise exception 'L: an unauthorized waiter is cancelled: %', v_answer; end if;
+end $$;
+set session_replication_role = replica;
+update public.qorpera_runtime_office_access set state = 'active'
+where office_id = current_setting('qorpera_test.office_id')::uuid and staff_agent_id = '64800000-0000-4000-8000-0000000000a1';
+set session_replication_role = origin;
+
+-- M. The drain locks no computer: with the computer held FOR UPDATE (a screen heartbeat) it delivers at once.
+select pg_temp.reset_waiter();
+select pg_temp.hold(format('select 1 from public.qorpera_runtime_offices where id = %L for update', current_setting('qorpera_test.office_id')));
+do $$
+declare v_answer text := pg_temp.settled('fence_three', pg_temp.sql_drain());
+begin
+	perform pg_temp.release();
+	if v_answer !~ '"delivered": 1' then raise exception 'M: the drain delivers beside a held computer: %', v_answer; end if;
+end $$;
+
+-- N. The admission held past the budget, after the waiters are locked, also answers busy and leaves the waiter waiting.
+select pg_temp.reset_waiter();
+select pg_temp.hold($q$select 1 from public.qorpera_folder_admissions where profile_id = '64800000-0000-4000-8000-000000000010'
+	for update$q$);
+do $$
+declare v_answer text := pg_temp.settled('fence_three', pg_temp.sql_drain());
+begin
+	perform pg_temp.release();
+	if v_answer is distinct from '{"state": "busy"}' or (pg_temp.waiter()).state <> 'waiting' or pg_temp.wakes() <> 0 then
+		raise exception 'N: a held admission answers busy: %', v_answer; end if;
+end $$;
+
 -- E. A start whose turn failed is cancelled, not woken.
 set session_replication_role = replica;
 update public.qorpera_runtime_office_start_waiters set state = 'waiting', occurrence_id = null
@@ -358,7 +517,7 @@ begin
 		raise exception 'E: a failed start''s waiter is cancelled: %', v_answer; end if;
 end $$;
 
--- F. Only the service role drains, and a malformed page or company limit is refused.
+-- F. Only the service role lists and drains, and a malformed page or company limit is refused.
 do $$
 begin
 	begin
@@ -368,13 +527,19 @@ begin
 	exception when insufficient_privilege then null;
 	end;
 	begin
+		set local request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}';
+		perform public.qorpera_folder_office_wakes_due(null, 100);
+		raise exception 'F: a member cannot list the due companies' using errcode = 'QTF01';
+	exception when insufficient_privilege then null;
+	end;
+	begin
 		perform public.qorpera_folder_office_wakes_due(null, 501);
 		raise exception 'F: a page over 500 is refused' using errcode = 'QTF01';
 	exception when invalid_parameter_value then null;
 	end;
 	begin
-		perform public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 65);
-		raise exception 'F: a company limit over 64 is refused' using errcode = 'QTF01';
+		perform public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 41);
+		raise exception 'F: a company limit over 40 is refused' using errcode = 'QTF01';
 	exception when invalid_parameter_value then null;
 	end;
 end $$;
@@ -382,8 +547,8 @@ end $$;
 -- G. Exactly the patched functions and the new ones name this migration.
 do $$
 begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930030100') <> 7 then
-		raise exception 'G: 4 patched functions and 3 new ones name 20260930030100 (found %)',
+	if (select count(*) from pg_proc where prosrc ~ '20260930030100') <> 8 then
+		raise exception 'G: 4 patched functions and 4 new ones name 20260930030100 (found %)',
 			(select count(*) from pg_proc where prosrc ~ '20260930030100'); end if;
 end $$;
 

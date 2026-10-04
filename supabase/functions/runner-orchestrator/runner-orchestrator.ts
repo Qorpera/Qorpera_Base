@@ -13,7 +13,7 @@ export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; comp
 	office_wakes: Object.freeze({
 		due: "qorpera_folder_office_wakes_due",
 		company: "qorpera_folder_office_wakes_company",
-		maximum: 64,
+		maximum: 40,
 	}),
 });
 

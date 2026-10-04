@@ -6,18 +6,21 @@
 -- Folder-v2 only (the founder's decision of 3 October): each patch is a folder-v2 branch or removes a folder-v2 refusal;
 -- the statement that was there before stays untouched in its else.
 -- * The drain: qorpera_folder_office_wakes_due and qorpera_folder_office_wakes_company, a pair in the shared
---   folder-drains step's shape (P29a, RUNTIME-COMPANY-FOLDER-LISTENER.md §9). One company per request, in its own
---   transaction: the waiters' requesters, agents and execution authorities KEY SHARE behind the folder fence and the
---   company row (folder_company_enter), the waiters FOR UPDATE SKIP LOCKED, the admission, then the wakes. No computer
---   row is locked: the wake's authority is read again at materialization and on every tool call of the woken run. Since
---   P28a nothing calls the old drain (qorpera_drain_office_activation_wakes), which stays for the legacy removal.
+--   folder-drains step's shape (P29a, RUNTIME-COMPANY-FOLDER-LISTENER.md §9). A waiter is due once its start's turn has
+--   ended and it can be delivered or must be cancelled (qorpera_folder_office_waiter_due). One company per request, in
+--   its own transaction with a 2 s lock budget: the waiters' requesters, agents and execution authorities KEY SHARE
+--   behind the folder fence and the company row (folder_company_enter), the waiters FOR UPDATE SKIP LOCKED, the
+--   admission, then the wakes. A pause seen at any point leaves the waiter waiting. No computer row is locked: the wake's
+--   authority is read again at materialization and on every tool call of the woken run. Since P28a nothing calls the
+--   old drain (qorpera_drain_office_activation_wakes), which stays for the legacy removal.
 -- * qorpera_folder_office_waiter_authorized(waiter): the waiter's authority as plain reads. qorpera_office_waiter_authorized
 --   answers it on folder-v2 instead of taking the company row and every row NOWAIT, which would turn a screen heartbeat
 --   (the computer FOR UPDATE) into a refused tool call of the woken run.
 -- * The 'office-activation' source leaves the folder-v2 refusal lists of qorpera_pin_wake_occurrence (0A000),
 --   qorpera_folder_wake_authorized and qorpera_folder_run_resolve (0A000); qorpera_folder_wake_authorized checks an
---   office-activation wake's ancestry. Each removal anchors on its own token only, so P29's 'company-file' and 3i-b's
---   'machine-event' edits apply in either order (whichever would empty a list drops the whole check).
+--   office-activation wake's ancestry. Each list is found by its own opening and its own raise or return; only the
+--   'office-activation' token and its comma go, and a list left empty drops its whole statement. So 3i-b's
+--   'machine-event' edit of the same lists (S3, 20260930058000) applies cleanly in either order.
 --
 -- Each patched function and new function names this migration (20260930030100) in its body, for the deploy guard.
 
@@ -105,35 +108,90 @@ end $$;
 
 -- 2. The wake source on folder-v2 --------------------------------------------------------------------------------------
 
+-- Removes 'office-activation' from the one source list that p_head opens and ')' || p_tail closes, keeping every other
+-- token and its spacing, with a marker line before the statement. A list left empty drops its whole statement, which
+-- p_statement says p_head and p_tail are.
+create function pg_temp.c1c3l2_drop_source(p_target regprocedure, p_indent text, p_head text, p_tail text,
+	p_statement boolean) returns void
+language plpgsql as $$
+declare
+	v_definition text := pg_get_functiondef(p_target);
+	v_at integer; v_list text; v_kept text; v_token text;
+	v_marker text := p_indent || '-- C1c-3l (20260930030100): office-activation serves folder-v2.' || E'\n';
+begin
+	if (length(v_definition) - length(replace(v_definition, p_head, ''))) / length(p_head) <> 1 then
+		raise exception 'C1c-3l part 2: the source list is not found once in %', p_target; end if;
+	v_at := strpos(v_definition, p_head) + length(p_head);
+	v_list := substr(v_definition, v_at, strpos(substr(v_definition, v_at), ')') - 1);
+	if substr(v_definition, v_at + length(v_list), 1 + length(p_tail)) is distinct from ')' || p_tail then
+		raise exception 'C1c-3l part 2: the source list of % ends unexpectedly', p_target; end if;
+	foreach v_token in array array[$t$'office-activation', $t$, $t$'office-activation',$t$, $t$, 'office-activation'$t$,
+		$t$,'office-activation'$t$, $t$'office-activation'$t$] loop
+		if (length(v_list) - length(replace(v_list, v_token, ''))) / length(v_token) = 1 then
+			v_kept := replace(v_list, v_token, ''); exit; end if;
+	end loop;
+	if v_kept is null then raise exception 'C1c-3l part 2: office-activation is not once in the list of %', p_target; end if;
+	if btrim(v_kept) = '' and not p_statement then
+		raise exception 'C1c-3l part 2: the list of % would be empty', p_target; end if;
+	execute replace(v_definition, p_head || v_list || ')' || p_tail,
+		v_marker || case when btrim(v_kept) = '' then '' else p_head || v_kept || ')' || p_tail end);
+end $$;
+
 do $$
 begin
-	-- The pin's folder-v2 refusal list: this source leaves it (its own token only).
-	perform pg_temp.c1c3l2_replace('public.qorpera_pin_wake_occurrence()',
-		E'''office-activation'', ',
-		E'/* C1c-3l 20260930030100: office-activation serves folder-v2 */ ', 1);
+	-- The pin's folder-v2 refusal list.
+	perform pg_temp.c1c3l2_drop_source('public.qorpera_pin_wake_occurrence()', E'\t\t', E'\t\tif new.source_kind in (',
+		E' then\n\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n',
+		true);
 	-- The folder wake check: the source leaves the refused list, and its ancestry is checked as the agent sources' are.
-	perform pg_temp.c1c3l2_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)',
-		E'''office-activation'',',
-		E'/* C1c-3l 20260930030100 */', 1);
+	perform pg_temp.c1c3l2_drop_source('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', E'\t\t',
+		E'\t\tor p_wake.source_kind in (', E' then return false; end if;\n', false);
 	perform pg_temp.c1c3l2_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)',
 		E'\t\telse return false; end if;\n',
 		E'\t\telsif p_wake.source_kind = ''office-activation'' then\n'
 		|| E'\t\t\tv_ancestry := public.qorpera_office_activation_wake_ancestry(p_wake); /* C1c-3l 20260930030100 */\n'
 		|| E'\t\telse return false; end if;\n', 1);
 	-- The run resolve: a run woken by its computer coming up runs.
-	perform pg_temp.c1c3l2_replace('public.qorpera_folder_run_resolve(uuid,uuid,jsonb)',
-		E'''office-activation'',',
-		E'/* C1c-3l 20260930030100 */', 1);
+	perform pg_temp.c1c3l2_drop_source('public.qorpera_folder_run_resolve(uuid,uuid,jsonb)', E'\t', E'\tif v_wake.source_kind in (',
+		E' then\n\t\traise exception ''Folder writes by this kind of run are not available yet'' using errcode = ''0A000''; end if;\n',
+		true);
 end $$;
 
+drop function pg_temp.c1c3l2_drop_source(regprocedure, text, text, text, boolean);
+
 -- 3. The drain ----------------------------------------------------------------------------------------------------------
+
+-- Plain reads: a waiting waiter whose start's turn has ended, which the drain can deliver (its computer is up under the
+-- start's activation) or must cancel (the turn failed or was cancelled, the start is gone or cancelled, or the computer
+-- was replaced). A waiter whose computer is still coming up waits for a later pass, so the due list does not name its
+-- company on every pass.
+create function public.qorpera_folder_office_waiter_due(p_waiter public.qorpera_runtime_office_start_waiters)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- C1c-3l (20260930030100)
+	select p_waiter.state = 'waiting' and exists (
+		select 1 from public.qorpera_execution_runs as parent
+		join public.qorpera_runner_jobs as job on job.id = parent.job_id
+		left join public.qorpera_runtime_office_start_intents as intent on intent.id = p_waiter.intent_id
+		where parent.id = p_waiter.parent_run_id
+			and (job.status in ('failed', 'cancelled')
+				or (job.status = 'completed' and (intent.id is null or intent.state = 'cancelled'
+					or not exists (select 1 from public.qorpera_runtime_offices as office where office.id = intent.office_id
+						and office.generation = intent.computer_generation)
+					or (exists (select 1 from public.qorpera_runtime_offices as office where office.id = intent.office_id
+							and office.state = 'active')
+						and exists (select 1 from public.qorpera_runtime_office_activations as activation
+							where activation.intent_id = intent.id and activation.state = 'active' and activation.superseded_at is null))))))
+$$;
+revoke all on function public.qorpera_folder_office_waiter_due(public.qorpera_runtime_office_start_waiters)
+	from public, anon, authenticated, service_role;
 
 create function public.qorpera_folder_office_wakes_due(p_after_environment uuid default null, p_limit integer default 100)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_items jsonb; v_next uuid; v_count integer;
 begin
-	-- C1c-3l (20260930030100): the folder-v2 companies with a waiting waiter whose start's run has ended, in the shared
-	-- folder-drains step's shape (P29a). Paused and deleting companies are left out: the drain does nothing for them.
+	-- C1c-3l (20260930030100): the folder-v2 companies with a due waiter, in the shared folder-drains step's shape (P29a):
+	-- has_more when the page is full, and then the next cursor, else none. Paused and deleting companies are left out:
+	-- the drain does nothing for them.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Office wake admission requires control-plane authority' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 500 then
@@ -141,10 +199,9 @@ begin
 	with page as (
 		select distinct file.environment_id from public.qorpera_runtime_office_start_waiters as waiter
 		join public.qorpera_execution_runs as parent on parent.id = waiter.parent_run_id
-		join public.qorpera_runner_jobs as job on job.id = parent.job_id
 		join public.qorpera_company_files as file on file.profile_id = parent.profile_id and file.environment_id = parent.environment_id
 			and file.core = 'folder-v2'
-		where waiter.state = 'waiting' and job.status in ('completed', 'failed', 'cancelled')
+		where waiter.state = 'waiting' and public.qorpera_folder_office_waiter_due(waiter)
 			and (p_after_environment is null or file.environment_id > p_after_environment)
 			and not public.qorpera_company_execution_paused(parent.profile_id)
 			and not public.qorpera_company_deleting(parent.profile_id)
@@ -155,13 +212,13 @@ begin
 		max(environment_id::text)::uuid, count(*)
 	into v_items, v_next, v_count from page;
 	return jsonb_build_object('items', v_items, 'has_more', v_count = p_limit,
-		'next_after_environment_id', case when v_count > 0 then v_next end);
+		'next_after_environment_id', case when v_count = p_limit then v_next end);
 end $$;
 revoke all on function public.qorpera_folder_office_wakes_due(uuid, integer) from public, anon, authenticated;
 grant execute on function public.qorpera_folder_office_wakes_due(uuid, integer) to service_role;
 
 create function public.qorpera_folder_office_wakes_company(p_environment_id uuid, p_limit integer default 16)
-returns jsonb language plpgsql security definer set search_path = '' as $$
+returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
 declare
 	v_profile uuid; v_ids uuid[]; v_targets jsonb; v_locked uuid[];
 	v_waiter public.qorpera_runtime_office_start_waiters%rowtype; v_parent public.qorpera_execution_runs%rowtype;
@@ -169,10 +226,11 @@ declare
 	v_wake public.qorpera_wake_occurrences%rowtype;
 	v_delivered integer := 0; v_cancelled integer := 0; v_skipped integer := 0;
 begin
-	-- C1c-3l (20260930030100): one company's waiting office-activation waiters, in its own transaction.
+	-- C1c-3l (20260930030100): one company's due office-activation waiters, in its own transaction. A lock held past the
+	-- 2 s budget answers busy. At most 40 waiters: each writes in its own subtransaction, under core §3's budget of 64.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Office wake admission requires control-plane authority' using errcode = '42501'; end if;
-	if p_environment_id is null or p_limit is null or p_limit not between 1 and 64 then
+	if p_environment_id is null or p_limit is null or p_limit not between 1 and 40 then
 		raise exception 'Office wake admission is invalid' using errcode = '22023'; end if;
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id and core = 'folder-v2';
 	if not found then return jsonb_build_object('state', 'not_folder'); end if;
@@ -183,8 +241,7 @@ begin
 	from (select waiter.* from public.qorpera_runtime_office_start_waiters as waiter
 		join public.qorpera_execution_runs as parent on parent.id = waiter.parent_run_id
 			and parent.profile_id = v_profile and parent.environment_id = p_environment_id
-		join public.qorpera_runner_jobs as job on job.id = parent.job_id and job.status in ('completed', 'failed', 'cancelled')
-		where waiter.state = 'waiting'
+		where waiter.state = 'waiting' and public.qorpera_folder_office_waiter_due(waiter)
 		order by waiter.scanned_at, waiter.created_at, waiter.id limit p_limit) as waiter;
 	if cardinality(v_ids) = 0 then return jsonb_build_object('state', 'idle'); end if;
 	-- Ranks 1 to 3: the starts' requesters, agents and their execution authorities KEY SHARE (as the materializer).
@@ -202,8 +259,11 @@ begin
 		-- The fence KEY SHARE with the pause read again, the company row KEY SHARE, then ranks 1 to 3.
 		begin
 			perform public.qorpera_folder_company_enter(p_environment_id, v_profile, v_targets, true);
-		exception when sqlstate '55000' then
-			return jsonb_build_object('state', 'paused');
+		exception
+			-- A lock past the budget (55P03) is busy; only the pause itself (55000) is paused. Order matters: a
+			-- class code such as '55000' also matches every code of its class.
+			when lock_not_available then return jsonb_build_object('state', 'busy');
+			when sqlstate '55000' then return jsonb_build_object('state', 'paused');
 		end;
 		-- The waiters (still waiting), each once: a second drain of the company skips them.
 		select coalesce(array_agg(id order by id), '{}') into v_locked from (
@@ -227,13 +287,18 @@ begin
 				update public.qorpera_runtime_office_start_waiters set state = 'cancelled' where id = v_waiter.id;
 				v_cancelled := v_cancelled + 1; continue;
 			end if;
+			-- A computer not up yet, or a pause that committed since the fence (a stop's first phase does not wait for
+			-- it), leaves the waiter waiting for a later pass, as the old drain does.
 			if v_job_status <> 'completed'
 				or not exists (select 1 from public.qorpera_runtime_offices where id = v_intent.office_id and state = 'active')
 				or not exists (select 1 from public.qorpera_runtime_office_activations where intent_id = v_intent.id
-					and state = 'active' and superseded_at is null) then
+					and state = 'active' and superseded_at is null)
+				or public.qorpera_company_execution_paused(v_profile) then
 				v_skipped := v_skipped + 1; continue;
 			end if;
 			if not public.qorpera_folder_office_waiter_authorized(v_waiter) then
+				-- The check also fails on a pause; one that committed in between is not a cancellation.
+				if public.qorpera_company_execution_paused(v_profile) then v_skipped := v_skipped + 1; continue; end if;
 				update public.qorpera_runtime_office_start_waiters set state = 'cancelled' where id = v_waiter.id;
 				v_cancelled := v_cancelled + 1; continue;
 			end if;
@@ -246,10 +311,10 @@ begin
 				'office-activation:' || v_intent.id::text || ':' || v_parent.id::text, v_at, clock_timestamp(),
 				public.qorpera_office_activation_wake_payload(v_waiter))
 			returning * into v_wake;
-			-- A pause that committed meanwhile makes the pin cancel the wake: the waiter waits for the next pass.
+			-- A pause that committed meanwhile makes the pin cancel the wake. Undo it (the handler below rolls the insert
+			-- back and counts the waiter skipped), so the waiter waits for the next pass and its key stays free.
 			if v_wake.status is distinct from 'queued' then
-				v_skipped := v_skipped + 1; continue;
-			end if;
+				raise exception 'Company execution is paused' using errcode = '55000'; end if;
 			update public.qorpera_runtime_office_start_waiters set state = 'delivered', occurrence_id = v_wake.id where id = v_waiter.id;
 			v_delivered := v_delivered + 1;
 		exception
