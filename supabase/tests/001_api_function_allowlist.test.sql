@@ -240,7 +240,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_browser_profiles(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_browser_recovery(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_company_file_mode(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
-	('public.qorpera_member_company_state_folders(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only, readable files only (C4 P34a)'),
+	('public.qorpera_member_company_state_folders(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only, readable files only (C4 P34a, routines P34r)'),
 	('public.qorpera_member_file_export_source(uuid,jsonb)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_member_folder_changes(uuid,bigint,integer,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_history(uuid,bigint,integer)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
