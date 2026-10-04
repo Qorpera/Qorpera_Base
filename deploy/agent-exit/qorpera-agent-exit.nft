@@ -1,10 +1,10 @@
 # Qorpera agent exit (E1): the rules inside the exit's own network namespace, qexit. Agent road machines on the
 # bridge qagent0 reach the exit's br0 (10.210.0.1/16); the exit sends their traffic out of up0 from its own address.
 # It refuses our own networks and TCP port 25 at once, drops IPv6, foreign sources and invalid packets, bounds each
-# machine to 16,384 connections and the exit to 98,304 (decided 3 October), counts new connections and
-# refusals per machine, keeps each refused flow an hour
-# for the log, and answers names and DHCP itself (dnsmasq on 10.210.0.1). Plain DNS a machine sends elsewhere is
-# redirected to it.
+# machine to 16,384 open connections and the exit to 98,304 (decided 3 October), holds a closed agent connection 30
+# seconds instead of the kernel's 120 (the bounds do not count closed ones), counts new connections and refusals per
+# machine, keeps each refused flow an hour for the log, and answers names and DHCP itself (dnsmasq on 10.210.0.1).
+# Plain DNS a machine sends elsewhere is redirected to it.
 #
 # Load it with qorpera-agent-exit.sh, never with `nft -f` alone. The same file runs on every node. See README.md and
 # deploy/first-node/RUNTIME-AGENT-EXIT.md.
@@ -84,6 +84,21 @@ table inet qorpera_agent_exit {
 	}
 
 	counter dropped_invalid {
+	}
+
+	# Agent TCP connections: a closed one (TIME_WAIT) is kept 30 seconds, not the kernel's 120. The open-connection
+	# bounds do not count closed connections, so a machine that opens and closes fast would otherwise hold tens of
+	# thousands of entries, and the exit's shared source ports towards a site with them. Other states keep the
+	# defaults.
+	ct timeout agent_tcp {
+		protocol tcp
+		l3proto ip
+		policy = { time_wait : 30 }
+	}
+
+	chain timeouts {
+		type filter hook prerouting priority filter; policy accept;
+		iifname "br0" ip saddr 10.210.0.0/16 meta l4proto tcp ct state new ct timeout set "agent_tcp"
 	}
 
 	chain prerouting {

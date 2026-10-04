@@ -2,7 +2,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
-import { CompanyBootstrapProvisioner } from "./company-bootstrap.ts";
 import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
@@ -47,14 +46,8 @@ const memberAuthority = new SupabaseMemberCompanyAuthority({
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
 });
-const companyBootstrap = new CompanyBootstrapProvisioner({
-	workerId: process.env.QORPERA_COMPANY_BOOTSTRAP_WORKER_ID?.trim() || randomUUID(),
-	authority: memberAuthority,
-	store,
-	replication,
-	authorizeServiceDownload: (profileId, sha256) => authority.authorizeServiceDownload(profileId, sha256),
-	readLegacyObject: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
-});
+// The legacy company bootstrap (CompanyBootstrapProvisioner) no longer runs: new companies are created at the founding
+// table, on folder-v2, by the creation loop below. A legacy bootstrap job stays queued (lobby hardening, #776's review).
 // The vault's connection-file writer (P22b): off unless QORPERA_CONNECTION_FILE_WRITER=1; the coordinator turns it on.
 // Its own database client (its own circuit, so a slow commit never refuses members' file requests) and its own loop.
 const connectionFiles =
@@ -106,6 +99,13 @@ const handler = createObjectGatewayHandler({
 		secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
 		requestTimeoutMs: 15_000,
 	}),
+	// Their follow-up (F2's P15) on another client: a failing follow-up never opens the commits' circuit.
+	memberFolderFollowUps: new SupabaseMemberCompanyAuthority({
+		projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+		publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+		secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+		requestTimeoutMs: 3_000,
+	}),
 	memberObservations: new MemberCompanyObservations(),
 	memberClientOrigins: JSON.parse(process.env.QORPERA_MEMBER_CLIENT_ORIGINS ?? "[]"),
 	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),
@@ -142,7 +142,6 @@ if (process.argv[2] === "migrate") {
 					.then(() => folderGc.recover())
 					.then(() => replication.reconcile()),
 				readLeases?.prune(),
-				companyBootstrap.provisionOne(),
 			]);
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");

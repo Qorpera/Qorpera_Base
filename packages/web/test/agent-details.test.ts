@@ -403,7 +403,11 @@ describe("agent pages", () => {
 		const routines = {
 			list: vi.fn(async () => []),
 			runs: vi.fn(async () => []),
-			save: vi.fn(async () => {}),
+			files: vi.fn(async (): Promise<ReadonlySet<string>> => new Set()),
+			open: vi.fn(async () => {
+				throw new Error("No routine to open");
+			}),
+			save: vi.fn(async (): Promise<"saved" | "unchanged"> => "saved"),
 			setEnabled: vi.fn(async () => {}),
 		} satisfies WebRoutines;
 		const nativeSubscription = {

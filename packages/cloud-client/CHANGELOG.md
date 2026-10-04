@@ -7,6 +7,8 @@
 - `NativeSubscriptionControl.approveSessionTurnSponsorship` and its input type: a member can no longer ask another member to pay for a turn. `requestSessionTurn` refuses the `sponsorship_request` mode before any call; turn provenance still reads it on older requests.
 
 ### Added
+- `cloud-routine-file`: a routine file's trigger as the routine list reads it (`cloudRoutineTriggerOfFile`, the twin of the index's `qorpera_company_state_routine_trigger`), the file's trigger for what a member's editor makes (`routineFileTrigger`: every N minutes, days at a time) and the settings an edit changes (`routineFileSettings`, for `setCompanyStateSettings`; when the zone changes, quiet hours without a zone of their own keep the one they went by in `quiet_timezone`). `CloudMemberFolderClient.stateFolders()` reads routines' files too (`routines`, null where the cloud does not list them yet). Folder core C4, slice P34r.
+
 - `CloudMemberFolderClient.commit(operationKey, units)` sends a member's change set to the object gateway's member commit route and parses the core's answer unit by unit (`parseCloudMemberFolderCommit`); `stateFolders()` reads the live agents' and group chats' files the member may read (`parseCloudMemberCompanyStateFolders`). Folder core C4, slice P34a.
 
 - The folder hook's entry point for interface files (folder core P16, with F2; `RUNTIME-INTERFACES.md` §6.1): `parseInterfaceStateFile(path, text)` answers in `parseCompanyStateFile`'s shape for `interfaces/order.md`, `interfaces/<name>/interface.toml`, `tables/<name>/table.toml` and `tables/<name>/rows.csv` (kinds `interface-order`, `interface`, `table`, `table-rows`), and null for every other path. The kind comes from the path's shape, so a badly named folder is refused, never saved plain. `parseTableRowsText` reads a rows file without its definition (`TableRowsFile`: the header and each row's raw fields), which the database types against the definition at commit. `test/fixtures/interface-state.json` pins the answers for the SQL side. A table's key can no longer be a number, money or percent column, and a link's length counts code points. `test/fixtures/table-rows-typed.json` pins how rows are typed. `InterfaceProblemCode` gains the save check's codes `placement`, `main`, `owners`, `write` and `areas`.
@@ -87,6 +89,7 @@
 
 ### Changed
 
+- The seeded Co-Founder's `agent.md` has no colour (it was `blue`), so the web shows its native gold crown and a member can still pick blue for it.
 - `parseTableFile` reads a choice as the folder hook checks it (RUNTIME-INTERFACES.md §6.1 rule 1; F2's P16a): 1–60 code points rather than UTF-16 units, and a choice holding a direction character (U+202A–U+202E, U+2066–U+2069) or a broken character is refused. Before, such a `table.toml` passed the client and was refused at commit.
 - The worker brief and results parses (`WorkerBriefFile`, `WorkerResultsFile`) give their body's sections (F2-5b-1) in place of the whole body: `brief` and `report` are gone. Nothing wrote or read them yet.
 - `CloudRunnerJob.substrateVersionId` is optional: a folder-v2 run has no Company File substrate (folder core C3, P23).
