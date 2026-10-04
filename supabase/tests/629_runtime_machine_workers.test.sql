@@ -110,7 +110,7 @@ begin
 	perform public.qorpera_record_company_machine_commands((pg_temp.placement('shard-1')).id,'mx-a',
 		public.qorpera_company_machine_binding_text((pg_temp.placement('shard-1')).binding),repeat('c',64),
 		(pg_temp.placement('shard-1')).boot_id,
-		'[{"commandId":"30000000-0000-4000-8000-000000000601","state":"failed","exitCode":1,"outputTail":"1 failing"}]','[]',false);
+		'[{"commandId":"30000000-0000-4000-8000-000000000601","state":"failed","exitCode":1,"outputTail":"1 failing"}]',false);
 	v_status := public.qorpera_native_machine_manage(pg_temp.child(),
 		'{"action":"status","machine":"shard-1","commandId":"30000000-0000-4000-8000-000000000601"}');
 	perform pg_temp.wake_assert(v_status #>> '{command,state}' = 'failed' and v_status #>> '{command,endedAt}' is not null

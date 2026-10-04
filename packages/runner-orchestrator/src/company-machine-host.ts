@@ -7,9 +7,8 @@ import {
 	type CloudCodingCommandRead,
 	type CloudCodingNasPolicy,
 	type CloudMachineCommandReceipt,
-	type IdleRuleMachineSample,
+	type IdleRuleSample,
 	idleRuleBusy,
-	idleRuleOutsideBusy,
 	parseCloudCodingNasPolicy,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
@@ -43,6 +42,7 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_release_company_machine",
 	"qorpera_record_company_machine_error",
 	"qorpera_record_company_machine_commands",
+	"qorpera_record_company_machine_stop",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -114,34 +114,6 @@ export type CompanyMachineCommand =
 	| { action: "read"; read: CloudCodingCommandRead }
 	| { action: "cancel"; commandId: string };
 
-/** What the executor keeps of one running machine's boot (its clock, in milliseconds): the whole machine's last
- * sample, each running command's last sample (the guest measures a page of them a look, so each keeps its own time),
- * where the next page starts, busy work SQL has not recorded yet, and the guest's stop SQL last took. */
-interface GuestSample {
-	bootId: string;
-	at: number;
-	machine: IdleRuleMachineSample;
-	commands: Map<string, { cpuSeconds: number; ioBytes: number; at: number }>;
-	cursor: string | null;
-	pending: { busyCommands: Set<string>; outsideBusy: boolean };
-	stopTaken: string | null;
-}
-/** A command's sample is forgotten when the guest has not measured it for this long (it ended). */
-const COMMAND_SAMPLE_KEPT_MS = 600000;
-/** What one look saw: the listed commands that ended, the running ones that were busy, busy outside work, where the
- * guest's next page of running commands starts (null: this look reached the last one), and the boot's last stop that
- * saw its programs stopped (null: none). */
-interface GuestLook {
-	bootId: string;
-	ended: { commandId: string; state: unknown; exitCode?: unknown; outputTail: string; stopped?: true }[];
-	busyCommands: string[];
-	outsideBusy: boolean;
-	next: string | null;
-	stopId: string | null;
-}
-/** A sweep before a sleep looks at most this many pages (16,384 running commands); beyond, the machine stays up. */
-const SWEEP_PAGES = 64;
-
 function record(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
 	return value as Record<string, unknown>;
@@ -183,8 +155,9 @@ export class LxdCompanyMachineHost {
 	readonly #storage: CodingNasStorage;
 	readonly #repositories: CompanyMachineRepositoryStorage;
 	readonly #work = new Map<string, Promise<unknown>>();
-	/** Per placement: the boot whose helper was checked and prepared, and its last sample. */
-	readonly #guests = new Map<string, GuestSample>();
+	/** Per placement: the boot whose helper was checked and prepared, the whole machine's last sample, and whether it was
+	 * busy since SQL last took that. */
+	readonly #guests = new Map<string, { bootId: string; sample: IdleRuleSample; busy: boolean }>();
 	/** When this process first saw the placement started and its guest not yet answering. */
 	readonly #starting = new Map<string, number>();
 	readonly #generation = Math.floor(Date.now() / 1000);
@@ -408,151 +381,75 @@ export class LxdCompanyMachineHost {
 			this.#guests.delete(e.placementId);
 			return { placementId: e.placementId, step: "start", state: "done" };
 		}
-		await this.#record(e, await this.#look(e, bootId, signal), signal);
+		// A running machine of this boot: how its commands ended, and whether it is busy.
+		await this.#record(e, bootId, await this.#look(e, bootId, signal), signal);
 		return { placementId: e.placementId, step: "commands", state: "done" };
 	}
-	/**
-	 * A running machine of this boot: how its commands ended, which running commands were busy, and whether work
-	 * outside them was busy, by the one idle rule (`@qorpera/contracts` idle-rule), each command against its own last
-	 * sample of the same boot and the machine against its last one. The guest measures every running command, listed or
-	 * not, a page of 256 a look. The first sample of a boot, or of a command, is never busy. Busy work the last record
-	 * did not reach SQL with is carried until one does.
-	 */
+	/** One look inside a running machine of this boot: the listed commands that ended, and whether the whole machine,
+	 * apart from its own control, was busy since the last look (the one idle rule: 5% of one core, or 512 KiB read or
+	 * written in 30 seconds). Busy stays owed until SQL takes it. */
 	async #look(
 		e: CompanyMachineEntry,
 		bootId: string,
 		signal: AbortSignal,
-		after: string | null | undefined = undefined,
-	): Promise<GuestLook> {
-		const kept = this.#guests.get(e.placementId);
-		const same = kept?.bootId === bootId ? kept : undefined;
-		const page = after === undefined ? (same?.cursor ?? null) : after;
-		const observed = await this.#helper(
-			e,
-			["observe", e.commands.length ? e.commands.join(",") : "-", page ?? "-"],
-			signal,
-		);
-		const cpu = record(observed.cpu, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
+	): Promise<{ ended: Record<string, unknown>[]; busy: boolean }> {
+		const observed = await this.#helper(e, ["observe", e.commands.length ? e.commands.join(",") : "-"], signal);
 		if (
 			observed.schema !== "qorpera.machine-observation/v2" ||
 			observed.bootId !== bootId ||
-			![observed.at, cpu.busyUsec, cpu.totalUsec, cpu.ownUsec].every(
+			![observed.at, observed.cpuUsec, observed.ioBytes].every(
 				(value) => Number.isSafeInteger(value) && Number(value) >= 0,
 			) ||
-			!Array.isArray(observed.running) ||
-			observed.running.length > 256 ||
-			(observed.next !== null && (typeof observed.next !== "string" || !UUID.test(observed.next))) ||
-			(observed.stopId !== null && (typeof observed.stopId !== "string" || !UUID.test(observed.stopId))) ||
 			!Array.isArray(observed.ended) ||
 			observed.ended.length > 64
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
-		const at = Number(observed.at);
-		const machine = {
-			busySeconds: Number(cpu.busyUsec) / 1e6,
-			totalSeconds: Number(cpu.totalUsec) / 1e6,
-			ownSeconds: Number(cpu.ownUsec) / 1e6,
+		const sample = {
+			cpuSeconds: Number(observed.cpuUsec) / 1e6,
+			ioBytes: Number(observed.ioBytes),
+			at: Number(observed.at),
 		};
-		const commands = new Map(
-			[...(same?.commands ?? [])].filter(([, sample]) => at - sample.at <= COMMAND_SAMPLE_KEPT_MS),
-		);
-		const busyCommands = new Set(same?.pending.busyCommands ?? []);
-		for (const value of observed.running) {
-			const item = record(value, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
-			if (
-				typeof item.commandId !== "string" ||
-				!UUID.test(item.commandId) ||
-				![item.cpuUsec, item.ioBytes].every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
-			)
-				throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
-			const now = { cpuSeconds: Number(item.cpuUsec) / 1e6, ioBytes: Number(item.ioBytes), at };
-			const before = commands.get(item.commandId);
-			// SQL counts only this machine's open commands among them.
-			if (before && idleRuleBusy(before, now) && busyCommands.size < 256) busyCommands.add(item.commandId);
-			commands.set(item.commandId, now);
-		}
-		const outsideBusy = !!same?.pending.outsideBusy || (!!same && idleRuleOutsideBusy(same.machine, machine));
-		this.#guests.set(e.placementId, {
-			bootId,
-			at,
-			machine,
-			commands,
-			cursor: (observed.next as string | null) ?? null,
-			// Until SQL records it.
-			pending: { busyCommands, outsideBusy },
-			stopTaken: same?.stopTaken ?? null,
-		});
+		const previous = this.#guests.get(e.placementId);
+		const same = previous?.bootId === bootId ? previous : undefined;
+		const busy = !!same && (same.busy || idleRuleBusy(same.sample, sample));
+		this.#guests.set(e.placementId, { bootId, sample, busy });
 		const ended = observed.ended
 			.map((item) => record(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
 			.filter((item) => typeof item.commandId === "string" && e.commands.includes(item.commandId))
 			.map((item) => ({
-				commandId: item.commandId as string,
+				commandId: item.commandId,
 				state: item.state,
 				...(item.state === "succeeded" || item.state === "failed" ? { exitCode: item.exitCode } : {}),
 				outputTail: typeof item.outputTail === "string" ? item.outputTail.slice(-4000) : "",
-				// The machine's stop ended it (the guest marked it before stopping the programs).
-				...(item.state === "lost" && item.stopped === true ? { stopped: true as const } : {}),
 			}));
-		return {
-			bootId,
-			ended,
-			busyCommands: [...busyCommands],
-			outsideBusy,
-			next: (observed.next as string | null) ?? null,
-			stopId: (observed.stopId as string | null) ?? null,
-		};
+		return { ended, busy };
 	}
-	/** What a look saw, recorded in SQL: ended commands, busy work, which keeps the machine awake, and a stop of the boot
-	 * SQL has not taken (what ran outside the commands ended with it). Busy work stays pending until SQL took it. */
-	async #record(e: CompanyMachineEntry, look: GuestLook, signal: AbortSignal): Promise<void> {
-		const before = this.#guests.get(e.placementId);
-		const stop = look.stopId !== null && look.stopId !== (before?.bootId === look.bootId ? before.stopTaken : null);
-		if (look.ended.length || look.busyCommands.length || look.outsideBusy || stop)
-			await this.#custody(e, "qorpera_record_company_machine_commands", signal, {
-				p_boot_id: look.bootId,
-				p_ended: look.ended,
-				p_busy_commands: look.busyCommands,
-				p_outside_busy: look.outsideBusy,
-				p_stop_id: look.stopId,
-			});
+	/** What a look saw, recorded in SQL: the ended commands, and a busy machine, which moves its idle clock. */
+	async #record(
+		e: CompanyMachineEntry,
+		bootId: string,
+		look: { ended: unknown[]; busy: boolean },
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!look.ended.length && !look.busy) return;
+		await this.#custody(e, "qorpera_record_company_machine_commands", signal, {
+			p_boot_id: bootId,
+			p_ended: look.ended,
+			p_busy: look.busy,
+		});
 		const kept = this.#guests.get(e.placementId);
-		if (kept?.bootId === look.bootId) {
-			kept.pending = { busyCommands: new Set(), outsideBusy: false };
-			kept.stopTaken = look.stopId ?? kept.stopTaken;
-		}
+		if (kept?.bootId === bootId) kept.busy = false;
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
-		// A last sweep first, when this boot was seen before: every page of running commands, each against its own last
-		// sample, so what ended on its own is recorded as it ended, not as stopped, and a program busy again keeps the
-		// machine (stop custody then refuses). A guest that does not answer still stops, once busy work seen earlier is
-		// recorded; a record SQL does not take leaves the machine running until a later pass records it.
-		if (e.bootId !== null && this.#guests.get(e.placementId)?.bootId === e.bootId) {
-			const bootId = e.bootId;
-			const deadline = AbortSignal.any([signal, AbortSignal.timeout(60000)]);
-			let after: string | null = null;
-			for (let page = 1; ; page++) {
-				const look: GuestLook | undefined = await this.#look(e, bootId, deadline, after).catch(() => undefined);
-				if (!look) {
-					const kept = this.#guests.get(e.placementId);
-					await this.#record(
-						e,
-						{
-							bootId,
-							ended: [],
-							busyCommands: [...(kept?.pending.busyCommands ?? [])],
-							outsideBusy: !!kept?.pending.outsideBusy,
-							next: null,
-							stopId: null,
-						},
-						signal,
-					);
-					break;
-				}
-				await this.#record(e, look, signal);
-				if (look.next === null) break;
-				if (page >= SWEEP_PAGES) return { placementId: e.placementId, step: "stop", state: "not-now" };
-				after = look.next;
-			}
+		// A last look first, when this boot was seen before, so a machine busy again since the last pass keeps running
+		// (stop custody then refuses). A guest that does not answer still stops, once busy work seen earlier is recorded;
+		// a record SQL does not take leaves the machine running until a later pass records it.
+		const kept = this.#guests.get(e.placementId);
+		if (e.bootId !== null && kept?.bootId === e.bootId) {
+			const look = await this.#look(e, e.bootId, AbortSignal.any([signal, AbortSignal.timeout(30000)])).catch(
+				() => ({ ended: [], busy: kept.busy }),
+			);
+			await this.#record(e, e.bootId, look, signal);
 		}
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
 		try {
@@ -562,23 +459,38 @@ export class LxdCompanyMachineHost {
 				return { placementId: e.placementId, step: "stop", state: "not-now" };
 			throw error;
 		}
-		// Give the guest's own programs a moment to stop and its disk to settle; then the machine is powered off (its disk
-		// stays). The helper marks each command it stops as the machine's stop, and keeps the stop itself once nothing it
-		// stopped still runs, so however the stop ends (a power-off that fails, then a wake), what the guest shows later
-		// is told with the stop's cause. A guest without it is stopped as before. What the stop ended is never measured
-		// as busy afterwards: the next look starts afresh.
+		// Right before it stops the programs, the guest lists what runs (its command units, at most 32 oldest first,
+		// and whether Docker ran containers); SQL ends those commands with the stop's cause and tells them, before the
+		// machine is powered off (its disk stays). A guest without the helper's stop is stopped as before; a snapshot
+		// that is not the listed shape, or of a boot SQL does not know, is left out. Either way what still runs is told
+		// at the power-off. A power-off that then fails ends this stop: the next one takes its own snapshot.
 		if (e.runningAt !== null) {
 			const stopping = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
-			await this.#helper(e, ["stop-commands"], stopping).catch(() =>
-				this.#options.client
+			const stopped = await this.#helper(e, ["stop-commands"], stopping).catch(() => undefined);
+			if (!stopped)
+				await this.#options.client
 					.execInstance(
 						e.binding.project,
 						this.#plan(e).name,
 						["/bin/sh", "-c", `systemctl stop ${PATHS.slice} docker.service containerd.service; sync`],
 						stopping,
 					)
-					.catch(() => undefined),
-			);
+					.catch(() => undefined);
+			else if (
+				stopped.schema === "qorpera.machine-commands-stopped/v1" &&
+				stopped.bootId === e.bootId &&
+				Array.isArray(stopped.commands) &&
+				stopped.commands.length <= 32 &&
+				stopped.commands.every((id) => typeof id === "string" && UUID.test(id)) &&
+				typeof stopped.containers === "boolean"
+			)
+				// SQL takes the snapshot before the power-off; a record it does not take leaves the machine running.
+				await this.#custody(e, "qorpera_record_company_machine_stop", signal, {
+					p_boot_id: e.bootId,
+					p_commands: stopped.commands,
+					p_containers: stopped.containers,
+				});
+			// What the stop ended is never measured as busy afterwards: a look after a failed power-off starts afresh.
 			this.#guests.delete(e.placementId);
 		}
 		const state = await this.#physical(e, "stopped", signal);

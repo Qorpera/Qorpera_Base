@@ -113,13 +113,14 @@ async function main(path: string): Promise<void> {
 			if (method === "qorpera_record_company_machine_commands") {
 				for (const ended of args.p_ended as { commandId: string }[])
 					entry.commands = entry.commands.filter((id) => id !== ended.commandId);
-				note("commands", {
-					ended: args.p_ended,
-					busyCommands: args.p_busy_commands,
-					outsideBusy: args.p_outside_busy,
-					stopId: args.p_stop_id,
-				});
+				note("commands", { ended: args.p_ended, busy: args.p_busy });
 				return { state: "recorded" };
+			}
+			if (method === "qorpera_record_company_machine_stop") {
+				const listed = args.p_commands as string[];
+				entry.commands = entry.commands.filter((id) => !listed.includes(id));
+				note("stop", { commands: listed, containers: args.p_containers });
+				return { state: "recorded", ended: listed.length };
 			}
 			if (method === "qorpera_record_company_machine_error") {
 				note("error", { stage: args.p_stage, code: args.p_code });

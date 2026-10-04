@@ -541,7 +541,7 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
-	it("passes on what a machine's stop or restart ended, commands and outside work, and refuses what it does not know", async () => {
+	it("passes on what a machine's stop or restart ended, commands and containers, and refuses what it does not know", async () => {
 		const { binding } = nativeToolAuthorityFixture();
 		const signal = new AbortController().signal;
 		const counts = { todos: { open: 0, blocked: 0 }, workers: { active: 0, blocked: 0 } };
@@ -553,10 +553,9 @@ describe("agent todo and worker tools", () => {
 			endedAt: "2026-10-04T03:00:00.654321+00:00",
 			reason: "slept",
 		};
-		const outside = {
+		const containers = {
 			machine: "build-a",
-			work: "outside",
-			busyAt: "2026-10-04T02:10:00+00:00",
+			work: "containers",
 			endedAt: "2026-10-04T03:00:00+00:00",
 			reason: "hours",
 		};
@@ -564,11 +563,11 @@ describe("agent todo and worker tools", () => {
 			schema: "qorpera.agent-open-work/v1",
 			runId: binding.runId,
 			...counts,
-			machineStopped: [command, outside],
+			machineStopped: [command, containers],
 		}));
 		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual({
 			...counts,
-			machineStopped: [command, outside],
+			machineStopped: [command, containers],
 		});
 		for (const broken of [
 			[],
@@ -576,8 +575,9 @@ describe("agent todo and worker tools", () => {
 			[{ ...command, reason: "closed" }],
 			[{ ...command, work: "shell" }],
 			[{ ...command, busyAt: command.startedAt }],
-			[{ ...outside, command: "docker" }],
-			[{ ...outside, busyAt: 1 }],
+			[{ ...containers, command: "docker" }],
+			[{ ...containers, work: "outside" }],
+			[{ ...containers, endedAt: 1 }],
 			[{ ...command, machine: null }],
 			{ ...command },
 		]) {

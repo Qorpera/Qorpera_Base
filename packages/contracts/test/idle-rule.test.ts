@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	IDLE_RULE_BUSY_BYTES_PER_SAMPLE,
 	IDLE_RULE_BUSY_CORE_SHARE,
-	IDLE_RULE_OUTSIDE_BUSY_MACHINE_SHARE,
 	IDLE_RULE_SAMPLE_SECONDS,
 	idleRuleBusy,
-	idleRuleOutsideBusy,
 	idleRuleProcessIoBytes,
 } from "../src/idle-rule.ts";
 
@@ -48,34 +46,5 @@ describe("the one idle rule's busy measure", () => {
 		expect(idleRuleProcessIoBytes("")).toBe(0);
 		expect(idleRuleProcessIoBytes("rchar: 12\n")).toBe(12);
 		expect(idleRuleProcessIoBytes("rchar: 99999999999999999999\nwchar: 1\n")).toBe(0);
-	});
-});
-
-describe("the one idle rule's outside work on an agent's machine", () => {
-	// A two-processor machine over 10 seconds: 20 processor-seconds in all.
-	const before = { busySeconds: 100, totalSeconds: 1000, ownSeconds: 40 };
-	const machineLater = (busy: number, own: number, total = 20) => ({
-		busySeconds: 100 + busy,
-		totalSeconds: 1000 + total,
-		ownSeconds: 40 + own,
-	});
-
-	it("states its threshold: 2% of the whole machine beyond its own units", () => {
-		expect(IDLE_RULE_OUTSIDE_BUSY_MACHINE_SHARE).toBe(0.02);
-	});
-
-	it("is busy at 2% of the whole machine beyond what the commands and the machine's own control used", () => {
-		// 0.4 of 20 processor-seconds outside: busy; just under it: not.
-		expect(idleRuleOutsideBusy(before, machineLater(0.4, 0))).toBe(true);
-		expect(idleRuleOutsideBusy(before, machineLater(0.39, 0))).toBe(false);
-		// A busy command is its own; it leaves nothing outside.
-		expect(idleRuleOutsideBusy(before, machineLater(10, 9.7))).toBe(false);
-		expect(idleRuleOutsideBusy(before, machineLater(10, 9.5))).toBe(true);
-	});
-
-	it("counts nothing from samples that cannot be compared", () => {
-		expect(idleRuleOutsideBusy(before, machineLater(5, 0, 0))).toBe(false);
-		expect(idleRuleOutsideBusy(before, machineLater(5, -1))).toBe(false);
-		expect(idleRuleOutsideBusy(before, machineLater(-1, 0))).toBe(false);
 	});
 });
