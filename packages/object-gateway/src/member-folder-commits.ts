@@ -37,15 +37,20 @@ const MAX_TEXT_BYTES = 512 * 1024;
 /** Files staged one after another must fit the member gateway's 25 s; a hire sends two. */
 const MAX_FILES = 32;
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
-/** Follow-up calls after one commit, and the time they may take before the answer goes back. */
+/** Follow-up calls after one commit, the time they may take, and how late in the request they may still start: the
+ * member gateway's bridge gives a request 25 s, and a saved commit's answer must reach the member inside it. */
 const MAX_FOLLOW_UPS = 8;
 const FOLLOW_UP_MS = 3_000;
+const FOLLOW_UP_LATEST_MS = 20_000;
 /** The members with a change set in flight on this gateway. */
 const inFlight = new Set<string>();
 const LONE_SURROGATE = /[\ud800-\udfff]/u;
 
 export interface MemberFolderCommitOptions {
 	readonly authority: Pick<MemberCompanyAuthority, "member" | "publisher">;
+	/** The follow-up's own database client (its own circuit), so a failing follow-up never refuses members' commits.
+	 * Without one there is no follow-up: the core's own step converges each commit within seconds. */
+	readonly followUps?: Pick<MemberCompanyAuthority, "publisher">;
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
 	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
@@ -268,8 +273,9 @@ export async function followUpMemberCommit(
 	environmentId: string,
 	commitId: string,
 	signal: AbortSignal,
+	timeMs = FOLLOW_UP_MS,
 ): Promise<number> {
-	const budget = AbortSignal.any([signal, AbortSignal.timeout(FOLLOW_UP_MS)]);
+	const budget = AbortSignal.any([signal, AbortSignal.timeout(timeMs)]);
 	let calls = 0;
 	try {
 		while (calls < MAX_FOLLOW_UPS && !budget.aborted) {
@@ -292,6 +298,7 @@ export async function serveMemberFolderCommit(
 	response: ServerResponse,
 	options: MemberFolderCommitOptions,
 ): Promise<void> {
+	const started = Date.now();
 	if (request.method !== "POST") throw new ObjectDependencyError(405);
 	const match = /^\/v1\/member-folder-commits\/([0-9a-f-]{36})$/.exec(request.url ?? "");
 	if (!match || !UUID.test(match[1]!)) throw new ObjectDependencyError(404);
@@ -385,9 +392,25 @@ export async function serveMemberFolderCommit(
 		} | null;
 		if (answer?.schema !== "qorpera.folder-commit/v1" || !Array.isArray(answer.units))
 			throw new ObjectDependencyError(503);
-		// Something was saved: what it starts (a hire's first run, an archive's clean-up) is done before the answer.
-		if (Number.isSafeInteger(answer.seq) && typeof answer.commitId === "string" && UUID.test(answer.commitId))
-			await followUpMemberCommit(options.authority, environmentId, answer.commitId, signal);
+		// Something was saved (a replay of a saved change set too): what it starts, a hire's first run or an archive's
+		// clean-up, is done before the answer, while the request has time left. The member's slot is free meanwhile.
+		inFlight.delete(member.actor.userId);
+		held = undefined;
+		const left = FOLLOW_UP_LATEST_MS - (Date.now() - started);
+		if (
+			options.followUps &&
+			left > 0 &&
+			Number.isSafeInteger(answer.seq) &&
+			typeof answer.commitId === "string" &&
+			UUID.test(answer.commitId)
+		)
+			await followUpMemberCommit(
+				options.followUps,
+				environmentId,
+				answer.commitId,
+				signal,
+				Math.min(FOLLOW_UP_MS, left),
+			);
 		const encoded = JSON.stringify(answer);
 		observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
 		response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
