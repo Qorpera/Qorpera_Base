@@ -60,8 +60,8 @@ begin
 	r := pg_temp.commit(a, 'p17-exists-01', pg_temp.write('Plans/q3.md', pg_temp.stage_v2(a, array['taken'])) ||
 		pg_temp.write('Plans/q4.md', pg_temp.stage_v2(a, array['q4'])));
 	perform pg_temp.expect(r, 1, 'conflict', 'exists'); perform pg_temp.expect(r, 2, 'saved');
-	if r ->> 'seq' is null or (select array_agg(unit_no) from pg_temp.copies(r)) <> array[1]
-		or (select manifest_sha256 from pg_temp.copies(r)) <> pg_temp.hash(pg_temp.manifest(array['taken'])) then
+	if r ->> 'seq' is null or (select array_agg(unit_no) from pg_temp.copies(r)) is distinct from array[1]
+		or (select manifest_sha256 from pg_temp.copies(r)) is distinct from pg_temp.hash(pg_temp.manifest(array['taken'])) then
 		raise exception 'A write onto a taken path keeps its file: %', r; end if;
 
 	-- A file deleted, folder and all, while its writer worked: kept at the path the writer asked for.
@@ -72,7 +72,7 @@ begin
 		'path','Gone','expectedVersion',(pg_temp.entry('gone')).version,'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	r := pg_temp.commit(a, 'p17-gone-04', pg_temp.write('gone/Old.md', pg_temp.stage_v2(a, array['old, edited']), v_first));
 	perform pg_temp.expect(r, 1, 'conflict', 'version_changed');
-	if (select array_agg(path) from pg_temp.copies(r)) <> array['gone/Old.md'] then
+	if (select array_agg(path) from pg_temp.copies(r)) is distinct from array['gone/Old.md'] then
 		raise exception 'A write to a deleted file keeps its file: %', r; end if;
 end $$;
 
@@ -91,7 +91,7 @@ begin
 	perform pg_temp.expect(r, 1, 'conflict', 'exists');
 	-- Numbered by their place in the contents, each spelled as the new folder would have stored it.
 	if (select jsonb_agg(jsonb_build_array(file_no, path, manifest_sha256) order by file_no) from pg_temp.copies(r))
-		<> jsonb_build_array(jsonb_build_array(2, 'Work/report/Parts/one.md', v_one ->> 'manifestSha256'),
+		is distinct from jsonb_build_array(jsonb_build_array(2, 'Work/report/Parts/one.md', v_one ->> 'manifestSha256'),
 			jsonb_build_array(3, 'Work/report/two.md', v_two ->> 'manifestSha256')) then
 		raise exception 'A conflicting new folder keeps every file: % %', r, (select jsonb_agg(to_jsonb(c)) from pg_temp.copies(r) c); end if;
 end $$;
