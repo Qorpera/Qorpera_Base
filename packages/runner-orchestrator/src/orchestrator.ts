@@ -221,6 +221,8 @@ export interface CloudFolderDrainSpec {
 
 /** The drains the orchestrator runs, in order. Another drain adds its entry here and in the edge function's table. */
 export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freeze([
+	// F2's worker drain first (core §11 C4): a worker started or a parent revived this pass is materialized this pass too.
+	Object.freeze({ name: "workers", companyLimit: 32 }),
 	Object.freeze({ name: "listen", companyLimit: 32 }),
 	// A company machine's events, to the runs that started the work (C1c-3i-b): up to 8 parents a step.
 	Object.freeze({ name: "machine_events", companyLimit: 8 }),

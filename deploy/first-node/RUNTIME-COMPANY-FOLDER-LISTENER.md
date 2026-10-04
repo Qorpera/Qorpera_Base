@@ -352,7 +352,8 @@ touching nothing else here.
 
 **The edge function** (`supabase/functions/runner-orchestrator/runner-orchestrator.ts`):
 - the closed table `FOLDER_DRAINS` maps a drain name (`^[a-z][a-z0-9_]{0,31}$`) to `{due, company, maximum}`:
-  today `listen: {due: 'qorpera_folder_listen_due', company: 'qorpera_folder_listen_company', maximum: 256}` and
+  today `listen: {due: 'qorpera_folder_listen_due', company: 'qorpera_folder_listen_company', maximum: 256}`,
+  `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}` and
   `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
   maximum: 64}`;
 - two generic actions:
@@ -364,7 +365,7 @@ touching nothing else here.
 
 **The orchestrator** (`CloudFolderDrains` in `packages/runner-orchestrator/src/orchestrator.ts`):
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
-  `[{name: 'listen', companyLimit: 32}, {name: 'machine_events', companyLimit: 8}]`;
+  `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'machine_events', companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
@@ -387,7 +388,7 @@ function gets the 400 and pauses only that drain.
 (an absent cursor counts as behind) or that have a recorded hook failure whose wait is over (§8), leaving out companies
 being deleted, through the clock, the cursor and the failures.
 
-**3i-b's due list** (`machine_events`, C1C §6.17): the folder-v2 environments with a waiting machine event whose
+**3i-b's due list** (`machine_events`, C1C §6.20): the folder-v2 environments with a waiting machine event whose
 parent run is ready for it, has stopped or is gone, leaving out companies being deleted or paused (the step does
 nothing while paused). A parent still running, or one whose last continuation has not run yet, asks nothing, so a long
 run's events cost no request per pass. One step delivers up to 8 parents' events, a wake each.

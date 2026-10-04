@@ -157,10 +157,11 @@ function nativeColor(figure: FigureId): string {
 	return model?.color ?? "#fcb51b";
 }
 
-/** The colour a saved appearance resolves to: a palette token, a palette hex,
- * the nearest palette colour for a retired choice, else the figure's own
- * shade. A retired colour is never written back just by rendering it. */
-export function colorFor(
+/** The colour an agent is drawn in, the Co-Founder's too: a palette token, a
+ * palette hex, the nearest palette colour for a retired choice, else the
+ * figure's own shade (an agent whose file names no colour is `native`). A
+ * retired colour is never written back just by rendering it. */
+export function agentColor(
 	agent: Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">,
 	figure = figureFor(agent),
 ): string {
@@ -174,23 +175,6 @@ export function colorFor(
 	const distance = (hex: string) =>
 		channels(hex).reduce((sum, value, index) => sum + (value - (target[index] ?? 0)) ** 2, 0);
 	return [...choices].sort((left, right) => distance(left) - distance(right))[0] ?? nativeColor(figure);
-}
-
-/** The colour the cloud seeds every Co-Founder with (the organization kernel
- * migrations). Nobody chose it, and a colour picked in a client is stored as a
- * palette hex, never as this token. */
-const COFOUNDER_SEED_COLOR = "qorpera-blue";
-
-/** The colour an agent is drawn in. A Co-Founder that still carries the seeded
- * colour wears its figure's own shade, as in the trailer; once somebody picks a
- * colour it wears that, like every other agent. */
-export function agentColor(
-	agent: Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">,
-	figure = figureFor(agent),
-): string {
-	const stored = (agent.appearance?.color ?? "").trim().toLowerCase();
-	if (agent.templateId === "co-founder" && stored === COFOUNDER_SEED_COLOR) return nativeColor(figure);
-	return colorFor(agent, figure);
 }
 
 /* Views build and insert figures synchronously. Sweep after DOM changes so

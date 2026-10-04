@@ -1,4 +1,4 @@
--- Company folder core, C1c-3i part b (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.17, LISTENER §9): a company
+-- Company folder core, C1c-3i part b (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.20, LISTENER §9): a company
 -- machine's events reach the folder-v2 run that started the work, as a drain of the shared folder drains step.
 --
 -- A command that ended, a machine that runs, or one stopped before it ran is a row of qorpera_company_machine_events

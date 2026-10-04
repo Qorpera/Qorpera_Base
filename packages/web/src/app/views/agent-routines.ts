@@ -1023,7 +1023,7 @@ export class AgentRoutines {
 			this.#busy = true;
 			save.disabled = cancel.disabled = true;
 			status.textContent = t("Saving…");
-			let after: "reopen" | "gone" | undefined;
+			let after: "reopen" | "made" | "gone" | undefined;
 			try {
 				const saved = await access.routines.save(
 					{
@@ -1051,7 +1051,9 @@ export class AgentRoutines {
 				await this.#refresh();
 			} catch (error) {
 				if (this.#signal.aborted) return;
-				if (error instanceof WebRoutineChangedError && routine) after = "reopen";
+				// A new routine's save meets a change only once a lost answer's replay made the routine: this form is then
+				// that routine's.
+				if (error instanceof WebRoutineChangedError) after = routine ? "reopen" : "made";
 				else if (error instanceof WebRoutineGoneError && routine) after = "gone";
 				else
 					status.textContent =
@@ -1063,12 +1065,28 @@ export class AgentRoutines {
 								: t("The routine could not be saved. Your draft is still here.");
 			} finally {
 				this.#busy = false;
-				save.disabled = cancel.disabled = false;
+				// A form whose new routine was made stays shut until it opens on that routine: its save id is done, and a
+				// Save as a new routine would find the routine there and write nothing of the draft.
+				save.disabled = cancel.disabled = after === "made";
 			}
 			if (after === "reopen") {
 				// Someone changed what the form shows: it opens again on what the file says now.
 				this.#editing = false;
 				await this.#edit(routine, t("This routine changed while you were editing it."));
+			} else if (after === "made") {
+				// The list says which routine this form made (the index keeps the file's id); the form opens again on its
+				// file, as an edit of it. The form stays while the list is read.
+				await this.#refresh();
+				if (this.#signal.aborted || !this.el.contains(status)) return;
+				this.#editing = false;
+				const notice = t("This routine changed while you were editing it.");
+				const made = this.#routines.find((item) => item.clientRoutineId === clientRoutineId);
+				if (made) await this.#edit(made, notice);
+				// The form is still this one: the routine is not listed yet, or not one the editor opens. The list says why
+				// the form closed, unless its read failed.
+				if (this.#signal.aborted || !this.el.contains(status)) return;
+				this.#message ||= notice;
+				this.#list();
 			} else if (after === "gone") {
 				this.#editing = false;
 				await this.#refresh();
