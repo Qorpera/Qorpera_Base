@@ -1,6 +1,6 @@
 # Company folder core: erasure (slice P18)
 
-Status: design ratified 3 October 2026 (#732, §8's decisions as proposed); P18a built (§10); P18b built (§11). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
+Status: design ratified 3 October 2026 (#732, §8's decisions as proposed); P18a built (§10); P18b built (§11); P18c built (§12). Owner: the folder GC and erasure session (slices P11, P12, P18; taken over from
 F2 on 3 October 2026). Rules: contract 5.6 ("Permanent erasure"), 14.1 (an agent's permanent deletion), the
 2026-10-02 amendment "work for people" item 3, core §8 ("Erasure"), C1D §9.4 (when a root ends). Evidence:
 `~/work/qorpera-folder-core-tools/reports/P18-erasure-inventory.md` (every column, reader and lock erasure meets) and
@@ -86,7 +86,8 @@ can erase copies too (the empty file's manifest is left out). The same manifest 
 the member may add.
 
 ### 2.4 Refused roots
-- under `tables/` until I6 (P18a also refused `agents/` and `rules/`; P18b, §11, erases them);
+- none by its top folder any more: P18a refused `agents/`, `rules/` and `tables/`; P18b (§11) erases the first two and
+  P18c (§12) `tables/`;
 - `members/<id>/private/**`, except by that member: a private resource is its owner's alone (20260928249000:86-95);
 - an unrevoked path resource at or under a root (`qorpera_company_path_resources`): the member revokes it first;
 - a seeded folder itself (`contacts`, `human-tasks`, `connections`, …): it is never deleted.
@@ -387,7 +388,7 @@ Decisions (coordinator, 3 October 2026, as proposed):
 - office access and browser grants are revoked (state `revoked`), not deleted: screens point at them.
 
 What it does:
-- **The request** no longer refuses `agents/` and `rules/`; `tables/` waits for I6.
+- **The request** no longer refuses `agents/` and `rules/`; `tables/` waited for P16a and is P18c's (§12).
 - **Locks:** it takes the commit's own locks in its rank order:
   - rank 2: the retired agents under the roots, NO KEY UPDATE (`qorpera_folder_structured_lock`);
   - rank 3: their execution authorities, FOR UPDATE (`qorpera_folder_lock_commit_rank`);
@@ -465,3 +466,23 @@ What it does:
   - a member-made routine's erasure;
   - an office added while phase 6 runs, which can leave an erased agent's new access row active (inferred, rare: the
     agent is archived and cannot run).
+
+## 12. Built (P18c, migration 20260930028000, test 886)
+
+P16a (20260930016000) indexes each table folder in `qorpera_folder_table_index`, keyed (environment, id). A deleted table
+folder leaves its row retired, and a table made again with the same id revives it (F2's hand-over, 4 October 2026).
+
+- **The request** no longer refuses `tables/`. It deletes the retired table rows built from the files it erases, as it
+  deletes H2's task and contact rows:
+  - a plain read through the row's `(environment_id, folder_key)` index, with the key range written out;
+  - rank 5, after the contact rows (the last table in `qorpera_folder_structured_lock`'s order), FOR UPDATE, in
+    `environment_id:id` key order, before rank 6;
+  - the QRC01 re-read after the paths covers them;
+  - only a retired row whose definition, and rows when it has them, lie before its root's cutoff
+    (`qorpera_folder_erasure_row_before`).
+- **Never a live row:** not one a later life at the same path made, not one revived at another path, and not one
+  revived at the same path. The reply's `erased` counts `tables`.
+- **No placeholder:** the row holds no file text (path, key, versions, commit), so a deleted row loses nothing else.
+- **Interfaces** have no index before I7, so an interface folder is erased like any path.
+- **Tests (886):** a deleted table, a table revived at another path, a later life at the same path with another id, a
+  table revived at the same path with its id, an interface folder, and the lock order.
