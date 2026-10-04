@@ -30,7 +30,11 @@
 -- office, which stops every shell.
 -- Lock order: the report and the idle policy take the office row (the idle
 -- policy after the folder machine fence, C1c-3j), then the command rows. The
--- told list takes command rows with SKIP LOCKED only.
+-- told list takes command rows with SKIP LOCKED only. The report takes no
+-- folder fence and no company row, as the supervisor's own status call: it
+-- changes nothing in the company folder, it must run during a pause to end
+-- commands as paused, and a stop or pause takes only the fence, so the two
+-- never wait for each other (870 sends a report under a held fence).
 
 create table public.qorpera_runtime_office_shell_activity (
 	screen_id uuid primary key references public.qorpera_runtime_office_screens(id) on delete cascade,

@@ -272,6 +272,50 @@ select pg_temp.refused(format('select public.qorpera_report_runtime_office_shell
 select pg_temp.check(pg_temp.settled('fence_two', format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)::text',
 	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), '{"schema":"qorpera.office-shell-report/v1","screens":[]}'))
 	like '42501 %', 'a member cannot report');
+create function pg_temp.report_raw(p_report text) returns text language sql as $$
+	select format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %s)',
+		current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), p_report)
+$$;
+select pg_temp.refused(pg_temp.report_raw(report), '22023', 'Invalid office shell activity') from unnest(array[
+	'null',
+	quote_literal('{"schema":"qorpera.office-shell-report/v1"}') || '::jsonb',
+	quote_literal('{"schema":"qorpera.office-shell-report/v2","screens":[]}') || '::jsonb',
+	quote_literal('{"schema":"qorpera.office-shell-report/v1","screens":[],"extra":1}') || '::jsonb',
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',(select jsonb_agg(jsonb_build_object(
+		'screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb)) from generate_series(1,65))))
+		|| '::jsonb',
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb),
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb))))
+		|| '::jsonb',
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy','true','open','[]'::jsonb,'ended','[]'::jsonb))))
+		|| '::jsonb',
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb,'x',1))))
+		|| '::jsonb',
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open',(select jsonb_agg(
+			pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')) from generate_series(1,65)),'ended','[]'::jsonb))))
+		|| '::jsonb'
+]) as report \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).ended_at is null, 'a refused report changes nothing');
+-- The report takes no folder fence and no company row: it answers while another session holds both FOR UPDATE, so a
+-- folder stop or pause never waits for it and it can end commands as paused during one.
+select dblink_exec('fence_one', 'begin');
+select * from dblink('fence_one', $q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+	for update$q$) as t(x integer);
+select * from dblink('fence_one', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
+	for update$q$) as t(x integer);
+do $$
+declare v_answer text := pg_temp.settled('fence_three', format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)::text',
+	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), jsonb_build_object('schema', 'qorpera.office-shell-report/v1',
+		'screens', jsonb_build_array(jsonb_build_object('screenId', current_setting('qorpera_test.screen'), 'busy', false,
+			'open', jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')), 'ended', '[]'::jsonb)))));
+begin
+	perform dblink_exec('fence_one', 'rollback');
+	perform pg_temp.check(v_answer like '{%"paused": false%}', 'the report answers under a held folder fence and company row: ' || v_answer);
+end $$;
 
 -- A busy job keeps the computer awake and Ada's seat, for 90 seconds after its last busy report.
 select pg_temp.check(pg_temp.shells(true, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
@@ -384,11 +428,15 @@ select pg_temp.shells(false, (select jsonb_agg(pg_temp.open_item(100 + n, 'not s
 	from generate_series(1, 64) n)) \g /dev/null
 select pg_temp.check((pg_temp.command_row(1)).ended_at is null, 'a full list ends nothing it leaves out');
 rollback;
-select pg_temp.check(pg_get_functiondef('public.qorpera_begin_runtime_office_lifecycle(jsonb)'::regprocedure)
-	like '%update public.qorpera_runtime_office_shell_commands set ended_at=clock_timestamp(),end_reason=''closed''%'
-	and pg_get_functiondef('public.qorpera_reconcile_runtime_office_idle(jsonb,bigint,uuid,text,integer)'::regprocedure)
-	like '%end_reason=''slept''%perform public.qorpera_begin_runtime_office_lifecycle(v_request);%',
-	'sleep ends commands as slept before the stop; any other stop of the computer ends them as closed');
+-- Any other stop of the computer (the provider's lifecycle request, here a power-off) ends what still runs as closed.
+begin;
+select public.qorpera_begin_runtime_office_lifecycle(jsonb_build_object('schema', 'qorpera.office-lifecycle-request/v1',
+	'transitionId', '87000000-0000-4000-8000-0000000000e9', 'action', 'power_off', 'activationId', '87000000-0000-4000-8000-0000000000f1',
+	'providerId', '87000000-0000-4000-8000-0000000000b0', 'providerPolicySha256', repeat('f', 64),
+	'startup', current_setting('qorpera_test.startup')::jsonb)) \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).end_reason = 'closed' and (pg_temp.command_row(2)).end_reason = 'exited',
+	'any other stop of the computer ends what still runs as closed');
+rollback;
 
 -- 4. A worker's command is told in the conversation that dispatched the worker. The worker run is synthetic: a copy of
 --    Ada's run outside any conversation, with a dispatch wake naming a worker whose steering run is Ada's run.
