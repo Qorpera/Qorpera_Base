@@ -317,7 +317,8 @@ export async function folderWriterFixture(
 						// SQL's resume rule: a paid save of the active file, unchanged, ends the platform's pause, and a paid edit
 						// that makes a new version (a new title, instructions, trigger with its time zone and reply, or effort)
 						// ends a wait for a login; any other edit keeps the pause. A change of the file's status overrides, and so
-						// does a changed routine over an ended one.
+						// does a changed routine over an ended one. An archive's pause ends once the agent is active again, which
+						// the fixture's agent always is.
 						const state = routineStates.get(key);
 						const same = JSON.stringify(next) === JSON.stringify(previous);
 						const version = (routine: RoutineFile | null) =>
@@ -332,7 +333,9 @@ export async function folderWriterFixture(
 							]);
 						const platform =
 							state?.status === "paused" &&
-							["member", "authorization_failed", "needs_model_account"].includes(state.pauseReason ?? "");
+							["member", "authorization_failed", "needs_model_account", "agent_archived"].includes(
+								state.pauseReason ?? "",
+							);
 						if (previous && next.status !== previous.status) routineStates.delete(key);
 						else if (
 							platform &&
