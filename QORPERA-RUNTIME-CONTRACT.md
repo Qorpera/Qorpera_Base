@@ -4742,10 +4742,10 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    infrastructure guard for the node's connection table, far above normal use, and not a limit on the work.
    - The node's own connection table holds 262,144 entries (read on both nodes, 2 October). In phase 1 each agent
      connection takes one entry in the exit's own table and one, the masqueraded leg, in the node's; the node does
-     not track the bridged leg (step E2). The total bounds open connections only: a closed connection stays in both
-     tables for a while (120 seconds by default), and a refused attempt in the exit's (10 seconds for TCP, 30 for
-     UDP, 600 for other protocols). Step E2's proof on LXD measures the tables under such floods, and the total's
-     cost, before any node is switched on.
+     not track the bridged leg (step E2). The total bounds open connections only: a closed agent TCP connection
+     stays in both tables for 30 seconds (the kernel's default, 120, is shortened for agent connections only), and a
+     refused attempt in the exit's (10 seconds for TCP, 30 for UDP, 600 for other protocols). Step E2's proof on LXD
+     measured the tables under such floods, and the total's cost, before any node is switched on.
    - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
      bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
    - One company with six busy machines on a node could reach the node's total; until its connections close, every

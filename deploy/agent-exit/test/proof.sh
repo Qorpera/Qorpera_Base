@@ -375,6 +375,15 @@ connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
 wait_for "grep -q '1.1.1.1:443 192.168.1.42' $work/lan-peers"
 grep -q '1.1.1.1:443 10\.' "$work/lan-peers" && fail "a site saw an inside address"
 pass "a website is reached, and sees the node's address (phase 1)"
+# The site closed that connection: both tables hold it in TIME_WAIT for at most 30 seconds (the kernel's default 120).
+time_wait_left() { "$@" conntrack -L -p tcp --state TIME_WAIT -d 1.1.1.1 2>/dev/null | awk '$4 == "TIME_WAIT" {print $3}' | sort -n | tail -1; }
+connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
+wait_for "[[ -n \$(time_wait_left ip netns exec qexit) ]]"
+exit_left=$(time_wait_left ip netns exec qexit)
+wait_for "[[ -n \$(time_wait_left) ]]"
+node_left=$(time_wait_left)
+((exit_left <= 30 && node_left <= 30)) || fail "a closed agent connection is held ${exit_left}s in the exit and ${node_left}s on the node"
+pass "a closed agent connection is held at most 30 seconds in both tables (exit ${exit_left}s, node ${node_left}s left)"
 if ((br_netfilter)); then
 	ip netns exec qexit conntrack -L -s 10.210.1.1 2>/dev/null | grep -q 'dport=443' || fail "the exit did not track the connection"
 	host_legs=$(conntrack -L -s 10.210.1.1 2>/dev/null | grep -c . || true)

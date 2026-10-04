@@ -28,8 +28,8 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address until E2's NIC filtering pins each machine to one); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
-| `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
+| `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `verify`, `health`, `status` |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one |
 | `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
@@ -205,7 +205,7 @@ test machine, covers the first three.
 node scripts/run-on-node.mjs --machine node01 --sudo --no-install --no-status -- bash deploy/agent-exit/test/prove-lxd-vm.sh </dev/null
 ```
 
-It changes nothing of the test machine's own kernel or network. It claims an LXD project, makes a throwaway VM with no
+It changes nothing of the test machine's own network. It claims an LXD project, makes a throwaway VM with no
 network card in it, pushes in LXD 6.9 rev 40424 (the nodes' revision), a container image and two packages (the VM is
 offline), and runs `test/prove-lxd.sh` inside. That VM has its own kernel and LXD: it loads br_netfilter, builds the
 exit and plugs real LXD containers in the creators' way. Afterwards the test machine's links (but Docker's), nft
@@ -244,11 +244,12 @@ What the numbers say:
   and then 7.7 s, and 8.8 s and then 13.9 s in three runs, the second each time while another machine flooded and the
   exit held over 14,000 entries. At this scale it is below the noise.
 - Closed connections are not bounded: one machine opening and closing about 1,300 connections a second leaves about
-  20,000 entries in each table, each held for the kernel's default 120 s (TIME_WAIT). Kept up towards many
-  destinations, one machine could hold over 150,000 of the node's 262,144. The same entries hold the exit's
-  masqueraded source ports towards each destination, which every company on the node shares. Proposed next step: a
-  shorter TIME_WAIT for agent connections only (a `ct timeout` policy on the node's masqueraded leg and the exit
-  namespace's own timeout), and the line guard's burst brake (E7). Phase 2 (E9) drops the node's leg altogether.
+  20,000 entries in each table. At the kernel's default 120 s (TIME_WAIT), kept up towards many destinations, one
+  machine could hold over 150,000 of the node's 262,144, and the same entries hold the exit's masqueraded source
+  ports towards each destination, which every company on the node shares. So agent TCP connections are held 30 s
+  once closed, in both tables (`ct timeout agent_tcp`, set for new agent connections only; the node's own traffic
+  keeps the defaults): a quarter of that. The line guard's burst brake (E7) bounds the rate itself; phase 2 (E9)
+  drops the node's leg altogether.
 
 ## Notes for later steps
 
@@ -257,7 +258,7 @@ What the numbers say:
 - The per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine to its
   address. A reload of the rules starts both counts again from zero. The node's table holds 262,144 entries (read on
   both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. Closed
-  connections are not bounded (E2b's floods above): a follow-up gives agent connections a shorter TIME_WAIT. Proofs
+  connections are not bounded but leave after 30 s (E2b's floods above; E7's brake bounds their rate). Proofs
   that change a kernel run in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel
   modules there changes the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every
   bridge on it).
