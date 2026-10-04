@@ -4,11 +4,12 @@
 -- again with the same id revives it. The request no longer refuses `tables/` and deletes the retired rows built from the
 -- files it erases, as it deletes H2's task and contact rows:
 -- * a plain read through the row's (environment_id, folder_key) index, with the key range written out;
--- * rank 5, after the contact index (the last table in qorpera_folder_structured_lock's order), FOR UPDATE, in
---   'environment_id:id' key order, before rank 6;
+-- * rank 5, after the contact index (the table index is last in qorpera_folder_structured_lock's table order), FOR
+--   UPDATE, in 'environment_id:id' key order, before rank 6;
 -- * the QRC01 re-read after the paths covers it too;
--- * only a retired row whose files lie before its root's cutoff (qorpera_folder_erasure_row_before, on its definition and,
---   when it has one, its rows), so a live table, or one revived meanwhile, is never touched.
+-- * under its lock, a row that is still retired and still under the root (a table revived meanwhile, here or at another
+--   path, is live and stays), whose files lie before its root's cutoff (qorpera_folder_erasure_row_before, on its
+--   definition and, when it has one, its rows); the reply counts those.
 -- The row holds no file text (path, key, versions, commit), so no placeholder is needed. Every patched body carries the
 -- marker 20260930028000 for the deploy guard.
 
@@ -74,7 +75,17 @@ $old$,
 			where i.retired_at is not null and not i.id = any(v_tables))
 $new$);
 
--- The reply counts them.
+-- Under the locks, the rows the request deletes (as P18b narrows its own), and the reply counts those.
+select pg_temp.p18c_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	v_erased := jsonb_build_object('agents', cardinality(v_staff_ids),$old$,
+	$new$	-- 20260930028000 (P18c): the table rows still retired, still under their root and before its cutoff.
+	v_tables := array(select i.id from public.qorpera_folder_table_index i
+		join jsonb_array_elements(v_roots) r on public.qorpera_folder_erasure_covers(r ->> 'key', i.folder_key)
+		where i.environment_id = p_environment_id and i.id = any(v_tables) and i.retired_at is not null
+			and public.qorpera_folder_erasure_row_before(r, i.commit_id, i.definition_version)
+			and (i.rows_version is null or public.qorpera_folder_erasure_row_before(r, i.commit_id, i.rows_version))
+		order by i.id);
+	v_erased := jsonb_build_object('agents', cardinality(v_staff_ids),$new$);
 select pg_temp.p18c_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
 	$old$		'rules', cardinality(v_rules));$old$,
 	$new$		'rules', cardinality(v_rules), 'tables', cardinality(v_tables)); -- 20260930028000 (P18c)$new$);
