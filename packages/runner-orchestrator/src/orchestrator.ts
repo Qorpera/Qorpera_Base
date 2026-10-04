@@ -226,6 +226,8 @@ export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freez
 	Object.freeze({ name: "listen", companyLimit: 32 }),
 	// A company machine's events, to the runs that started the work (C1c-3i-b): up to 8 parents a step.
 	Object.freeze({ name: "machine_events", companyLimit: 8 }),
+	// The one idle rule's check-ins: it asks about busy programs, then continues up to 8 parents a step.
+	Object.freeze({ name: "machine_checkins", companyLimit: 8 }),
 ]);
 
 /** A page of folder-v2 environments with work for one drain. */
