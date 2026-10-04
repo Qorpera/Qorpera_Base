@@ -311,46 +311,6 @@ describe("receipt-bound immutable office captures", () => {
 		);
 		expect(JSON.stringify(f.asset)).not.toContain(token);
 	});
-	it("keeps a folder-v2 capture for the model only: no upload, the receipt names it, read once from memory", async () => {
-		const f = await fixture();
-		const asset = { ...f.asset, assetId: f.context.receiptId };
-		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
-			f.calls.push(`${method}:${args.p_action ?? "read"}`);
-			return args.p_action === "authorize" ? { state: "authorized", storage: "none" } : { ...asset };
-		});
-		await expect(f.publish()).resolves.toEqual(asset);
-		expect(f.put).not.toHaveBeenCalled();
-		expect(f.objects).not.toHaveBeenCalled();
-		await expect(f.screenshots.read(asset, f.stop.signal)).resolves.toEqual(Uint8Array.from(f.bytes));
-		expect(f.get).not.toHaveBeenCalled();
-		expect(f.calls).toEqual([
-			"qorpera_native_office_capture:authorize",
-			"qorpera_native_office_capture:publish",
-			"qorpera_read_native_office_capture:read",
-			"qorpera_read_native_office_capture:read",
-		]);
-		// Handed to the model once: a later read finds no held pixels.
-		await f.screenshots.read(asset, f.stop.signal);
-		expect(f.get).toHaveBeenCalledOnce();
-	});
-	it("refuses a folder-v2 capture that does not name its receipt", async () => {
-		const f = await fixture();
-		f.call
-			.mockResolvedValueOnce({ state: "authorized", storage: "none" })
-			.mockResolvedValueOnce({ ...f.asset, assetId: randomUUID() });
-		await expect(f.publish()).rejects.toThrow("OFFICE_CAPTURE_UNCONFIRMED");
-		expect(f.put).not.toHaveBeenCalled();
-	});
-	it.each([
-		{ state: "authorized", storage: "object" },
-		{ state: "authorized", storage: "none", extra: true },
-	])("refuses an unknown capture storage %j before any upload", async (answer) => {
-		const f = await fixture();
-		f.call.mockResolvedValueOnce(answer);
-		await expect(f.publish()).rejects.toThrow("OFFICE_CAPTURE_UNCONFIRMED");
-		expect(f.put).not.toHaveBeenCalled();
-		expect(f.call).toHaveBeenCalledOnce();
-	});
 	it("parses only immutable image references, never URLs or paths", async () => {
 		const f = await fixture();
 		expect(() => parseCompanyComputerScreenshotAsset({ ...f.asset, url: "file:///secret" })).toThrow();

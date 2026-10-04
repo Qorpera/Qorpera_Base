@@ -538,8 +538,7 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office and the self-approval until C1c-3 (machine start serves folder-v2 since C1c-3f, test 824; an
--- agent's screenshot since C1c-3l part 3, test 891, which keeps nothing); the
+-- 9. Refusals: the office and the self-approval until C1c-3 (machine start serves folder-v2 since C1c-3f, test 824); the
 -- runner broker's send, direct receipts
 -- and transcript append until C3 (the native send, the interaction request and the tool operation receipts have folder
 -- bodies since C1c-2b, tests 650 and 652). The same calls on a snapshot-v1 company are not refused as folder-v2.
@@ -552,6 +551,8 @@ begin
 		foreach v_sql in array array[
 			format('select public.qorpera_native_office_start(%L, %L, %L, %L, %L)', v, '{}', 'start', extensions.gen_random_uuid(), repeat('a', 64)),
 			format('select public.qorpera_native_office_start_descriptor(%L, false)', v),
+			format('select public.qorpera_native_office_capture(%L, %L, %L, %L, %L, %L, %L, %L)', v, '{}', '{}', '{}',
+				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_office_file_export(%L, %L, %L, %L, %L, %L, %L, %L)', v, '{}', '{}', '{}',
 				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_shared_file_export_source(%L, %L)', v, '{}'),
