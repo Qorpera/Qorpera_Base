@@ -915,7 +915,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
 | Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks. P15's name copy alone takes `FOR NO KEY UPDATE SKIP LOCKED` (§3 step 3) |
-| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A transaction over several companies takes one company per transaction, or every company's fence in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or deletion's finisher batch `FOR UPDATE` (C1C §6.10) |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A loop over several companies handles one company per transaction, or takes every company's fence in one transaction in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or `FOR UPDATE` (deletion's finisher batch, C1C §6.10) |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post, a room delivery's retry and a member's answer in an agent's thread take their room `FOR SHARE` (C1C §6.2, §6.3) |
@@ -997,7 +997,11 @@ whose read set holds N paths, alone, with function statistics. Its first
 finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
 later slices"). Its second was the upload's presence check, which under a plan
 that scanned the company's catalog first checked every object it stores, fixed
-by P24c (C1D §7). It reports statements running over 2 s with their wait
+by P24c (C1D §7). A third, from P17's review rather than the load: a file
+reference's byte check hashed the company's catalog for every file and copied
+the commit's locked array for every file or object, so a new folder of 10,000
+new files took 87 s; P24d (C1D §4) makes it 4.5-5.6 s, and a copy of it 2.9 s
+rather than 17 s. The script reports statements running over 2 s with their wait
 events, statements over 1 s with their plans (auto_explain), and PL/pgSQL
 functions by self time over the load. Since C1c-3i every migration change runs it short (run-on-node's
 `folder-core-load` step: 16 runs for 30 s and a 5,000-path read set), in place
