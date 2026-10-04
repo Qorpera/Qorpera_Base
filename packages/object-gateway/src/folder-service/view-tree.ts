@@ -153,7 +153,8 @@ export class ViewTree {
 		const previous = this.#entries.get(e.path);
 		if (previous?.kind === "folder" && e.kind === "file") changed.push(...this.#removeBelow(e.path, replaced));
 		const next = entryOf(e, previous);
-		if (previous?.kind === "file" && (next.kind !== "file" || next.version !== previous.version)) replaced?.(previous);
+		if (previous?.kind === "file" && (next.kind !== "file" || next.version !== previous.version))
+			replaced?.(previous);
 		if (!previous || !same(previous, next) || previous.implicit) changed.push(e.path);
 		this.#link(next);
 		return changed;
