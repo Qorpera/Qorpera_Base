@@ -532,17 +532,18 @@ begin
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', v, 'coworker-secret-1', c_refused), '42501');
 	v_ga := public.qorpera_folder_grant(c_env, pg_temp.member(1), v_secret, 'staff_agent', c_a, array['read']) ->> 'grantId';
 	perform pg_temp.expect(pg_temp.commit(v, 'coworker-secret-2', '[{"op":"mkdir","path":"cw-secret-2"}]'), 1, 'saved');
-	-- While the parent's rows are unchanged the check reads resources and re-resolves no path; once one changed, it does.
-	set local track_functions = 'pl';
-	n := coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public' and funcname = 'qorpera_folder_actor_allowed'), 0);
+	-- While the parent's rows are unchanged the check reads resources and re-resolves no path; once one changed, it does
+	-- (since P24b, 20260930019500, every path at once through qorpera_folder_paths_authority, a SQL function).
+	set local track_functions = 'all';
+	n := coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public' and funcname = 'qorpera_folder_paths_authority'), 0);
 	if not public.qorpera_folder_parent_reads_allowed((select o from public.qorpera_wake_occurrences o where o.run_id = (v ->> 'runId')::uuid))
 		or coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public'
-			and funcname = 'qorpera_folder_actor_allowed'), 0) <> n then
+			and funcname = 'qorpera_folder_paths_authority'), 0) <> n then
 		raise exception 'An unchanged parent row re-resolves no path'; end if;
 	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), v_secret, v_gb);
 	if not public.qorpera_folder_parent_reads_allowed((select o from public.qorpera_wake_occurrences o where o.run_id = (v ->> 'runId')::uuid))
 		or coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public'
-			and funcname = 'qorpera_folder_actor_allowed'), 0) = n then
+			and funcname = 'qorpera_folder_paths_authority'), 0) = n then
 		raise exception 'A changed parent row re-resolves its paths for the recipient'; end if;
 	perform pg_temp.expect(pg_temp.commit(v, 'coworker-secret-3', '[{"op":"mkdir","path":"cw-secret-3"}]'), 1, 'saved');
 	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), v_secret, v_ga);
@@ -664,10 +665,13 @@ end $$;
 do $$
 begin
 	if exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and provolatile = 'v'
-		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant')) then
+		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant',
+			'qorpera_folder_paths_resources', 'qorpera_folder_paths_authority')) then
 		raise exception 'The read receipt helpers must stay stable'; end if;
+	-- P24b (20260930019500): the set-based twins give the receipts of a re-resolution now.
 	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace
-		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant')) <> 3 then
+		and proname in ('qorpera_folder_read_receipt', 'qorpera_folder_path_resource', 'qorpera_folder_agent_grant',
+			'qorpera_folder_paths_resources', 'qorpera_folder_paths_authority')) <> 5 then
 		raise exception 'The read receipt helpers are missing'; end if;
 end $$;
 

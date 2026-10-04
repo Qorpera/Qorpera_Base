@@ -299,8 +299,8 @@ set session_replication_role = replica;
 update public.qorpera_runtime_offices set state = 'provisioning' where id = current_setting('qorpera_test.office_id')::uuid;
 set session_replication_role = origin;
 
--- F. Adopting a replaced computer's screens is refused on folder-v2 until C1c-3k, before any lock: with the company row
---    held, the refusal comes at once.
+-- F. Adopting a replaced computer's screens (only ever a legacy computer's) is refused on folder-v2, before any lock:
+--    with the company row held, the refusal comes at once.
 select pg_temp.hold(pg_temp.company_hold('10'));
 do $$
 declare v_answer text := pg_temp.settled('fence_three', format(
@@ -310,7 +310,7 @@ declare v_answer text := pg_temp.settled('fence_three', format(
 begin
 	perform pg_temp.release();
 	if v_answer = 'WAITED' then perform pg_temp.outcome('fence_three'); end if;
-	if v_answer not like '0A000 Adopting a computer''s screens comes later%' then
+	if v_answer not like '0A000 Adopting a legacy computer''s screens is not available%' then
 		raise exception 'F: a folder-v2 adoption with screens refuses before any lock: %', v_answer; end if;
 end $$;
 

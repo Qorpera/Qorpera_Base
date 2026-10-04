@@ -1094,7 +1094,7 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 | A member's start, cancel, withdrawal and status; the provider's reserve and check (and their wrappers, before the assertion); the fleet offer and placement; the office's activation and its startup lock (`activate_runtime_office`, `lock_runtime_office_startup`, before the assertion) | gc fence, office, then the start's member or agent | `qorpera_folder_office_enter`: machine fence, the acting member and the start's requester (rank 1), the requesting agent's staff row (rank 2), then the office |
 | `member_office_catalog` | gc fence, member | machine fence, member |
 | `register_runtime_office` (a company's first computer) | gc fence; refused (path gateway 1 only) | machine fence, the owner or admin's member row, the seat lock (a second first registration waits and returns the same computer), the office rows |
-| `check_runtime_office_adoption` with a non-empty mapping (a replaced computer's screens) | gc fence, office, then the mapping's agents and members | refused with 0A000 before any lock, until C1c-3k |
+| `check_runtime_office_adoption` with a non-empty mapping (a replaced computer's screens) | gc fence, office, then the mapping's agents and members | refused with 0A000 before any lock; C1c-3k keeps the refusal (mappings come only from adopting a legacy computer, §6.11) |
 | Gates (registration, start source, guest binding, office reservation) | `path_gateway_version = 1` | also a ready folder-v2 Company File |
 | The interlock trigger | gc fence on every company-computer write | returns first: a folder-v2 company has no version-1 cutover |
 | A hire's default access (`runtime_office_default_access_for_staff`) | offices in scan order | offices by id (both cores) |
@@ -1131,7 +1131,7 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 - **Until C1c-3g**, an office path waiting at rank 0 behind a company deletion's gc fence holds the folder fence
   `KEY SHARE` that the purge's cascade wants: one 40P01 that heals on retry, as for 3f's sweep (§6.4).
 - **Not in 3j:** screens and their events and observations, the shared surface and restart-surface gates, access
-  configuration, the adoption mapping (refused above), the member's agent-office call (C1c-3k); an agent's start, the
+  configuration, the member's agent-office call (C1c-3k; the adoption mapping stays refused, §6.11); an agent's start, the
   descriptor and the activation-wake drain (C1c-3l). Capture and export stay refused (C1d, C3).
 
 ### 6.8 C1c-3h as built: coding machines (migration 20260930002300, test 826)
@@ -1257,6 +1257,53 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   grants-before-secrets order, but a broker seal takes the company row `KEY SHARE` first (#660), and the finisher now
   holds the row `FOR UPDATE` before it revokes (the gc fence on snapshot-v1), so the two meet at the row, not in a
   40P01. Account deletion stays an operator action (§6.6).
+
+### 6.11 C1c-3k part 1 as built: screens, restarts and power-off (migration 20260930019000, test 894)
+
+The coordinator's P06b, first of two PRs (plan `outputs/company-accounts/p06-office-folder-v2-plan.md`; the PR lists the
+33 callers of the provider's assertion and their locks after 3j). Folder-v2 only, by the founder's decision of 3 October: each patch is a
+folder-v2 branch, and the statement that was there before stays untouched in its `else` until snapshot-v1 is removed.
+
+| Path | Before (on folder-v2) | Now |
+|---|---|---|
+| The three successor activations (restart, reset, host reboot) | status call (the office) first, then the activation's prelude: the start's requester and agent after the office | `qorpera_folder_office_enter_successor(request)`: 3j's prelude for the activation's start before the status call |
+| Restart surfaces, shared surface, screen v1, disposal | `path_gateway_version = 1` gates: every restart path, every screen heartbeat, the agent's screen tool and disposal refused | also a ready folder-v2 Company File; the restart gate opens only with the successors ordered |
+| Screen event cleanup, observation retention, disposal, `member_agent_office` 'new', the office power-off (`suspend_runtime_node_machine`) | gc fence | machine fence (the folder fence and rank 0 `KEY SHARE`); the rest as before |
+| A member's start status | 3j's prelude, then the office, member and intent `FOR SHARE` | plain reads: a poll never waits for a folder stop |
+| Adopting a computer's screens (a non-empty mapping) | refused with 0A000 "comes later" (3j) | still refused, for good: the orchestrator builds mappings only to adopt a legacy computer (`lxd-office-adoption-plan.ts`, `input.legacy`), which a folder-v2 company never has |
+
+- **Test 894** (648's committed fixture; "must not wait" calls are sent while another session holds the company row
+  `FOR NO KEY UPDATE`). It starts the company's computer as 893 does, then:
+  - A: start status with the folder fence, the computer and the owner's member row all held `FOR UPDATE`;
+  - B: the owner opens Ada's screen, the shared surface passes its gate, and the first heartbeat makes the screen's
+    lifetime. The cleanup event (DESKTOP_REAPED) doesn't wait. B2: retention gets past its identity checks to its
+    fence and doesn't wait;
+  - C: the office power-off's node suspend doesn't wait;
+  - D: with the computer in maintenance, the restart check passes its gate and finds the allocation;
+  - E: with scale-out on and the computer in maintenance, a member's new computer for Ada is added without waiting;
+  - F: each successor activation, sent while the owner's member row is held, waits there holding no office;
+  - G: exactly 14 bodies name the migration (13 patched functions and the successor's prelude).
+  893 F now expects the new refusal text.
+- **Not tested here:** the screen v1 gate (the agent's screen tool, through a folder-v2 run's tool authority) and the
+  operator's disposal (a signed delete document). Both are one-line changes of the same shape as the tested ones.
+- **Open after part 1 (review r1), for part 2:**
+  - A new computer for an agent (and 3j's first registration) no longer waits for another agent's hire or return. If
+    both run together, the new computer can miss the hired agent's default access row, and placement then skips that
+    computer for the agent. Part 2 has 'new' and registration share the company's staff rows (rank 2) before the seat
+    lock. Taking the seat lock in the hire's office walk instead would make a cycle, since 'new' takes staff after it.
+  - The shared-surface gate makes `office_screen_browser_grant` reachable; it shares the viewer's member row after the
+    office (`assert_runtime_office_viewer`). That is not a live cycle before C1c-3l's pin.
+- **Not in part 1 (part 2, 20260930019100):**
+  - access configuration and its status (a per-company serializer: swapping the gc fence alone deadlocks two capability
+    changes of one agent on two computers);
+  - opening a screen;
+  - the private screen event;
+  - the viewers and the screen's browser grant;
+  - the agent's screen tool through a folder-v2 run (which also tests the screen v1 gate);
+  - the view-anchor tests.
+  Part 2's bodies name its own slot, so 894 G's count of 14 stays.
+
+  C1c-3l: an agent's own start and the wake drain.
 
 ## 7. Traps for C1c-2 and C1c-3
 

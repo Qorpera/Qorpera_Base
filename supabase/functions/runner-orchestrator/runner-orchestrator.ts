@@ -50,6 +50,18 @@ export type RunnerOrchestratorRequest =
 			routineId: string;
 			expectedVersion: number;
 	  }
+	| {
+			action: "folder_materialize_due";
+			orchestratorId: string;
+			afterProfileId?: string;
+			limit: number;
+	  }
+	| {
+			action: "folder_materialize_company";
+			orchestratorId: string;
+			profileId: string;
+			limit: number;
+	  }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| {
@@ -226,6 +238,23 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				orchestratorId,
 				routineId: uuid(input.routineId, "routine id"),
 				expectedVersion: integer(input.expectedVersion, "routine version", 1_000_000),
+			};
+		// Folder-v2 runs, one company per request (folder core C4, P28).
+		case "folder_materialize_due":
+			return {
+				action: input.action,
+				orchestratorId,
+				...(input.afterProfileId === null || input.afterProfileId === undefined
+					? {}
+					: { afterProfileId: uuid(input.afterProfileId, "company cursor") }),
+				limit: integer(input.limit, "company page limit", 500),
+			};
+		case "folder_materialize_company":
+			return {
+				action: input.action,
+				orchestratorId,
+				profileId: uuid(input.profileId, "company id"),
+				limit: integer(input.limit, "materialization limit", 16),
 			};
 		case "reconcile":
 		case "retained":

@@ -4,7 +4,6 @@ import { CloudApi } from "../src/cloud/api.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type {
 	HostedCompanyFile,
-	HostedCompanyProposal,
 	HostedCompanySnapshot,
 	HostedProfile,
 	HostedProfileTeam,
@@ -101,25 +100,6 @@ export const file: HostedCompanyFile = {
 	objectBackends: ["supabase-storage"],
 	createdAt: timestamp,
 	updatedAt: timestamp,
-};
-export const proposal: HostedCompanyProposal = {
-	proposalId: id(13),
-	profileId: profileA.profileId,
-	environmentId: profileA.environmentId,
-	clientProposalId: id(14),
-	baseSnapshotId: id(15),
-	proposalSnapshot: snapshot,
-	execution: { kind: "run", id: id(16), claimantId: id(16) },
-	trailEndSequence: 1,
-	reason: "policy",
-	title: "Fixture proposal",
-	reviewerStaffIds: [],
-	reviewRevision: 1,
-	reviews: [],
-	status: "open",
-	createdByUserId: userA.id,
-	createdByName: "Account A",
-	createdAt: timestamp,
 };
 
 export function event(sequence: number, text = `Message ${sequence}`): HostedSessionEvent {
@@ -273,13 +253,6 @@ export function fixture() {
 		meteredUntil: "2026-09-28T18:00:00Z",
 		waitingForHours: false,
 	});
-	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
-	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);
-	vi.spyOn(api, "usesPathGateway").mockResolvedValue(false);
-	vi.spyOn(api, "listProposals").mockResolvedValue({ items: [proposal], hasMore: false });
-	vi.spyOn(api, "getProposal").mockResolvedValue(proposal);
-	vi.spyOn(api, "getSnapshot").mockResolvedValue(snapshot);
-	vi.spyOn(api, "listProposalComments").mockResolvedValue({ items: [], hasMore: false });
 	return {
 		api,
 		cloud,

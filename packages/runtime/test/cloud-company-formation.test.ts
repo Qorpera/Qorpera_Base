@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+	COMPANY_STATE_COFOUNDER_HANDLE,
+	COMPANY_STATE_FIRST_TODO_PATH,
+	companyStateSeedTree,
+} from "@qorpera/cloud-client/company-state-files";
+import {
 	COMPANY_FORMATION_PATH,
 	COMPANY_FORMATION_SCHEMA,
 	COMPANY_FORMATION_STAGES,
@@ -13,6 +18,8 @@ import { describe, expect, it } from "vitest";
 
 const formationId = "11111111-1111-4111-8111-111111111112";
 const cofounderStaffAgentId = "22222222-2222-4222-8222-222222222223";
+const cofounderId = "33333333-3333-4333-8333-333333333334";
+const firstTodoId = "44444444-4444-4444-8444-444444444445";
 
 function document(state: string, status: string, revision: number, extra: Record<string, unknown> = {}): string {
 	return JSON.stringify({
@@ -40,24 +47,42 @@ describe("company formation keys", () => {
 		expect(names(statuses![1]).sort()).toEqual([...COMPANY_FORMATION_STATUSES].sort());
 	});
 
-	it("gives the Co-Founder every stage key, the fields and the one-step rules, never to be named to the founder", () => {
+	it("points the Co-Founder at the company folder's own files, with no formation file or stages (P28b)", () => {
 		const cofounder = cloudRuntimeHireBehavior("cofounder");
-		expect(cofounder).toContain(`Its stage keys, in order, are ${COMPANY_FORMATION_STAGES.join(", ")}.`);
-		expect(cofounder).toContain(COMPANY_FORMATION_SCHEMA);
-		for (const field of ["formationId", "cofounderStaffAgentId", "state", "status", "revision"])
-			expect(cofounder).toContain(field);
-		for (const status of COMPANY_FORMATION_STATUSES) expect(cofounder).toContain(status);
-		expect(cofounder).toContain("never skipping a stage or going back");
-		expect(cofounder).toContain("exactly one more than the file's");
-		expect(cofounder).toContain("once completed it stays completed");
+		// The paths the creation's seed tree writes (companyStateSeedTree, #749).
+		for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
+		expect(cofounder).toContain("Your first todo, Start with the founders, is to shape vision/vision.md with them");
+		expect(cofounder).toContain("done when every founder has agreed their part of the vision");
+		// The founders wrote the vision at the founding table: the hello, after any acknowledgement, builds on it.
 		expect(cofounder).toContain(
-			"Each write is a proposal the founder approves, and the file keeps its stage until then",
+			"Before your hello (after any acknowledgement your reply policy asks for), read vision/vision.md",
 		);
-		expect(cofounder).toContain("stages that are your private map and are never named to the founder");
-		expect(cofounder).toContain("Never name these keys to the founder either.");
-		const employee = cloudRuntimeHireBehavior("employee");
-		for (const key of [...COMPANY_FORMATION_STAGES, COMPANY_FORMATION_SCHEMA, "formation.json"])
-			expect(employee).not.toContain(key);
+		expect(cofounder).toContain(
+			"Only when the vision says nothing yet, ask instead whether they are starting from a blank page",
+		);
+		// Every path and the first todo's title it names are the seed tree's.
+		const seeded = companyStateSeedTree({
+			companyName: "Nordlys Kaffe",
+			cofounderId,
+			firstTodo: { id: firstTodoId, requestedBy: null },
+		});
+		const paths = new Set(seeded.map((entry) => entry.path));
+		for (const path of ["vision/vision.md", "agents/sections.md"]) expect(paths.has(path)).toBe(true);
+		expect(paths.has(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
+		const todo = seeded.find((entry) => entry.path === COMPANY_STATE_FIRST_TODO_PATH);
+		expect(todo?.text).toContain("title: Start with the founders");
+		expect(todo?.text).toContain("Done when every founder has agreed their part of the vision.");
+		// Stage keys such as "research" are ordinary words; the list, the schema and the file are not.
+		for (const overlay of [cofounder, cloudRuntimeHireBehavior("employee")]) {
+			for (const key of [
+				COMPANY_FORMATION_STAGES.join(", "),
+				"stage keys",
+				COMPANY_FORMATION_SCHEMA,
+				"formation.json",
+				"organization/",
+			])
+				expect(overlay).not.toContain(key);
+		}
 	});
 
 	// The gateway then reads the file where bootstrap wrote it, COMPANY_FORMATION_PATH.

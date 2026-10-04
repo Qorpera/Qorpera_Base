@@ -12,17 +12,29 @@ describe("company routes", () => {
 		});
 	});
 
-	it.each(["approvals", "organization", `project/00000000-0000-4000-8000-000000000001`])(
-		"opens the company home for the removed %s page",
-		(section) => {
-			// Settings no longer links to Approvals or Organization; old links land on the company home.
-			expect(parseRoute(`#/c/${profileA.profileId}/${section}`)).toEqual({
-				name: "company",
-				profileId: profileA.profileId,
-				section: "home",
-			});
-		},
-	);
+	it.each([
+		"approvals",
+		"organization",
+		`project/00000000-0000-4000-8000-000000000001`,
+		`snapshot/00000000-0000-4000-8000-000000000002`,
+		`proposal/00000000-0000-4000-8000-000000000003`,
+	])("opens the company home for the removed %s page", (section) => {
+		// Settings no longer links to Approvals or Organization, and every company is a folder now, with no
+		// snapshot or proposal pages; old links land on the company home.
+		expect(parseRoute(`#/c/${profileA.profileId}/${section}`)).toEqual({
+			name: "company",
+			profileId: profileA.profileId,
+			section: "home",
+		});
+	});
+
+	it("opens the Company File for its removed history page", () => {
+		expect(parseRoute(`#/c/${profileA.profileId}/file/history`)).toEqual({
+			name: "company",
+			profileId: profileA.profileId,
+			section: "file",
+		});
+	});
 });
 
 describe("account routes", () => {
