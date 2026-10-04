@@ -147,6 +147,27 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
   ```
   A 503 means a phase could not claim or reconcile (a fixed text says which); the next run tries again. `timed_out`
   means pg_net stopped waiting: that answer is lost, and the dry-run counts show what the run did.
+- **Failed calls.** The query above only finds the worker's own answers, so read the failures beside it, every
+  failure pg_net recorded and the schedule's own runs:
+  ```sql
+  select created, status_code, timed_out, left(error_msg, 120) as transport_error, left(content, 120) as answer
+  from net._http_response
+  where created > now() - interval '2 hours'
+    and (status_code is distinct from 200 or timed_out or error_msg is not null)
+  order by created desc
+  limit 24;
+
+  select start_time, status, left(return_message, 120) as message
+  from cron.job_run_details
+  where jobid = (select jobid from cron.job where jobname = 'qorpera-artifact-gc-worker')
+  order by start_time desc
+  limit 12;
+  ```
+  The first lists other schedules' failures too; the worker's fall on its five-minute marks. `{"error":"Unauthorized"}`
+  (401) means the key in Vault and the function secret differ: set the secret again from Vault (1.3, step 2). A 503
+  "not configured" means the function secret is missing. A transport error or a timeout with no answer means the call
+  never reached the worker, or the worker never answered: the dry-run counts show whether that run did anything. A
+  failed schedule run (second query) means the cron statement itself failed, such as a missing Vault name.
 - The gateway's health (`GET /healthz` on 127.0.0.1:18445): `replication.degraded` false. NAS-backed deletions go
   through its replication journal (a `delete` entry each).
 - **Left after catch-up** (statement 1's `kept` lines): the live company's objects, the member picture, and the
