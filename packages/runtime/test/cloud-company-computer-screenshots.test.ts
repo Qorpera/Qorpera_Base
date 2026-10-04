@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { CompanyComputerOperation } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
 	CloudCompanyComputerScreenshots,
+	CompanyComputerInlineScreenshots,
 	createHttpCompanyComputerScreenshots,
 	parseCompanyComputerCaptureGateway,
 	parseCompanyComputerScreenshotAsset,
@@ -314,5 +316,75 @@ describe("receipt-bound immutable office captures", () => {
 	it("parses only immutable image references, never URLs or paths", async () => {
 		const f = await fixture();
 		expect(() => parseCompanyComputerScreenshotAsset({ ...f.asset, url: "file:///secret" })).toThrow();
+	});
+});
+
+describe("captures stored nowhere (folder-v2, P06d)", () => {
+	const unstored = (f: Awaited<ReturnType<typeof fixture>>) =>
+		f.call.mockImplementation(async (method, args) => {
+			f.calls.push(`${method}:${args.p_action ?? "read"}`);
+			return args.p_action === "authorize"
+				? { state: "authorized", storage: "none" }
+				: { ...f.asset, assetId: f.context.receiptId };
+		});
+	it("uploads nothing, names the receipt and keeps the pixels once for the perform answer", async () => {
+		const f = await fixture();
+		unstored(f);
+		await expect(f.publish()).resolves.toEqual({ ...f.asset, assetId: f.context.receiptId });
+		expect(f.calls).toEqual(["qorpera_native_office_capture:authorize", "qorpera_native_office_capture:publish"]);
+		expect(f.objects).not.toHaveBeenCalled();
+		expect(f.screenshots.takeInline(f.context.receiptId)).toEqual(Uint8Array.from(f.bytes));
+		expect(f.screenshots.takeInline(f.context.receiptId)).toBeUndefined();
+	});
+	it("refuses a capture stored nowhere that does not name its receipt, and any other storage answer", async () => {
+		const f = await fixture();
+		unstored(f);
+		f.call.mockImplementationOnce(async () => ({ state: "authorized", storage: "none" }));
+		f.call.mockImplementationOnce(async () => ({ ...f.asset }));
+		await expect(f.publish()).rejects.toThrow("OFFICE_CAPTURE_UNCONFIRMED");
+		expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
+		for (const answer of [
+			{ state: "authorized", storage: "object" },
+			{ state: "denied", storage: "none" },
+		]) {
+			f.call.mockImplementationOnce(async () => answer);
+			await expect(f.publish()).rejects.toThrow();
+		}
+		expect(f.objects).not.toHaveBeenCalled();
+	});
+	it("reads pixels that came in the perform answer once, between both authority checks, and never fetches them", async () => {
+		const f = await fixture();
+		f.screenshots.holdInline(f.asset, f.bytes);
+		await expect(f.screenshots.read(f.asset, f.stop.signal)).resolves.toEqual(Uint8Array.from(f.bytes));
+		expect(f.calls).toEqual(["qorpera_read_native_office_capture:read", "qorpera_read_native_office_capture:read"]);
+		expect(f.objects).not.toHaveBeenCalled();
+		// Read once: a second read goes to the object store, as a stored capture does.
+		await f.screenshots.read(f.asset, f.stop.signal);
+		expect(f.get).toHaveBeenCalledOnce();
+	});
+	it("keeps no pixels that are not exactly the published capture's", async () => {
+		const f = await fixture();
+		const altered = Buffer.from(f.bytes);
+		altered[30] ^= 1;
+		expect(() => f.screenshots.holdInline(f.asset, altered)).toThrow("OFFICE_CAPTURE_CHANGED");
+		expect(() => f.screenshots.holdInline({ ...f.asset, width: 2 }, f.bytes)).toThrow("OFFICE_CAPTURE_CHANGED");
+		expect(() => f.screenshots.holdInline({ ...f.asset, url: "file:///x" } as never, f.bytes)).toThrow();
+		await f.screenshots.read(f.asset, f.stop.signal);
+		expect(f.get).toHaveBeenCalledOnce();
+	});
+	it("keeps at most four screenshots, each for at most a minute", () => {
+		let now = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => now);
+		const held = new CompanyComputerInlineScreenshots();
+		const ids = Array.from({ length: 5 }, () => randomUUID());
+		for (const id of ids) held.hold(id, Uint8Array.of(1));
+		expect(held.size).toBe(4);
+		expect(held.take(ids[0])).toBeUndefined();
+		expect(held.take(ids[4])).toEqual(Uint8Array.of(1));
+		now = 59_999;
+		expect(held.size).toBe(3);
+		now = 60_000;
+		expect(held.size).toBe(0);
+		expect(held.take(ids[1])).toBeUndefined();
 	});
 });
