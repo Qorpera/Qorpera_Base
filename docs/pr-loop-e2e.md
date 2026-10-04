@@ -9,7 +9,7 @@ exact-head review, pr-loop merge checks). It targets the branch
 The helper below implements the Gregorian leap-year rule for a year `y`:
 
 ```js
-const isLeapYear = (y) => y % 4 === 0 && y % 100 === 0;
+const isLeapYear = (y) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
 ```
 
 Pass a full year number, such as `2024`. It returns `true` for leap years
