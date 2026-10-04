@@ -1214,10 +1214,11 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
 - **Expiry (migration 20260930027000, test 889).** The legacy expiry sweep (`qorpera_expire_cloud_routines`) ran only
   inside the Company File drain, which P28 took out of the reconcile RPC. So the tick also ends `folder-v2` routines:
   - The list also names any `folder-v2` routine, of any origin and trigger, that is active or paused and past its
-    `expires_at`, paused company included. A company being deleted is left to its purge (C1c-3g: effects refuse).
+    `expires_at`, paused company included. A company being deleted is left to its purge (C1c-3g: effects
+    refuse).
   - The restore ends such a routine first: the company row `KEY SHARE`, the routine `FOR NO KEY UPDATE SKIP LOCKED`,
-    then `status = 'expired'`. It answers `ended`, or `changed` if the routine was extended, retired or concluded
-    meanwhile. The status triggers record whether it was active, and cancel a paused routine's queued runs. A routine
+    then `status = 'expired'`. It answers `ended`, or `changed` if the routine was extended, its end removed,
+    retired or concluded meanwhile. The status triggers record whether it was active, and cancel a paused routine's queued runs. A routine
     held by a save answers `busy`, and the next pass ends it.
   - The legacy sweep has no caller now, so a `snapshot-v1` routine no longer expires; none remains.
   - Known: a later save of the routine's file revives it while the file still says `status: active` (F2's rule, test

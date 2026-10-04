@@ -11,7 +11,7 @@
 --   already), the company row KEY SHARE (rank 0), the routine FOR NO KEY UPDATE SKIP LOCKED (rank 5), then
 --   status = 'expired' (the status triggers record whether it was active, and cancel a paused routine's queued runs).
 --   It answers `ended`, whether or not the company is paused, as the legacy sweep did; `changed` if the routine was
---   extended, retired or concluded meanwhile.
+--   extended, its end removed, retired or concluded meanwhile.
 -- The legacy sweep has no caller now, so a snapshot-v1 routine no longer expires (no snapshot-v1 company remains).
 -- The routine file keeps its status until core C2's queue writes platform statuses into files (STATE "Status"). The
 -- orchestrator needs no change: `ended` is one of the restore's answers.
@@ -79,14 +79,15 @@ $old$;
 	c_new constant text := $new$	if not found then raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
 	-- 20260930027000: a routine past its expiry ends first, paused company or not (the legacy sweep's rule), unless the
 	-- company is being deleted (its purge removes it; every effect refuses then, C1c-3g): the company row KEY SHARE
-	-- (rank 0), the routine FOR NO KEY UPDATE (rank 5), then its status. One changed meanwhile (extended, retired or
-	-- concluded) answers changed.
+	-- (rank 0), the routine FOR NO KEY UPDATE (rank 5), then its status. One changed meanwhile (extended, its end
+	-- removed, retired or concluded) answers changed.
 	if v_routine.status in ('active', 'paused') and v_routine.expires_at <= statement_timestamp()
 		and not public.qorpera_company_deleting(v_routine.profile_id) then
 		perform 1 from public.qorpera_profiles where id = v_routine.profile_id for key share;
 		select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id for no key update skip locked;
 		if not found then return jsonb_build_object('status', 'busy'); end if;
-		if v_routine.status not in ('active', 'paused') or v_routine.expires_at > statement_timestamp() then
+		-- Positive, so an end removed meanwhile (expires_at null) answers changed too.
+		if not coalesce(v_routine.status in ('active', 'paused') and v_routine.expires_at <= statement_timestamp(), false) then
 			return jsonb_build_object('status', 'changed'); end if;
 		update public.qorpera_cloud_routines set status = 'expired', pause_reason = null, updated_at = statement_timestamp()
 		where id = v_routine.id;
