@@ -1010,7 +1010,8 @@ the old code until the reset, so it is removed in C6:
 Some things are rewritten earlier, because the reset or the proof company
 needs them:
 - **By C4:** the observability functions on revisions
-  (20260828019970:244,367), so the proof company is visible.
+  (20260828019970:244,367), so the proof company is visible. Done in P32
+  (20260930032000): they read the folder core's commits, reviews and read sets.
 - **By C5:**
   - the Company File acceptance gates that launch item 19 names;
   - the SQL tests in `scripts/test-*.mjs` that use snapshots;
@@ -1174,7 +1175,8 @@ For `folder-v2` companies:
   "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
   returns".
 - The members' and clients' hint (the feed itself is C1f).
-- The observability views.
+- The observability views (P32, migration `20260930032000`: the operator's run and company queries read commits,
+  reviews and read sets).
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write
   and read files for `folder-v2`. No member writer of `folder-v2` files goes
