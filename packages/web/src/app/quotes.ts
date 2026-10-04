@@ -46,7 +46,7 @@ export function withQuoteRecords(
 	if (!quotes.length) return known;
 	const records = [...known];
 	for (const quote of quotes) {
-		const words = text.slice(unitIndex(text, quote.start), unitIndex(text, quote.end));
+		const words = wordsOf(text, quote);
 		if (!records.some((record) => record.words === words))
 			records.push({ words, source: quote.source, ref: quote.ref });
 	}
@@ -170,13 +170,30 @@ export function snapSelection(
 	return from <= to ? { start: from, end: to } : { start: to, end: to };
 }
 
-/** A draft with `addition` after it, a blank line between, and the records of both. */
+/** A draft with `addition` after it, a blank line between, and the records of both. Undefined when the addition
+ * quotes the same words as a quote the draft still holds, from somewhere else (two emails with one subject): one
+ * record per words would give the new quote the other's thread, and a draft can't keep both. A record whose quote
+ * is no longer in the draft gives way to the addition's. */
 export function appendQuoted(
 	draft: string,
 	known: readonly QuoteRecord[],
 	addition: QuotedText,
-): { text: string; records: readonly QuoteRecord[] } {
+): { text: string; records: readonly QuoteRecord[] } | undefined {
 	const kept = draft.trim();
 	const text = kept ? `${kept}\n\n${addition.text}` : addition.text;
-	return { text, records: withQuoteRecords(known, addition.text, addition.quotes) };
+	const added = withQuoteRecords([], addition.text, addition.quotes);
+	const held = new Set(placeQuotes(draft, known).map((quote) => wordsOf(draft, quote)));
+	const stale = new Set<string>();
+	for (const record of added) {
+		const other = known.find((item) => item.words === record.words);
+		if (!other || (other.source === record.source && other.ref === record.ref)) continue;
+		if (held.has(record.words)) return undefined;
+		stale.add(record.words);
+	}
+	const records = stale.size ? known.filter((record) => !stale.has(record.words)) : known;
+	return { text, records: withQuoteRecords(records, addition.text, addition.quotes) };
+}
+
+function wordsOf(text: string, quote: MessageQuote): string {
+	return text.slice(unitIndex(text, quote.start), unitIndex(text, quote.end));
 }

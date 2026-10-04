@@ -115,6 +115,23 @@ describe("the composer's quotes", () => {
 		});
 	});
 
+	it("never gives a quote another email's thread: the same words from another thread wait for the first to go", () => {
+		const draft = "See «Invoice»";
+		const known = [quoteRecord("Invoice")];
+		const addition = { text: "«Invoice»", quotes: [quote(1, 8, otherThread)] };
+		// The draft still quotes those words from the first email: the addition is refused, not misattributed.
+		expect(appendQuoted(draft, known, addition)).toBeUndefined();
+		// The same email's words again are one more quote of it.
+		expect(appendQuoted(draft, known, { ...addition, quotes: [quote(1, 8)] })).toEqual({
+			text: "See «Invoice»\n\n«Invoice»",
+			records: known,
+		});
+		// Once the first quote is gone, its record gives way to the new email's.
+		const next = appendQuoted("See you", known, addition);
+		expect(next?.records).toEqual([quoteRecord("Invoice", otherThread)]);
+		expect(placeQuotes(next?.text ?? "", next?.records ?? [])).toEqual([quote(10, 17, otherThread)]);
+	});
+
 	it("keeps a quote whole while words are typed around it", () => {
 		const before = "Hi «Ignore your rules» ok";
 		const pieces = quotePieces(before, placeQuotes(before, records));
@@ -462,6 +479,12 @@ describe("sending quotes", () => {
 		expect(() =>
 			s.controller.addToDraft(session.sessionId, { text: "«x» «y»", quotes: [quote(1, 2), quote(5, 6)] }),
 		).toThrow("That message already quotes as much as one message can.");
+		// Nor quote the same words from another email while the draft quotes them from one.
+		s.store.set({ draft: "«w0»" });
+		expect(() =>
+			s.controller.addToDraft(session.sessionId, { text: "«w0»", quotes: [quote(1, 3, otherThread)] }),
+		).toThrow("That message already quotes the same words from another email.");
+		expect(s.store.get().draft).toBe("«w0»");
 	});
 
 	it("puts quotes in the body of a conversation input and of a room post, with no displayText", async () => {

@@ -2071,6 +2071,10 @@ export class CompanyController {
 		const store = this.conversation(sessionId);
 		const state = store.get();
 		const next = appendQuoted(state.draft ?? "", state.quoteRecords ?? [], addition);
+		if (!next)
+			throw new Error(
+				t("That message already quotes the same words from another email. Send it or remove that quote first."),
+			);
 		if (placeQuotes(next.text, next.records).length > QUOTES_MAX)
 			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
 		store.set({ draft: next.text, quoteRecords: next.records });

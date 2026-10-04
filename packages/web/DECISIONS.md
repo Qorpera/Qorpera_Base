@@ -441,7 +441,10 @@ marks, as the cloud finds a draft's kept quotes. So the member's own marks
 around the same words as a quote carry that quote's record, an undo or paste
 that puts a quote back makes it a quote again, and a save never keeps a quote's
 words without its record (which the cloud would refuse). The records go once
-the message is sent.
+the message is sent. Since one record stands for its words, a message button
+that would quote the same words from another email (two emails with one
+subject) while the draft still quotes them is refused with a line saying so,
+rather than giving the new quote the other email's thread.
 
 **Rules out.** A rich-text composer with quote chips (a larger change to the
 field, its caret handling and shared drafts' text merging), and a row's value

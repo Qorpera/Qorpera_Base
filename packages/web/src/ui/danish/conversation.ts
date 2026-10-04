@@ -30,6 +30,8 @@ export const CONVERSATION: Record<string, string> = {
 		"En besked kan højst rumme {count} citater. Fjern nogle for at sende den.",
 	"That message already quotes as much as one message can. Send it or remove a quote first.":
 		"Den besked citerer allerede så meget, som én besked kan. Send den, eller fjern et citat først.",
+	"That message already quotes the same words from another email. Send it or remove that quote first.":
+		"Den besked citerer allerede de samme ord fra en anden mail. Send den, eller fjern det citat først.",
 	"Quoted from an email": "Citeret fra en mail",
 	"A quote in it can't be shared. Remove the quote to share your changes.":
 		"Et citat i den kan ikke deles. Fjern citatet for at dele dine ændringer.",
