@@ -1,6 +1,6 @@
 -- Company folder core, C1c-3l part 3 (the coordinator's audit P06c): an agent's screenshot of the Company Computer on a
 -- folder-v2 company is refused before its operation's receipt begins (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md
--- §6.17).
+-- §6.22).
 --
 -- Before, qorpera_native_office_capture refused folder-v2 with 0A000 only after the screenshot operation's receipt had
 -- begun: the receipt stayed open and fenced the run's later operations. Now qorpera_native_office_operation refuses a

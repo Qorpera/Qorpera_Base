@@ -281,7 +281,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). A screenshot never reaches `_capture` on folder-v2: its operation is refused at authorize since 3l part 3 (§6.17) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). A screenshot never reaches `_capture` on folder-v2: its operation is refused at authorize since 3l part 3 (§6.22) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -995,7 +995,8 @@ Decisions:
   same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
   the definition before 3f (824 H).
-- **Decided with 3f** (§6.1): the machine-event drain and the worker drain on `folder-v2` go with 3i. Both deliver to a
+- **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
+  the shared folder drains' `workers`). Both deliver to a
   parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
   `folder-v2` run is not told when its machine is running or its command ended). Who creates a `folder-v2` office stays
   with 3j.
@@ -1203,7 +1204,7 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
   row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
 - **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
-  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event and worker drains.
+  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
@@ -1552,10 +1553,10 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
   The member removal's prelude is `folder-v2` only. The account metadata's new order holds on both cores (every other
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
   snapshot-v1 text pins (since 3 Oct); 824 H reverses the node reservation's new layer first.
-- **Known window until P13's second part** (20260930036000, test 901): `qorpera_request_login_identity_recovery` and
-  `_account_refresh_identity_recovery` still take the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
-  reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). The two could deadlock on one sign-in when two
-  gateway processes act on it at once; one gateway handles one identity's work at a time. 901 pins the pair.
+- **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
+  `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
+  reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
+  processes acted on it at once. They now take no sign-in lock.
 - 838's `p13_allowed` list loses these sites when #779 merges: whichever of the two lands second deletes them.
 
 ### 6.15 C1c-3n as built: a run's machine and node updates (migration 20260930046000, test 849)
@@ -1689,7 +1690,154 @@ each `else`.
   folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
   ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
 
-### 6.17 C1c-3l part 3 as built: no screenshot on folder-v2 yet (migration 20260930030200, test 891)
+### 6.17 P13 part 2 as built: identity recovery and retirement (migration 20260930049000, test 901)
+
+F3's activation check (838) listed eleven `folder-v2` gc-fence holders in identity recovery and retirement. Each took the
+gc fence (the company row `FOR UPDATE`), on `folder-v2` a stall of every effect of the company; the login's and refresh's
+recovery requests also took the sign-in before it (§6.14's window).
+- **Recovery** (`qorpera_activate_identity_recovery`, `qorpera_cancel_identity_recovery`,
+  `qorpera_consent_identity_recovery`, `qorpera_request_identity_recovery`, `qorpera_request_login_identity_recovery`,
+  `qorpera_request_account_refresh_identity_recovery`, and `qorpera_recovery_locked`, the first step of
+  `qorpera_prepare_identity_key_release`, `qorpera_commit_identity_key_release`, `qorpera_complete_identity_recovery` and
+  `qorpera_identity_recovery_completion_authority`):
+  1. the caller's or the recovery service's unlocked check, as before (#575);
+  2. `qorpera_folder_identity_recovery_locks`: the fence `KEY SHARE` and rank 0 (`qorpera_folder_machine_fence`), then
+     every member row of the company `FOR SHARE` in user id order (rank 1);
+  3. the identity `FOR UPDATE`, the recovery, the target and the backups, as before.
+
+  Every member row, because the call chain reads members `FOR SHARE` after the identity: the caller, the recovery's owner
+  of record and the consenting member (activation, which consent and the requests call, reads the last two). Which rows
+  those are, and their roles, is only known there; holding them all first means none that exists then is newly locked
+  after the identity. A member who joins meanwhile can be, which is harmless: a row just committed holds nothing. It
+  blocks member writes (role changes, removals, rule saves, display names) for the length of a rare recovery call, never
+  a reader or a `KEY SHARE` (C1B §8). A nested activation calls the helper again and re-takes rows it holds.
+- **A member's recovery decision** (`qorpera_decide_member_identity_recovery`, patched too though it never took the gc
+  fence itself) runs `qorpera_review_member_identity_recovery`, which reads the identity `FOR SHARE`, before the request,
+  consent or cancellation that takes it `FOR UPDATE`. On master the gc fence in `qorpera_recovery_member_role`
+  serialized the whole decision per company. On `folder-v2` the decision now takes the helper and the identity
+  `FOR UPDATE` before the review, after an unlocked check of what the review requires (a caller it would refuse takes no
+  lock and gets the review's own error). Two decisions on one identity, or a decision and the removal of the identity's
+  owner, then queue instead of both upgrading the review's `FOR SHARE` (901 I).
+- **No sign-in held `FOR SHARE`** (C1B §8 gives the argument):
+  - a login's or refresh's recovery request reads its sign-in or refresh request with no lock, and checks it again under
+    the identity's lock: pending, not expired, and re-pinned to no other recovery epoch since the first read (what the
+    old `FOR SHARE` held still). A sign-in pinned to an older epoch than the identity's, which the gateway recovers
+    from after another node's recovery, still goes through (901 F);
+  - a key backup's preparation (`qorpera_prepare_identity_key_backup`, which the backup's completion calls) takes the
+    fence and rank 0, then its sign-in `FOR KEY SHARE` before the identity, because the backup and its receipt reference
+    the sign-in. `KEY SHARE` conflicts only with `FOR UPDATE`, which completions, repins and machine reservations take
+    before the identity too, and not with a new sign-in's cancellation. It is checked again under the identity's lock
+    the same way (pending or completed).
+
+  This closes §6.14's window.
+- **Fence and rank 0 only:** a recovery target's registration (`qorpera_register_identity_recovery_target`), the recovery
+  member role (`qorpera_recovery_member_role`, then its own member row) and an identity's retirement confirmation
+  (`qorpera_confirm_runtime_identity_retirement`). The registration and the confirmation then take the identity's
+  machine lock (C1B §8), which serializes two of them on one identity as the gc fence did: the second finds the first's
+  target or receipt and replays it, instead of failing on its key with 23505 (901 L). It also orders a confirmation
+  after a machine reservation of the identity still in flight. The confirmation needs nothing more: the node deletes the
+  volume on an unlocked read of `qorpera_runtime_identity_retirements_due` before it confirms, the confirmation only
+  records that evidence, and the deletion's finisher and purge take the fence `FOR UPDATE`.
+- **No cycle:**
+  - Against effects that hold only the company (`KEY SHARE` at the fence and rank 0), no conflict. Against a stop or a
+    resume (the fence `FOR UPDATE`), they wait at the fence holding nothing (901 B).
+  - Against member writes (member management and the removal's prelude, rule saves, display names, joins): all take
+    their member rows at rank 1 before any identity, so they wait for recovery or it waits for them holding no identity
+    (901 H, I).
+  - Against a new sign-in (the identity `FOR SHARE`, then the earlier sign-in `FOR NO KEY UPDATE`) and a completion (the
+    sign-in, then the identity): recovery holds no sign-in, the backup only `KEY SHARE` (901 C, D). A completion that
+    already holds the identity `KEY SHARE` takes its epoch trigger's `FOR SHARE` without queueing behind recovery's
+    waiting `FOR UPDATE`, and finishes first (901 E).
+  - Against a sign-in's or a run's machine reservation (the fence, rank 0, the requester's member row, the identity's
+    machine lock, the sign-in `FOR UPDATE`, the identity `FOR SHARE`): the member locks are compatible, recovery takes
+    neither the machine lock nor the sign-in, and the backup takes the sign-in before the identity, as they do (901 J).
+- **Snapshot-v1** keeps the gc fence in each `else` branch, untested (`folder-v2` only since 3 Oct).
+
+**Tests.** 901 (dblink, waits checked through `pg_blocking_pids`, locks probed `NOWAIT`):
+- A: beside a folder effect (the fence and the company row `KEY SHARE`), every call finishes: target registration, backup
+  preparation and completion, the three requests, consent, cancellation, a key release, the member role and a
+  retirement confirmation.
+- B: behind a stop's second phase, each call waits at the fence holding no identity, member row, sign-in, refresh
+  request or company row, then goes on.
+- C: a new sign-in cancels the earlier one at once while a login's recovery request and a backup's preparation on it wait
+  at the identity; both then refuse on their re-check. A refresh's request refuses the same way once its refresh request
+  is cancelled meanwhile.
+- D: a completion holds the sign-in and the identity `KEY SHARE`; the request waits for it at the identity, holding an
+  uninvolved member's row, then refuses the completed sign-in.
+- E: a completion and a key release on an identity whose recovery is approved: the release waits at the identity, the
+  completion's trigger refuses the fenced generation (42501, no deadlock), the release goes on.
+- F: the recovery completes (commit and completion through `qorpera_recovery_locked`), and a request on the identity's
+  sign-in, still pinned to the older epoch, goes through, as does its replay.
+- G: the helper is postgres-only and holds the fence and the company row `KEY SHARE` and every member row `FOR SHARE`,
+  and no identity.
+- H: a role change and a recovery, in either order, queue (no 40P01).
+- I: two decisions on one identity (the member's consent, the owner's cancellation) queue, and the second finds its
+  review changed; a decision and the removal of the identity's owner queue, the decision holding no identity.
+- J: a backup's completion and a login machine reservation of one sign-in queue at the sign-in.
+- L: two registrations of one target, and two successful retirement confirmations of one identity (the company's
+  deletion requested, its machines ended over ten minutes ago), serialize on the identity's machine lock; the second
+  replays the first's target or receipt.
+- K: each patched branch is present, with no snapshot-v1 text pins.
+
+Fault runs (a temporary driver on the test machine), 26 faults, each caught where intended: a site or the helper that
+keeps the gc fence in A; the login's request holding its sign-in in B (or, without B, in C); a dropped re-check, or the
+backup holding its sign-in `FOR SHARE` (taken after the fence), in C; the helper without the member rows, or with the
+owners only, in D; the re-check comparing the identity's epoch in F; members `FOR UPDATE` in G; the decision without
+its locks in I; the backup without its `KEY SHARE` in J; the registration or the confirmation without the identity's
+machine lock in L.
+
+838's `p13_allowed` list loses the eleven sites.
+
+### 6.19 P06d part 1 as built: a screenshot stored nowhere travels in its answer (runtime only)
+
+The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
+office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
+The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.22) and
+gives the capture its folder-v2 authority. Until then nothing reaches this path.
+
+- **The office service** (`CloudCompanyComputerScreenshots.publish`):
+  - when the capture's authorize answers `{state: "authorized", storage: "none"}`, it uploads nothing;
+  - the published identity must name the operation's receipt (`assetId` is the receipt id);
+  - the PNG then waits in memory for the native gateway's answer.
+
+  `{state: "authorized"}` alone still means the stored legacy path. A session keeps one publisher for its whole life,
+  so a new automation (a reattached browser) doesn't lose a waiting screenshot.
+- **The native gateway** attaches the waiting PNG as `image` (base64), and only to a `computer_screenshot` perform
+  answer, taking it once. An answer with `image` may be up to 11 MiB (`COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE`,
+  an 8 MiB PNG as base64). Every other answer keeps the 48 KiB bound.
+- **The native host** (`HttpCompanyComputerNativeEndpoint.perform`):
+  - reads a screenshot's answer up to 11 MiB;
+  - accepts `image` only on a screenshot's answer, only as strict base64, only with JSON content whose identity names
+    this receipt, and only when the bytes are exactly that capture's (PNG header, size, width, height, sha256);
+  - then hands the bytes to the run's capture reader and returns the content without them, so the receipt stores only
+    the identity, as before.
+
+  The factory makes one capture reader per run and shares it between the endpoint and the boundary's
+  `CloudNativeCaptureImages`.
+- **To the model.** `read` makes the SQL read check, takes the bytes from memory once, checks them, and makes the SQL
+  check again. It never fetches them from the object store. A second read finds nothing in memory and goes to the
+  object store, as a stored capture does.
+- **Bounds.** `CompanyComputerInlineScreenshots` holds at most 4 screenshots, each for at most 60 s, on both sides; past
+  the bound the oldest goes. The executor runs one operation at a time, so one is the usual count.
+- **Mixed versions:**
+  - an old office service with the new host: no `image` ever comes;
+  - a new office service with an old host: it sends `image` only after a `storage: none` answer, which no database
+    gives until part 2;
+  - part 2 is applied after this release has rolled to every node and office (v173).
+- **Tests:**
+  - `cloud-company-computer-screenshots.test.ts`:
+    - nothing uploaded, the receipt named, and the pixels taken once;
+    - any other storage answer or identity refused;
+    - an inline read with both SQL checks and no fetch;
+    - pixels that aren't the published capture's refused;
+    - the holder's 4 and 60 s bounds;
+  - `cloud-company-computer-native.test.ts`, over real TLS:
+    - a 256 KiB PNG (past the 48 KiB bound) goes from the guest session through the gateway, the host, the receipt
+      and the capture reader to the model's data URL, with no object fetch;
+    - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
+      base64 is refused before anything is kept.
+
+### 6.22 C1c-3l part 3 as built: no screenshot on folder-v2 yet (migration 20260930030200, test 891)
 
 The coordinator's P06c, third PR. Before, an agent's `computer_screenshot` on a folder-v2 company was authorized and its
 receipt began; only then did `qorpera_native_office_capture` refuse with 0A000. The receipt stayed open, and an open
@@ -1735,55 +1883,6 @@ receipt fences the run's later operations.
     key answers it again with no receipt. A plain `CloudToolRefusal` there, or the refusal after the receipt began,
     stays an unknown outcome and keeps its fence;
   - `cloud-native-tool-boundary.test.ts`: the model gets `REFUSED: <message>`.
-
-### 6.19 P06d part 1 as built: a screenshot stored nowhere travels in its answer (runtime only)
-
-The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
-office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
-The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.17) and
-gives the capture its folder-v2 authority. Until then nothing reaches this path.
-
-- **The office service** (`CloudCompanyComputerScreenshots.publish`):
-  - when the capture's authorize answers `{state: "authorized", storage: "none"}`, it uploads nothing;
-  - the published identity must name the operation's receipt (`assetId` is the receipt id);
-  - the PNG then waits in memory for the native gateway's answer.
-
-  `{state: "authorized"}` alone still means the stored legacy path. A session keeps one publisher for its whole life,
-  so a new automation (a reattached browser) doesn't lose a waiting screenshot.
-- **The native gateway** attaches the waiting PNG as `image` (base64), and only to a `computer_screenshot` perform
-  answer, taking it once. An answer with `image` may be up to 11 MiB (`COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE`,
-  an 8 MiB PNG as base64). Every other answer keeps the 48 KiB bound.
-- **The native host** (`HttpCompanyComputerNativeEndpoint.perform`):
-  - reads a screenshot's answer up to 11 MiB;
-  - accepts `image` only on a screenshot's answer, only as strict base64, only with JSON content whose identity names
-    this receipt, and only when the bytes are exactly that capture's (PNG header, size, width, height, sha256);
-  - then hands the bytes to the run's capture reader and returns the content without them, so the receipt stores only
-    the identity, as before.
-
-  The factory makes one capture reader per run and shares it between the endpoint and the boundary's
-  `CloudNativeCaptureImages`.
-- **To the model.** `read` makes the SQL read check, takes the bytes from memory once, checks them, and makes the SQL
-  check again. It never fetches them from the object store. A second read finds nothing in memory and goes to the
-  object store, as a stored capture does.
-- **Bounds.** `CompanyComputerInlineScreenshots` holds at most 4 screenshots, each for at most 60 s, on both sides; past
-  the bound the oldest goes. The executor runs one operation at a time, so one is the usual count.
-- **Mixed versions:**
-  - an old office service with the new host: no `image` ever comes;
-  - a new office service with an old host: it sends `image` only after a `storage: none` answer, which no database
-    gives until part 2;
-  - part 2 is applied after this release has rolled to every node and office (v173).
-- **Tests:**
-  - `cloud-company-computer-screenshots.test.ts`:
-    - nothing uploaded, the receipt named, and the pixels taken once;
-    - any other storage answer or identity refused;
-    - an inline read with both SQL checks and no fetch;
-    - pixels that aren't the published capture's refused;
-    - the holder's 4 and 60 s bounds;
-  - `cloud-company-computer-native.test.ts`, over real TLS:
-    - a 256 KiB PNG (past the 48 KiB bound) goes from the guest session through the gateway, the host, the receipt
-      and the capture reader to the model's data URL, with no object fetch;
-    - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
-      base64 is refused before anything is kept.
 
 ## 7. Traps for C1c-2 and C1c-3
 
