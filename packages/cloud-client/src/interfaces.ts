@@ -1478,8 +1478,16 @@ export function parseTableFile(text: string): InterfaceParseResult<TableFile> {
 			choices = reader.list(cb, "choices", path, {
 				max: 50,
 				what: "a short choice",
+				// One line of text as the folder hook checks it (§6.1 rule 1): 1–60 code points, no control, line
+				// separator, direction character or broken character, and no comma or quote (they would split a CSV field).
 				item: (c) =>
-					c.length > 0 && c.length <= 60 && !NOT_ONE_LINE.test(c) && !c.includes(",") && !c.includes('"'),
+					[...c].length > 0 &&
+					[...c].length <= 60 &&
+					!NOT_ONE_LINE.test(c) &&
+					!BIDI.test(c) &&
+					!LONE_SURROGATE.test(c) &&
+					!c.includes(",") &&
+					!c.includes('"'),
 			});
 			if (choices.length === 0) reader.add(`${path}.choices`, "missing_key", "A choice column needs 1–50 choices.");
 		} else if (cb.choices !== undefined)

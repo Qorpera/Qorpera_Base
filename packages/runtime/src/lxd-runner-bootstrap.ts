@@ -13,6 +13,8 @@ import {
 	type IdentityRecoveryRuntimeState,
 	identityRecoveryEpochFilename,
 } from "./cloud-identity-recovery-guest.ts";
+import { NativeHostDispatch } from "./cloud-native-host-dispatch.ts";
+import { parseNativeIdentityCredential, parseNativeIdentityState } from "./cloud-native-identity-credential.ts";
 import { parseEphemeralCloudRunnerServiceConfig } from "./cloud-runner-service.ts";
 import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
@@ -486,28 +488,42 @@ async function ensureIdentityMasterKey(
 	}
 }
 
+/** The identity's recovery state (G2-3): a login guest's from the state its gateway delivered (a login guest may not
+ * read it), any other guest's through its identity credential (qorpera_native_identity_call). */
 async function identityRuntimeState(
 	paths: LxdNativeLoginBootstrapPaths | LxdRunnerBootstrapPaths,
 	computeIdentityId: string,
 	baseUrl: string,
 	expectedUid: number,
+	login: boolean,
 	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
 ): Promise<IdentityRecoveryRuntimeState> {
-	const state = stateReader
-		? await stateReader(computeIdentityId)
-		: await fetchIdentityRecoveryRuntimeState(
-				baseUrl,
-				(
-					await readOwnedFile(
-						join(paths.credentialSource, "qorpera-supabase-service-key"),
-						MAX_SERVICE_CREDENTIAL_BYTES,
-						"Native authority credential",
-						expectedUid,
-						true,
-					)
-				).trim(),
+	const credential = (name: string, label: string, bytes: number): Promise<string> =>
+		readOwnedFile(join(paths.credentialSource, name), bytes, label, expectedUid, true);
+	let state: IdentityRecoveryRuntimeState;
+	if (stateReader) state = await stateReader(computeIdentityId);
+	else if (login)
+		state = parseNativeIdentityState(
+			await credential("qorpera-native-identity-state", "Native identity state", MAX_SERVICE_CREDENTIAL_BYTES),
+			computeIdentityId,
+		);
+	else {
+		const dispatch = new NativeHostDispatch({
+			supabaseUrl: baseUrl,
+			serviceKey: (
+				await credential(
+					"qorpera-supabase-service-key",
+					"Native authority credential",
+					MAX_SERVICE_CREDENTIAL_BYTES,
+				)
+			).trim(),
+			identity: parseNativeIdentityCredential(
+				await credential("qorpera-native-identity", "Native identity credential", MAX_SERVICE_CREDENTIAL_BYTES),
 				computeIdentityId,
-			);
+			),
+		});
+		state = await fetchIdentityRecoveryRuntimeState(baseUrl, computeIdentityId, dispatch.fetch);
+	}
 	if (state.computeIdentityId !== computeIdentityId || state.blocked)
 		throw new Error("Compute Identity is fenced by cloud recovery authority");
 	return state;
@@ -544,7 +560,7 @@ async function prepareVaultLoginIdentity(
 	expectedGid: number,
 	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
 ): Promise<void> {
-	await identityRuntimeState(paths, computeIdentityId, baseUrl, expectedUid, stateReader);
+	await identityRuntimeState(paths, computeIdentityId, baseUrl, expectedUid, false, stateReader);
 	const entries = (await readdir(paths.identityVolume)).filter((entry) => entry !== basename(paths.identityMasterKey));
 	if (entries.length !== 0) throw new Error("A vault login guest must hold no identity material");
 	await writeCredentialSource(paths.identityMasterKey, "", expectedUid, expectedGid);
@@ -565,7 +581,7 @@ async function verifyIdentityRecovery(
 	login: boolean,
 	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
 ): Promise<void> {
-	const state = await identityRuntimeState(paths, computeIdentityId, baseUrl, expectedUid, stateReader);
+	const state = await identityRuntimeState(paths, computeIdentityId, baseUrl, expectedUid, login, stateReader);
 	if (login && !state.recoveryConfiguration)
 		throw new Error("Native login requires a configured cloud recovery authority");
 	const canInitialize = login && state.canInitialize;
@@ -643,7 +659,7 @@ function nativeProviderEnvironment(
 		"QORPERA_NATIVE_PROVIDER_PORT",
 		"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT",
 		"QORPERA_SUPABASE_URL",
-		...(trustedSource ? ["QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE"] : []),
+		...(trustedSource ? ["QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE", "QORPERA_NATIVE_LOGIN_GUEST"] : []),
 		...(companyRuntime
 			? [
 					"QORPERA_NATIVE_RUNTIME",
@@ -667,6 +683,9 @@ function nativeProviderEnvironment(
 		environment.get("QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY") !== "virtual_machine" ||
 		environment.get("QORPERA_NATIVE_PROVIDER_HOST") !== (trustedSource ? "0.0.0.0" : "127.0.0.1") ||
 		(trustedSource !== undefined && environment.get("QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE") !== trustedSource) ||
+		(trustedSource !== undefined &&
+			environment.get("QORPERA_NATIVE_LOGIN_GUEST") !== "sign_in" &&
+			environment.get("QORPERA_NATIVE_LOGIN_GUEST") !== "account_refresh") ||
 		environment.get("QORPERA_NATIVE_PROVIDER_PORT") !== bridge.port ||
 		environment.get("QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT") !== PRODUCTION_PATHS.nativeProviderTemporaryDirectory ||
 		bridge.protocol !== "http:" ||
@@ -719,6 +738,7 @@ async function verifyCredentialSource(
 	path: string,
 	expectedUid: number,
 	boundary: "runner" | "native-login" | "company-runner",
+	computeIdentityId: string,
 	companyRuntime?: LxdRunnerBootstrapConfig["companyRuntime"],
 	identityRecoveryCaSha256?: string,
 ): Promise<void> {
@@ -736,13 +756,20 @@ async function verifyCredentialSource(
 						: []),
 					...(boundary === "company-runner" ? ["qorpera-coding-command"] : []),
 					"qorpera-native-bridge",
+					"qorpera-native-identity",
 					...(boundary === "company-runner" ? ["qorpera-native-object-token"] : []),
 					...(boundary === "company-runner" ? ["qorpera-office-native"] : []),
 					"qorpera-runner-activation",
 					"qorpera-runner-assignment",
 					"qorpera-supabase-service-key",
 				]
-			: ["qorpera-identity-recovery-ca", "qorpera-native-bridge", "qorpera-supabase-service-key"];
+			: [
+					"qorpera-identity-recovery-ca",
+					"qorpera-native-bridge",
+					"qorpera-native-identity",
+					"qorpera-native-identity-state",
+					"qorpera-supabase-service-key",
+				];
 	if (JSON.stringify(entries) !== JSON.stringify(expected)) {
 		throw new Error("LXD runner credential source contains unexpected entries");
 	}
@@ -753,7 +780,9 @@ async function verifyCredentialSource(
 			entry !== "qorpera-cloud-secret-ca" &&
 			entry !== "qorpera-office-native" &&
 			entry !== "qorpera-coding-command" &&
-			entry !== "qorpera-identity-recovery-ca",
+			entry !== "qorpera-identity-recovery-ca" &&
+			entry !== "qorpera-native-identity" &&
+			entry !== "qorpera-native-identity-state",
 	)) {
 		const token = (
 			await readOwnedFile(
@@ -834,6 +863,31 @@ async function verifyCredentialSource(
 	}
 	if (boundary === "company-runner" && tokens.has(serviceKey))
 		throw new Error("Governed credentials must be independent");
+	// G2-3: the holder's identity credential, for the native host's calls between jobs; independent of every other
+	// credential here. A login guest's identity state is its gateway's reading of the recovery authority.
+	const identity = parseNativeIdentityCredential(
+		await readOwnedFile(
+			`${path}/qorpera-native-identity`,
+			MAX_SERVICE_CREDENTIAL_BYTES,
+			"Native identity credential",
+			expectedUid,
+			true,
+		),
+		computeIdentityId,
+	);
+	if (tokens.has(identity.credential) || identity.credential === serviceKey || identity.publishableKey === serviceKey)
+		throw new Error("The native identity credential must be independent");
+	if (boundary === "native-login")
+		parseNativeIdentityState(
+			await readOwnedFile(
+				`${path}/qorpera-native-identity-state`,
+				MAX_SERVICE_CREDENTIAL_BYTES,
+				"Native identity state",
+				expectedUid,
+				true,
+			),
+			computeIdentityId,
+		);
 }
 
 async function verifyCompanyGuest(
@@ -1132,6 +1186,7 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 		paths.credentialSource,
 		expectedRootUid,
 		bootstrap.companyRuntime ? "company-runner" : "runner",
+		bootstrap.computeIdentityId,
 		bootstrap.companyRuntime,
 	);
 	const identityMetadata = await lstat(paths.identityVolume);
@@ -1241,6 +1296,7 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 		paths.credentialSource,
 		expectedRootUid,
 		"native-login",
+		bootstrap.computeIdentityId,
 		undefined,
 		bootstrap.identityRecoveryCaSha256,
 	);

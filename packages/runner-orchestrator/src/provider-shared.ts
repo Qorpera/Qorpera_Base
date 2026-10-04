@@ -48,6 +48,21 @@ export function supabaseServiceHeaders(serviceKey: string): Record<string, strin
 	return headers;
 }
 
+/** G2-3: the identity credential file a native host loads as its systemd credential `qorpera-native-identity`: its
+ * identity, the credential the node host bound to its machine, and the project's publishable key. */
+export function nativeIdentityCredentialFile(
+	computeIdentityId: string,
+	credential: string,
+	publishableKey: string,
+): string {
+	return JSON.stringify({
+		schema: "qorpera.native-identity-credential/v1",
+		compute_identity_id: computeIdentityId,
+		credential,
+		publishable_key: publishableKey,
+	});
+}
+
 /** The control plane annotates each dispatch with attempt-scoped fields; a
  * retry is the same immutable run, so the journal digest must not vary with
  * them — or every second attempt is refused as foreign work. */
