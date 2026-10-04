@@ -248,8 +248,9 @@ What the numbers say:
   machine could hold over 150,000 of the node's 262,144, and the same entries hold the exit's masqueraded source
   ports towards each destination, which every company on the node shares. So agent TCP connections are held 30 s
   once closed, in both tables (`ct timeout agent_tcp`, set for new agent connections only; the node's own traffic
-  keeps the defaults): a quarter of that. The line guard's burst brake (E7) bounds the rate itself; phase 2 (E9)
-  drops the node's leg altogether.
+  keeps the defaults): a quarter of that. Measured on 4 October (run 20261004T013618-56993-344f627b, the same
+  throwaway VM): 5,000 connections left 4,995 TIME_WAIT entries in each table, and 35 seconds later none. The line
+  guard's burst brake (E7) bounds the rate itself; phase 2 (E9) drops the node's leg altogether.
 
 ## Notes for later steps
 
