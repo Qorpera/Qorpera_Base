@@ -56,7 +56,17 @@ function parentOf(path: string): string {
 	return path.slice(0, Math.max(0, path.lastIndexOf("/")));
 }
 
-export function folderFake(options: { seed?: readonly string[] } = {}) {
+export function folderFake(
+	options: {
+		seed?: readonly string[];
+		/** A routine file's index id from its own id (the routine index keeps its own); the file's id by default. */
+		routineIds?: (fileId: string) => string;
+		/** False for a cloud whose state folders read does not list routines' files yet. */
+		listsRoutines?: boolean;
+	} = {},
+) {
+	const routineIds = options.routineIds ?? ((fileId: string) => fileId);
+	const listsRoutines = options.listsRoutines ?? true;
 	const nodes = new Map<string, Node>();
 	const texts = new Map<string, string>();
 	const answers: Answer[] = [];
@@ -132,18 +142,35 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 			: [];
 	}
 
-	/** The agents' and group chats' files the member may read, as `qorpera_member_company_state_folders` answers. */
-	function stateFolders() {
+	/** The agents', group chats' and routines' files the member may read, as `qorpera_member_company_state_folders`
+	 * answers. A routine is listed by its index id (`routineIds`, the file's own id unless a test says otherwise) and
+	 * its owner, the agent whose folder holds it; `routines` is null where the cloud does not list routines' files. */
+	function stateFolders(): {
+		agents: { staffAgentId: string; file: string }[];
+		groups: { roomId: string; file: string }[];
+		routines: { routineId: string; staffAgentId: string; file: string }[] | null;
+	} {
 		const agents: { staffAgentId: string; file: string }[] = [];
 		const groups: { roomId: string; file: string }[] = [];
+		const routines: { routineId: string; staffAgentId: string; file: string }[] = [];
+		const owners = new Map<string, string>();
+		for (const node of nodes.values()) {
+			if (node.kind !== "file") continue;
+			const parsed = parseCompanyStateFile(node.path, node.text ?? "");
+			if (parsed?.ok && parsed.file.kind === "agent") owners.set(key(parentOf(node.path)), parsed.file.id);
+		}
 		for (const node of nodes.values()) {
 			if (node.kind !== "file" || hidden(node.path)) continue;
 			const parsed = parseCompanyStateFile(node.path, node.text ?? "");
 			if (!parsed?.ok) continue;
 			if (parsed.file.kind === "agent") agents.push({ staffAgentId: parsed.file.id, file: node.path });
 			if (parsed.file.kind === "group") groups.push({ roomId: parsed.file.id, file: node.path });
+			const owner = owners.get(key(parentOf(parentOf(node.path))));
+			if (parsed.file.kind === "routine" && owner)
+				routines.push({ routineId: routineIds(parsed.file.id), staffAgentId: owner, file: node.path });
 		}
-		return { agents, groups };
+		routines.sort((a, b) => (key(a.file) < key(b.file) ? -1 : 1));
+		return { agents, groups, routines: listsRoutines ? routines : null };
 	}
 
 	type Result = Pick<CloudMemberFolderUnitResult, "outcome" | "reason" | "problems" | "version">;
