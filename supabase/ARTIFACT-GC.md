@@ -17,6 +17,9 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
 
 ## Deployment
 
+The production runbook, with a counts-only dry run, the key and the folder phase's switch, is
+`deploy/first-node/RUNTIME-GC-SWITCH-ON.md`.
+
 1. Apply the repository migrations in version order, including
    `20260821006000_nas_object_gateway.sql`,
    `20260821007000_deleted_profile_object_gc.sql`,
