@@ -70,7 +70,7 @@ begin
 		or has_table_privilege('service_role','public.qorpera_company_founder_seats','INSERT')
 		or has_table_privilege('service_role','public.qorpera_company_foundings','UPDATE') then
 		raise exception 'the lobby tables are readable or writable directly'; end if;
-	if public.qorpera_company_founding_available() then raise exception 'the lobby is on before C2'; end if;
+	if not public.qorpera_company_founding_available() then raise exception 'the lobby is off (P39 turned it on)'; end if;
 end $$;
 
 -- Until the switch is on, opening a table is refused and nothing is written.
