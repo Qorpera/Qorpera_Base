@@ -20,11 +20,12 @@ set local lock_timeout = '3s';
 -- 1. The table -------------------------------------------------------------------------------------------------------
 
 -- One row per kept file: a write's file is file 1, a new folder's files are numbered by their place in its contents.
--- Rows are never updated; erasure deletes them with their path, and the company's purge with its environment. The key
--- index serves erasure's cover test, the manifest index the root and read checks.
+-- Rows are never updated. Erasure deletes them with their path; they live on their receipt, so they go with their
+-- commit row too, and with the environment at the company's purge. The key index serves erasure's cover test, the
+-- manifest index the root and read checks.
 create table public.qorpera_folder_conflict_copies (
 	environment_id uuid not null references public.qorpera_folder_clocks(environment_id) on delete cascade,
-	commit_id uuid not null references public.qorpera_folder_commits(id) on delete restrict,
+	commit_id uuid not null references public.qorpera_folder_commits(id) on delete cascade,
 	unit_no integer not null check (unit_no >= 1),
 	file_no integer not null check (file_no >= 1),
 	path text collate "C" not null check (public.qorpera_company_path_valid(path)),
