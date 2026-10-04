@@ -1,8 +1,8 @@
 -- @fixture 634_folder_core_authority.test.sql until "-- Mutators: owners and admins"
 -- Company folder core: artifacts refuse folder-v2 companies (migration 20260930041000). A member's registration, the
 -- runner broker's artifact lane and the member functions that would take the gc fence over an artifact answer 0A000 for
--- a folder-v2 company, as their first statement; a company that is not folder-v2 gets past the refusal. That the
--- refusal comes before any lock is pinned by 838.
+-- a folder-v2 company, as their first statement, whichever of its environments they name; a company that is not
+-- folder-v2 gets past the refusal. That the refusal comes before any lock is pinned by 838.
 
 -- Runs a statement that must be refused for folder-v2 (0A000), or must not be (any other outcome).
 create function pg_temp.refused(p_sql text) returns void language plpgsql as $$
@@ -19,18 +19,27 @@ exception when sqlstate '0A000' then
 when others then null;
 end $$;
 
--- A second environment of the company that is not folder-v2, an artifact in each, and a graph and a GC plan of the
--- folder-v2 one (written with triggers and foreign keys off: no folder-v2 path can make them).
+-- A second environment of the folder-v2 company that is not itself folder-v2, and another company that is not
+-- folder-v2 at all (member 2 belongs to it too); an artifact in the folder-v2 company and one in the other, and a graph
+-- and a GC plan of the folder-v2 one (written with triggers and foreign keys off: no folder-v2 path can make them).
 set local session_replication_role = replica;
 insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id) values
 	('63400000-0000-4000-8000-000000000029', '63400000-0000-4000-8000-000000000010', 'Old environment', 1,
+		'63400000-0000-4000-8000-000000000001');
+insert into public.qorpera_profiles(id, name, created_by_user_id) values
+	('90200000-0000-4000-8000-000000000010', 'Not folder-v2', '63400000-0000-4000-8000-000000000001');
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values
+	('90200000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000001', 'authority-owner@example.test', 'Owner', 'owner'),
+	('90200000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000002', 'authority-member@example.test', 'Member', 'contributor');
+insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id) values
+	('90200000-0000-4000-8000-000000000020', '90200000-0000-4000-8000-000000000010', 'Environment', 1,
 		'63400000-0000-4000-8000-000000000001');
 insert into public.qorpera_artifacts(id, profile_id, environment_id, client_artifact_id, artifact_type, name, root_object_sha256,
 	content_sha256, bytes, media_type, created_by_user_id) values
 	('90200000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020',
 		extensions.gen_random_uuid(), 'report', 'Folder-v2 artifact', repeat('a', 64), repeat('a', 64), 1, 'text/plain',
 		'63400000-0000-4000-8000-000000000002'),
-	('90200000-0000-4000-8000-0000000000a2', '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000029',
+	('90200000-0000-4000-8000-0000000000a2', '90200000-0000-4000-8000-000000000010', '90200000-0000-4000-8000-000000000020',
 		extensions.gen_random_uuid(), 'report', 'Old artifact', repeat('b', 64), repeat('b', 64), 1, 'text/plain',
 		'63400000-0000-4000-8000-000000000002');
 insert into public.qorpera_object_reachability_graphs(id, profile_id, environment_id, root_kind, root_id, client_graph_id,
@@ -44,12 +53,13 @@ insert into public.qorpera_artifact_gc_plans(id, profile_id, artifact_id, graph_
 		'90200000-0000-4000-8000-0000000000b1', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
 		'63400000-0000-4000-8000-000000000001');
 set local session_replication_role = origin;
--- The folder-v2 environment is the only folder-v2 one: the new one has no company files row.
+-- The fence is the company's: the second environment has no folder of its own, but its company is folder-v2.
 do $$
 begin
 	if public.qorpera_environment_is_folder_v2('63400000-0000-4000-8000-000000000029')
-		or not public.qorpera_environment_is_folder_v2('63400000-0000-4000-8000-000000000020') then
-		raise exception 'Fixture: one folder-v2 environment and one other'; end if;
+		or not public.qorpera_company_is_folder_v2('63400000-0000-4000-8000-000000000010')
+		or public.qorpera_company_is_folder_v2('90200000-0000-4000-8000-000000000010') then
+		raise exception 'Fixture: a folder-v2 company with a second environment, and a company that is not folder-v2'; end if;
 end $$;
 
 -- 1. A member's registration and index, as the member ------------------------------------------------------------------
@@ -65,8 +75,14 @@ begin
 	perform pg_temp.refused($q$select public.qorpera_create_artifact_retention_hold('90200000-0000-4000-8000-0000000000a1',
 		gen_random_uuid(), 'Keep it')$q$);
 	perform pg_temp.refused($q$select public.qorpera_complete_object_reachability_graph('90200000-0000-4000-8000-0000000000b1')$q$);
-	-- Another environment of the company goes on to the function's own checks.
-	perform pg_temp.not_refused($q$select public.qorpera_register_artifact_v2('63400000-0000-4000-8000-000000000029',
+	-- The folder-v2 company's other environment is refused too: the fence is the company's.
+	perform pg_temp.refused($q$select public.qorpera_register_artifact_v2('63400000-0000-4000-8000-000000000029',
+		gen_random_uuid(), null, 'report', 'A report', repeat('a', 64), 'qorpera.cloud-file-manifest/v1', repeat('a', 64), 1,
+		'text/plain')$q$);
+	perform pg_temp.refused($q$select public.qorpera_create_artifact_index('63400000-0000-4000-8000-000000000029',
+		gen_random_uuid(), '{}'::uuid[])$q$);
+	-- A company that is not folder-v2 goes on to the function's own checks.
+	perform pg_temp.not_refused($q$select public.qorpera_register_artifact_v2('90200000-0000-4000-8000-000000000020',
 		gen_random_uuid(), null, 'report', 'A report', repeat('c', 64), 'qorpera.cloud-file-manifest/v1', repeat('c', 64), 1,
 		'text/plain')$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_create_artifact_retention_hold('90200000-0000-4000-8000-0000000000a2',
@@ -112,7 +128,7 @@ end $$;
 do $$
 declare v_function regprocedure;
 begin
-	if (select count(*) from public.qorpera_artifacts where profile_id = '63400000-0000-4000-8000-000000000010') <> 2
+	if (select count(*) from public.qorpera_artifacts where profile_id = '63400000-0000-4000-8000-000000000010') <> 1
 		or exists (select 1 from public.qorpera_artifact_index_entries)
 		or exists (select 1 from public.qorpera_artifact_retention_holds where artifact_id = '90200000-0000-4000-8000-0000000000a1')
 		or (select status from public.qorpera_object_reachability_graphs where id = '90200000-0000-4000-8000-0000000000b1') <> 'uploading'

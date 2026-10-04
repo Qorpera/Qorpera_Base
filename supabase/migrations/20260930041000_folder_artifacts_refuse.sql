@@ -7,8 +7,10 @@
 -- * the runner broker's artifact lane (authorize and confirm an output object, register the artifact), with a leased
 --   folder-v2 job's tokens; folder-v2 runs never publish outputs, and their completion refuses artifacts.
 -- Each now refuses a folder-v2 company with 0A000 as its first statement, before any read under lock, so a refused call
--- takes no lock. So do qorpera_register_artifact (no caller can execute it today) and the member functions that would
--- take the fence over an artifact (index, hold, graph completion, GC plan cancel). The worker's GC functions only meet
+-- takes no lock. So do qorpera_register_artifact (members may not execute it; the rest are refused by its own checks)
+-- and the member functions that would take the fence over an artifact (index, hold, graph completion, GC plan cancel).
+-- The test is the company's, as the fence is: an environment, job, artifact, graph or plan names its company by a plain
+-- read. The worker's GC functions only meet
 -- artifacts, so they need nothing. Office capture, export and import already refuse folder-v2 (20260928279470,
 -- 20260928259430). Snapshot-v1 companies are unchanged. Every patched body carries the marker 20260930041000.
 
@@ -34,24 +36,30 @@ declare
 	c_refuse constant text := 'then raise exception ''Artifacts do not serve folder-v2 companies'' using errcode = ''0A000''; end if; -- 20260930041000';
 	v_function regprocedure;
 begin
-	-- A member's registration names the environment.
+	-- A member's registration names the environment, and through it the company.
 	perform pg_temp.artifacts_guard('public.qorpera_register_artifact(uuid,uuid,uuid,text,text,text,text,bigint,text)',
-		'if public.qorpera_environment_is_folder_v2(p_environment_id) ' || c_refuse);
+		'if public.qorpera_company_is_folder_v2((select e.profile_id from public.qorpera_company_environments e where e.id = p_environment_id)) '
+		|| c_refuse);
 	perform pg_temp.artifacts_guard('public.qorpera_register_artifact_v2(uuid,uuid,uuid,text,text,text,text,text,bigint,text)',
-		'if public.qorpera_environment_is_folder_v2(p_environment_id) ' || c_refuse);
+		'if public.qorpera_company_is_folder_v2((select e.profile_id from public.qorpera_company_environments e where e.id = p_environment_id)) '
+		|| c_refuse);
 	-- The runner broker's artifact lane names the job.
 	perform pg_temp.artifacts_guard('public.qorpera_runner_broker_authorize_output_object(uuid,text,uuid,text,text,bigint,text)',
-		'if public.qorpera_job_is_folder_v2(p_job_id) ' || c_refuse);
+		'if public.qorpera_company_is_folder_v2((select j.profile_id from public.qorpera_runner_jobs j where j.id = p_job_id)) '
+		|| c_refuse);
 	perform pg_temp.artifacts_guard('public.qorpera_runner_broker_confirm_output_object(uuid,text,uuid,text,text)',
-		'if public.qorpera_job_is_folder_v2(p_job_id) ' || c_refuse);
+		'if public.qorpera_company_is_folder_v2((select j.profile_id from public.qorpera_runner_jobs j where j.id = p_job_id)) '
+		|| c_refuse);
 	perform pg_temp.artifacts_guard('public.qorpera_runner_broker_register_artifact(uuid,text,uuid,text,uuid,text,text,text,bigint,text)',
-		'if public.qorpera_job_is_folder_v2(p_job_id) ' || c_refuse);
-	-- The member functions that take the fence over an artifact, by the environment or company of what they name (a
-	-- plain read). An id that names nothing reads null, which is no folder-v2 company: the function refuses it as before.
+		'if public.qorpera_company_is_folder_v2((select j.profile_id from public.qorpera_runner_jobs j where j.id = p_job_id)) '
+		|| c_refuse);
+	-- The member functions that take the fence over an artifact, by the company of what they name (a plain read). An id
+	-- that names nothing reads null, which is no folder-v2 company: the function refuses it as before.
 	perform pg_temp.artifacts_guard('public.qorpera_create_artifact_index(uuid,uuid,uuid[])',
-		'if public.qorpera_environment_is_folder_v2(p_environment_id) ' || c_refuse);
+		'if public.qorpera_company_is_folder_v2((select e.profile_id from public.qorpera_company_environments e where e.id = p_environment_id)) '
+		|| c_refuse);
 	perform pg_temp.artifacts_guard('public.qorpera_create_artifact_retention_hold(uuid,uuid,text,timestamp with time zone)',
-		'if public.qorpera_environment_is_folder_v2((select a.environment_id from public.qorpera_artifacts a where a.id = p_artifact_id)) '
+		'if public.qorpera_company_is_folder_v2((select a.profile_id from public.qorpera_artifacts a where a.id = p_artifact_id)) '
 		|| c_refuse);
 	perform pg_temp.artifacts_guard('public.qorpera_complete_object_reachability_graph(uuid)',
 		'if public.qorpera_company_is_folder_v2((select g.profile_id from public.qorpera_object_reachability_graphs g where g.id = p_graph_id)) '

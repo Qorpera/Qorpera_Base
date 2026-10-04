@@ -67,7 +67,7 @@ insert into p13_allowed(name, kind, reason) values
 	-- Artifacts: every path that makes an artifact, and every member function that would take the fence over one,
 	-- refuses folder-v2 first (20260930041000, pinned below), and a folder-v2 company has no snapshots. So these are
 	-- reached only through a snapshot-v1 company's artifacts and snapshots.
-	('qorpera_reject_profile_root_during_gc', 'legacy', 'Trigger on artifacts and snapshots; artifact registration refuses folder-v2, and folder-v2 has no snapshots.'),
+	('qorpera_reject_profile_root_during_gc', 'legacy', 'Trigger on artifacts and snapshots; artifact registration and the office capture, export and import refuse folder-v2, and folder-v2 has no snapshots.'),
 	('qorpera_reject_gc_artifact_index_entry', 'legacy', 'Trigger on artifact index entries; index creation refuses folder-v2, and it has no artifacts.'),
 	('qorpera_reject_gc_artifact_retention_hold', 'legacy', 'Trigger on artifact retention holds; hold creation refuses folder-v2, and it has no artifacts.'),
 	('qorpera_reject_graph_completion_during_gc', 'legacy', 'Trigger on reachability graphs; graph completion refuses folder-v2, whose roots (artifacts, snapshots) do not exist.'),
