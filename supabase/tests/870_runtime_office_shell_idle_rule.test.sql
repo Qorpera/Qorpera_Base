@@ -281,8 +281,10 @@ select pg_temp.refused(pg_temp.report_raw(report), '22023', 'Invalid office shel
 	quote_literal('{"schema":"qorpera.office-shell-report/v1"}') || '::jsonb',
 	quote_literal('{"schema":"qorpera.office-shell-report/v2","screens":[]}') || '::jsonb',
 	quote_literal('{"schema":"qorpera.office-shell-report/v1","screens":[],"extra":1}') || '::jsonb',
+	-- 65 distinct screens: only the size bound refuses them (without it, the screen check would answer 42501).
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',(select jsonb_agg(jsonb_build_object(
-		'screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb)) from generate_series(1,65))))
+		'screenId',('87000000-0000-4000-8000-00000000' || lpad(n::text,4,'0'))::uuid,'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb))
+		from generate_series(1,65) n)))
 		|| '::jsonb',
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
 		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb),

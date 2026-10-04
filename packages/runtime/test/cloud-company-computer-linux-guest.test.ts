@@ -474,7 +474,8 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 	});
 
 	it("reports each shell every 30 seconds: busy by processor time, its commands, and each end once", async () => {
-		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		// The busy measure divides by the wall-clock time between samples, so the clock moves with the timers.
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
 		const f = await fixture();
 		const session = await f.create();
 		await session.endpoint.perform(
