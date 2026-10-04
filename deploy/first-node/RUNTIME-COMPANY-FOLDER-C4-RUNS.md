@@ -150,9 +150,10 @@ for the same kickoff.
 
 ## 7. Not in P28
 
-- F2's worker drain (F2-5b-3). F2 adds its call at the start of `qorpera_folder_materialize_company`, where a comment
-  marks the place (core C4).
-- The listener (P29/P31).
+- F2's worker drain (F2-5b-3). It plugs into the shared folder-drains step that runs before the materializer
+  (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9, coordinator 4 October 2026), rather than calling from inside
+  `qorpera_folder_materialize_company`.
+- The listener (P29: `RUNTIME-COMPANY-FOLDER-LISTENER.md`, the shared step's first drain; H2c is P31).
 - Machine events (C1c-3i), the observability views (P32), and the edge functions (P26).
 
 ## 8. Switch-on

@@ -7,6 +7,9 @@
 --   fence and ranks 1 to 5 through qorpera_folder_company_enter, the cursor row FOR UPDATE SKIP LOCKED (its lease, after
 --   the fence: the company purge deletes it by cascade after taking the fence), the checks under the locks, the sessions
 --   KEY SHARE, admission, the wakes, the hook, the cursor. At most 32 new wakes and 46 writing subtransactions a step.
+--   A listener whose agent is no longer active is set aside, and P15 (20260930022000) marks its follow-up. The due list
+--   (qorpera_folder_listen_due) answers the shared folder drains' page (§9): the orchestrator's CloudFolderDrains step
+--   runs it with every other per-company drain before the materializer.
 -- * A wake is a routine wake from source 'company-file' whose source_id is the change set (the commit) and whose payload
 --   holds version ids; qorpera_folder_read_wake builds the paths when the run reads it, under the run's read rights, so
 --   an erased change drops out by itself.
@@ -16,7 +19,7 @@
 --   causal parent (coordinator, 4 October 2026; C1B amended).
 -- * Erasure (P18) notes the runs of file wakes about erased changes, in phases 1 and 2.
 -- No fence stronger than KEY SHARE, no profile row stronger than KEY SHARE, every wait at most 2 s, no 40001.
--- Every patched body carries the marker 20260930020000 for the deploy guard.
+-- Every patched body carries the marker 20260930020000; the guard at the end checks them.
 
 set local lock_timeout = '3s';
 
@@ -706,3 +709,20 @@ revoke all on function public.qorpera_folder_listen_due(uuid, integer), public.q
 	from public, anon, authenticated;
 grant execute on function public.qorpera_folder_listen_due(uuid, integer), public.qorpera_folder_listen_company(uuid, integer)
 	to service_role;
+
+-- 14. The deploy guard: every patched body carries the marker ----------------------------------------------------------------
+
+do $guard$
+declare v_fn regprocedure;
+begin
+	foreach v_fn in array array['public.qorpera_cloud_routine_trigger_valid(jsonb)',
+			'public.qorpera_company_state_routine_trigger(jsonb)',
+			'public.qorpera_company_state_routine_rules(uuid,uuid,jsonb,text,jsonb,boolean)',
+			'public.qorpera_pin_wake_occurrence()', 'public.qorpera_runtime_wake_policy_internal(uuid)',
+			'public.qorpera_folder_run_resolve(uuid,uuid,jsonb)', 'public.qorpera_routine_occurrence_count(uuid)',
+			'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', 'public.qorpera_folder_read_wake(jsonb)',
+			'public.qorpera_folder_erasure_step(integer,integer,integer)']::regprocedure[] loop
+		if strpos((select prosrc from pg_proc where oid = v_fn), '20260930020000') = 0 then
+			raise exception 'P29a did not reach %', v_fn; end if;
+	end loop;
+end $guard$;

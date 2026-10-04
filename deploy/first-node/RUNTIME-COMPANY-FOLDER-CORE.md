@@ -775,8 +775,10 @@ check reports drift.
     (`qorpera_wake_ancestry`, 20260907000860:1053-1055): an agent's own commit
     never wakes its own subscription, and the commit's causal wake is on the
     commit row.
-  - Listener activation reads `last_seq` from the clock row, so no event is
-    missed or doubled.
+  - Listener activation is the seq of the change set that last saved the
+    routine (P29: `RUNTIME-COMPANY-FOLDER-LISTENER.md` §2). A listener hears
+    only later change sets, so none is doubled; one saved while the drain had
+    not reached it is dropped, as decided on 4 October 2026.
 - **The pin.** A wake's `companySnapshotId` becomes `companySeq`: the run was
   composed as of at least this commit. Reads stay live, as today. The
   transcript check (`qorpera_run_head_follows_session_pin`, which walks up to

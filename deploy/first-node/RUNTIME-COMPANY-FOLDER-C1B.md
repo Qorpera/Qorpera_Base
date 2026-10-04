@@ -1150,6 +1150,11 @@ by a machine.
   - Coding commits during a leased turn record the turn (`turn_run_id` on the
     commit), for attribution. Their authority is still the coding rule's,
     and `run_id` stays empty: the save acts detached.
+  - **Amended by P29 (4 October 2026):** `turn_run_id` is also the causal
+    parent of the wakes such a commit causes (file-change wakes,
+    `RUNTIME-COMPANY-FOLDER-LISTENER.md` §5), so the 16-agent chain stop and
+    self-trigger fencing apply to it. Without this, two agents' coding
+    sessions could wake each other without end.
 - **Every view commit rechecks the view's read set at rank 10**, and one
   run's set besides (`qorpera_folder_view_reads_current`, same rules as the
   run's). The run's set is checked under that run's own authority (its

@@ -77,7 +77,7 @@ begin
 		raise exception 'The run resolve accepts file wakes'; end if;
 end $$;
 
--- 2. Matching: exact and subtree, siblings, moves from and into the watch, a copy at its target ------------------------------
+-- 2. Matching: exact and subtree, siblings, moves from and into the watch, a copy at its target, a delete ----------------
 
 do $$
 declare r jsonb; w public.qorpera_wake_occurrences; v_changes jsonb;
@@ -114,9 +114,19 @@ begin
 		w.requested_by_user_id, w.session_id)) -> 'changes';
 	if v_changes -> 0 ->> 'path' <> 'docs/c.md' or v_changes -> 0 ->> 'op' <> 'move_in' or v_changes -> 0 ->> 'from' <> 'notes/c.md' then
 		raise exception 'A move in, with its source: %', v_changes; end if;
+	-- A delete under the watch wakes too, naming the version it ended.
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0009b', jsonb_build_array(pg_temp.del('docs/b2.md'))));
+	perform pg_temp.listen();
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '6', 'a delete wakes');
+	select * into w from pg_temp.fw('88700000-0000-4000-8000-0000000000e1') offset 5 limit 1;
+	v_changes := public.qorpera_folder_file_wake_changes(w, public.qorpera_folder_listener_actor(w.profile_id, w.staff_agent_id,
+		w.requested_by_user_id, w.session_id)) -> 'changes';
+	if jsonb_array_length(v_changes) <> 1 or v_changes -> 0 ->> 'path' <> 'docs/b2.md' or v_changes -> 0 ->> 'op' <> 'delete'
+		or v_changes -> 0 ->> 'priorVersion' is null then
+		raise exception 'A delete, with the version it ended: %', v_changes; end if;
 end $$;
 
--- 3. Read rights: a path the run may not read is never named nor counted ----------------------------------------------------
+-- 3. Read rights: a path the run may not read is never named nor counted, and a grant narrowed later drops it -----------
 
 do $$
 declare w public.qorpera_wake_occurrences;
@@ -128,13 +138,24 @@ begin
 	perform pg_temp.saved(pg_temp.commit('{"kind":"platform"}', 'listen-0010', jsonb_build_array(
 		jsonb_build_object('op','mkdir','path','docs/private'), pg_temp.put('docs/private/s.md', 'hidden'))));
 	perform pg_temp.listen();
-	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '5', 'no wake for unreadable paths alone');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '6', 'no wake for unreadable paths alone');
 	perform pg_temp.saved(pg_temp.commit('{"kind":"platform"}', 'listen-0011', jsonb_build_array(
 		pg_temp.put('docs/private/t.md', 'hidden too'), pg_temp.put('docs/pub.md', 'public'))));
 	perform pg_temp.listen();
-	select * into w from pg_temp.fw('88700000-0000-4000-8000-0000000000e1') offset 5 limit 1;
+	select * into w from pg_temp.fw('88700000-0000-4000-8000-0000000000e1') offset 6 limit 1;
 	if w.payload -> 'versions' <> jsonb_build_array(pg_temp.version('docs/pub.md')) or (w.payload ->> 'more')::integer <> 0 then
 		raise exception 'Only the readable path, and the unreadable one not counted: %', w.payload; end if;
+	-- A grant narrowed before the run reads its wake: the change drops out of what it reads, and the wake is no longer
+	-- readable, so the materializer cancels it (qorpera_folder_wake_authorized).
+	if not public.qorpera_folder_file_wake_readable(w) then raise exception 'The wake is readable before the narrowing'; end if;
+	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id, policy, created_by_user_id)
+	values ('70700000-0000-4000-8000-000000000020', 'docs/pub.md', 'exact', 'member_private', '70700000-0000-4000-8000-000000000002',
+		'normal', '70700000-0000-4000-8000-000000000002');
+	if public.qorpera_folder_file_wake_readable(w) or public.qorpera_folder_wake_authorized(w)
+		or jsonb_array_length(public.qorpera_folder_file_wake_changes(w, public.qorpera_folder_listener_actor(w.profile_id,
+			w.staff_agent_id, w.requested_by_user_id, w.session_id)) -> 'changes') <> 0 then
+		raise exception 'A narrowed grant drops the change at read time'; end if;
+	delete from public.qorpera_company_path_resources where environment_id = '70700000-0000-4000-8000-000000000020' and path = 'docs/pub.md';
 end $$;
 
 -- 4. The self rule: a run's own change never wakes its agent; another agent's listener carries the chain on -------------
@@ -148,7 +169,7 @@ begin
 	a := pg_temp.routine_run('88700000-0000-4000-8000-0000000000e3');
 	r := pg_temp.saved(pg_temp.commit(a, 'listen-0012', jsonb_build_array(pg_temp.put('docs/a.md', 'alpha by nora'))));
 	perform pg_temp.listen();
-	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '6', 'Nora''s own change never wakes Nora');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '7', 'Nora''s own change never wakes Nora');
 	select * into w from pg_temp.fw('88700000-0000-4000-8000-0000000000e2') offset 1 limit 1;
 	if w.source_id::text <> r ->> 'commitId' or w.parent_run_id::text <> a ->> 'runId'
 		or w.causal_agent_ids <> array['70700000-0000-4000-8000-0000000000a1','70700000-0000-4000-8000-0000000000a2']::uuid[]
@@ -164,7 +185,7 @@ begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0013', (select jsonb_agg(pg_temp.put('docs/m' || lpad(i::text, 2, '0') || '.md',
 		'many ' || i)) from generate_series(1, 25) i)));
 	perform pg_temp.listen();
-	select * into w from pg_temp.fw('88700000-0000-4000-8000-0000000000e1') offset 6 limit 1;
+	select * into w from pg_temp.fw('88700000-0000-4000-8000-0000000000e1') offset 7 limit 1;
 	if jsonb_array_length(w.payload -> 'versions') <> 21 or (w.payload ->> 'more')::integer <> 4 then
 		raise exception '21 versions and more: %', w.payload; end if;
 end $$;
@@ -179,7 +200,7 @@ begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0014', jsonb_build_array(pg_temp.put('docs/a.md', 'alpha again'))));
 	r := pg_temp.listen();
 	perform pg_temp.is(r ->> 'skipped', '1', 'Otto''s routine at its limit is passed over');
-	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '8', 'Nora''s still wakes');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '9', 'Nora''s still wakes');
 	-- Otto archived, his routine not followed yet (still active): passed over.
 	update public.qorpera_cloud_routines set max_occurrences = null where id = '88700000-0000-4000-8000-0000000000e2';
 	update public.qorpera_profile_staff set employment_status = 'archived'
@@ -189,7 +210,7 @@ begin
 	r := pg_temp.listen();
 	perform pg_temp.is(r ->> 'inactive', '1', 'an archived agent''s routine is set aside');
 	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e2')::text, '2', 'and wakes nothing');
-	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '9', 'Nora''s still wakes');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '10', 'Nora''s still wakes');
 	update public.qorpera_profile_staff set employment_status = 'active'
 	where profile_id = '70700000-0000-4000-8000-000000000010' and staff_agent_id = '70700000-0000-4000-8000-0000000000a2';
 	update public.qorpera_cloud_routines set expires_at = clock_timestamp() - interval '1 minute'
@@ -202,7 +223,7 @@ begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0015', jsonb_build_array(v_unit)));
 	r := pg_temp.listen();
 	perform pg_temp.is(r ->> 'state', 'paused', 'a paused company');
-	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '9', 'writes no wake');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '10', 'writes no wake');
 	delete from public.qorpera_company_execution_pauses where profile_id = '70700000-0000-4000-8000-000000000010';
 	perform pg_temp.is(pg_temp.listen() ->> 'state', 'idle', 'and does not replay it after the resume');
 end $$;
