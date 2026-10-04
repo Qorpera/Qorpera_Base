@@ -4581,17 +4581,24 @@ amendment governs. In-place edits are marked "(changed in place)".
    a computer opens.
    - **A run** counts while it makes progress or has a model request in
      flight. So does its lease on a computer.
-     - Its progress clock is the newest of its last recorded tool call, its
-       last native context view (recorded before every model request, by the
-       2026-09-29 amendment "one call before a model request") and its job
-       start. Lease renewals never count.
+     - Its progress clock is the newest of its last record (a tool call, a
+       result fence or one of the runtime's own checks; "writing" pulses are
+       skipped), its last native context view (recorded before every model
+       request, by the 2026-09-29 amendment "one call before a model
+       request"), its last assignment and its job start. Lease renewals never
+       count. A run waiting on a tool it started is making progress.
      - A model request is in flight from its context view until the run's next
        tool call, its next context view or its end. So a long single request
        never makes a run idle; a harness that hangs inside a request keeps the
-       machine awake until its run ends.
+       machine awake until its run ends. The run's records arrive in order,
+       so the platform reads it from them: a request is in flight while the
+       newest record other than a "writing" pulse is its result fence
+       (recorded around its context view), or while the newest record is a
+       pulse of its reply.
      - A run with neither progress nor a model request for 15 minutes is
        idle. The same clock drives the run's "no progress for 15 minutes"
-       notice.
+       notice. The notice also covers a run inside a model request, while the
+       idle rule keeps that machine awake.
      - A coding turn is a run.
    - **A program** counts while it is busy: while it uses more than about 5%
      of one processor core.
