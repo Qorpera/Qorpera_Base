@@ -2109,7 +2109,8 @@ follows a run:
   in again, the conversation follows its binding to their new connection for
   the same account (every sign-in makes a new connection; the vault's upkeep
   pass moves the member's pins from the older node or vault login of the same
-  kind and account to it, then switches the old one off). When the login is
+  kind and account to it, then switches the old one off; a ChatGPT plan's
+  account is its verified OpenAI subject). When the login is
   disconnected (revoked, by the member or
   by an owner or admin), the conversation has no account and says "Choose a
   login to continue" until the member picks one of their own logins by hand:

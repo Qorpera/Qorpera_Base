@@ -1,4 +1,4 @@
--- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
+-- @fixture 764_chatgpt_plan_login.test.sql until "-- Both kinds are listed for their account (20260930059000)"
 -- Sign in with ChatGPT, slice 1b (20260928359950): the rules a member's ChatGPT plan login keeps. Test 764's
 -- fixture leaves the member with a completed plan login (not consented for work while they are away) and a
 -- Codex vault login, next to test 160's capsule login that pays for the fixture's run.

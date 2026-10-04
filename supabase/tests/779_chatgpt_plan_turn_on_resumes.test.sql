@@ -1,4 +1,4 @@
--- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
+-- @fixture 764_chatgpt_plan_login.test.sql until "-- Both kinds are listed for their account (20260930059000)"
 -- Sign in with ChatGPT (20260928369985): a member's own Turn on (qorpera_set_chatgpt_plan_work_while_away) also starts
 -- the agent's routines that wait only for that member's plan: re-pinned to the plan's unattended binding of the
 -- version just turned on, with a schedule cursor, and recorded on the new version. Never another member's routine, a

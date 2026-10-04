@@ -375,3 +375,99 @@ select pg_temp.so_expect(public.qorpera_select_member_session_account('16000000-
 	'69600000-0000-4000-8000-0000000000c0')::text, current_setting('qorpera_test.so_again')::jsonb ->> 'connectionId',
 	'the conversation follows its binding to the same account''s new login');
 reset role;
+
+-- 10. A ChatGPT plan the member signs in to again (20260930059000): the broker records a plan login's verified OpenAI
+-- subject as its account, so the pass pairs a plan that needs a new sign-in with the member's new plan of the same
+-- person, and never with a plan of another person.
+update public.qorpera_chatgpt_plan_settings set enabled = true;
+select set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+set role service_role;
+select pg_temp.so_expect(public.qorpera_set_chatgpt_plan_company('16000000-0000-4000-8000-000000000010', true)::text,
+	'true', 'the operator lists the company for plans');
+reset role;
+-- A plan sign-in of the member, begun and completed as the product does; p_n names its ids and envelope.
+create function pg_temp.so_plan(p_n text) returns jsonb language plpgsql as $$
+declare v_login jsonb; v_result jsonb;
+begin
+	perform set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',true);
+	execute 'set local role authenticated';
+	v_login := public.qorpera_begin_chatgpt_plan_sign_in('16000000-0000-4000-8000-000000000010',
+		('69600000-0000-4000-8000-0000000001' || p_n || '1')::uuid, ('69600000-0000-4000-8000-0000000001' || p_n || '2')::uuid,
+		current_setting('qorpera_test.so_identity')::uuid, encode(sha256(('plan-' || p_n)::bytea),'hex'));
+	execute 'reset role';
+	execute 'set local session authorization qorpera_secret_broker';
+	v_result := public.qorpera_complete_chatgpt_plan_sign_in('69600000-0000-4000-8000-000000000040', repeat('c',64),
+		(v_login ->> 'login_id')::uuid, encode(sha256(('plan-' || p_n)::bytea),'hex'),
+		('69600000-0000-4000-8000-0000000001' || p_n || '0')::uuid, 'company-kek-1',
+		encode(('plan-envelope-' || p_n)::bytea,'base64'), encode(sha256(('plan-envelope-' || p_n)::bytea),'hex'),
+		clock_timestamp() - interval '1 minute', clock_timestamp() + interval '59 minutes', 'account-subject',
+		'native-owner@example.test', clock_timestamp() + interval '20 minutes');
+	execute 'reset session authorization';
+	perform set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',true);
+	return v_result;
+end $$;
+-- A plan login's account as the broker records it: its verified subject, in the plan namespace.
+create function pg_temp.so_plan_account(p_n text, p_subject text) returns text language plpgsql as $$
+begin
+	execute 'set local session authorization qorpera_secret_broker';
+	return pg_temp.so_call(format($q$select public.qorpera_record_model_login_account('69600000-0000-4000-8000-000000000040',
+		repeat('c',64), %L, %L) ->> 'recorded'$q$, '69600000-0000-4000-8000-0000000001' || p_n || '0',
+		encode(sha256(convert_to('openai-subject:' || p_subject, 'utf8')),'hex')));
+end $$;
+grant execute on function pg_temp.so_plan(text), pg_temp.so_plan_account(text,text) to qorpera_secret_broker, authenticated;
+
+select set_config('qorpera_test.so_plan_a', pg_temp.so_plan('a')::text, false);
+-- The member's conversation on plan A (a plan is bound for the member's own messages only).
+select set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select set_config('qorpera_test.so_plan_a_binding', public.qorpera_create_member_execution_sponsor(
+	'16000000-0000-4000-8000-000000000010', '69600000-0000-4000-8000-0000000001a3',
+	(current_setting('qorpera_test.so_plan_a')::jsonb ->> 'connectionId')::uuid,
+	(current_setting('qorpera_test.so_plan_a')::jsonb ->> 'connectionVersion')::bigint, false) ->> 'binding_id', false);
+reset role;
+select set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+do $$
+begin
+	insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,created_by_user_id,
+		audience_kind,audience_user_id)
+	select '69600000-0000-4000-8000-0000000000c2','69600000-0000-4000-8000-0000000000c3',profile_id,environment_id,'Plan',
+		created_by_user_id,audience_kind,audience_user_id
+	from public.qorpera_shared_sessions where id = '69600000-0000-4000-8000-0000000000c0';
+	insert into public.qorpera_member_session_accounts(profile_id,session_id,user_id,connection_id,sponsor_binding_id)
+	values ('16000000-0000-4000-8000-000000000010','69600000-0000-4000-8000-0000000000c2','16000000-0000-4000-8000-000000000001',
+		(current_setting('qorpera_test.so_plan_a')::jsonb ->> 'connectionId')::uuid,current_setting('qorpera_test.so_plan_a_binding')::uuid);
+end $$;
+-- The broker now lists a plan login for its account, and records its subject.
+set local session authorization qorpera_secret_broker;
+select pg_temp.so_expect(pg_temp.so_call($q$select (public.qorpera_model_logins_without_account('69600000-0000-4000-8000-000000000040',
+		repeat('c',64)) -> 'logins') @> '[{"loginId":"69600000-0000-4000-8000-0000000001a0"}]' $q$),
+	'true', 'a plan login is listed for its account');
+reset session authorization;
+select pg_temp.so_expect(pg_temp.so_plan_account('a', 'subject-1'), 'true', 'plan A''s subject is recorded');
+reset session authorization;
+-- Plan A needs a new sign-in; the member signs in with another person's plan: nothing pairs them.
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '69600000-0000-4000-8000-0000000001a0';
+select set_config('qorpera_test.so_plan_b', pg_temp.so_plan('b')::text, false);
+select pg_temp.so_expect(pg_temp.so_plan_account('b', 'subject-2'), 'true', 'plan B''s subject is recorded');
+select pg_temp.so_expect(pg_temp.so_pass(), '0/0/0', 'a plan of another person replaces nothing');
+reset session authorization;
+-- The member disconnects plan B and signs in with their own plan again.
+select set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select public.qorpera_revoke_native_provider_connection('16000000-0000-4000-8000-000000000010',
+	(current_setting('qorpera_test.so_plan_b')::jsonb ->> 'connectionId')::uuid);
+reset role;
+select set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+select set_config('qorpera_test.so_plan_c', pg_temp.so_plan('c')::text, false);
+select pg_temp.so_expect(pg_temp.so_plan_account('c', 'subject-1'), 'true', 'plan C''s subject is recorded');
+select pg_temp.so_expect(pg_temp.so_pass(), '1/0/0', 'plan A is switched off for the same person''s plan C');
+reset session authorization;
+select pg_temp.so_expect((select sponsor.provider_connection_id::text from public.qorpera_execution_sponsor_versions sponsor
+	where sponsor.binding_id = current_setting('qorpera_test.so_plan_a_binding')::uuid order by sponsor.version desc limit 1),
+	current_setting('qorpera_test.so_plan_c')::jsonb ->> 'connectionId', 'the plan conversation''s binding pays with plan C');
+select set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.so_expect(public.qorpera_select_member_session_account('16000000-0000-4000-8000-000000000010',
+	'69600000-0000-4000-8000-0000000000c2')::text, current_setting('qorpera_test.so_plan_c')::jsonb ->> 'connectionId',
+	'the plan conversation follows to the same person''s new plan');
+reset role;

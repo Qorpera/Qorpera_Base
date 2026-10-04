@@ -25,7 +25,8 @@
 -- * A member who signs in to the vault again with the same account gets a new connection, as every sign-in does; the
 --   vault's upkeep pass now moves their pins from the older vault login of the same kind and account to it and
 --   switches the old one off (qorpera_switch_off_replaced_node_logins, as it did for node logins), so what they started
---   follows the same account's new login.
+--   follows the same account's new login. A ChatGPT plan login's account is recorded too (its verified OpenAI subject,
+--   in a namespace of its own), so a plan pairs only with the same person's new plan.
 -- * The usage-limit handoff (qorpera_handoff_run_sponsor), unreachable since 20260928349910, is dropped, with the two
 --   helpers of the old plan-only rule. The handoff rows and readers stay until the run continuation goes; nothing
 --   writes them any more.
@@ -394,6 +395,17 @@ $new$		for v_pair in
 			limit 4
 		loop
 $new$);
+
+-- A plan login's account is recorded too (review of #806, round 2): the broker reads its verified OpenAI subject and
+-- records it in a namespace of its own (sha256 of 'openai-subject:' || subject), which matches only another plan login
+-- of the same person. So the pass above also moves a member's pins from a plan login that needs a new sign-in to the
+-- plan they signed in with again, and never to a plan of another person.
+select pg_temp.payer_never_swaps_replace('public.qorpera_model_logins_without_account(uuid,text)'::regprocedure,
+	$old$and login.status = 'active' and login.account_identity is null and login.login_kind = 'codex'$old$,
+	$new$and login.status = 'active' and login.account_identity is null$new$);
+select pg_temp.payer_never_swaps_replace('public.qorpera_record_model_login_account(uuid,text,uuid,text)'::regprocedure,
+	$old$where id = p_login_id and broker_authority_id = v_authority.id and account_identity is null and login_kind = 'codex';$old$,
+	$new$where id = p_login_id and broker_authority_id = v_authority.id and account_identity is null;$new$);
 
 drop function public.qorpera_handoff_run_sponsor(uuid, text);
 drop function public.qorpera_connection_at_limit(uuid);
