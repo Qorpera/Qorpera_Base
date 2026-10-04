@@ -6,13 +6,22 @@ import {
 	type CloudNativeToolRun,
 	cloudToolRequest,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import { CloudToolAuthorizeRefusal, type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import {
 	CloudRuntimeDiagnosticError,
 	type CloudRuntimeObservationSpan,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
+
+/** The registry's refusal at the authorize before the receipt, kept apart from the same refusal anywhere later. */
+class RefusedBeforeReceipt extends Error {
+	readonly refusal: CloudToolAuthorizeRefusal;
+	constructor(refusal: CloudToolAuthorizeRefusal) {
+		super("Cloud tool operation refused before its receipt");
+		this.refusal = refusal;
+	}
+}
 
 /** A permission check as its own child observation of the tool call, so a
  * refusal or a timeout there is told apart from the receipt, the effect and
@@ -241,7 +250,9 @@ export class CloudNativeToolOperations {
 						await cloudToolRequest(
 							(requestSignal) => authorize(operation, this.#run.identity, requestSignal),
 							signal,
-						);
+						).catch((error: unknown) => {
+							throw error instanceof CloudToolAuthorizeRefusal ? new RefusedBeforeReceipt(error) : error;
+						});
 					},
 					signal,
 				);
@@ -451,6 +462,11 @@ export class CloudNativeToolOperations {
 			);
 			return structuredClone(confirmed.content);
 		} catch (error) {
+			// Refused at the authorize before the receipt: nothing began, so the registry's words are the answer.
+			if (error instanceof RefusedBeforeReceipt && receipt.id === null && !signal.aborted) {
+				options.observation?.finish("denied", { errorCategory: "authority_unavailable" });
+				throw error.refusal;
+			}
 			options.observation?.finish("unconfirmed", {
 				receiptId: receipt.id,
 				errorCategory: receipt.id ? "ambiguous_effect" : cloudRuntimeErrorCategory(error, signal),
