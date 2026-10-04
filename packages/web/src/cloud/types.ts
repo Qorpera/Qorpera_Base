@@ -306,12 +306,6 @@ export interface HostedCompanySnapshot {
 	publicationState?: "prepared" | "published";
 }
 
-export interface CreatedCompanyResult {
-	profile: HostedProfile;
-	/** Absent on clouds that predate the Order 0 bootstrap ledger. */
-	bootstrapState?: "queued" | "leased" | "completed" | "blocked";
-}
-
 /* Company tree manifests (COMPANY-FILE.md, cloud-company-snapshot.ts) */
 
 export interface CloudFileReference {

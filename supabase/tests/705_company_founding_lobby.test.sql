@@ -2,8 +2,8 @@
 -- connects their own ChatGPT login and presses Ready for the current table revision, and one
 -- repeat-safe Start makes every founder at the table an owner and hands the vision and the
 -- founders to C2's creation commit, with the launcher paying for the kickoff.
--- C2's creation halves, its readiness and the availability switch are placeholders until C2;
--- this test stands in for them.
+-- C2's creation halves and its readiness are stood in for here; the availability switch is on since P39
+-- (20260930031000), and this test turns it off where it checks the refusals (the rollback path).
 begin;
 
 insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values
@@ -272,6 +272,11 @@ begin
 end $$;
 select pg_temp.refused(format($$select public.qorpera_set_founder_role(%L,4,%L)$$,
 	current_setting('qorpera_test.table'),repeat('x',301)),'22023');
+-- A name Start's seed would refuse is refused at the rename (20260930039000): a control character, a line separator,
+-- or nothing but spaces (non-ASCII ones too).
+select pg_temp.refused(format($$select public.qorpera_update_company_founding(%L,4,%L,'')$$,
+	current_setting('qorpera_test.table'),name),'22023')
+from unnest(array[E'Nordlys\tKaffe', 'Nordlys' || chr(8232) || 'Kaffe', chr(160) || chr(12288) || ' ']) as name;
 reset role;
 select pg_temp.connect_login(current_setting('qorpera_test.table')::uuid,'40000000-0000-4000-8000-000000000001',1);
 select pg_temp.connect_login(current_setting('qorpera_test.table')::uuid,'40000000-0000-4000-8000-000000000002',2);
@@ -310,6 +315,27 @@ select pg_temp.refused(format($$select public.qorpera_start_company_founding(%L,
 reset role;
 update public.qorpera_provider_connections set status = 'active'
 	where profile_id = current_setting('qorpera_test.table')::uuid and owner_user_id = '40000000-0000-4000-8000-000000000002';
+
+-- With the switch off (the rollback path), Start refuses an open table that is otherwise ready, and nothing changes.
+create or replace function public.qorpera_company_founding_available()
+returns boolean language sql stable security definer set search_path = '' as $$
+	select false
+$$;
+select pg_temp.as_user('40000000-0000-4000-8000-000000000002');
+set local role authenticated;
+select pg_temp.refused(format($$select public.qorpera_start_company_founding(%L,5,'40000000-0000-4000-8000-000000000200')$$,
+	current_setting('qorpera_test.table')),'0A000');
+reset role;
+do $$
+begin
+	if (select phase from public.qorpera_company_foundings where profile_id = current_setting('qorpera_test.table')::uuid) <> 'open'
+		or exists (select 1 from public.founding_test_seeds where profile_id = current_setting('qorpera_test.table')::uuid) then
+		raise exception 'a refused Start changed the table'; end if;
+end $$;
+create or replace function public.qorpera_company_founding_available()
+returns boolean language sql stable security definer set search_path = '' as $$
+	select true
+$$;
 
 -- Bo starts it. Every founder at the table owns the company; the vision and the roles move into
 -- the seed input; Cy's and Dee's unanswered invitations are withdrawn.
