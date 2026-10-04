@@ -50,11 +50,11 @@ import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
-import { type QuotePiece, quotePieces } from "../quotes.ts";
+import { type FieldEdit, type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
-import { keepCaretOutOfQuotes } from "./composer-quotes.ts";
+import { keepCaretOutOfQuotes, watchEdits } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
@@ -204,6 +204,8 @@ export class ConversationView {
 	readonly #quoteNote = h("p", { class: "composer-quote-note", role: "status", hidden: true });
 	/** The quotes the field's copy last set apart, so a change in them alone redraws it. */
 	#piecesShown = "[]";
+	/** What each edit of the composer replaced (composer-quotes.ts). */
+	readonly #takeEdit: (event: Event) => FieldEdit | undefined;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -335,11 +337,12 @@ export class ConversationView {
 					this.#submit();
 				}
 			},
-			oninput: () => {
-				// A change that reached into a quote removes the whole quote; the field shows what is kept.
+			oninput: (event: Event) => {
+				// A change that reached into a quote removes the whole quote; the field shows what is kept. The field's
+				// own account of what it replaced tells a quote pasted over another from words typed inside it.
 				const composer = this.#composer;
 				const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
-				const kept = company.editDraft(sessionId, composer.value, caret);
+				const kept = company.editDraft(sessionId, composer.value, caret, this.#takeEdit(event));
 				if (kept.text !== composer.value) {
 					composer.value = kept.text;
 					if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
@@ -393,6 +396,7 @@ export class ConversationView {
 			quotes: () => this.#quotePieces(),
 		});
 		keepCaretOutOfQuotes(this.#composer, () => this.#quotePieces(), this.#lifetime.signal);
+		this.#takeEdit = watchEdits(this.#composer, this.#lifetime.signal);
 		this.#send = h(
 			"button",
 			{

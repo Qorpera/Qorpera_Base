@@ -260,6 +260,9 @@
 .draft-panel-status[hidden] { display: none; }
 .draft-panel-quotes { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .draft-panel-quotes[hidden] { display: none; }
+/* The member's own draft when the cloud won't take it as it is, or when a quote gave way: one line above the composer. */
+.draft-own-note { margin: 0 6px; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.draft-own-note[hidden] { display: none; }
 .draft-panel-input { display: block; width: 100%; min-height: 21px; max-height: 147px; padding: 0 4px 0 0; border: 0; border-radius: 0; background: transparent; outline: 0; resize: none; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
 /* The Model panel (models, effort and speed) fits without scrolling on an ordinary window. */
 .composer-menu:has(> .composer-models:not([hidden])) { max-height: min(452px, 72dvh); }

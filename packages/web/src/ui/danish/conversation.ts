@@ -33,6 +33,10 @@ export const CONVERSATION: Record<string, string> = {
 	"That message already quotes the same words from another email. Send it or remove that quote first.":
 		"Den besked citerer allerede de samme ord fra en anden mail. Send den, eller fjern det citat først.",
 	"Quoted from an email": "Citeret fra en mail",
+	"A message can hold at most {count} quotes. Remove some to share your changes.":
+		"En besked kan højst rumme {count} citater. Fjern nogle for at dele dine ændringer.",
+	"A quote was taken out: the draft now quotes the same words from another email.":
+		"Et citat blev taget ud: kladden citerer nu de samme ord fra en anden mail.",
 	"A quote in it can't be shared. Remove the quote to share your changes.":
 		"Et citat i den kan ikke deles. Fjern citatet for at dele dine ændringer.",
 	// Mentions: "@" and a name in a message (conversation.ts, ui/mentions.ts, shell.ts)

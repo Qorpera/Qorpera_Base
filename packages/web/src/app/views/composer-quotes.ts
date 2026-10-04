@@ -1,9 +1,32 @@
-import { type QuotePiece, snapSelection } from "../quotes.ts";
+import { type FieldEdit, type QuotePiece, snapSelection } from "../quotes.ts";
 
 /* A quote of outside content is one piece of a draft (app/quotes.ts): the caret never rests inside one, so nothing
  * typed, pasted or composed (an input method) lands in its words, and a selection takes a quote whole or not at all.
  * Arrow keys step over a quote, a click inside one lands at its nearer edge, and Backspace or Delete at its edge
  * reaches its mark, which removes it whole (CompanyController.editDraft). */
+
+/** Reads what each edit of a field replaces: the selection as it stood just before the edit landed (`beforeinput`).
+ * The returned function takes an `input` event and gives its edit, once: only for the InputEvent of the same kind
+ * that followed it, so a change made by code (a name or skill put in, a teammate's words) is read from the texts. */
+export function watchEdits(input: HTMLTextAreaElement, signal: AbortSignal): (event: Event) => FieldEdit | undefined {
+	let pending: FieldEdit | undefined;
+	input.addEventListener(
+		"beforeinput",
+		(event) => {
+			const { inputType } = event as InputEvent;
+			pending =
+				typeof inputType === "string" && inputType
+					? { start: input.selectionStart, end: input.selectionEnd, inputType }
+					: undefined;
+		},
+		{ signal },
+	);
+	return (event) => {
+		const edit = pending;
+		pending = undefined;
+		return edit && event instanceof InputEvent && event.inputType === edit.inputType ? edit : undefined;
+	};
+}
 
 /** Keeps a field's caret and selection out of the inside of its quotes, for as long as `signal` lasts. */
 export function keepCaretOutOfQuotes(

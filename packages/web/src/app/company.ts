@@ -50,12 +50,13 @@ import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import {
 	appendQuoted,
+	type FieldEdit,
 	keepQuotesWhole,
 	placeQuotes,
 	type QuotedText,
 	type QuoteRecord,
 	quotePieces,
-	withQuoteRecords,
+	takeQuoteRecords,
 } from "./quotes.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store, throttle } from "./state.ts";
@@ -474,10 +475,12 @@ export class CompanyController {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
 			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
 			quotes: (sessionId) => this.draftQuotes(sessionId),
+			// The merged draft's quotes take their words over: a record kept here never outlives the email its
+			// words now come from (another tab removed one quote and quoted the same words from another email).
 			setDraft: (sessionId, text, quotes) =>
 				this.conversation(sessionId).set((state) => ({
 					draft: text,
-					quoteRecords: withQuoteRecords(state.quoteRecords ?? [], text, quotes),
+					quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], text, quotes),
 				})),
 		});
 		this.#writeInput =
@@ -2062,10 +2065,15 @@ export class CompanyController {
 
 	/** The member changed the draft's text in a composer; `caret` is where theirs stands. A change that reaches into a
 	 * quote removes the whole quote (app/quotes.ts). Returns the text kept, which the composer shows, and its caret. */
-	editDraft(sessionId: string, text: string, caret?: number): { text: string; caret: number | undefined } {
+	editDraft(
+		sessionId: string,
+		text: string,
+		caret?: number,
+		edit?: FieldEdit,
+	): { text: string; caret: number | undefined } {
 		const store = this.conversation(sessionId, false);
 		const before = store.get().draft ?? "";
-		const kept = keepQuotesWhole(before, quotePieces(before, this.draftQuotes(sessionId)), text, caret);
+		const kept = keepQuotesWhole(before, quotePieces(before, this.draftQuotes(sessionId)), text, caret, edit);
 		store.set({ draft: kept.text });
 		return kept;
 	}
@@ -2082,6 +2090,8 @@ export class CompanyController {
 		if (placeQuotes(next.text, next.records).length > QUOTES_MAX)
 			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
 		store.set({ draft: next.text, quoteRecords: next.records });
+		// A shared draft shares it at once, as if the member had typed it.
+		this.roomDrafts.input(sessionId);
 	}
 
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {

@@ -6,7 +6,7 @@ import {
 	quoteRefFits,
 	unitIndex,
 } from "../cloud/quotes.ts";
-import { diffText } from "./text-merge.ts";
+import { diffText, mergeText, type TextEdit } from "./text-merge.ts";
 
 /* Quotes in the composer (contract, the 2026-10-02 amendment "quoted outside content in a member's message", item 2).
  * A quote is one piece of the draft: the member keeps it or removes it whole, and writes their own words around it.
@@ -37,7 +37,8 @@ export interface QuotePiece {
 	readonly to: number;
 }
 
-/** `known` with the records of a text's quotes added; a record whose words are already known is left out. */
+/** `known` with the records of a text's quotes added; a record whose words are already known is left out. For quotes
+ * the member adds here; quotes that come confirmed from the cloud take their words over (`takeQuoteRecords`). */
 export function withQuoteRecords(
 	known: readonly QuoteRecord[],
 	text: string,
@@ -51,6 +52,20 @@ export function withQuoteRecords(
 			records.push({ words, source: quote.source, ref: quote.ref });
 	}
 	return records.length === known.length ? known : records;
+}
+
+/** `known` with the records of quotes the cloud confirmed (a shared draft's, as merged): each one replaces a known
+ * record of the same words, so a quote never keeps an email it no longer names. Another tab or a teammate may have
+ * removed a quote of one email and quoted the same words from another; the draft holds them from the new one now. */
+export function takeQuoteRecords(
+	known: readonly QuoteRecord[],
+	text: string,
+	quotes: readonly MessageQuote[],
+): readonly QuoteRecord[] {
+	if (!quotes.length) return known;
+	const taken = withQuoteRecords([], text, quotes);
+	const words = new Set(taken.map((record) => record.words));
+	return [...taken, ...known.filter((record) => !words.has(record.words))];
 }
 
 /** The quotes of a text: every «words» of a known record, in order. A record's words never hold a mark, so they
@@ -88,19 +103,51 @@ export function quotePieces(text: string, quotes: readonly MessageQuote[]): Quot
 	return quotes.map((quote) => ({ from: unitIndex(text, quote.start) - 1, to: unitIndex(text, quote.end) + 1 }));
 }
 
-/** The member changed a text from `before` to `after`; `caret` is where their caret stands in `after`. A change that
- * reaches into a quote (its marks or its words) removes all of it: the rest of its piece goes, and the words the
- * member typed stay. Returns the text to keep and where the caret goes in it. The field keeps the caret out of a
- * quote (`snapSelection`), so this is mostly a deletion that reached a quote's mark, removing the quote whole. */
-export function keepQuotesWhole(
-	before: string,
-	pieces: readonly QuotePiece[],
-	after: string,
-	caret?: number,
-): { text: string; caret: number | undefined } {
-	if (before === after || !pieces.length) return { text: after, caret };
-	// One replaced span: `removed` units of `before` from `prefix`, in place of which `inserted` stands. diffText
-	// starts with the kept prefix only when there is one; a kept number after the change is the suffix.
+/** An edit as the text field made it: the selection it replaced, read just before it landed (`beforeinput`), and what
+ * kind of edit it was (the InputEvent's `inputType`). */
+export interface FieldEdit {
+	readonly start: number;
+	readonly end: number;
+	readonly inputType: string;
+}
+
+/** One replaced span: `removed` units of the old text from `prefix`, in place of which `inserted` stands. */
+interface Change {
+	readonly prefix: number;
+	readonly removed: number;
+	readonly inserted: string;
+}
+
+/** The span a field's edit replaced, from its selection: the selection itself, or for a deletion from a caret the
+ * characters beside it. Undefined when the edit replaces a span the selection doesn't tell (composing a letter, undo,
+ * a drop, a spelling fix), or when the selection doesn't account for the change. */
+function replacedSpan(before: string, after: string, edit: FieldEdit): Change | undefined {
+	if (/Composition|Drop|Replacement|Transpose|^history/.test(edit.inputType)) return undefined;
+	const grown = after.length - before.length;
+	const { start, end } = edit;
+	const spans: [number, number][] =
+		start !== end || !edit.inputType.startsWith("delete")
+			? [[start, end]]
+			: edit.inputType.endsWith("Forward")
+				? [[start, start - grown]]
+				: edit.inputType.endsWith("Backward")
+					? [[start + grown, start]]
+					: [
+							[start + grown, start],
+							[start, start - grown],
+						];
+	for (const [from, to] of spans) {
+		const tail = before.length - to;
+		if (from < 0 || from > to || tail < 0 || after.length - tail < from) continue;
+		if (after.slice(0, from) === before.slice(0, from) && after.slice(after.length - tail) === before.slice(to))
+			return { prefix: from, removed: to - from, inserted: after.slice(from, after.length - tail) };
+	}
+	return undefined;
+}
+
+/** The span that changed, read from the texts alone: diffText starts with the kept prefix only when there is one,
+ * and a kept number after the change is the suffix. Where the same letters repeat it can't tell which ones went. */
+function diffSpan(before: string, after: string, caret: number | undefined): Change {
 	let prefix = 0;
 	let removed = 0;
 	let inserted = "";
@@ -111,6 +158,27 @@ export function keepQuotesWhole(
 		else if (!seen) prefix = step;
 		seen = true;
 	}
+	return { prefix, removed, inserted };
+}
+
+/** The member changed a text from `before` to `after`; `caret` is where their caret stands in `after`. A change that
+ * reaches into a quote (its marks or its words) removes all of it: the rest of its piece goes, and the words the
+ * member typed or pasted stay. Returns the text to keep and where the caret goes in it. The field keeps the caret out
+ * of a quote (`snapSelection`), so this is mostly a deletion that reached a quote's mark, removing the quote whole.
+ *
+ * `edit` is the field's own account of the change. Without it the change is read from the texts, which can't tell a
+ * pasted «A» over «B» from an A typed over the B inside the marks (and would leave a bare A, a quote's words as the
+ * member's own); with it the whole «B» was replaced, and the pasted «A» is a quote again. */
+export function keepQuotesWhole(
+	before: string,
+	pieces: readonly QuotePiece[],
+	after: string,
+	caret?: number,
+	edit?: FieldEdit,
+): { text: string; caret: number | undefined } {
+	if (before === after || !pieces.length) return { text: after, caret };
+	const { prefix, removed, inserted } =
+		(edit && replacedSpan(before, after, edit)) ?? diffSpan(before, after, caret);
 	const shift = inserted.length - removed;
 	const cut: [number, number][] = [];
 	for (const { from, to } of pieces) {
@@ -196,4 +264,132 @@ export function appendQuoted(
 
 function wordsOf(text: string, quote: MessageQuote): string {
 	return text.slice(unitIndex(text, quote.start), unitIndex(text, quote.end));
+}
+
+/** The first and last private-use letters: placeholders for quotes while drafts merge. */
+const PRIVATE_USE_FIRST = 0xe000;
+const PRIVATE_USE_LAST = 0xf8ff;
+
+/** A shared draft merged with each quote as one indivisible piece (app/room-drafts.ts). Letters merge one by one
+ * (text-merge.ts), so a quote one side replaced and the other removed would come out as bare words, a quote's words
+ * as the member's own. Here every «words» of a quote stands as one placeholder letter while base, mine and theirs
+ * merge: a quote is kept, removed or replaced whole, never cut. The placeholders are private-use letters none of the
+ * three texts holds; undefined when there aren't enough of them (thousands of private-use letters in a draft).
+ *
+ * One record per words (`placeQuotes`) can't hold the same words from two emails. When the merge would, the cloud's
+ * quote stays and the other gives way (`dropped`): the cloud's draft is what every member's browser shows, and a
+ * local quote of the same words would otherwise carry the other email's thread. `edit` turns `mine` into the result,
+ * as mergeText's does. */
+export function mergeQuoted(
+	base: QuotedText,
+	mine: QuotedText,
+	theirs: QuotedText,
+	caret?: number,
+): { text: string; quotes: MessageQuote[]; edit: TextEdit; dropped: boolean } | undefined {
+	const used = new Set<number>();
+	for (const { text } of [base, mine, theirs])
+		for (const letter of text) {
+			const code = letter.codePointAt(0) ?? 0;
+			if (code >= PRIVATE_USE_FIRST && code <= PRIVATE_USE_LAST) used.add(code);
+		}
+	let next = PRIVATE_USE_FIRST;
+	const letters = new Map<string, string>();
+	const records = new Map<string, QuoteRecord>();
+	const letterFor = (record: QuoteRecord): string | undefined => {
+		const key = `${record.source}\n${record.ref}\n${record.words}`;
+		let letter = letters.get(key);
+		if (letter === undefined) {
+			while (used.has(next)) next++;
+			if (next > PRIVATE_USE_LAST) return undefined;
+			letter = String.fromCharCode(next++);
+			letters.set(key, letter);
+			records.set(letter, record);
+		}
+		return letter;
+	};
+	const tokens = ({ text, quotes }: QuotedText): string | undefined => {
+		let out = "";
+		let at = 0;
+		for (const quote of quotes) {
+			const words = wordsOf(text, quote);
+			const from = unitIndex(text, quote.start) - 1;
+			const letter = letterFor({ words, source: quote.source, ref: quote.ref });
+			if (letter === undefined) return undefined;
+			out += text.slice(at, from) + letter;
+			at = from + words.length + 2;
+		}
+		return out + text.slice(at);
+	};
+	const size = (letter: string) => {
+		const record = records.get(letter);
+		return record ? record.words.length + 2 : letter.length;
+	};
+	const expand = (tokenText: string): QuotedText & { quotes: MessageQuote[] } => {
+		let text = "";
+		const quotes: MessageQuote[] = [];
+		let characters = 0;
+		for (const letter of tokenText) {
+			const record = records.get(letter);
+			if (!record) {
+				text += letter;
+				characters += 1;
+				continue;
+			}
+			const length = [...record.words].length;
+			quotes.push({ start: characters + 1, end: characters + 1 + length, source: record.source, ref: record.ref });
+			text += `«${record.words}»`;
+			characters += length + 2;
+		}
+		return { text, quotes };
+	};
+	const baseTokens = tokens(base);
+	const mineTokens = tokens(mine);
+	const theirTokens = tokens(theirs);
+	if (baseTokens === undefined || mineTokens === undefined || theirTokens === undefined) return undefined;
+	// The caret in the placeholder text: past each whole quote before it, at the start of one it stands in.
+	let tokenCaret = caret;
+	if (caret !== undefined) {
+		let shrunk = 0;
+		let inside: number | undefined;
+		for (const { from, to } of quotePieces(mine.text, mine.quotes)) {
+			if (to <= caret) shrunk += to - from - 1;
+			else if (from < caret) inside = from - shrunk;
+		}
+		tokenCaret = inside ?? caret - shrunk;
+	}
+	const merged = mergeText(baseTokens, mineTokens, theirTokens, tokenCaret);
+	// The same words from two emails: the quote the cloud's draft holds stays, and every other one goes whole.
+	const kept = new Map<string, string>();
+	for (const letter of theirTokens) {
+		const record = records.get(letter);
+		if (record && !kept.has(record.words)) kept.set(record.words, letter);
+	}
+	for (const letter of merged.text) {
+		const record = records.get(letter);
+		if (record && !kept.has(record.words)) kept.set(record.words, letter);
+	}
+	let dropped = false;
+	let resolved = "";
+	for (const letter of merged.text) {
+		const record = records.get(letter);
+		if (record && kept.get(record.words) !== letter) dropped = true;
+		else resolved += letter;
+	}
+	const result = expand(resolved);
+	if (dropped) return { ...result, edit: diffText(mine.text, result.text), dropped };
+	// The edit in the real text: each placeholder it keeps or removes stands for its whole quote.
+	const edit: (number | string)[] = [];
+	let at = 0;
+	const span = (count: number) => {
+		let units = 0;
+		for (const letter of mineTokens.slice(at, at + count)) units += size(letter);
+		at += count;
+		return units;
+	};
+	for (const step of merged.edit) {
+		if (typeof step === "string") edit.push(expand(step).text);
+		else if (step > 0) edit.push(span(step));
+		else edit.push(-span(-step));
+	}
+	return { ...result, edit, dropped };
 }

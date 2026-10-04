@@ -3,14 +3,15 @@ import { CloudRpcError } from "../cloud/client.ts";
 import { type MessageQuote, sameQuotes } from "../cloud/quotes.ts";
 import type { RealtimePhase } from "../cloud/realtime.ts";
 import {
+	DraftQuotesError,
 	ROOM_DRAFT_BYTES,
 	type RoomDraft,
 	type RoomDraftSubscription,
 	type RoomDraftWrite,
 } from "../cloud/room-drafts.ts";
-import { placeQuotes, withQuoteRecords } from "./quotes.ts";
+import { mergeQuoted } from "./quotes.ts";
 import { Store } from "./state.ts";
-import { applyEdit, diffText, mergeText, type TextEdit, transform } from "./text-merge.ts";
+import { applyEdit, diffText, type TextEdit, transform } from "./text-merge.ts";
 
 /* Shared drafts in the browser. Every room this member opens shows the other
  * members' unsent messages; the member's own draft is written to the cloud as
@@ -37,12 +38,12 @@ function wellFormed(text: string): string {
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 }
 
-/** Where this browser's text stands: in the cloud, not yet (tried again), too long to share, or holding a quote the
- * cloud would not keep. */
-export type DraftStatus = "saved" | "retrying" | "too-long" | "refused";
+/** Where this browser's text stands: in the cloud, not yet (tried again), too long to share, holding more quotes than
+ * a message can, or holding a quote the cloud would not keep. */
+export type DraftStatus = "saved" | "retrying" | "too-long" | "quote-limit" | "refused";
 
 /** The cloud will not take the text as it is: it waits for the member to change it. */
-const givenUp = (status: DraftStatus) => status === "too-long" || status === "refused";
+const givenUp = (status: DraftStatus) => status === "too-long" || status === "quote-limit" || status === "refused";
 
 export interface DraftHost {
 	/** The text this browser shows for the draft. */
@@ -57,8 +58,11 @@ export interface DraftHost {
 	gone(): void;
 	/** The member is composing a letter (an input method); the text must not change under it. */
 	busy?(): boolean;
-	/** The text is written, is not reaching the cloud (tried again), or is too long to share. */
+	/** The text is written, is not reaching the cloud (tried again), or the cloud will not take it as it is. */
 	status?(status: DraftStatus): void;
+	/** A quote shown here gave way in a merge: the draft quotes the same words from another email (app/quotes.ts,
+	 * mergeQuoted). */
+	dropped?(): void;
 }
 
 /** A draft as the cloud confirmed it: its text and the quotes that text holds. */
@@ -189,19 +193,28 @@ export class DraftSync {
 		if (newest.revision > this.#server.revision) this.#merge(newest);
 	}
 
-	/** Take the cloud's draft as the base and replay this browser's own change on it. The merged text's quotes are
-	 * found by their words (app/quotes.ts): a quote either side kept is kept, and one either side removed is gone
-	 * with its words. */
+	/** Take the cloud's draft as the base and replay this browser's own change on it. Each quote merges as one piece
+	 * (app/quotes.ts, mergeQuoted): kept, removed or replaced whole, never cut into bare words. */
 	#merge(draft: { revision: number; body: string; quotes?: readonly MessageQuote[] }): void {
 		const shown = this.#host.text();
 		const mine = this.quotes();
-		const { text, edit } = mergeText(this.#server.body, shown, draft.body, this.#host.caret());
-		const quotes = placeQuotes(
-			text,
-			withQuoteRecords(withQuoteRecords([], shown, mine), draft.body, draft.quotes ?? []),
+		const merged = mergeQuoted(
+			{ text: this.#server.body, quotes: this.#server.quotes },
+			{ text: shown, quotes: mine },
+			{ text: draft.body, quotes: draft.quotes ?? [] },
+			this.#host.caret(),
 		);
 		this.#server = { revision: draft.revision, body: draft.body, quotes: draft.quotes ?? [] };
-		if (text !== shown || !sameQuotes(quotes, mine)) this.#host.show(text, edit, quotes);
+		if (!merged) {
+			// No placeholder letter is free for every quote (thousands of private-use letters in the drafts): rather
+			// than merge letter by letter, which can cut a quote, the text shown here stays as it is and replaces the
+			// cloud's at the next write.
+			this.#schedule(0);
+			return;
+		}
+		if (merged.text !== shown || !sameQuotes(merged.quotes, mine))
+			this.#host.show(merged.text, merged.edit, merged.quotes);
+		if (merged.dropped) this.#host.dropped?.();
 		if (!this.#confirmed()) this.#schedule(0);
 	}
 
@@ -243,23 +256,25 @@ export class DraftSync {
 		}
 		this.#writing = true;
 		let result: RoomDraftWrite | undefined;
-		let refused = false;
+		let refused: DraftStatus | undefined;
 		try {
 			result = await this.#write(this.#server.revision, body, quotes);
 			this.#failures = 0;
 		} catch (error) {
 			// Refused or missing on this cloud: the draft is not this member's to write.
 			if (error instanceof CloudRpcError && (error.denied || error.missing)) result = { status: "gone" };
-			// The text itself was refused: trying it again cannot help.
-			else if (error instanceof CloudRpcError && error.code === "22023") refused = true;
+			// The text itself was refused: trying it again cannot help. With quotes, it was the quotes the cloud would
+			// not keep (a mail thread it no longer shows, say).
+			else if (error instanceof CloudRpcError && error.code === "22023") refused = quotes.length ? "refused" : "too-long";
+			// Quotes this browser can't send as they are (more than a message carries) fail the same way every time.
+			else if (error instanceof DraftQuotesError) refused = error.tooMany ? "quote-limit" : "refused";
 			else this.#failures += 1;
 		} finally {
 			this.#writing = false;
 		}
 		if (this.#stopped) return;
 		if (refused) {
-			// With quotes, it was the quotes the cloud would not keep (a mail thread it no longer shows, say).
-			this.#setStatus(quotes.length ? "refused" : "too-long");
+			this.#setStatus(refused);
 			return;
 		}
 		this.#setStatus(result ? "saved" : "retrying");
@@ -461,6 +476,9 @@ export class RoomDraftRoom {
 	}
 }
 
+/** What a view says about the member's own draft: where it stands, or that a quote gave way in a merge. */
+export type OwnDraftNote = { readonly kind: "status"; readonly status: DraftStatus } | { readonly kind: "dropped" };
+
 export interface DraftEditor {
 	caret(): number | undefined;
 	busy(): boolean;
@@ -489,6 +507,8 @@ export class RoomDrafts {
 	readonly #sending = new Map<string, TextEdit[]>();
 	/** The composer of each conversation a view shows: its caret, and whether a letter is being composed. */
 	readonly #editors = new Map<string, DraftEditor>();
+	/** Views that say what became of the member's own draft: the cloud would not take it, or a quote gave way. */
+	readonly #ownNotes = new Map<string, Set<(note: OwnDraftNote) => void>>();
 	#missing = false;
 
 	constructor(api: CloudApi, userId: string, signal: AbortSignal, hooks: RoomDraftsHooks) {
@@ -547,6 +567,24 @@ export class RoomDrafts {
 		}
 		listeners.add(listener);
 		return () => listeners.delete(listener);
+	}
+
+	/** Called when the member's own draft here can't be shared as it is, can again, or lost a quote in a merge. */
+	onOwnDraft(sessionId: string, listener: (note: OwnDraftNote) => void): () => void {
+		let listeners = this.#ownNotes.get(sessionId);
+		if (!listeners) {
+			listeners = new Set();
+			this.#ownNotes.set(sessionId, listeners);
+		}
+		listeners.add(listener);
+		return () => listeners.delete(listener);
+	}
+
+	/** Where the member's own draft here stands. */
+	ownStatus(sessionId: string): DraftStatus {
+		const room = this.room(sessionId);
+		const sync = room?.syncs.get(this.#userId);
+		return sync && !sync.stopped ? sync.status : "saved";
 	}
 
 	/** The member typed in their own composer. */
@@ -648,6 +686,13 @@ export class RoomDrafts {
 					this.#hooks.setDraft(sessionId, text, quotes);
 				},
 				gone: () => {},
+				// A refusal is said beside the member's own composer, not only in a teammate's panel.
+				status: (status) => {
+					for (const listener of this.#ownNotes.get(sessionId) ?? []) listener({ kind: "status", status });
+				},
+				dropped: () => {
+					for (const listener of this.#ownNotes.get(sessionId) ?? []) listener({ kind: "dropped" });
+				},
 			},
 			(base, body, quotes) => this.#api.putRoomDraft(room.roomId, this.#userId, base, body, quotes),
 			(written) => room.apply(written, "own"),
