@@ -1872,7 +1872,8 @@ runs with 2 seconds), so a member's or run's commit never waits long behind it. 
 7. rank 8: the agent's vault grants by id, then each shared secret `FOR KEY SHARE NOWAIT` before a connector grant is
    inserted (a busy secret ends the attempt with 55P03; a company share or seal never waits on the converge);
 8. rank 11: the agent's open sessions (`FOR UPDATE`, by id, `SKIP LOCKED` for those it only closes; a skipped one
-   leaves the subject dirty), then their execution bindings. The thread session is taken `FOR UPDATE` only when a
+   leaves the subject dirty), then their execution bindings and those of its own sessions already closed (its thread,
+   which the commit closed), as legacy deleted them. The thread session is taken `FOR UPDATE` only when a
    kickoff is inserted; to queue a turn alone the converge takes the thread session `FOR KEY SHARE` explicitly, then
    the kickoff input `FOR UPDATE` (sessions before inputs, as P28's materializer takes them);
 9. the company operation clock, taken by the session closes and the kickoff;
@@ -1919,7 +1920,8 @@ For an **archived or retired agent**:
   told 4 October);
 - the expired routines' `expired_while_active` is cleared (the routines-stop trigger's work);
 - its secret and connector grants are revoked;
-- its execution authorities, and the bindings of the sessions it closes, are deleted;
+- its execution authorities are deleted, and so are the bindings of the sessions it closes and of its own closed
+  sessions (its thread, closed by the commit);
 - its pair sessions and other open sessions are closed (members' private conversations with it too, as legacy did;
   reactivation reopens none of them). The thread trigger closes only the thread, which the commit names.
 
