@@ -177,8 +177,7 @@ export function keepQuotesWhole(
 	edit?: FieldEdit,
 ): { text: string; caret: number | undefined } {
 	if (before === after || !pieces.length) return { text: after, caret };
-	const { prefix, removed, inserted } =
-		(edit && replacedSpan(before, after, edit)) ?? diffSpan(before, after, caret);
+	const { prefix, removed, inserted } = (edit && replacedSpan(before, after, edit)) ?? diffSpan(before, after, caret);
 	const shift = inserted.length - removed;
 	const cut: [number, number][] = [];
 	for (const { from, to } of pieces) {

@@ -689,7 +689,7 @@ describe("room drafts keep their quotes", () => {
 		more: readonly QuoteRecord[] = [],
 	) {
 		let text = start.body;
-		let records = [...withQuoteRecords([], start.body, start.quotes ?? []), ...more];
+		let records: readonly QuoteRecord[] = [...withQuoteRecords([], start.body, start.quotes ?? []), ...more];
 		let dropped = 0;
 		const writes: { base: number; body: string; quotes: readonly MessageQuote[] }[] = [];
 		const answers: ReturnType<typeof deferred<RoomDraftWrite>>[] = [];
@@ -913,7 +913,10 @@ describe("room drafts keep their quotes", () => {
 		vi.useFakeTimers();
 		const words = Array.from({ length: 16 }, (_, n) => `w${n}`);
 		const sixteen = words.map((word) => `«${word}»`).join(" ");
-		const quotes = placeQuotes(sixteen, words.map((word) => quoteRecord(word)));
+		const quotes = placeQuotes(
+			sixteen,
+			words.map((word) => quoteRecord(word)),
+		);
 		const s = await view({ drafts: [roomDraft(userB.id, sixteen, 2, { quotes })] });
 		// The real adapter: the put goes to the cloud's RPC unless the quotes can't be sent as they are.
 		const rpc = vi.mocked(s.f.cloud.rpc);
