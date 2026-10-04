@@ -186,10 +186,18 @@ probe_sent() {
 	nft delete table bridge qae2b_probe
 	[[ $out =~ packets\ [1-9] ]]
 }
-# Gives m1's card another MAC (or its own back) and keeps its address, route and the exit as a static neighbour.
+# Gives m1's card another MAC and keeps its address, route and the exit as a static neighbour. m1's own network
+# service is stopped first: on a new MAC it would drop the hand-set route (a probe would then never leave).
 set_mac() {
-	in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $1; ip link set eth0 up; ip addr replace $a1/16 dev eth0
+	in_m m1 sh -c "systemctl stop systemd-networkd.socket systemd-networkd 2>/dev/null || true
+		ip link set eth0 down; ip link set eth0 address $1; ip link set eth0 up; ip addr replace $a1/16 dev eth0
 		ip route replace default via 10.210.0.1 dev eth0 onlink; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+}
+# Its own MAC back, and its network service again.
+own_mac() {
+	set_mac "$mac1"
+	in_m m1 systemctl start systemd-networkd 2>/dev/null || true
+	wait_for "reach m1 198.51.100.1 80" 150
 }
 # LXD's own layers on each machine's port, each tested with ours opened for it (the reconciler stopped meanwhile, so
 # it cannot close them again): port isolation, its MAC filter and its IPv6 filter must hold by themselves.
@@ -207,7 +215,7 @@ probe_start ether saddr 0e:51:0a:d2:99:98 tcp dport 80
 reach m1 198.51.100.1 80 && fail "LXD's MAC filter let another MAC through"
 probe_sent || fail "the probe with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "LXD's MAC filter let another MAC through to the exit"
-set_mac "$mac1"
+own_mac
 # Our rules let m1's IPv6 through, so only LXD's IPv6 filter can stop it before forward priority 100.
 nft insert rule bridge qorpera_agent_exit_bridge forward iifname "$host_if" ether type ip6 accept
 nft add table bridge qae2b_lxd6
@@ -245,8 +253,7 @@ probe_start ether saddr 0e:51:0a:d2:99:99 tcp dport 80
 reach m1 198.51.100.1 80 && fail "a machine got out with another MAC"
 probe_sent || fail "the probe with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "the exit saw a machine's address from another MAC"
-set_mac "$mac1"
-wait_for "reach m1 198.51.100.1 80" 100
+own_mac
 # IPv6: none of it reaches the bridge.
 nft add table bridge qae2b_count
 # After LXD's filters and ours (forward, priority 100): nothing of a machine's IPv6 is left.
