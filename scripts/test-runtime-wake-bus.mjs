@@ -198,7 +198,9 @@ async function verifyDatabase(database, target) {
 	pass(target, "SQL / TypeScript policy fixtures match for all five kinds and closed fallback");
 
 	const envelopes = [];
-	for (const name of ["human", "first-run", "routine-default", "routine-optional", "routine-required", "routine-silent", "company-file", "agent"]) {
+	// No snapshot-v1 File envelope: since P29b the runtime parses only folder-v2 file wakes, which this snapshot-v1 baseline
+	// cannot make (887 checks the payload SQL builds; cloud-wake-bus.test.ts the parser).
+	for (const name of ["human", "first-run", "routine-default", "routine-optional", "routine-required", "routine-silent", "agent"]) {
 		let prepare = "";
 		if (name === "first-run") prepare = `
  insert into public.qorpera_session_inputs(session_id,client_input_id,kind,author_user_id,body)
@@ -215,16 +217,7 @@ async function verifyDatabase(database, target) {
  perform public.qorpera_materialize_wake_execution_runs(1);
  select run_id into strict v_run from public.qorpera_wake_occurrences where id=v_id;
  v_binding := pg_temp.wake_start(v_run);`;
-		} else if (name === "company-file") prepare = `
- perform pg_temp.wake_public_send(v_binding,'progress');
- v_routine := pg_temp.wake_routine('${bob}',
-  '{"id":"changes","kind":"listener","source":"company-file","path":"note.md","match":"exact","timeZone":"UTC","replyPolicy":"optional"}');
- v_result := pg_temp.path_commit(pg_temp.path_plan('envelope-file','note.md',pg_temp.path_stage_file('note.md','Authorized event')));
- perform public.qorpera_materialize_wake_execution_runs(1);
- select run_id into strict v_run from public.qorpera_wake_occurrences
-  where routine_id=(v_routine->>'routine_id')::uuid and file_event_id=(v_result->>'snapshotId')::uuid;
- v_binding := pg_temp.wake_start(v_run);`;
-		else if (name === "agent") prepare = `
+		} else if (name === "agent") prepare = `
  perform pg_temp.wake_public_send(v_binding,'progress');
  v_result := public.qorpera_send_coworker_message(v_binding,'${bob}','envelope-agent','Authorized coworker message');
  perform public.qorpera_materialize_wake_execution_runs(1);
