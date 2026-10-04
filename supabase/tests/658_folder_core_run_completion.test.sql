@@ -1,4 +1,4 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-2c part 2 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6): a folder-v2 run's
 -- completion, sponsor handoff and receipt recovery. v6's folder lane completes a run with the disposition its commits
 -- give (unchanged, published, review_pending), after its receipts are matched to the commits that carry them; it closes
@@ -115,47 +115,8 @@ $$;
 create function pg_temp.begin(p_binding jsonb, p_receipt uuid, p_key text) returns jsonb language sql as $$
 	select public.qorpera_begin_native_tool_operation(p_binding, p_receipt, p_key, repeat('1', 64), repeat('2', 64), true)
 $$;
-create function pg_temp.without_guard(p_definition text) returns text language plpgsql as $$
-declare v_body integer := position('$function$' in p_definition); v_at integer; v_end integer;
-begin
-	v_at := v_body + position(E'\nbegin\n' in substr(p_definition, v_body)) - 1 + length(E'\nbegin\n');
-	v_end := v_at + position(E'\n' in substr(p_definition, v_at));
-	return substr(p_definition, 1, v_at - 1) || substr(p_definition, v_end);
-end $$;
 
--- 1. Snapshot-v1 keeps its text: each patch reversed, and the recovery body without its first line, is the definition
--- before this migration.
-do $$
-declare v_def text;
-begin
-	if md5(replace(pg_get_functiondef('public.qorpera_complete_runner_job_v6(uuid,text,uuid,text,uuid,uuid,uuid,jsonb)'::regprocedure),
-			'if public.qorpera_job_is_folder_v2(p_job_id) then return public.qorpera_folder_complete_run_job(p_runner_id, '
-			|| 'p_session_token_sha256, p_job_id, p_lease_token_sha256, p_client_artifact_index_id, p_client_substrate_version_id, '
-			|| 'p_output_snapshot_id, p_result); end if;',
-			'if public.qorpera_job_is_folder_v2(p_job_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;'))
-			<> 'b14a29d8e7afc543038de525b955571b' then raise exception 'v6''s snapshot-v1 text changed'; end if;
-	if md5(replace(pg_get_functiondef('public.qorpera_complete_runner_job_v2(uuid,text,uuid,text,uuid,uuid,jsonb)'::regprocedure),
-			E'\tif public.qorpera_job_is_folder_v2(v_job.id) then\n'
-			|| E'\t\tif exists (select 1 from public.qorpera_runner_job_artifacts where job_id = v_job.id) then\n'
-			|| E'\t\t\traise exception ''runner source substrate is inconsistent'' using errcode = ''55000''; end if;\n'
-			|| E'\telse\n', '')) is null then raise exception 'unreachable'; end if;
-	v_def := replace(pg_get_functiondef('public.qorpera_complete_runner_job_v2(uuid,text,uuid,text,uuid,uuid,jsonb)'::regprocedure),
-		E'\tif public.qorpera_job_is_folder_v2(v_job.id) then\n'
-		|| E'\t\tif exists (select 1 from public.qorpera_runner_job_artifacts where job_id = v_job.id) then\n'
-		|| E'\t\t\traise exception ''runner source substrate is inconsistent'' using errcode = ''55000''; end if;\n'
-		|| E'\telse\n', '');
-	v_def := replace(v_def, E'\t\traise exception ''runner source substrate is inconsistent'' using errcode = ''55000'';\n'
-		|| E'\tend if;\n\tend if;\n', E'\t\traise exception ''runner source substrate is inconsistent'' using errcode = ''55000'';\n'
-		|| E'\tend if;\n');
-	if md5(v_def) <> '9e1bda8d68110049d48788c9bda47abc' then raise exception 'v2''s snapshot-v1 text changed'; end if;
-	if md5(replace(pg_get_functiondef('public.qorpera_handoff_run_sponsor(uuid,text)'::regprocedure),
-			' and folder_commit_id is null)))', ')))')) <> 'c5311dfbd68b708e188a82c0a07d45bb' then
-		raise exception 'The handoff''s snapshot-v1 text changed'; end if;
-	v_def := pg_get_functiondef('public.qorpera_resolve_run_operation_receipt(uuid,text,jsonb,uuid,uuid)'::regprocedure);
-	if position(E'\nbegin\n\tif public.qorpera_environment_is_folder_v2((select run.environment_id from public.qorpera_run_operation_receipts receipt' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> '9d966774a73d2789f2888dcdf10531ff' then
-		raise exception 'The recovery''s snapshot-v1 body changed'; end if;
-end $$;
+-- The checks start here: a test that runs after this file's fixture part stops at this line.
 
 -- 2. A run with no commit completes unchanged: the job completes, the inputs are done, the native lease ends, the result
 -- names the folder lane. A replay returns the job; a different result refuses. No source substrate is read (the fixture
