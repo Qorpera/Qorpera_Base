@@ -177,18 +177,24 @@ begin
 	where not exists (select 1 from p13_code c where c.name = n and c.src ~ 'qorpera_execution_run_budgets');
 	if v_list is not null then raise exception 'Take these off the run mutex list (gone, or no longer the mutex): %', v_list; end if;
 	-- On folder-v2 the mutex comes before the job. The folder run entry takes the budget row FOR UPDATE, then enters the
-	-- run (which takes the job); the receipt begin and the transcript's callers go through it before they name the row.
+	-- run (which takes the job). The run check under every runtime tool call sends folder-v2 to it before any lock of its
+	-- own. The receipt begin and the transcript's callers go through one of the two before they name the row.
 	if not exists (select 1 from p13_code c where c.name = 'qorpera_folder_tool_run'
 			and (select min(nullif(position(m[1] in c.src), 0)) from regexp_matches(c.src,
 				'(public\.qorpera_execution_run_budgets\M[^;]*\mfor\s+update\M)', 'gi') m)
 				< nullif(position('public.qorpera_folder_run_enter(' in c.src), 0)) then
 		raise exception 'qorpera_folder_tool_run takes the run mutex before it enters the run (and the job)'; end if;
+	if not exists (select 1 from p13_code c where c.name = 'qorpera_native_tool_locked_run'
+			and position('public.qorpera_folder_tool_run(' in c.src) between 1 and coalesce((select min(nullif(position(m[1] in c.src), 0))
+				from regexp_matches(c.src, '(\mfor\s+(?:update|no\s+key\s+update|share|key\s+share)\M)', 'gi') m), 1000000)) then
+		raise exception 'qorpera_native_tool_locked_run sends folder-v2 to qorpera_folder_tool_run before any lock of its own'; end if;
 	select string_agg(c.name, ', ' order by c.name) into v_list from p13_code c
 	where (c.name = 'qorpera_folder_begin_run_receipt' or c.src like '%public.qorpera_folder_append_transcript_event(%')
 		and c.name <> 'qorpera_folder_append_transcript_event'
-		and not (position('public.qorpera_folder_tool_run(' in c.src) between 1 and least(
-			coalesce(nullif(position('qorpera_execution_run_budgets' in c.src), 0), 1000000),
-			coalesce(nullif(position('public.qorpera_folder_append_transcript_event(' in c.src), 0), 1000000)));
+		and not (least(coalesce(nullif(position('public.qorpera_folder_tool_run(' in c.src), 0), 1000000),
+				coalesce(nullif(position('public.qorpera_native_tool_locked_run(' in c.src), 0), 1000000))
+			< least(coalesce(nullif(position('qorpera_execution_run_budgets' in c.src), 0), 1000000),
+				coalesce(nullif(position('public.qorpera_folder_append_transcript_event(' in c.src), 0), 1000000)));
 	if v_list is not null then raise exception 'These folder-v2 functions use the run mutex without taking it first: %', v_list; end if;
 	select string_agg(name, ', ' order by name) into v_list from (
 		select c.name, position('qorpera_execution_run_budgets' in c.src) as mutex_at,
