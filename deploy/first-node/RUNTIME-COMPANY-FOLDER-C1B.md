@@ -419,6 +419,29 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     after the identity. A path that holds a sign-in and then waits for the
     identity in a mode that conflicts with `FOR SHARE` (`FOR NO KEY UPDATE`,
     `FOR UPDATE`) must not hold an earlier pending sign-in of the same user.
+
+    **Identity recovery takes no sign-in lock** (P13's second part, migration
+    `20260930049000`). A login's or a refresh's recovery request, and a key
+    backup's preparation, read the sign-in (or refresh request) with no lock.
+    Then they take the fence, rank 0 and (recovery) every member row `FOR
+    SHARE`, then the identity `FOR UPDATE`. Then they read the sign-in again
+    and refuse unless it is still pending (or, for the backup, completed), not
+    expired, and of the identity's recovery epoch. With a sign-in lock, neither
+    order works:
+    - the sign-in before the identity deadlocks with a new sign-in, which
+      holds the identity `FOR SHARE` and then cancels the earlier sign-in;
+    - the identity before the sign-in deadlocks with a completion, which
+      holds the sign-in and then takes the identity (`KEY SHARE` through its
+      capsule, `FOR SHARE` through its epoch trigger).
+
+    Nothing needs the sign-in held. Once recovery holds the identity `FOR
+    UPDATE`, no completion of its sign-ins can commit until it ends: the
+    capsule's foreign key and the epoch trigger wait for it. A cancellation or
+    a completion that commits first shows in the re-check. A completion that
+    already holds the identity `KEY SHARE` takes its trigger's `FOR SHARE`
+    without queueing behind recovery's waiting `FOR UPDATE` (Postgres raises a
+    lock its own transaction holds without joining the row's queue), so it
+    finishes first.
 - **Keys.** A uuid table's key is the uuid as text (resources, grants,
   rooms, routines). Keys with no single uuid are encoded:
   - members: `profile_id:user_id`;
