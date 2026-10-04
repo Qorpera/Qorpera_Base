@@ -492,10 +492,11 @@ its members and an empty company folder (no seeded files); nothing else exists
 until Start (no Co-Founder or first run), so no agent runs and nothing is
 charged before it (20260930010000).
 
-- `qorpera_company_founding_available()` → boolean. False until new companies
-  are created on the company folder; until then the hub keeps
-  `qorpera_create_cloud_company`, and opening or starting a table is refused
-  (`0A000`).
+- `qorpera_company_founding_available()` → boolean. True since P39
+  (20260930031000): new companies start at a founding table on the company
+  folder. False is the rollback: opening or starting a table is then refused
+  (`0A000`), and the hub says creating a company is paused. The hub has no
+  other way to create a company.
 - `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
   a table with the caller's seat; repeat-safe per creation id. Needs a
   confirmed email. A creation id that already belongs to a company that is not
@@ -506,10 +507,16 @@ charged before it (20260930010000).
   `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
   (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
   `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
-  `companySetup`) once started. `companySetup` is `pending` while the company
-  is set up, `ready` once it is (then `companyReady` is true), or `failed` when
-  setup stopped and waits for Qorpera, or the company was deleted before it was
-  set up; a failed setup keeps the company hidden.
+  `companySetup`, `firstRun`) once started. `companySetup` is `pending` while
+  the company is set up, `ready` once it is (then `companyReady` is true), or
+  `failed` when setup stopped and waits for Qorpera, or the company was deleted
+  before it was set up; a failed setup keeps the company hidden. `firstRun`
+  (20260930039000) is how the Co-Founder's first run stands once the company is
+  made: `queued` (its turn request waits for a run), `started` (a run took the
+  kickoff, whatever that run's outcome), `waiting_for_login` (no login of the
+  starter could pay when the company was made, so nothing was queued), `failed`
+  (the request or the kickoff failed, or the request was cancelled), or null
+  before the company is made.
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and
@@ -518,7 +525,10 @@ charged before it (20260930010000).
   p_company_name, p_vision)`, `qorpera_set_founder_role(p_profile_id,
   p_expected_revision, p_role)` (at most 300 characters) and
   `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
-  A stale revision is `PT412`. Ready needs the caller's own usable ChatGPT
+  A stale revision is `PT412`. A name is refused (`22023`) as Open and the
+  seed refuse it: more than 120 characters, a control character or line
+  separator, or nothing but spaces (20260930039000). Ready needs the caller's
+  own usable ChatGPT
   account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
   for that revision: a change to the name, description, a role or who sits at
   the table clears every Ready.

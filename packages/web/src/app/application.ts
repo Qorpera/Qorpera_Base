@@ -15,6 +15,7 @@ import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
+import { nativeColorOf } from "../ui/avatar.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -31,6 +32,7 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
+import { savedAgentDraft } from "./views/agent-edits.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
@@ -691,8 +693,8 @@ export function mountApplication(
 			);
 			return;
 		}
-		// Agents are Company File documents. Each write re-checks that this
-		// member still holds the authority the company showed when it began.
+		// Agents are company folders (agents/<handle>/agent.md). Each write re-checks
+		// that this member still holds the authority the company showed when it began.
 		const agents = () => {
 			const team = controller.store.get().team;
 			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can change agents."));
@@ -708,6 +710,8 @@ export function mountApplication(
 					)
 						throw new Error(t("Company access changed."));
 				}),
+				// A field the member did not touch keeps the file's own value; a figure's own shade is no colour.
+				{ saved: savedAgentDraft, native: nativeColorOf },
 			);
 		};
 		const agentActions: WorkspaceActions = {
@@ -721,7 +725,7 @@ export function mountApplication(
 			if (disposed || company !== controller || auth.userId !== controller.userId || now.accessLost)
 				throw new Error(t("Company access changed."));
 		};
-		const groupEditor = async (signal: AbortSignal) => {
+		const groupFolder = (signal: AbortSignal) => {
 			companyCurrent();
 			const team = controller.store.get().team;
 			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can edit group chats."));
@@ -729,11 +733,11 @@ export function mountApplication(
 				companyCurrent();
 				if (!controller.store.get().team?.capabilities.authorize)
 					throw new Error(t("Group chat editing access changed."));
-			}).files();
+			}).folder();
 		};
 		const groupActions: Pick<WorkspaceActions, "updateGroup" | "deleteGroup"> = {
-			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, editor: groupEditor }),
-			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, editor: groupEditor }),
+			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, folder: groupFolder }),
+			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, folder: groupFolder }),
 		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
@@ -869,7 +873,7 @@ export function mountApplication(
 							check,
 						),
 						current: check,
-						editor: async (signal) => {
+						folder: (signal) => {
 							check();
 							const team = controller.store.get().team;
 							if (!team?.capabilities.authorize)
@@ -878,7 +882,7 @@ export function mountApplication(
 								check();
 								if (!controller.store.get().team?.capabilities.authorize)
 									throw new Error(t("Group chat creation access changed."));
-							}).files();
+							}).folder();
 						},
 						send: async (sessionId, text, signal) => {
 							check();
@@ -991,16 +995,16 @@ export function mountApplication(
 									current();
 									const role = controller.store.get().team?.role;
 									if (!role) throw new Error(t("Conversation access changed."));
-									// Read with the member's own Company File access, as the Company File page reads.
-									const files = await new WebCompanyFiles(
+									// Read with the member's own access to the company's folder, as the Company File page reads.
+									const folder = new WebCompanyFiles(
 										cloud,
 										controller.profile,
 										controller.userId,
 										role,
 										controller.signal,
 										current,
-									).files();
-									return loadSkillSuggestions(files, controller.profile.profileId, agentId, controller.signal);
+									).folder();
+									return loadSkillSuggestions(folder, agentId, controller.signal);
 								});
 							},
 							sessionModel: createWebSessionModel(
@@ -1012,7 +1016,7 @@ export function mountApplication(
 							updateGroup: createGroupUpdater({
 								company: controller,
 								current: checkConversationAccess,
-								editor: async (signal) => {
+								folder: (signal) => {
 									checkConversationAccess();
 									const team = controller.store.get().team;
 									if (!team?.capabilities.authorize)
@@ -1028,7 +1032,7 @@ export function mountApplication(
 											if (!controller.store.get().team?.capabilities.authorize)
 												throw new Error(t("Group chat editing access changed."));
 										},
-									).files();
+									).folder();
 								},
 							}),
 							nativeSubscription: createWebNativeSubscription(

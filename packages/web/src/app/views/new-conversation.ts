@@ -1,5 +1,5 @@
-import { CloudCompanyAgentOperationRejectedError } from "@qorpera/cloud-client/cloud-company-agent";
 import { prepareWebCompanyAgentCreation } from "../../cloud/company-agents.ts";
+import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
@@ -640,7 +640,7 @@ export class NewConversationView {
 				}
 			} catch (error) {
 				if (!this.#lifetime.signal.aborted) {
-					const rejected = !this.#createdAgentId && error instanceof CloudCompanyAgentOperationRejectedError;
+					const rejected = !this.#createdAgentId && error instanceof WebCompanyFolderRejectedError;
 					if (rejected) this.#creation = undefined;
 					status.textContent = this.#createdAgentId
 						? t("The agent was created. Retry adding it once the agent list is available.")

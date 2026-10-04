@@ -35,7 +35,6 @@ import {
 	parseAccountMatch,
 	parseAgentThreadHandle,
 	parseCompanyFile,
-	parseCreatedCompany,
 	parseEvents,
 	parseFriends,
 	parseIncomingInvitations,
@@ -67,7 +66,6 @@ import {
 } from "./room-drafts.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
-	CreatedCompanyResult,
 	HostedAccountEntitlement,
 	HostedAccountMatch,
 	HostedCompanyFile,
@@ -98,7 +96,6 @@ function requiredUuid(value: string, label: string): string {
 }
 
 export const SESSION_PROMPT_SCHEMA = "qorpera.session-prompt/v1";
-export const COMPANY_CONTRACT_VERSION = 2;
 
 export class CloudApi {
 	readonly cloud: Cloud;
@@ -331,18 +328,6 @@ export class CloudApi {
 
 	async deleteProfile(profileId: string): Promise<void> {
 		await this.cloud.rpc("qorpera_delete_hosted_profile", { p_profile_id: requiredUuid(profileId, "Profile id") });
-	}
-
-	/** Idempotent by client creation id: call again with the same id to read
-	 * bootstrap progress on clouds that report it. */
-	createCompany(clientCreationId: string, name: string): Promise<CreatedCompanyResult> {
-		return this.cloud
-			.rpc("qorpera_create_cloud_company", {
-				p_client_creation_id: requiredUuid(clientCreationId, "Creation id"),
-				p_company_name: name.trim(),
-				p_contract_version: COMPANY_CONTRACT_VERSION,
-			})
-			.then(parseCreatedCompany);
 	}
 
 	// Organization and staff
