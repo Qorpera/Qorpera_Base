@@ -688,9 +688,17 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(f.send().disabled).toBe(false);
-		// A disconnected account is replaced as a new conversation chooses.
+		// An owner or admin's disable is not the member's choice: the account stays.
+		const disabled = withUsage([30, 40]);
+		disabled.connections[0]!.connectionStatus = "disabled";
+		f.listConnections.mockResolvedValue(disabled);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		// An account the member disconnected is replaced as a new conversation chooses.
 		const disconnected = withUsage([30, 40]);
-		f.listConnections.mockResolvedValue({ ...disconnected, connections: [disconnected.connections[1]!] });
+		disconnected.connections[0]!.connectionStatus = "revoked";
+		f.listConnections.mockResolvedValue(disconnected);
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));

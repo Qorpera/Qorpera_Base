@@ -76,7 +76,9 @@ department model is replaced by responsibilities (section 14); the Company
 File is worked on as one live document with presence and object versions,
 never copies (5.2); one shared working world per company may be served by
 more than one Company Computer (section 12); usage-limit notification and
-recorded same-principal sponsor handoff (section 17); a failure-model chapter
+recorded same-principal sponsor handoff (section 17; since 2026-10-01 a usage
+limit stops the work, and since 2026-10-04 the payer never changes without the
+member); a failure-model chapter
 whose implementation is deferred to partner testing (section 23); Company
 File implementation caps are defects (5.5); gated decisions queue until an
 authorized member is online (16.2); kernel ceilings and a founder stop (7.4);
@@ -2044,7 +2046,7 @@ execution authority names a company account only; it never pays with a
 member's login. A coding session runs for the member who asked, on their
 account; the model cannot name another member. A member cannot ask another
 member to pay for a turn. Every run is checked where it is created and where
-a handoff moves it: a member-connection sponsor must be owned by the run's
+its sponsor is moved: a member-connection sponsor must be owned by the run's
 requester; a company sponsor serves any member. Unattended use stays granted
 by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
 work. A company account is a company-owned account added by an owner or
@@ -2096,29 +2098,35 @@ Codex logins are unchanged by this amendment.
 2026-10-04 amendment: the payer never changes without the member (founder
 decision: "the system should never be able to swap what member pays without
 permission"; migration 20260930048000). For every kind of login, not only
-ChatGPT plans:
+ChatGPT plans, in a conversation's choice and in the payer of work that
+follows a run:
 
 - A conversation keeps its login, also at its usage limit (sending waits
-  until it resets), while the login needs a new sign-in and while its computer
-  recovers. When the member signs in again, the conversation follows its
-  binding to their new connection for the same account. Only a login the
-  member disconnected is replaced, by a new conversation's first choice: the
-  member's login with the most room left.
-- Work that follows a run (a coworker's or a worker's wake, a review of the
-  run's change and its retry) stays on that run's login or company account,
-  also at its usage limit, which then stops it there. When that login can no
-  longer pay at all (disconnected, or its consent to work while the member is
-  away switched off), the work does not start; it never moves to another login
-  or to a company account.
-- New work with no run to follow takes the requester's own login with the
-  most room left, then their used-up login, whose limit stops the work. A
+  until it resets), while the login needs a new sign-in, while its computer
+  recovers and while an owner or admin has it disabled. When the member signs
+  in again, the conversation follows its binding to their new connection for
+  the same account. Only a login the member disconnected (revoked) is
+  replaced, by a new conversation's first choice: the member's login with the
+  most room left.
+- Work that follows a run (a coworker's, a worker's or another agent wake, a
+  review of the run's change and its retry) stays on that run's login or
+  company account, also at its usage limit, which then stops it there. When
+  that login or account can no longer pay at all (disconnected, or its consent
+  to work while the member is away switched off), the work does not start; it
+  never moves to another login or to another account.
+- New work there with no run to follow takes the requester's own login with
+  the most room left, then their used-up login, whose limit stops the work. A
   company account pays only for a member with no login of their own and never
-  stands in for a login at its limit.
+  stands in for a login at its limit. A first run and a new conversation take
+  only a login with room left, and wait while every login is at its limit.
 - The sponsor handoff is removed. Moving work to another login is the member's
   own act; today that is starting a new conversation.
 
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
-requester's login with room left first, then a company account).
+requester's login with room left first, then a company account). Still open:
+a folder-v2 routine's payer when it is saved, an agent-made routine's payer,
+and a coding worker's payer still choose among the member's logins and company
+accounts themselves (until then, the 2026-10-01 coding rule above holds).
 
 ## 18. Short constitution
 

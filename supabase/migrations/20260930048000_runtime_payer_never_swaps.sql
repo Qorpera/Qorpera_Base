@@ -8,20 +8,25 @@
 -- * work that follows a run (a coworker's or a worker's wake, a review of the run's change, its retry) took the
 --   starter's login with the most room left, then the company account, and only last the run's own login
 --   (qorpera_starter_sponsor). ChatGPT plans alone stayed put (20260929950000, migration 20260928359950).
--- Now, for every kind of login:
+-- Now, for every kind of login, in these two choices:
 -- * A conversation keeps its login, also at its usage limit (sending waits until it resets), while it needs a new
---   sign-in or while its computer is recovering. Its binding still follows the member to their new connection for
---   the same account after they sign in again (qorpera_move_member_login_pins). Only a login the member disconnected is
---   replaced, by the same first choice as a new conversation's: the member's login with the most room left.
--- * Work that follows a run paid by the requester's own login or by a company account stays on that login or account,
---   also at its usage limit, which then stops it there. When that login can no longer pay at all (disconnected, or its
---   consent to work while the member is away switched off) nothing pays: the work does not start on another login.
--- * New work (no run to follow) takes the requester's own login with the most room left, then their used-up login
---   (the work stops at its limit), and a company account only for a member with no login of their own. A company
---   account is never chosen because the member's login is at its limit.
+--   sign-in, while its computer is recovering and while an owner or admin has it disabled. Its binding still follows
+--   the member to their new connection for the same account after they sign in again (qorpera_move_member_login_pins).
+--   Only a login the member disconnected (revoked) is replaced, by the same first choice as a new conversation's: the
+--   member's login with the most room left.
+-- * Work that follows a run (qorpera_starter_sponsor's callers: coworker, worker and other agent wakes, a change's
+--   review and its retry) stays on that run's login or company account, also at its usage limit, which then stops it
+--   there. When that login or account can no longer pay at all (disconnected, or its consent to work while the member
+--   is away switched off) nothing pays: the work does not start on another login or account.
+-- * New work there (no run to follow) takes the requester's own login with the most room left, then their used-up
+--   login (the work stops at its limit), and a company account only for a member with no login of their own. A
+--   company account is never chosen because the member's login is at its limit.
 -- * The usage-limit handoff (qorpera_handoff_run_sponsor), unreachable since 20260928349910, is dropped, with the two
 --   helpers of the old plan-only rule. The handoff rows and readers stay until the run continuation goes; nothing
 --   writes them any more.
+-- Not here (open, contract section 17's 2026-10-04 amendment): a folder-v2 routine's payer at save
+-- (qorpera_company_state_routine_payer), an agent-made routine's (qorpera_agent_routine_sponsor) and a coding worker's
+-- (qorpera_coding_owner_sponsor) still choose among the member's logins and company accounts themselves.
 --
 -- Locks: none new. The conversation choice keeps its one row lock on the conversation; the payer functions only read.
 -- Every new body carries the marker 20260930048000. Folder-v2 only: no compatibility path is kept.
@@ -111,10 +116,10 @@ begin
             return v_choice.connection_id;
         end if;
         -- A login that cannot pay right now (a new sign-in needed, its computer recovering, consent or the provider
-        -- switched off) stays the conversation's, and sending waits for it. Only a login the member disconnected is
-        -- replaced, as a new conversation chooses.
+        -- switched off, an owner or admin's reversible disable) stays the conversation's, and sending waits for it.
+        -- Only a login the member disconnected (revoked) is replaced, as a new conversation chooses.
         if exists (select 1 from public.qorpera_provider_connections connection where connection.id = v_current
-            and connection.profile_id = p_profile_id and connection.owner_user_id = v_user and connection.status = 'active') then
+            and connection.profile_id = p_profile_id and connection.owner_user_id = v_user and connection.status <> 'revoked') then
             return v_current;
         end if;
     end if;
@@ -173,18 +178,40 @@ as $$
 		from public.qorpera_provider_connections as connection
 		where connection.id = public.qorpera_sponsor_binding_connection(p_prefer_binding_id)
 			and (connection.owner_user_id is null or connection.owner_user_id = p_requester)
+	),
+	-- The followed company account's bindings that can pay for this agent's work now: qorpera_company_account_sponsor's
+	-- conditions, for that account whichever account the agent would take for new work.
+	followed_company as (
+		select binding.id as binding_id, sponsor.version, sponsor.created_at
+		from followed
+		join public.qorpera_provider_connections as connection on connection.id = followed.connection_id
+		join public.qorpera_execution_sponsor_versions as sponsor on sponsor.provider_connection_id = connection.id
+		join public.qorpera_execution_sponsor_bindings as binding on binding.id = sponsor.binding_id
+		join public.qorpera_provider_connection_versions as version on version.connection_id = connection.id
+			and version.version = sponsor.provider_connection_version
+		join public.qorpera_profile_staff as staff on staff.profile_id = p_profile_id
+			and staff.staff_agent_id = p_staff_agent_id and staff.employment_status = 'active'
+		where followed.company and binding.profile_id = p_profile_id and binding.status = 'active'
+			and sponsor.version = (select max(latest.version) from public.qorpera_execution_sponsor_versions as latest
+				where latest.binding_id = binding.id)
+			and sponsor.sponsor_kind <> 'member_connection' and sponsor.allow_autonomous
+			and connection.profile_id = p_profile_id and connection.owner_user_id is null and connection.status = 'active'
+			and connection.provider = coalesce(staff.model_provider, 'openai')
+			and version.authorization_state = 'active' and version.allow_autonomous
+			and version.native_harness <> 'claude-code'
+			and not exists (select 1 from public.qorpera_provider_connection_versions as newer
+				where newer.connection_id = connection.id and newer.version > version.version)
+			and public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)
 	)
 	select candidate.binding_id, candidate.version from (
 		-- The payer never changes without the member (20260930048000): work that follows a run stays on that run's login
-		-- or company account, also at its usage limit, which then stops it there. When that login cannot pay any more,
-		-- nothing does.
+		-- or company account, also at its usage limit, which then stops it there. When that login or account cannot pay
+		-- any more, nothing does.
 		select own.binding_id, own.version, 1 as rank, own.binding_id = p_prefer_binding_id as preferred, own.created_at
 		from own join followed on not followed.company and followed.connection_id = own.connection_id
 		union all
-		select company.binding_id, company.version, 1, company.binding_id = p_prefer_binding_id, null::timestamptz
-		from public.qorpera_company_account_sponsor(p_profile_id, p_staff_agent_id) as company
-		join followed on followed.company
-			and followed.connection_id = public.qorpera_sponsor_binding_connection(company.binding_id)
+		select company.binding_id, company.version, 1, company.binding_id = p_prefer_binding_id, company.created_at
+		from followed_company as company
 		union all
 		-- New work: the requester's own login with the most room left (unknown usage after measured room), then their
 		-- used-up login, whose limit stops the work; a company account only for a member with no login of their own.

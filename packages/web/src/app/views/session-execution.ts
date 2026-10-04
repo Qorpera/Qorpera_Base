@@ -309,12 +309,13 @@ export class SessionExecutionView {
 			return;
 		const available = this.#available();
 		const kept = conversation.executionSponsor;
-		// A conversation keeps its account even when it cannot pay now; only one the
-		// member disconnected is replaced, as a new conversation chooses.
+		// A conversation keeps its account even when it cannot pay now (also while an
+		// owner or admin has it disabled); only one the member disconnected (revoked)
+		// is replaced, as a new conversation chooses.
 		const keeps =
 			kept !== undefined &&
 			this.#observed.connections.some(
-				(connection) => connection.connectionId === kept.connectionId && connection.connectionStatus === "active",
+				(connection) => connection.connectionId === kept.connectionId && connection.connectionStatus !== "revoked",
 			);
 		// Follow the conversation's binding to the member's new connection after they
 		// sign in again; never to another account. A retry still keeps its exact
@@ -410,8 +411,9 @@ export class SessionExecutionView {
 	 * conversation waits for it and never moves to another account on its own. */
 	#unavailableReason(observed: NativeExecutionConnections): string {
 		const now = Date.now();
-		const own =
-			this.#serverConnectionId ?? this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+		const own = this.#serverSelection
+			? this.#serverConnectionId
+			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
 		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
 		if (own && atLimit.some((connection) => connection.connectionId === own))
 			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
