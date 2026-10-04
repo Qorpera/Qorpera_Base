@@ -264,7 +264,7 @@ export function lxdCompanyMachineJournalPlan(
 		request: plan.request,
 		agentPlug: {
 			claim: {
-				kind: "machine",
+				kind: "machine" as const,
 				companyId: plan.binding.companyId,
 				machineId: plan.binding.machineId,
 				memberUserId: null,

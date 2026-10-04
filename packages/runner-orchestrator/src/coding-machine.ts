@@ -333,7 +333,7 @@ export function lxdCodingMachineJournalPlan(
 		request: plan.request,
 		agentPlug: {
 			claim: {
-				kind: "coding",
+				kind: "coding" as const,
 				companyId: plan.binding.companyId,
 				machineId: plan.binding.machineId,
 				memberUserId: plan.binding.memberUserId,

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { isUuid } from "@qorpera/contracts";
 import type { LxdCreateInstanceRequest } from "./lxd-client.ts";
 
 /** The agents' bridge on every node: an agent road machine's only network card is a port of it, and its traffic
@@ -7,7 +8,6 @@ export const AGENT_BRIDGE = "qagent0";
 /** The node's plug tool, installed by deploy/agent-exit/install-agent-exit.sh. Run as the creator's own user (a
  * member of the group qorpera-agent-plug); it gives the machine its address and the MAC that carries it. */
 export const AGENT_PLUG_TOOL = "/usr/local/libexec/qorpera-agent-exit/qorpera-agent-plug.py";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LXD_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
 
 /** What a machine is, for the exit's client map: the plug tool records it, and its reconciler checks it against the
@@ -109,11 +109,7 @@ export function parseAgentPlugAnswer(text: string): string {
 
 /** A plug that runs the node's plug tool: no shell, an empty environment (it reads its folders from its own
  * defaults), a bounded answer and a hard timeout. Tests point it at a stand-in tool. */
-export function createAgentPlug(
-	tool = AGENT_PLUG_TOOL,
-	python = "/usr/bin/python3",
-	timeoutMs = 10_000,
-): AgentPlug {
+export function createAgentPlug(tool = AGENT_PLUG_TOOL, python = "/usr/bin/python3", timeoutMs = 10_000): AgentPlug {
 	return (claim, signal) => plugWith(tool, python, timeoutMs, claim, signal);
 }
 /** The node's plug tool. */
@@ -128,10 +124,10 @@ function plugWith(
 ): Promise<string> {
 	if (
 		(claim.kind !== "machine" && claim.kind !== "coding") ||
-		!UUID.test(claim.companyId) ||
-		!UUID.test(claim.machineId) ||
+		!isUuid(claim.companyId) ||
+		!isUuid(claim.machineId) ||
 		(claim.kind === "coding") !== (claim.memberUserId !== null) ||
-		(claim.memberUserId !== null && !UUID.test(claim.memberUserId)) ||
+		(claim.memberUserId !== null && !isUuid(claim.memberUserId)) ||
 		!LXD_NAME.test(claim.project) ||
 		!LXD_NAME.test(claim.instance)
 	)

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentPlug } from "../../src/agent-plug.ts";
 import {
 	type CodingMachineStorage,
 	type LxdCodingMachineBinding,
@@ -11,7 +12,7 @@ import type { LxdInstanceRecord } from "../../src/lxd-client.ts";
 /** The MAC a test machine's agent card carries (as the agent plug gives it). */
 export const testAgentMac = "0e:51:0a:d2:01:01";
 /** A fake agent plug: every machine gets testAgentMac. */
-export const testAgentPlug = async (): Promise<string> => testAgentMac;
+export const testAgentPlug: AgentPlug = async () => testAgentMac;
 
 export const codingMachineStorage: CodingMachineStorage = Object.freeze({
 	policy: {

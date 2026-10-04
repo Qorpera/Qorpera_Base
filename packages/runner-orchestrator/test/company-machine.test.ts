@@ -166,14 +166,15 @@ describe("company machine plan", () => {
 		(otherImage.expandedConfig as Record<string, string>)["volatile.base_image"] = "e".repeat(64);
 		expect(() => journal.assertInstance(otherImage)).toThrow("COMPANY_MACHINE_DRIFTED");
 		// Its agent card: a plug MAC, exactly the card's keys, on the agents' bridge.
-		for (const card of [
+		const cards: Record<string, string>[] = [
 			{ ...agentPlugCard("eth0") },
 			{ ...agentPlugCard("eth0"), hwaddr: "00:16:3e:00:00:01" },
 			{ ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:00:07" },
 			{ ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:01:07", parent: "machine-net" },
 			{ ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:01:07", "ipv4.address": "10.210.1.7" },
 			{ type: "nic", network: "machine-net", name: "eth0" },
-		]) {
+		];
+		for (const card of cards) {
 			const other = instance(request);
 			other.devices = { ...other.devices, network: card };
 			other.expandedDevices = structuredClone(other.devices);

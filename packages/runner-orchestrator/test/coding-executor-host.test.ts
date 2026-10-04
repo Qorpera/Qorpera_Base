@@ -14,8 +14,8 @@ import {
 	lxdCodingSessionStorage,
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
-import { testAgentMac } from "./helpers/coding-machine.ts";
 import type { LxdInstanceRecord } from "../src/lxd-client.ts";
+import { testAgentMac } from "./helpers/coding-machine.ts";
 
 const mocked = vi.hoisted(() => ({
 	reconcile: vi.fn(),
@@ -624,12 +624,7 @@ describe("a coding turn on its member's machine", () => {
 		const journal = (mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions).plan;
 		expect(journal).toMatchObject({ machineId: f.machine.machineId, journalName: f.machine.machineId });
 		expect(vi.mocked(f.client.replaceInstanceDevices).mock.calls).toEqual([
-			[
-				"coding",
-				f.plan.request.name,
-				{ ...f.base, ...f.sessionDevices(f.claim.workerId) },
-				f.signal,
-			],
+			["coding", f.plan.request.name, { ...f.base, ...f.sessionDevices(f.claim.workerId) }, f.signal],
 		]);
 		const layout = f.layout(f.claim.workerId);
 		// The guest is up (agent, watchdog, pinned helpers, no self-update) before anything is hot-plugged.
