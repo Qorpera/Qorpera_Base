@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS } from "@qorpera/runtime/cloud-native-result-fence";
 import {
+	CLOUD_NATIVE_FENCE_BUDGET_MS,
+	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	CloudNativeToolRun,
 	cloudToolRequest,
@@ -215,6 +218,12 @@ it("closes at once on a refusal, and asks no more once the authority would lapse
 	await expect(second.run.assertActive(second.run.signal)).rejects.toThrow("Cloud tool authority unavailable");
 	expect(second.reader.describeToolAuthority).toHaveBeenCalledTimes(2);
 	expect(second.run.signal.aborted).toBe(true);
+});
+
+it("keeps the fence's attempts inside the host's deadline, and the host's inside the pinned Codex's 45 s", () => {
+	expect(CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).toBeLessThan(CLOUD_NATIVE_FENCE_BUDGET_MS);
+	expect(CLOUD_NATIVE_FENCE_BUDGET_MS + 1_000).toBeLessThan(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS);
+	expect(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS + 4_000).toBeLessThan(45_000);
 });
 
 it("asks another call's read again only within its budget", async () => {

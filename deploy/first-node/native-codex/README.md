@@ -89,7 +89,8 @@ headers, credentials, installation identity or session tokens.
 
 Every request, including an empty initial request, needs a live acknowledgement.
 Missing, stalled, malformed, mismatched or replayed replies fail closed. The
-native deadline is five seconds; the host deadline is four. An exhaustive
+native deadline is 45 seconds; the host deadline is 40 (5 and 4 until 4 Oct 2026: a database slowed to a few
+seconds per call stopped turns; the host now asks a lost or late fence call again within its budget). An exhaustive
 item match rejects unhandled tool-result kinds, unissued images and encrypted tool
 results. Native memory requests are not admitted in this adapter. Only result
 bodies can change; the reply cannot alter calls, instructions, models or roles.

@@ -5,6 +5,7 @@ import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts"
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
+	CLOUD_NATIVE_FENCE_BUDGET_MS,
 	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
@@ -150,7 +151,7 @@ export async function runCloudNativeRunToolSession(options: {
 						(requestSignal) => fence(frame, outputs, requestSignal),
 						signal,
 						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
-						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+						CLOUD_NATIVE_FENCE_BUDGET_MS,
 					))
 				) {
 					observation?.finish("failed", { errorCategory: "unavailable_tool" });

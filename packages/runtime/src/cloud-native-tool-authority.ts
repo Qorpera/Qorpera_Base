@@ -193,9 +193,11 @@ export function parseCloudNativeToolAuthority(
 
 /** Two cloud reads sent together that the database serialises on the run's job row. */
 export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
-/** The one call before each model request (qorpera_fence_native_context) gets most of the
- * native result fence's 4 s budget; the rest covers the host's own steps and the reply. */
-export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 3_500;
+/** One attempt of the one call before each model request (qorpera_fence_native_context). */
+export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 10_000;
+/** Every attempt of that call together: most of the native result fence's 40 s, which the rest (the host's own steps
+ * and the reply) fits beside. A lost or late answer is asked again within it, never past the run's authority. */
+export const CLOUD_NATIVE_FENCE_BUDGET_MS = 38_000;
 
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(

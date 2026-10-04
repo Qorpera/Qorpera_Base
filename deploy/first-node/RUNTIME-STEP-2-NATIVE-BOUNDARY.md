@@ -169,8 +169,8 @@ authentication, headers, model metadata or the native provider transport.
 
 `cloud-native-result-fence.ts` accepts only length-prefixed, bounded JSON over
 a private Unix socket. It binds request, thread and turn identity, rejects
-replay and extra fields, and applies an independent four-second host deadline.
-The native caller has a five-second deadline. Unhandled result kinds and
+replay and extra fields, and applies an independent 40-second host deadline.
+The native caller has a 45-second deadline (4 and 5 seconds until 4 Oct 2026). Unhandled result kinds and
 multimodal/encrypted tool results fail closed. The callback covers the common
 HTTP, WebSocket and compaction request builder; the actual-binary acceptance
 below exercises HTTP. Additional actual-binary tests cover local, remote-v1

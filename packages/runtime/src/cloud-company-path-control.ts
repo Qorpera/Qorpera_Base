@@ -290,7 +290,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				return value;
 			},
 			signal,
-			// The one-call fence carries what four calls did before a model request, within the same 4 s budget.
+			// The one-call fence carries what four calls did before a model request: one attempt of its budget.
 			method === "qorpera_fence_native_context" ? CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS : 3000,
 		);
 	}

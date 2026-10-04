@@ -16,8 +16,9 @@ const MAX_FRAME_BYTES = CLOUD_NATIVE_FENCE_FRAME_BYTES;
 // A run is not capped by its number of model requests or their total size
 // (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
 const TRACKED_REQUESTS = 16_384;
-/** From a request's connection to its reply: the checks before release and the reply. */
-export const CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS = 4_000;
+/** From a request's connection to its reply: the checks before release and the reply. Within the pinned Codex's own
+ * 45 s (0001-cloud-result-fence.patch; 5 s and 4 s here until 4 Oct 2026): a slow database is not a stopped run. */
+export const CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS = 40_000;
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 
 export interface CloudNativeFenceRequest {

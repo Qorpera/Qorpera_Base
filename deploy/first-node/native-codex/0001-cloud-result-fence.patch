@@ -545,7 +545,7 @@ new file mode 100644
 index 000000000..4a60a6777
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,385 @@
+@@ -0,0 +1,387 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -628,7 +628,9 @@ index 000000000..4a60a6777
 +    const MAX_RESULT_BYTES: usize = 8 * 1024;
 +    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
-+    const DEADLINE: Duration = Duration::from_secs(5);
++    // A model request waits this long for the host's checks: a slow database is not a stopped run
++    // (Qorpera, 4 Oct 2026; the host answers within 40 s). Tests use 1 s.
++    const DEADLINE: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 45 });
 +
 +    #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 +    #[serde(rename_all = "snake_case")]
@@ -1313,7 +1315,7 @@ index 000000000..0e95b6fab
 +        fence(&mut history().unwrap(), &metadata(), &path).await,
 +        Err(())
 +    );
-+    assert!(started.elapsed() < std::time::Duration::from_secs(7));
++    assert!(started.elapsed() < std::time::Duration::from_secs(3));
 +    host.abort();
 +}
 +
