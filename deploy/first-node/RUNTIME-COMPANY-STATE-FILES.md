@@ -1769,7 +1769,7 @@ first files, a member's text kept through a rewrite, a Disconnect's delete, and 
 file version or writer commit.
 
 **Plan (P15): the follow-up queue** (core §5 "After the commit", core §11 C2; the coordinator's slice P15, after P16a;
-design, 4 October; reviews r1, r2 and r3 folded). The facts are in the inventory of 4 October (today's publish path, the 12 staff
+design, 4 October; reviews r1 to r4 folded). The facts are in the inventory of 4 October (today's publish path, the 12 staff
 triggers, what `qorpera_company_state_index_agent` does). Folder-v2 only.
 
 *What is missing today.* An agent's save is indexed by its staff row, and the staff triggers give it a thread, a default
@@ -1809,7 +1809,8 @@ and revoke its secret grants. What remains:
      not counted either);
   2. the subject: the oldest marked subject of such a company whose work row it can take (the row inserted if missing,
      then `FOR UPDATE SKIP LOCKED`; a row another transaction holds is passed over with its marks), its marks consumed
-     (`SKIP LOCKED`) and the row made dirty and due; else the oldest due dirty work row, `FOR UPDATE SKIP LOCKED`. A first
+     (`SKIP LOCKED`) and the row made dirty, and due when a mark came with a commit (a mark with no commit, firing's,
+     keeps a back-off); else the oldest due dirty work row, `FOR UPDATE SKIP LOCKED`. A first
      mark's new row can make two takers wait for each other's insert briefly, in subject order, as P22a's claim does;
   3. the agent converge inside one exception block. Inside, nothing writes a row that references the folder clock, so
      nothing there takes or updates the clock row, whose savepoints meet PostgreSQL's multixact error; the rows it
@@ -1833,15 +1834,20 @@ and revoke its secret grants. What remains:
   Indexes keep an idle pass to index probes: marks by subject, work rows by due time. The cron job's own log
   (`cron.job_run_details`, about 43,200 rows a day at 2 seconds) gets erasure's daily cleanup.
 
-  **Kicks:** a service-role writer that just committed marks converges them at once, in its own transaction, running
-  steps 1–4: `qorpera_folder_follow_up_now(env, kind, id)` for one subject (the creation worker after a completed
-  creation), and `qorpera_folder_follow_up_commit(env, commit id)` for the subjects one commit marked (the object
-  gateway's member commit route, P34a, Interfaces, which knows the commit but not the staff ids; recorded in the
-  registry and asked of Interfaces for C4-MEMBERS §P34a). A subject another transaction holds answers `busy`, and so
+  **Kicks:** a service-role writer that just committed marks converges them at once, one subject per call (each call its
+  own transaction, so no lock of one subject comes after another's clock, and the name copy never runs where an agent's
+  converge took the fence), running steps 1–4: `qorpera_folder_follow_up_now(env, kind, id)` for one subject (the creation
+  worker after a completed creation), and `qorpera_folder_follow_up_commit(env, commit id)` for the next subject one commit
+  marked, the company's first, answering whether more remain, so the caller calls again (the object gateway's member
+  commit route, P34a, Interfaces, which knows the commit but not the staff ids; recorded in the registry and asked of
+  Interfaces for C4-MEMBERS §P34a). A subject another transaction holds answers `busy`, and so
   does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the 2-second
   step: a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
   does not add. The step is the safety net.
 - A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`.
+- **Throughput:** the step converges one subject every 2 seconds across all companies (about 30 a minute); kicks cover
+  creation and members' saves at once. P24's load test measures the backlog; if it grows, the step converges several
+  subjects of different companies a pass (their locks are disjoint).
 - The job runs as the database owner with no JWT. Every helper the converge calls checks no `auth.role()`; the
   service-role wrappers do.
 
@@ -1869,7 +1875,7 @@ runs with 2 seconds), so a member's or run's commit never waits long behind it. 
    kickoff is inserted; to queue a turn alone the converge takes the thread session `FOR KEY SHARE` explicitly, then
    the kickoff input `FOR UPDATE` (sessions before inputs, as P28's materializer takes them);
 9. the company operation clock, taken by the session closes and the kickoff;
-10. the folder clock, last, at the step's top level (step 5), only when a default grant was inserted.
+10. the folder clock, last, at the step's top level (step 4), only when a default grant was inserted.
 
 The default grant writes one widening authority journal row: core §4 says every grant change writes one, and the
 folder service and the web folder view relist a view only on an authority event, so a view opened before the converge
@@ -1933,16 +1939,19 @@ itself), record `paused / agent_archived` when the row would be `active` while t
 plain read): the platform's record, as the converge writes it. A concurrent reactivation leaves the routine paused for
 a paid resume. A concurrent archive can leave one routine active (a save whose apply read the agent active commits just
 after the archive's converge read the routines); routine firing closes that gap: when it defers for an archived agent it
-also writes a mark for the agent (insert-only, no lock), so the next step pauses the routine.
+also writes a mark for the agent (insert-only, no lock), so the next step pauses the routine. It writes one only when
+the agent has no mark pending and its work row is not dirty (plain reads; deferrals repeat every scheduler pass), and a
+mark with no commit never clears a back-off.
+P29's listener, a third firing path, does the same when it skips an archived agent's routine (a hand-off to P29).
 
 *Converging the company name* (`qorpera_folder_converge_company(environment)`): a plain compare of
 `qorpera_profiles.name` with `qorpera_folder_company_index.name` first; only when they differ, at the step's top level
 (no savepoint), alone in its own transaction (never inside one holding the fence), the company row `FOR NO KEY UPDATE
-SKIP LOCKED` (a busy row is a back-off, with no error raised; the coordinator's decision named `NOWAIT`, which this
-keeps without an error to catch), the compare again, and the update. The name is checked against the company row's own
+SKIP LOCKED` (a busy row is a back-off, with no error raised; the coordinator approved `SKIP LOCKED` on 4 October, in
+place of the `NOWAIT` first decided), the compare again, and the update. The name is checked against the company row's own
 rules first, so the update cannot fail. This is core §3's one named exception to "the company row only `KEY SHARE`" (coordinator,
-3 October); `FOR NO KEY UPDATE` does not conflict with the `KEY SHARE` every folder-v2 effect takes. Core §3 step 3, §9
-and the activation check are amended to name it. A company being deleted is skipped.
+3 October; `SKIP LOCKED` 4 October); `FOR NO KEY UPDATE` does not conflict with the `KEY SHARE` every folder-v2 effect
+takes. Core §3 step 3 and §9 name it; so does the activation check (test 879). A company being deleted is skipped.
 
 *The commit's side* (F2's hook):
 - apply writes the marks;
@@ -1973,21 +1982,22 @@ through the follow-up queue; the first-run turn is materialized by C4", as P14a 
 *Documents amended in this slice:* core §3 step 3 (the exception), §3's vault and first-run lines (CORE:419-421: the
 commit writes no vault rows on hire or archive; the queue inserts no wake), §5 "After the commit" (marks, work rows, the
 drain, the journal row at the step's top level) and "Company creation is one commit" (CORE:699-701: the turn request
-leaves the creation commit), §9; CREATION's turn-request lines (§1, §2 and §4); C4-RUNS §5 (Start's hand-off); the
-registry's decision (b) (`agent_archived`);
+leaves the creation commit), §9; CREATION's turn-request lines (the introduction, §3, §7 and §8); C4-RUNS §5 (Start's
+hand-off); the registry's decisions (b) (`agent_archived`) and (a) (`SKIP LOCKED`);
 §2's routine status and W4c's platform-pause lines; §5's follow-ups list; C1C's and CREATION's "in the commit that
 creates the agent" (now the queue); P24's load script gains the drain. The rebuild marks every agent subject. Member
 notices stay out (no slice yet).
 
 *Tests* (migration 20260930022000; 856's apply digest pin is dropped under the folder-v2-only rule):
 - 877: a hire (the default grant's rules: no widening of an explicit grant, no revival, revision 1, one widening
-  journal row per inserted grant with `narrowing = false` and none on a repeat, the feed's authority event; the first
+  journal row listing the inserted grants with `narrowing = false` and none on a repeat, the feed's authority event; the first
   run and its turn after the grant, and P28's materializer picking the turn up; connectors), the hirer gone, no login,
   saved archived and activated by another member in one step (the activating mark's member authors), a rename before
   the converge; an archive (routines paused `agent_archived`, an agent's own file pause untouched, expired flags,
   execution authority, bindings, sessions, secret grants); reactivation (routines stay paused; a paid unchanged save
   resumes); a handover to an active agent; routines saved, moved or set active under an archived agent, and firing's
-  mark; the commit kick; a retire and
+  mark (once, and a failing archive converge with a due routine keeps its back-off); the commit kick (one subject a
+  call, the company's first, `more` until none remain); a retire and
   restore; the enqueue and the tick deferring for an archived owner; the Co-Founder at creation (`ready`, the hub,
   `companySetup`, the turn after the grant); the company name; the marks; back-off, a pause, a company being deleted,
   and the orphan sweep; the step as the job's role; the cron log cleanup.
@@ -1998,6 +2008,7 @@ notices stay out (no slice yet).
   against the step on one subject, and on the commit side a reactivation against a post in the thread; and contention
   (eight clients converging hires and archives, copying the name and committing on one company, against effects that
   key-share those rows: no multixact error).
+  (A converge's journal row is one row listing every grant it inserted.)
 - 879: the triggers' folder-v2 guards (default grant, connectors, secret revocation, routines stop, pair sessions), the
   rank-11 targets (rename, archive, retire, reactivation, restore), an assertion that an agent unit's apply takes no row
   lock after the paths beyond those already held, and the step and its cron job;
