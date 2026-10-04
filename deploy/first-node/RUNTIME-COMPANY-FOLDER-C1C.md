@@ -1320,7 +1320,7 @@ P06b's second PR, folder-v2 only like part 1 (the statement that was there befor
 | `runtime_office_access_status` | gc fence | plain reads (the setter checks again under its locks) |
 | The staff trigger's office walk (a hire or an agent's return) | the computers by id (3j) | the company's seat locks first, then the computers by id |
 | `member_agent_office` 'new', `register_runtime_office` (folder mode) | member, seat lock, the new computer | member, the company's agents `KEY SHARE` by id, seat lock, the new computer |
-| `open_runtime_office_screen` | seat lock, the computer, a plain role read | machine fence, the member's row, then the seat lock and the computer |
+| `open_runtime_office_screen` | seat lock, the computer, a plain role read | someone who may not write the company refused first; then the machine fence, the member's row, the seat lock and the computer |
 | `record_runtime_screen_event`, a private heartbeat | the startup lock (the computer), then the privacy owner's member row | `qorpera_folder_office_enter_startup`: 3j's prelude with the privacy owner as its member, before the startup lock |
 | Viewers (create, redeem, the input check) and `office_screen_browser_grant` | the computer, then the viewer's member row | `qorpera_folder_office_members_first`: the members' rows `FOR SHARE` by user id, then the computer. No fence on these hot paths; rank 1 alone never goes backwards |
 
@@ -1337,8 +1337,8 @@ P06b's second PR, folder-v2 only like part 1 (the statement that was there befor
   - A: with the low computer held, a capability change on the high one waits there, holding neither the high computer
     nor any access row, then lands, and the triggers carry the new capabilities to the low computer;
   - B, C: an access change waits at the agent, then at the seat lock, before any computer;
-  - D: with the folder fence held `FOR UPDATE`, access status answers (plain reads); with the company row held, an
-    access change doesn't wait;
+  - D: with the folder fence and the company row both held `FOR UPDATE`, access status answers (plain reads); with the
+    company row held, an access change doesn't wait;
   - E: an agent's return waits at the seat lock before the computers;
   - F: a new computer for an agent waits at the agents before the seat lock;
   - G: opening a screen waits at the member's row before the seat lock and the computer; G2: someone outside the
