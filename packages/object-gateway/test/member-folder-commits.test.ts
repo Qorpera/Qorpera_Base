@@ -348,6 +348,15 @@ describe("a member's change set to a folder-v2 company", () => {
 		);
 		expect(response.status).toBe(400);
 		expect(g.staged()).toEqual([]);
+		// A folder entry's joined path too.
+		const folderEntry = await g.send(
+			request([
+				{ op: "write", path: "first.md", text: "staged first, were the join checked late" },
+				{ op: "new_folder", path: long, contents: [{ path: long, kind: "folder" }] },
+			]),
+		);
+		expect(folderEntry.status).toBe(400);
+		expect(g.staged()).toEqual([]);
 	});
 
 	it("lets a member's browser send it across origins", () => {

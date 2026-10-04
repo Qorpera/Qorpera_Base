@@ -126,11 +126,15 @@ function unit(value: unknown): Unit {
 				path: folder,
 				contents: input.contents.map((item): Content => {
 					const kind = (item as { kind?: unknown } | null)?.kind;
-					if (kind === "folder") return { path: path(object(item, ["path", "kind"]).path), kind };
+					// Each entry's joined path is checked here too, so a refusal never follows staged bytes.
+					if (kind === "folder") {
+						const inner = path(object(item, ["path", "kind"]).path);
+						path(`${folder}/${inner}`);
+						return { path: inner, kind };
+					}
 					if (kind !== "file") return invalid();
 					const file = object(item, ["path", "kind", "text"]);
 					const inner = path(file.path);
-					// The joined path is checked here too, so a refusal never follows staged bytes.
 					return { path: inner, whole: path(`${folder}/${inner}`), kind, text: text(file.text) };
 				}),
 			};
