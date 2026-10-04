@@ -29,6 +29,12 @@ begin
 		cancelled_by_user_id = case when p_status = 'cancelled' then '63400000-0000-4000-8000-000000000001'::uuid end,
 		lease_token_sha256 = null, lease_expires_at = null where run_id = p_run;
 end $$;
+-- A wake that ends before any run took it (as the materializer cancels one).
+create function pg_temp.cancel_wake(p_id uuid) returns void language plpgsql as $$
+begin
+	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
+		where id = %L$q$, p_id));
+end $$;
 -- A dispatch by a run of Ada's, through the worker entry with the call's review.
 create function pg_temp.dispatch(p_run jsonb, p_folder text, p_id uuid, p_key text, p_revival text default 'each') returns uuid
 language plpgsql as $$
@@ -76,8 +82,8 @@ do $$
 declare ada jsonb := current_setting('qorpera_test.ada')::jsonb; v jsonb; x public.qorpera_runtime_workers; o public.qorpera_wake_occurrences;
 	price constant uuid := '84000000-0000-4000-8000-000000000101'; extra constant uuid := '84000000-0000-4000-8000-000000000104';
 begin
-	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = 'completed' where id = %L$q$,
-		(pg_temp.w(price)).occurrence_id));
+	-- The worker's run (as the materializer makes it from the wake) ends without a report.
+	perform pg_temp.finish((pg_temp.worker_run(ada, price) -> 'actor' ->> 'runId')::uuid);
 	v := pg_temp.drain();
 	x := pg_temp.w(price);
 	if (v ->> 'failed')::integer <> 1 or x.state is distinct from 'failed' or x.completion_state is distinct from 'waiting'
@@ -99,16 +105,14 @@ begin
 		or (o.payload ->> 'stillActive')::integer <> 1 then
 		raise exception 'The parent is revived with the result: % / %', v, to_jsonb(o); end if;
 	-- One revival at a time: the second worker ends too, and waits for the first revival's run.
-	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = 'cancelled' where id = %L$q$,
-		(pg_temp.w(extra)).occurrence_id));
+	perform pg_temp.cancel_wake((pg_temp.w(extra)).occurrence_id);
 	v := pg_temp.drain();
 	if (v ->> 'failed')::integer <> 1 or (pg_temp.w(extra)).result ->> 'reason' is distinct from 'not_started'
 		or (pg_temp.w(extra)).completion_state is distinct from 'waiting' or (v ->> 'revivals')::integer <> 0 then
 		raise exception 'A cancelled wake is not_started, and the revival waits: %', v; end if;
 	if pg_temp.listed() then raise exception 'A parent with a pending revival is listed'; end if;
 	-- The first revival's run ends: the second result goes.
-	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = 'completed' where id = %L$q$,
-		x.completion_occurrence_id));
+	perform pg_temp.cancel_wake(x.completion_occurrence_id);
 	v := pg_temp.drain();
 	if (v ->> 'revivals')::integer <> 1 or (pg_temp.w(extra)).completion_state is distinct from 'delivered' then
 		raise exception 'The next revival: %', v; end if;
@@ -132,7 +136,7 @@ begin
 		or (pg_temp.w(a)).result ->> 'reason' is distinct from 'todo_cancelled'
 		or (pg_temp.wake((pg_temp.w(a)).occurrence_id)).status is distinct from 'cancelled'
 		or (pg_temp.w(b)).completion_state is distinct from 'suppressed'
-		or (select status from public.qorpera_runtime_agent_todos where id = (pg_temp.w(a)).todo_id) is distinct from 'cancelled' then
+		or (select state from public.qorpera_runtime_agent_todos where id = (pg_temp.w(a)).todo_id) is distinct from 'cancelled' then
 		raise exception 'A cancelled todo cancels its workers: % / %', v, to_jsonb(pg_temp.w(a)); end if;
 end $$;
 select set_config('qorpera_test.ada3', pg_temp.agent_run('84000000-0000-4000-8000-0000000000e1')::text, false) \g /dev/null
@@ -191,11 +195,11 @@ begin
 	perform pg_temp.dispatch(ada, 'agents/ada/todos/pay-the-rent/two', f, 'drain-dispatch-0006', 'batch');
 	perform pg_temp.drain();
 	perform pg_temp.finish((ada -> 'actor' ->> 'runId')::uuid);
-	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = 'completed' where id = %L$q$, (pg_temp.w(e)).occurrence_id));
+	perform pg_temp.cancel_wake((pg_temp.w(e)).occurrence_id);
 	v := pg_temp.drain();
 	if (pg_temp.w(e)).completion_state is distinct from 'waiting' or (v ->> 'revivals')::integer <> 0 then
 		raise exception 'A batch revives before its last worker: %', v; end if;
-	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = 'completed' where id = %L$q$, (pg_temp.w(f)).occurrence_id));
+	perform pg_temp.cancel_wake((pg_temp.w(f)).occurrence_id);
 	v := pg_temp.drain();
 	if (v ->> 'revivals')::integer <> 1 or (pg_temp.w(e)).completion_state is distinct from 'delivered'
 		or (pg_temp.w(f)).completion_state is distinct from 'delivered'

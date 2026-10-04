@@ -57,7 +57,7 @@ returns boolean language sql stable security definer set search_path = '' as $$
 			or exists (select 1 from public.qorpera_execution_runs r join public.qorpera_runner_jobs j on j.id = r.job_id
 				where r.id = p_worker.steering_run_id and j.status = 'cancelled')
 			or public.qorpera_worker_revival_stopped(p_worker.steering_run_id)
-			or exists (select 1 from public.qorpera_runtime_agent_todos t where t.id = p_worker.todo_id and t.status = 'cancelled'))
+			or exists (select 1 from public.qorpera_runtime_agent_todos t where t.id = p_worker.todo_id and t.state = 'cancelled'))
 		when p_worker.completion_state = 'waiting' then p_worker.folder_erased_at is not null
 			or (not exists (select 1 from public.qorpera_execution_runs r join public.qorpera_runner_jobs j on j.id = r.job_id
 					where r.id = p_worker.steering_run_id and j.status in ('queued','leased'))
@@ -198,7 +198,7 @@ begin
 					select * into v_todo from public.qorpera_runtime_agent_todos where id = v_worker.todo_id;
 					-- The parent was stopped, or its todo cancelled: the worker stops with it. Its queued wake NOWAIT.
 					if v_status = 'cancelled' or public.qorpera_worker_revival_stopped(v_worker.steering_run_id)
-						or v_todo.status = 'cancelled' then
+						or v_todo.state = 'cancelled' then
 						perform 1 from public.qorpera_wake_occurrences where id = v_worker.occurrence_id and status = 'queued'
 						for update nowait;
 						perform public.qorpera_cancel_worker(v_worker, null, case when v_status = 'cancelled'
