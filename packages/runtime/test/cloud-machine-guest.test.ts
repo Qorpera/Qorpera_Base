@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCloudMachineCommandReceipt } from "@qorpera/contracts";
+import { idleRuleBusy, parseCloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	cancelMachineCommand,
@@ -33,6 +33,8 @@ async function machine() {
 	await mkdir(home);
 	let boot = randomUUID();
 	let now = 1_000_000;
+	/** The machine's busy processor time in USER_HZ ticks (the first line of /proc/stat: user, nice, system, idle, ...). */
+	let busyTicks = 150;
 	const units = new Map<string, string>([
 		["qorpera-control.slice", "ControlGroup=/qorpera.slice/qorpera-control.slice\n"],
 		["lxd-agent.service", "ControlGroup=/system.slice/lxd-agent.service\n"],
@@ -67,7 +69,7 @@ async function machine() {
 		nowMs: async () => now,
 		bootId: async () => boot,
 		system,
-		readCpu: async () => "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 1 2 3\n",
+		readCpu: async () => `cpu  ${busyTicks - 50} 0 50 800 50 0 0 0 0 0\ncpu0 1 2 3\n`,
 		readSystemFile: async (path: string) => {
 			const contents = files.get(path);
 			if (contents === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
@@ -116,6 +118,10 @@ async function machine() {
 		request,
 		reboot: () => {
 			boot = randomUUID();
+		},
+		/** The machine used this many more ticks of processor time. */
+		work: (ticks: number) => {
+			busyTicks += ticks;
 		},
 		tick: (ms: number) => {
 			now += ms;
@@ -263,6 +269,8 @@ describe("machine command guest", () => {
 			`/usr/bin/node\0/opt/qorpera-machine/cloud-machine-guest.mjs\0execute\0${running}\0`,
 			"rchar: 9000000\nwchar: 9000000\n",
 		);
+		// The relay used 0.2 s of its own (utime 15 + stime 5 ticks), started at tick 4242.
+		m.files.set("/proc/500/stat", `500 (node) S 1 500 500 0 -1 4194560 100 0 0 0 15 5 900 300 20 0 7 0 4242 0`);
 		m.process(600, `/system.slice/docker-${"c".repeat(64)}.scope`, "nginx\0", "rchar: 100000\nwchar: 0\n");
 		m.process(700, "/system.slice/lxd-agent.service", "node\0helper\0observe\0", "rchar: 50000000\nwchar: 0\n");
 		m.process(
@@ -278,8 +286,9 @@ describe("machine command guest", () => {
 			machineId: m.machineId,
 			bootId: expect.any(String),
 			at: 1_000_000,
-			// /proc/stat in USER_HZ (100 a second): 150 ticks busy, 1.5 s, less the own units' 0.5 s.
-			cpuUsec: 1_000_000,
+			// /proc/stat in USER_HZ (100 a second): 150 ticks busy, 1.5 s, less the own units' 0.5 s and the relay's 0.2 s
+			// of its own (its children's 12 ticks count).
+			cpuUsec: 800_000,
 			ioBytes: 5120 + 100000,
 			ended: [
 				{ commandId: done, state: "succeeded", exitCode: 0, outputTail: "" },
@@ -291,9 +300,55 @@ describe("machine command guest", () => {
 		m.units.set("qorpera-control.slice", "ControlGroup=/qorpera.slice/../../etc\n");
 		m.units.set("lxd-agent.service", "ControlGroup=\n");
 		expect(await observeMachine([], m.ports)).toMatchObject({
-			cpuUsec: 1_500_000,
+			cpuUsec: 1_300_000,
 			ioBytes: 5120 + 100000 + 50000000 + 70000000,
 		});
+	});
+
+	it("leaves the relays' own processor time out of a busy machine, and takes nothing back when a relay ends", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		const commandId = await m.request("./build.sh");
+		await startMachineCommand(commandId, m.ports);
+		const unit = `/qorpera.slice/qorpera-machine.slice/qorpera-machine-command-${commandId}.service`;
+		const relay = (ownTicks: number) => {
+			m.process(
+				500,
+				unit,
+				`/usr/bin/node\0/opt/qorpera-machine/cloud-machine-guest.mjs\0execute\0${commandId}\0`,
+				"",
+			);
+			m.files.set("/proc/500/stat", `500 (node) S 1 500 500 0 -1 0 0 0 0 0 ${ownTicks} 0 0 0 20 0 1 0 777 0`);
+		};
+		const sample = async () => {
+			const observed = await observeMachine([], m.ports);
+			return { cpuSeconds: observed.cpuUsec / 1e6, ioBytes: observed.ioBytes, at: observed.at };
+		};
+		relay(10);
+		const first = await sample();
+		// 30 s: the command works 1.2 s and its relay 0.6 s of its own: 4% of one core, not busy.
+		m.tick(30000);
+		m.work(180);
+		relay(70);
+		const second = await sample();
+		expect(second.cpuSeconds - first.cpuSeconds).toBeCloseTo(1.2, 6);
+		expect(idleRuleBusy(first, second)).toBe(false);
+		// The next 30 s the command works 1.6 s: busy.
+		m.tick(30000);
+		m.work(160);
+		const third = await sample();
+		expect(idleRuleBusy(second, third)).toBe(true);
+		// The command ends and its relay with it: what the relay used before is still left out.
+		m.tick(30000);
+		for (const file of ["cgroup", "cmdline", "io", "stat"]) m.files.delete(`/proc/500/${file}`);
+		const fourth = await sample();
+		expect(fourth.cpuSeconds).toBe(third.cpuSeconds);
+		expect(idleRuleBusy(third, fourth)).toBe(false);
+		// Another boot counts its own relays afresh.
+		m.reboot();
+		await prepareMachineGuest(m.machineId, 2, m.ports);
+		expect((await observeMachine([], m.ports)).cpuUsec).toBe(4_400_000);
 	});
 
 	it("keeps the ended commands' output tails within one reply", async () => {

@@ -535,10 +535,36 @@ async function cgroupUsec(ports: MachineGuestPorts, group: string): Promise<numb
 	if (!Number.isSafeInteger(usage)) throw new Error("MACHINE_GUEST_CGROUP_UNKNOWN");
 	return usage;
 }
+/** What the commands' relays used of the processor so far in this boot (microseconds): a counter kept in /run that
+ * each look moves on by every running relay's own time since the look before (all of it for one first seen; a relay's
+ * own time is utime + stime, never its children's). A relay that ends takes nothing back with it, so the machine's
+ * work never jumps when a command ends; what it used after the last look counts as the machine's. */
+async function relayUsec(ports: MachineGuestPorts, bootId: string, relays: Map<string, number>): Promise<number> {
+	const path = join(roots(ports).runtime, "relays.json");
+	const kept = (await missing(() => readJson(path, 1048576)).catch(() => undefined)) as
+		| { bootId?: unknown; usec?: unknown; relays?: unknown }
+		| undefined;
+	const same =
+		kept?.bootId === bootId &&
+		Number.isSafeInteger(kept.usec) &&
+		!!kept.relays &&
+		typeof kept.relays === "object" &&
+		!Array.isArray(kept.relays)
+			? { usec: Number(kept.usec), relays: kept.relays as Record<string, unknown> }
+			: undefined;
+	let usec = same?.usec ?? 0;
+	for (const [relay, now] of relays) {
+		const before = Number(same?.relays[relay] ?? 0);
+		usec += Math.max(0, now - (Number.isSafeInteger(before) ? before : 0));
+	}
+	await writeJson(path, { schema: "qorpera.machine-relays/v1", bootId, usec, relays: Object.fromEntries(relays) });
+	return usec;
+}
 /** The whole machine's work so far, apart from its own control: the processor time it used (microseconds, all
- * processors) and the bytes its processes passed to read and write calls, a command's relay aside (it only copies the
- * command's output to the log). The idle rule's busy measure, taken between two looks. */
-async function machineWork(ports: MachineGuestPorts): Promise<{ cpuUsec: number; ioBytes: number }> {
+ * processors) and the bytes its processes passed to read and write calls, the commands' relays aside (a relay only
+ * copies its command's output to the log; its children, the command, count). The idle rule's busy measure, taken
+ * between two looks. */
+async function machineWork(ports: MachineGuestPorts, bootId: string): Promise<{ cpuUsec: number; ioBytes: number }> {
 	const ticks = (await (ports.readCpu ?? (() => readFile("/proc/stat", "utf8")))())
 		.split("\n")[0]
 		.trim()
@@ -555,6 +581,7 @@ async function machineWork(ports: MachineGuestPorts): Promise<{ cpuUsec: number;
 		ownUsec += await cgroupUsec(ports, group).catch(() => 0);
 	}
 	let ioBytes = 0;
+	const relays = new Map<string, number>();
 	const pids = (await systemDirectory(ports, "/proc").catch(() => [] as string[]))
 		.filter((pid) => /^[1-9][0-9]*$/.test(pid))
 		.slice(0, MACHINE_PROCESSES_READ);
@@ -567,11 +594,20 @@ async function machineWork(ports: MachineGuestPorts): Promise<{ cpuUsec: number;
 		if (own.some((ownGroup) => group === ownGroup || group.startsWith(`${ownGroup}/`))) continue;
 		// Linux ends every argument, the last one too, with a NUL.
 		const argv = (await systemFile(ports, `/proc/${pid}/cmdline`).catch(() => "")).replace(/\0$/, "").split("\0");
-		if (argv.at(-3) === (ports.helper ?? PATHS.helper) && argv.at(-2) === "execute" && UUID.test(argv.at(-1) ?? ""))
+		if (argv.at(-3) === (ports.helper ?? PATHS.helper) && argv.at(-2) === "execute" && UUID.test(argv.at(-1) ?? "")) {
+			// Its own time: utime and stime (fields 14 and 15 of /proc/<pid>/stat, after the command name); keyed by its
+			// start (field 22), so a reused pid is another relay.
+			const fields =
+				(await systemFile(ports, `/proc/${pid}/stat`).catch(() => "")).split(") ").at(-1)?.split(" ") ?? [];
+			const [utime, stime, started] = [fields[11], fields[12], fields[19]].map(Number);
+			if ([utime, stime, started].every((value) => Number.isSafeInteger(value) && value >= 0))
+				relays.set(`${pid}:${started}`, ((utime + stime) * 1000000) / CLOCK_TICKS_PER_SECOND);
 			continue;
+		}
 		ioBytes += idleRuleProcessIoBytes(await systemFile(ports, `/proc/${pid}/io`).catch(() => ""));
 	}
-	return { cpuUsec: Math.max(0, (busy * 1000000) / CLOCK_TICKS_PER_SECOND - ownUsec), ioBytes };
+	const relayed = await relayUsec(ports, bootId, relays).catch(() => 0);
+	return { cpuUsec: Math.max(0, (busy * 1000000) / CLOCK_TICKS_PER_SECOND - ownUsec - relayed), ioBytes };
 }
 /** The bytes a text takes in a JSON reply, its quotes aside. */
 function jsonBytes(text: string): number {
@@ -622,7 +658,7 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 		}
 	}
 	const at = await (ports.nowMs ?? uptimeMs)();
-	const work = await machineWork(ports);
+	const work = await machineWork(ports, guest.bootId);
 	return {
 		schema: "qorpera.machine-observation/v2",
 		machineId: guest.machineId,
