@@ -12,8 +12,10 @@
 --   status = 'expired' (the status triggers record whether it was active, and cancel a paused routine's queued runs).
 --   It answers `ended`, whether or not the company is paused, as the legacy sweep did.
 -- The routine file keeps its status until core C2's queue writes platform statuses into files (STATE "Status"). The
--- orchestrator needs no change: `ended` is one of the restore's answers. Each inserted text names this migration
--- (20260930027000), for deploy guards.
+-- orchestrator needs no change: `ended` is one of the restore's answers.
+-- Also (P28's tidy-up): qorpera_folder_materialize_company's comment on F2's worker drain is corrected. The drain, like
+-- the listener (P29), runs in its own transaction as its own orchestrator step, never inside the materializer.
+-- Each inserted text names this migration (20260930027000), for deploy guards.
 
 set local lock_timeout = '3s';
 
@@ -89,5 +91,19 @@ $new$;
 begin
 	if (length(v_definition) - length(replace(v_definition, c_old, ''))) / length(c_old) <> 1 then
 		raise exception 'Routine expiry patch anchor not found in %', v_target; end if;
+	execute replace(v_definition, c_old, c_new);
+end $$;
+
+-- 3. The materializer's comment on F2's worker drain ---------------------------------------------------------------
+
+do $$
+declare v_target constant regprocedure := 'public.qorpera_folder_materialize_company(uuid,integer)';
+	v_definition text := pg_get_functiondef(v_target);
+	c_old constant text := E'\t-- F2-5b-3 calls the folder worker drain here, before this function locks anything (core C4).\n';
+	c_new constant text := E'\t-- 20260930027000: F2''s worker drain and the listener (P29) run in their own transactions, as their own orchestrator\n'
+		|| E'\t-- steps before this one: a drain admits wakes, and admission must come after this function''s ranks.\n';
+begin
+	if (length(v_definition) - length(replace(v_definition, c_old, ''))) / length(c_old) <> 1 then
+		raise exception 'Materializer comment anchor not found in %', v_target; end if;
 	execute replace(v_definition, c_old, c_new);
 end $$;

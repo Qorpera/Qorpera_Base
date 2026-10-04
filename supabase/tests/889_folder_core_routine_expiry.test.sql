@@ -3,7 +3,8 @@
 -- P04's folder list names a folder-v2 routine of any origin past its expiry, active or paused, paused company or not;
 -- the restore ends it (`ended`, status expired) under the fence, the company row and the routine's rank-5 lock. An
 -- expired active routine leaves the schedule heads, so the scheduler stops offering its slots; an expired paused one has
--- its queued runs cancelled. A routine not yet at its end, and a snapshot-v1 company's routine, are left alone.
+-- its queued runs cancelled. A routine not yet at its end, and a snapshot-v1 company's routine, are left alone. The
+-- materializer's comment on F2's drain is corrected.
 
 -- A member's schedule routine with a due slot (the heads' condition), ending at p_ends.
 create function pg_temp.scheduled(p_ends timestamptz) returns uuid language plpgsql as $$
@@ -99,6 +100,15 @@ begin
 		raise exception 'A snapshot-v1 routine is not the folder tick''s'; end if;
 	if (select status from public.qorpera_cloud_routines where id = v_control) <> 'active' then
 		raise exception 'A snapshot-v1 routine is left active'; end if;
+end $$;
+
+-- 5. P28's tidy-up: the materializer no longer says F2's drain runs inside it.
+do $$
+declare v_def text := pg_get_functiondef('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure);
+begin
+	if position('F2-5b-3 calls the folder worker drain here' in v_def) > 0
+		or position('20260930027000: F2''s worker drain and the listener (P29) run in their own transactions' in v_def) = 0 then
+		raise exception 'The materializer''s comment on F2''s drain is not the corrected one'; end if;
 end $$;
 
 rollback;
