@@ -25,6 +25,7 @@ insert into public.qorpera_profile_members(profile_id, user_id, email, display_n
 insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'Environment', 1,
 	'92400000-0000-4000-8000-000000000001');
+
 create function pg_temp.base_claims(p_role text, p_user uuid default null) returns void language sql as $$
 	select set_config('request.jwt.claims', jsonb_strip_nulls(jsonb_build_object('role', p_role, 'sub', p_user))::text, true)::text::void
 $$;
@@ -175,7 +176,7 @@ $$;
 -- Starts a queued run on a real runner with a lease, through orchestrator …092; answers its native binding. NULL
 -- accepts the queue's own choice.
 create function pg_temp.base_start(p_run uuid) returns jsonb language plpgsql as $$
-declare v_claim jsonb; v_runner jsonb; v_assignment jsonb; v_lease jsonb;
+declare v_claim jsonb; v_runner jsonb; v_assignment jsonb; v_lease jsonb; v_run public.qorpera_execution_runs;
 begin
 	perform pg_temp.base_claims('service_role');
 	v_claim := public.qorpera_claim_runner_job_for_orchestrator('92400000-0000-4000-8000-000000000092', extensions.gen_random_uuid(), 120);
@@ -189,10 +190,12 @@ begin
 		(v_assignment ->> 'assignment_id')::uuid, (v_claim #>> '{work,job_id}')::uuid, repeat('3', 64));
 	v_lease := public.qorpera_acquire_native_provider_connection_lease(p_run, (v_runner ->> 'runner_id')::uuid, repeat('2', 64),
 		(v_assignment ->> 'assignment_id')::uuid, repeat('3', 64), 120);
+	-- The binding names the model the run pinned, as the runner reads it from its job.
+	select * into strict v_run from public.qorpera_execution_runs where id = p_run;
 	return jsonb_build_object('leaseId', v_lease ->> 'lease_id', 'runId', p_run, 'jobId', v_claim #>> '{work,job_id}',
 		'runnerId', v_runner ->> 'runner_id', 'assignmentId', v_assignment ->> 'assignment_id',
 		'credentialCapsuleId', v_lease ->> 'credential_capsule_id', 'computeIdentityId', v_lease ->> 'compute_identity_id',
-		'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-native');
+		'provider', v_run.model_provider, 'nativeHarness', 'codex-cli', 'model', v_run.model_id);
 end
 $$;
 -- The run's public message in its conversation (an acknowledgement or the final report).
@@ -300,6 +303,9 @@ begin
 	perform pg_temp.base_assert(exists (select 1 from public.qorpera_native_provider_connection_leases
 		where id = (v_binding ->> 'leaseId')::uuid and run_id = v_run.id), 'the run holds a native lease');
 	perform pg_temp.base_assert((select status from public.qorpera_runner_jobs where id = v_run.job_id) = 'leased', 'the job is leased');
+	-- The binding is the one the native tool host checks, as it is: any binding-based folder tool takes it.
+	perform pg_temp.base_assert((public.qorpera_native_tool_locked_run(v_binding)).id = v_run.id,
+		'the binding passes the native tool guard: ' || v_binding::text);
 end
 $$;
 
