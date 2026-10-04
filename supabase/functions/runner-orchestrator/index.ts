@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
+	FOLDER_DRAINS,
 	parseRunnerOrchestratorBearer,
 	readRunnerOrchestratorRequest,
 	runnerOrchestratorRpcStatus,
@@ -124,6 +125,20 @@ Deno.serve(async (request) => {
 			rpc = "qorpera_folder_materialize_company";
 			args = {
 				p_profile_id: action.profileId,
+				p_limit: action.limit,
+			};
+			break;
+		case "folder_drain_due":
+			rpc = FOLDER_DRAINS[action.drain].due;
+			args = {
+				p_after_environment: action.afterEnvironmentId ?? null,
+				p_limit: action.limit,
+			};
+			break;
+		case "folder_drain_company":
+			rpc = FOLDER_DRAINS[action.drain].company;
+			args = {
+				p_environment_id: action.environmentId,
 				p_limit: action.limit,
 			};
 			break;

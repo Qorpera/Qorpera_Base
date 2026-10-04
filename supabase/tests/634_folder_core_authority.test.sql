@@ -198,10 +198,27 @@ begin
 	set local session_replication_role = origin;
 end $$;
 
+-- P15: the follow-up queue, run at once after a commit that marked something, as its step would: each marked subject
+-- taken, then each dirty one converged (the company first, then the agents).
+create function pg_temp.follow_ups(p_env uuid) returns void language plpgsql as $$
+declare v_subject record; v_work public.qorpera_folder_follow_ups%rowtype;
+begin
+	for v_subject in select distinct m.subject_kind, m.subject_id from public.qorpera_folder_follow_up_marks m
+		where m.environment_id = p_env loop
+		v_work := public.qorpera_folder_follow_up_take(p_env, v_subject.subject_kind, v_subject.subject_id);
+	end loop;
+	for v_work in select * from public.qorpera_folder_follow_ups w where w.environment_id = p_env and w.dirty
+		order by w.subject_kind = 'agent', w.subject_id loop
+		perform public.qorpera_folder_follow_up_converge(v_work);
+	end loop;
+end $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb, p_review uuid default null) returns jsonb language plpgsql as $$
+declare v_result jsonb;
 begin
 	perform pg_temp.possess('63400000-0000-4000-8000-000000000020', p_actor, p_units);
-	return public.qorpera_folder_commit('63400000-0000-4000-8000-000000000020', p_actor, p_key, p_units, p_review);
+	v_result := public.qorpera_folder_commit('63400000-0000-4000-8000-000000000020', p_actor, p_key, p_units, p_review);
+	perform pg_temp.follow_ups('63400000-0000-4000-8000-000000000020');
+	return v_result;
 end $$;
 create function pg_temp.member(p_n integer) returns jsonb language sql as $$
 	select jsonb_build_object('kind','member','userId','63400000-0000-4000-8000-00000000000' || p_n)
