@@ -33,8 +33,10 @@ async function machine() {
 	await mkdir(home);
 	let boot = randomUUID();
 	let now = 1_000_000;
-	/** Command units a stop of the whole commands' slice does not end (it did not reach them). */
+	/** Command units a stop of the whole commands' slice does not end (it did not reach them), and ones it leaves failed
+	 * (the others it ends cleanly, and systemd forgets them). */
 	const survivors = new Set<string>();
+	const failing = new Set<string>();
 	const units = new Map<string, string>([
 		["qorpera.slice", "ControlGroup=/qorpera.slice\nMainPID=0\n"],
 		["lxd-agent.service", "ControlGroup=/system.slice/lxd-agent.service\nMainPID=90\n"],
@@ -51,14 +53,25 @@ async function machine() {
 				`LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=/qorpera.slice/qorpera-machine.slice/${unit}\nMainPID=500\n`,
 			);
 		} else if (executable === "/usr/bin/systemctl" && args[0] === "show")
-			return units.get(args[1]) ?? "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\n";
+			// One block a unit, as systemd shows several.
+			return args
+				.slice(1)
+				.filter((arg) => !arg.startsWith("--"))
+				.map(
+					(unit) =>
+						units.get(unit) ?? "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\n",
+				)
+				.join("\n");
 		else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && args.includes("qorpera-machine.slice")) {
-			for (const unit of units.keys())
-				if (unit.startsWith("qorpera-machine-command-") && !survivors.has(unit))
-					units.set(
-						unit,
-						"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
-					);
+			for (const unit of [...units.keys()])
+				if (unit.startsWith("qorpera-machine-command-") && !survivors.has(unit)) {
+					if (failing.has(unit))
+						units.set(
+							unit,
+							"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
+						);
+					else units.delete(unit);
+				}
 		} else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && units.has(args[1]))
 			units.set(
 				args[1],
@@ -113,6 +126,7 @@ async function machine() {
 		units,
 		files,
 		survive: (commandId: string) => survivors.add(`qorpera-machine-command-${commandId}.service`),
+		failOnStop: (commandId: string) => failing.add(`qorpera-machine-command-${commandId}.service`),
 		machineId,
 		request,
 		reboot: () => {
@@ -289,6 +303,8 @@ describe("machine command guest", () => {
 				{ commandId: done, state: "succeeded", exitCode: 0, outputTail: "" },
 				{ commandId: never, state: "lost", exitCode: null, outputTail: "" },
 			],
+			// No stop in this boot yet.
+			stopId: null,
 		});
 		// Own units whose cgroup systemd names outside the hierarchy, or not at all, are never read.
 		m.units.set("qorpera.slice", "ControlGroup=/qorpera.slice/../../etc\n");
@@ -301,17 +317,23 @@ describe("machine command guest", () => {
 		await prepareMachineGuest(m.machineId, 1, m.ports);
 		await refreshMachineLease(900000, m.ports);
 		const killed = await m.request("npm run dev"),
+			failed = await m.request("python crawl.py"),
 			survivor = await m.request("sleep 1000"),
 			done = await m.request("true");
-		for (const id of [killed, survivor, done]) await startMachineCommand(id, m.ports);
+		for (const id of [killed, failed, survivor, done]) await startMachineCommand(id, m.ports);
 		m.exit(done, 0);
 		m.survive(survivor);
-		expect(await stopMachineCommands(m.ports)).toEqual({
+		// The stop ends one cleanly (systemd then forgets its unit) and leaves the other failed.
+		m.failOnStop(failed);
+		const reply = await stopMachineCommands(m.ports);
+		expect(reply).toEqual({
 			schema: "qorpera.machine-commands-stopped/v1",
 			machineId: m.machineId,
 			bootId: expect.any(String),
-			stopped: [killed],
+			stopId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+			stopped: expect.arrayContaining([killed, failed]),
 		});
+		expect(reply.stopped).toHaveLength(2);
 		expect(m.system).toHaveBeenCalledWith("/usr/bin/systemctl", [
 			"stop",
 			"qorpera-machine.slice",
@@ -319,23 +341,49 @@ describe("machine command guest", () => {
 			"containerd.service",
 		]);
 		expect(m.system).toHaveBeenCalledWith("/usr/bin/sync", []);
-		// The stopped one ends as lost by the stop; the one that ended before keeps its own end; the one still running runs.
-		const observed = await observeMachine([killed, survivor, done], m.ports);
+		// The stopped ones end as lost by the stop, their units gone or failed; the one that ended before keeps its own end;
+		// the one still running runs. Every look of this boot reports the stop.
+		const observed = await observeMachine([killed, failed, survivor, done], m.ports);
 		expect(observed.ended).toEqual([
 			{ commandId: killed, state: "lost", exitCode: null, outputTail: "", stopped: true },
+			{ commandId: failed, state: "lost", exitCode: null, outputTail: "", stopped: true },
 			{ commandId: done, state: "succeeded", exitCode: 0, outputTail: "" },
 		]);
+		expect(observed.stopId).toBe(reply.stopId);
 		// Seen again (or after a wake), the stopped one is still the stop's.
-		expect((await observeMachine([killed], m.ports)).ended).toEqual([
-			{ commandId: killed, state: "lost", exitCode: null, outputTail: "", stopped: true },
-		]);
-		// The command line asks for it by name and takes nothing else.
+		expect(await observeMachine([killed], m.ports)).toMatchObject({
+			ended: [{ commandId: killed, state: "lost", exitCode: null, outputTail: "", stopped: true }],
+			stopId: reply.stopId,
+		});
+		// The command line asks for it by name and takes nothing else; each stop has an id of its own.
 		const nonce = randomUUID();
 		expect(await runMachineGuestCli([nonce, "stop-commands"], m.ports)).toBe(0);
-		expect(JSON.parse(await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8"))).toMatchObject({
-			schema: "qorpera.machine-commands-stopped/v1",
-			stopped: [],
-		});
+		const again = JSON.parse(await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8"));
+		expect(again).toMatchObject({ schema: "qorpera.machine-commands-stopped/v1", stopped: [] });
+		expect(again.stopId).not.toBe(reply.stopId);
+		expect((await observeMachine([], m.ports)).stopId).toBe(again.stopId);
+		// Another boot reports no stop.
+		m.reboot();
+		await prepareMachineGuest(m.machineId, 2, m.ports);
+		expect((await observeMachine([], m.ports)).stopId).toBeNull();
+	});
+
+	it("keeps no stop while what it stops still shows active", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		// Docker does not stop.
+		m.units.set("docker.service", "LoadState=loaded\nActiveState=deactivating\nSubState=stop-sigterm\n");
+		expect(await stopMachineCommands(m.ports)).toMatchObject({ stopId: null, stopped: [] });
+		expect((await observeMachine([], m.ports)).stopId).toBeNull();
+		// Nor when systemd cannot be asked.
+		m.units.delete("docker.service");
+		m.system
+			.mockImplementationOnce(async () => "")
+			.mockImplementationOnce(async () => {
+				throw new Error("MACHINE_GUEST_SERVICE_UNCONFIRMED");
+			});
+		expect(await stopMachineCommands(m.ports)).toMatchObject({ stopId: null });
 	});
 
 	it("measures every running command, also the ones beyond the executor's list, a page of 256 a look", async () => {

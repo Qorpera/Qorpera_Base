@@ -116,7 +116,7 @@ export type CompanyMachineCommand =
 
 /** What the executor keeps of one running machine's boot (its clock, in milliseconds): the whole machine's last
  * sample, each running command's last sample (the guest measures a page of them a look, so each keeps its own time),
- * where the next page starts, and busy work SQL has not recorded yet. */
+ * where the next page starts, busy work SQL has not recorded yet, and the guest's stop SQL last took. */
 interface GuestSample {
 	bootId: string;
 	at: number;
@@ -124,17 +124,20 @@ interface GuestSample {
 	commands: Map<string, { cpuSeconds: number; ioBytes: number; at: number }>;
 	cursor: string | null;
 	pending: { busyCommands: Set<string>; outsideBusy: boolean };
+	stopTaken: string | null;
 }
 /** A command's sample is forgotten when the guest has not measured it for this long (it ended). */
 const COMMAND_SAMPLE_KEPT_MS = 600000;
-/** What one look saw: the listed commands that ended, the running ones that were busy, busy outside work, and where the
- * guest's next page of running commands starts (null: this look reached the last one). */
+/** What one look saw: the listed commands that ended, the running ones that were busy, busy outside work, where the
+ * guest's next page of running commands starts (null: this look reached the last one), and the boot's last stop that
+ * saw its programs stopped (null: none). */
 interface GuestLook {
 	bootId: string;
 	ended: { commandId: string; state: unknown; exitCode?: unknown; outputTail: string; stopped?: true }[];
 	busyCommands: string[];
 	outsideBusy: boolean;
 	next: string | null;
+	stopId: string | null;
 }
 /** A sweep before a sleep looks at most this many pages (16,384 running commands); beyond, the machine stays up. */
 const SWEEP_PAGES = 64;
@@ -439,6 +442,7 @@ export class LxdCompanyMachineHost {
 			!Array.isArray(observed.running) ||
 			observed.running.length > 256 ||
 			(observed.next !== null && (typeof observed.next !== "string" || !UUID.test(observed.next))) ||
+			(observed.stopId !== null && (typeof observed.stopId !== "string" || !UUID.test(observed.stopId))) ||
 			!Array.isArray(observed.ended) ||
 			observed.ended.length > 64
 		)
@@ -476,6 +480,7 @@ export class LxdCompanyMachineHost {
 			cursor: (observed.next as string | null) ?? null,
 			// Until SQL records it.
 			pending: { busyCommands, outsideBusy },
+			stopTaken: same?.stopTaken ?? null,
 		});
 		const ended = observed.ended
 			.map((item) => record(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
@@ -494,20 +499,27 @@ export class LxdCompanyMachineHost {
 			busyCommands: [...busyCommands],
 			outsideBusy,
 			next: (observed.next as string | null) ?? null,
+			stopId: (observed.stopId as string | null) ?? null,
 		};
 	}
-	/** What a look saw, recorded in SQL: ended commands, and busy work, which keeps the machine awake. Busy work stays
-	 * pending until SQL took it. */
+	/** What a look saw, recorded in SQL: ended commands, busy work, which keeps the machine awake, and a stop of the boot
+	 * SQL has not taken (what ran outside the commands ended with it). Busy work stays pending until SQL took it. */
 	async #record(e: CompanyMachineEntry, look: GuestLook, signal: AbortSignal): Promise<void> {
-		if (look.ended.length || look.busyCommands.length || look.outsideBusy)
+		const before = this.#guests.get(e.placementId);
+		const stop = look.stopId !== null && look.stopId !== (before?.bootId === look.bootId ? before.stopTaken : null);
+		if (look.ended.length || look.busyCommands.length || look.outsideBusy || stop)
 			await this.#custody(e, "qorpera_record_company_machine_commands", signal, {
 				p_boot_id: look.bootId,
 				p_ended: look.ended,
 				p_busy_commands: look.busyCommands,
 				p_outside_busy: look.outsideBusy,
+				p_stop_id: look.stopId,
 			});
 		const kept = this.#guests.get(e.placementId);
-		if (kept?.bootId === look.bootId) kept.pending = { busyCommands: new Set(), outsideBusy: false };
+		if (kept?.bootId === look.bootId) {
+			kept.pending = { busyCommands: new Set(), outsideBusy: false };
+			kept.stopTaken = look.stopId ?? kept.stopTaken;
+		}
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		// A last sweep first, when this boot was seen before: every page of running commands, each against its own last
@@ -530,6 +542,7 @@ export class LxdCompanyMachineHost {
 							busyCommands: [...(kept?.pending.busyCommands ?? [])],
 							outsideBusy: !!kept?.pending.outsideBusy,
 							next: null,
+							stopId: null,
 						},
 						signal,
 					);
@@ -550,8 +563,10 @@ export class LxdCompanyMachineHost {
 			throw error;
 		}
 		// Give the guest's own programs a moment to stop and its disk to settle; then the machine is powered off (its disk
-		// stays). The helper marks each command it stops as the machine's stop, so however the stop ends, what the guest
-		// shows of them later is told with the stop's cause. A guest without it is stopped as before.
+		// stays). The helper marks each command it stops as the machine's stop, and keeps the stop itself once nothing it
+		// stopped still runs, so however the stop ends (a power-off that fails, then a wake), what the guest shows later
+		// is told with the stop's cause. A guest without it is stopped as before. What the stop ended is never measured
+		// as busy afterwards: the next look starts afresh.
 		if (e.runningAt !== null) {
 			const stopping = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
 			await this.#helper(e, ["stop-commands"], stopping).catch(() =>
@@ -564,6 +579,7 @@ export class LxdCompanyMachineHost {
 					)
 					.catch(() => undefined),
 			);
+			this.#guests.delete(e.placementId);
 		}
 		const state = await this.#physical(e, "stopped", signal);
 		if (state === "not-now") return { placementId: e.placementId, step: "stop", state: "not-now" };

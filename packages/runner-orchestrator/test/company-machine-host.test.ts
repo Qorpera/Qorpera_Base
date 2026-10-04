@@ -170,6 +170,8 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 									bootId: boot,
 									// The guest's paging cursor: one look measures every running command unless a test says otherwise.
 									next: null,
+									// No stop of this boot yet.
+									stopId: null,
 									...(observed as object),
 								}
 							: {
@@ -522,6 +524,59 @@ describe("company machine host", () => {
 			"-c",
 			"systemctl stop qorpera-machine.slice docker.service containerd.service; sync",
 		]);
+	});
+
+	it("records the guest's stop once, and measures afresh after a stop whose power-off did not happen", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [] });
+		const records = () => f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands");
+		/** The two-processor machine's counters at a time: a container outside the commands used this much. */
+		const sample = (seconds: number, outside: number, stopId: string | null = null) => ({
+			at: seconds * 1000,
+			ended: [],
+			running: [],
+			cpu: { busyUsec: outside * 1e6, totalUsec: seconds * 2e6, ownUsec: 0 },
+			stopId,
+		});
+		f.observe(sample(10, 0));
+		await f.host.pass(f.signal);
+		// The container is busy; the sleep's last look records it, then the helper stops it, and a member wakes the machine
+		// before its power-off (SQL refuses it).
+		f.observe(sample(20, 5));
+		f.entry.sleepDue = true;
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			if (command[3] === "stop-commands") f.refusals.set("stop", "MACHINE_WANTED_RUNNING");
+			return exec(project, name, command);
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "not-now" }]);
+		expect(records().at(-1)?.args).toMatchObject({ p_outside_busy: true, p_stop_id: null });
+		expect(f.client.execInstance.mock.calls.some((call) => call[2][3] === "stop-commands")).toBe(true);
+		expect(f.instance()?.status).toBe("Running");
+		// The next look reports the guest's stop, which SQL takes; what the container used before the stop ended it is
+		// not busy work after it (the look starts afresh).
+		f.entry.sleepDue = false;
+		const stopId = randomUUID();
+		f.observe(sample(30, 10, stopId));
+		await f.host.pass(f.signal);
+		expect(records().at(-1)?.args).toMatchObject({
+			p_ended: [],
+			p_busy_commands: [],
+			p_outside_busy: false,
+			p_stop_id: stopId,
+		});
+		// Every later look of the boot reports it again; it is recorded once.
+		const before = records().length;
+		f.observe(sample(40, 10, stopId));
+		await f.host.pass(f.signal);
+		expect(records()).toHaveLength(before);
+		// A stop id that is no id is refused.
+		f.observe(sample(50, 10, "not-a-stop"));
+		expect((await f.host.pass(f.signal))[0]).toMatchObject({
+			state: "failed",
+			code: "COMPANY_MACHINE_GUEST_REPLY_INVALID",
+		});
 	});
 
 	it("sweeps every page of running commands before a sleep, so a busy one on a later page keeps the machine", async () => {

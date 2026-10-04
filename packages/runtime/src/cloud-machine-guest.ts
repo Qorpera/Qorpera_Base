@@ -103,6 +103,8 @@ function roots(ports: MachineGuestPorts) {
 		replies: join(runtime, "replies"),
 		identity: join(runtime, "machine.json"),
 		lease: join(runtime, "lease.json"),
+		/** The boot's last stop that saw its programs stopped (stop-commands). */
+		stop: join(state, "stop.json"),
 	};
 }
 async function system(executable: string, args: readonly string[]): Promise<string> {
@@ -375,6 +377,8 @@ async function observe(
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
 			}
+			// systemd forgets a unit its stop ended cleanly: a marked command whose unit is gone is the stop's.
+			else if (fields.LoadState === "not-found" && stopped) state = "lost";
 		} catch {
 			state = "unconfirmed";
 			exitCode = null;
@@ -666,6 +670,9 @@ export async function observeMachine(
 		ownUsec += await unitCgroup(ports, unit)
 			.then((directory) => cgroupUsec(ports, directory))
 			.catch(() => 0);
+	const stop = (await missing(() => readJson(roots(ports).stop, 4096)).catch(() => undefined)) as
+		| Record<string, unknown>
+		| undefined;
 	return {
 		schema: "qorpera.machine-observation/v2",
 		machineId: guest.machineId,
@@ -679,12 +686,23 @@ export async function observeMachine(
 		running,
 		next,
 		ended,
+		// The last stop of this boot that saw the commands, Docker and containerd stopped: what ran outside the commands
+		// ended with it, however the stop went on (a power-off that failed, then a wake).
+		stopId:
+			stop?.schema === "qorpera.machine-stop/v1" &&
+			stop.bootId === guest.bootId &&
+			typeof stop.stopId === "string" &&
+			UUID.test(stop.stopId)
+				? stop.stopId
+				: null,
 	};
 }
 
 /** The machine's stop, from the executor once SQL granted it: each command still running in this boot is marked as
  * stopped by it (so its end, whenever and however the executor next sees it, is the stop's), then the commands, Docker
- * and containerd are stopped and the disk synced. A mark on a command that still runs afterwards is taken back. */
+ * and containerd are stopped and the disk synced. A mark on a command that still runs afterwards is taken back. Once
+ * none of them shows active, the stop is kept with an id of its own (stopId), which every later look of this boot
+ * reports, so SQL hears once that the work outside the commands ended, however the stop goes on. */
 export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
 	requireRoot(ports);
 	const guest = await identity(ports);
@@ -698,12 +716,17 @@ export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
 		await retain(commandPaths(ports, name).stopped, { commandId: name });
 		marked.push(name);
 	}
-	await (ports.system ?? system)("/usr/bin/systemctl", [
-		"stop",
-		PATHS.slice,
-		"docker.service",
-		"containerd.service",
-	]).catch(() => undefined);
+	const units = [PATHS.slice, "docker.service", "containerd.service"];
+	await (ports.system ?? system)("/usr/bin/systemctl", ["stop", ...units]).catch(() => undefined);
+	// Once systemd shows none of them active, the stop is kept for this boot (what ran outside the commands ended).
+	const states = await (ports.system ?? system)("/usr/bin/systemctl", ["show", ...units, "--property=ActiveState"])
+		.then((shown) => shown.split("\n").filter((line) => line.startsWith("ActiveState=")))
+		.catch(() => []);
+	const stopId =
+		states.length === units.length && states.every((line) => ["inactive", "failed"].includes(line.slice(12)))
+			? randomUUID()
+			: null;
+	if (stopId) await writeJson(roots(ports).stop, { schema: "qorpera.machine-stop/v1", bootId: guest.bootId, stopId });
 	const stopped: string[] = [];
 	for (const commandId of marked) {
 		const intent = (await readIntent(ports, commandId))!;
@@ -714,7 +737,13 @@ export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
 		else stopped.push(commandId);
 	}
 	await (ports.system ?? system)("/usr/bin/sync", []).catch(() => undefined);
-	return { schema: "qorpera.machine-commands-stopped/v1", machineId: guest.machineId, bootId: guest.bootId, stopped };
+	return {
+		schema: "qorpera.machine-commands-stopped/v1",
+		machineId: guest.machineId,
+		bootId: guest.bootId,
+		stopId,
+		stopped,
+	};
 }
 
 async function refuse(ports: MachineGuestPorts, commandId: string, code: string): Promise<void> {
