@@ -42,7 +42,7 @@ the live definitions they found.
 | One head per company (`qorpera_company_files.head_snapshot_id`); every write checks and moves it, and fails with PT409 after 4 tries | Each path has its own version; a change checks only the versions of the paths it touches |
 | Every write rebuilds the full tree manifest (`qorpera.company-tree/v1`, 8 MiB, about 25,000 files), verifies it with an O(n²) parent check, stores a full jsonb copy, and records a reachability graph of every object in the company | A commit touches only its own paths. No manifest, tree copy or per-write graph exists |
 | One path per operation (`qorpera.company-path-mutation/v1`) | A change set of units: write, mkdir, new folder with contents, delete, move, copy |
-| Every call, reads included, locks the profile row, the wake-admission fence and the Company File row `FOR UPDATE` (`qorpera_company_path_actor`, 20260920030500:371, 53 callers) | Reads take no company-wide lock. Nothing locks the profile row exclusively. Effects take the company's folder fence `FOR KEY SHARE`; stop and resume take it `FOR UPDATE` |
+| Every call, reads included, locks the profile row, the wake-admission fence and the Company File row `FOR UPDATE` (`qorpera_company_path_actor`, 20260920030500:371, 53 callers) | Reads take no company-wide lock. Nothing locks the profile row exclusively (P15's name copy alone takes it `FOR NO KEY UPDATE SKIP LOCKED`, §3 step 3). Effects take the company's folder fence `FOR KEY SHARE`; stop and resume take it `FOR UPDATE` |
 | Each run rechecks every path it read, one by one, under that lock (`qorpera_company_path_assert_context`) | Read sets are kept by covering resource and grant, each with a revision, a few rows per run |
 | Change events walk a linear chain of revisions, one path per event (`qorpera_drain_company_file_wakes`) | A journal with a per-company sequence number; one event lists all its units |
 | Review is chosen by tool name in the runtime (`cloud-action-review.ts:148-209`) | Folder units are classified by path and by what changes, and SQL refuses an agent's reviewed unit without its review |
@@ -307,7 +307,12 @@ is never upgraded. The steps:
      Admission itself is serialized on its own row (step 10).
    - The profile row is never locked `FOR UPDATE` or `NOWAIT` on any
      `folder-v2` path (§9), except deletion's finisher and purge, after
-     the fence `FOR UPDATE` (C1C §6.10).
+     the fence `FOR UPDATE` (C1C §6.10). One named exception takes it
+     `FOR NO KEY UPDATE SKIP LOCKED`: P15's copy of the company name
+     (STATE-FILES, "Plan (P15)"), alone in its own transaction, never
+     holding the fence, with no savepoint; a busy row is a back-off.
+     `FOR NO KEY UPDATE` does not conflict with the `KEY SHARE` every
+     effect takes.
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
    0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
@@ -699,11 +704,12 @@ Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
 - the empty seeded folders.
 
 The same transaction writes the Co-Founder's staff row and exactly one silent
-first-run kickoff with its turn request (launch item 3); the first-run wake
-comes when C4 (P28) materializes that turn. The company stays hidden until the
-creation is completed, and, once P15's queue exists, until the queue has
-converged its other side effects, as today's bootstrap job keeps a company
-hidden (`qorpera_finalize_company_bootstrap`). How creation runs (the
+first-run kickoff (launch item 3). The follow-up queue (below, P15) gives the
+Co-Founder its default grant and then queues the kickoff's turn request; the
+first-run wake comes when C4 (P28) materializes that turn. The company stays
+hidden until the creation is completed and the queue has converged the
+Co-Founder, as today's bootstrap job keeps a company hidden
+(`qorpera_finalize_company_bootstrap`). How creation runs (the
 creation row, the worker, the operator's path):
 `RUNTIME-COMPANY-FOLDER-CREATION.md`.
 
@@ -714,13 +720,24 @@ Other side effects converge after the commit:
 - pausing an archived agent's routines;
 - revoking its secret grants.
 
-Today they run inside the publish (20260828019600:528-615). In this design:
-- The commit writes a queue row per (company, subject).
-- A worker takes the fence (§3 step 3), then locks the subject in the global
-  order of §3 step 4, and converges it to the subject's current index row.
-  It never replays events. A hire at sequence 10 processed after an archive
-  at sequence 11 leaves the agent archived.
-- The worker is idempotent and runs at least once.
+Today they run inside the publish (20260828019600:528-615). In this design
+(P15, STATE-FILES "Plan (P15)"):
+- The commit writes an insert-only mark per changed subject (an agent hired,
+  archived, reactivated, retired or restored; the company on every `vision.md`
+  write, whose name the queue copies),
+  with no lock and no foreign key.
+- A pg_cron step every 2 seconds takes one subject per transaction: its marks
+  become its work row's (one row per subject, with attempts and a back-off).
+  It takes the fence (§3 step 3), then locks the subject in the global order of
+  §3 step 4, and converges it to the subject's current index row. It never
+  replays events. A hire at sequence 10 processed after an archive at sequence
+  11 leaves the agent archived.
+- The converge runs in one exception block; a default grant's widening
+  authority journal row, and with it the folder clock, is written after the
+  block at the step's top level, so no savepoint ever updates the clock.
+- The step is idempotent and runs at least once. Service-role writers kick a
+  subject at once after their commit (the creation worker, the member commit
+  route), one subject per call.
 
 Some consumers must see a status change at once. They read the index row
 directly and never wait for the worker: wake admission, routine firing, the
@@ -897,8 +914,8 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | Lock | Today | folder-v2 |
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
-| Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks |
-| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A transaction over several companies takes one company per transaction, or every company's fence in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or deletion's finisher batch `FOR UPDATE` (C1C §6.10) |
+| Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks. P15's name copy alone takes `FOR NO KEY UPDATE SKIP LOCKED` (§3 step 3) |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A loop over several companies handles one company per transaction, or takes every company's fence in one transaction in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or `FOR UPDATE` (deletion's finisher batch, C1C §6.10) |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post, a room delivery's retry and a member's answer in an agent's thread take their room `FOR SHARE` (C1C §6.2, §6.3) |
@@ -912,7 +929,8 @@ keys point at `qorpera_profiles`, so a function that locked the profile row
 row `FOR UPDATE` or `NOWAIT`, whether new or old. The one exception is
 deletion's finisher and purge (C1C §6.10): they take the fence `FOR UPDATE`
 first, so no effect holds the row while they wait, and the purge deletes
-the row. That covers:
+the row. (P15's name copy takes it `FOR NO KEY UPDATE SKIP LOCKED`, which
+no effect's `KEY SHARE` waits on; §3 step 3.) That covers:
 - `qorpera_lock_profile_gc_fence` (20260907000700:7,14), which about 79
   migrations call;
 - the direct sites: 20260926130000:204,806, 20260907000200:15,
@@ -936,7 +954,9 @@ rules here. The check refuses any `folder-v2` path that:
   indexes, paths, objects, admission, clock (the incident of 27 September was
   a cross-row order problem, 20260927150000:4-9, and "job before fence",
   :33-37, becomes enforced);
-- locks the profile row exclusively;
+- locks the profile row exclusively (the one named exception, P15's name
+  copy, `FOR NO KEY UPDATE SKIP LOCKED` alone in its own transaction, §3
+  step 3, is listed by name);
 - strengthens a lock on a row it already holds, in any mode; or
 - ends a lease without `FOR UPDATE`.
 
@@ -977,7 +997,11 @@ whose read set holds N paths, alone, with function statistics. Its first
 finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
 later slices"). Its second was the upload's presence check, which under a plan
 that scanned the company's catalog first checked every object it stores, fixed
-by P24c (C1D §7). It reports statements running over 2 s with their wait
+by P24c (C1D §7). A third, from P17's review rather than the load: a file
+reference's byte check hashed the company's catalog for every file and copied
+the commit's locked array for every file or object, so a new folder of 10,000
+new files took 87 s; P24d (C1D §4) makes it 4.5-5.6 s, and a copy of it 2.9 s
+rather than 17 s. The script reports statements running over 2 s with their wait
 events, statements over 1 s with their plans (auto_explain), and PL/pgSQL
 functions by self time over the load. Since C1c-3i every migration change runs it short (run-on-node's
 `folder-core-load` step: 16 runs for 30 s and a 5,000-path read set), in place
@@ -1178,12 +1202,11 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
-  The `folder-v2` materializer (P28) also calls F2's worker drain,
-  `qorpera_folder_drain_worker_wakes(environment, limit)`, for each company
-  that `qorpera_folder_worker_wakes_due()` lists, in its own transaction,
-  before it materializes that company's wakes (RUNTIME-COMPANY-STATE-FILES.md,
-  "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
-  returns".
+  F2's worker drain (`workers`: `qorpera_folder_workers_due` and
+  `qorpera_folder_workers_company`) runs as the first of the shared folder
+  drains, each company in its own transaction, before the materializer's list
+  (RUNTIME-COMPANY-STATE-FILES.md, "Plan (F2-5b)" §6; LISTENER.md §9). Its
+  acceptance includes "a dispatch runs and its revival returns".
 - The members' and clients' hint (the feed itself is C1f).
 - The observability views (P32, migration `20260930032000`: the operator's run and company queries read commits,
   reviews and read sets).

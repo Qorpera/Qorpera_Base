@@ -470,14 +470,17 @@ paths it may read. Its own change sets never wake it.
 - The platform starts no routine: nothing would pay for it.
 - The id never changes and belongs to one file; the name is one no routine row of the agent from
   before the files has.
-- The platform writes `status: paused` for:
-  - an agent's archiving (the follow-up queue, so a restore does not revive the routine);
+- The platform pauses a routine in the index only (`status` paused with a `pause_reason`; the file
+  is not written) for:
+  - an agent's archiving or retiring (`agent_archived`, by the follow-up queue, P15; a reactivation
+    or a restore does not revive the routine, a paid unchanged save resumes it once the agent is
+    active);
   - the authorization-failure suspension;
   - a member's Stop of a dynamic routine's run;
   - a routine left without a model account.
 
-  Each platform commit records its reason. The index keeps it as `pause_reason`. Until C2's
-  queue exists, the runtime writes these pauses to the index only.
+  A routine saved, set active or moved under an archived or retired agent is recorded paused
+  (`agent_archived`) the same way.
 
 **Review:** an agent creating, changing, moving or deleting a routine is delegation. The one
 exception is the routine run's own end-of-run decision while it is owed, when the actor's wake is
@@ -1778,6 +1781,270 @@ the platform live in `platform-folder-writer.ts`, which F2's company creation (P
 first files, a member's text kept through a rewrite, a Disconnect's delete, and nothing outside the allow-list in any
 file version or writer commit.
 
+**Plan (P15): the follow-up queue** (core §5 "After the commit", core §11 C2; the coordinator's slice P15, after P16a;
+design, 4 October; reviews r1 to r4 folded). The facts are in the inventory of 4 October (today's publish path, the 12 staff
+triggers, what `qorpera_company_state_index_agent` does). Folder-v2 only.
+
+*What is missing today.* An agent's save is indexed by its staff row, and the staff triggers give it a thread, a default
+root grant, office access, execution authority and connector grants, and on archive close its thread and pair sessions
+and revoke its secret grants. What remains:
+- a hire gets no first run (only a creation's Co-Founder does, inside the creation);
+- an archive leaves its routines `active` in the index, and its execution authority, session bindings and other open
+  sessions in place;
+- routine firing (the folder-v2 enqueue and the dynamic tick) never checks the routine's agent, so an archived agent's
+  routine still fires;
+- the company name in `vision.md` never reaches `qorpera_profiles.name`, which the hub reads;
+- four triggers write after the commit's paths, outside the global order: the default grant (ranks 6–7), the connector
+  grants on a hire and the secret revocation on an archive (rank 8), and the routines-stop trigger (rank 5). The
+  thread trigger updates the thread session and closes pair sessions (rank 11), which the hook does not name.
+
+*The queue* (P22a's model: marks, then one work row per subject, converged to its current state, never replayed):
+- `qorpera_folder_follow_up_marks`: insert-only rows `(environment, subject kind, subject id, by user, commit id,
+  active)`, written by apply with no lock at all: no foreign key (a cascade from the folder clock would put the
+  deletion purge, which locks each child row after taking the fence, in a cycle with a step that consumed marks before
+  it reached the fence), so the step's sweep deletes the marks of environments that no longer exist. The commit's seq is
+  still null during apply, so the step orders marks by the joined `qorpera_folder_commits.seq`. `active` records whether
+  the commit left the agent active (apply knows the parse). Routine firing may also write a mark with no commit (below).
+  Subjects:
+  - `agent` (the staff id): every unit that inserts an `agent.md`, changes its status, or retires or restores the
+    agent (a rename converges to nothing, so it writes no mark);
+  - `company` (the profile): every `vision.md` write.
+
+  The kind check is open to more kinds (F2-5b-3 may add `todo` for a cancelled todo's workers).
+- `qorpera_folder_follow_ups`: one row per subject, kept: `dirty`, `attempts`, `not_before`, `last_problem`,
+  `last_attempt_at`, `converged_at`, `failing_since`, and `hired_by_user_id` (see the first run). No foreign key, so
+  nothing that holds the fence ever waits on it. A new row starts clean: only a mark makes it dirty, so a kick on a
+  subject with no marks converges nothing. The purge stays untouched: about once a minute the step sweeps the work rows
+  and marks of environments that no longer exist (a plain read, then `DELETE … SKIP LOCKED`).
+- **Companies made before P15:** the migration marks every agent of every folder-v2 company, and the company
+  (`qorpera_folder_follow_up_mark_all`, the rebuild's too), with no commit and no member: their agents never went
+  through the queue, and a Co-Founder must converge before its company shows as ready. An active agent with no first
+  run yet gets a kickoff its owner authors, and nobody's login pays for its turn (`last_problem` `no_hirer`).
+- **The drain** is a pg_cron step every 2 seconds, one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
+  step: `lock_timeout` 2 seconds, read committed). One step is one transaction, and holds one work row (P22a's model):
+  1. plain reads: skip companies being deleted (`qorpera_company_deletions`) and paused companies (a pause is not an
+     attempt, so a hire converges as soon as the company resumes; a 55000 from the pause read again under the fence is
+     not counted either; any other 55000 is a failure like the rest);
+  2. the subject: the oldest marked subject of such a company whose work row it can take (the row inserted if missing,
+     then `FOR UPDATE SKIP LOCKED`; a row another transaction holds is passed over with its marks), its marks consumed
+     (`SKIP LOCKED`) and the row made dirty, and due when a mark came with a commit (a mark with no commit, firing's,
+     keeps a back-off: a taken subject not yet due is left dirty for its time, and the step tries the next marked
+     subject); else the oldest due dirty work row, `FOR UPDATE SKIP LOCKED`. A first
+     mark's new row can make two takers wait for each other's insert briefly, in subject order, as P22a's claim does.
+     A dirty row taken this way has its pending marks taken too;
+  3. the agent converge inside one exception block. Inside, nothing writes a row that references the folder clock, so
+     nothing there takes or updates the clock row, whose savepoints meet PostgreSQL's multixact error; the rows it
+     updates are taken `FOR UPDATE` (routines, vault grants, execution authorities, sessions), which excludes the key
+     shares that would make them multixacts; the company operation clock has no inbound foreign key and its writer no
+     exception block of its own. The journal's changes are built and checked inside the block. The step saves its
+     `lock_timeout` before the block and restores it after (the block's 200 ms survives a released subtransaction). On
+     success the row is clean and `attempts` resets; on an error (a lock timeout, 40P01, a refusal) the row keeps
+     `dirty` with `attempts + 1`, `not_before` `2^attempts` seconds up to 10 minutes, and the error code in
+     `last_problem`;
+  4. when the converge inserted a default grant, one widening authority journal row listing every inserted grant
+     (`{grantId, revision: 1, prefix: ''}` each) at the step's top level, outside every savepoint
+     (`qorpera_folder_authority_journal(environment, {kind:'platform'}, false, changes)`): the folder clock, taken once,
+     last, after the operation clock the block holds (the work row is held since step 2). With the changes checked
+     inside the block, it can fail only on the clock wait: that aborts the whole step, the grant rolls back, and the next
+     pass retries with no attempt recorded (the failure shows in `cron.job_run_details`, which the drift check reads).
+
+  The company subject has no block: the name copy runs at the step's top level (below), so the company row is never
+  updated inside a savepoint.
+
+  Indexes keep an idle pass to index probes: marks by subject, work rows by due time. The cron job's own log
+  (`cron.job_run_details`, about 43,200 rows a day at 2 seconds) gets erasure's daily cleanup.
+
+  **Kicks:** a service-role writer that just committed marks converges them at once, one subject per call (each call its
+  own transaction, so no lock of one subject comes after another's clock, and the name copy never runs where an agent's
+  converge took the fence), running steps 1–4: `qorpera_folder_follow_up_now(env, kind, id)` for one subject (the creation
+  worker after a completed creation), and `qorpera_folder_follow_up_commit(env, commit id)` for the next subject one commit
+  marked, the company's first, answering whether more remain, so the caller calls again (the object gateway's member
+  commit route, P34a, Interfaces, which knows the commit but not the staff ids; recorded in the registry and asked of
+  Interfaces for C4-MEMBERS §P34a). A subject another transaction holds answers `busy`, and so
+  does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the 2-second
+  step: a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
+  does not add. The step is the safety net.
+- A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`. The kicks run
+  at read committed (25000 otherwise).
+- **Throughput:** the step converges one subject every 2 seconds across all companies (about 30 a minute); kicks cover
+  creation and members' saves at once. P24's load test measures the backlog; if it grows, more steps run side by side
+  (one subject each, one company per transaction, as core §3 requires; `SKIP LOCKED` keeps them apart).
+- The job runs as the database owner with no JWT. Every helper the converge calls checks no `auth.role()`; the
+  service-role wrappers do.
+
+*Converging an agent* (`qorpera_folder_converge_agent(environment, staff)`, F2's). It reads the staff row plainly to
+choose its targets, enters the company (`qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, rank 0, and
+ranks 1–2), takes ranks 3–11 itself, and reads the staff row again under its lock. If the status, the folder or the
+first-run state changed since the plain read, or the first run's author was a member then and is not now, it ends as a
+retry that is not counted as an attempt. An archive changes only the routines and vault grants it locked (one that
+turns active after the plain read is firing's to mark). After rank 2 it waits at most 200 milliseconds a lock (`set_config('lock_timeout', '200ms', true)` inside the block; the step itself
+runs with 2 seconds), so a member's or run's commit never waits long behind it. Its locks, in order:
+1. rank 1: the hire's member row (`KEY SHARE`), when a first run is due;
+2. rank 2: the staff row (`FOR NO KEY UPDATE`; the converge writes no staff row);
+3. rank 3: the agent's execution authorities (`FOR UPDATE`), on an archive;
+4. rank 4: the thread room (`KEY SHARE`);
+5. rank 5: the agent's routines (`FOR UPDATE`, by id), on an archive; and, when a turn request will be queued, the
+   sponsor version and the compute identity of the login chosen by a plain read (`KEY SHARE NOWAIT`: a recovering
+   identity holds its row `FOR UPDATE`, which ends the attempt with 55P03), at the end of rank 5 as C1B §8 places
+   logins and identities;
+6. ranks 6–7: only when a default grant must be inserted (read plainly first): the live shared root (`FOR NO KEY
+   UPDATE`) and the agent's grants on it (`FOR NO KEY UPDATE`), then, under those locks, the check again that the agent
+   has no grant row of any kind on the root;
+7. rank 8: the agent's vault grants by id, then each shared secret `FOR KEY SHARE NOWAIT` before a connector grant is
+   inserted (a busy secret ends the attempt with 55P03; a company share or seal never waits on the converge);
+8. rank 11: the agent's open sessions (`FOR UPDATE`, by id, `SKIP LOCKED` for those it only closes; a skipped one
+   leaves the subject dirty), then their execution bindings and those of its own sessions already closed (its thread,
+   which the commit closed), as legacy deleted them. The thread session is taken `FOR UPDATE` only when a
+   kickoff is inserted; to queue a turn alone the converge takes the thread session `FOR KEY SHARE` explicitly, then
+   the kickoff input `FOR UPDATE` (sessions before inputs, as P28's materializer takes them);
+9. the company operation clock, taken by the session closes and the kickoff;
+10. the folder clock, last, at the step's top level (step 4), only when a default grant was inserted.
+
+The default grant writes one widening authority journal row: core §4 says every grant change writes one, and the
+folder service and the web folder view relist a view only on an authority event, so a view opened before the converge
+sees the grant when it lands (C1C:121-123 says only that the authority *check* needs no row for a widening, and calls
+"outside the authority journal" F2's concern). The grant is inserted at revision 1; nothing else is bumped.
+
+For an **active agent whose folder is live**:
+- **the default grant**, on folder-v2 only inserted: read and write on each live shared root where the agent has no
+  grant row of any kind, origin `default_agent_read`, attributed to the owner (contract 14.1). It never widens an
+  explicit grant and never revives a revoked or expired default, as today. (The read-to-read-and-write upgrade and the
+  recovery from earlier root versions are left out: every folder-v2 default is read and write, and the root's version
+  is fixed.)
+- **the shared connectors**, as today's trigger does, in the vault's order above;
+- **the first run, once ever** (`qorpera_agent_first_runs` holds at most one per agent):
+  - for a hire: the kickoff in the thread (`client_input_id = md5('qorpera.folder-agent-first-run:' || staff)`),
+    `qorpera.agent-first-run/v1` with `{kind:'staff_startup', companyId, staffAgentId, firstTodoId}` (the id of the
+    agent's `first-assignment` todo when it has one; P28 reads its path when the run starts), and the first-run row;
+  - for every agent, the Co-Founder included: **the turn request**, queued after the default grant, on the login of the
+    kickoff's author as P14a's (`qorpera_member_first_run_sponsor`, `qorpera_sponsor_serves_requester`), or pending
+    without one. The creation commit keeps the Co-Founder's kickoff and first-run row (contract 14.1, P14a's check),
+    and stops queueing its turn; one helper queues every agent's pending turn once its grant exists. No wake: P28's
+    materializer (part 1, `20260930018000`, on master) materializes the queued turn.
+  - **Who:** `hired_by_user_id` is the `by` of the earliest mark (by the joined commit seq) whose commit left the agent
+    active, so the member whose change made the agent active authors and pays, even when the mark of an earlier save
+    that left it archived is consumed in the same step. It is set once, while still null; a mark with no `by` (routine
+    firing's) never sets it. If that member has left, the kickoff is authored by the owner
+    with no turn request, and `last_problem` says why; an owner starts it as today. The work row keeps that first run
+    manual (`first_run_manual`), so no later converge (an archive and a reactivation) queues it on the owner's login.
+  - **Start** (`qorpera_start_agent_first_run`) must not queue a turn before the grant: P28 part 2, which gives Start
+    its folder-v2 order (C4-RUNS §5), takes the session before the input and refuses with a retry while the agent's
+    subject has marks or a dirty work row, or its default grant is missing. If it kicks the converge, it does so in a
+    separate transaction before its own locks (a hand-off line in C4-RUNS).
+
+For an **archived or retired agent**:
+- its active routines are paused in the index with the new reason `agent_archived` (widening the reason check), never
+  resumed by the queue: a paid save that changes nothing, or `manage_routine resume`, ends the pause once the routine's
+  agent is active (`qorpera_company_state_routine_resumes` learns the reason, and so does the runtime's
+  `manage_routine`: its set of platform pauses and its wording for the model, "Its agent was archived: resume it if
+  the agent should run it again"). This holds for a routine handed to another, active agent too. The web shows these
+  routines as paused because their agent is archived: the agent routines view labels the reason (Interfaces, C4 web;
+  told 4 October);
+- the expired routines' `expired_while_active` is cleared (the routines-stop trigger's work);
+- its secret and connector grants are revoked;
+- its execution authorities are deleted, and so are the bindings of the sessions it closes and of its own closed
+  sessions (its thread, closed by the commit);
+- its pair sessions and other open sessions are closed (members' private conversations with it too, as legacy did;
+  reactivation reopens none of them). The thread trigger closes only the thread, which the commit names.
+
+*Routine files are not written.* This changes §2's routine-status text: there the platform wrote `status: paused` into
+an archived agent's routine files. `agent.md`'s status is the truth, and the index pause with its own reason is the
+platform's record (coordinator, 3 October); the other platform pauses (a member's Stop, an authorization failure, a
+wait for a login) stay index-only as today. §2's "Status" and W4c's lines are amended to say so.
+
+*Routine firing checks the agent.* The folder-v2 enqueue and the dynamic tick already hold the routine's staff row
+`KEY SHARE`; they defer when it is not active (a deferred occurrence counts no run and no authorization failure). P28:
+cancel an archived agent's waiting occurrences the same way.
+
+*A routine landing under an archived agent* (a member saves a new routine in its folder, a routine is moved there, a
+file is set back to `active`, a new version ends a login wait) is not seen by the converge, which ran at the archive.
+So `qorpera_company_state_index_routine` (after its expiry and login-wait rules, for the folder's agent), and the
+structured apply's move branch for a routine moved under another agent (whose status and schedule position it sets
+itself), record `paused / agent_archived` when the row would be `active` while that agent's staff row is not active (a
+plain read): the platform's record, as the converge writes it. A concurrent reactivation leaves the routine paused for
+a paid resume. A concurrent archive can leave one routine active (a save whose apply read the agent active commits just
+after the archive's converge read the routines); routine firing closes that gap: when it defers for an archived agent it
+also writes a mark for the agent (insert-only, no lock), so the next step pauses the routine. It writes one only when
+the agent has no mark pending and its work row is not dirty (plain reads; deferrals repeat every scheduler pass), and a
+mark with no commit never clears a back-off.
+P29's listener, a third firing path, does the same when it skips an archived agent's routine (a hand-off to P29).
+
+*Converging the company name* (`qorpera_folder_converge_company(environment)`): a plain compare of
+`qorpera_profiles.name` with `qorpera_folder_company_index.name` first; only when they differ, at the step's top level
+(no savepoint), alone in its own transaction (never inside one holding the fence), the company row `FOR NO KEY UPDATE
+SKIP LOCKED` (a busy row is a back-off, with no error raised; the coordinator approved `SKIP LOCKED` on 4 October, in
+place of the `NOWAIT` first decided), the compare again, and the update. The name is checked against the company row's own
+rules first, so the update cannot fail. This is core §3's one named exception to "the company row only `KEY SHARE`" (coordinator,
+3 October; `SKIP LOCKED` 4 October); `FOR NO KEY UPDATE` does not conflict with the `KEY SHARE` every folder-v2 effect
+takes. Core §3 step 3 and §9 name it; so does the activation check (test 879). A company being deleted is skipped.
+
+*The commit's side* (F2's hook):
+- apply writes the marks;
+- the default grant, connector grant, secret revocation and routines-stop triggers skip folder-v2 companies, and the
+  thread trigger leaves pair sessions to the converge on folder-v2;
+- the hook names the thread session at rank 11 under exactly the conditions it names the room at rank 4: a write that
+  changes the name or the status or restores the agent, and a delete of an active agent's folder;
+- execution authority (rank 3, inserted on a hire), office access and the thread room stay with their triggers.
+
+*Creation and `ready`.* `qorpera_folder_company_ready` is the creation completed and the Co-Founder's agent subject
+converged (its default grant, then its first-run turn): no mark left for it, and its work row clean with a converge
+done. A turn left pending for want of a login counts as converged. The hub's hidden condition and `companySetup` read `ready`, and a
+Co-Founder subject failing for more than 10 minutes shows as `failed`. The creation worker kicks the Co-Founder's
+subject after a completed creation. The company subject does not gate `ready`: the names agree at creation.
+
+*What waits for the queue* (until its subject converges, a few seconds after the commit, at once with a kick):
+- a hire's default grant: a run of the new agent before then (a post in its thread, a coworker message) cannot read or
+  write the company's files, and an agent it hires through `hire_agent` meanwhile is a restricted hire;
+- a hire's first run;
+- an archive's cleanup (the agent is fenced at once: wake authorization, runs, the broker, views and office access read
+  its status);
+- the company name in the hub.
+
+Contract 14.1 says creating an agent "MUST atomically persist … resource grants … and exactly one first-run wake". The
+amendment line this slice proposes: "the default grant and the first run converge within seconds after the commit,
+through the follow-up queue; the first-run turn is materialized by C4", as P14a amended the creation wake.
+
+*Documents amended in this slice:* core §3 step 3 (the exception), §3's vault and first-run lines (CORE:419-421: the
+commit writes no vault rows on hire or archive; the queue inserts no wake), §5 "After the commit" (marks, work rows, the
+drain, the journal row at the step's top level) and "Company creation is one commit" (CORE:699-701: the turn request
+leaves the creation commit), §9; CREATION's turn-request lines (the introduction, §3, §7 and §8); C4-RUNS §5 (Start's
+hand-off); the registry's decisions (b) (`agent_archived`) and (a) (`SKIP LOCKED`);
+§2's routine status and W4c's platform-pause lines; §5's follow-ups list; C1C's and CREATION's "in the commit that
+creates the agent" (now the queue); P24's load script gains the drain. The rebuild marks every agent subject. Member
+notices stay out (no slice yet).
+
+*Tests* (migration 20260930022000; 856's apply digest pin is dropped under the folder-v2-only rule):
+- 877: a hire (the default grant's rules: no widening of an explicit grant, no revival, revision 1, one widening
+  journal row listing the inserted grants with `narrowing = false` and none on a repeat, the feed's authority event; the first
+  run and its turn after the grant, and P28's materializer picking the turn up; connectors), the hirer gone, no login,
+  saved archived and activated by another member in one step (the activating mark's member authors), a rename before
+  the converge; an archive (routines paused `agent_archived`, an agent's own file pause untouched, expired flags,
+  execution authority, bindings, sessions, secret grants); reactivation (routines stay paused; a paid unchanged save
+  resumes); a handover to an active agent; routines saved, moved or set active under an archived agent, and firing's
+  mark (once, and a failing archive converge with a due routine keeps its back-off); the commit kick (one subject a
+  call, the company's first, `more` until none remain); a retire and
+  restore; the enqueue and the tick deferring for an archived owner; the Co-Founder at creation (`ready`, the hub,
+  `companySetup`, the turn after the grant); the company name; the marks; back-off, a pause, a company being deleted,
+  and the orphan sweep; the step as the job's role; the cron log cleanup.
+- 878: races: a converge against a status flip between its read and its lock, a post or a run's call on the thread
+  session, the hirer's removal, a share or seal or Disconnect, a routine save or move and the expiry sweep, the
+  enqueue, two converges on one root, an owner's grant on the root, the deletion finisher and purge, the name copy
+  against the lobby and the purge, the step holding marks against the purge, Start against the converge, a kick
+  against the step on one subject, and on the commit side a reactivation against a post in the thread; and contention
+  (eight clients converging hires and archives, copying the name and committing on one company, against effects that
+  key-share those rows: no multixact error).
+- 879: the triggers' folder-v2 guards (default grant, connectors, secret revocation, routines stop, pair sessions), the
+  rank-11 targets (rename, archive, retire, reactivation, restore), an assertion that an agent unit's apply takes no row
+  lock after the paths beyond those already held, and the step and its cron job;
+- 856 and 857: the creation's turn request and the no-login pending case (856), and the racing Starts (857), move to
+  "after the converge";
+- the runtime: `manage_routine resume` and an unchanged upsert over an `agent_archived` pause;
+- and a mutant run.
+
+*PRs:* one PR: the database (migration 20260930022000, tests 877–879, the 856/857 moves), the creation worker's kick
+(its creation script asserts the Co-Founder's grant, which now comes from the queue), and the runtime's
+`manage_routine` reason.
+
 **Plan (F2-5b): worker briefs and results on the folder core** (core C3; the coordinator's slice P21 of
 2 October). Revised after design review r1 and the coordinator's answers of 3 October.
 
@@ -1940,33 +2207,41 @@ writes it in the same transaction as the files:
 **6. Wakes: the folder-v2 worker drain** (F2 builds it, the coordinator agreed 3 October). The commit
 inserts no wake: the hook has no call at core §3 step 10, and a refused wake must never roll back the
 files. So a dispatch or a follow-up leaves its row active with no occurrence, and the drain starts it.
-- `qorpera_folder_drain_worker_wakes(environment, limit)`: one company in its own transaction (never
-  inside a caller's transaction that holds admission). In order:
-  1. `qorpera_folder_company_enter(environment, profile, targets, true)`: the pause (a paused company
-     refuses with 55000, and the due list leaves paused companies out), the fence `KEY SHARE` with the pause
-     read again, the company row at rank 0, and the targets at their ranks: each requester's member row
-     (rank 1, `KEY SHARE`), each parent agent's staff row (rank 2, `KEY SHARE`) and execution authority
-     (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers (`FOR NO KEY UPDATE`) at rank 5. The
-     workers are the due ones and every other waiting worker of their parents, so a revival's set of up to
-     four is always among the locked rows;
+- The drain is the shared folder drains' `workers` (LISTENER.md §9; F2-5b-3, migration 20260930003100), first in the
+  orchestrator's pass, before the listener and the materializer.
+- `qorpera_folder_workers_company(environment, limit ≤ 32)`: one company in its own transaction (never inside a
+  caller's transaction that holds admission), at read committed, answering `{state: done | idle | paused | busy |
+  deleting | not_folder, started, failed, cancelled, revivals, suppressed, undeliverable, skipped}`. In order:
+  1. `qorpera_folder_company_enter(environment, profile, targets, false)`, then the pause and the deletion read
+     again under the fence (answers, never 55000): the fence `KEY SHARE`, the company row at rank 0, and the
+     targets at their ranks: each requester's member row (rank 1, `KEY SHARE`), each parent agent's staff row (rank
+     2, `KEY SHARE`) and execution authority (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers
+     (`FOR UPDATE`, so a row the drain updates inside a block is never key-shared by another) at rank 5. The workers
+     are the due ones and up to four waiting workers of each waiting one's parent, so a revival's set is always among
+     the locked rows; a lock it waits on past 2 seconds answers `busy`;
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
   4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
-     workers (`todo_cancelled`, which no queue does yet); and revival with today's rules (`each`, `batch`,
+     workers (`todo_cancelled`, which no queue does yet), each cancel taking the worker's queued wake `NOWAIT` (one
+     P28's materializer holds keeps the worker for the next pass); and revival with today's rules (`each`, `batch`,
      at most four results, one revival of a parent at a time). A revival block that fails (42501, P0002,
-     55000) marks its workers undeliverable, as today. The drain never touches a todo row. A pass handles at
-     most 32 workers, within core §3's 64 subtransactions.
+     55000), or whose wake is cancelled at insert, marks its workers undeliverable. An erased worker's waiting
+     results are suppressed (their text is gone). Coding workers are started by their coding turns and only
+     revived here. The drain never touches a todo row. A pass handles at most 32 due workers, within core §3's 64
+     subtransactions.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
   - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
-- `qorpera_folder_worker_wakes_due()` lists the companies with due work.
-- **The seam for P28** (written into core §11 C4): the `folder-v2` materializer calls the drain for each
-  company `qorpera_folder_worker_wakes_due()` lists, in its own transaction, before it materializes that
-  company's wakes; P28's acceptance includes "a dispatch runs and its revival returns". Until P28 nothing
-  calls it, and no `folder-v2` run exists either.
+- `qorpera_folder_workers_due(after, limit)` lists, a page at a time, the folder-v2 environments with a due worker
+  (`qorpera_folder_worker_due`, the same predicate the drain uses, so it leaves out companies the drain would only
+  answer `idle` for), leaving out paused companies and those being deleted.
+- **The seam** (core §11 C4, corrected 3 October): the orchestrator's shared folder-drains step runs the drain for
+  each company the due list names, in its own request, before the materializer's list, so a worker started or a
+  parent revived this pass is materialized this pass; the edge function's `FOLDER_DRAINS` and the orchestrator's
+  `CLOUD_FOLDER_DRAINS` name it `workers`.
 
 **7. The runtime.**
 - `manage_worker` on `folder-v2`: dispatch, follow-up and decide build the files with the shared writers,

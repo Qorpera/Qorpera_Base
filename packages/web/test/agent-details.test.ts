@@ -333,12 +333,12 @@ describe("agent figure", () => {
 		const drawnIn = () => figures.mock.calls.at(-1)?.[2];
 		const updateAgent = saving();
 		const cofounder = { ...staff, id: id(40), templateId: "co-founder" };
-		const f = open({ updateAgent }, { ...cofounder, appearance: { ...cofounder.appearance, color: "qorpera-blue" } });
+		const f = open({ updateAgent }, { ...cofounder, appearance: { ...cofounder.appearance, color: "native" } });
 		named("Edit figure").click();
 		const picker = f.dialog.querySelector<HTMLElement>(".agent-figure-picker")!;
 		expect(picker.getAttribute("aria-label")).toBe("Choose a figure and color");
 		expect(named("Reset")).toBeDefined();
-		// The seeded colour is nobody's choice: the figure starts in its own shade.
+		// The founding seed names no colour: the figure starts in its own shade.
 		expect(drawnIn()).toBe(nativeColorOf(figureFor(cofounder)));
 		expect(named("Teal").getAttribute("aria-checked")).toBe("false");
 		named("Teal").click();
@@ -403,7 +403,11 @@ describe("agent pages", () => {
 		const routines = {
 			list: vi.fn(async () => []),
 			runs: vi.fn(async () => []),
-			save: vi.fn(async () => {}),
+			files: vi.fn(async (): Promise<ReadonlySet<string>> => new Set()),
+			open: vi.fn(async () => {
+				throw new Error("No routine to open");
+			}),
+			save: vi.fn(async (): Promise<"saved" | "unchanged"> => "saved"),
 			setEnabled: vi.fn(async () => {}),
 		} satisfies WebRoutines;
 		const nativeSubscription = {

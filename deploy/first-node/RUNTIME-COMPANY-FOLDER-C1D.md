@@ -136,7 +136,34 @@ read it or step 7 refuses the copy.
 
 A move alone references nothing new and locks no object. The commit is found by name (it must have exactly one
 definition), and the patch is five replacements in its declarations and byte block, each of which must match exactly
-once.
+once. C1d-2 adds a sixth (§9.7), and P24d three more (below).
+
+**Cost (P24d, migration 20260930047000, test 904).** The byte checks cost the same whatever the company stores. Step 6
+keeps the objects it locked as an array, sorted `collate "C"` (P24d sorts it explicitly, after C1d-2's filter). Every
+check looks an object up in that array with `qorpera_folder_sorted_position`, a binary search. Only if that misses does
+it scan the array, so an unsorted array costs time and never changes an answer.
+- **A file's check** (`qorpera_folder_file_bytes_problem`) walks the proof's objects one by one, a manifest and up to
+  64 chunks. Each object is looked up in the array, then its catalog row is probed by primary key.
+- **A new folder's files** go through `qorpera_folder_contents_bytes_problem`, a loop over its contents.
+- **A copy's objects** go through `qorpera_folder_unit_objects_unlocked`, a loop over `qorpera_folder_unit_objects`.
+- **The calling rule:** call these from a PL/pgSQL assignment or `IF`/`ELSIF` condition, with the array in a variable;
+  the array then arrives by reference. A SQL statement, or `PERFORM`, copies the array into each call under custom
+  plans, and `= any` over it flattens it for every row under a generic plan.
+
+Before P24d, one statement over the proof's objects did both of a file's checks. The planner hashed the catalog lookup,
+expecting a set-returning function to return 100 rows, so every file read every object the company stores. The copy's
+statement flattened the array for every object under a generic plan, which the plan cache usually picks after five runs.
+A new folder of N new files, and a copy of it, over a catalog of 2 × 10,000 objects (a manifest and a chunk each,
+platform actor):
+
+| N | new folder before | new folder after (custom / generic plans) | copy before (custom / generic) | copy after (custom / generic) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 5.3 s | 0.61 / 0.49 s | 0.30 / 0.59 s | 0.33 / 0.46 s |
+| 2,500 | 14.9 s | 1.4 / 1.1 s | | |
+| 5,000 | 32.5 s | 2.7 / 2.3 s | 1.3 / 4.9 s | 1.4 / 1.4 s |
+| 10,000 | 87 s | 5.6 / 4.5 s | 2.6 / 17 s | 2.8 / 2.9 s |
+
+The catalog rows a new folder reads went from N × 20,000 to 20,000 + 2N.
 
 ## 5. Usage and the quota
 
@@ -332,7 +359,8 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Later roots come with C2:** proposals and review cards, conflict copies on receipts, retention holds, erasure. C2
   adds them to the one root check (§9.3) under the rules of §9.4.
 - **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:221-234; artifact GC
-  at :236-251 retains everything for folder-v2, and a folder-v2 company is enabled untouched, so it has no artifacts).
+  at :236-251 retains everything for folder-v2). A folder-v2 company has no artifacts: since `20260930041000` every
+  path that makes one refuses folder-v2 (§9.3).
   That stays. Folder GC is its own lane, and it takes no company fence.
 - **Order of landing:** #573, then #594 (the 2 s budget; C1d-2a's patches are made on top of it), then C1d-2a, then C1d-2b.
 
@@ -391,8 +419,11 @@ switched on before step 3. Manifests of manifests (core §7) will need a recursi
 here; that comes with them.
 
 **The catalog of a folder-v2 company holds only folder objects.** Every other feature that stores bytes refuses
-folder-v2 before it writes: native and office uploads (the C1c-1 guard, 20260928259430:79-80), session attachments
-(the path-gateway check), the member whole-tree lane and bootstrap. Any feature that later stores bytes for a
+folder-v2 before it writes: member and native uploads (the C1c-1 guards, 20260928259430:79-84), session attachments
+(the path-gateway check), the member whole-tree lane and bootstrap, office capture, export and import, and, since
+`20260930041000`, artifacts: `register_artifact(_v2)`, the runner broker's output objects and artifact registration,
+and the member functions that would take the gc fence over an artifact (index, hold, graph completion, GC plan cancel)
+answer 0A000 first (838 pins it). Any feature that later stores bytes for a
 folder-v2 company (C3 and C4: chat images, screenshots, mail attachments, checkpoints) must add its root here first.
 C1d-2a pins this with a test that no table outside the folder core references a folder-v2 profile's catalog rows. A
 23503 at finish (a RESTRICT reference) is answered `restore`.
