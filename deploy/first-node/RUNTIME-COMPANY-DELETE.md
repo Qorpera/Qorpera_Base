@@ -206,8 +206,8 @@ records what it waits for.
   one-off sweep removes `<uuid>.capsule` objects older than a day that no capsule row names as
   `native-capsule/<uuid>` (a sign-in uploads its capsule before its row commits), and recovery folders
   of companies that no longer exist.
-  Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the coordinator bundles it with the
-  other function deploys once Jonas has created the worker key):
+  Switching the worker on (supabase/ARTIFACT-GC.md "Deployment"; the production runbook, with a counts-only dry run,
+  is RUNTIME-GC-SWITCH-ON.md):
   1. Apply the migrations, including 20260928269480.
   2. Deploy `supabase/functions/artifact-gc-worker` with JWT verification off (`config.toml`).
   3. Edge Function secrets: `QORPERA_ARTIFACT_GC_WORKER_KEY` (a new random invocation key, kept only
