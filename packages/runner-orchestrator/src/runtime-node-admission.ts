@@ -26,6 +26,9 @@ export const NODE_CAPACITY_REFUSALS = [
 	// The company is out of computer hours: no Company Computer, coding machine or agent's machine
 	// starts or wakes until hours are added (migration 20260929700000; never a run or sign-in machine).
 	"COMPUTER_HOURS_EXHAUSTED",
+	// The node's agent exit is not healthy: no new Company Computer or agent's machine there, and no agent's machine
+	// wakes there (migration 20260930037000; deploy/agent-exit). Never a run, a sign-in or a coding machine.
+	"NODE_AGENT_EXIT_UNHEALTHY",
 ] as const;
 export type RuntimeNodeCapacityRefusal = (typeof NODE_CAPACITY_REFUSALS)[number];
 export type RuntimeNodeAdmission =
