@@ -11,7 +11,11 @@ import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-compan
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerLinuxCommands } from "@qorpera/runtime/cloud-company-computer-linux-commands";
 import { CompanyComputerLinuxGuest } from "@qorpera/runtime/cloud-company-computer-linux-guest";
-import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
+import {
+	COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES,
+	CompanyComputerRegistryUnansweredError,
+	HttpCloudCompanyComputerRegistry,
+} from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { CompanyComputerScreenLifecyclePublisher } from "@qorpera/runtime/cloud-company-computer-screen-lifecycle";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -516,6 +520,7 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 					{
 						screenId: f.binding.screenId,
 						busy: false,
+						whole: true,
 						open: [{ ...command, workedAt: expect.any(String) }],
 						ended: [],
 					},
@@ -557,6 +562,7 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 			{
 				screenId: f.binding.screenId,
 				busy: false,
+				whole: true,
 				open: [],
 				ended: [{ ...command, reason: "exited", endedAt: expect.any(String) }],
 			},
@@ -591,6 +597,7 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 			{
 				screenId: f.binding.screenId,
 				busy: false,
+				whole: true,
 				open: [],
 				ended: [expect.objectContaining({ command: "sleep 600", reason: "closed" })],
 			},
@@ -659,6 +666,68 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(
 			f.call.mock.calls.slice(calls).filter(([method]) => method === "qorpera_report_runtime_office_shell_activity"),
 		).toEqual([]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
+	it("fits a full shell into one registry request: ends first, the cut screen not whole, the rest next time", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "sleep 600", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		// 64 commands still open and 64 ended, each 300 four-byte characters: about 180 KB, more than one request holds.
+		const long = "🛠".repeat(300);
+		const at = (n: number) => new Date(Date.UTC(2026, 9, 4, 12, 0, n)).toISOString();
+		const item = (n: number) => ({
+			id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+			runId: f.run.identity.runId,
+			receiptId: randomUUID(),
+			command: long,
+			startedAt: at(0),
+		});
+		shells[0].open = Array.from({ length: 64 }, (_, n) => ({ ...item(n + 1), workedAt: at(n) }));
+		shells[0].ended = Array.from({ length: 64 }, (_, n) => ({ ...item(n + 101), reason: "exited", endedAt: at(n) }));
+		// The real transport, with its size bound, carries every report.
+		const bodies: string[] = [];
+		const transport = new HttpCloudCompanyComputerRegistry({
+			supabaseUrl: "https://control.example.test",
+			serviceRoleKey: "sb_secret_fixture",
+			fetch: async (_url, init) => {
+				bodies.push(String(init?.body));
+				return Response.json({ schema: "qorpera.office-shell-activity/v1", screens: [], paused: false });
+			},
+		});
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) =>
+			method === "qorpera_report_runtime_office_shell_activity"
+				? transport.call(method, args, new AbortController().signal)
+				: original(method, args),
+		);
+		type Sent = { p_report: { screens: { whole: boolean; open: { id: string }[]; ended: { id: string }[] }[] } };
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(bodies).toHaveLength(1);
+		expect(Buffer.byteLength(bodies[0])).toBeLessThanOrEqual(COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES);
+		const first = (JSON.parse(bodies[0]) as Sent).p_report.screens[0];
+		// Every end the platform has not heard of goes first; the open commands fill what is left, so the list is cut.
+		expect(first.ended).toHaveLength(64);
+		expect(first.open.length).toBeGreaterThan(0);
+		expect(first.open.length).toBeLessThan(64);
+		expect(first.whole).toBe(false);
+		// The latest worked first.
+		expect(first.open.map((open) => open.id)).toEqual(
+			Array.from({ length: first.open.length }, (_, n) => item(64 - n).id),
+		);
+		expect(shells[0].reported).toHaveBeenCalledExactlyOnceWith(first.ended.map((ended) => ended.id));
+		// With the ends delivered, every open command fits: the screen is whole again.
+		await vi.advanceTimersByTimeAsync(30000);
+		const second = (JSON.parse(bodies[1]) as Sent).p_report.screens[0];
+		expect(second.ended).toEqual([]);
+		expect(second.open).toHaveLength(64);
+		expect(second.whole).toBe(true);
 		expect(f.failure).not.toHaveBeenCalled();
 		await session.close();
 	});

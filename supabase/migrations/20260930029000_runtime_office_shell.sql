@@ -18,7 +18,8 @@
 -- 3. Sleep ends what still runs (slept); any other stop of the computer, a
 --    screen gone, a seat that changed hands, a pause or a lost generation end
 --    it as closed, paused or lost; one the office stops listing without
---    reporting its end, as unknown.
+--    reporting its end, as unknown (only from a screen the office says is
+--    whole: a report fits one request, so a long list may be cut).
 -- 4. The agent's next run in the conversation that started a command the
 --    platform stopped (a worker's: the conversation that dispatched it) is
 --    told, once: a list in the open work the host reads at the start of every
@@ -100,10 +101,10 @@ begin
 		or jsonb_typeof(p_report->'screens') is distinct from 'array' or jsonb_array_length(p_report->'screens')>64 then
 		raise exception 'Invalid office shell activity' using errcode='22023'; end if;
 	for v_screen in select value from jsonb_array_elements(p_report->'screens') loop
-		if jsonb_typeof(v_screen) is distinct from 'object' or v_screen-'screenId'-'busy'-'open'-'ended'<>'{}'::jsonb
+		if jsonb_typeof(v_screen) is distinct from 'object' or v_screen-'screenId'-'busy'-'whole'-'open'-'ended'<>'{}'::jsonb
 			or coalesce(v_screen->>'screenId','') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
 			or (v_screen->>'screenId')::uuid=any(v_reported)
-			or jsonb_typeof(v_screen->'busy') is distinct from 'boolean'
+			or jsonb_typeof(v_screen->'busy') is distinct from 'boolean' or jsonb_typeof(v_screen->'whole') is distinct from 'boolean'
 			or jsonb_typeof(v_screen->'open') is distinct from 'array' or jsonb_array_length(v_screen->'open')>64
 			or jsonb_typeof(v_screen->'ended') is distinct from 'array' or jsonb_array_length(v_screen->'ended')>64 then
 			raise exception 'Invalid office shell activity' using errcode='22023'; end if;
@@ -161,8 +162,8 @@ begin
 			and screen.staff_agent_id is distinct from command.staff_agent_id;
 	-- A screen whose lists are whole names every command it still has: one it neither lists open nor reports
 	-- ended was let go of by the office (its end never arrived), so nobody is told a stop that did not happen.
-	for v_screen in select value from jsonb_array_elements(p_report->'screens')
-		where jsonb_array_length(value->'open')<64 and jsonb_array_length(value->'ended')<64 loop
+	-- A screen whose lists the office had to cut (one request holds only so much) says nothing about the rest.
+	for v_screen in select value from jsonb_array_elements(p_report->'screens') where (value->>'whole')::boolean loop
 		update public.qorpera_runtime_office_shell_commands set ended_at=v_at,end_reason='unknown'
 			where office_id=v_office.id and screen_id=(v_screen->>'screenId')::uuid and ended_at is null
 				and id<>all(array(select (item->>'id')::uuid from jsonb_array_elements(v_screen->'open') item));

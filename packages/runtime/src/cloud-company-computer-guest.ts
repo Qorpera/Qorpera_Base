@@ -374,6 +374,8 @@ export interface CompanyComputerScreenshotPublisher {
 		bytes: number;
 		mediaType: "image/png";
 	}>;
+	/** A capture published without storage (folder-v2): its pixels, once, for the native gateway's perform answer. */
+	takeInline?(assetId: string): Uint8Array | undefined;
 }
 
 /** Bound JSON-encoded bytes, including escaping, so tab discovery fits the native result envelope. */

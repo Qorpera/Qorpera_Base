@@ -70,6 +70,8 @@ const transientSqlState = /^(08|40|53|57)|^(55P03|25006)$/;
 
 /** How long a desktop, or its browser, outlasts a registry that does not answer. */
 export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
+/** The largest request body the registry transport sends (its arguments as JSON, in bytes). */
+export const COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES = 128 * 1024;
 
 /**
  * Whether a failed authority check only lacked an answer: an unanswered
@@ -131,7 +133,8 @@ export class HttpCloudCompanyComputerRegistry {
 	): Promise<unknown> {
 		if (!methods.includes(method)) throw new Error("UNKNOWN_OFFICE_REGISTRY_METHOD");
 		const body = JSON.stringify(args);
-		if (Buffer.byteLength(body) > 128 * 1024) throw new Error("OFFICE_REGISTRY_REQUEST_TOO_LARGE");
+		if (Buffer.byteLength(body) > COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES)
+			throw new Error("OFFICE_REGISTRY_REQUEST_TOO_LARGE");
 		try {
 			return await companyComputerRequest(
 				async (requestSignal) => {
