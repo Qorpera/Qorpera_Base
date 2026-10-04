@@ -79,19 +79,27 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -c 'drop function public.qorpera_runt
 
 ## Step 4: the node observer that posts the exit's health, node 1 then node 2
 
-Install the node observer package of the release head on node 1 as for any observer update
-(`deploy/first-node/NODE-OBSERVER-INSTALLATION.md`), then on node 2. Its new loop reads
-`/run/qorpera-agent-exit/health.json` every 5 seconds and posts it on a connection of its own; the inventory and node
-health loops are unchanged.
+Roll the release head's node observer onto node 1 the way runtime observers are rolled at a cut: the release head's
+observer build and one more systemd drop-in on `qorpera-native25-phql-observer.service` that runs it (as
+`zzzzzzzz-observer-v145-a1.conf` did on 28 September), then
+`systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service`. Then node 2. (The installer of
+`deploy/first-node/NODE-OBSERVER-INSTALLATION.md` makes a first installation only; it never replaces an installed
+observer.) Its new loop reads `/run/qorpera-agent-exit/health.json` every 5 seconds and posts it on a connection of its
+own; the inventory and node health loops are unchanged. The unit has no file sandbox, and the exit writes the file
+root-owned 0644 in a 0755 directory, so the observer's account reads it.
 
 Check, per node, within 30 seconds of the observer's start:
-- `journalctl -u qorpera-node-observer --since -2min -o cat | grep node_agent_exit | tail -1` shows
+- `journalctl -u qorpera-native25-phql-observer --since -2min -o cat | grep node_agent_exit | tail -1` shows
   `{"event":"node_agent_exit","state":"healthy"}` (and `node_inventory` still `ready`);
 - `select healthy, problem_count, now() - observed_at as age, now() - checked_at as check_age from public.qorpera_runtime_node_agent_exit where node_id = '<node id>';`
   shows `true`, `0` and both ages under 20 seconds (the observer posts every 5 seconds, the exit checks every 10);
 - `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`.
 
-Undo: reinstall the node's previous observer package (the same installer). Nothing reads the health yet.
+Undo (nothing reads the health yet):
+
+```bash
+rm /etc/systemd/system/qorpera-native25-phql-observer.service.d/<the new drop-in>.conf && systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service
+```
 
 ## Step 5: the node release of the release head, node 1 then node 2
 
