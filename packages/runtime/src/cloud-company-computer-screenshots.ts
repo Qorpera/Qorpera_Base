@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
 	assertCompanyComputerLease,
@@ -97,32 +96,37 @@ const INLINE_SCREENSHOT_MS = 60_000;
 
 /** Screenshots that travel in their perform answer instead of being stored (folder-v2, P06d): the office service keeps
  * one until its native gateway answers, and the native host until the boundary hands it to the model. Each is taken
- * once; past the bound the oldest goes, and any goes once its time is up. */
+ * once; past the bound the oldest goes, each goes on its own timer once its time is up, and all go when the run ends. */
 export class CompanyComputerInlineScreenshots {
-	readonly #held = new Map<string, { bytes: Uint8Array; until: number }>();
+	readonly #held = new Map<string, { bytes: Uint8Array; timer: ReturnType<typeof setTimeout> }>();
 
 	hold(assetId: string, bytes: Uint8Array): void {
-		this.#expire();
-		this.#held.delete(assetId);
-		this.#held.set(assetId, { bytes: Uint8Array.from(bytes), until: performance.now() + INLINE_SCREENSHOT_MS });
-		while (this.#held.size > INLINE_SCREENSHOTS) this.#held.delete(this.#held.keys().next().value as string);
+		this.#drop(assetId);
+		const timer = setTimeout(() => this.#drop(assetId), INLINE_SCREENSHOT_MS);
+		timer.unref?.();
+		this.#held.set(assetId, { bytes: Uint8Array.from(bytes), timer });
+		while (this.#held.size > INLINE_SCREENSHOTS) this.#drop(this.#held.keys().next().value as string);
 	}
 
 	take(assetId: string): Uint8Array | undefined {
-		this.#expire();
 		const held = this.#held.get(assetId);
-		this.#held.delete(assetId);
+		this.#drop(assetId);
 		return held?.bytes;
 	}
 
+	clear(): void {
+		for (const assetId of [...this.#held.keys()]) this.#drop(assetId);
+	}
+
 	get size(): number {
-		this.#expire();
 		return this.#held.size;
 	}
 
-	#expire(): void {
-		const now = performance.now();
-		for (const [assetId, held] of this.#held) if (held.until <= now) this.#held.delete(assetId);
+	#drop(assetId: string): void {
+		const held = this.#held.get(assetId);
+		if (!held) return;
+		clearTimeout(held.timer);
+		this.#held.delete(assetId);
 	}
 }
 
@@ -166,6 +170,8 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		this.#scope = Object.freeze({ ...options.scope });
 		this.#registry = options.registry;
 		this.#objects = options.objects;
+		// A waiting screenshot never outlives its run (a closed native session closes its run).
+		this.#run.signal.addEventListener("abort", () => this.#inline.clear(), { once: true });
 	}
 
 	async publish(
@@ -233,12 +239,12 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 					})
 				)
 					throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+				signal.throwIfAborted();
 				if (storage === "none") {
 					// The receipt names the capture; the pixels wait here for the native gateway's answer.
 					if (asset.assetId !== receiptId) throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
 					this.#inline.hold(asset.assetId, bytes);
 				}
-				signal.throwIfAborted();
 				return asset;
 			},
 			AbortSignal.any([context.signal, this.#run.signal]),
@@ -254,6 +260,7 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 	/** The native host's side: the pixels that came in a capture's perform answer, kept for {@link read} once they
 	 * are exactly the published capture's. */
 	holdInline(value: CompanyComputerScreenshotAsset, bytes: Uint8Array): void {
+		this.#run.signal.throwIfAborted();
 		const asset = parseCompanyComputerScreenshotAsset(value);
 		if (
 			!isDeepStrictEqual(png(bytes, asset.surface), {

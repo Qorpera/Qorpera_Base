@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import type { CompanyComputerOperation } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
 	CloudCompanyComputerScreenshots,
@@ -372,19 +371,50 @@ describe("captures stored nowhere (folder-v2, P06d)", () => {
 		await f.screenshots.read(f.asset, f.stop.signal);
 		expect(f.get).toHaveBeenCalledOnce();
 	});
-	it("keeps at most four screenshots, each for at most a minute", () => {
-		let now = 0;
-		vi.spyOn(performance, "now").mockImplementation(() => now);
-		const held = new CompanyComputerInlineScreenshots();
-		const ids = Array.from({ length: 5 }, () => randomUUID());
-		for (const id of ids) held.hold(id, Uint8Array.of(1));
-		expect(held.size).toBe(4);
-		expect(held.take(ids[0])).toBeUndefined();
-		expect(held.take(ids[4])).toEqual(Uint8Array.of(1));
-		now = 59_999;
-		expect(held.size).toBe(3);
-		now = 60_000;
-		expect(held.size).toBe(0);
-		expect(held.take(ids[1])).toBeUndefined();
+	it("keeps at most four screenshots, each for at most a minute on its own timer", () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const held = new CompanyComputerInlineScreenshots();
+			const ids = Array.from({ length: 5 }, () => randomUUID());
+			for (const id of ids) held.hold(id, Uint8Array.of(1));
+			expect(held.size).toBe(4);
+			expect(held.take(ids[0])).toBeUndefined();
+			expect(held.take(ids[4])).toEqual(Uint8Array.of(1));
+			expect(vi.getTimerCount()).toBe(3);
+			// Nothing touches the holder again: its timers alone let the rest go.
+			vi.advanceTimersByTime(59_999);
+			expect(held.size).toBe(3);
+			vi.advanceTimersByTime(1);
+			expect(held.size).toBe(0);
+			expect(vi.getTimerCount()).toBe(0);
+			held.hold(ids[1], Uint8Array.of(1));
+			held.clear();
+			expect(held.size).toBe(0);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("lets a waiting screenshot go when its run ends, on either side, and keeps none after", async () => {
+		const f = await fixture();
+		unstored(f);
+		await f.publish();
+		f.screenshots.holdInline(f.asset, f.bytes);
+		f.run.close();
+		expect(f.screenshots.takeInline(f.context.receiptId)).toBeUndefined();
+		expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
+		expect(() => f.screenshots.holdInline(f.asset, f.bytes)).toThrow();
+		expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
+	});
+	it("keeps nothing when the run ends while the capture is being published", async () => {
+		const f = await fixture();
+		unstored(f);
+		f.call.mockImplementationOnce(async () => ({ state: "authorized", storage: "none" }));
+		f.call.mockImplementationOnce(async () => {
+			f.run.close();
+			return { ...f.asset, assetId: f.context.receiptId };
+		});
+		await expect(f.publish()).rejects.toThrow();
+		expect(f.screenshots.takeInline(f.context.receiptId)).toBeUndefined();
 	});
 });
