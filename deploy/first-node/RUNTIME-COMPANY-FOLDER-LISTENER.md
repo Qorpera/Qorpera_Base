@@ -229,8 +229,9 @@ unreadable ones are never counted.
   48 KiB limit with the conversation's held messages.
 - `from` and `priorVersion` appear only when the source is readable too, as the feed shows a move's prior version.
   The source is found through a partial index on move-outs `(commit_id, prior_version)`, not by scanning a large move.
-- The stored `more` was counted under the drain's rights: once a stored change is hidden from the run (a grant narrowed
-  since), the stored count is dropped too, so `more` never counts what the run may not read (review r1 F11).
+- The stored `more` was counted under the drain's rights: once one of the stored changes is hidden from the run (a
+  grant narrowed since), the stored count is dropped too (review r1 F11). A narrowing or erasure that touches only
+  changes past the first 21 is not seen, so `more` can still count a few of those (review r2 N3).
 - An erased version has gone, so it drops out by itself. Erasure needs no wake scrub, the wake identity guard stays as
   it is, and no race can leave an erased path in a wake.
 - A run that already read its wake is noted by erasure (§10).
@@ -288,7 +289,11 @@ functions with no-op bodies, and P31 replaces them (`create or replace`, its own
   - It is a plain read. The drain accepts only that shape (`qorpera_folder_listener_targets_valid`: targets at ranks 1
     to 3, KEY SHARE, keyed `<profile>:<uuid>` in this company; session ids; a boolean). If the call raises or answers
     anything else, the step goes on without the hook: `_commit` is not called, and each change set it would have heard
-    (and each retry) is recorded as a failure with that SQLSTATE, `QP29T` for a malformed answer (review r1 F3).
+    (and each retry) is recorded as a failure with that SQLSTATE, `QP29T` for a malformed answer (review r1 F3). A lock
+    timeout or deadlock in the call answers `busy` before any lock is taken (review r2 N2). `when others` does not catch
+    a statement timeout (`query_canceled`) or a failed assertion: a targets hook that always hits one fails every step,
+    so P31's must not (review r2 N5).
+  - The drain takes the hook's `sessions` only within this company.
 - **`qorpera_folder_listener_commit(env, commit jsonb) returns void`** is called per change set, in seq order, after
   admission. `commit` is `{commitId, seq, actor: {kind, id}, runId, paused}`.
   - `actor` is the commit's: `kind` is `member`, `platform` or `staff_agent`, and `id` is the user, null, or the staff
@@ -517,7 +522,7 @@ path.
   hook, then delivered once it answers), a stored trigger that no longer validates;
 - the run's wake read end to end (`qorpera_read_native_wake` on a hand-built leased run of a file wake): the closed
   payload, its changes, `actorUserId` for a member's commit;
-- erasure's phase 1 noting the run of a file wake about an erased change;
+- erasure noting the run of a file wake about an erased change (phase 1 or 2; the test does not tell them apart);
 - grants, the lock text (the lease after the ranks, no 40001, the 2 s budget) and RLS.
 
 888 (dblink): two drains of one company; the drain against the company purge in both orders; a commit never waits on a
@@ -530,7 +535,7 @@ parser and the first presence.
 **Not tested yet** (from §13): a coding session's commit during a turn and a desktop's commit after its run; an
 ancestor's move under an `exact` watch and a refused unit; a readable 22nd behind unreadable ones; a resume starting
 again; an expired routine alone and a `required` routine with no session; the 46-subtransaction bound and a
-100,000-entry move; the ChatGPT plan refusals; erasure's phase-2 re-collection; P28's materializer making the run (887
+100,000-entry move; the ChatGPT plan refusals; each erasure phase's noting on its own; P28's materializer making the run (887
 builds it by hand); a SQL-built folder-v2 file wake envelope run through the TypeScript parser (887 checks the
 payload's keys, `cloud-wake-bus.test.ts` the parser; `scripts/test-runtime-wake-bus.mjs` dropped its snapshot-v1 File
 envelope); the drain against routine firing and against the materializer.

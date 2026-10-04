@@ -416,8 +416,9 @@ returns boolean language sql immutable set search_path = '' as $$
 		and jsonb_typeof(coalesce(p_hook -> 'admit', 'false'::jsonb)) = 'boolean'
 		and not exists (select 1 from jsonb_array_elements(coalesce(p_hook -> 'targets', '[]'::jsonb)) t(value)
 			where jsonb_typeof(t.value) <> 'object' or t.value - array['rank','tbl','key','mode'] <> '{}'::jsonb
-				or (t.value ->> 'rank', t.value ->> 'tbl') not in (('1', 'qorpera_profile_members'), ('2', 'qorpera_profile_staff'),
-					('3', 'qorpera_staff_execution_authorities'))
+				or not t.value ?& array['rank','tbl','key','mode']
+				or coalesce((t.value ->> 'rank', t.value ->> 'tbl') not in (('1', 'qorpera_profile_members'),
+					('2', 'qorpera_profile_staff'), ('3', 'qorpera_staff_execution_authorities')), true)
 				or t.value ->> 'mode' is distinct from 'keyshare'
 				or coalesce(t.value ->> 'key', '') !~ ('^' || p_profile_id::text
 					|| ':[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))
@@ -565,6 +566,8 @@ begin
 	exception when others then
 		get stacked diagnostics v_hook_state = returned_sqlstate, v_hook_constraint = constraint_name;
 	end;
+	-- A lock the call waited on (no row lock is held yet): the next pass tries again.
+	if v_hook_state in ('55P03', '40P01') then return jsonb_build_object('schema', c_schema, 'state', 'busy'); end if;
 	if v_hook_state is not null then v_hook := '{"targets":[],"sessions":[],"admit":false}'::jsonb; end if;
 	select coalesce(jsonb_agg(y.t), '[]'::jsonb) into v_targets from (
 		select distinct x.t from jsonb_array_elements(v_matches) m, lateral (values
@@ -644,7 +647,7 @@ begin
 			select (x.value ->> 'session')::uuid as id from jsonb_array_elements(v_kept) x where x.value ->> 'session' is not null
 			union all
 			select h.value::uuid from jsonb_array_elements_text(coalesce(v_hook -> 'sessions', '[]'::jsonb)) h) s;
-		perform 1 from public.qorpera_shared_sessions where id = any(v_sessions) order by id for key share;
+		perform 1 from public.qorpera_shared_sessions where id = any(v_sessions) and profile_id = v_profile order by id for key share;
 		-- 6. Admission, only when a wake will be written.
 		if (not v_paused and jsonb_array_length(v_kept) > 0) or coalesce((v_hook ->> 'admit')::boolean, false) then
 			perform public.qorpera_folder_admit_wakes(v_profile); end if;

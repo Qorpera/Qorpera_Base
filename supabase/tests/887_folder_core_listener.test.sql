@@ -409,6 +409,9 @@ create or replace function public.qorpera_folder_listener_targets(p_environment_
 returns jsonb language plpgsql security definer set search_path = '' as $$
 begin
 	if current_setting('qorpera_test.targets', true) = 'raise' then raise exception 'P31 is down' using errcode = 'P0888'; end if;
+	if current_setting('qorpera_test.targets', true) = 'norank' then
+		return jsonb_build_object('targets', jsonb_build_array(jsonb_build_object('tbl', 'qorpera_profile_staff',
+			'key', '70700000-0000-4000-8000-000000000010:70700000-0000-4000-8000-0000000000a1', 'mode', 'keyshare'))); end if;
 	if current_setting('qorpera_test.targets', true) = 'rank5' then
 		return jsonb_build_object('targets', jsonb_build_array(jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines',
 			'key', '88700000-0000-4000-8000-0000000000e1', 'mode', 'nokeyupdate')), 'sessions', '[]'::jsonb, 'admit', false); end if;
@@ -416,7 +419,7 @@ begin
 end $$;
 
 do $$
-declare r jsonb; r2 jsonb; s jsonb; w integer;
+declare r jsonb; r2 jsonb; r3 jsonb; s jsonb; w integer;
 begin
 	-- It raises: the listener still wakes, the cursor moves on, the change set is recorded for the hook with the SQLSTATE.
 	perform set_config('qorpera_test.targets', 'raise', true);
@@ -437,13 +440,20 @@ begin
 			where commit_id = (r2 ->> 'commitId')::uuid and sqlstate = 'QP29T')
 		or (select attempts from public.qorpera_folder_listener_hook_failures where commit_id = (r ->> 'commitId')::uuid) <> 2 then
 		raise exception 'A malformed targets answer holds nothing: %', s; end if;
-	-- Fixed: both change sets reach the hook and their records go.
+	-- A target with no rank the same (it never reaches the lock helper, which would raise outside any handler).
+	perform set_config('qorpera_test.targets', 'norank', true);
+	r3 := pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0031b', jsonb_build_array(pg_temp.put('notes/t2b.md', 't2b'))));
+	s := pg_temp.listen();
+	if s ->> 'state' <> 'done' or s ->> 'processedSeq' <> r3 ->> 'seq' or not exists (select 1
+			from public.qorpera_folder_listener_hook_failures where commit_id = (r3 ->> 'commitId')::uuid and sqlstate = 'QP29T') then
+		raise exception 'A target with no rank holds nothing: %', s; end if;
+	-- Fixed: the change sets reach the hook and their records go.
 	perform set_config('qorpera_test.targets', '', true);
 	update public.qorpera_folder_listener_hook_failures set last_attempt_at = last_attempt_at - interval '1 hour'
 	where environment_id = '70700000-0000-4000-8000-000000000020';
 	perform pg_temp.listen();
 	if exists (select 1 from public.qorpera_folder_listener_hook_failures where environment_id = '70700000-0000-4000-8000-000000000020')
-		or (select count(*) from pg_temp.hook_calls where seq in ((r ->> 'seq')::bigint, (r2 ->> 'seq')::bigint)) <> 2 then
+		or (select count(*) from pg_temp.hook_calls where seq in ((r ->> 'seq')::bigint, (r2 ->> 'seq')::bigint, (r3 ->> 'seq')::bigint)) <> 3 then
 		raise exception 'Once the targets hook answers, the change sets reach the hook'; end if;
 	if public.qorpera_folder_listener_targets_valid('70700000-0000-4000-8000-000000000010', jsonb_build_object('targets', jsonb_build_array(
 			jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'key', '70700000-0000-4000-8000-000000000010:70700000-0000-4000-8000-0000000000a1',
@@ -451,6 +461,12 @@ begin
 		or public.qorpera_folder_listener_targets_valid('70700000-0000-4000-8000-000000000010', jsonb_build_object('targets', jsonb_build_array(
 			jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'key', '70800000-0000-4000-8000-000000000010:70700000-0000-4000-8000-0000000000a1',
 				'mode', 'keyshare')))) is not false
+		or public.qorpera_folder_listener_targets_valid('70700000-0000-4000-8000-000000000010', jsonb_build_object('targets',
+			jsonb_build_array(jsonb_build_object('tbl', 'qorpera_profile_staff',
+				'key', '70700000-0000-4000-8000-000000000010:70700000-0000-4000-8000-0000000000a1', 'mode', 'keyshare')))) is not false
+		or public.qorpera_folder_listener_targets_valid('70700000-0000-4000-8000-000000000010', jsonb_build_object('targets',
+			jsonb_build_array(jsonb_build_object('rank', 2,
+				'key', '70700000-0000-4000-8000-000000000010:70700000-0000-4000-8000-0000000000a1', 'mode', 'keyshare')))) is not false
 		or public.qorpera_folder_listener_targets_valid('70700000-0000-4000-8000-000000000010', '{"admit":"yes"}') is not false
 		or public.qorpera_folder_listener_targets_valid('70700000-0000-4000-8000-000000000010', '{"sessions":[1]}') is not false then
 		raise exception 'The targets the drain accepts'; end if;
