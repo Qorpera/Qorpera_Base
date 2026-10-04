@@ -4,18 +4,20 @@
 -- company row FOR UPDATE: the reverse of the core's order, and on folder-v2 a stall of every effect of the company,
 -- which holds the row KEY SHARE. On folder-v2 now:
 -- * The reservation (qorpera_reserve_runtime_login_machine, _account_refresh_machine) first reads the sign-in with no
---   lock and checks its capability: a caller without it takes nothing. It then takes the folder fence KEY SHARE and the
+--   lock and checks its capability: a caller without it is refused before any lock (on either core). It then takes the folder fence KEY SHARE and the
 --   company row KEY SHARE (rank 0, qorpera_folder_machine_fence, no pause read: the pause is read after the locks, as
 --   before), the requester's member row FOR SHARE (rank 1), the identity's machine lock, then the sign-in FOR UPDATE
 --   (rank 5, before the model logins), the identity FOR SHARE, the provider policy, the machine request and the
 --   allocation, as before. No gc fence.
 -- * The identity's machine lock is a transaction advisory lock, not a row, with the key
 --   hashtextextended('qorpera.identity-machine:' || <compute identity id>::text, 0). The gc fence used to serialize two
---   machines of one identity, so the "identity already has a machine" check could not race; KEY SHARE does not.
---   Locking the identity row more strongly would deadlock with a new sign-in, whose epoch trigger holds the identity
---   FOR SHARE while it cancels the earlier sign-in. A run's own machine reservation still takes the gc fence on
---   folder-v2 (it conflicts with this KEY SHARE, so the two stay serialized); when it leaves the gc fence (C1c-3n) it
---   takes this same lock.
+--   machines of one identity, so the "identity already has a machine" check saw the other's machine; KEY SHARE does
+--   not. The unique index qorpera_runtime_login_identity_occupied keeps one live sign-in or refresh machine per identity
+--   but would turn that race into a 23505, and a run's machine has no such index. The identity row cannot serve: it
+--   sits after the sign-in in C1B §8's rank 5, and taking it first, stronger than FOR SHARE, would deadlock with a
+--   sign-in's completion (the sign-in, then the identity through its epoch trigger). A run's own machine reservation
+--   still takes the gc fence on folder-v2 (it conflicts with this KEY SHARE, so the two stay serialized); when it leaves
+--   the gc fence (C1c-3n) it takes this same lock.
 -- * The release takes the fence and rank 0, then the sign-in, the machine request and the allocation; no pause read,
 --   so a paused company's sign-in machines are released.
 -- * The node reservation of a login machine (qorpera_reserve_runtime_node_machine, kind 'login', the gateway's own call
@@ -28,7 +30,13 @@
 --   (qorpera_record_native_provider_account_metadata) took the identity FOR SHARE before the connection, which would
 --   deadlock with the removal in its new order. Both now take the model login first. Both completions
 --   (qorpera_complete_native_provider_login, _model_login_sign_in_kind) already follow it and are unchanged.
--- Snapshot-v1 keeps every patched statement in the else branch (test 900 reverses the patches to the text before).
+-- Snapshot-v1 keeps the reservation's, release's and node reservation's patched statements in their else branch. The
+-- member removal's prelude is folder-v2 only; the account metadata's new order holds for both cores (every other
+-- path takes the model login before the identity too).
+-- Known window until P13's second part (20260930036000): qorpera_request_login_identity_recovery and
+-- _account_refresh_identity_recovery still take the sign-in FOR SHARE and then the gc fence, the reverse of this
+-- reservation (the row KEY SHARE, then the sign-in FOR UPDATE); the two could deadlock on one sign-in from two gateway
+-- processes at once. One gateway handles one identity's work at a time.
 -- The patches are exact text: an anchor that is missing or found twice stops the migration.
 
 create function pg_temp.p13_replace(p_target regprocedure, p_old text, p_new text, p_count integer) returns void language plpgsql as $$
@@ -42,10 +50,11 @@ end $$;
 
 -- 1. A sign-in machine's locks on folder-v2 -------------------------------------------------------------------------
 
--- Null (and nothing locked) for a sign-in that does not exist, a reservation whose capability does not match (the
--- caller refuses after its own read) or a snapshot-v1 company (the caller takes the gc fence as before). Otherwise the
--- folder fence and rank 0, and for a reservation the requester's member row and the identity's machine lock; it
--- returns what it read, which the caller compares with the sign-in it then locks.
+-- A reservation of a sign-in that does not exist, or with a capability that does not match, is refused here, before
+-- any lock, with the error the caller raised after locking the sign-in. Null (and nothing locked) for a release of a
+-- sign-in that does not exist (the caller's strict read refuses as before) or a snapshot-v1 company (the caller takes
+-- the gc fence as before). Otherwise the folder fence and rank 0, and for a reservation the requester's member row and
+-- the identity's machine lock; it returns what it read, which the caller compares with the sign-in it then locks.
 create function public.qorpera_folder_sign_in_machine_locks(p_kind text, p_id uuid, p_capability_sha256 text, p_reserve boolean)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_profile uuid; v_identity uuid; v_user uuid; v_capability text;
@@ -62,8 +71,9 @@ begin
 	else
 		raise exception 'Sign-in machine kind is invalid' using errcode = '22023';
 	end if;
-	if v_profile is null or (p_reserve and v_capability is distinct from p_capability_sha256)
-		or not public.qorpera_company_is_folder_v2(v_profile) then
+	if p_reserve and (v_profile is null or v_capability is distinct from p_capability_sha256) then
+		raise exception 'Login machine authority unavailable' using errcode = '42501'; end if;
+	if v_profile is null or not public.qorpera_company_is_folder_v2(v_profile) then
 		return null; end if;
 	perform public.qorpera_folder_machine_fence(v_profile);
 	if p_reserve then

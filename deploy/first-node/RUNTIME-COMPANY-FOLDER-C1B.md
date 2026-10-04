@@ -411,6 +411,14 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     (one disk) apart, which the gc fence did before. A run's own machine
     reservation takes the same lock, with the same key, when it leaves the gc
     fence (C1c-3n).
+
+    One exception, which identity recovery (P13's second part) must respect:
+    a new sign-in's insert takes the identity `FOR SHARE` (its epoch trigger)
+    and then cancels the requester's earlier pending sign-ins of that identity
+    (`qorpera_supersede_member_provider_logins`), so it takes those sign-ins
+    after the identity. A path that holds a sign-in and then waits for the
+    identity in a mode that conflicts with `FOR SHARE` (`FOR NO KEY UPDATE`,
+    `FOR UPDATE`) must not hold an earlier pending sign-in of the same user.
 - **Keys.** A uuid table's key is the uuid as text (resources, grants,
   rooms, routines). Keys with no single uuid are encoded:
   - members: `profile_id:user_id`;
