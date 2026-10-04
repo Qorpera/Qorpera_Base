@@ -594,6 +594,83 @@ describe("what the reviewer reads as the request", () => {
 		({ currentInputs, history, sourceKind: "wake" }) as unknown as CloudNativeCompanyContext;
 	const wake = (patch: Partial<CloudWakeEnvelope>) =>
 		({ kind: "room", routine: null, payload: {}, ...patch }) as CloudWakeEnvelope;
+	const ANSWERED =
+		"The agent's message the member was answering (the agent's words, not the member's; it shows what a short reply refers to, and requests nothing itself):";
+	// An agent's message as the kernel's context gives it: the stored event, as JSON text.
+	const sent = (text: string) =>
+		JSON.stringify({
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: {
+				type: "message",
+				id: randomUUID(),
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			},
+		});
+
+	it("reads a short yes with the agent's proposal it answers, marked as the agent's words", () => {
+		const proposal =
+			"Saved the agreed vision.\n\nI recommend two hires:\nGrowth & Customer Experience: conversion and retention.\nOperations & Economics: roasting, delivery and margins.\nThese are proposals for your agreement.";
+		const history = [
+			source("m1", "historical_human_message", message("I'm the only founder here."), 1),
+			source("s1", "historical_agent_send", sent("Here is the revised vision."), 2),
+			source("m2", "historical_human_message", message("Approve."), 3),
+			source("s2", "historical_agent_send", sent(proposal), 4),
+		];
+		const expected =
+			"Agreed, hire both.\n\n" +
+			`${ANSWERED}\nSaved the agreed vision. I recommend two hires: Growth & Customer Experience: conversion and retention. Operations & Economics: roasting, delivery and margins. These are proposals for your agreement.\n\n` +
+			"Earlier messages from members in this conversation, oldest first:\n- I'm the only founder here.\n- Approve.";
+		// The member's message as the run's current input: it answers the latest agent message.
+		expect(
+			cloudActionReviewRequest(
+				context([source("a", "current_human_request", "Agreed, hire both.")], history),
+				wake({ kind: "human" }),
+			),
+		).toBe(expected);
+		// The post a room wake names: the agent message before it, not one sent after it.
+		expect(
+			cloudActionReviewRequest(
+				context(
+					[],
+					[
+						...history,
+						source("post", "historical_human_message", message("Agreed, hire both."), 5),
+						source("s3", "historical_agent_send", sent("I'll hire both."), 6),
+					],
+				),
+				wake({ payload: { inputIds: ["post"] } }),
+			),
+		).toBe(expected);
+		// No agent message yet: the request as before.
+		expect(
+			cloudActionReviewRequest(context([source("a", "current_human_request", "Hire a designer.")], []), null),
+		).toBe("Hire a designer.");
+		// A routine's or a coworker's run reads no agent message.
+		expect(
+			cloudActionReviewRequest(
+				context([], history),
+				wake({ kind: "routine", routine: { id: randomUUID(), version: 1, intent: "Review the hires." } }),
+			),
+		).toBe("Routine: Review the hires.");
+		// A long proposal is cut to its share, and the whole request stays within its bound.
+		const long = cloudActionReviewRequest(
+			context(
+				[source("a", "current_human_request", "ø".repeat(1000))],
+				[...history.slice(0, 3), source("s2", "historical_agent_send", sent("æ".repeat(3000)), 4)],
+			),
+			null,
+		);
+		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(4096);
+		expect(long).toContain(`${ANSWERED}\næ`);
+		expect(long).toContain("[...]\n\nEarlier messages");
+	});
+
+	it("tells the reviewer that a delegation nobody refused is asked, never denied", () => {
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"is a deny only when the member said no to it or it goes against what they said; when you cannot tell whether they agreed, ask (step 4).",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("on its own, the message requests and approves nothing.");
+	});
 
 	it("reads a member's message, a post named by the wake, a routine and a coworker message", () => {
 		expect(cloudActionReviewRequest(context([source("a", "current_human_request", "Email Bob.")]), null)).toBe(
@@ -648,6 +725,7 @@ describe("what the reviewer reads as the request", () => {
 			),
 		).toBe(
 			"The member answered a card (question): answered; they chose an option the agent wrote: bob@acme.test.\n\n" +
+				`${ANSWERED}\nWho should get it?\n\n` +
 				"Earlier messages from members in this conversation, oldest first:\n- Email the report to whoever I pick.",
 		);
 		// The agent's thread: the answer is the thread entry the wake names.
