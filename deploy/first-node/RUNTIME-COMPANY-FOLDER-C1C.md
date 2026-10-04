@@ -1326,7 +1326,8 @@ P06b's second PR, folder-v2 only like part 1 (the statement that was there befor
 
 - **Why every computer for one access change:** swapping the gc fence for the machine fence alone deadlocks two
   capability changes of one agent on two computers. Each holds its own computer and access row, and its trigger
-  cascade updates the other's. It also lets a computer added meanwhile inherit a revoked state. With every computer
+  cascade updates the other's. It would also let an agent revoked on every computer keep access on a computer added
+  meanwhile (the new computer copies a sibling's state read before the revocation committed). With every computer
   locked by id after the seat lock, the cascade finds them all held, and a new computer waits at the seat lock.
 - **Why the seat lock in the hire's walk:** see §6.11 (review r2 of #759). A computer added while an agent is hired or
   returns now gets the agent's default access either way.
@@ -1334,19 +1335,27 @@ P06b's second PR, folder-v2 only like part 1 (the statement that was there befor
   there holding no computer):
   - Z: a first registration waits at the agents (one held `FOR UPDATE`) before the seat lock;
   - A: with the low computer held, a capability change on the high one waits there, holding neither the high computer
-    nor any access row, then lands;
+    nor any access row, then lands, and the triggers carry the new capabilities to the low computer;
   - B, C: an access change waits at the agent, then at the seat lock, before any computer;
-  - D: with the company row held, access status answers and an access change doesn't wait;
+  - D: with the folder fence held `FOR UPDATE`, access status answers (plain reads); with the company row held, an
+    access change doesn't wait;
   - E: an agent's return waits at the seat lock before the computers;
   - F: a new computer for an agent waits at the agents before the seat lock;
-  - G: opening a screen waits at the member's row before the seat lock and the computer;
+  - G: opening a screen waits at the member's row before the seat lock and the computer; G2: someone outside the
+    company is refused before the folder fence (it answers at once with the fence held `FOR UPDATE`);
   - H: a private heartbeat waits at the privacy owner before the computer;
   - I: creating a viewer, redeeming it, its input check and the screen's browser grant each wait at the member before
     the computer;
-  - J: exactly 13 bodies name the migration (11 patched functions, 2 helpers).
+  - J: a computer is added under the seat lock in another session while Ada returns, then while a platform commit
+    hires a new agent: each waits at the seat lock and, once the computer commits, has access on it (review r1 of #767:
+    without the walk's seat lock both miss it);
+  - K: exactly 13 bodies name the migration (11 patched functions, 2 helpers).
+- **A small window left:** the screen's browser grant reads the screen's active viewers before it locks the computer,
+  so a viewer redeemed in between has its member row shared after the computer. No member writer takes the computer,
+  so this is not a cycle.
 - **Not here:**
   - the agent's screen tool through a folder-v2 run (the screen v1 gate);
-  - the view-anchor tests;
+  - the view-anchor tests (moved to C1c-3l with the agent's screen tool);
   - the member's own browser calls (the privacy entry, browser grants and profiles), which take the member after the
     computer but no company lock.
 

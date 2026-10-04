@@ -14,7 +14,8 @@
 --   and a new computer for an agent (member_agent_office 'new') and a first registration share the company's agents
 --   KEY SHARE before theirs. So a computer added while an agent is hired or returns gets the agent's default access:
 --   one of the two waits at the seat lock for the other.
--- * Opening a screen takes the machine fence and the member's row before the seat lock and the computer.
+-- * Opening a screen refuses someone who may not write the company, then takes the machine fence and the member's row
+--   before the seat lock and the computer.
 -- * The private screen heartbeat takes the privacy owner with the start's members (3j's prelude) before the computer.
 -- * The viewers (create, redeem, the input check) and the screen's browser grant share the viewers' member rows before
 --   the computer, without the fence on these hot paths.
@@ -134,8 +135,11 @@ do $$
 begin
 	perform pg_temp.c1c3k2_replace('public.qorpera_open_runtime_office_screen(jsonb,uuid)',
 		E'\tperform public.qorpera_lock_runtime_office_seats(v_office.environment_id);\n',
-		E'\t-- C1c-3k (20260930019100): on folder-v2 the machine fence and the member\'s row before the seat lock and the computer.\n'
+		E'\t-- C1c-3k (20260930019100): on folder-v2 the machine fence and the member\'s row before the seat lock and the computer;\n'
+		|| E'\t-- someone who may not write the company is refused before the fence.\n'
 		|| E'\tif public.qorpera_company_is_folder_v2(v_office.profile_id) then\n'
+		|| E'\t\tif not public.qorpera_can_write_profile(v_office.profile_id) then\n'
+		|| E'\t\t\traise exception ''Office member unavailable'' using errcode = ''42501''; end if;\n'
 		|| E'\t\tperform public.qorpera_folder_machine_fence(v_office.profile_id);\n'
 		|| E'\t\tperform 1 from public.qorpera_profile_members where profile_id=v_office.profile_id and user_id=auth.uid() for share;\n'
 		|| E'\tend if;\n'

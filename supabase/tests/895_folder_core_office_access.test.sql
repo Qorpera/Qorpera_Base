@@ -156,12 +156,13 @@ end $$;
 
 -- A. Two changes of one agent's access on two computers never deadlock: the setter takes every live computer by id
 --    before any access row. With the low computer held (another change of Ada's access there, or a hire's walk), a
---    capability change on the high computer waits at the low one holding neither the high computer nor any access row.
+--    capability change on the high computer waits at the low one holding neither the high computer nor any access row,
+--    then lands, and the access triggers carry the new capabilities to the low computer too.
 select pg_temp.hold(format('select 1 from public.qorpera_runtime_offices where id = %L for no key update', current_setting('qorpera_test.low')));
 select dblink_send_query('fence_two', format('select public.qorpera_configure_runtime_office_access(%L, %L, %s, true, %L)::text',
 	current_setting('qorpera_test.high_scope'), '64800000-0000-4000-8000-0000000000a1',
 	(select version from public.qorpera_runtime_office_access where office_id = current_setting('qorpera_test.high')::uuid
-		and staff_agent_id = '64800000-0000-4000-8000-0000000000a1'), '["desktop","shell"]'));
+		and staff_agent_id = '64800000-0000-4000-8000-0000000000a1'), '["shell"]'));
 do $$
 begin
 	if not pg_temp.waits_at('fence_two', 'public.qorpera_runtime_offices') or not pg_temp.office_row_free(current_setting('qorpera_test.high'))
@@ -173,9 +174,10 @@ do $$
 declare v_outcome text := pg_temp.outcome('fence_two');
 begin
 	if v_outcome <> 'ok' then raise exception 'A: the access change lands: %', v_outcome; end if;
-	if (select capabilities from public.qorpera_runtime_office_access where office_id = current_setting('qorpera_test.high')::uuid
-		and staff_agent_id = '64800000-0000-4000-8000-0000000000a1') <> '["desktop","shell"]' then
-		raise exception 'A: the capabilities changed'; end if;
+	if exists (select 1 from public.qorpera_runtime_office_access where staff_agent_id = '64800000-0000-4000-8000-0000000000a1'
+		and office_id in (current_setting('qorpera_test.low')::uuid, current_setting('qorpera_test.high')::uuid)
+		and capabilities is distinct from '["shell"]'::jsonb) then
+		raise exception 'A: the capabilities changed on both computers'; end if;
 end $$;
 
 -- B. The agent before the computers: with Ada's row held (a return or a hire in flight), a change of her access waits at
@@ -218,23 +220,28 @@ begin
 	if v_outcome <> 'ok' then raise exception 'C: the access change lands: %', v_outcome; end if;
 end $$;
 
--- D. With the company row held, access status answers at once (plain reads), and a change of Ada's access does not wait
---    (the machine fence takes the row only KEY SHARE).
-select pg_temp.hold(pg_temp.company_hold('10'));
+-- D. Access status is plain reads: with the folder fence held FOR UPDATE (a folder stop's second phase), it answers at
+--    once. Then, with the company row held, a change of Ada's access does not wait (the machine fence takes the row only
+--    KEY SHARE).
+select pg_temp.hold($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+	for update$q$);
 do $$
 declare v_answer text := pg_temp.settled('fence_two', format('select public.qorpera_runtime_office_access_status(%L, %L)::text',
 	current_setting('qorpera_test.scope'), '64800000-0000-4000-8000-0000000000a1'));
-	v_set text;
 begin
-	if v_answer = 'WAITED' then perform pg_temp.release(); perform pg_temp.outcome('fence_two');
-		raise exception 'D: access status answers without a lock'; end if;
-	v_set := pg_temp.settled('fence_two', format('select public.qorpera_set_runtime_office_access(%L, %L, %s, true)::text',
-		current_setting('qorpera_test.low'), '64800000-0000-4000-8000-0000000000a1',
-		(select version from public.qorpera_runtime_office_access where office_id = current_setting('qorpera_test.low')::uuid
-			and staff_agent_id = '64800000-0000-4000-8000-0000000000a1')));
+	perform pg_temp.release();
+	if v_answer = 'WAITED' then perform pg_temp.outcome('fence_two'); end if;
+	if v_answer !~ '"state": "active"' then raise exception 'D: access status answers without a lock: %', v_answer; end if;
+end $$;
+select pg_temp.hold(pg_temp.company_hold('10'));
+do $$
+declare v_set text := pg_temp.settled('fence_two', format('select public.qorpera_set_runtime_office_access(%L, %L, %s, true)::text',
+	current_setting('qorpera_test.low'), '64800000-0000-4000-8000-0000000000a1',
+	(select version from public.qorpera_runtime_office_access where office_id = current_setting('qorpera_test.low')::uuid
+		and staff_agent_id = '64800000-0000-4000-8000-0000000000a1')));
+begin
 	perform pg_temp.release();
 	if v_set = 'WAITED' then perform pg_temp.outcome('fence_two'); end if;
-	if v_answer !~ '"state": "active"' then raise exception 'D: access status answers without a lock: %', v_answer; end if;
 	if v_set = 'WAITED' or v_set !~ '"state": "active"' then
 		raise exception 'D: an access change takes the company row only KEY SHARE: %', v_set; end if;
 end $$;
@@ -308,6 +315,22 @@ begin
 	perform set_config('qorpera_test.epoch', v_screen.epoch::text, false);
 end $$;
 
+-- G2. Someone outside the company is refused before the folder fence: with the fence held FOR UPDATE, a stranger's
+--     open answers at once with the refusal.
+select pg_temp.hold($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+	for update$q$);
+select pg_temp.claims('fence_two', 'authenticated', '64800000-0000-4000-8000-000000000003');
+do $$
+declare v_answer text := pg_temp.settled('fence_two', format('select public.qorpera_open_runtime_office_screen(%L, %L)::text',
+	current_setting('qorpera_test.scope'), '64800000-0000-4000-8000-0000000000a1'));
+begin
+	perform pg_temp.release();
+	if v_answer = 'WAITED' then perform pg_temp.outcome('fence_two'); end if;
+	if v_answer not like '42501 Office member unavailable%' then
+		raise exception 'G2: a stranger is refused before the folder fence: %', v_answer; end if;
+end $$;
+select pg_temp.claims('fence_two', 'authenticated', '64800000-0000-4000-8000-000000000001');
+
 -- H. A private heartbeat takes the privacy owner (with the start's members) before the computer: with the privacy
 --    owner's row held (the company's other member, not the start's requester), it waits there holding no computer, and
 --    then goes on (its made-up challenge is refused; never 40P01).
@@ -373,11 +396,74 @@ begin
 	if v_outcome <> 'ok' then raise exception 'I: the viewer is redeemed: %', v_outcome; end if;
 end $$;
 
--- J. Exactly the patched functions and the two helpers name this migration.
+-- J. A computer added while an agent returns or is hired still gets the agent's default access: the computer is added
+--    under the seat lock in another session, and the return (or the hire, a platform commit creating agents/bea) waits at
+--    the seat lock; once the computer commits, the walk sees it.
+create function pg_temp.answer(p_conn text) returns text language plpgsql as $$
+declare v text;
+begin
+	begin
+		select r into v from dblink_get_result(p_conn) as t(r text);
+	exception when others then v := sqlstate || ' ' || sqlerrm;
+	end;
+	begin
+		perform * from dblink_get_result(p_conn) as t(r text);
+	exception when others then null;
+	end;
+	return coalesce(v, 'null');
+end $$;
+create function pg_temp.missing(p_staff uuid) returns text language sql as $$
+	select string_agg(o.computer_number::text || ':' || o.state, ' ' order by o.computer_number) from public.qorpera_runtime_offices o
+	where o.environment_id = '64800000-0000-4000-8000-000000000020' and o.state <> 'retired'
+		and not exists (select 1 from public.qorpera_runtime_office_access a where a.office_id = o.id and a.staff_agent_id = p_staff)
+$$;
+set session_replication_role = replica;
+update public.qorpera_profile_staff set employment_status = 'archived'
+where profile_id = '64800000-0000-4000-8000-000000000010' and staff_agent_id = '64800000-0000-4000-8000-0000000000a1';
+set session_replication_role = origin;
+select pg_temp.hold(format('select 1 from (select public.qorpera_lock_runtime_office_seats(%L)) as seats', '64800000-0000-4000-8000-000000000020'));
+select * from dblink('fence_one', format('select 1 from (select public.qorpera_add_runtime_office_computer(%L, %L, %L, null, %L)) as added',
+	'64800000-0000-4000-8000-000000000020', 'member', '64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-000000000001'))
+	as t(x integer);
+select dblink_send_query('fence_three', format('update public.qorpera_profile_staff set employment_status = %L
+	where profile_id = %L and staff_agent_id = %L', 'active', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-0000000000a1'));
+do $$
+begin
+	if not pg_temp.waits_for('fence_three', 'fence_one') then
+		perform pg_temp.release(); raise exception 'J: the return must wait at the seat lock'; end if;
+end $$;
+select pg_temp.release();
+do $$
+declare v text := pg_temp.answer('fence_three'); v_missing text := pg_temp.missing('64800000-0000-4000-8000-0000000000a1');
+begin
+	if v <> 'UPDATE 1' then raise exception 'J: the return lands: %', v; end if;
+	if v_missing is not null then raise exception 'J: the returned agent misses a computer added meanwhile: %', v_missing; end if;
+end $$;
+select set_config('qorpera_test.bea', jsonb_build_array(pg_temp.hire('bea', '89500000-0000-4000-8000-0000000000b2', 'Bea'))::text, false);
+select pg_temp.hold(format('select 1 from (select public.qorpera_lock_runtime_office_seats(%L)) as seats', '64800000-0000-4000-8000-000000000020'));
+select * from dblink('fence_one', format('select 1 from (select public.qorpera_add_runtime_office_computer(%L, %L, %L, null, %L)) as added',
+	'64800000-0000-4000-8000-000000000020', 'member', '64800000-0000-4000-8000-0000000000c0', '64800000-0000-4000-8000-000000000001'))
+	as t(x integer);
+select dblink_send_query('fence_three', format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000020', '{"kind":"platform"}', 'office-access-hire-0001', current_setting('qorpera_test.bea')));
+do $$
+begin
+	if not pg_temp.waits_for('fence_three', 'fence_one') then
+		perform pg_temp.release(); raise exception 'J: the hire must wait at the seat lock'; end if;
+end $$;
+select pg_temp.release();
+do $$
+declare v text := pg_temp.answer('fence_three'); v_missing text := pg_temp.missing('89500000-0000-4000-8000-0000000000b2');
+begin
+	if v !~ '"outcome": "saved"' then raise exception 'J: the hire lands: %', v; end if;
+	if v_missing is not null then raise exception 'J: the new hire misses a computer added meanwhile: %', v_missing; end if;
+end $$;
+
+-- K. Exactly the patched functions and the two helpers name this migration.
 do $$
 begin
 	if (select count(*) from pg_proc where prosrc ~ '20260930019100') <> 13 then
-		raise exception 'J: 11 patched functions and 2 helpers name 20260930019100 (found %)',
+		raise exception 'K: 11 patched functions and 2 helpers name 20260930019100 (found %)',
 			(select count(*) from pg_proc where prosrc ~ '20260930019100'); end if;
 end $$;
 
