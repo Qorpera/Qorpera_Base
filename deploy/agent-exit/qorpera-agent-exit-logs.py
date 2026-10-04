@@ -23,7 +23,7 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
   first, the client history's last. One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
   pressure; at 90 days a counts file goes after every part it names, and the newest one (the checkpoint) never. Each
-  deleted file is a line in lost.jsonl (its day is unknown to a lookup from then on).
+  deleted file is a line in lost.jsonl, written before the file goes (its day is unknown to a lookup from then on).
 <run-dir>/logs.json says when it last ran and what it could not do; `qorpera-agent-exit.sh verify` fails while it is
 older than 15 minutes or names a problem (the logs still over their cap, or the disk under its floor, with every
 part it may delete gone; a part it cannot seal; a closed day it cannot count). The logger pauses by itself at the
@@ -568,12 +568,18 @@ def file_day(name):
     return None
 
 
-def record_lost(log_dir, now, name, size, reason):
-    line = json.dumps({"ts": now, "file": name, "bytes": size, "day": file_day(name), "reason": reason},
-                      sort_keys=True, separators=(",", ":"))
-    fd = os.open(os.path.join(log_dir, "lost.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o640)
-    with os.fdopen(fd, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+def delete_recorded(log_dir, now, name, size, reason):
+    """Deletes a file, its lost.jsonl line written (and synced) first: a deletion is never unrecorded. A line written
+    by a pass cut short before its unlink is not written twice."""
+    if name not in lost_names(log_dir):
+        line = json.dumps({"ts": now, "file": name, "bytes": size, "day": file_day(name), "reason": reason},
+                          sort_keys=True, separators=(",", ":"))
+        fd = os.open(os.path.join(log_dir, "lost.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o640)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    os.unlink(os.path.join(log_dir, name))
 
 
 def tidy(log_dir, now, cap, floor, free=free_percent):
@@ -588,8 +594,7 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
 
     def expire(name):
-        os.unlink(os.path.join(log_dir, name))
-        record_lost(log_dir, now, name, files.pop(name), EXPIRED)
+        delete_recorded(log_dir, now, name, files.pop(name), EXPIRED)
         deleted.append(name)
 
     # The parts first, the counts after: a counts file goes only once no part it names is left (so a part never
@@ -620,8 +625,7 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
         if total <= cap * CAP_SHARE and free(log_dir) >= low_water:
             break
         reason = "over the cap" if total > cap * CAP_SHARE else "the disk is low"
-        os.unlink(os.path.join(log_dir, name))
-        record_lost(log_dir, now, name, files.pop(name), reason)
+        delete_recorded(log_dir, now, name, files.pop(name), reason)
         deleted.append(name)
     still = sum(regular_files(log_dir).values()) > cap or free(log_dir) < floor
     return deleted, still

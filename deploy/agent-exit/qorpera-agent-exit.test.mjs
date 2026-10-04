@@ -886,6 +886,33 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 			assert.ok(lost.indexOf(part) >= 0 && lost.indexOf(part) < lost.indexOf(counts), lost.join(" "));
 	});
 
+	test("a deletion is never unrecorded: the ledger line comes first, once, and a deleted name is never used again", () => {
+		const ledger = mkdtempSync(join(dir, "ledger-"));
+		writeFileSync(join(ledger, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
+		writeFileSync(join(ledger, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
+		writeFileSync(join(ledger, `flows-${next}.jsonl`), lines([opened("10.210.1.1", t0 + DAY + 200)]));
+		const run = (now) =>
+			spawnSync("python3", [logsTool, "tend", "--log-dir", ledger, "--status", join(dir, "ledger.json"), "--now", String(now), "--settle", "0", "--free-percent", "50"], { encoding: "utf8" });
+		assert.equal(run(t0 + 2 * DAY + 3 * 3600).status, 0);
+		const later = t0 + 92 * DAY + 3 * 3600;
+		// The ledger cannot be written: nothing is deleted.
+		mkdirSync(join(ledger, "lost.jsonl"));
+		assert.equal(run(later).status, 1);
+		assert.ok(readdirSync(ledger).includes(`flows-${day}.p001.jsonl.gz`), "kept without its ledger line");
+		rmSync(join(ledger, "lost.jsonl"), { recursive: true });
+		// A pass cut short after writing a line and before its unlink: the next pass deletes it, with no second line.
+		writeFileSync(join(ledger, "lost.jsonl"), lines([{ ts: later, file: `flows-${day}.p001.jsonl.gz`, bytes: 1, day, reason: "kept 90 days" }]));
+		assert.equal(run(later).status, 0);
+		const lost = readFileSync(join(ledger, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line).file);
+		assert.equal(lost.filter((name) => name === `flows-${day}.p001.jsonl.gz`).length, 1);
+		assert.ok(!readdirSync(ledger).some((name) => name.startsWith("flows-") || name.startsWith("clients-")));
+		// The first day's counts are gone too; a late part for it gets a name never used before, and is counted late.
+		writeFileSync(join(ledger, `clients-${day}.jsonl`), lines([machine("10.210.1.2", "cC", "mC", t0 + 300)]));
+		assert.equal(run(later + DAY).status, 0);
+		const newest = readdirSync(ledger).filter((name) => name.startsWith("counts-")).sort().at(-1);
+		assert.deepEqual(JSON.parse(readFileSync(join(ledger, newest), "utf8")).late.map((late) => late.parts), [[`clients-${day}.p002.jsonl.gz`]]);
+	});
+
 	test("a pass cut short never seals a line twice, and a DNS copy left plain is compressed", () => {
 		const crashed = mkdtempSync(join(dir, "crashed-"));
 		const line = lines([opened("10.210.1.1", t0 + 10)]);

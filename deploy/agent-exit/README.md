@@ -192,8 +192,8 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
   pressure; so while a day cannot be counted, the logger's pause is what keeps the disk. At 90 days a counts file goes
   only after every part it names, and the newest one (the checkpoint) never; each pass writes `attribution.json` again
-  if it is missing or behind. Each deleted file is a line in `lost.jsonl`, so a lookup knows that day is unknown, and
-  a part's name is never used twice.
+  if it is missing or behind. Each deleted file is a line in `lost.jsonl`, written and synced before the file goes
+  (and not twice), so a lookup knows that day is unknown, and a part's name is never used twice.
 
 The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
 (`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool
