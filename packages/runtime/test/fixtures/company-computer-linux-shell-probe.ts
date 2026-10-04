@@ -333,19 +333,32 @@ printf isolated`),
 	);
 	assert.equal(companyComputerShellBusy(before, during), true, "the download is busy by the data it moves");
 	assert.equal((await stop(download.sessionId)).state, "stopped");
-	// A download left running in the background, after its command has ended, still counts: it lives on under the
-	// namespace's init, outside the shell host's tree.
+	assert.equal((await stop(serving.sessionId)).state, "stopped");
+	// A program left running in the background, after its command has ended, still counts: it lives on under the
+	// namespace's init, outside the shell host's tree. With the server stopped, its own writes are all that moves.
 	assert.equal(
 		await done(
-			"nohup curl -sS --limit-rate 64k -o /tmp/large-background http://127.0.0.1:8002/ >/dev/null 2>&1 & echo $! > /tmp/background.pid; echo left",
+			"nohup sh -c 'while :; do head -c 65536 /dev/zero > /tmp/background; sleep 0.5; done' >/dev/null 2>&1 & echo $! > /tmp/background.pid; echo left",
 		),
 		"left\n",
 	);
+	assert.equal(
+		await done(
+			'while read -r key value; do [ "$key" != PPid: ] || echo "$value"; done < /proc/$(cat /tmp/background.pid)/status',
+		),
+		"1\n",
+		"the background program left the shell host's tree for the namespace's init (Tini, PID 1)",
+	);
 	before = await sample();
 	await delay(3000);
-	assert.equal(companyComputerShellBusy(before, await sample()), true, "a background download is busy by its data");
+	const background = await sample();
+	assert.equal(
+		companyComputerShellBusy({ ...before, ioBytes: 0 }, { ...background, ioBytes: 0 }),
+		false,
+		"by processor alone the background program looks idle",
+	);
+	assert.equal(companyComputerShellBusy(before, background), true, "a background program is busy by its data");
 	assert.equal(await done("kill $(cat /tmp/background.pid) && echo stopped"), "stopped\n");
-	assert.equal((await stop(serving.sessionId)).state, "stopped");
 	before = await sample();
 	await delay(3000);
 	assert.equal(companyComputerShellBusy(before, await sample()), false, "the waiting server still moves nothing");
