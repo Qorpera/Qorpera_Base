@@ -777,8 +777,10 @@ check reports drift.
     (`qorpera_wake_ancestry`, 20260907000860:1053-1055): an agent's own commit
     never wakes its own subscription, and the commit's causal wake is on the
     commit row.
-  - Listener activation reads `last_seq` from the clock row, so no event is
-    missed or doubled.
+  - Listener activation is the seq of the change set that last saved the
+    routine (P29: `RUNTIME-COMPANY-FOLDER-LISTENER.md` §2). A listener hears
+    only later change sets, so none is doubled; one saved while the drain had
+    not reached it is dropped, as decided on 4 October 2026.
 - **The pin.** A wake's `companySnapshotId` becomes `companySeq`: the run was
   composed as of at least this commit. Reads stay live, as today. The
   transcript check (`qorpera_run_head_follows_session_pin`, which walks up to
@@ -896,7 +898,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
 | Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks |
-| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A transaction over several companies takes one company per transaction, or every company's fence in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or deletion's finisher batch `FOR UPDATE` (C1C §6.10) |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post, a room delivery's retry and a member's answer in an agent's thread take their room `FOR SHARE` (C1C §6.2, §6.3) |
@@ -1018,7 +1020,8 @@ the old code until the reset, so it is removed in C6:
 Some things are rewritten earlier, because the reset or the proof company
 needs them:
 - **By C4:** the observability functions on revisions
-  (20260828019970:244,367), so the proof company is visible.
+  (20260828019970:244,367), so the proof company is visible. Done in P32
+  (20260930032000): they read the folder core's commits, reviews and read sets.
 - **By C5:**
   - the Company File acceptance gates that launch item 19 names;
   - the SQL tests in `scripts/test-*.mjs` that use snapshots;
@@ -1182,7 +1185,8 @@ For `folder-v2` companies:
   "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
   returns".
 - The members' and clients' hint (the feed itself is C1f).
-- The observability views.
+- The observability views (P32, migration `20260930032000`: the operator's run and company queries read commits,
+  reviews and read sets).
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write
   and read files for `folder-v2`. No member writer of `folder-v2` files goes
