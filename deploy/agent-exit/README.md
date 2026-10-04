@@ -257,12 +257,15 @@ What the numbers say:
 - E3 (log shipping): rotate `dns.log` by copying and truncating it, not by renaming it and sending SIGUSR2. dnsmasq's
   unprivileged user cannot create a file in the 0750 log directory, so a reopen would fail and logging would stop.
 - The per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine to its
-  address. A reload of the rules starts both counts again from zero. The node's table holds 262,144 entries (read on
-  both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. Closed
-  connections are not bounded but leave after 30 s (E2b's floods above; E7's brake bounds their rate). Proofs
-  that change a kernel run in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel
-  modules there changes the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every
-  bridge on it).
+  address. A reload of the rules starts both counts again from zero, and recreates the 30 s timeout policy: the
+  connections open at that moment close into the kernel's 120 s. 30 s is the trade-off of many NAT gateways: a site
+  that closed first and still holds TIME_WAIT may see the same public port again within 30 to 60 s and delay that one
+  connection about a second, against a quarter of the entries and ports held. The node's table holds 262,144 entries
+  (read on both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. Closed
+  connections are not bounded but leave after 30 s (E2b's floods above; E7's brake bounds their rate). Proofs that
+  change a kernel run in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel modules
+  there changes the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge
+  on it).
 - E2c: a creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses
   an address it stored (`plug` is the only source of a machine's address). Plugging while the old instance still
   exists, then deleting and making it again, can let the reconciler unplug the address in between. Its unit joins the
