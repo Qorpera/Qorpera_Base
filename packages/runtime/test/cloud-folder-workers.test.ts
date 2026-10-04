@@ -453,9 +453,11 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	expect(manage?.description).toContain("Coding sessions are not available in this company yet.");
 	expect(manage?.description).not.toContain("species coding");
 	expect(manage?.description).not.toContain("nextCursor");
-	const request = manage?.parseArguments({ ...DISPATCH, context: undefined, species: undefined });
+	// As the model sends them: JSON, without the empty context.
+	const { context: _context, ...sent } = DISPATCH;
+	const request = manage?.parseArguments(JSON.parse(JSON.stringify(sent)));
 	expect(parse(await manage!.execute(request, f.context))).toMatchObject({ action: "dispatch", outcome: "saved" });
-	const reporting = await fixture({}, { outputFolder: FOLDER });
+	const reporting = await fixture({ files: { [`${FOLDER}/brief.md`]: briefText() } }, { outputFolder: FOLDER });
 	const [report] = cloudWorkerTools(
 		reporting.binding,
 		reporting.identity,

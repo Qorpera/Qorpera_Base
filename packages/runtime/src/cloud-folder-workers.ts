@@ -11,6 +11,7 @@ import {
 	writeWorkerBriefFile,
 	writeWorkerResultsFile,
 } from "@qorpera/cloud-client/company-state-files";
+import type { JsonValue } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderCommitResult,
@@ -222,7 +223,7 @@ export class CloudFolderWorkers {
 					action: "dispatch",
 					todoKey: request.todoKey,
 					workerKey: request.workerKey,
-					title: request.title,
+					title: request.title ?? "",
 					goal,
 					definitionOfDone: doneWhen,
 					context: briefContext,
@@ -490,7 +491,7 @@ export class CloudFolderWorkers {
 		context: CloudToolContext,
 		units: readonly CloudCompanyFolderUnit[],
 		workerRequest: CloudCompanyFolderWorkerRequest,
-		args: Record<string, unknown>,
+		args: JsonValue,
 		path: string,
 		actionReviewId: string | undefined,
 	): Promise<CloudToolContent> {
