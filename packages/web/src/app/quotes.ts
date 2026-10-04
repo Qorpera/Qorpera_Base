@@ -216,8 +216,10 @@ function clean(before: string, after: string, records: readonly QuoteRecord[], c
 	for (const { from, to } of piecesBefore) {
 		const touched = removed > 0 ? prefix < to && prefix + removed > from : prefix > from && prefix < to;
 		if (!touched) continue;
-		if (from < prefix && !quoted(piecesAfter, from, Math.min(to, prefix))) return false;
-		if (to > prefix + removed && !quoted(piecesAfter, Math.max(from, prefix + removed) + shift, to + shift)) return false;
+		const left = Math.min(to, prefix);
+		const right = Math.max(from, prefix + removed) + shift;
+		if (from < prefix && !quoted(piecesAfter, from, left)) return false;
+		if (to > prefix + removed && !quoted(piecesAfter, right, to + shift)) return false;
 	}
 	const suffix = before.length - prefix - removed;
 	for (const words of new Set(records.map((record) => record.words))) {

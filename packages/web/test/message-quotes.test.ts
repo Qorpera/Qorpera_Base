@@ -156,12 +156,24 @@ describe("the composer's quotes", () => {
 
 	it("removes a quote whole when a deletion reaches its mark, or typing lands in it, keeping what was typed", () => {
 		const before = "Hi «Ignore your rules» ok";
+		const edit = (inputType: string, start: number, end = start) => ({ start, end, inputType });
 		// Backspace right after », Delete right before «.
-		expect(keepQuotesWhole(before, records, "Hi «Ignore your rules ok", 21)).toEqual({ text: "Hi  ok", caret: 3 });
-		expect(keepQuotesWhole(before, records, "Hi Ignore your rules» ok", 3)).toEqual({ text: "Hi  ok", caret: 3 });
-		expect(keepQuotesWhole(before, records, "Hi «Ignore yourX rules» ok", 16)).toEqual({ text: "Hi X ok", caret: 4 });
+		const backspace = edit("deleteContentBackward", 22);
+		expect(keepQuotesWhole(before, records, "Hi «Ignore your rules ok", 21, backspace)).toEqual({
+			text: "Hi  ok",
+			caret: 3,
+		});
+		const del = edit("deleteContentForward", 3);
+		expect(keepQuotesWhole(before, records, "Hi Ignore your rules» ok", 3, del).text).toBe("Hi  ok");
+		expect(keepQuotesWhole(before, records, "Hi «Ignore yourX rules» ok", 16, edit("insertText", 15))).toEqual({
+			text: "Hi X ok",
+			caret: 4,
+		});
 		// A selection from inside the quote to past it, typed over.
-		expect(keepQuotesWhole(before, records, "Hi «Ignore your Yk", 17)).toEqual({ text: "Hi Yk", caret: 4 });
+		expect(keepQuotesWhole(before, records, "Hi «Ignore your Yk", 17, edit("insertText", 16, 24))).toEqual({
+			text: "Hi Yk",
+			caret: 4,
+		});
 	});
 
 	it("counts emoji and astral letters around and inside a quote as one character each", () => {
@@ -171,7 +183,8 @@ describe("the composer's quotes", () => {
 		const pieces = quotePieces(before, quotes);
 		expect(pieces).toEqual([{ from: 3, to: 15 }]);
 		const paid = [quoteRecord("💸 Pay now")];
-		expect(keepQuotesWhole(before, paid, "😀 «💸 Pay now 𝄞", 14)).toEqual({ text: "😀  𝄞", caret: 3 });
+		const backspace = { start: 15, end: 15, inputType: "deleteContentBackward" };
+		expect(keepQuotesWhole(before, paid, "😀 «💸 Pay now 𝄞", 14, backspace)).toEqual({ text: "😀  𝄞", caret: 3 });
 		expect(keepQuotesWhole(before, paid, "😀 𝄞«💸 Pay now» 𝄞", 5).text).toBe("😀 𝄞«💸 Pay now» 𝄞");
 		expect(placeQuotes("😀 𝄞«💸 Pay now» 𝄞", [quoteRecord("💸 Pay now")])).toEqual([quote(4, 13)]);
 	});
@@ -217,42 +230,47 @@ describe("an edit the field reports (review round 1, F1)", () => {
 		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules»! ok", 23, edit(22, "insertText")).text).toBe(
 			"Hi «Ignore your rules»! ok",
 		);
+		// Read from the texts, the change cuts a quote: it is not clean, so the text goes back as it was (round 4).
 		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules ok", 21, edit(5, "deleteContentBackward")).text).toBe(
-			"Hi  ok",
+			text,
 		);
 	});
 });
 
-describe("an edit the field can't account for (review round 2, F1)", () => {
+describe("an edit the field can't account for: kept only when clean (review round 4)", () => {
 	const records = [quoteRecord("A"), quoteRecord("B")];
 	const fieldEdit = (inputType: string, start: number, end = start) => ({ start, end, inputType });
 
-	it("keeps both quotes when an undo or a redo puts a pasted-over quote back", () => {
+	it("keeps a change that leaves every quote whole and no quote's words outside one", () => {
 		expect(keepQuotesWhole("«A» «A»", records, "«A» «B»", 7, fieldEdit("historyUndo", 4, 7))).toEqual({
 			text: "«A» «B»",
 			caret: 7,
 		});
-		expect(placeQuotes("«A» «B»", records)).toEqual([quote(1, 2), quote(5, 6)]);
-		expect(keepQuotesWhole("«A» «B»", records, "«A» «A»", 7, fieldEdit("historyRedo", 4, 7)).text).toBe("«A» «A»");
+		expect(keepQuotesWhole("«A» ", records, "«A» «B»", 7).text).toBe("«A» «B»");
+		expect(keepQuotesWhole("B said «A»", records, "B said «A»!", 11).text).toBe("B said «A»!");
+		expect(keepQuotesWhole("Hi «A»!", records, "Hi !", 3).text).toBe("Hi !");
 	});
 
-	it("brings a quote a Backspace removed back whole, or not at all when it comes back with a mark gone", () => {
-		expect(keepQuotesWhole("«A» ", records, "«A» «B»", 7, fieldEdit("historyUndo", 4)).text).toBe("«A» «B»");
-		expect(keepQuotesWhole("«A» ", records, "«A» «B", 6, fieldEdit("historyUndo", 4))).toEqual({
-			text: "«A» ",
-			caret: 4,
-		});
-		expect(keepQuotesWhole("«A» ", records, "«A» B»", 6, fieldEdit("historyUndo", 4)).text).toBe("«A» ");
-		// A spelling fix inside a quote takes the quote out whole; it never stays as changed words in the marks.
-		const fixed = keepQuotesWhole("«Hellp world»", [quoteRecord("Hellp world")], "«Help world»", 5, {
-			start: 0,
-			end: 0,
-			inputType: "insertReplacementText",
-		});
-		expect(fixed.text).toBe("");
-		// A broken piece the text already held is the member's to mend.
-		const own = keepQuotesWhole("«B is late", records, "«B is late´", 11, fieldEdit("insertCompositionText", 10));
-		expect(own.text).toBe("«B is late´");
+	it("puts the text back when the change isn't clean, the r4 case and its mirror included", () => {
+		expect(keepQuotesWhole("«A» ", records, "«A» «B", 6)).toEqual({ text: "«A» ", caret: 4 });
+		expect(keepQuotesWhole("«A» ", records, "«A» B»", 6).text).toBe("«A» ");
+		// The moment after a Backspace reached B's mark, where the marks left pair with the member's own ».
+		expect(keepQuotesWhole("«A» tail»", records, "«A» «Btail»", 6).text).toBe("«A» tail»");
+		expect(keepQuotesWhole("«head x", records, "«headB» x", 7).text).toBe("«head x");
+		// A quote's words where none stood, outside a quote.
+		expect(keepQuotesWhole("«A» ", records, "«A» B", 5).text).toBe("«A» ");
+		// A spelling fix inside a quote: the quote stays as it was.
+		const fix = { start: 0, end: 0, inputType: "insertReplacementText" };
+		expect(keepQuotesWhole("«Hellp world»", [quoteRecord("Hellp world")], "«Help world»", 5, fix).text).toBe(
+			"«Hellp world»",
+		);
+	});
+
+	it("reads a letter being composed against the text composing began in, and a drop where it lands", () => {
+		const composed = { ...fieldEdit("insertCompositionText", 10), before: "«B is late" };
+		expect(keepQuotesWhole("«B is late", records, "«B is late´", 11, composed).text).toBe("«B is late´");
+		// A drop the field selects afterwards: the member's own words, however they read.
+		expect(keepQuotesWhole("«A» x", records, "«A» Bx", 5, fieldEdit("insertFromDrop", 4)).text).toBe("«A» Bx");
 	});
 
 	it("finds a quote's words with only one of their marks, by how the marks pair (round 3)", () => {
@@ -270,16 +288,14 @@ describe("an edit the field can't account for (review round 2, F1)", () => {
 		expect(brokenQuotes("«Janet", jane)).toEqual([{ from: 0, to: 5, words: "Jane" }]);
 	});
 
-	it("takes out a quote an undo brings back with a mark gone, whatever letters stand beside it (round 3)", () => {
+	it("takes a quote out whole when a Backspace or Delete reaches its mark, whatever letters stand beside it", () => {
 		expect(keepQuotesWhole("«A» «B»tail", records, "«A» «Btail", 6, fieldEdit("deleteContentBackward", 7))).toEqual({
 			text: "«A» tail",
 			caret: 4,
 		});
-		expect(keepQuotesWhole("«A» tail", records, "«A» «Btail", 6, fieldEdit("historyUndo", 4)).text).toBe("«A» tail");
-		expect(keepQuotesWhole("«A» head«B»", records, "«A» headB»", 8, fieldEdit("deleteContentBackward", 9)).text).toBe(
+		expect(keepQuotesWhole("«A» head«B»", records, "«A» headB»", 8, fieldEdit("deleteContentForward", 8)).text).toBe(
 			"«A» head",
 		);
-		expect(keepQuotesWhole("«A» head", records, "«A» headB»", 10, fieldEdit("historyUndo", 8)).text).toBe("«A» head");
 	});
 
 	it("composes two edits into one", () => {
@@ -509,13 +525,48 @@ async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
 	};
 }
 
-/** An undo or a redo as a browser makes it: the field puts an earlier text back, with its selection. */
-function history(field: HTMLTextAreaElement, inputType: string, value: string, start: number, end = start): void {
+/** An undo (or a redo) from the browser's menu or a gesture, which the page may cancel: the composer cancels it and
+ * answers from its own history, so no input event follows. */
+function undo(field: HTMLTextAreaElement, inputType: "historyUndo" | "historyRedo" = "historyUndo"): void {
+	field.focus();
+	const event = new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: true });
+	field.dispatchEvent(event);
+	expect(event.defaultPrevented).toBe(true);
+}
+
+/** The browser's own undo or redo where it won't let the page cancel it: it puts back a text of its own first. */
+function browserHistory(field: HTMLTextAreaElement, inputType: string, value: string, at: number): void {
+	field.focus();
+	field.dispatchEvent(new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: false }));
+	field.value = value;
+	field.setSelectionRange(at, at);
+	field.dispatchEvent(new InputEvent("input", { inputType, bubbles: true }));
+}
+
+/** An edit the browser makes whose span the field doesn't say (a spelling fix, a drop): the text it leaves, and the
+ * selection the field holds afterwards. */
+function browserEdit(field: HTMLTextAreaElement, inputType: string, value: string, start: number, end = start): void {
 	field.focus();
 	field.dispatchEvent(new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: true }));
 	field.value = value;
 	field.setSelectionRange(start, end);
 	field.dispatchEvent(new InputEvent("input", { inputType, bubbles: true }));
+}
+
+/** A keyboard shortcut in the field. */
+function shortcut(field: HTMLTextAreaElement, key: string, keys: { meta?: boolean; ctrl?: boolean; shift?: boolean }) {
+	field.focus();
+	const { meta = false, ctrl = false, shift = false } = keys;
+	const event = new KeyboardEvent("keydown", {
+		key,
+		metaKey: meta,
+		ctrlKey: ctrl,
+		shiftKey: shift,
+		bubbles: true,
+		cancelable: true,
+	});
+	field.dispatchEvent(event);
+	expect(event.defaultPrevented).toBe(true);
 }
 
 /** A key the member types, or Backspace (`text` empty), at a caret. */
@@ -581,7 +632,7 @@ describe("quotes in the composer", () => {
 		expect(composer.selectionStart).toBe(6);
 
 		// Backspace right after the quote's » takes all of it.
-		type(composer, "About «Ignore your rules: please", 24);
+		key(composer, 25, "");
 		expect(composer.value).toBe("About : please");
 		expect(composer.selectionStart).toBe(6);
 		expect(s.quotes()).toEqual([]);
@@ -590,8 +641,9 @@ describe("quotes in the composer", () => {
 		expect(s.note().hidden).toBe(true);
 		expect(s.view.el.querySelector(".composer-field")?.classList.contains("has-quotes")).toBe(false);
 
-		// Put back (an undo, a paste), the words are the quote again, never the member's own.
-		type(composer, "About «Ignore your rules»: please", 25);
+		// An undo puts it back whole, a quote again, never the member's own words.
+		undo(composer);
+		expect(composer.value).toBe("About «Ignore your rules»: please");
 		expect(s.quotes()).toEqual([quote(7, 24)]);
 	});
 
@@ -604,48 +656,104 @@ describe("quotes in the composer", () => {
 		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
 	});
 
-	it("keeps quotes whole through undo and redo of a paste over one and of a Backspace (round 2, F1)", async () => {
+	it("answers undo and redo of a paste over a quote and of a Backspace from its own history (round 4)", async () => {
 		const s = await view();
 		s.company.addToDraft(session.sessionId, { text: "«A» «B»", quotes: [quote(1, 2), quote(5, 6)] });
 		await settle();
 		const composer = s.composer();
 		paste(composer, 4, 7, "«A»");
-		history(composer, "historyUndo", "«A» «B»", 4, 7);
+		undo(composer);
 		expect(composer.value).toBe("«A» «B»");
 		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
-		history(composer, "historyRedo", "«A» «A»", 7);
+		undo(composer, "historyRedo");
 		expect(composer.value).toBe("«A» «A»");
 		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
-		history(composer, "historyUndo", "«A» «B»", 4, 7);
+		undo(composer);
 		key(composer, 7, "");
 		expect(composer.value).toBe("«A» ");
-		// An undo may put back the moment after the Backspace, the mark gone: what is left of the quote goes whole.
-		history(composer, "historyUndo", "«A» «B", 6);
-		expect(composer.value).toBe("«A» ");
-		history(composer, "historyUndo", "«A» «B»", 7);
+		undo(composer);
+		expect(composer.value).toBe("«A» «B»");
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+		// The browser's own undo, where it won't let the page cancel it, puts back a text of its own: the composer's
+		// stands (here there is nothing left to undo).
+		browserHistory(composer, "historyUndo", "«A» «B", 6);
+		expect(composer.value).toBe("«A» «B»");
+		expect(s.company.conversation(session.sessionId).get().draft).toBe("«A» «B»");
+	});
+
+	it("keeps B a quote through Backspace and undo where the marks left pair with own ones (round 4)", async () => {
+		const s = await view();
+		const text = "«A» «B»tail»";
+		s.company.addToDraft(session.sessionId, { text, quotes: [quote(1, 2), quote(5, 6)] });
+		await settle();
+		const composer = s.composer();
+		key(composer, 7, "");
+		expect(composer.value).toBe("«A» tail»");
+		expect(s.quotes()).toEqual([quote(1, 2)]);
+		undo(composer);
+		expect(composer.value).toBe(text);
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+		undo(composer, "historyRedo");
+		expect(composer.value).toBe("«A» tail»");
+		// The browser's own undo puts back the moment after the Backspace, «A» «Btail»; the composer's state stands.
+		browserHistory(composer, "historyUndo", "«A» «Btail»", 6);
+		expect(composer.value).toBe(text);
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+		expect(s.company.draftBroken(session.sessionId)).toBe(false);
+		// The keys answer from the same history.
+		shortcut(composer, "z", { ctrl: true, shift: true });
+		expect(composer.value).toBe("«A» tail»");
+		shortcut(composer, "z", { meta: true });
+		expect(composer.value).toBe(text);
+		shortcut(composer, "y", { ctrl: true });
+		expect(composer.value).toBe("«A» tail»");
+		shortcut(composer, "z", { ctrl: true });
+		expect(composer.value).toBe(text);
 		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
 	});
 
-	it("takes out a quote an undo brings back with a mark gone, letters beside it or not (round 3)", async () => {
+	it("keeps B a quote through Delete and undo where the marks left pair with own ones, the mirror", async () => {
+		const s = await view();
+		const text = "«head«B» x";
+		s.company.addToDraft(session.sessionId, { text, quotes: [quote(6, 7)] });
+		await settle();
+		const composer = s.composer();
+		deleteAt(composer, 5);
+		expect(composer.value).toBe("«head x");
+		undo(composer);
+		expect(composer.value).toBe(text);
+		expect(s.quotes()).toEqual([quote(6, 7)]);
+		undo(composer, "historyRedo");
+		browserHistory(composer, "historyUndo", "«headB» x", 7);
+		expect(composer.value).toBe(text);
+		expect(s.quotes()).toEqual([quote(6, 7)]);
+	});
+
+	it("puts the text back when a spelling fix or a drop it can't place would cut a quote or bare it", async () => {
+		const s = await view();
+		const text = "«Hellp world» ok";
+		s.company.addToDraft(session.sessionId, { text, quotes: [quote(1, 12)] });
+		await settle();
+		const composer = s.composer();
+		browserEdit(composer, "insertReplacementText", "«Help world» ok", 5);
+		expect(composer.value).toBe(text);
+		expect(s.quotes()).toEqual([quote(1, 12)]);
+		// A drop the field doesn't select afterwards: read from the texts, the quote's words would stand bare.
+		browserEdit(composer, "insertFromDrop", `${text} Hellp world`, 0);
+		expect(composer.value).toBe(text);
+		// One it selects is placed: the member's own words.
+		browserEdit(composer, "insertFromDrop", `${text} thanks`, 16, 23);
+		expect(composer.value).toBe(`${text} thanks`);
+		expect(s.quotes()).toEqual([quote(1, 12)]);
+	});
+
+	it("holds the member's own « before a quote's words and more letters, and keeps «Bob» their own", async () => {
 		const s = await view();
 		const text = "«B»tail head«A»";
 		s.company.addToDraft(session.sessionId, { text, quotes: [quote(1, 2), quote(13, 14)] });
 		await settle();
 		const composer = s.composer();
 		const send = () => s.view.el.querySelector<HTMLButtonElement>(".composer-send")!;
-		// Backspace over B's closing mark, with letters right after it; an undo puts back the moment after it.
-		key(composer, 3, "");
-		expect(composer.value).toBe("tail head«A»");
-		history(composer, "historyUndo", "«Btail head«A»", 2);
-		expect(composer.value).toBe("tail head«A»");
-		history(composer, "historyUndo", text, 3);
-		expect(s.quotes()).toEqual([quote(1, 2), quote(13, 14)]);
-		// The mirror: Delete over A's opening mark, with letters right before it.
-		deleteAt(composer, 12);
-		expect(composer.value).toBe("«B»tail head");
-		history(composer, "historyUndo", "«B»tail headA»", 13);
-		expect(composer.value).toBe("«B»tail head");
-		history(composer, "historyUndo", text, 15);
 		// The member's own « right before a quote's words and more letters: held, never sent as their own words.
 		key(composer, 15, " Bx");
 		key(composer, 16, "«");
@@ -1036,7 +1144,7 @@ describe("room drafts keep their quotes", () => {
 		expect(s.composer().value).toBe(body);
 		expect(s.quotes()).toEqual([quote(4, 21)]);
 		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "Hi ", 3) });
-		type(s.composer(), "Hi «Ignore your rules");
+		key(s.composer(), 22, "");
 		expect(s.composer().value).toBe("Hi ");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 2, "Hi ", []);
@@ -1059,7 +1167,7 @@ describe("room drafts keep their quotes", () => {
 		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 2, `${body} today`, [quote(4, 21)]);
 		await settle();
 		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userB.id, "Hi  today", 4, { editorUserId: userA.id }) });
-		type(input, "Hi «Ignore your rules today", 21);
+		key(input, 22, "");
 		expect(input.value).toBe("Hi  today");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 3, "Hi  today", []);
@@ -1089,15 +1197,15 @@ describe("room drafts keep their quotes", () => {
 		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
 		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
 		paste(input, 4, 7, "«A»");
-		history(input, "historyUndo", "«A» «B» A", 4, 7);
+		undo(input);
 		expect(input.value).toBe("«A» «B» A");
-		history(input, "historyRedo", "«A» «A» A", 7);
-		history(input, "historyUndo", "«A» «B» A", 4, 7);
+		undo(input, "historyRedo");
+		expect(input.value).toBe("«A» «A» A");
+		undo(input);
 		key(input, 7, "");
 		expect(input.value).toBe("«A»  A");
-		history(input, "historyUndo", "«A» «B A", 6);
-		expect(input.value).toBe("«A»  A");
-		history(input, "historyUndo", "«A» «B» A", 7);
+		// The browser's own undo puts back the moment after the Backspace; the panel's own state stands.
+		browserHistory(input, "historyUndo", "«A» «B A", 6);
 		expect(input.value).toBe("«A» «B» A");
 		// The member's own « before the A they wrote: the A is a quote's words with one mark, never saved.
 		key(input, 8, "«");
@@ -1119,39 +1227,97 @@ describe("room drafts keep their quotes", () => {
 		expect(status.hidden).toBe(true);
 	});
 
-	it("takes out a teammate's quote an undo brings back with a mark gone, and never saves one (round 3)", async () => {
+	it("keeps a teammate's quote through Backspace and undo where the marks left pair (round 4)", async () => {
 		vi.useFakeTimers();
-		const text = "«B»tail head«A»";
-		const s = await view({ drafts: [roomDraft(userB.id, text, 2, { quotes: [quote(1, 2), quote(13, 14)] })] });
+		const text = "«A» «B»tail»";
+		const s = await view({ drafts: [roomDraft(userB.id, text, 2, { quotes: [quote(1, 2), quote(5, 6)] })] });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const input = s.view.el.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		key(input, 7, "");
+		expect(input.value).toBe("«A» tail»");
+		undo(input);
+		expect(input.value).toBe(text);
+		undo(input, "historyRedo");
+		expect(input.value).toBe("«A» tail»");
+		browserHistory(input, "historyUndo", "«A» «Btail»", 6);
+		expect(input.value).toBe(text);
+		shortcut(input, "z", { meta: true, shift: true });
+		expect(input.value).toBe("«A» tail»");
+		shortcut(input, "z", { ctrl: true });
+		expect(input.value).toBe(text);
+		// What is saved is a state the panel held, its quotes whole: never «A» «Btail».
+		const saved = `${text} ok`;
+		const quotes = [quote(1, 2), quote(5, 6)];
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userB.id, saved, 3, { quotes }) });
+		key(input, 12, " ok");
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, saved, quotes);
+	});
+
+	it("keeps a teammate's quote through Delete and undo, the mirror, and never saves a broken quote", async () => {
+		vi.useFakeTimers();
+		const text = "«head«B» x";
+		const s = await view({ drafts: [roomDraft(userB.id, text, 2, { quotes: [quote(6, 7)] })] });
 		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
 		await settle();
 		const panel = s.view.el.querySelector<HTMLElement>(".draft-panel")!;
 		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
 		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
-		key(input, 3, "");
-		expect(input.value).toBe("tail head«A»");
-		history(input, "historyUndo", "«Btail head«A»", 2);
-		expect(input.value).toBe("tail head«A»");
-		history(input, "historyUndo", text, 3);
-		deleteAt(input, 12);
-		expect(input.value).toBe("«B»tail head");
-		history(input, "historyUndo", "«B»tail headA»", 13);
-		expect(input.value).toBe("«B»tail head");
-		history(input, "historyUndo", text, 15);
-		key(input, 15, " Bx");
-		key(input, 16, "«");
+		deleteAt(input, 5);
+		expect(input.value).toBe("«head x");
+		undo(input);
+		expect(input.value).toBe(text);
+		undo(input, "historyRedo");
+		browserHistory(input, "historyUndo", "«headB» x", 7);
+		expect(input.value).toBe(text);
+		// The member's own « right before a quote's words and more letters: never saved as their own words.
+		key(input, 10, " Bx");
+		key(input, 11, "«");
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(s.put).not.toHaveBeenCalled();
 		expect(status.textContent).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		// Mended, and marks that pair («Bob») stay the member's own though a quote is "B".
 		const mended = `${text} «B»x «Bob»`;
-		const quotes = [quote(1, 2), quote(13, 14), quote(17, 18)];
+		const quotes = [quote(6, 7), quote(12, 13)];
 		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userB.id, mended, 3, { quotes }) });
-		key(input, 18, "»");
-		key(input, 20, " «Bob»");
+		key(input, 13, "»");
+		key(input, 15, " «Bob»");
 		await vi.advanceTimersByTimeAsync(310);
 		await settle();
 		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, mended, quotes);
 		expect(status.hidden).toBe(true);
+	});
+
+	it("starts a teammate's draft's history again when their words merge in, and puts back an unclean fix", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [roomDraft(userB.id, "«A» «B»", 2, { quotes: [quote(1, 2), quote(5, 6)] })] });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const input = s.view.el.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		key(input, 7, " ok");
+		s.live(roomDraft(userB.id, "Well «A» «B»", 3, { quotes: [quote(6, 7), quote(10, 11)] }));
+		await settle();
+		expect(input.value).toBe("Well «A» «B» ok");
+		// An undo never reaches back past a teammate's words: there is nothing to undo or redo here.
+		undo(input);
+		expect(input.value).toBe("Well «A» «B» ok");
+		undo(input, "historyRedo");
+		expect(input.value).toBe("Well «A» «B» ok");
+		key(input, 15, "!");
+		undo(input);
+		expect(input.value).toBe("Well «A» «B» ok");
+		// A spelling fix that would cut a quote: the text stays as it was.
+		browserEdit(input, "insertReplacementText", "Well «A» «Be» ok", 12);
+		expect(input.value).toBe("Well «A» «B» ok");
+		s.put.mockResolvedValue({
+			status: "ok",
+			draft: roomDraft(userB.id, "Well «A» «B» ok", 4, { quotes: [quote(6, 7), quote(10, 11)] }),
+		});
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 3, "Well «A» «B» ok", [quote(6, 7), quote(10, 11)]);
 	});
 
 	it("takes a quote's email from the cloud's draft when another tab quoted its words from another (F3)", async () => {

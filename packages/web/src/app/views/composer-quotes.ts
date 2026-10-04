@@ -68,6 +68,13 @@ export interface FieldState {
 
 export type HistoryStep = "undo" | "redo";
 
+/** Where an edit begins and how it joins a run of the history (`historyRun`). */
+export interface HistoryRun {
+	readonly kind: string;
+	readonly start: number;
+	readonly closes: boolean;
+}
+
 /** The most states a composer's history keeps. */
 const HISTORY_MAX = 100;
 
@@ -92,7 +99,7 @@ export class FieldHistory {
 	}
 
 	/** The member's edit, once settled: `before` is the text it was made in, `next` what the field holds now. */
-	edited(before: string, next: FieldState, run?: { readonly kind: string; readonly start: number; readonly closes: boolean }): void {
+	edited(before: string, next: FieldState, run?: HistoryRun): void {
 		if (before !== this.#present.text) this.#restart({ text: before, caret: run?.start ?? next.caret });
 		if (next.text === this.#present.text) {
 			this.#present = next;
@@ -105,7 +112,9 @@ export class FieldHistory {
 		}
 		this.#redo = [];
 		this.#present = next;
-		this.#run = run && !run.closes ? { kind: run.kind, end: run.kind === "composing" ? run.start : next.caret } : undefined;
+		// A letter being composed is one run from where composing began, however its text changes.
+		const end = run?.kind === "composing" ? run.start : next.caret;
+		this.#run = run && !run.closes ? { kind: run.kind, end } : undefined;
 	}
 
 	/** Undo or redo from `current`, the text the composer holds: the state to show, or undefined when there is none
@@ -134,10 +143,7 @@ export class FieldHistory {
 
 /** How an edit joins the history's runs: typing, deleting or composing a letter, from where it began. A typed space
  * or line ends a typing run. */
-export function historyRun(
-	edit: FieldEdit | undefined,
-	event: Event,
-): { kind: string; start: number; closes: boolean } | undefined {
+export function historyRun(edit: FieldEdit | undefined, event: Event): HistoryRun | undefined {
 	if (!edit) return undefined;
 	const data = (event as InputEvent).data;
 	if (/Composition/.test(edit.inputType)) return { kind: "composing", start: edit.start, closes: false };
@@ -158,7 +164,11 @@ export function historyStep(event: Event): HistoryStep | undefined {
  * (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y) and the browser's own undo and redo (a menu, a gesture), which it cancels.
  * A browser that doesn't let the page cancel those applies its own first; the field's `input` handler then puts the
  * composer's state back (`historyStep`). */
-export function watchHistory(input: HTMLTextAreaElement, signal: AbortSignal, step: (which: HistoryStep) => void): void {
+export function watchHistory(
+	input: HTMLTextAreaElement,
+	signal: AbortSignal,
+	step: (which: HistoryStep) => void,
+): void {
 	input.addEventListener(
 		"keydown",
 		(event) => {
