@@ -1940,33 +1940,41 @@ writes it in the same transaction as the files:
 **6. Wakes: the folder-v2 worker drain** (F2 builds it, the coordinator agreed 3 October). The commit
 inserts no wake: the hook has no call at core §3 step 10, and a refused wake must never roll back the
 files. So a dispatch or a follow-up leaves its row active with no occurrence, and the drain starts it.
-- `qorpera_folder_drain_worker_wakes(environment, limit)`: one company in its own transaction (never
-  inside a caller's transaction that holds admission). In order:
-  1. `qorpera_folder_company_enter(environment, profile, targets, true)`: the pause (a paused company
-     refuses with 55000, and the due list leaves paused companies out), the fence `KEY SHARE` with the pause
-     read again, the company row at rank 0, and the targets at their ranks: each requester's member row
-     (rank 1, `KEY SHARE`), each parent agent's staff row (rank 2, `KEY SHARE`) and execution authority
-     (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers (`FOR NO KEY UPDATE`) at rank 5. The
-     workers are the due ones and every other waiting worker of their parents, so a revival's set of up to
-     four is always among the locked rows;
+- The drain is the shared folder drains' `workers` (LISTENER.md §9; F2-5b-3, migration 20260930003100), first in the
+  orchestrator's pass, before the listener and the materializer.
+- `qorpera_folder_workers_company(environment, limit ≤ 32)`: one company in its own transaction (never inside a
+  caller's transaction that holds admission), at read committed, answering `{state: done | idle | paused | busy |
+  deleting | not_folder, started, failed, cancelled, revivals, suppressed, undeliverable, skipped}`. In order:
+  1. `qorpera_folder_company_enter(environment, profile, targets, false)`, then the pause and the deletion read
+     again under the fence (answers, never 55000): the fence `KEY SHARE`, the company row at rank 0, and the
+     targets at their ranks: each requester's member row (rank 1, `KEY SHARE`), each parent agent's staff row (rank
+     2, `KEY SHARE`) and execution authority (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers
+     (`FOR UPDATE`, so a row the drain updates inside a block is never key-shared by another) at rank 5. The workers
+     are the due ones and up to four waiting workers of each waiting one's parent, so a revival's set is always among
+     the locked rows; a lock it waits on past 2 seconds answers `busy`;
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
   4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
-     workers (`todo_cancelled`, which no queue does yet); and revival with today's rules (`each`, `batch`,
+     workers (`todo_cancelled`, which no queue does yet), each cancel taking the worker's queued wake `NOWAIT` (one
+     P28's materializer holds keeps the worker for the next pass); and revival with today's rules (`each`, `batch`,
      at most four results, one revival of a parent at a time). A revival block that fails (42501, P0002,
-     55000) marks its workers undeliverable, as today. The drain never touches a todo row. A pass handles at
-     most 32 workers, within core §3's 64 subtransactions.
+     55000), or whose wake is cancelled at insert, marks its workers undeliverable. An erased worker's waiting
+     results are suppressed (their text is gone). Coding workers are started by their coding turns and only
+     revived here. The drain never touches a todo row. A pass handles at most 32 due workers, within core §3's 64
+     subtransactions.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
   - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
-- `qorpera_folder_worker_wakes_due()` lists the companies with due work.
-- **The seam for P28** (written into core §11 C4): the `folder-v2` materializer calls the drain for each
-  company `qorpera_folder_worker_wakes_due()` lists, in its own transaction, before it materializes that
-  company's wakes; P28's acceptance includes "a dispatch runs and its revival returns". Until P28 nothing
-  calls it, and no `folder-v2` run exists either.
+- `qorpera_folder_workers_due(after, limit)` lists, a page at a time, the folder-v2 environments with a due worker
+  (`qorpera_folder_worker_due`, the same predicate the drain uses, so it leaves out companies the drain would only
+  answer `idle` for), leaving out paused companies and those being deleted.
+- **The seam** (core §11 C4, corrected 3 October): the orchestrator's shared folder-drains step runs the drain for
+  each company the due list names, in its own request, before the materializer's list, so a worker started or a
+  parent revived this pass is materialized this pass; the edge function's `FOLDER_DRAINS` and the orchestrator's
+  `CLOUD_FOLDER_DRAINS` name it `workers`.
 
 **7. The runtime.**
 - `manage_worker` on `folder-v2`: dispatch, follow-up and decide build the files with the shared writers,

@@ -993,7 +993,8 @@ Decisions:
   same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
   the definition before 3f (824 H).
-- **Decided with 3f** (§6.1): the machine-event drain and the worker drain on `folder-v2` go with 3i. Both deliver to a
+- **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
+  the shared folder drains' `workers`). Both deliver to a
   parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
   `folder-v2` run is not told when its machine is running or its command ended). Who creates a `folder-v2` office stays
   with 3j.
@@ -1201,7 +1202,7 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
   row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
 - **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
-  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event and worker drains.
+  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
