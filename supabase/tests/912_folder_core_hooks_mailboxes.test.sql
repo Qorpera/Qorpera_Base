@@ -210,10 +210,19 @@ begin
 	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', v_path, 'hook', c -> 'settings',
 		'Payments, and what the Analyst does with them.', (c -> 'current' ->> 'version')::uuid), 1, 'saved');
 	perform public.qorpera_finish_connection_file('85200000-0000-4000-8000-00000000000a', v_hook, 2, null, 'hook');
+	-- A unit writing the hook's file takes the hook FOR SHARE at rank 5, so a removal waits for it (919 races it).
+	if not exists (select 1 from public.qorpera_folder_structured_targets('70400000-0000-4000-8000-000000000020', pg_temp.platform(),
+		jsonb_build_array(pg_temp.write(v_path, 'hook', 'x', pg_temp.hook_parse('hook', c -> 'settings', ''))))
+		where rank = 5 and tbl = 'qorpera_event_hooks' and key = v_hook::text and mode = 'share') then
+		raise exception 'A hook''s file write does not take its hook at rank 5'; end if;
 	-- Removed: the file goes, by the platform, and its row retires.
 	perform pg_temp.as_owner();
 	perform public.qorpera_set_event_hook_status(v_hook, 'removed');
 	perform pg_temp.as_service();
+	-- A write that comes after the removal sees it under its lock and is refused.
+	if not pg_temp.refused(pg_temp.hook_write(pg_temp.platform(), 'e1-after-removal', v_path, 'hook', c -> 'settings',
+		'Late.', pg_temp.version(v_path))) then
+		raise exception 'A file was written for a removed hook'; end if;
 	c := pg_temp.claim();
 	if c ->> 'present' <> 'false' or c -> 'settings' <> 'null'::jsonb or c ->> 'body' is not null
 		or c -> 'current' ->> 'path' <> v_path then
@@ -228,6 +237,21 @@ begin
 		raise exception 'A finish is by kind'; end if;
 end $$;
 
+-- A new mail domain marks every folder-v2 mailbox, whose file shows its address.
+do $$
+declare v_box uuid := current_setting('qorpera_test.box')::uuid; c jsonb;
+begin
+	perform pg_temp.as_service();
+	update public.qorpera_mail_settings set domain = 'mail.example.test';
+	if pg_temp.hook_marks('mailbox', v_box) <> 1 then raise exception 'A new mail domain marks the mailbox''s file'; end if;
+	c := pg_temp.claim();
+	if c ->> 'subjectKind' <> 'mailbox' or c -> 'settings' ->> 'address' <> 'support@mail.example.test'
+		or c -> 'current' ->> 'path' <> 'connections/mailbox-support.md' then
+		raise exception 'The mailbox''s claim after a new domain: %', c; end if;
+	perform pg_temp.expect(pg_temp.hook_write(pg_temp.platform(), c ->> 'operationKey', 'connections/mailbox-support.md', 'mailbox',
+		c -> 'settings', 'Customer support.', (c -> 'current' ->> 'version')::uuid), 1, 'saved');
+end $$;
+
 -- 5. The company and the platform's own reach ----------------------------------------------------------------------------
 
 do $$
@@ -237,7 +261,7 @@ begin
 		foreach v_function in array array['public.qorpera_folder_hook_file_state(text,uuid,uuid)',
 			'public.qorpera_company_state_hook_rules(uuid,uuid,jsonb,text,text,jsonb)',
 			'public.qorpera_company_state_index_hook(uuid,uuid,uuid,text,uuid,text,jsonb)',
-			'public.qorpera_folder_hook_file_mark()'] loop
+			'public.qorpera_folder_hook_file_mark()', 'public.qorpera_folder_mailbox_domain_mark()'] loop
 			if has_function_privilege(v_role, v_function, 'EXECUTE') then
 				raise exception '% may execute %', v_role, v_function; end if;
 		end loop;

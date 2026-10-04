@@ -18,7 +18,11 @@
 -- * P22's marks and work gain subject_kind ('vault', 'hook' or 'mailbox'), part of the work row's key (A1): the claim
 --   reads the state by kind (qorpera_folder_hook_file_state for a hook or a mailbox), never by "no secret has this id".
 --   P22a's invariants stay: a mark is a plain insert that waits on nothing, and the claim never touches a hook row.
---   Triggers on qorpera_event_hooks mark a folder-v2 hook due when a field its file shows changes.
+--   Triggers on qorpera_event_hooks mark a folder-v2 hook due when a field its file shows changes, and a new mail domain
+--   marks every folder-v2 mailbox (its file shows its address).
+-- * A unit that writes a hook's or a mailbox's file takes the hook FOR SHARE at rank 5, so a removal and a file write
+--   serialize: either the removal waits for the write and the next claim deletes the file, or the write sees the hook
+--   removed and is refused.
 -- * Creating a hook or a mailbox, and pausing, resuming or removing one, get a folder-v2 branch in core §3's order: the
 --   fence and the company row KEY SHARE and the member at rank 1 (qorpera_folder_company_enter), the hook row FOR NO KEY
 --   UPDATE at rank 5 (qorpera_event_hooks joins the structured lock last, where E2's routine saves will take it FOR
@@ -324,6 +328,21 @@ select pg_temp.e1_replace('public.qorpera_folder_structured_verify(uuid,uuid)'::
 					and e.path = h.folder_path))
 		or exists (select 1 from public.qorpera_folder_company_index i$new$);
 
+-- The targets: a unit that writes a hook's or a mailbox's file takes the hook FOR SHARE at rank 5 (review r1 F1). A removal
+-- takes it FOR NO KEY UPDATE there, so it waits for the write to commit (and the writer that claims the removal then finds
+-- the file and deletes it), or the write waits for the removal and its rules see the hook removed. Without the lock a file
+-- written after a writer saw "no file" for a removed hook would stay with nothing due to remove it.
+select pg_temp.e1_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+	$old$		-- 20260930016000 (P16): the table rows and the company index row a unit writes or relies on, at rank 5.$old$,
+	$new$		-- 20260930060000 (E1): the hook of a hook's or a mailbox's file the unit writes, FOR SHARE at rank 5.
+		for v_entry in select e.value from jsonb_array_elements(case when v_op in ('write','new_folder')
+				and jsonb_typeof(v_unit -> 'structured') = 'array' then v_unit -> 'structured' else '[]'::jsonb end) e
+			where e.value ->> 'kind' in ('hook','mailbox') and coalesce(e.value -> 'parse' ->> 'id', '') ~ c_uuid loop
+			rank := 5; tbl := 'qorpera_event_hooks'; key := v_entry -> 'parse' ->> 'id'; mode := 'share';
+			return next;
+		end loop;
+		-- 20260930016000 (P16): the table rows and the company index row a unit writes or relies on, at rank 5.$new$);
+
 -- The lock: hooks at rank 5, after every other table there (E2's routine saves take them FOR SHARE), keyed by the hook id.
 select pg_temp.e1_replace('public.qorpera_folder_structured_lock(uuid,jsonb,smallint,smallint)'::regprocedure,
 	$old$			'qorpera_folder_table_index' /* 20260930016000 (P16) */], t ->> 'tbl'),$old$,
@@ -390,6 +409,26 @@ create trigger qorpera_folder_hook_file_mark_update
 	for each row when (old.status is distinct from new.status or old.name is distinct from new.name
 		or old.max_body_bytes is distinct from new.max_body_bytes or old.per_minute is distinct from new.per_minute)
 	execute function public.qorpera_folder_hook_file_mark();
+
+-- A mailbox's file shows its address, which carries the mail domain: a new domain marks every live folder-v2 mailbox due
+-- (review r1 F2). An operator's change, rare; its marks key-share the companies' rows like any mark.
+create function public.qorpera_folder_mailbox_domain_mark()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+	-- 20260930060000 (E1).
+	insert into public.qorpera_folder_connection_file_marks(secret_id, profile_id, environment_id, subject_kind)
+	select hook.id, hook.profile_id, hook.environment_id, 'mailbox'
+	from public.qorpera_event_hooks as hook
+	join public.qorpera_company_mailboxes as box on box.hook_id = hook.id and box.removed_at is null
+	where hook.proof = 'mail' and hook.status <> 'removed' and public.qorpera_environment_is_folder_v2(hook.environment_id)
+	order by hook.id;
+	return null;
+end $$;
+revoke all on function public.qorpera_folder_mailbox_domain_mark() from public, anon, authenticated, service_role;
+create trigger qorpera_folder_mailbox_domain_mark
+	after update of domain on public.qorpera_mail_settings
+	for each row when (old.domain is distinct from new.domain)
+	execute function public.qorpera_folder_mailbox_domain_mark();
 
 -- The claim, by kind: P22a's, with the kind part of every key, the state read by kind, and P14a's creation guard kept.
 create or replace function public.qorpera_claim_connection_file(p_worker uuid, p_lease_seconds integer)
@@ -764,6 +803,7 @@ begin
 		'public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)',
 		'public.qorpera_folder_structured_verify(uuid,uuid)',
 		'public.qorpera_folder_structured_lock(uuid,jsonb,smallint,smallint)',
+		'public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)',
 		'public.qorpera_folder_erase(uuid,jsonb,jsonb,text)', 'public.qorpera_folder_connection_file_state(uuid)',
 		'public.qorpera_claim_connection_file(uuid,integer)',
 		'public.qorpera_finish_connection_file(uuid,uuid,bigint,text,text)',
