@@ -139,6 +139,7 @@ describe("creating an agent", () => {
 		expect(await f.fake.folder.stateFolders(f.signal)).toEqual({
 			agents: [{ staffAgentId: creation.id, file: "agents/ledger/agent.md" }],
 			groups: [],
+			routines: [],
 		});
 	});
 
