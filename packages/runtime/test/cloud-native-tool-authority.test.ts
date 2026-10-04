@@ -7,6 +7,8 @@ import {
 	parseCloudNativeToolAuthority,
 	parseCloudNativeToolBinding,
 } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -149,18 +151,101 @@ it("binds private runs to the exact requesting member and runtime bundle", () =>
 		).toThrow();
 });
 
-it("bounds an uncooperative authority transport before admission", async () => {
+it("bounds an uncooperative authority transport before admission, asking again within the authority window", async () => {
 	vi.useFakeTimers();
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
 	const { binding } = nativeToolAuthorityFixture();
 	const request = vi.fn<CloudNativeToolAuthorityReader["describeToolAuthority"]>(
 		async () => new Promise<never>(() => undefined),
 	);
 	const opened = CloudNativeToolRun.open(binding, { describeToolAuthority: request }, new AbortController().signal);
 	const rejected = expect(opened).rejects.toThrow("Cloud tool authority unavailable");
-	await vi.advanceTimersByTimeAsync(5000);
+	// Each attempt waits 5 s, then pauses 250 ms doubling to 2 s; the window is 30 s from the first: attempts start at
+	// 0, 5.25, 10.75, 16.75 and 23.75 s, and the fifth's end (28.75 s) plus its pause would pass the window.
+	for (let step = 0; step < 130; step += 1) {
+		now += 250;
+		await vi.advanceTimersByTimeAsync(250);
+	}
 	await rejected;
-	expect(request.mock.calls[0]?.[1].aborted).toBe(true);
+	expect(request).toHaveBeenCalledTimes(5);
+	expect(request.mock.calls.every((call) => call[1].aborted)).toBe(true);
 	expect(vi.getTimerCount()).toBe(0);
+});
+
+it("asks a lost or late authority read again and keeps the run (control calls, 4 Oct 2026)", async () => {
+	vi.useFakeTimers();
+	const { run, reader, authority } = await admit();
+	// A gateway error, then a read slower than its 5 s, then the answer: the run never closes.
+	reader.describeToolAuthority
+		.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("transport_unavailable"))
+		.mockImplementationOnce(async () => new Promise<never>(() => undefined))
+		.mockResolvedValueOnce(structuredClone(authority));
+	const check = run.assertActive(run.signal);
+	await vi.advanceTimersByTimeAsync(250);
+	await vi.advanceTimersByTimeAsync(5_000);
+	await vi.advanceTimersByTimeAsync(500);
+	await expect(check).resolves.toBeUndefined();
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(4);
+	expect(run.signal.aborted).toBe(false);
+});
+
+it("closes at once on a refusal, and asks no more once the authority would lapse", async () => {
+	vi.useFakeTimers();
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const fixture = nativeToolAuthorityFixture();
+	const reader = { describeToolAuthority: vi.fn(async () => ({ ...fixture.authority, validForMs: 2000 })) };
+	const run = await CloudNativeToolRun.open(fixture.binding, reader, new AbortController().signal);
+	runs.push(run);
+	// Transient failures are asked again only while the authority read at 0 holds (2 s).
+	reader.describeToolAuthority.mockRejectedValue(new CloudRuntimeDiagnosticError("transport_unavailable"));
+	const check = run.assertActive(run.signal);
+	const rejected = expect(check).rejects.toThrow("Cloud tool authority unavailable");
+	for (let step = 0; step < 12; step += 1) {
+		now += 250;
+		await vi.advanceTimersByTimeAsync(250);
+	}
+	await rejected;
+	expect(run.signal.aborted).toBe(true);
+	expect(reader.describeToolAuthority.mock.calls.length).toBeLessThan(10);
+	// A refused read is never asked again.
+	const second = await admit();
+	second.reader.describeToolAuthority.mockRejectedValueOnce(new CloudControlRpcRefused("55000", "Company execution is paused"));
+	await expect(second.run.assertActive(second.run.signal)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(second.reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+	expect(second.run.signal.aborted).toBe(true);
+});
+
+it("asks another call's read again only within its budget", async () => {
+	vi.useFakeTimers();
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	// Both clocks move together, in small steps, so a timer set late in a step still fires in the next.
+	const tick = async (ms: number) => {
+		for (let passed = 0; passed < ms; passed += 50) {
+			now += 50;
+			await vi.advanceTimersByTimeAsync(50);
+		}
+	};
+	const { run, authority } = await admit();
+	// A fast 503, then the answer: within 3.5 s.
+	const fence = vi
+		.fn<(signal: AbortSignal) => Promise<unknown>>()
+		.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("transport_unavailable"))
+		.mockResolvedValueOnce(structuredClone(authority));
+	const fenced = run.assertActiveWith(fence, run.signal, 3_500, 3_500);
+	await tick(300);
+	await expect(fenced).resolves.toBe(true);
+	expect(fence).toHaveBeenCalledTimes(2);
+	// A read that uses up the budget is not asked again: the run stops.
+	const slow = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => new Promise<never>(() => undefined));
+	const stopped = run.assertActiveWith(slow, run.signal, 3_500, 3_500);
+	const rejected = expect(stopped).rejects.toThrow("Cloud tool authority unavailable");
+	await tick(4_000);
+	await rejected;
+	expect(slow).toHaveBeenCalledTimes(1);
+	expect(run.signal.aborted).toBe(true);
 });
 
 it("retains the independent lease deadline while refresh is stalled", async () => {

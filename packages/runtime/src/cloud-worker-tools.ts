@@ -12,6 +12,7 @@ import {
 	type CloudToolContext,
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
+	relayControlRefusal,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeObservationSpan, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
@@ -241,6 +242,7 @@ export function cloudWorkerTools(
 			throw new Error("Worker tool identity differs");
 		context.signal.throwIfAborted();
 	};
+	// Each tool's first effect: a refusal of it reaches the model as the tool's answer (control calls, 4 Oct 2026).
 	const call = (
 		method: "qorpera_manage_agent_todo" | "qorpera_manage_agent_worker" | "qorpera_report_worker_result",
 		request: Record<string, unknown>,
@@ -249,7 +251,7 @@ export function cloudWorkerTools(
 		cloudToolRequest(
 			(requestSignal) => control.call(method, { p_binding: admitted, p_request: request }, requestSignal),
 			signal,
-		) as Promise<Record<string, unknown> | null>;
+		).catch(relayControlRefusal) as Promise<Record<string, unknown> | null>;
 
 	const publish = async (
 		value: unknown,

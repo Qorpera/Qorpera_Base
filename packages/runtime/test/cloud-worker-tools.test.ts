@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudCompanyPathRpcRefusal } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import type { CloudFolderTodos } from "@qorpera/runtime/cloud-folder-todos";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
 	cloudWorkerToolFilter,
 	cloudWorkerTools,
@@ -533,6 +536,37 @@ describe("agent todo and worker tools", () => {
 				expect(body(refused).status).toBe("denied");
 			}
 			expect(f.call.mock.calls.length).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("answers a refusal of its call with the database's words, once, never as a lost connection", async () => {
+		const f = await fixture();
+		try {
+			// The folder-v2 worker rules refuse a coding dispatch (55000); PostgREST answers 500. The agent is told why and
+			// the call is not made again (control calls, 4 Oct 2026).
+			f.call.mockRejectedValueOnce(
+				new CloudControlRpcRefused("55000", "Coding workers come to the company folder with coding machines"),
+			);
+			const refused = await f.boundary.invoke("w1", "qorpera", "manage_worker", dispatch);
+			expect(body(refused)).toMatchObject({
+				status: "denied",
+				content: { text: "REFUSED: NOT_AVAILABLE: Coding workers come to the company folder with coding machines" },
+			});
+			expect(f.call).toHaveBeenCalledTimes(1);
+			// A 42501 with words is relayed the same way; one whose words are not plain says only that it is not available.
+			f.call.mockRejectedValueOnce(new CloudCompanyPathRpcRefusal("Run is unavailable"));
+			const denied = await f.boundary.invoke("w2", "qorpera", "manage_worker", { ...dispatch, operationKey: "d2" });
+			expect(body(denied).content.text).toBe("REFUSED: NOT_AVAILABLE: Run is unavailable");
+			f.call.mockRejectedValueOnce(new CloudControlRpcRefused("0A000", "Settings \u2192 General has no \u{1F600} here"));
+			const odd = await f.boundary.invoke("w3", "qorpera", "manage_worker", { ...dispatch, operationKey: "d3" });
+			expect(body(odd).content.text).toBe("REFUSED: NOT_AVAILABLE: this is not available now");
+			// Anything else stays an unknown outcome.
+			f.call.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("transport_unavailable"));
+			const lost = await f.boundary.invoke("w4", "qorpera", "manage_worker", { ...dispatch, operationKey: "d4" });
+			expect(body(lost)).toMatchObject({ status: "unconfirmed", content: { text: "TOOL_OUTCOME_UNCONFIRMED" } });
+			expect(f.call).toHaveBeenCalledTimes(4);
 		} finally {
 			f.run.close();
 		}

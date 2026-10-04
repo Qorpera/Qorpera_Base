@@ -18,6 +18,7 @@ import {
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	cloudToolJsonText,
+	relayControlRefusal,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
@@ -596,11 +597,12 @@ export function cloudRoutineTools(
 					ownDynamicRoutine.settled();
 				return changed.content;
 			}
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call("qorpera_manage_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
 				context.signal,
-			);
+			).catch(relayControlRefusal);
 			const r = result as Record<string, unknown> | null;
 			if (
 				!r ||
@@ -711,7 +713,7 @@ export function cloudRoutineDecisionTool(
 				(requestSignal) =>
 					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
 				context.signal,
-			);
+			).catch(relayControlRefusal);
 			const r = result as Record<string, unknown> | null;
 			const receipt =
 				r?.schema === "qorpera.agent-routine-receipt/v1" &&

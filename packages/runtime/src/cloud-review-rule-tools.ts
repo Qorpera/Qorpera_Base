@@ -5,7 +5,12 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudToolJsonText,
+	relayControlRefusal,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9_:.-]{1,128}$/;
@@ -79,6 +84,7 @@ export function cloudReviewRuleTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as { operationKey: string; when: string };
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call(
@@ -87,7 +93,7 @@ export function cloudReviewRuleTools(
 						requestSignal,
 					),
 				context.signal,
-			);
+			).catch(relayControlRefusal);
 			const r = result as Record<string, unknown> | null;
 			const rule = r?.rule as Record<string, unknown> | null | undefined;
 			if (

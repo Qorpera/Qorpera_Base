@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -6,7 +7,7 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
+import { type CloudNativeTool, relayControlRefusal } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_WAKE_SCHEMA = "qorpera.wake-envelope/v1";
@@ -774,6 +775,7 @@ async function callCoworkerMessage(
 	message: CloudCoworkerMessage,
 	signal: AbortSignal,
 ): Promise<CloudCoworkerReceipt> {
+	// The send is the tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
 	const value = await cloudToolRequest(
 		(requestSignal) =>
 			control.call(
@@ -788,7 +790,7 @@ async function callCoworkerMessage(
 				requestSignal,
 			),
 		signal,
-	);
+	).catch(relayControlRefusal);
 	const receipt = closed(value, ["schema", "runId", "receiptId", "occurrenceId", "recipientStaffId", "status"]);
 	if (
 		receipt.schema !== "qorpera.coworker-send/v1" ||
@@ -993,7 +995,18 @@ export class HttpCloudWakeControl implements CloudWakeControl {
 				signal: requestSignal,
 			});
 			const bytes = await readBoundedCloudResponse(response, response.ok ? 96 * 1024 : 4096, requestSignal);
-			if (!response.ok) throw new Error("Wake authority unavailable");
+			if (!response.ok) {
+				// Control calls (4 Oct 2026): a refusal the database raised stays a refusal, with its words.
+				let refused: { code: string; message: string } | undefined;
+				try {
+					refused = cloudPostgrestError(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+				} catch {
+					refused = undefined;
+				}
+				if (refused && cloudControlRefusalCode(refused.code))
+					throw new CloudControlRpcRefused(refused.code, refused.message, "Wake authority unavailable");
+				throw new Error("Wake authority unavailable");
+			}
 			try {
 				return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
 			} catch {

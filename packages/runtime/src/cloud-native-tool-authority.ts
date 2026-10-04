@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
@@ -282,6 +283,7 @@ export class CloudNativeToolRun {
 	 * Rechecks from the cloud after queuing and again before releasing tool data.
 	 * `timeoutMs` widens the read's deadline when a caller sends it together with
 	 * another read of the same run, which the database serialises on the job row.
+	 * A read whose answer is lost or late is asked again (see `retry`); a refusal closes the run at once.
 	 */
 	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
 		await this.#check(
@@ -297,14 +299,49 @@ export class CloudNativeToolRun {
 	 * The same checks before the call (not closed, the last authority not lapsed) and after
 	 * it (same identity, not expired, new deadline), in the same order as every other check.
 	 * Returns false, changing nothing, when `read` returns undefined: the database lacks the
-	 * call and nothing ran.
+	 * call and nothing ran. With `budgetMs`, every attempt together ends within that budget (a model request's
+	 * fence answers within its result fence's deadline); `read` must then be safe to repeat.
 	 */
 	async assertActiveWith(
 		read: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		timeoutMs?: number,
+		budgetMs?: number,
 	): Promise<boolean> {
-		return this.#check(read, signal, timeoutMs, true);
+		return this.#check(read, signal, timeoutMs, true, budgetMs);
+	}
+
+	/**
+	 * Asks an idempotent read of this run again while its answer is lost or late (a timeout, a connection or gateway
+	 * error, a serialization failure, a lock or statement timeout), pausing 250 ms doubling to 2 s, until the run's
+	 * current authority would lapse (its validity, which the cloud bounds by the run's lease) or, before the first
+	 * authority, within the authority window; or within `budgetMs`. A refusal, a cancellation, or any other failure is
+	 * thrown at once. A slow database is not a stopped run (control calls, 4 Oct 2026).
+	 */
+	async retry<T>(
+		read: (signal: AbortSignal) => Promise<T>,
+		signal: AbortSignal,
+		timeoutMs?: number,
+		budgetMs?: number,
+	): Promise<{ value: T; started: number }> {
+		const combined = AbortSignal.any([signal, this.signal]);
+		const begun = performance.now();
+		const lapse = this.#identity ? this.#deadline : begun + CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS;
+		const limit = budgetMs === undefined ? lapse : Math.min(lapse, begun + budgetMs);
+		for (let attempt = 0; ; attempt += 1) {
+			combined.throwIfAborted();
+			const started = performance.now();
+			const remaining = Math.floor(limit - started);
+			try {
+				const attemptMs = budgetMs === undefined ? timeoutMs : Math.min(timeoutMs ?? remaining, remaining);
+				if (attemptMs !== undefined && attemptMs < 1) throw new Error("Cloud tool authority unavailable");
+				return { value: await cloudToolRequest(read, combined, attemptMs), started };
+			} catch (error) {
+				const pause = cloudControlBackoffMs(attempt);
+				if (combined.aborted || !cloudControlRetryable(error) || performance.now() + pause >= limit) throw error;
+				await cloudControlPause(pause, combined);
+			}
+		}
 	}
 
 	async #check(
@@ -312,14 +349,15 @@ export class CloudNativeToolRun {
 		signal: AbortSignal,
 		timeoutMs: number | undefined,
 		unavailableIsUndefined = false,
+		budgetMs?: number,
 	): Promise<boolean> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		let applied = false;
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
-			const started = performance.now();
-			const value = await cloudToolRequest(read, combined, timeoutMs);
+			// The attempt that answered dates the authority it read.
+			const { value, started } = await this.retry(read, combined, timeoutMs, budgetMs);
 			if (unavailableIsUndefined && value === undefined) return;
 			this.#apply(value, started, combined);
 			applied = true;

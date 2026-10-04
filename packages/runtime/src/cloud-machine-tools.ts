@@ -19,7 +19,12 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudToolJsonText,
+	relayControlRefusal,
+} from "./cloud-native-tool-boundary.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
@@ -675,7 +680,10 @@ export function cloudMachineTools(options: {
 		},
 		async execute(value, context) {
 			check(context);
-			const result = await manage({ action, machine: (value as { machine: string }).machine }, context.signal);
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
+			const result = await manage({ action, machine: (value as { machine: string }).machine }, context.signal).catch(
+				relayControlRefusal,
+			);
 			if (
 				result.schema !== "qorpera.machine-change/v1" ||
 				(result.machine === undefined) === (result.refused === undefined)
