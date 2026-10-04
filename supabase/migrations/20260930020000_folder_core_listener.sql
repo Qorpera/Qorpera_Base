@@ -510,7 +510,10 @@ begin
 		if public.qorpera_company_deleting(v_profile) then
 			return jsonb_build_object('schema', c_schema, 'state', 'deleting'); end if;
 		-- 3. The lease: the cursor row, made after the fence, FOR UPDATE SKIP LOCKED; moved since the read: another step's.
-		insert into public.qorpera_folder_listener_cursors(environment_id) values (p_environment_id) on conflict do nothing;
+		-- Made only when absent: an insert that meets a row another drain holds waits for it, where the lease must skip.
+		if not exists (select 1 from public.qorpera_folder_listener_cursors where environment_id = p_environment_id) then
+			insert into public.qorpera_folder_listener_cursors(environment_id) values (p_environment_id) on conflict do nothing;
+		end if;
 		select processed_seq into v_cursor from public.qorpera_folder_listener_cursors
 		where environment_id = p_environment_id for update skip locked;
 		if not found or v_cursor <> v_start then return jsonb_build_object('schema', c_schema, 'state', 'busy'); end if;
