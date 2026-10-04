@@ -186,18 +186,57 @@ probe_sent() {
 	nft delete table bridge qae2b_probe
 	[[ $out =~ packets\ [1-9] ]]
 }
-# Gives m1's card another MAC and keeps its address, route and the exit as a static neighbour. m1's own network
-# service is stopped first: on a new MAC it would drop the hand-set route (a probe would then never leave).
-set_mac() {
-	in_m m1 sh -c "systemctl stop systemd-networkd.socket systemd-networkd 2>/dev/null || true
-		ip link set eth0 down; ip link set eth0 address $1; ip link set eth0 up; ip addr replace $a1/16 dev eth0
-		ip route replace default via 10.210.0.1 dev eth0 onlink; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
-}
-# Its own MAC back, and its network service again.
-own_mac() {
-	set_mac "$mac1"
-	in_m m1 systemctl start systemd-networkd 2>/dev/null || true
-	wait_for "reach m1 198.51.100.1 80" 150
+cat >"$work/spoof.py" <<'EOF'
+import socket, struct, sys
+# argv: kind ... from inside a machine (eth0). garp IP [SHA]: an ARP reply claiming IP; frame MAC: a frame with that
+# source MAC; decline OWN_IP CHADDR ADDRESS: a DHCPDECLINE naming CHADDR; syn: see below.
+own = bytes.fromhex(open("/sys/class/net/eth0/address").read().strip().replace(":", ""))
+raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+raw.bind(("eth0", 0))
+kind = sys.argv[1]
+if kind == "garp":
+    ip = socket.inet_aton(sys.argv[2])
+    sha = bytes.fromhex(sys.argv[3].replace(":", "")) if len(sys.argv) > 3 else own
+    for op in (1, 2):
+        raw.send(b"\xff" * 6 + own + b"\x08\x06" + struct.pack("!HHBBH", 1, 0x0800, 6, 4, op) + sha + ip + b"\xff" * 6 + ip)
+elif kind == "syn":
+    # Three TCP SYNs as whole frames: source MAC argv[2], to MAC argv[3], from argv[4] to argv[5] port argv[6]. A raw
+    # frame leaves the card whatever its routes and neighbours are.
+    src, dst = socket.inet_aton(sys.argv[4]), socket.inet_aton(sys.argv[5])
+    def csum(b):
+        b += b"\0" * (len(b) % 2)
+        t = sum(struct.unpack("!%dH" % (len(b) // 2), b))
+        while t >> 16:
+            t = (t & 0xffff) + (t >> 16)
+        return ~t & 0xffff
+    for n in range(3):
+        tcp = struct.pack("!HHIIBBHHH", 40000 + n, int(sys.argv[6]), 7, 0, 5 << 4, 0x02, 64240, 0, 0)
+        tcp = tcp[:16] + struct.pack("!H", csum(src + dst + struct.pack("!BBH", 0, 6, len(tcp)) + tcp)) + tcp[18:]
+        ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 100 + n, 0, 64, 6, 0, src, dst)
+        ip = ip[:10] + struct.pack("!H", csum(ip)) + ip[12:]
+        raw.send(bytes.fromhex(sys.argv[3].replace(":", "")) + bytes.fromhex(sys.argv[2].replace(":", "")) + b"\x08\x00" + ip + tcp)
+elif kind == "frame":
+    raw.send(b"\xff" * 6 + bytes.fromhex(sys.argv[2].replace(":", "")) + b"\x08\x00" + b"\x45" + b"\x00" * 45)
+elif kind == "decline":
+    # A whole frame, from the machine's own MAC and address and from port 68 (dnsmasq answers only that), to the
+    # exit's MAC (argv[5]): only the chaddr names another machine.
+    zero = b"\0" * 4
+    bootp = struct.pack("!BBBBIHH4s4s4s4s", 1, 1, 6, 0, 0x5150, 0, 0, zero, zero, zero, zero)
+    bootp += bytes.fromhex(sys.argv[3].replace(":", "")) + b"\0" * 202 + b"\x63\x82\x53\x63"
+    bootp += bytes([53, 1, 4, 50, 4]) + socket.inet_aton(sys.argv[4]) + bytes([54, 4]) + socket.inet_aton("10.210.0.1") + bytes([255])
+    udp = struct.pack("!HHHH", 68, 67, 8 + len(bootp), 0) + bootp
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 1, 0, 64, 17, 0, socket.inet_aton(sys.argv[2]), socket.inet_aton("10.210.0.1"))
+    total = sum(struct.unpack("!10H", ip))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    ip = ip[:10] + struct.pack("!H", ~total & 0xffff) + ip[12:]
+    raw.send(bytes.fromhex(sys.argv[5].replace(":", "")) + own + b"\x08\x00" + ip + udp)
+EOF
+lx file push "$work/spoof.py" m1/root/spoof.py >/dev/null
+# Three SYNs from m1's card with the source MAC $1 and m1's own address, to the site: did the exit forward them?
+syn_from() {
+	in_m m1 python3 /root/spoof.py syn "$1" "$exit_mac" "$a1" 198.51.100.1 80
+	sleep 0.5
 }
 # LXD's own layers on each machine's port, each tested with ours opened for it (the reconciler stopped meanwhile, so
 # it cannot close them again): port isolation, its MAC filter and its IPv6 filter must hold by themselves.
@@ -208,14 +247,16 @@ kill "$plug_pid"
 wait "$plug_pid" 2>/dev/null || true
 nft add element bridge qorpera_agent_exit_bridge ports "{ \"$host_if\" . 0e:51:0a:d2:99:98 }"
 nft add element bridge qorpera_agent_exit_bridge clients "{ 0e:51:0a:d2:99:98 . $a1 }"
-# Our rules know the new MAC and address, so only LXD's MAC filter can stop it: the exit must forward nothing.
+# The method first: SYNs from m1's own MAC are forwarded and counted by the exit.
 before=$(new_count "$a1")
-set_mac 0e:51:0a:d2:99:98
+syn_from "$mac1"
+[[ $(new_count "$a1") != "$before" ]] || fail "the positive control: the exit did not count m1's own SYNs"
+# Our rules know the other MAC and address, so only LXD's MAC filter can stop it: the exit must forward nothing.
+before=$(new_count "$a1")
 probe_start ether saddr 0e:51:0a:d2:99:98 tcp dport 80
-reach m1 198.51.100.1 80 && fail "LXD's MAC filter let another MAC through"
-probe_sent || fail "the probe with another MAC never left m1"
+syn_from 0e:51:0a:d2:99:98
+probe_sent || fail "the SYNs with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "LXD's MAC filter let another MAC through to the exit"
-own_mac
 # Our rules let m1's IPv6 through, so only LXD's IPv6 filter can stop it before forward priority 100.
 nft insert rule bridge qorpera_agent_exit_bridge forward iifname "$host_if" ether type ip6 accept
 nft add table bridge qae2b_lxd6
@@ -248,12 +289,10 @@ in_m m1 ip addr del "$a2/32" dev eth0
 [[ $(new_count "$a2") == "$a2_before" ]] || fail "the exit forwarded a connection from another machine's address"
 # Another MAC than its own.
 before=$(new_count "$a1")
-set_mac 0e:51:0a:d2:99:99
 probe_start ether saddr 0e:51:0a:d2:99:99 tcp dport 80
-reach m1 198.51.100.1 80 && fail "a machine got out with another MAC"
-probe_sent || fail "the probe with another MAC never left m1"
+syn_from 0e:51:0a:d2:99:99
+probe_sent || fail "the SYNs with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "the exit saw a machine's address from another MAC"
-own_mac
 # IPv6: none of it reaches the bridge.
 nft add table bridge qae2b_count
 # After LXD's filters and ours (forward, priority 100): nothing of a machine's IPv6 is left.
@@ -266,37 +305,6 @@ count6=$(nft list chain bridge qae2b_count seen)
 [[ $count6 == *"packets 0 "* ]] || fail "a machine's IPv6 got through: $count6"
 nft delete table bridge qae2b_count
 pass "another address, another machine's address, another MAC or any IPv6 from a machine's card gets nothing through"
-cat >"$work/spoof.py" <<'EOF'
-import socket, struct, sys
-# argv: kind ... from inside a machine (eth0). garp IP [SHA]: an ARP reply claiming IP; frame MAC: a frame with that
-# source MAC; decline OWN_IP CHADDR ADDRESS: a DHCPDECLINE naming CHADDR.
-own = bytes.fromhex(open("/sys/class/net/eth0/address").read().strip().replace(":", ""))
-raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-raw.bind(("eth0", 0))
-kind = sys.argv[1]
-if kind == "garp":
-    ip = socket.inet_aton(sys.argv[2])
-    sha = bytes.fromhex(sys.argv[3].replace(":", "")) if len(sys.argv) > 3 else own
-    for op in (1, 2):
-        raw.send(b"\xff" * 6 + own + b"\x08\x06" + struct.pack("!HHBBH", 1, 0x0800, 6, 4, op) + sha + ip + b"\xff" * 6 + ip)
-elif kind == "frame":
-    raw.send(b"\xff" * 6 + bytes.fromhex(sys.argv[2].replace(":", "")) + b"\x08\x00" + b"\x45" + b"\x00" * 45)
-elif kind == "decline":
-    # A whole frame, from the machine's own MAC and address and from port 68 (dnsmasq answers only that), to the
-    # exit's MAC (argv[5]): only the chaddr names another machine.
-    zero = b"\0" * 4
-    bootp = struct.pack("!BBBBIHH4s4s4s4s", 1, 1, 6, 0, 0x5150, 0, 0, zero, zero, zero, zero)
-    bootp += bytes.fromhex(sys.argv[3].replace(":", "")) + b"\0" * 202 + b"\x63\x82\x53\x63"
-    bootp += bytes([53, 1, 4, 50, 4]) + socket.inet_aton(sys.argv[4]) + bytes([54, 4]) + socket.inet_aton("10.210.0.1") + bytes([255])
-    udp = struct.pack("!HHHH", 68, 67, 8 + len(bootp), 0) + bootp
-    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 1, 0, 64, 17, 0, socket.inet_aton(sys.argv[2]), socket.inet_aton("10.210.0.1"))
-    total = sum(struct.unpack("!10H", ip))
-    while total >> 16:
-        total = (total & 0xffff) + (total >> 16)
-    ip = ip[:10] + struct.pack("!H", ~total & 0xffff) + ip[12:]
-    raw.send(bytes.fromhex(sys.argv[5].replace(":", "")) + own + b"\x08\x00" + ip + udp)
-EOF
-lx file push "$work/spoof.py" m1/root/spoof.py >/dev/null
 in_m m2 ping -c 1 -W 2 10.210.0.1 >/dev/null || fail "m2 cannot ping the exit"
 wait_for "ip -n qexit neigh show $a2 | grep -q $mac2"
 in_m m1 python3 /root/spoof.py garp "$a2"

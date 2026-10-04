@@ -219,7 +219,7 @@ the VM's kernel 7.0.0-34, the nodes' 7.0.0-30), all passed:
 | --- | --- |
 | Plug | two containers plugged in the creators' way get their addresses by DHCP from the exit; the card carries only the MAC (LXD refuses `ipv4.address` on an unmanaged parent without its IPv4 filter) |
 | Reach | the stand-in internet through the exit; our networks refused; the node holds no bridged leg (`notrack`) |
-| LXD's own layers | each machine's port isolated; with the exit's rules opened for it, LXD's MAC filter alone stops a probe from another MAC (counted leaving the machine, never reaching the exit) and LXD's IPv6 filter alone stops IPv6 (counted leaving, never forwarded) |
+| LXD's own layers | each machine's port isolated; with the exit's rules opened for it, LXD's MAC filter alone stops SYNs sent from another MAC (counted leaving the machine; the exit, which counts the same SYNs from the machine's own MAC, counts none of them) and LXD's IPv6 filter alone stops IPv6 (counted leaving, never forwarded) |
 | Spoofing | another address and another machine's address towards the internet (the exit forwards and counts nothing from them), another MAC, any IPv6, gratuitous ARP for another machine, a spoofed ARP sender MAC, a DHCPDECLINE from port 68 naming another machine's MAC (seen reaching the bridge, never dnsmasq), another machine's MAC or the exit's taken (`bridge fdb`): none gets through |
 | Flooding | a frame from the exit to a MAC the bridge has forgotten reaches no other machine |
 | Default deny | a new machine gets nothing until the reconciler has it in the rules; with the reconciler down and the pairs flushed nothing passes, and restarted it sets them right within a pass; an `up` reload keeps running machines' traffic by itself |
