@@ -208,6 +208,9 @@ begin
 	if (pg_temp.w(e)).completion_state is distinct from 'waiting' or (v ->> 'revivals')::integer <> 0 then
 		raise exception 'A batch revives before its last worker: %', v; end if;
 	perform pg_temp.cancel_wake((pg_temp.w(f)).occurrence_id);
+	-- This pass ends the last worker; the next revives the parent with both results.
+	v := pg_temp.drain();
+	if (v ->> 'failed')::integer <> 1 or (v ->> 'revivals')::integer <> 0 then raise exception 'The last worker ends: %', v; end if;
 	v := pg_temp.drain();
 	if (v ->> 'revivals')::integer <> 1 or (pg_temp.w(e)).completion_state is distinct from 'delivered'
 		or (pg_temp.w(f)).completion_state is distinct from 'delivered'
