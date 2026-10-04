@@ -271,7 +271,9 @@ it:
   read (a past one too, which today's editor keeps): a held future start moves with the time, and one that is let go
   is removed;
 - the keys of the other `when` are removed. `timezone` stays when an edit moves to `every`: quiet hours without their
-  own zone take it.
+  own zone take it. The zone field shows the file's `timezone` (also for an `every` file that keeps one), and an edit
+  that changes it writes `quiet_timezone` with the old zone when quiet hours had none of their own, so they stay as
+  read.
 
 **The writes**, each through §5's member commit route, as the member:
 - **New routine:** the routines folder is read first; when it is missing, a `mkdir` comes first in the same change
@@ -287,7 +289,9 @@ it:
   unchanged save would resume a routine the platform paused, which only the switch does. A `version_changed` retries
   only while the re-read file's editor fields equal those the form opened with; otherwise it stops with "This routine
   changed while you were editing it" and the form reloads. A transport failure resends the same request with the same
-  operation key (a replay); only an answer that saved nothing frees the key.
+  operation key (a replay); only an answer that saved nothing frees the key. A replay that saved is "saved"; a draft
+  changed since is then written on top of what that request wrote, at the version its answer gives, so a change by
+  someone else meanwhile meets `version_changed` and the check above.
 - **Pause:** `status: paused`, no login needed; nothing is written when the file already says `paused`.
 - **Resume:** the login first (above); then `status: active`. When the file already says `active` (a pause the
   platform recorded in the index only: a member's Stop, a failing login, a wait for one, and P15's `agent_archived`

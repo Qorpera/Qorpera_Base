@@ -106,7 +106,8 @@ export interface WebRoutines {
 	open(routine: CloudRoutine): Promise<WebRoutineFile>;
 	/** Writes a new routine's file, or an edit of one. `saveId` is the editor's: a request whose answer never came is
 	 * sent again as it was by the next save with the same id, and only an answer frees it. "unchanged" when an edit
-	 * changes nothing: nothing is written, since an unchanged save would resume a routine the platform paused. */
+	 * changes nothing: nothing is written, since an unchanged save would resume a routine the platform paused. A save
+	 * whose resent request was saved is "saved". */
 	save(
 		draft: WebRoutineDraft,
 		account: WebMemberConnection | undefined,
@@ -225,9 +226,12 @@ interface RoutineBase {
 interface PendingSave {
 	readonly key: string;
 	readonly units: readonly CloudMemberFolderUnit[];
-	/** The draft it was made from, and the routine file it writes. */
+	/** The draft it was made from. */
 	readonly draft: string;
+	/** The routine file it writes: its path, its text and that text's parse. */
 	readonly path: string;
+	readonly text: string;
+	readonly file: RoutineFile;
 }
 
 interface SaveState {
@@ -235,8 +239,19 @@ interface SaveState {
 	pending: PendingSave | null;
 }
 
-const drafted = (draft: WebRoutineDraft) =>
-	JSON.stringify([draft.staffAgentId, draft.title, draft.prompt, draft.trigger, draft.effort]);
+/** A draft as a save compares it. The trigger's id is the editor's own: the file never stores it. */
+const drafted = (draft: WebRoutineDraft) => {
+	const { id: _id, ...trigger } = draft.trigger;
+	return JSON.stringify([draft.staffAgentId, draft.title, draft.prompt, trigger, draft.effort]);
+};
+
+/** A routine file's text as a save writes it, parsed; the file's own problems when it does not parse. */
+function routineOf(path: string, text: string): RoutineFile {
+	const parsed = parseStateFile(path, text);
+	if (!parsed.ok) throw invalid(NOT_SAVED, parsed.problems);
+	if (parsed.file.kind !== "routine") throw invalid(NOT_SAVED, [`${path} is not a routine`]);
+	return parsed.file;
+}
 
 export function createWebRoutines(
 	cloud: Cloud,
@@ -442,8 +457,7 @@ export function createWebRoutines(
 			check();
 			const key = freeCompanyStateName(fields.title, "routine", taken);
 			const path = `${routines}/${key}.md`;
-			const parsed = parseStateFile(path, text);
-			if (!parsed.ok) throw invalid(NOT_SAVED, parsed.problems);
+			const file = routineOf(path, text);
 			await login();
 			const units: CloudMemberFolderUnit[] = [
 				...(listed.entry ? [] : [{ op: "mkdir" as const, path: routines }]),
@@ -454,6 +468,8 @@ export function createWebRoutines(
 				units,
 				draft: drafted(draft),
 				path,
+				text,
+				file,
 			});
 			const write = results.at(-1)!;
 			const made = listed.entry ? null : results[0]!;
@@ -486,15 +502,16 @@ export function createWebRoutines(
 		let known = base;
 		for (let attempt = 0; ; attempt++) {
 			const text = rewriteRoutine(known.text, known.file, editOf(draft, known.file));
-			const parsed = parseStateFile(known.path, text);
-			if (!parsed.ok) throw invalid(NOT_SAVED, parsed.problems);
-			if (JSON.stringify(parsed.file) === JSON.stringify(known.file)) return attempt ? "saved" : "unchanged";
+			const file = routineOf(known.path, text);
+			if (JSON.stringify(file) === JSON.stringify(known.file)) return attempt ? "saved" : "unchanged";
 			await login();
 			const [result] = await send(from, state, {
 				key: `web:routine-update:${crypto.randomUUID()}`,
 				units: [{ op: "write", path: known.path, text, expectedVersion: known.version }],
 				draft: drafted(draft),
 				path: known.path,
+				text,
+				file,
 			});
 			if (result!.outcome === "saved") return "saved";
 			if (result!.outcome === "conflict" && result!.reason === "version_changed" && attempt < RETRIES) {
@@ -525,44 +542,55 @@ export function createWebRoutines(
 			const from = folder();
 			const state = saves.get(saveId) ?? { base: draft.opened ?? null, pending: null };
 			saves.set(saveId, state);
-			const login = payer(account);
-			// A change set whose answer never came goes again first, as it was: a replay when it was saved.
-			const lost = state.pending;
-			if (lost) {
-				await login();
-				const results = await send(from, state, lost);
-				const write = results.at(-1)!;
-				if (write.outcome === "saved") {
-					if (lost.draft === drafted(draft)) {
-						saves.delete(saveId);
-						return "saved";
+			try {
+				const login = payer(account);
+				// A change set whose answer never came goes again first, as it was: a replay when it was saved.
+				const lost = state.pending;
+				let replayed = false;
+				if (lost) {
+					await login();
+					const results = await send(from, state, lost);
+					const write = results.at(-1)!;
+					if (write.outcome === "saved") {
+						if (lost.draft === drafted(draft)) {
+							saves.delete(saveId);
+							return "saved";
+						}
+						// The draft changed since: this edit starts from the file as that change set wrote it, at the version
+						// its answer gives, so a change made since meets version_changed and is checked against what it wrote.
+						if (!write.version) throw new Error("Invalid cloud response");
+						state.base = {
+							routineId: state.base?.routineId ?? null,
+							path: lost.path,
+							version: write.version,
+							text: lost.text,
+							file: lost.file,
+						};
+						replayed = true;
+					} else if (write.outcome === "conflict" && write.reason === "version_changed" && state.base)
+						state.base = await reread(from, state.base, editorFields(state.base.file));
+					else if (write.outcome !== "conflict") {
+						// Refused or denied: nothing was written, and the same draft would be refused again.
+						const made = results.length > 1 ? results[0]! : null;
+						throw unsaved(
+							made && made.outcome !== "saved" && write.reason === "parent_missing" ? made : write,
+							NOT_SAVED,
+						);
 					}
-					// The draft changed since: the file as that change set wrote it is what this edit starts from.
-					const written = await readRoutine(
-						from,
-						lost.path,
-						state.base?.routineId ?? null,
-						state.base?.file.id ?? draft.clientRoutineId,
-					);
-					if (!written) throw new WebRoutineGoneError("This routine is no longer available.");
-					state.base = written;
-				} else if (write.outcome === "conflict" && write.reason === "version_changed" && state.base)
-					state.base = await reread(from, state.base, editorFields(state.base.file));
-				else if (write.outcome !== "conflict") {
-					// Refused or denied: nothing was written, and the same draft would be refused again.
-					const made = results.length > 1 ? results[0]! : null;
-					throw unsaved(
-						made && made.outcome !== "saved" && write.reason === "parent_missing" ? made : write,
-						NOT_SAVED,
-					);
+					// Any other conflict (a name taken, a folder made meanwhile) is the steps' own, from a new read.
 				}
-				// Any other conflict (a name taken, a folder made meanwhile) is the steps' own, from a new read.
+				const result = state.base
+					? await editFile(from, state, state.base, draft, login)
+					: await createFile(from, state, draft, login);
+				saves.delete(saveId);
+				// The replay wrote this save's routine, even when the draft's change since adds nothing to it.
+				return replayed ? "saved" : result;
+			} catch (error) {
+				// Failed with nothing sent unanswered and nothing learned since the form opened: the next save with this
+				// id starts as a first one would, so the entry goes.
+				if (state.pending === null && state.base === (draft.opened ?? null)) saves.delete(saveId);
+				throw error;
 			}
-			const result = state.base
-				? await editFile(from, state, state.base, draft, login)
-				: await createFile(from, state, draft, login);
-			saves.delete(saveId);
-			return result;
 		},
 		async setEnabled(routine, account, enabled, saveId) {
 			const from = folder();

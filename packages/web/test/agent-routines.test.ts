@@ -26,6 +26,7 @@ import { WebCompanyFolderRejectedError } from "../src/cloud/company-folder-write
 import {
 	createWebRoutines,
 	type WebRoutine,
+	WebRoutineChangedError,
 	type WebRoutineDraft,
 	WebRoutineEndedError,
 	type WebRoutineFile,
@@ -1404,6 +1405,38 @@ describe("a new routine's file (P34r)", () => {
 		expect(fake.commits).toHaveLength(3);
 		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
 	});
+	it("saves a new routine whose answer was lost with the next Save, as one file, and the list comes back", async () => {
+		const fake = seeded({ text: null });
+		const f = mountFolder([], { fake });
+		await openEditor(f.view, "New routine");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		fake.loseAnswer();
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() =>
+			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
+		);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		// The second Save sends the same change set again, under its key: a replay of the routine it made.
+		expect(fake.commits).toHaveLength(2);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		expect(f.view.el.textContent).not.toContain("Nothing changed.");
+		f.stop.abort();
+	});
+	it("is saved when a lost change set's replay saved the routine, though the draft's change since adds nothing", async () => {
+		const fake = seeded({ text: null });
+		const f = writer(fake);
+		fake.loseAnswer();
+		await expect(f.routines.save(newDraft(), account, "save-1")).rejects.toThrow("Failed to fetch");
+		// Another trigger id is the same draft (the file does not keep it); a title the file trims makes the same file.
+		const again = newDraft({ title: "Weekly close ", trigger: { ...newDraft().trigger, id: "another" } });
+		await expect(f.routines.save(again, account, "save-1")).resolves.toBe("saved");
+		expect(fake.commits).toHaveLength(2);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+	});
 	it("saves no trigger a member's editor does not make, such as a file change", async () => {
 		const fake = seeded({ text: null });
 		const f = writer(fake);
@@ -1565,6 +1598,64 @@ describe("an edit of a routine's file (P34r)", () => {
 		expect(fake.commits[1]).toEqual(fake.commits[0]);
 		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning digest", instructions: "Brief me." });
 	});
+	it("checks a change made since a lost answer against what that change set wrote, at the version its replay gives", async () => {
+		const fake = seeded();
+		const f = writer(fake);
+		const opened = await f.routines.open(routine());
+		fake.loseAnswer();
+		await expect(f.routines.save(editDraft(opened, { title: "Morning digest" }), account, "save-1")).rejects.toThrow(
+			"Failed to fetch",
+		);
+		const written = fake.version(PATH);
+		// Meanwhile someone changes what the form shows: the edit stops instead of writing over it.
+		fake.put(PATH, routineText({ title: "Evening brief" }));
+		const changed = editDraft(opened, { title: "Morning digest", prompt: "Brief me." });
+		await expect(f.routines.save(changed, account, "save-1")).rejects.toBeInstanceOf(WebRoutineChangedError);
+		expect(fake.commits).toHaveLength(3);
+		expect(fake.commits[2]!.units).toEqual([
+			{ op: "write", path: PATH, text: expect.any(String), expectedVersion: written },
+		]);
+		expect(parsed(fake.text(PATH))).toMatchObject({
+			title: "Evening brief",
+			instructions: "Summarise what changed.",
+		});
+
+		// A change to what the form does not show is kept under the edit.
+		const other = seeded();
+		const g = writer(other);
+		const again = await g.routines.open(routine());
+		other.loseAnswer();
+		await expect(g.routines.save(editDraft(again, { title: "Morning digest" }), account, "save-2")).rejects.toThrow(
+			"Failed to fetch",
+		);
+		other.put(PATH, routineText({ title: "Morning digest", status: "paused" }));
+		await expect(
+			g.routines.save(editDraft(again, { title: "Morning digest", prompt: "Brief me." }), account, "save-2"),
+		).resolves.toBe("saved");
+		expect(other.commits).toHaveLength(4);
+		expect(parsed(other.text(PATH))).toMatchObject({
+			title: "Morning digest",
+			status: "paused",
+			instructions: "Brief me.",
+		});
+	});
+	it("forgets a save that failed with nothing unanswered: the next save with its id starts from what it opened", async () => {
+		const fake = seeded();
+		const f = writer(fake);
+		const opened = await f.routines.open(routine());
+		fake.answer("refused", "structured_rule", ["the title is not allowed"]);
+		await expect(
+			f.routines.save(editDraft(opened, { title: "Morning digest" }), account, "save-1"),
+		).rejects.toBeInstanceOf(WebCompanyFolderRejectedError);
+		// Someone renames the routine, and it is opened again: a save under the same id edits that read, not the first.
+		fake.put(PATH, routineText({ title: "Evening brief" }));
+		const reopened = await f.routines.open(routine());
+		await expect(f.routines.save(editDraft(reopened, { prompt: "Brief me." }), account, "save-1")).resolves.toBe(
+			"saved",
+		);
+		expect(fake.commits).toHaveLength(2);
+		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Evening brief", instructions: "Brief me." });
+	});
 });
 
 describe("pausing and resuming a routine's file (P34r)", () => {
@@ -1616,6 +1707,22 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 		expect(index.fake.commits[0]!.units).toEqual([{ op: "write", path: PATH, text, expectedVersion: version }]);
 		expect(index.log).toEqual([CONSENT, SPONSOR, "commit"]);
 		index.stop.abort();
+	});
+	it("says why the hook refused a resume, in its words, and puts the switch back", async () => {
+		const f = mountFolder([routine({ status: "paused" })], {
+			fake: seeded({ text: routineText({ status: "paused" }) }),
+		});
+		await listed(f.view);
+		f.fake.answer("refused", "structured_rule", ["no login of yours pays for this routine's runs"]);
+		click(f.view.el, "Morning brief");
+		await vi.waitFor(() =>
+			expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
+				"The routine could not be changed: no login of yours pays for this routine's runs.",
+			),
+		);
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(parsed(f.fake.text(PATH)).status).toBe("paused");
+		f.stop.abort();
 	});
 	it("retries while the file is active or paused, and stops at a file concluded or a routine the index has ended", async () => {
 		const rows = vi.fn(() => [indexRow("active")]);
@@ -1682,6 +1789,16 @@ describe("pausing and resuming a routine's file (P34r)", () => {
 		expect(older.calls).toEqual([]);
 		expect(older.fake.commits).toEqual([]);
 		older.stop.abort();
+		document.body.replaceChildren();
+
+		// The files could not be read this time: the list still shows, read-only, without an error.
+		const unread = seeded();
+		unread.folder.stateFolders.mockRejectedValueOnce(new Error("Company folder is unavailable (503)"));
+		const g = mountFolder([routine()], { fake: unread });
+		await vi.waitFor(() => expect(cards(g.view.el)).toHaveLength(1));
+		expect(cards(g.view.el).map(controls)).toEqual([[]]);
+		expect(g.view.el.querySelector(".surface-status")).toBeNull();
+		g.stop.abort();
 	});
 });
 
@@ -1689,6 +1806,8 @@ describe("the routine editor's choices", () => {
 	it("offers every few minutes or days at a time, never a file change, and minutes from 5", async () => {
 		const f = mount([]);
 		await openEditor(f.view, "New routine");
+		// The instructions may be as long as the file allows.
+		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").maxLength).toBe(32768);
 		const when = field<HTMLSelectElement>(f.view.el, "When it runs");
 		expect([...when.options].map((option) => option.value)).toEqual(["weekly", "interval"]);
 		expect(f.view.el.querySelector('[aria-label="Company File path"]')).toBeNull();
@@ -1894,6 +2013,29 @@ describe("a member edit of an agent's routine", () => {
 			reply: "optional",
 		});
 		expect(switched.after).not.toMatch(/^(days|time):/m);
+	});
+	it("offers an interval's own zone for days at a time, and keeps its quiet hours in the zone they go by", async () => {
+		// The file keeps a zone that is not the viewer's, and its quiet hours have none of their own.
+		const quiet = { start: "22:00", end: "07:00", timezone: "America/New_York" };
+		const kept = routineFile({ ...every, timezone: "America/New_York", quiet });
+		const toWeekly = (form: HTMLElement) => {
+			const when = form.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
+			when.value = "weekly";
+			when.dispatchEvent(new Event("change"));
+		};
+		const same = await saveEdited(kept, (form) => {
+			expect(form.querySelector<HTMLInputElement>('[aria-label="Time zone"]')!.value).toBe("America/New_York");
+			toWeekly(form);
+		});
+		expect(same.file).toMatchObject({ trigger: { when: "weekly" }, timezone: "America/New_York", quiet });
+		expect(same.after).not.toMatch(/^quiet_timezone:/m);
+		// The member names another zone: the routine runs by it, and quiet hours stay as they were read.
+		const moved = await saveEdited(kept, (form) => {
+			toWeekly(form);
+			type(form, "Time zone", "Europe/Copenhagen");
+		});
+		expect(moved.file).toMatchObject({ timezone: "Europe/Copenhagen", quiet });
+		expect(moved.after).toMatch(/^quiet_timezone: America\/New_York$/m);
 	});
 });
 

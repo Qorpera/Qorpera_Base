@@ -76,6 +76,7 @@ export const AGENTS: Record<string, string> = {
 	"Routines will appear here.": "Rutiner vises her.",
 	"Your model accounts could not be read. Try again.": "Dine modelkonti kunne ikke hentes. Prøv igen.",
 	"The routine could not be changed. Try again.": "Rutinen kunne ikke ændres. Prøv igen.",
+	"The routine could not be changed.": "Rutinen kunne ikke ændres.",
 	"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.":
 		"Forbind først en modelkonto i Indstillinger; en rutine kører på kontoen hos det medlem, der sidst gemte den.",
 	"Routine name": "Rutinens navn",

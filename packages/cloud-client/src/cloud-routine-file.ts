@@ -131,8 +131,9 @@ const same = (a: CompanyStateSetting | undefined, b: CompanyStateSetting | undef
 
 /** The settings an edit changes in a routine file: the title, the trigger's keys (those of the trigger it had and the
  * new one does not are removed), the time zone when the new trigger names one (it is never removed: quiet hours without
- * their own zone take it), and the reply. Empty when the edit changes none of them. The instructions are the body,
- * which `setCompanyStateSettings` leaves as it is. */
+ * their own zone take it), and the reply. Quiet hours stay as read: when the zone changes and they had none of their
+ * own, `quiet_timezone` keeps the one they went by. Empty when the edit changes none of them. The instructions are the
+ * body, which `setCompanyStateSettings` leaves as it is. */
 export function routineFileSettings(
 	file: RoutineFile,
 	edit: {
@@ -150,7 +151,11 @@ export function routineFileSettings(
 		const next = after[key] ?? null;
 		if (!same(before[key], next)) changes[key] = next;
 	}
-	if (edit.timezone !== null && edit.timezone !== file.timezone) changes.timezone = edit.timezone;
+	if (edit.timezone !== null && edit.timezone !== file.timezone) {
+		changes.timezone = edit.timezone;
+		// The parse gives quiet hours without `quiet_timezone` the file's zone.
+		if (file.quiet && file.quiet.timezone === file.timezone) changes.quiet_timezone = file.quiet.timezone;
+	}
 	if (edit.reply !== file.reply) changes.reply = edit.reply;
 	return changes;
 }

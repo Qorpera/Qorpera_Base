@@ -208,4 +208,36 @@ describe("the settings an edit changes", () => {
 		expect(read.trigger).toEqual({ when: "every", minutes: 90, starts: null });
 		expect(read.timezone).toBe("Europe/Copenhagen");
 	});
+
+	it("keeps quiet hours in the zone they went by when an edit changes the routine's zone", () => {
+		// Quiet hours without a zone of their own go by the routine's: the file has no quiet_timezone.
+		const quiet = { start: "22:00", end: "06:00", timezone: "Europe/Copenhagen" };
+		const source = text(file({ timezone: "Europe/Copenhagen", quiet }));
+		expect(source).not.toMatch(/^quiet_timezone:/m);
+		const edit = {
+			title: "Inbox",
+			trigger: { when: "weekly", days: ["mon"], time: "08:30", starts: null } as const,
+			timezone: "America/New_York",
+			reply: "required" as const,
+		};
+		const changes = routineFileSettings(parse(source), edit);
+		expect(changes).toMatchObject({ timezone: "America/New_York", quiet_timezone: "Europe/Copenhagen" });
+		const after = setCompanyStateSettings(source, changes);
+		expect(parse(after)).toMatchObject({ timezone: "America/New_York", quiet });
+		// A file that names their zone, even the routine's own, reads the same.
+		const named = source.replace("quiet: ", "quiet_timezone: Europe/Copenhagen\nquiet: ");
+		expect(parse(named).quiet).toEqual(quiet);
+		expect(parse(setCompanyStateSettings(named, routineFileSettings(parse(named), edit))).quiet).toEqual(quiet);
+
+		// Quiet hours with a zone of their own keep it, and nothing about them is written.
+		const own = { ...quiet, timezone: "UTC" };
+		const ownSource = text(file({ timezone: "Europe/Copenhagen", quiet: own }));
+		const ownChanges = routineFileSettings(parse(ownSource), edit);
+		expect(ownChanges).not.toHaveProperty("quiet_timezone");
+		expect(parse(setCompanyStateSettings(ownSource, ownChanges)).quiet).toEqual(own);
+		// The zone as it was: nothing about quiet hours either.
+		expect(routineFileSettings(parse(source), { ...edit, timezone: "Europe/Copenhagen" })).not.toHaveProperty(
+			"quiet_timezone",
+		);
+	});
 });

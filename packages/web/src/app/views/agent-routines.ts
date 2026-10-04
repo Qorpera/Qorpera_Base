@@ -306,7 +306,10 @@ export class AgentRoutines {
 			const [routines, runs, files] = await Promise.all([
 				access.routines.list(),
 				access.routines.runs(),
-				access.routines.files(),
+				// Routines whose files could not be found are read-only; the list still shows.
+				access.routines
+					.files()
+					.catch((): ReadonlySet<string> => new Set()),
 			]);
 			if (this.#signal.aborted || read < this.#shown) return;
 			this.#shown = read;
@@ -728,8 +731,14 @@ export class AgentRoutines {
 			if (!failed) await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
 		} catch (error) {
 			failed = true;
-			// A routine that ended meanwhile shows as ended once the list is read again.
-			failure = error instanceof WebRoutineEndedError ? "" : t("The routine could not be changed. Try again.");
+			// A routine that ended meanwhile shows as ended once the list is read again. A refusal saved nothing; the
+			// file's or the hook's problems say why, in English.
+			failure =
+				error instanceof WebRoutineEndedError
+					? ""
+					: error instanceof WebCompanyFolderRejectedError
+						? withProblems(t("The routine could not be changed."), error.problems)
+						: t("The routine could not be changed. Try again.");
 		} finally {
 			this.#busy = false;
 			this.#moving = undefined;
@@ -790,9 +799,11 @@ export class AgentRoutines {
 			value: opened?.file.title ?? "",
 			"aria-label": t("Routine name"),
 		});
+		// The file allows 32,768 bytes of instructions. Each character is at least one byte, so this bound never cuts text
+		// that fits; the file's parse says when longer characters take it past.
 		const prompt = h(
 			"textarea",
-			{ rows: 5, maxlength: "8000", "aria-label": t("What to do"), value: opened?.file.instructions ?? "" },
+			{ rows: 5, maxlength: "32768", "aria-label": t("What to do"), value: opened?.file.instructions ?? "" },
 			opened?.file.instructions ?? "",
 		);
 		const when = h(
@@ -841,9 +852,10 @@ export class AgentRoutines {
 			value: first && "localTime" in first ? first.localTime : "09:00",
 			"aria-label": t("Time"),
 		});
+		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it.
 		const timeZone = h("input", {
 			type: "text",
-			value: first && "timeZone" in first ? first.timeZone : zone,
+			value: opened?.file.timezone ?? zone,
 			"aria-label": t("Time zone"),
 			maxlength: "128",
 		});
@@ -936,7 +948,9 @@ export class AgentRoutines {
 		when.onchange = sync;
 		sync();
 		const status = h("p", { class: "surface-status", role: "status" }, notice);
-		// A new interval's first run is one interval from the form's first Save, so a retry sends the same draft.
+		// A new interval's first run is one interval from the form's first Save, and a new routine's trigger keeps one id,
+		// so a retry sends the same draft.
+		const triggerId = first?.id ?? crypto.randomUUID();
 		const starts = new Map<number, string>();
 		const next = (interval: number) => {
 			const at =
@@ -947,12 +961,11 @@ export class AgentRoutines {
 		};
 		const trigger = (): CloudRoutineTrigger => {
 			const replyPolicy = reply.value === "required" ? {} : { replyPolicy: reply.value as CloudRoutineReplyPolicy };
-			const id = first?.id ?? crypto.randomUUID();
 			// Only while the box shows: it belongs to the routine's own kind of schedule.
 			const letGo = !waiting.hidden && !wait.checked;
 			if (when.value === "weekly")
 				return parseCloudRoutineTrigger({
-					id,
+					id: triggerId,
 					kind: "schedule",
 					intervalMinutes: 1440,
 					// Once past, the scheduler ignores a weekly start, so a past one is kept as it is; one let go is removed.
@@ -973,7 +986,7 @@ export class AgentRoutines {
 					? first
 					: undefined;
 			return parseCloudRoutineTrigger({
-				id,
+				id: triggerId,
 				kind: "schedule",
 				intervalMinutes,
 				startAt: kept ? (letGo ? undefined : kept.startAt) : next(intervalMinutes),
