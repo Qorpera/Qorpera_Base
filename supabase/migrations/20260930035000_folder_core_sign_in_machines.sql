@@ -1,5 +1,5 @@
 -- Company folder core, P13: sign-in machines on the folder core's order (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md
--- §6.12; C1B §8). F3's activation check 838 lists these sites as gc fence holders. A sign-in's or an account refresh's
+-- §6.14; C1B §8). F3's activation check 838 lists these sites as gc fence holders. A sign-in's or an account refresh's
 -- login machine was reserved and released with the sign-in (or refresh request) FOR UPDATE and then the gc fence, the
 -- company row FOR UPDATE: the reverse of the core's order, and on folder-v2 a stall of every effect of the company,
 -- which holds the row KEY SHARE. On folder-v2 now:

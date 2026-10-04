@@ -18,6 +18,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -228,7 +229,6 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 				parent: "qagent0",
 				name: "eth1",
 				hwaddr: e.hwaddr,
-				"ipv4.address": e.address,
 				"ipv6.address": "none",
 				"security.mac_filtering": "true",
 				"security.ipv6_filtering": "true",
@@ -485,6 +485,61 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 			`add element bridge qorpera_agent_exit_bridge clients { ${fresh.hwaddr} . ${fresh.address} }`,
 			`insert rule bridge qorpera_agent_exit_bridge dhcp ether saddr ${fresh.hwaddr} ip saddr { 0.0.0.0, ${fresh.address} } @th,256,32 0 @th,288,48 0x${hex} accept comment "${fresh.address}"`,
 		]);
+	});
+
+	test("ports: a machine's own while LXD has its card (not stopped), never the exit's links; a missed read keeps it once", () => {
+		const script = String.raw`
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+root = sys.argv[2]
+paths = plug.Paths(os.path.join(root, "state"), os.path.join(root, "run"), os.path.join(root, "log"))
+for d in (paths.clients, paths.dhcp, *paths.root_dirs()):
+    os.makedirs(d, exist_ok=True)
+def card(port, status="Running", **nic):
+    device = dict(plug.PLUG_NIC, hwaddr="0e:51:0a:d2:02:01", **nic)
+    config = {"user.qorpera.company_id": "c", "user.qorpera.machine_id": "m", "volatile.eth0.host_name": port}
+    return {"name": "m", "project": "qp", "status": status, "expanded_config": config, "expanded_devices": {"eth0": device}}
+out = {"statuses": {s: plug.host_port(card("tap1a2b", s)) for s in ("Running", "Ready", "Frozen", "Error", "Stopped")},
+       "names": {n: plug.host_port(card(n)) for n in ("qx-br", "qx-up", "qagent0", "bad name!", "veth9f8e7d6c")}}
+entry = {"schema": "qorpera.agent-plug/v1", "address": "10.210.2.1", "hwaddr": "0e:51:0a:d2:02:01", "kind": "machine",
+         "company": "c", "machine": "m", "member": None, "project": "qp", "instance": "m", "since": "2026-10-03T00:00:00Z"}
+entries = {"10.210.2.1": entry}
+loaded = {("tapold", "0e:51:0a:d2:02:01")}
+open(os.path.join(paths.verified, "10.210.2.1"), "w").write("x")
+out["running"] = sorted(plug.backed(paths, entries, [card("tapnew")], loaded)[1])
+out["mismatch"] = sorted(plug.backed(paths, entries, [card("tapnew", **{"security.port_isolation": "false"})], loaded)[0])
+out["absent"] = sorted(plug.backed(paths, entries, [], loaded)[1])
+open(os.path.join(paths.missing, "10.210.2.1"), "w").write("x")
+open(os.path.join(paths.seen, "10.210.2.1"), "w").write(json.dumps(entry))
+out["first_miss"] = sorted(plug.backed(paths, entries, [], loaded)[1])
+open(os.path.join(paths.seen, "10.210.2.1"), "w").write(json.dumps(dict(entry, since="2026-10-02T00:00:00Z")))
+out["made_again"] = sorted(plug.backed(paths, entries, [], loaded)[1])
+print(json.dumps(out))
+`;
+		const root = mkdtempSync(join(tmpdir(), "agent-plug-ports-"));
+		const r = spawnSync("python3", ["-c", script, plugTool, root], { encoding: "utf8" });
+		rmSync(root, { recursive: true, force: true });
+		assert.equal(r.status, 0, r.stderr);
+		const out = JSON.parse(r.stdout);
+		assert.deepEqual(out.statuses, { Running: "tap1a2b", Ready: "tap1a2b", Frozen: "tap1a2b", Error: "tap1a2b", Stopped: null });
+		assert.deepEqual(out.names, { "qx-br": null, "qx-up": null, qagent0: null, "bad name!": null, veth9f8e7d6c: "veth9f8e7d6c" });
+		assert.deepEqual(out.running, [["tapnew", "0e:51:0a:d2:02:01"]], "a running machine's own port, never the loaded one");
+		assert.deepEqual(out.mismatch, [], "a machine LXD no longer backs gets nothing");
+		assert.deepEqual(out.absent, [], "missing, and not yet once: no port");
+		assert.deepEqual(out.first_miss, [["tapold", "0e:51:0a:d2:02:01"]], "the first missed read keeps the loaded port");
+		assert.deepEqual(out.made_again, [], "a machine being made again does not keep the old one's port");
+	});
+
+	test("a stale temporary folder in a creators' folder is a problem, never a crash", () => {
+		const folder = join(state, "clients", ".tmp-left");
+		mkdirSync(folder);
+		const old = new Date(Date.now() - 3600_000);
+		utimesSync(folder, old, old);
+		lxdHas();
+		assert.ok(reconcile().problems.some((p) => p.includes("clients/.tmp-left is a folder")));
+		rmSync(folder, { recursive: true });
 	});
 
 	test("conntrack lines from the exit become the node's twins: masqueraded TCP, UDP and ICMP only", () => {

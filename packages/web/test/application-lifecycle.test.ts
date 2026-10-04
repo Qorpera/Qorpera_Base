@@ -769,7 +769,6 @@ describe("account and route ownership", () => {
 		}));
 		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue({ list } as never);
 		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const mode = vi.spyOn(WebCompanyFiles.prototype, "mode");
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		await draw();
 		const page = f.root.querySelector("main .folder-page");
@@ -787,7 +786,6 @@ describe("account and route ownership", () => {
 		expect(again).not.toBe(page);
 		expect(page?.isConnected).toBe(false);
 		expect(list).toHaveBeenCalledTimes(2);
-		expect(mode).not.toHaveBeenCalled();
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
 	});
 

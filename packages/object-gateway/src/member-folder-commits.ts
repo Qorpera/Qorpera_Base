@@ -23,7 +23,10 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * runtime's commits do. A unit at or under human-tasks/ is refused until P31 delivers the wakes a person's save there
  * queues (H2c). Members share the platform's operation-key scope in the core, so the member's key is sent as
  * `member:<userId>:<key>`, a namespace the platform's writers never use. Every shape, size and the hold are checked
- * before any byte is staged, and a member has at most one change set in flight here.
+ * before any byte is staged, and a member has at most one change set in flight here. After a commit that saved
+ * anything, the route asks the core to follow it up at once (F2's P15: a hire's grants, connectors and first run, an
+ * archive's clean-up), one subject a call while it says there is more, as a best effort: the core's own step does
+ * whatever is left within seconds.
  */
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -34,12 +37,20 @@ const MAX_TEXT_BYTES = 512 * 1024;
 /** Files staged one after another must fit the member gateway's 25 s; a hire sends two. */
 const MAX_FILES = 32;
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+/** Follow-up calls after one commit, the time they may take, and how late in the request they may still start: the
+ * member gateway's bridge gives a request 25 s, and a saved commit's answer must reach the member inside it. */
+const MAX_FOLLOW_UPS = 8;
+const FOLLOW_UP_MS = 3_000;
+const FOLLOW_UP_LATEST_MS = 20_000;
 /** The members with a change set in flight on this gateway. */
 const inFlight = new Set<string>();
 const LONE_SURROGATE = /[\ud800-\udfff]/u;
 
 export interface MemberFolderCommitOptions {
 	readonly authority: Pick<MemberCompanyAuthority, "member" | "publisher">;
+	/** The follow-up's own database client (its own circuit), so a failing follow-up never refuses members' commits.
+	 * Without one there is no follow-up: the core's own step converges each commit within seconds. */
+	readonly followUps?: Pick<MemberCompanyAuthority, "publisher">;
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
 	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
@@ -254,11 +265,40 @@ function writer(value: unknown): { actor: MemberActor; profileId: string } {
 	return { actor: { kind: "member", userId: actor.userId }, profileId: input.profileId };
 }
 
+/** Asks the core to follow a saved commit up now (`qorpera_folder_follow_up_commit`, F2's P15): one subject a call,
+ * again while it answers `more`. A best effort: any error, an unexpected answer, the call budget or the time budget ends
+ * it, and the core's own step converges the rest. Before P15 the function does not exist and the first call fails. */
+export async function followUpMemberCommit(
+	authority: Pick<MemberCompanyAuthority, "publisher">,
+	environmentId: string,
+	commitId: string,
+	signal: AbortSignal,
+	timeMs = FOLLOW_UP_MS,
+): Promise<number> {
+	const budget = AbortSignal.any([signal, AbortSignal.timeout(timeMs)]);
+	let calls = 0;
+	try {
+		while (calls < MAX_FOLLOW_UPS && !budget.aborted) {
+			calls++;
+			const answer = (await authority.publisher(
+				"qorpera_folder_follow_up_commit",
+				{ p_environment_id: environmentId, p_commit_id: commitId },
+				budget,
+			)) as { schema?: unknown; more?: unknown } | null;
+			if (answer?.schema !== "qorpera.folder-follow-up/v1" || answer.more !== true) break;
+		}
+	} catch {
+		/* Best effort: the core's own step follows the commit up. */
+	}
+	return calls;
+}
+
 export async function serveMemberFolderCommit(
 	request: IncomingMessage,
 	response: ServerResponse,
 	options: MemberFolderCommitOptions,
 ): Promise<void> {
+	const started = Date.now();
 	if (request.method !== "POST") throw new ObjectDependencyError(405);
 	const match = /^\/v1\/member-folder-commits\/([0-9a-f-]{36})$/.exec(request.url ?? "");
 	if (!match || !UUID.test(match[1]!)) throw new ObjectDependencyError(404);
@@ -346,10 +386,33 @@ export async function serveMemberFolderCommit(
 			signal,
 		)) as {
 			schema?: unknown;
+			commitId?: unknown;
+			seq?: unknown;
 			units?: unknown;
 		} | null;
 		if (answer?.schema !== "qorpera.folder-commit/v1" || !Array.isArray(answer.units))
 			throw new ObjectDependencyError(503);
+		// Something was saved: what it starts, a hire's first run or an archive's clean-up, is done before the answer,
+		// while the request has time left. The member's slot is free meanwhile. A replay of a saved change set is
+		// followed up again on purpose: it is harmless (a subject already followed up has nothing left to do), and a
+		// replay is usually the retry of an answer that was lost, perhaps before its follow-up ran.
+		inFlight.delete(member.actor.userId);
+		held = undefined;
+		const left = FOLLOW_UP_LATEST_MS - (Date.now() - started);
+		if (
+			options.followUps &&
+			left > 0 &&
+			Number.isSafeInteger(answer.seq) &&
+			typeof answer.commitId === "string" &&
+			UUID.test(answer.commitId)
+		)
+			await followUpMemberCommit(
+				options.followUps,
+				environmentId,
+				answer.commitId,
+				signal,
+				Math.min(FOLLOW_UP_MS, left),
+			);
 		const encoded = JSON.stringify(answer);
 		observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
 		response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });

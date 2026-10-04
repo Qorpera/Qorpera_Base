@@ -52,6 +52,12 @@ export const AGENTS: Record<string, string> = {
 	"Resume routine": "Genoptag rutinen",
 	"Only owners and admins can pause or resume routines.":
 		"Kun ejere og administratorer kan sætte rutiner på pause eller genoptage dem.",
+	"Reactivate the agent first": "Genaktivér agenten først",
+	"Paused by a member": "Sat på pause af et medlem",
+	"Paused by {name}": "Sat på pause af {name}",
+	"Paused: it could not start with the access it had": "På pause: den kunne ikke starte med den adgang, den havde",
+	"Paused: no model account pays for it": "På pause: ingen modelkonto betaler for den",
+	"Paused when its agent was archived": "Sat på pause, da dens agent blev arkiveret",
 	"{every} between {start} and {end}, {days} ({zone})": "{every} mellem {start} og {end}, {days} ({zone})",
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
@@ -155,13 +161,6 @@ export const AGENTS: Record<string, string> = {
 	"Enter a group name of no more than 256 characters.": "Skriv et gruppenavn på højst 256 tegn.",
 	"Enter a group subtitle of no more than 256 characters.": "Skriv en undertitel på højst 256 tegn.",
 	"Enter a description for this group chat.": "Skriv en beskrivelse af gruppechatten.",
-	"This group chat document has changed. Reopen its details before saving.":
-		"Gruppechattens dokument er ændret. Åbn detaljerne igen, før du gemmer.",
-	"Invalid group participant.": "Ugyldig deltager i gruppen.",
-	"This group chat changed while you were editing. Reopen its details before saving.":
-		"Gruppechatten blev ændret, mens du redigerede. Åbn detaljerne igen, før du gemmer.",
-	"The group details are too long. Shorten the description.":
-		"Gruppedetaljerne er for lange. Gør beskrivelsen kortere.",
 	"The group chat changes could not be saved.": "Ændringerne i gruppechatten kunne ikke gemmes.",
 
 	// Coding sessions (ui/coding-session.ts, ui/coding-session-thread.ts)

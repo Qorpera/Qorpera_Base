@@ -1,4 +1,4 @@
--- Company folder core, P13 (20260930035000; deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.12, C1B §8): on a
+-- Company folder core, P13 (20260930035000; deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.14, C1B §8): on a
 -- folder-v2 company a sign-in's and an account refresh's login machine are reserved and released on the folder core's
 -- order: the folder fence and the company row KEY SHARE, the requester's member row, the identity's machine lock, then
 -- the sign-in. No gc fence: a folder effect holding the fence and the company row KEY SHARE never makes them wait, a

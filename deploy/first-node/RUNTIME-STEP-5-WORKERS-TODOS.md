@@ -218,7 +218,7 @@ published only by the agent's next list or change of that todo.
   `20260927150000_company_file_writer_fence` takes the fence first only in the
   member writers (save, publish, propose, submit, rebase) and for a NAS replica
   copy (which the replica guard fences anyway); no hot insert path takes a new
-  fence. SQL test 608 races each, and `scripts/load-company-file-fence.mjs` runs
+  fence. SQL test 608 races each, and `scripts/load-company-file-fence.mjs` (removed in C1c-3i) ran
   agent tool calls, Storage uploads, replica copies, a node observer and coding
   turns at once: on the text before it, about two deadlocks a second and agent
   calls near the native result boundary's 4 s budget; with it, none.
