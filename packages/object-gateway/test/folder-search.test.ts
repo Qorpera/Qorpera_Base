@@ -304,6 +304,44 @@ describe("folder search", () => {
 		).toEqual([1]);
 	});
 
+	it("never decodes a character a long line's stretch cut in two", async () => {
+		// "plan" just before a four-byte character, at every alignment against the stretches' ends.
+		for (let pad = 20; pad <= 80; pad++) {
+			const { source } = stage({ "a.txt": `${"x".repeat(pad)}plan\u{1F600}${"y".repeat(60)}\n` });
+			const page = await searchView({ ...source, longestLine: 40 }, request("plan"));
+			expect(page.hits.map((h) => h.line)).toEqual([1]);
+			expect(page.hits[0]!.text).not.toContain("\uFFFD");
+		}
+	});
+
+	it("answers nothing once its view closed or lapsed while the last read was awaited", async () => {
+		for (const reason of ["VIEW_CLOSED", "UNAVAILABLE"]) {
+			const { source } = stage({ "a.md": "the plan" });
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let serving = true;
+			const page = searchView(
+				{
+					...source,
+					read: async (entry, offset, length) => {
+						await gate;
+						return source.read(entry, offset, length);
+					},
+					serving: () => {
+						if (!serving) throw new Error(reason);
+					},
+				},
+				request("plan"),
+			);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			serving = false;
+			release();
+			await expect(page).rejects.toThrow(reason);
+		}
+	});
+
 	it("shows the match in a hit's text after characters that count double", async () => {
 		const { source } = stage({ "e.md": `${"\u{1F600}".repeat(300)} the plan ${"\u{1F600}".repeat(300)}\n` });
 		const page = await searchView(source, request("PLAN"));

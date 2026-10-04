@@ -216,7 +216,12 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		hitBytes += bytes;
 		return true;
 	};
-	const answer = (next: SearchCursor | null): SearchAnswer => ({ hits, searched, binary, unreadable, reads, next });
+	/** A page, only while the view may still be served: a view that closed, or whose lease lapsed, while the page's last
+	 * read was awaited gets no hits. */
+	const answer = (next: SearchCursor | null): SearchAnswer => {
+		source.serving?.();
+		return { hits, searched, binary, unreadable, reads, next };
+	};
 	const at = (entry: TreeEntry, offset = 0, line = 0): SearchCursor => ({
 		path: entry.path,
 		version: entry.version,
@@ -299,6 +304,8 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			let piece: Buffer;
 			try {
 				piece = await source.read(entry, offset, pieceBytes);
+				// The view may have closed, or its lease lapsed, while the read was awaited.
+				source.serving?.();
 			} catch (error) {
 				if (error instanceof ObjectIntegrityError || error instanceof ObjectMissingError) {
 					source.log?.(`folder-service: search passed over ${entry.path} (${entry.version}): ${error.message}`);
@@ -353,11 +360,13 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 				break;
 			}
 			if (rest.byteLength >= longestLine) {
-				// A long line: searched as it comes, keeping its end for a match across stretches.
-				if (!stretch(rest)) return answer(at(entry, lineStart, line));
+				// A long line: searched as it comes up to its last whole character, keeping its end (with a character
+				// the piece cut in two) for a match across stretches.
+				const whole = wholeUtf8(rest);
+				if (!stretch(rest.subarray(0, whole))) return answer(at(entry, lineStart, line));
 				long = true;
-				let keep = Math.max(0, rest.byteLength - overlap);
-				while (keep < rest.byteLength && (rest[keep]! & 0xc0) === 0x80) keep++;
+				let keep = Math.max(0, whole - overlap);
+				while (keep < whole && (rest[keep]! & 0xc0) === 0x80) keep++;
 				carry = rest.subarray(keep);
 			} else carry = rest;
 			offset = end;
@@ -368,6 +377,16 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		if (!skipped) searched++;
 	}
 	return answer(null);
+}
+
+/** The length of `bytes` up to the end of its last whole UTF-8 character: a character cut at the end is left out. */
+function wholeUtf8(bytes: Buffer): number {
+	let start = bytes.byteLength;
+	while (start > 0 && bytes.byteLength - start < 3 && (bytes[start - 1]! & 0xc0) === 0x80) start--;
+	if (start === 0) return bytes.byteLength;
+	const lead = bytes[start - 1]!;
+	const size = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+	return bytes.byteLength - (start - 1) >= size ? bytes.byteLength : start - 1;
 }
 
 /** A line as a hit shows it: around its first match, at most HIT_CHARS long, control characters as spaces. `found` is
