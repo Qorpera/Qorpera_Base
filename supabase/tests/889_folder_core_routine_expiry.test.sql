@@ -3,8 +3,8 @@
 -- P04's folder list names a folder-v2 routine of any origin past its expiry, active or paused, paused company or not;
 -- the restore ends it (`ended`, status expired) under the fence, the company row and the routine's rank-5 lock. An
 -- expired active routine leaves the schedule heads, so the scheduler stops offering its slots; an expired paused one has
--- its queued runs cancelled. A routine not yet at its end, and a snapshot-v1 company's routine, are left alone. The
--- materializer's comment on F2's drain is corrected.
+-- its queued runs cancelled. A routine not yet at its end, a snapshot-v1 company's routine, and a company being deleted
+-- are left alone. The materializer's comment on F2's drain is corrected.
 
 -- A member's schedule routine with a due slot (the heads' condition), ending at p_ends.
 create function pg_temp.scheduled(p_ends timestamptz) returns uuid language plpgsql as $$
@@ -100,6 +100,22 @@ begin
 		raise exception 'A snapshot-v1 routine is not the folder tick''s'; end if;
 	if (select status from public.qorpera_cloud_routines where id = v_control) <> 'active' then
 		raise exception 'A snapshot-v1 routine is left active'; end if;
+end $$;
+
+-- 4b. A company being deleted: its expired routine is left to the purge (C1c-3g: effects refuse); the restore answers
+-- paused, as for any routine of a paused company.
+do $$
+declare v_routine uuid := pg_temp.scheduled(clock_timestamp() - interval '1 minute');
+begin
+	perform pg_temp.fx(format('insert into public.qorpera_company_deletions(profile_id, requested_by_user_id) values (%L, %L)',
+		'63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000001'));
+	perform pg_temp.path_claims('service_role');
+	if pg_temp.listed(v_routine) or pg_temp.restore(v_routine) ->> 'status' <> 'paused' then
+		raise exception 'A deleting company''s expired routine is not listed and answers paused'; end if;
+	if (select status from public.qorpera_cloud_routines where id = v_routine) <> 'active' then
+		raise exception 'A deleting company''s routine is left to its purge'; end if;
+	perform pg_temp.fx(format('delete from public.qorpera_company_deletions where profile_id = %L',
+		'63400000-0000-4000-8000-000000000010'));
 end $$;
 
 -- 5. P28's tidy-up: the materializer no longer says F2's drain runs inside it.

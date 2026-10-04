@@ -1192,9 +1192,9 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   reconciler reports those after its pass. A run the kernel refuses for want of authority (42501 from the wake's pin
   trigger) undoes the admission and the insert, suspends the routine and tells its member once, as the legacy tick
   does (`suspended`).
-- The list leaves out routines already past their expiry or at their occurrence limit (819 §8), which the lifecycle
-  sweep closes. A routine whose next retry would fall after its expiry is still listed, and answered `ended` every
-  30 s, until the sweep closes it. A raised 42501 (a missing fence or admission row) reaches the orchestrator as HTTP
+- The list leaves out routines at their occurrence limit (819 §8). Since 20260930027000 it lists those past their
+  expiry, which the restore ends (below). A routine whose next retry would fall after its expiry is still listed, and
+  answered `ended` every 30 s, until its expiry passes and the restore ends it. A raised 42501 (a missing fence or admission row) reaches the orchestrator as HTTP
   401, which the reconciler reports like any failure; only a broken `folder-v2` company shows it.
 - **`qorpera_ensure_dynamic_routine_run`** refuses a `folder-v2` routine (0A000) as its first line. It takes no fence
   and no ranks, and none of its callers reaches `folder-v2`: the tick skips it, and the agent tools refuse it.
@@ -1214,10 +1214,14 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
 - **Expiry (migration 20260930027000, test 889).** The legacy expiry sweep (`qorpera_expire_cloud_routines`) ran only
   inside the Company File drain, which P28 took out of the reconcile RPC. So the tick also ends `folder-v2` routines:
   - The list also names any `folder-v2` routine, of any origin and trigger, that is active or paused and past its
-    `expires_at`, paused company included.
+    `expires_at`, paused company included. A company being deleted is left to its purge (C1c-3g: effects refuse).
   - The restore ends such a routine first: the company row `KEY SHARE`, the routine `FOR NO KEY UPDATE SKIP LOCKED`,
-    then `status = 'expired'`. It answers `ended`. The status triggers record whether it was active, and cancel a
-    paused routine's queued runs. A routine held by a save answers `busy`, and the next pass ends it.
+    then `status = 'expired'`. It answers `ended`, or `changed` if the routine was extended, retired or concluded
+    meanwhile. The status triggers record whether it was active, and cancel a paused routine's queued runs. A routine
+    held by a save answers `busy`, and the next pass ends it.
+  - The legacy sweep has no caller now, so a `snapshot-v1` routine no longer expires; none remains.
+  - Known: a later save of the routine's file revives it while the file still says `status: active` (F2's rule, test
+    708 §4), and the next pass expires it again, until C2's queue writes the platform's status into the file.
   - An expired routine leaves the schedule heads, so the scheduler stops offering its slots, which the lifecycle
     trigger would refuse.
   - The routine file keeps its status until core C2's queue writes platform statuses into files (STATE "Status").
