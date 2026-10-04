@@ -1,10 +1,11 @@
 -- @fixture 634_folder_core_authority.test.sql until "-- Mutators: owners and admins"
--- Company folder core, P24d (migration 20260930047000): a file reference's byte check costs the same whatever the company
+-- Company folder core, P24d (migration 20260930047000): the commit's byte checks cost the same whatever the company
 -- stores. The patched qorpera_folder_file_bytes_problem answers what the old one answered (rebuilt here by undoing the
--- patch) for the platform, a member and a run, with sorted, unsorted and partial locked sets, and so does the commit's new
--- loop over a new folder's files; over a catalog of 6,000 objects, under the planner's defaults, the old body read the
--- whole catalog on every call (the hashed shape) and the new one reads a file's own rows, with custom and generic plans;
--- and a new folder of 1,000 new files reads the catalog in proportion to its files. 634's fixture, rolled back.
+-- patch) for the platform, a member and a run, with sorted, unsorted, partial and odd locked arrays, and so do the
+-- commit's new loops over a new folder's files and a copy's objects; the sorted lookup finds every element of a sorted
+-- array and nothing else; over a catalog of 6,000 objects, under the planner's defaults, the old body read the whole
+-- catalog on every call (the hashed shape) and the new one reads a file's own rows, with custom and generic plans; and a
+-- new folder of 1,000 new files, and its copy, read the catalog in proportion to their files. 634's fixture, rolled back.
 
 -- 3,000 distinct verified files, as an upload leaves them: a manifest object and one chunk in the catalog, a version-2
 -- proof naming both in hash order, and the chunk row. Rows go in directly (staging 3,000 uploads would be most of the
@@ -45,18 +46,12 @@ end $$;
 do $$
 declare v text := pg_get_functiondef('public.qorpera_folder_file_bytes_problem(uuid,uuid,jsonb,jsonb,jsonb,text[])'::regprocedure);
 begin
-	v := pg_temp.swap(v, $new$	-- P24d (20260930047000): object by object. Locked: a binary search of p_locked (sorted collate "C" by the commit), then
-	-- a scan only if it misses; never inside a statement, which would copy the array. Then the catalog row by primary key.
+	v := pg_temp.swap(v, $new$	-- P24d (20260930047000): object by object. Locked: the sorted lookup, then a scan only if it misses; never inside a
+	-- statement, which would copy p_locked. Then the catalog row by primary key.
 	for v_object in select o from jsonb_array_elements(v_proof.objects) o loop
 		v_sha := v_object ->> 'sha256';
-		v_low := 1; v_high := coalesce(cardinality(p_locked), 0); v_locked := false;
-		while v_low <= v_high and not v_locked loop
-			v_mid := (v_low + v_high) / 2;
-			if p_locked[v_mid] = v_sha then v_locked := true;
-			elsif p_locked[v_mid] collate "C" < v_sha collate "C" then v_low := v_mid + 1;
-			else v_high := v_mid - 1; end if;
-		end loop;
-		if not v_locked and not (v_sha = any (p_locked)) then return 'bytes_unverified'; end if;
+		if public.qorpera_folder_sorted_position(p_locked, v_sha) is null and not (v_sha = any (p_locked)) then
+			return 'bytes_unverified'; end if;
 		if not exists (select 1 from public.qorpera_profile_objects s
 				where s.profile_id = p_profile_id and s.sha256 = v_sha and s.bytes = (v_object ->> 'bytes')::bigint) then
 			return 'bytes_unverified'; end if;
@@ -65,7 +60,7 @@ begin
 			or not exists (select 1 from public.qorpera_profile_objects s
 				where s.profile_id = p_profile_id and s.sha256 = o ->> 'sha256' and s.bytes = (o ->> 'bytes')::bigint)) then
 		return 'bytes_unverified'; end if;$old$);
-	v := pg_temp.swap(v, E'\n\tv_object jsonb; v_sha text; v_low integer; v_high integer; v_mid integer; v_locked boolean; -- P24d (20260930047000)', '');
+	v := pg_temp.swap(v, E'\n\tv_object jsonb; v_sha text; -- P24d (20260930047000)', '');
 	v := pg_temp.swap(v, 'FUNCTION public.qorpera_folder_file_bytes_problem(', 'FUNCTION pg_temp.old_bytes_problem(');
 	execute v;
 end $$;
@@ -125,7 +120,10 @@ begin
 		for v_locked in select l from (values (array(select x from unnest(array[v_file ->> 'manifestSha256', v_file ->> 'fileSha256']) x order by x collate "C")),
 				(array(select x from unnest(array[v_file ->> 'manifestSha256', v_file ->> 'fileSha256']) x order by x collate "C" desc)),
 				(array[v_file ->> 'manifestSha256']), (array[v_file ->> 'fileSha256']), ('{}'::text[]), (null::text[]),
-				(v_catalog), (v_catalog_unsorted)) x(l) loop
+				(v_catalog), (v_catalog_unsorted),
+				-- Odd arrays the commit never passes: a null element, a duplicate, nulls only, a lower bound of 0.
+				(array[null, v_file ->> 'manifestSha256']), (array[v_file ->> 'fileSha256', v_file ->> 'fileSha256', v_file ->> 'manifestSha256']),
+				(array[null]::text[]), (('[0:1]={' || (v_file ->> 'manifestSha256') || ',' || (v_file ->> 'fileSha256') || '}')::text[])) x(l) loop
 			foreach v_actor in array array[v_platform, pg_temp.member(1), v_run] loop
 				v_old := pg_temp.answer(true, v_actor, v_file, v_locked);
 				v_new := pg_temp.answer(false, v_actor, v_file, v_locked);
@@ -135,7 +133,23 @@ begin
 			end loop;
 		end loop;
 	end loop;
-	if v_cases <> 144 then raise exception 'A: % cases, expected 144', v_cases; end if;
+	if v_cases <> 216 then raise exception 'A: % cases, expected 216', v_cases; end if;
+	-- A copy's check, the old statement against the new loop: a copy of p24d-a (the whole file), with every object locked
+	-- (sorted, unsorted), one missing, or none.
+	for v_locked in select l from (values (v_catalog), (v_catalog_unsorted), (array_remove(v_catalog, v_whole ->> 'fileSha256')),
+			('{}'::text[])) x(l) loop
+		v_old := exists (select 1 from public.qorpera_folder_unit_objects('63400000-0000-4000-8000-000000000020', v_profile,
+			jsonb_build_array(jsonb_build_object('op', 'copy', 'from', 'p24d-a', 'to', 'p24d-a2'))) h where not (h = any (v_locked)))::text;
+		v_new := public.qorpera_folder_unit_objects_unlocked('63400000-0000-4000-8000-000000000020', v_profile,
+			jsonb_build_object('op', 'copy', 'from', 'p24d-a', 'to', 'p24d-a2'), v_locked)::text;
+		if v_old is distinct from v_new then
+			raise exception 'A: a copy''s check with % locked: the old statement %, the loop %', cardinality(v_locked), v_old, v_new; end if;
+	end loop;
+	if not public.qorpera_folder_unit_objects_unlocked('63400000-0000-4000-8000-000000000020', v_profile,
+			jsonb_build_object('op', 'copy', 'from', 'p24d-a', 'to', 'p24d-a2'), array_remove(v_catalog, v_whole ->> 'fileSha256'))
+		or public.qorpera_folder_unit_objects_unlocked('63400000-0000-4000-8000-000000000020', v_profile,
+			jsonb_build_object('op', 'copy', 'from', 'p24d-a', 'to', 'p24d-a2'), v_catalog) then
+		raise exception 'A: a copy''s check finds the one object not locked, and only it'; end if;
 	-- The commit's loop over a new folder's files answers as its old statement did: the first file's problem, folders
 	-- skipped.
 	foreach v_contents in array array[
@@ -215,7 +229,7 @@ begin
 end $$;
 
 -- C. A new folder of 1,000 new files, as the platform: the commit reads the catalog in proportion to its files (step 6's
--- lock may scan the catalog once), not 1,000 times.
+-- lock may scan the catalog once), not 1,000 times. Its copy passes the copy's check against the commit's own array.
 do $$
 declare v_rows bigint := pg_temp.catalog_rows();
 begin
@@ -225,19 +239,58 @@ begin
 	v_rows := pg_temp.catalog_rows() - v_rows;
 	if v_rows > 6000 + 4 * 1000 then
 		raise exception 'C: a new folder of 1,000 files read % catalog rows; expected at most 10,000', v_rows; end if;
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p24d-case-c-copy', jsonb_build_array(jsonb_build_object('op', 'copy',
+		'from', 'p24d', 'to', 'p24d-copy'))), 1, 'saved');
 end $$;
 
--- D. The markers, and the commit checks a new folder's files through the loop, not in a statement.
+-- D. The sorted lookup: on the company's catalog sorted collate "C", each element's position by binary search alone, and
+-- no position for a value it does not hold, a null, or an empty or null array.
+do $$
+declare v_sorted text[]; v_bad integer;
+begin
+	select array_agg(sha256 order by sha256 collate "C") into v_sorted from public.qorpera_profile_objects
+	where profile_id = '63400000-0000-4000-8000-000000000010';
+	select count(*) into v_bad from generate_subscripts(v_sorted, 1) i
+	where public.qorpera_folder_sorted_position(v_sorted, v_sorted[i]) is distinct from i;
+	if v_bad <> 0 or cardinality(v_sorted) < 5000 then
+		raise exception 'D: % of % elements not found at their place', v_bad, cardinality(v_sorted); end if;
+	select count(*) into v_bad from generate_series(1, 500) n
+	where public.qorpera_folder_sorted_position(v_sorted, encode(extensions.digest('absent ' || n, 'sha256'), 'hex')) is not null;
+	if v_bad <> 0 or public.qorpera_folder_sorted_position(v_sorted, null) is not null
+		or public.qorpera_folder_sorted_position('{}', v_sorted[1]) is not null
+		or public.qorpera_folder_sorted_position(null, v_sorted[1]) is not null then
+		raise exception 'D: a value the array does not hold has no position'; end if;
+end $$;
+
+-- E. The functions: markers; the helpers are definer-rights (the two that read tables) or pure, with an empty search path,
+-- for no API role, and take no lock (761's rule); the commit sorts its array and calls the two loops, not statements.
 do $$
 declare v_commit text := (select prosrc from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_folder_commit');
+	v_fn record;
 begin
 	if position('20260930047000' in pg_get_functiondef('public.qorpera_folder_file_bytes_problem(uuid,uuid,jsonb,jsonb,jsonb,text[])'::regprocedure)) = 0
-		or position('20260930047000' in pg_get_functiondef('public.qorpera_folder_contents_bytes_problem(uuid,uuid,jsonb,jsonb,jsonb,text[])'::regprocedure)) = 0
 		or position('20260930047000' in v_commit) = 0 then
-		raise exception 'D: a patched body lacks its marker'; end if;
-	if position('elsif public.qorpera_folder_contents_bytes_problem(p_environment_id, v_file.profile_id, p_actor, v_auth_actor,' in v_commit) = 0
-		or position('c.value -> ''file'', v_objects) is not null) then' in v_commit) > 0 then
-		raise exception 'D: the commit must check a new folder''s files through qorpera_folder_contents_bytes_problem'; end if;
+		raise exception 'E: a patched body lacks its marker'; end if;
+	for v_fn in select p.oid::regprocedure as f, p.proname, p.prosecdef, p.provolatile, p.proconfig, p.prosrc from pg_proc p
+		where p.pronamespace = 'public'::regnamespace and p.proname in ('qorpera_folder_sorted_position',
+			'qorpera_folder_contents_bytes_problem', 'qorpera_folder_unit_objects_unlocked') loop
+		if position('20260930047000' in v_fn.prosrc) = 0 or v_fn.proconfig is distinct from array['search_path=""']
+			or v_fn.prosecdef is distinct from (v_fn.proname <> 'qorpera_folder_sorted_position')
+			or v_fn.provolatile <> (case when v_fn.proname = 'qorpera_folder_sorted_position' then 'i' else 's' end)
+			or has_function_privilege('service_role', v_fn.f, 'execute') or has_function_privilege('authenticated', v_fn.f, 'execute')
+			or has_function_privilege('anon', v_fn.f, 'execute')
+			or v_fn.prosrc ~* '(for update|for share\M|nowait|for no key update|for key share|lock_profile_gc_fence|qorpera_folder_fences|qorpera_runner_jobs)' then
+			raise exception 'E: % is not as P24d makes it', v_fn.f; end if;
+	end loop;
+	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('qorpera_folder_sorted_position',
+			'qorpera_folder_contents_bytes_problem', 'qorpera_folder_unit_objects_unlocked')) <> 3 then
+		raise exception 'E: the three helpers exist once each'; end if;
+	if position('array_agg(s.sha256 order by s.sha256 collate "C")' in v_commit) = 0
+		or position('elsif public.qorpera_folder_contents_bytes_problem(p_environment_id, v_file.profile_id, p_actor, v_auth_actor,' in v_commit) = 0
+		or position('and public.qorpera_folder_unit_objects_unlocked(p_environment_id, v_file.profile_id, v_unit, v_objects) then' in v_commit) = 0
+		or position('c.value -> ''file'', v_objects) is not null) then' in v_commit) > 0
+		or position('where not (h = any (v_objects))' in v_commit) > 0 then
+		raise exception 'E: the commit sorts its array and checks new folders and copies through the loops'; end if;
 end $$;
 
 rollback;
