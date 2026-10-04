@@ -70,10 +70,14 @@ begin
 		or has_table_privilege('service_role','public.qorpera_company_founder_seats','INSERT')
 		or has_table_privilege('service_role','public.qorpera_company_foundings','UPDATE') then
 		raise exception 'the lobby tables are readable or writable directly'; end if;
-	if public.qorpera_company_founding_available() then raise exception 'the lobby is on before C2'; end if;
+	if not public.qorpera_company_founding_available() then raise exception 'the lobby is off (P39 turned it on)'; end if;
 end $$;
 
--- Until the switch is on, opening a table is refused and nothing is written.
+-- With the switch off, opening a table is refused and nothing is written (P39 turned it on; switched off here).
+create or replace function public.qorpera_company_founding_available()
+returns boolean language sql stable security definer set search_path = '' as $$
+	select false
+$$;
 select pg_temp.as_user('40000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.refused($$select public.qorpera_open_company_founding('40000000-0000-4000-8000-000000000100','Nordlys')$$,'0A000');
