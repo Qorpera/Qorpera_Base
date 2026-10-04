@@ -488,10 +488,11 @@ its members and an empty company folder (no seeded files); nothing else exists
 until Start (no Co-Founder or first run), so no agent runs and nothing is
 charged before it (20260930010000).
 
-- `qorpera_company_founding_available()` → boolean. False until new companies
-  are created on the company folder; until then the hub keeps
-  `qorpera_create_cloud_company`, and opening or starting a table is refused
-  (`0A000`).
+- `qorpera_company_founding_available()` → boolean. True since P39
+  (20260930031000): new companies start at a founding table on the company
+  folder. False is the rollback: opening or starting a table is then refused
+  (`0A000`), and the hub says creating a company is paused. The hub has no
+  other way to create a company.
 - `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
   a table with the caller's seat; repeat-safe per creation id. Needs a
   confirmed email. A creation id that already belongs to a company that is not
@@ -502,10 +503,16 @@ charged before it (20260930010000).
   `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
   (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
   `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
-  `companySetup`) once started. `companySetup` is `pending` while the company
-  is set up, `ready` once it is (then `companyReady` is true), or `failed` when
-  setup stopped and waits for Qorpera, or the company was deleted before it was
-  set up; a failed setup keeps the company hidden.
+  `companySetup`, `firstRun`) once started. `companySetup` is `pending` while
+  the company is set up, `ready` once it is (then `companyReady` is true), or
+  `failed` when setup stopped and waits for Qorpera, or the company was deleted
+  before it was set up; a failed setup keeps the company hidden. `firstRun`
+  (20260930039000) is how the Co-Founder's first run stands once the company is
+  made: `queued` (its turn request waits for a run), `started` (a run took the
+  kickoff, whatever that run's outcome), `waiting_for_login` (no login of the
+  starter could pay when the company was made, so nothing was queued), `failed`
+  (the request or the kickoff failed, or the request was cancelled), or null
+  before the company is made.
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and
@@ -514,7 +521,10 @@ charged before it (20260930010000).
   p_company_name, p_vision)`, `qorpera_set_founder_role(p_profile_id,
   p_expected_revision, p_role)` (at most 300 characters) and
   `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
-  A stale revision is `PT412`. Ready needs the caller's own usable ChatGPT
+  A stale revision is `PT412`. A name is refused (`22023`) as Open and the
+  seed refuse it: more than 120 characters, a control character or line
+  separator, or nothing but spaces (20260930039000). Ready needs the caller's
+  own usable ChatGPT
   account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
   for that revision: a change to the name, description, a role or who sits at
   the table clears every Ready.
@@ -585,7 +595,7 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - A name inside a quote names nobody: room mentions read the member's own words. A client that says who will answer
   (`mentionFold`) folds each quote to its placeholder first.
 - Quotes are refused (22023) in a company whose runs can't fence them: an environment that is neither folder-v2 nor
-  on the company path (`20260930008000_member_draft_quotes`).
+  on the company path (`20260928469160_member_draft_quotes`).
 - Room drafts keep their quotes: `qorpera_put_room_draft(p_room_id, p_owner_user_id, p_base_revision, p_body,
   p_quotes?)` checks `p_quotes` as a message's quotes and stores them, and `qorpera.room-draft/v1` carries `quotes`
   when the draft has any. Once a draft holds quotes, a save that keeps a quote's words without its record (in their
@@ -779,15 +789,17 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
   work while away".
 
-### The company folder for members (20260930013000_folder_core_member_reads)
+### The company folder for members (20260928469250_folder_core_member_reads)
 
 Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call
 answers 42501 "Company folder is unavailable" for a caller who is not a member of a folder-v2 company with that
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
-looks absent in every answer. Reads only: member writes come with P31.
+looks absent in every answer. Members write through the object gateway's member commit route (P34a,
+`20260930021000_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
+a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
-  `20260930013200_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
+  `20260928469270_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
   company with the functions below, never with the governed Company File calls.
 
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
@@ -813,12 +825,18 @@ looks absent in every answer. Reads only: member writes come with P31.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
   chunk) of a file the member may read, now or in a version they may read. Clients fetch bytes from the gateway
   (P27b), not with this call.
+- `qorpera_member_company_state_folders(environment)` (P34a): `{schema: "qorpera.member-company-state-folders/v1",
+  agents: [{staffAgentId, file}], groups: [{roomId, file}]}`, the live agents' `agent.md` and group chats' `group.md`
+  the member may read, in path order. An agent's or group chat's folder is its file's parent.
+- `qorpera_member_folder_writer(environment)` (P34a): `{schema: "qorpera.member-folder-writer/v1", actor, profileId}`,
+  the caller's own actor `{kind: "member", userId}`. For the object gateway's member commit route, which calls it
+  with the member's token; clients don't call it.
 
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
 topic to be the joined one (`realtime.messages.topic = (select realtime.topic())`;
-presence and room drafts since migration `20260930017000_realtime_topic_equality`):
+presence and room drafts since migration `20260928469300_realtime_topic_equality`):
 a client joined to one topic reads, and where it may publish writes, only that
 topic's rows. A new private topic's policies must do the same.
 
@@ -859,7 +877,7 @@ topic's rows. A new private topic's policies must do the same.
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
 - `qorpera-folder-{environmentId}` — a folder-v2 company's folder changed (migration
-  `20260930013100_folder_core_member_hint`, folder core C4 P30). Private broadcast channel, event `folder`,
+  `20260928469260_folder_core_member_hint`, folder core C4 P30). Private broadcast channel, event `folder`,
   payload `{"schema":"qorpera.folder-hint/v1","seq":<n>}` and nothing else: the folder's clock reached seq `n` (a
   change set or an authority change; the same number as the feed's seq and a run's `companySeq`). Members of the
   company receive it, not while it is being deleted (RLS on `realtime.messages` via `qorpera_folder_hint_member`);

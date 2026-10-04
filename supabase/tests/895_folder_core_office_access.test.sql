@@ -220,10 +220,11 @@ begin
 	if v_outcome <> 'ok' then raise exception 'C: the access change lands: %', v_outcome; end if;
 end $$;
 
--- D. Access status is plain reads: with the folder fence held FOR UPDATE (a folder stop's second phase), it answers at
---    once. Then, with the company row held, a change of Ada's access does not wait (the machine fence takes the row only
---    KEY SHARE).
-select pg_temp.hold($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'
+-- D. Access status is plain reads: with the folder fence and the company row both held FOR UPDATE (a folder stop's second
+--    phase, and the old exclusive company lock), it answers at once. Then, with the company row held, a change of Ada's
+--    access does not wait (the machine fence takes the row only KEY SHARE).
+select pg_temp.hold($q$select 1 from public.qorpera_folder_fences as fence, public.qorpera_profiles as company
+	where fence.profile_id = '64800000-0000-4000-8000-000000000010' and company.id = '64800000-0000-4000-8000-000000000010'
 	for update$q$);
 do $$
 declare v_answer text := pg_temp.settled('fence_two', format('select public.qorpera_runtime_office_access_status(%L, %L)::text',

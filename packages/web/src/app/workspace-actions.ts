@@ -24,12 +24,13 @@ export interface AgentCreation extends AgentDraft {
 /** Member UI adapters over the shared cloud SDK. A view offers an action only
  * when its adapter is present. */
 export interface WorkspaceActions {
+	/** Answers whether it wrote: a write raises the room's version by one, and nothing written leaves it. */
 	updateGroup?: (
 		sessionId: string,
 		observed: GroupChatDetails,
 		draft: GroupChatDraft,
 		signal: AbortSignal,
-	) => Promise<void>;
+	) => Promise<boolean>;
 	/** Deletes the group chat for everyone. */
 	deleteGroup?: (sessionId: string, roomId: string, signal: AbortSignal) => Promise<void>;
 	/** Company notices (all company computers in use). The conversation shows them above its composer. */

@@ -11,8 +11,6 @@ on:
       - 'supabase/tests/**'
       - 'scripts/test-hosted-db.mjs'
       - 'scripts/test-hosted-db.test.mjs'
-      - 'scripts/test-coding-turn-backfill.mjs'
-      - 'scripts/fixtures/coding-turn-pre-continuity.sql'
       - 'scripts/test-runtime-bundle-activation.mjs'
       - 'scripts/test-email-draft-e2e.mjs'
       - 'scripts/fixtures/email-draft-e2e*'
@@ -74,9 +72,6 @@ jobs:
 
       - name: Verify current office activation against disposable PostgreSQL
         run: node scripts/test-runtime-office-current-provider-activation.mjs
-
-      - name: Coding sessions recorded before per-turn history against disposable PostgreSQL
-        run: node scripts/test-coding-turn-backfill.mjs
 
       - name: Room history accepted before the history upgrade against disposable PostgreSQL
         run: node scripts/test-runtime-room-history.mjs

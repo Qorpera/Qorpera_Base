@@ -9,6 +9,7 @@ import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./m
 import { serveMemberCompanyPresence } from "./member-company-presence.ts";
 import { createMemberCors } from "./member-cors.ts";
 import { serveMemberFileExport } from "./member-file-exports.ts";
+import { serveMemberFolderCommit } from "./member-folder-commits.ts";
 import { type MemberFolderObjectAuthority, serveMemberFolderObject } from "./member-folder-objects.ts";
 import {
 	MEMBER_OBSERVATIONS_PATH,
@@ -43,6 +44,11 @@ export interface ObjectGatewayServiceOptions {
 	memberObjects?: MemberCompanyObjectAuthority;
 	/** A member's bytes of a folder-v2 company (folder core C4, P27b). */
 	memberFolderObjects?: MemberFolderObjectAuthority;
+	/** A member's change sets to a folder-v2 company (folder core C4, P34a): the writer check with the member's token,
+	 * then staging and the commit as that member with the service key. */
+	memberFolderCommits?: MemberCompanyAuthority;
+	/** The member commit route's follow-up after a saved commit (F2's P15), on its own database client. */
+	memberFolderFollowUps?: MemberCompanyAuthority;
 	memberFiles?: MemberCompanyAuthority;
 	memberPresence?: MemberCompanyAuthority;
 	memberObservations?: MemberCompanyObservations;
@@ -159,6 +165,8 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				observation = options.memberObservations?.start("object_read");
 			else if (request.url?.startsWith("/v1/member-company-file/"))
 				observation = options.memberObservations?.start("file_request");
+			else if (request.url?.startsWith("/v1/member-folder-commits/"))
+				observation = options.memberObservations?.start("command_submit");
 		} catch {
 			/* Optional diagnostics cannot prevent a human request. */
 		}
@@ -310,6 +318,18 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						options.store,
 						observation,
 					);
+					return;
+				}
+				if (request.url?.startsWith("/v1/member-folder-commits/")) {
+					if (!options.memberFolderCommits || !options.replication) throw new HttpError(404, "Not found");
+					await serveMemberFolderCommit(request, response, {
+						authority: options.memberFolderCommits,
+						...(options.memberFolderFollowUps ? { followUps: options.memberFolderFollowUps } : {}),
+						store: options.store,
+						replication: options.replication,
+						readFallback: (profileId, sha256) => options.authority.readLegacyObject(profileId, sha256),
+						...(observation ? { observation } : {}),
+					});
 					return;
 				}
 				if (request.url?.startsWith("/v1/folder-objects/")) {

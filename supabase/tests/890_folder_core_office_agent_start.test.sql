@@ -277,37 +277,75 @@ begin
 end $$;
 
 -- E. A start of the computer that appears after the prelude's read: Ada's start waits at the seat lock (another session
---    holds it) while the Co-Founder's start of the computer commits; once the seat lock is free the start refuses with
---    55P03 (try again) and records nothing.
+--    holds it) while the Co-Founder's start of the computer commits. Once the seat lock is free, Ada's start shares the
+--    Co-Founder without waiting (the start-source check, NOWAIT on folder-v2) and joins that start.
 select pg_temp.clear_starts();
+create function pg_temp.cofounder_start(p_id uuid) returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_runtime_office_start_intents(id, office_id, computer_generation, state, requested_by_staff_agent_id,
+		grant_id, grant_version, receipt_id)
+	select p_id, office.id, office.generation, 'requested', access.staff_agent_id, access.grant_id, access.version, p_id
+	from public.qorpera_runtime_offices as office
+	join public.qorpera_runtime_office_access as access on access.office_id = office.id
+		and access.staff_agent_id = '64800000-0000-4000-8000-0000000000c0'
+	where office.id = current_setting('qorpera_test.office_id')::uuid;
+end $$;
+create function pg_temp.seat_hold() returns text language sql as $$
+	select format('select 1 from (select public.qorpera_lock_runtime_office_seats(%L)) as seats', '64800000-0000-4000-8000-000000000020')
+$$;
 select pg_temp.start_operation('start-e', '89000000-0000-4000-8000-0000000000e3');
-select pg_temp.hold(format('select 1 from (select public.qorpera_lock_runtime_office_seats(%L)) as seats', '64800000-0000-4000-8000-000000000020'));
+select pg_temp.hold(pg_temp.seat_hold());
 select dblink_send_query('fence_three', pg_temp.sql_begin('89000000-0000-4000-8000-0000000000e3'));
 do $$
 begin
 	if not pg_temp.waits_for('fence_three', 'fence_one') then
 		perform pg_temp.release(); raise exception 'E: the start must wait at the seat lock'; end if;
 end $$;
-set session_replication_role = replica;
-insert into public.qorpera_runtime_office_start_intents(id, office_id, computer_generation, state, requested_by_staff_agent_id,
-	grant_id, grant_version, receipt_id)
-select '89000000-0000-4000-8000-0000000000d2', office.id, office.generation, 'requested', access.staff_agent_id, access.grant_id,
-	access.version, '89000000-0000-4000-8000-0000000000ea'
-from public.qorpera_runtime_offices as office
-join public.qorpera_runtime_office_access as access on access.office_id = office.id
-	and access.staff_agent_id = '64800000-0000-4000-8000-0000000000c0'
-where office.id = current_setting('qorpera_test.office_id')::uuid;
-set session_replication_role = origin;
+select pg_temp.cofounder_start('89000000-0000-4000-8000-0000000000d2');
 select pg_temp.release();
 do $$
 declare v_outcome text := pg_temp.answer('fence_three');
 begin
-	perform pg_temp.complete('89000000-0000-4000-8000-0000000000e3', '{"state":"refused","reason":"TRY_AGAIN"}');
-	if v_outcome not like '55P03 The Company Computer''s start changed while this one waited%' then
-		raise exception 'E: a start named after the read makes the start try again: %', v_outcome; end if;
-	if exists (select 1 from public.qorpera_runtime_office_start_waiters where receipt_id = '89000000-0000-4000-8000-0000000000e3') then
-		raise exception 'E: the refused start recorded nothing'; end if;
+	if v_outcome !~ '"state": "requested"' then raise exception 'E: Ada''s start joins a start that appeared meanwhile: %', v_outcome; end if;
+	perform pg_temp.complete('89000000-0000-4000-8000-0000000000e3', v_outcome::jsonb);
+	if not exists (select 1 from public.qorpera_runtime_office_start_waiters where intent_id = '89000000-0000-4000-8000-0000000000d2'
+		and receipt_id = '89000000-0000-4000-8000-0000000000e3') then raise exception 'E: Ada waits on the Co-Founder''s start'; end if;
 end $$;
+
+-- E1. The same, with the Co-Founder's row being written when the seat lock frees (its return in flight): Ada's start
+--     refuses at once (55P03) rather than wait behind a holder that wants the seat lock, and records nothing; its
+--     receipt stays open, as the runtime leaves an unconfirmed start.
+select pg_temp.clear_starts();
+select pg_temp.start_operation('start-e1', '89000000-0000-4000-8000-0000000000e6');
+-- A start that waited for the busy agent would sit behind an idle holder: the lock timeout turns that into a failure.
+select dblink_exec('fence_three', 'set lock_timeout = ''10s''');
+select pg_temp.hold(pg_temp.seat_hold());
+select dblink_send_query('fence_three', pg_temp.sql_begin('89000000-0000-4000-8000-0000000000e6'));
+do $$
+begin
+	if not pg_temp.waits_for('fence_three', 'fence_one') then
+		perform pg_temp.release(); raise exception 'E1: the start must wait at the seat lock'; end if;
+end $$;
+select pg_temp.cofounder_start('89000000-0000-4000-8000-0000000000d4');
+select dblink_exec('fence_two', 'begin');
+select * from dblink('fence_two', pg_temp.staff_hold('c0', 'no key update')) as t(x integer);
+select pg_temp.release();
+do $$
+declare v_outcome text := pg_temp.answer('fence_three');
+begin
+	perform dblink_exec('fence_two', 'commit');
+	perform dblink_exec('fence_three', 'reset lock_timeout');
+	if v_outcome not like '55P03 could not obtain lock%' then raise exception 'E1: a busy agent makes the start refuse at once: %', v_outcome; end if;
+	if exists (select 1 from public.qorpera_runtime_office_start_waiters where receipt_id = '89000000-0000-4000-8000-0000000000e6')
+		or (select status from public.qorpera_run_operation_receipts where id = '89000000-0000-4000-8000-0000000000e6') <> 'executing' then
+		raise exception 'E1: the refused start recorded nothing and left its receipt open'; end if;
+end $$;
+-- The test settles the open receipt itself, so the run's later calls are not blocked.
+set session_replication_role = replica;
+update public.qorpera_run_operation_receipts set status = 'completed', completed_at = clock_timestamp(),
+	result = '{"state":"refused"}' where id = '89000000-0000-4000-8000-0000000000e6';
+set session_replication_role = origin;
 
 -- E2. A start that joins a member's start of the computer shares that member first: the owner starts the computer,
 --     and with the owner's row held (a role change or a removal in flight) Ada's start waits there holding no computer,
@@ -354,6 +392,75 @@ begin
 	perform pg_temp.complete('89000000-0000-4000-8000-0000000000e5', v_outcome::jsonb);
 end $$;
 
+-- E2b. The owner's start commits after Ada's read (Ada waits at the seat lock), and the owner's row is held: Ada's start
+--      shares the owner after the computer, which is safe (a member's writers never take a seat lock or a computer), so it
+--      waits there and then joins.
+select pg_temp.clear_starts();
+select pg_temp.start_operation('start-e2b', '89000000-0000-4000-8000-0000000000e7');
+select pg_temp.hold(pg_temp.seat_hold());
+select dblink_send_query('fence_three', pg_temp.sql_begin('89000000-0000-4000-8000-0000000000e7'));
+do $$
+begin
+	if not pg_temp.waits_for('fence_three', 'fence_one') then
+		perform pg_temp.release(); raise exception 'E2b: the start must wait at the seat lock'; end if;
+end $$;
+set session_replication_role = replica;
+insert into public.qorpera_runtime_office_start_intents(id, office_id, computer_generation, state, requested_by_user_id)
+select '89000000-0000-4000-8000-0000000000d5', office.id, office.generation, 'requested', '64800000-0000-4000-8000-000000000001'
+from public.qorpera_runtime_offices as office where office.id = current_setting('qorpera_test.office_id')::uuid;
+set session_replication_role = origin;
+select dblink_exec('fence_two', 'begin');
+select * from dblink('fence_two', pg_temp.member_hold('01')) as t(x integer);
+select pg_temp.release();
+do $$
+begin
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_profile_members') then
+		perform dblink_exec('fence_two', 'commit'); raise exception 'E2b: the start must wait at the owner''s row'; end if;
+end $$;
+select dblink_exec('fence_two', 'commit');
+do $$
+declare v_outcome text := pg_temp.answer('fence_three');
+begin
+	if v_outcome !~ '"state": "requested"' then raise exception 'E2b: Ada''s start joins the owner''s: %', v_outcome; end if;
+	perform pg_temp.complete('89000000-0000-4000-8000-0000000000e7', v_outcome::jsonb);
+end $$;
+
+-- E4. A member's start against an agent's start that appeared after the member's read (3j's start, now that agents
+--     start too): the owner's start waits at the computer while Ada's start commits and Ada's row is being written; the
+--     owner's start (its before-idle body runs 3j's prelude again, nested) then refuses at once (55P03) rather than wait
+--     behind a holder that wants the seat lock.
+select pg_temp.clear_starts();
+select dblink_exec('fence_two', 'set lock_timeout = ''10s''');
+select pg_temp.hold(format('select 1 from public.qorpera_runtime_offices where id = %L for update', current_setting('qorpera_test.office_id')));
+select dblink_send_query('fence_two', format('select public.qorpera_request_runtime_office_start(%L, %s, %L)::text',
+	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), '89000000-0000-4000-8000-0000000000d6'));
+do $$
+begin
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_runtime_offices') then
+		perform pg_temp.release(); raise exception 'E4: the owner''s start must wait at the computer'; end if;
+end $$;
+set session_replication_role = replica;
+insert into public.qorpera_runtime_office_start_intents(id, office_id, computer_generation, state, requested_by_staff_agent_id,
+	grant_id, grant_version, receipt_id)
+select '89000000-0000-4000-8000-0000000000d7', office.id, office.generation, 'requested', access.staff_agent_id, access.grant_id,
+	access.version, '89000000-0000-4000-8000-0000000000d7'
+from public.qorpera_runtime_offices as office
+join public.qorpera_runtime_office_access as access on access.office_id = office.id
+	and access.staff_agent_id = '64800000-0000-4000-8000-0000000000a1'
+where office.id = current_setting('qorpera_test.office_id')::uuid;
+set session_replication_role = origin;
+select dblink_exec('fence_three', 'begin');
+select * from dblink('fence_three', pg_temp.staff_hold('a1', 'no key update')) as t(x integer);
+select pg_temp.release();
+do $$
+declare v_outcome text := pg_temp.answer('fence_two');
+begin
+	perform dblink_exec('fence_three', 'commit');
+	perform dblink_exec('fence_two', 'reset lock_timeout');
+	if v_outcome not like '55P03 could not obtain lock%' then
+		raise exception 'E4: the owner''s start refuses at once beside a busy agent: %', v_outcome; end if;
+end $$;
+
 -- F. The descriptor's new computer shares the company's agents before the seat lock: with scale-out on and the only
 --    computer in maintenance (no seat for Ada), and the Co-Founder's row held FOR UPDATE, the descriptor waits at the
 --    agents holding no seat lock.
@@ -384,8 +491,8 @@ update public.qorpera_runtime_office_scale_out set enabled = current_setting('qo
 -- G. Exactly the patched functions and the prelude name this migration.
 do $$
 begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930030000') <> 3 then
-		raise exception 'G: 2 patched functions and the prelude name 20260930030000 (found %)',
+	if (select count(*) from pg_proc where prosrc ~ '20260930030000') <> 5 then
+		raise exception 'G: 4 patched functions and the prelude name 20260930030000 (found %)',
 			(select count(*) from pg_proc where prosrc ~ '20260930030000'); end if;
 end $$;
 

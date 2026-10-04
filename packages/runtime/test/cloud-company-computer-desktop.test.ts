@@ -440,19 +440,26 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 	it("cycles the hourly set chronologically on the company's local clock when the wrapper supplies it", async () => {
 		const fixture = await xfceFixture();
 		const env = { ...fixture.env, QORPERA_SCREEN_BACKDROPS: fixture.backdrops };
+		const companyHour = () =>
+			new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: "Etc/GMT-9" })
+				.format(new Date())
+				.padStart(2, "0");
+		// The helper reads the clock between these two samples, so an hour boundary can fall on either side of it.
+		const hourBefore = companyHour();
 		await execute("/bin/bash", [xfceHelper, fixture.wallpaper], { env, timeout: 3000 });
+		const hourAfter = companyHour();
 		const calls = (await readFile(fixture.log, "utf8")).trimEnd().split("\n");
 		expect(calls.pop()).toBe("SESSION");
-		const hour = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: "Etc/GMT-9" })
-			.format(new Date())
-			.padStart(2, "0");
 		const backdrop = "/backdrop/screen0/monitorVirtual-1/workspace0";
 		expect(
 			calls
 				.slice(0, 4)
 				.map((call) => call.trimEnd().split("\t").slice(3, 4).concat(call.trimEnd().split("\t").slice(-1))),
 		).toEqual([
-			[`${backdrop}/last-image`, join(fixture.backdrops, `${hour}.png`)],
+			[
+				`${backdrop}/last-image`,
+				expect.toBeOneOf([hourBefore, hourAfter].map((hour) => join(fixture.backdrops, `${hour}.png`))),
+			],
 			[`${backdrop}/backdrop-cycle-enable`, "true"],
 			[`${backdrop}/backdrop-cycle-period`, "6"],
 			[`${backdrop}/backdrop-cycle-random-order`, "false"],

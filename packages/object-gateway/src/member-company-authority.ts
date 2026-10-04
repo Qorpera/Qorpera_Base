@@ -19,7 +19,9 @@ export type MemberCompanyRpc =
 	| "qorpera_authorize_member_company_command_object"
 	| "qorpera_authorize_member_company_proposal_object"
 	| "qorpera_begin_member_session_attachment_upload"
-	| "qorpera_authorize_member_session_attachment";
+	| "qorpera_authorize_member_session_attachment"
+	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
+	| "qorpera_member_folder_writer";
 
 export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"
@@ -45,6 +47,8 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_confirm_object"
 	| "qorpera_folder_seal_upload"
 	| "qorpera_folder_commit"
+	// The member commit route's follow-up after a saved commit (F2's P15): a hire's or an archive's work at once.
+	| "qorpera_folder_follow_up_commit"
 	// Company creation's worker (company-folder-creation.ts, P14b): its claim, create, release and fail.
 	| "qorpera_folder_company_creation_claim"
 	| "qorpera_folder_company_create"

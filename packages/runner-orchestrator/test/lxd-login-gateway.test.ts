@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,6 +70,8 @@ class FakeLxd implements LxdClient {
 	lostSubmission?: LxdTrackedInstanceAction["action"];
 	lostPolls = 0;
 	restoreFailures = 0;
+	/** Agent calls after the VM runs that fail before its agent answers. */
+	agentPending = 0;
 	pending = false;
 	onSubmit?: (action: LxdTrackedInstanceAction) => void;
 
@@ -165,6 +167,7 @@ class FakeLxd implements LxdClient {
 
 	async pushInstanceFile(_project: string, _name: string, path: string, content: string, mode: number): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
+		if (this.agentPending > 0 && this.agentPending--) throw new Error("fake VM agent is unavailable");
 		this.filePushes.push({ path, content, mode });
 		this.guestFiles.set(path, content);
 	}
@@ -172,6 +175,7 @@ class FakeLxd implements LxdClient {
 	guestFiles = new Map<string, string>();
 	async execInstance(_project: string, _name: string, command: readonly string[]): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
+		if (this.agentPending > 0 && this.agentPending--) throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
 		if (command[0] === "/usr/bin/test" && command[1] === "-f" && !this.guestFiles.has(command[2]!))
 			throw new Error("LXD instance command failed");
@@ -205,6 +209,7 @@ function config(root: string): LxdNativeLoginGatewayConfig {
 		adapterId: "lxd",
 		supabaseUrl: "https://example.supabase.co",
 		supabaseServiceKey: "sb_secret_private",
+		supabasePublishableKey: "sb_publishable_loginTestKey",
 		stateRoot: root,
 		project: "qorpera-runners",
 		loginProfile: "qorpera-login-v1",
@@ -258,6 +263,8 @@ function loginRequest(body = loginBody(), bearerCapability = capability): Reques
 function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" | "completed"> = [], id = loginId) {
 	const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
 	const control = {
+		/** G2-3: the identity credential binds the gateway sent. */
+		binds: [] as Record<string, unknown>[],
 		companyRefusal: null as string | null,
 		nodeRefusal: null as string | null,
 		nodeSequence: [] as Array<string | null>,
@@ -334,6 +341,14 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				state: "reserved",
 				allocationId: args.p_allocation_id,
 				instanceSha256: args.p_instance_sha256,
+			});
+		}
+		if (url.endsWith("qorpera_bind_native_identity_credential")) {
+			control.binds.push(args);
+			return Response.json({
+				allocationId: args.p_allocation_id,
+				computeIdentityId,
+				holderKind: args.p_holder_kind,
 			});
 		}
 		if (url.endsWith("qorpera_reserve_runtime_node_machine")) {
@@ -514,6 +529,21 @@ describe("LXD native login gateway", () => {
 		expect((await gateway.handle(request())).status).toBe(200);
 		expect(lxd.createCalls).toHaveLength(1);
 	});
+	it("refuses a publishable key that a guest's native host would refuse, at startup (G2-3)", async () => {
+		const root = await stateRoot();
+		const jwt = (role: string) =>
+			`eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ role })).toString("base64url")}.c2lnbmF0dXJl`;
+		const build = (supabasePublishableKey: string) =>
+			new LxdNativeLoginGateway(
+				{ ...config(root), supabasePublishableKey },
+				new FakeLxd(),
+				fetchBoundary([]).fetchImplementation,
+			);
+		for (const key of ["", "sb_secret_private", "publishable-key", jwt("service_role"), "sb_publishable_x\n"])
+			expect(() => build(key)).toThrow("configuration is invalid");
+		expect(() => build(jwt("anon"))).not.toThrow();
+	});
+
 	it("rejects a refresh identity mismatch before machine allocation", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),
@@ -581,7 +611,7 @@ describe("LXD native login gateway", () => {
 		expect(second.status).toBe(200);
 		expect(await second.json()).toMatchObject({ status: "awaiting_member", user_code: "SLOW-CODE" });
 		expect(lxd.createCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(5);
+		expect(lxd.filePushes).toHaveLength(7);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("shares one pending route across authorized callers with independent response bodies", async () => {
@@ -630,7 +660,7 @@ describe("LXD native login gateway", () => {
 				user_code: "SHARED-CODE",
 			});
 		}
-		expect(lxd.filePushes).toHaveLength(5);
+		expect(lxd.filePushes).toHaveLength(7);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("restores an established identity on a fresh volume before the bootstrap (2026-09-17 amendment)", async () => {
@@ -708,7 +738,12 @@ describe("LXD native login gateway", () => {
 			lxd.restoreFailures = fault === "interrupted-restore" ? 1 : 0;
 			let approved = false;
 			const transport: typeof fetch = async (input, init) => {
-				if (String(input).endsWith("qorpera_identity_recovery_runtime_state") && approved) {
+				// Blocked from the approval until the restore re-pinned the login.
+				if (
+					String(input).endsWith("qorpera_identity_recovery_runtime_state") &&
+					approved &&
+					boundary.control.repins.length === 0
+				) {
 					return Response.json({ canInitialize: false, blocked: true, epoch: 2 });
 				}
 				const response = await boundary.fetchImplementation(input, init);
@@ -1310,6 +1345,8 @@ describe("LXD native login gateway", () => {
 	it("admits one login allocation, then deletes its VM while preserving the identity disk", async () => {
 		const root = await stateRoot();
 		const lxd = new FakeLxd();
+		// A new identity's guest: nothing waits for its agent before the identity state is pushed but that push.
+		lxd.agentPending = 2;
 		const boundary = fetchBoundary(
 			[
 				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
@@ -1347,13 +1384,46 @@ describe("LXD native login gateway", () => {
 		});
 		expect(JSON.stringify(lxd.createCalls[0])).not.toContain("sb_secret_private");
 		expect(lxd.filePushes.map((file) => file.path)).toEqual([
+			// G2-3: the identity's recovery state, read here because a login guest may not read it.
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity-state",
 			"/var/lib/qorpera-bootstrap/login-bootstrap.json",
 			"/var/lib/qorpera-bootstrap/native-provider.env",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
+		const pushed = (name: string) => lxd.filePushes.find((file) => file.path.endsWith(name))?.content ?? "";
+		expect(JSON.parse(pushed("qorpera-native-identity-state"))).toMatchObject({ computeIdentityId, blocked: false });
+		expect(pushed("native-provider.env")).toContain("QORPERA_NATIVE_LOGIN_GUEST=sign_in\n");
+		const bridgeFile = JSON.parse(await readFile(join(root, loginId, "bridge.json"), "utf-8")) as {
+			token: string;
+			identity: string;
+		};
+		expect(JSON.parse(pushed("qorpera-native-identity"))).toEqual({
+			schema: "qorpera.native-identity-credential/v1",
+			compute_identity_id: computeIdentityId,
+			credential: bridgeFile.identity,
+			publishable_key: "sb_publishable_loginTestKey",
+		});
+		expect(bridgeFile.identity).not.toBe(bridgeFile.token);
+		// Bound by its hash to the sign-in's machine allocation as a login guest (the same bind again with each
+		// re-reservation); the plaintext never left the node.
+		expect(boundary.control.binds.length).toBeGreaterThan(0);
+		for (const bind of boundary.control.binds)
+			expect(bind).toEqual({
+				p_allocation_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				p_provider_adapter: "lxd",
+				p_instance_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+				p_holder_kind: "login_guest",
+				p_credential_sha256: createHash("sha256").update(bridgeFile.identity).digest("hex"),
+			});
+		expect(
+			new Set(boundary.control.binds.map((bind) => `${bind.p_allocation_id}/${bind.p_instance_sha256}`)).size,
+		).toBe(1);
+		expect(JSON.stringify(boundary.requests)).not.toContain(bridgeFile.identity);
+		expect(JSON.stringify(lxd.createCalls)).not.toContain(bridgeFile.identity);
 		expect(lxd.filePushes.find((file) => file.path.endsWith("qorpera-identity-recovery-ca"))?.content).toBe(
 			identityRecoveryCa,
 		);

@@ -1,24 +1,27 @@
-import {
-	CloudMemberCompanyFileClient,
-	type CloudMemberCompanyMode,
-	parseCloudMemberCompanyMode,
-} from "@qorpera/cloud-client/cloud-member-company-editor";
-import { CloudMemberCompanyFileReader } from "@qorpera/cloud-client/cloud-member-company-file";
-import { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
 import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-client/cloud-member-folder";
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
+import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
 import type { HostedProfile, HostedProfileRole } from "./types.ts";
 
-/** The product owns member lifetime; the shared SDK owns governed File calls. */
+/** A member's endpoints, token and transport for one company. */
+interface MemberFolderOptions {
+	readonly environmentId: string;
+	readonly supabaseUrl: string;
+	readonly publishableKey: string;
+	readonly objectGatewayUrl: string;
+	readonly accessToken: (signal: AbortSignal) => Promise<string>;
+	readonly fetch: typeof fetch;
+}
+
+/** The product owns member lifetime; the shared SDK owns the company folder's calls. Every company is folder-v2
+ * (founder decision, 3 October 2026): members read its folder (C4 P27) and write it through the member commit route
+ * (P34a). */
 export class WebCompanyFiles {
 	readonly company: { readonly role: HostedProfileRole; readonly canWrite: boolean };
 	readonly signal: AbortSignal;
-	readonly #options: ConstructorParameters<typeof CloudMemberCompanyFileClient>[0];
+	readonly #options: MemberFolderOptions;
 	readonly #current: () => void;
-	#mode?: Promise<CloudMemberCompanyMode["mode"]>;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -32,7 +35,6 @@ export class WebCompanyFiles {
 		this.signal = signal;
 		this.#current = current;
 		this.#options = {
-			companyId: profile.profileId,
 			environmentId: profile.environmentId,
 			supabaseUrl: cloud.config.projectUrl,
 			publishableKey: cloud.config.publishableKey,
@@ -86,74 +88,7 @@ export class WebCompanyFiles {
 		this.signal.throwIfAborted();
 		this.#current();
 	}
-	snapshot(snapshotId: string): CloudMemberCompanyFileReader {
-		this.current();
-		return new CloudMemberCompanyFileReader({ ...this.#options, snapshotId });
-	}
-	/** How this company's files are read: governed (the path gateway), a folder-v2 company's folder, or legacy. One
-	 * answer serves this page's lifetime (a company's mode never changes under it); a failed read is asked again. */
-	mode(): Promise<CloudMemberCompanyMode["mode"]> {
-		this.current();
-		this.#mode ??= this.#readMode().catch((error: unknown) => {
-			this.#mode = undefined;
-			throw error;
-		});
-		return this.#mode;
-	}
-	async #readMode(): Promise<CloudMemberCompanyMode["mode"]> {
-		this.current();
-		// The SDK validates endpoint origins before even the mode request can carry a token.
-		new CloudMemberCompanyFileClient(this.#options);
-		const mode = await withCloudDeadline(
-			async (signal) => {
-				const token = await this.#options.accessToken(signal);
-				signal.throwIfAborted();
-				this.current();
-				const response = await this.#options.fetch!(
-					`${new URL(this.#options.supabaseUrl).origin}/rest/v1/rpc/qorpera_member_company_file_mode`,
-					{
-						method: "POST",
-						signal,
-						redirect: "error",
-						cache: "no-store",
-						headers: {
-							authorization: `Bearer ${token}`,
-							apikey: this.#options.publishableKey,
-							"content-type": "application/json",
-						},
-						body: JSON.stringify({ p_profile_id: this.#options.companyId }),
-					},
-				);
-				if (response.status !== 200) {
-					void response.body?.cancel().catch(() => undefined);
-					throw new Error("Company File access could not be confirmed.");
-				}
-				const result = parseCloudMemberCompanyMode(
-					JSON.parse(
-						new TextDecoder("utf-8", { fatal: true }).decode(
-							await readBoundedCloudResponse(response, 16384, signal),
-						),
-					),
-					this.#options.companyId,
-				);
-				signal.throwIfAborted();
-				this.current();
-				return result;
-			},
-			10000,
-			this.signal,
-		);
-		// Another environment's mode is no mode for this company.
-		if (mode.environmentId !== this.#options.environmentId)
-			throw new Error("This company does not have a governed File interface.");
-		return mode.mode;
-	}
-	async files(): Promise<CloudMemberCompanyFileClient> {
-		const client = new CloudMemberCompanyFileClient(this.#options);
-		if ((await this.mode()) !== "governed") throw new Error("This company does not have a governed File interface.");
-		return client;
-	}
-	/** A folder-v2 company's folder, read only (folder core C4, P27). Call after `mode()` answered `folder`. */
+	/** The company's folder: reads (C4 P27) and the member's change sets (P34a). */
 	folder(): CloudMemberFolderClient {
 		this.current();
 		return new CloudMemberFolderClient({
@@ -173,15 +108,6 @@ export class WebCompanyFiles {
 			client: this.#realtime(),
 			signal: this.signal,
 			onHint,
-		});
-	}
-	presence(onChange: (view: CompanyPathPresenceView) => void): CloudMemberCompanyPresence {
-		this.current();
-		return new CloudMemberCompanyPresence({
-			...this.#options,
-			client: this.#realtime(),
-			signal: this.signal,
-			onChange,
 		});
 	}
 	#realtime() {

@@ -25,6 +25,7 @@ import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
 import {
 	canonical,
 	exactRunner,
+	nativeIdentityCredentialFile,
 	ProviderAdmissionRefused,
 	ProviderRpcFailed,
 	providerRpcErrorCode,
@@ -178,6 +179,8 @@ interface LxdProviderJournal {
 		activationSha256: string;
 		assignmentSha256: string;
 		nativeBridgeSha256: string;
+		/** G2-3: the guest's identity credential, bound to its machine allocation as a job guest. */
+		nativeIdentitySha256: string;
 	};
 	createdAt: string;
 	updatedAt: string;
@@ -187,6 +190,7 @@ interface ProviderCredentials {
 	activationToken: string;
 	assignmentToken: string;
 	nativeBridgeToken: string;
+	nativeIdentityToken: string;
 }
 
 interface LxdGuestBootstrapAuthority {
@@ -422,6 +426,8 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		!SHA256_PATTERN.test(credentials.assignmentSha256) ||
 		typeof credentials.nativeBridgeSha256 !== "string" ||
 		!SHA256_PATTERN.test(credentials.nativeBridgeSha256) ||
+		typeof credentials.nativeIdentitySha256 !== "string" ||
+		!SHA256_PATTERN.test(credentials.nativeIdentitySha256) ||
 		typeof input.createdAt !== "string" ||
 		!Number.isFinite(Date.parse(input.createdAt)) ||
 		typeof input.updatedAt !== "string" ||
@@ -555,6 +561,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			activationSha256: credentials.activationSha256,
 			assignmentSha256: credentials.assignmentSha256,
 			nativeBridgeSha256: credentials.nativeBridgeSha256,
+			nativeIdentitySha256: credentials.nativeIdentitySha256,
 		},
 		createdAt: new Date(input.createdAt).toISOString(),
 		updatedAt: new Date(input.updatedAt).toISOString(),
@@ -1179,6 +1186,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					activationSha256: sha256(credentials.activationToken),
 					assignmentSha256: sha256(credentials.assignmentToken),
 					nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
+					nativeIdentitySha256: sha256(credentials.nativeIdentityToken),
 				},
 				createdAt: now,
 				updatedAt: now,
@@ -1642,12 +1650,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Governed coding command credential must be independent");
 		if (
 			runtime &&
-			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
-				runtime.objectGatewayToken === credentials.activationToken ||
-				runtime.objectGatewayToken === credentials.assignmentToken ||
-				runtime.secretBroker.runtimeToken === credentials.nativeBridgeToken ||
-				runtime.secretBroker.runtimeToken === credentials.activationToken ||
-				runtime.secretBroker.runtimeToken === credentials.assignmentToken)
+			Object.values(credentials).some(
+				(value) => value === runtime.objectGatewayToken || value === runtime.secretBroker.runtimeToken,
+			)
 		) {
 			throw new Error("Governed native runtime credentials must be independent");
 		}
@@ -1766,6 +1771,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 				content: `${credentials.nativeBridgeToken}\n`,
+			},
+			{
+				// G2-3: the guest's identity credential, for its native host's calls between jobs.
+				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
+				content: `${nativeIdentityCredentialFile(authority.computeIdentityId, credentials.nativeIdentityToken, this.#config.supabasePublishableKey)}\n`,
 			},
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
@@ -2152,6 +2162,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			activationToken: await this.#privateToken(join(root, "qorpera-runner-activation")),
 			assignmentToken: await this.#privateToken(join(root, "qorpera-runner-assignment")),
 			nativeBridgeToken: await this.#privateToken(join(root, "qorpera-native-bridge")),
+			nativeIdentityToken: await this.#privateToken(join(root, "qorpera-native-identity")),
 		};
 	}
 
@@ -2172,7 +2183,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (
 			sha256(credentials.activationToken) !== journal.credentials.activationSha256 ||
 			sha256(credentials.assignmentToken) !== journal.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256
+			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256 ||
+			sha256(credentials.nativeIdentityToken) !== journal.credentials.nativeIdentitySha256
 		) {
 			throw new Error("LXD provider credentials do not match their durable journal");
 		}
@@ -2356,6 +2368,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		signal?.throwIfAborted();
 		this.#registeredCapacity.add(current.acquisitionId);
 		await this.#writeJournal(current);
+		// G2-3: the guest's identity credential is bound to this allocation before the guest can start (idempotent on
+		// a re-reservation); only its hash leaves the node host.
+		await this.#rpc(
+			"qorpera_bind_native_identity_credential",
+			{ ...identity, p_holder_kind: "job_guest", p_credential_sha256: current.credentials.nativeIdentitySha256 },
+			signal,
+		);
 		return this.#reserveNodeMachine(current, signal);
 	}
 
