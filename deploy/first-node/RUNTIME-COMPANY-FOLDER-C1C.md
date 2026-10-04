@@ -1361,6 +1361,48 @@ P06b's second PR, folder-v2 only like part 1 (the statement that was there befor
 
   These go to C1c-3l, which runs agents on the computer, or to the activation checks (3m).
 
+### 6.13 C1c-3l part 1 as built: an agent starts the Company Computer (migration 20260930030000, test 890)
+
+The coordinator's P06c, first of two PRs. Folder-v2 only, like 3j and 3k: the statement that was there before stays in
+each `else`.
+
+| Path | Before (on folder-v2) | Now |
+|---|---|---|
+| `native_office_start` (an agent's `computer_start`) | refused with 0A000 | `qorpera_folder_office_start_enter(binding)`, then the seat lock and every computer of the company by id, as before; no gc fence (the tool run holds the folder fence and rank 0) |
+| `native_office_start_descriptor` | refused with 0A000 | serves folder-v2; its new computer takes the company's agents `KEY SHARE` before the seat lock (as `member_agent_office` does, §6.12); the gate accepts a ready folder-v2 Company File |
+
+- **The prelude.** An agent's tool run takes its requester and agent only `KEY SHARE`. But the start-source check shares
+  the start's agent (or member) after the computer, and a start may join another start of the same computer, whose
+  agent or member it then shares. So before the seat lock and the computers, the tool run takes `FOR SHARE`:
+  - the members (rank 1) and agents (rank 2) named by any current start of the company's computers;
+  - the run's own agent;
+
+  and every active agent `KEY SHARE` (a new computer's default access takes them after the computers). An agent's
+  return holds its row, then wants the seat lock (the hire's walk, §6.12), then the computers: the start now waits at
+  the row and never holds what the return wants.
+- **55P03 for a start named after the read.** The prelude reads the current starts plainly. If one appears before the
+  start locks the computers, it may name someone the prelude did not lock. The start then refuses with 55P03, which the
+  runtime treats as no answer and tries again. Every writer of a start holds the computer, so nothing changes after the
+  start locks it.
+- **Test 890** (648's committed fixture; Ada's run starts the company's computer):
+  - A: with the company row held, the descriptor and the authorize answer at once;
+  - B: with Ada's row held (her return), Ada's start waits there holding no seat lock and no computer; the holder bumps
+    the computer's revision and commits; the start lands;
+  - C: with Ada's start recorded, the owner's before-idle, the provider's offer, placement, the unbound check and
+    reserve, the withdrawal and the cancel each wait at Ada's row holding no computer, and never deadlock (the carried
+    C-style tests from #739's review);
+  - D: Ada's start joins the Co-Founder's start, waiting first at the Co-Founder's row;
+  - E: the Co-Founder's start commits while Ada's start waits at the seat lock; Ada's start refuses with 55P03 and records
+    nothing;
+  - E2: Ada's start joins the owner's start, waiting first at the owner's row;
+  - E3: with an active agent's row held `FOR UPDATE`, the start waits at the agents before the seat lock;
+  - F: the descriptor's new computer waits at the agents before the seat lock;
+  - G: exactly 3 bodies name the migration.
+- **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
+  up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
+  folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
+  ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
