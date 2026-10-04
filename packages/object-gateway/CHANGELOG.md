@@ -29,6 +29,7 @@
 - Added bounded, operator-only Company File request observations with canonical command/read linkage, timing, safe outcomes and available object-byte counts. The in-process window exposes restart/eviction gaps and excludes paths, file contents, tokens and raw errors.
 
 ### Changed
+- The maintenance loop no longer runs the legacy company bootstrap (`CompanyBootstrapProvisioner`): new companies are created at the founding table by the folder creation loop, so a legacy bootstrap job stays queued (lobby hardening, from #776's review).
 
 - The replication reconciler reads folder GC's conflict (`qorpera_authorize_profile_object_replication` answering QRC01 409 with the folder core's "being collected" message, for an object folder GC holds) as a lock conflict: the entry stays pending instead of `blocked`, and the database circuit is left alone. snapshot-v1's cleanup fence, which also answers QRC01, keeps its 409, and no other RPC's answer changes.
 - The folder route answers the folder core's storage allowance refusal (23514, which PostgREST sends as 400) with 413, so the runtime can tell a full company from a failed request.

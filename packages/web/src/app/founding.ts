@@ -15,6 +15,9 @@ import { ConnectionsView, memberProviderSignIns } from "./views/settings-connect
 const POLL_MS = 2500;
 /** While the ChatGPT panel is open, a finished sign-in turns into Ready sooner. */
 const CONNECT_POLL_MS = 1500;
+/** After the company is made, the table is read a little longer while the Co-Founder's first run is queued, so a
+ * first run that fails (or starts) is shown; never past this. */
+const FIRST_RUN_WATCH_MS = 120_000;
 
 export type FoundingAction = "name" | "vision" | "role" | "ready" | "invite" | "remove" | "respond" | "start" | "close";
 
@@ -63,6 +66,8 @@ export class FoundingController {
 	readonly #lifetime = new AbortController();
 	readonly #startKey: string;
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	/** When this table was first read with its company made. */
+	#readyAt: number | undefined;
 	#reading: Promise<void> | undefined;
 	#connections: ConnectionsView | undefined;
 	#queue: Promise<void> = Promise.resolve();
@@ -124,7 +129,11 @@ export class FoundingController {
 	#schedule(): void {
 		clearTimeout(this.#timer);
 		const { table, gone, connectOpen } = this.store.get();
-		if (this.disposed || gone || (table?.start?.companyReady ?? false)) return;
+		if (this.disposed || gone) return;
+		if (table?.start?.companyReady) {
+			this.#readyAt ??= Date.now();
+			if (table.start.firstRun !== "queued" || Date.now() - this.#readyAt > FIRST_RUN_WATCH_MS) return;
+		}
 		// A hidden tab does not ask; coming back (visibilitychange) reads at once.
 		this.#timer = setTimeout(
 			() => {
@@ -185,7 +194,7 @@ export class FoundingController {
 				await this.#reading?.catch(() => undefined);
 				await this.refresh();
 				this.store.set({ error: t("The table changed while you were editing. Check it and try again.") });
-			} else this.store.set({ error: describeError(error) });
+			} else this.store.set({ error: lobbyError(error) });
 			return false;
 		} finally {
 			if (!this.disposed) this.store.set({ busy: undefined });
@@ -384,4 +393,11 @@ export class FoundingController {
 		this.store.set({ gone: reason, connectOpen: false, friendsOpen: false, loading: false });
 		this.#options.onSeatChanged?.();
 	}
+}
+
+/** The lobby switched off (the rollback) refuses opening and starting with 0A000: say it as the hub does. */
+export function lobbyError(error: unknown): string {
+	return error instanceof CloudRpcError && error.code === "0A000"
+		? t("Creating a company is paused. Try again later.")
+		: describeError(error);
 }

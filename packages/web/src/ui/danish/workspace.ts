@@ -116,30 +116,22 @@ export const WORKSPACE: Record<string, string> = {
 	viewer: "læser",
 	"Resume the pending company creation before starting another.":
 		"Gør oprettelsen af den ventende virksomhed færdig, før du starter en ny.",
-	"The cloud could not provision the company's Company File.": "Skyen kunne ikke oprette Virksomhedsfilen.",
-	"The company is still being created. Resume to check its progress.":
-		"Virksomheden bliver stadig oprettet. Genoptag for at se, hvor langt den er.",
+	"Creating a company is paused. Try again later.": "Det er sat på pause at oprette virksomheder. Prøv igen senere.",
 	"Invited as {role} · expires {date}": "Inviteret som {role} · udløber {date}",
 	Accept: "Accepter",
 	"{role} · since {date}": "{role} · siden {date}",
 	"Company name": "Virksomhedsnavn",
-	"Creating {name}": "Opretter {name}",
-	"Creating the company": "Opretter virksomheden",
-	"Seeding its Company File and Co-Founder.": "Opretter Virksomhedsfilen og Co-Founder.",
+	"Opening a table for the company": "Åbner et bord til virksomheden",
 	"You have been invited": "Du er blevet inviteret",
 	"Start your first company": "Start din første virksomhed",
 	"Join a company you have been invited to, or start one of your own.":
 		"Bliv en del af en virksomhed, du er inviteret til, eller start din egen.",
-	"Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.":
-		"Giv den et navn. Qorpera opretter Virksomhedsfilen og en Co-Founder, der går i gang med det samme.",
 	or: "eller",
-	"Create company": "Opret virksomhed",
 	"Resume creating {name}": "Genoptag oprettelsen af {name}",
 	"Invited to a company? It appears here the moment someone adds you.":
 		"Inviteret til en virksomhed? Den vises her, så snart nogen tilføjer dig.",
 	"New company": "Ny virksomhed",
 	Create: "Opret",
-	"Seeds a Company File and a Co-Founder": "Opretter en Virksomhedsfil og en Co-Founder",
 	"Loading companies": "Henter virksomheder",
 
 	// app/views/new-conversation.ts

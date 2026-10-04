@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { buildCompanyHierarchy, parseHostedCompanyOrganization } from "../src/cloud/organization.ts";
 import {
 	parseAccountMatch,
-	parseCreatedCompany,
 	parseFriends,
 	parseProfiles,
 	parseRunRecovery,
@@ -219,20 +218,6 @@ describe("parsers", () => {
 			userId: U,
 		});
 		expect(() => parseSession({ ...base, audience_kind: "member_private", audience_user_id: null })).toThrow();
-	});
-
-	it("reads created-company bootstrap state when present and tolerates its absence", () => {
-		const base = {
-			profile_id: P,
-			environment_id: E,
-			profile_name: "N",
-			environment_name: "main",
-			role: "owner",
-			contract_version: 2,
-			created_at: "2026-08-20T00:00:00Z",
-		};
-		expect(parseCreatedCompany(base).bootstrapState).toBeUndefined();
-		expect(parseCreatedCompany({ ...base, bootstrap_state: "queued" }).bootstrapState).toBe("queued");
 	});
 
 	it("parses staff and tolerates older rosters without a creature", () => {
