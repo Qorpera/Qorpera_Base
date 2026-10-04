@@ -1690,6 +1690,55 @@ each `else`.
   folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
   ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
 
+### 6.19 P06d part 1 as built: a screenshot stored nowhere travels in its answer (runtime only)
+
+The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
+office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
+The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.17) and
+gives the capture its folder-v2 authority. Until then nothing reaches this path.
+
+- **The office service** (`CloudCompanyComputerScreenshots.publish`):
+  - when the capture's authorize answers `{state: "authorized", storage: "none"}`, it uploads nothing;
+  - the published identity must name the operation's receipt (`assetId` is the receipt id);
+  - the PNG then waits in memory for the native gateway's answer.
+
+  `{state: "authorized"}` alone still means the stored legacy path. A session keeps one publisher for its whole life,
+  so a new automation (a reattached browser) doesn't lose a waiting screenshot.
+- **The native gateway** attaches the waiting PNG as `image` (base64), and only to a `computer_screenshot` perform
+  answer, taking it once. An answer with `image` may be up to 11 MiB (`COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE`,
+  an 8 MiB PNG as base64). Every other answer keeps the 48 KiB bound.
+- **The native host** (`HttpCompanyComputerNativeEndpoint.perform`):
+  - reads a screenshot's answer up to 11 MiB;
+  - accepts `image` only on a screenshot's answer, only as strict base64, only with JSON content whose identity names
+    this receipt, and only when the bytes are exactly that capture's (PNG header, size, width, height, sha256);
+  - then hands the bytes to the run's capture reader and returns the content without them, so the receipt stores only
+    the identity, as before.
+
+  The factory makes one capture reader per run and shares it between the endpoint and the boundary's
+  `CloudNativeCaptureImages`.
+- **To the model.** `read` makes the SQL read check, takes the bytes from memory once, checks them, and makes the SQL
+  check again. It never fetches them from the object store. A second read finds nothing in memory and goes to the
+  object store, as a stored capture does.
+- **Bounds.** `CompanyComputerInlineScreenshots` holds at most 4 screenshots, each for at most 60 s, on both sides; past
+  the bound the oldest goes. The executor runs one operation at a time, so one is the usual count.
+- **Mixed versions:**
+  - an old office service with the new host: no `image` ever comes;
+  - a new office service with an old host: it sends `image` only after a `storage: none` answer, which no database
+    gives until part 2;
+  - part 2 is applied after this release has rolled to every node and office (v173).
+- **Tests:**
+  - `cloud-company-computer-screenshots.test.ts`:
+    - nothing uploaded, the receipt named, and the pixels taken once;
+    - any other storage answer or identity refused;
+    - an inline read with both SQL checks and no fetch;
+    - pixels that aren't the published capture's refused;
+    - the holder's 4 and 60 s bounds;
+  - `cloud-company-computer-native.test.ts`, over real TLS:
+    - a 256 KiB PNG (past the 48 KiB bound) goes from the guest session through the gateway, the host, the receipt
+      and the capture reader to the model's data URL, with no object fetch;
+    - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
+      base64 is refused before anything is kept.
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.

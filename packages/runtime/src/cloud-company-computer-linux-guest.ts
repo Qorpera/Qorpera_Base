@@ -541,6 +541,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		 * that never touched the browser has no say over a window a member opened. */
 		let driving: CompanyComputerBrowserSession | "attaching" | undefined;
 		let automation: CompanyComputerGuestAutomation | undefined;
+		// One publisher for the session's whole life: a capture it keeps for the perform answer outlives a new automation.
+		const screenshots = this.#options.screenshots(input.run);
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
@@ -742,7 +744,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							return current && !current.isEnded?.() ? current.context : undefined;
 						},
 						commands: commands!,
-						screenshots: this.#options.screenshots(input.run),
+						screenshots,
 						fileExports: this.#options.fileExports?.(input.run),
 						fileImports: this.#options.fileImports?.(input.run),
 						fillKey: this.#options.fillKey,
@@ -756,6 +758,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		return {
 			close: session.close,
 			ended: () => ended,
+			screenshot: (receiptId) => screenshots.takeInline?.(receiptId),
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,
