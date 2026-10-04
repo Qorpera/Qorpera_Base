@@ -267,14 +267,18 @@ begin
 		raise exception 'the list does not name the resume: % %', v_resumed, v_waiting; end if;
 end $$;
 
--- 7. An agent's next save for the member finds the same binding (qorpera_ensure_unattended_sponsor, once the
---    member's other logins are gone, as in 768), so an identical save hashes to the resumed version.
+-- 7. An agent's next save for the member, from a run the plan pays for, finds the same binding
+--    (qorpera_ensure_unattended_sponsor), so an identical save hashes to the resumed version. A run another login paid
+--    for, now gone, prepares nothing: its routine never moves to the plan on its own (20260930064000).
 update public.qorpera_provider_connections set status = 'revoked' where id in (pg_temp.r779('codex'), pg_temp.r779('capsule'));
 do $$
 declare v_run public.qorpera_execution_runs%rowtype; v_binding uuid; v_version bigint;
 begin
 	select * into strict v_run from public.qorpera_execution_runs
 	where id = (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+	if exists (select 1 from public.qorpera_ensure_unattended_sponsor(v_run)) then
+		raise exception 'a run another login paid for moved its routine to the plan'; end if;
+	v_run.sponsor_binding_id := current_setting('qorpera_test.r779_binding')::uuid; v_run.sponsor_version := 1;
 	select sponsor.binding_id, sponsor.version into v_binding, v_version from public.qorpera_ensure_unattended_sponsor(v_run) as sponsor;
 	if v_binding is distinct from current_setting('qorpera_test.r779_binding')::uuid or v_version is distinct from 1 then
 		raise exception 'an agent''s save would pin another sponsor: % %', v_binding, v_version; end if;
@@ -303,6 +307,8 @@ declare v_run public.qorpera_execution_runs%rowtype; v_binding uuid; v_version b
 begin
 	select * into strict v_run from public.qorpera_execution_runs
 	where id = (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+	-- A run the plan pays for (20260930064000: a routine is prepared only on the login its run pays with).
+	v_run.sponsor_binding_id := current_setting('qorpera_test.r779_binding')::uuid; v_run.sponsor_version := 1;
 	select sponsor.binding_id, sponsor.version into v_binding, v_version from public.qorpera_ensure_unattended_sponsor(v_run) as sponsor;
 	if v_binding is null or v_binding = current_setting('qorpera_test.r779_binding')::uuid then
 		raise exception 'ensure made no binding of its own for the version that is on: %', v_binding; end if;

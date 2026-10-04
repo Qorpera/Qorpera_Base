@@ -17,8 +17,13 @@ begin
 end $$;
 select set_config('request.jwt.claims', '{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}', false);
 set local role authenticated;
-select public.qorpera_set_chatgpt_plan_work_while_away('16000000-0000-4000-8000-000000000010',
-	current_setting('qorpera_test.r778_plan')::uuid, true);
+select set_config('qorpera_test.r778_on', public.qorpera_set_chatgpt_plan_work_while_away('16000000-0000-4000-8000-000000000010',
+	current_setting('qorpera_test.r778_plan')::uuid, true)::text, false);
+-- The agent's run is paid by the plan (a run of the member's conversation on it): since 20260930064000 its routine is
+-- prepared only on the login its run pays with.
+select set_config('qorpera_test.r778_binding', public.qorpera_create_member_execution_sponsor(
+	'16000000-0000-4000-8000-000000000010', '77800000-0000-4000-8000-0000000000b1', current_setting('qorpera_test.r778_plan')::uuid,
+	(current_setting('qorpera_test.r778_on')::jsonb ->> 'version')::bigint, false)::text, false);
 reset role;
 update public.qorpera_provider_connections set status = 'revoked'
 where profile_id = '16000000-0000-4000-8000-000000000010' and owner_user_id = '16000000-0000-4000-8000-000000000001'
@@ -29,7 +34,7 @@ where profile_id = '16000000-0000-4000-8000-000000000010' and owner_user_id = '1
 -- cleanup could not tell from its own.
 reset role;
 select set_config(name, current_setting(name), false)
-from unnest(array['qorpera_test.r778_plan']) name;
+from unnest(array['qorpera_test.r778_plan','qorpera_test.r778_binding']) name;
 select set_config('qorpera_test.r778_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('r778_member', 'dbname=' || current_database());
 select dblink_connect('r778_agent', 'dbname=' || current_database());
@@ -126,12 +131,16 @@ begin
 end $$;
 
 -- What an agent's routine save for the member asks for: the sponsor it binds, or none.
-create function pg_temp.r778_send_ensure() returns void language sql as $$
-	select dblink_send_query('r778_agent', $q$select to_jsonb(coalesce((select string_agg(sponsor.binding_id::text, ',')
+create function pg_temp.r778_send_ensure() returns void language plpgsql as $$
+begin
+	perform dblink_send_query('r778_agent', format($q$select to_jsonb(coalesce((select string_agg(sponsor.binding_id::text, ',')
 		from public.qorpera_ensure_unattended_sponsor(jsonb_populate_record(null::public.qorpera_execution_runs,
 			jsonb_build_object('profile_id', '16000000-0000-4000-8000-000000000010',
-				'requested_by_user_id', '16000000-0000-4000-8000-000000000001', 'source_kind', 'routine'))) as sponsor), 'none'))$q$)
-$$;
+				'requested_by_user_id', '16000000-0000-4000-8000-000000000001', 'source_kind', 'routine',
+				'sponsor_binding_id', %L, 'sponsor_version', %s))) as sponsor), 'none'))$q$,
+		current_setting('qorpera_test.r778_binding')::jsonb ->> 'binding_id',
+		current_setting('qorpera_test.r778_binding')::jsonb ->> 'version'));
+end $$;
 -- The plan's versions, oldest first: whether each is on, and whose consent it records.
 create function pg_temp.r778_versions() returns jsonb language sql as $$
 	select jsonb_agg(jsonb_build_array(version.version, version.allow_autonomous, version.consent_version) order by version.version)

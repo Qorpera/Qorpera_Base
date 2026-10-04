@@ -805,6 +805,23 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
   work while away".
 
+- `qorpera_get_routine_payer(p_routine_id)` and `qorpera_set_routine_login(p_routine_id, p_connection_id)`
+  (20260930064000, folder-v2 routines; the payer never changes without permission). Get answers
+  `{schema: 'qorpera.routine-payer/v1', routineId, routineVersion, status, pauseReason, connectionId,
+  payer: 'member'|'company', payerUserId (null for a company account), savedByUserId (the member the routine runs
+  for), canPay, since, changedByUserId, changeReason: 'save'|'pick'|null}` to a member who may read the routine's
+  file. Show "Paid by <member or the company> since <since>", and when `canPay` is false (the routine waits as
+  `needs_model_account`) a "Choose a login" control: set picks one of the caller's own logins (the caller becomes
+  the routine's saver) or, for an owner or admin, a company account (the saver stays), and answers the same shape.
+  A routine that waited runs again. Refusals: 42501 "Routine is unavailable" (not a member who may write the
+  routine's file, or a retired routine), 42501 "This login cannot pay for this routine" (another member's login, or
+  a company account picked by a contributor), 22023 "This login cannot pay for this routine" (a login that cannot
+  pay for work while its member is away now), 42501 "A ChatGPT plan cannot pay for a listener".
+- Member notification `routine_payer_changed` (subject `qorpera.member-notification.routine-payer-changed/v1`:
+  `routineId, routineVersion, staffAgentId, payer ('member'|'company'), payerUserId, changedByUserId,
+  reason ('save'|'pick'), at`): the member whose login paid for a routine before someone else's save or pick moved
+  it. Show "<agent>'s routine no longer runs on your login" with who moved it.
+
 ### The company folder for members (20260928469250_folder_core_member_reads)
 
 Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call
