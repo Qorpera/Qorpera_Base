@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
-import { FoundingController } from "../src/app/founding.ts";
+import { cofounderArrivalKey, FoundingController } from "../src/app/founding.ts";
 import { parseRoute, routeHash } from "../src/app/router.ts";
 import { FoundingView } from "../src/app/views/founding.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
@@ -135,7 +135,7 @@ describe("founding table", () => {
 		location.hash = "";
 	});
 
-	function mount(rpc: (name: string, args: Record<string, unknown>) => unknown) {
+	function mount(rpc: (name: string, args: Record<string, unknown>) => unknown, onCompanyReady?: () => void) {
 		const f = fixture();
 		const calls: { name: string; args: Record<string, unknown> }[] = [];
 		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
@@ -143,7 +143,11 @@ describe("founding table", () => {
 			return rpc(name, args);
 		});
 		const seatChanges = vi.fn();
-		controller = new FoundingController(f.api, me, table, { currentUserId: () => me, onSeatChanged: seatChanges });
+		controller = new FoundingController(f.api, me, table, {
+			currentUserId: () => me,
+			onSeatChanged: seatChanges,
+			...(onCompanyReady ? { onCompanyReady } : {}),
+		});
 		const view = new FoundingView(controller);
 		container.append(view.el);
 		controller.store.subscribe(() => view.update());
@@ -502,17 +506,81 @@ describe("founding table", () => {
 			});
 		});
 		await settle();
+		sessionStorage.removeItem(cofounderArrivalKey(table));
 		container.querySelector<HTMLButtonElement>(".founding-start")!.click();
 		await settle();
 		let text = visibleText(container);
 		expect(text).toContain("Nordlys Kaffe is starting");
 		expect(text).toContain("Anna and Bo own it now.");
 		expect(text).toContain("Wholesale.");
+		// The Co-Founder's arrival plays from its first frame in this tab (the hint Interfaces' layer reads once).
+		expect(Number(sessionStorage.getItem(cofounderArrivalKey(table)))).toBeGreaterThan(0);
+		sessionStorage.removeItem(cofounderArrivalKey(table));
 		ready = true;
 		await controller!.refresh();
 		await settle();
 		text = visibleText(container);
 		expect(text).toContain("Open Nordlys Kaffe");
+	});
+
+	it("opens the company by itself once it is made and its Co-Founder's first run is on its way, once", async () => {
+		let firstRun: string | null = null;
+		let ready = false;
+		const opened = vi.fn();
+		mount(
+			() =>
+				wire({
+					phase: "started",
+					vision: "",
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: {
+						startedAt: "2026-09-28T18:00:00Z",
+						startedByUserId: me,
+						revision: 4,
+						companyReady: ready,
+						companySetup: ready ? "ready" : "pending",
+						firstRun,
+					},
+				}),
+			opened,
+		);
+		await settle();
+		expect(opened).not.toHaveBeenCalled();
+		ready = true;
+		firstRun = "queued";
+		await controller!.refresh();
+		await settle();
+		expect(opened).toHaveBeenCalledOnce();
+		firstRun = "started";
+		await controller!.refresh();
+		await settle();
+		expect(opened).toHaveBeenCalledOnce();
+	});
+
+	it("stays on the table when the made company's Co-Founder waits for a login, so the page can say why", async () => {
+		const opened = vi.fn();
+		mount(
+			() =>
+				wire({
+					phase: "started",
+					vision: "",
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: {
+						startedAt: "2026-09-28T18:00:00Z",
+						startedByUserId: me,
+						revision: 4,
+						companyReady: true,
+						companySetup: "ready",
+						firstRun: "waiting_for_login",
+					},
+				}),
+			opened,
+		);
+		await settle();
+		expect(opened).not.toHaveBeenCalled();
+		expect(visibleText(container)).toContain("The Co-Founder has not started");
 	});
 
 	it("says when the company could not be set up, or its Co-Founder could not start, instead of waiting forever", async () => {

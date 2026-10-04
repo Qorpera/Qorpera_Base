@@ -27,7 +27,7 @@ import { CompanyController } from "./company.ts";
 import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
-import { currentRoute, navigate, type Route } from "./router.ts";
+import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -584,9 +584,16 @@ export function mountApplication(
 				const userId = auth.userId!;
 				if (founding?.controller.profileId !== route.profileId) {
 					teardownFounding();
-					const controller = new FoundingController(api, userId, route.profileId, {
+					const profileId = route.profileId;
+					const controller = new FoundingController(api, userId, profileId, {
 						currentUserId: () => auth.userId,
 						onSeatChanged: () => void hub.refresh(),
+						// Still on this table's page: open the company, which opens its Co-Founder's thread. The table's
+						// page leaves the history, so Back does not return to a table that is done.
+						onCompanyReady: () => {
+							if (location.hash === routeHash({ name: "found", profileId }))
+								navigate({ name: "company", profileId, section: "home" }, true);
+						},
 					});
 					founding = { controller, view: new FoundingView(controller) };
 					let companyListed = false;
