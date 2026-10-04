@@ -56,7 +56,9 @@ select cron.schedule(
 			'content-type', 'application/json',
 			'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'qorpera_artifact_gc_worker_key')
 		),
-		body := '{}'::jsonb
+		body := '{}'::jsonb,
+		-- A run takes longer than pg_net's 5-second default; wait for its answer (counts only) so it is kept.
+		timeout_milliseconds := 150000
 	);
 	$$
 );

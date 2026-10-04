@@ -66,17 +66,31 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
 5. **Live companies' objects in Storage:** write the number down. It never goes down while the folder phase is off
    (the live company may add files).
 
+**Production, 4 October ~08:05Z** (the coordinator's run):
+- statement 1: `qorpera-profile-objects` 1,365 objects (21.3 MB) to be removed by the deleted-profile phase and 10
+  (4.9 KB) kept for the folder-v2 company; `qorpera-native-compute-capsules` 11 (61 KB) and `qorpera-identity-recovery`
+  3 (3.3 KB) to be removed by the D5a phase; one member picture kept; no orphan kind;
+- statement 2: all 1,365 rows `nas-object-gateway`, 10 companies, at most 9 runs for the largest. So the worker needs
+  the gateway secrets and both mux locations (1.3);
+- statement 3: 11 capsule and 2 recovery entries waiting, none failing; statement 4: all 0; statement 5: 10 objects,
+  4.9 KB.
+- Their NAS bytes on the old NAS gateway (about 21 MB, the store behind objects.qorpera.com) stay after the rows go:
+  an accepted leak, for a one-off NAS clean-up later.
+
 ### 1.3 Deploy and key
 
 1. **Node 1's mux** (hand-managed nginx, `/etc/qorpera-native25-proxy`, behind Funnel :10000), as for the folder routes
    on 4 October (registry 05:56Z; `lanes/cut-v171-a1/gateway/mux-folder-routes.sh`):
-   - add a location for `^/v1/folder-gc/<uuid>/<64 hex>$`, DELETE only, a small body, proxied to 127.0.0.1:18445;
-   - if dry-run statement 2 shows `nas-object-gateway` rows: check that `DELETE /v1/profile-objects/<uuid>/<64 hex>`
-     passes the mux too, and add it the same way if not.
-   - Check from outside, with no token (nothing can happen without one):
+   - add a location for `^/v1/folder-gc/<uuid>/<64 hex>$`, DELETE only, a small body, proxied to 127.0.0.1:18445
+     (the folder phase, part 2);
+   - add a location for `^/v1/profile-objects/<uuid>/<64 hex>$`, DELETE only, a small body, proxied the same way (the
+     deleted-profile phase: the production dry run of 4 October found every purged company's catalog row
+     NAS-backed). If the mux already has a location for that path for other methods, add DELETE to it rather than a
+     second location.
+   - Check both from outside, with no token (nothing can happen without one):
      `curl -s -o /dev/null -w '%{http_code}\n' -X DELETE https://<node 1 gateway>/v1/folder-gc/00000000-0000-4000-8000-000000000000/<64 zeros>`
-     must print `401` (the gateway answered), not `404` (the mux did). The same for the profile-objects path if you
-     added it.
+     and the same for `/v1/profile-objects/00000000-0000-4000-8000-000000000000/<64 zeros>` must print `401` (the
+     gateway answered), not `404` (the mux did).
 2. **The invocation key** (go-live step 6b). Make it inside the database, so its value is never in a statement's
    text or a log:
    ```sql
@@ -108,7 +122,8 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
    - check the Vault names (names only): `select name from vault.secrets where name in ('qorpera_project_url',
      'qorpera_artifact_gc_worker_key');`. `qorpera_project_url` may exist already (other schedules use it); if not,
      `select vault.create_secret('https://<ref>.supabase.co', 'qorpera_project_url');`;
-   - schedule `qorpera-artifact-gc-worker` every five minutes with the `cron.schedule` in `supabase/ARTIFACT-GC.md`.
+   - schedule `qorpera-artifact-gc-worker` every five minutes with the `cron.schedule` in `supabase/ARTIFACT-GC.md`
+     (its `timeout_milliseconds` keeps pg_net waiting for the answer, which 1.4 reads).
    With one purged company a run, catching up takes about as many runs as dry-run statement 2 counted.
 
 ### 1.4 Watch, and what is left
@@ -116,14 +131,29 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
 - After each of the first runs, and then hourly until the `REMOVED` lines are gone: dry-run statements 1, 3 and 5.
   Statement 5 never goes down. D5a `failing` stays 0; a failing recovery entry means an unexpected name under its
   prefix, which the worker never removes on its own.
-- The function's own log: a 503 answer means a phase could not claim or reconcile; the next run tries again.
+- **The scheduled runs' answers.** The worker answers with its counts but does not log them, and the Edge Function
+  log shows only each call's status. pg_net keeps each answer for a few hours (`pg_net.ttl`, 6 hours by default); the
+  worker's answers hold counts and fixed error texts only:
+  ```sql
+  select created, status_code, timed_out,
+    case when status_code = 200 then content::jsonb - 'folderObjects' end as counts,
+    case when status_code = 200 then content::jsonb -> 'folderObjects' end as folder_objects,
+    case when status_code <> 200 then left(content, 120) end as error
+  from net._http_response
+  where created > now() - interval '2 hours'
+    and (content like '%"companyStorage"%' or content like '%cleanup%' or content like '%reconciliation failed%')
+  order by created desc
+  limit 24;
+  ```
+  A 503 means a phase could not claim or reconcile (a fixed text says which); the next run tries again. `timed_out`
+  means pg_net stopped waiting: that answer is lost, and the dry-run counts show what the run did.
 - The gateway's health (`GET /healthz` on 127.0.0.1:18445): `replication.degraded` false. NAS-backed deletions go
   through its replication journal (a `delete` entry each).
-- **Left after catch-up** (statement 1's `kept` lines): the orphans. The capsules of abandoned sign-ins grow again
-  over time (with G2-4, a sign-in may add a capsule but not remove one). Send the folder GC session the counts: a small
-  follow-up gives the worker an orphan-capsule phase (a capsule over a day old that no capsule row and no D5a entry
-  names), and the one-off rest (objects with no catalog row, unrecorded recovery prefixes) gets a reviewed one-off
-  script if the counts are worth it.
+- **Left after catch-up** (statement 1's `kept` lines): the live company's objects, the member picture, and the
+  purged companies' NAS bytes on the old NAS gateway (1.2). The production dry run found no orphans. Capsules of
+  abandoned sign-ins can start to appear with G2-4 (a sign-in may add a capsule but not remove one): the worker gets an
+  orphan-capsule phase (a capsule over a day old that no capsule row and no D5a entry names) with or right after G2-4,
+  from the folder GC session. Statement 1 shows them as `ORPHAN` until then.
 
 ### 1.5 Undo
 
@@ -148,10 +178,12 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
      `folder_companies_not_served` is 0 (a company being deleted, or one with a snapshot-v1 environment, is never
      collected).
    - **2: all three columns 0.** Every live file and path version names a manifest with a catalog row, each of their
-     chunks has its own row, and none is marked. This is the check that nothing live is lost; do not switch while it
-     is not 0.
+     chunks has its own row, and none of these manifests or chunks is marked. This is the check that nothing live is
+     lost; do not switch while it is not 0.
    - 3 to 6: the side rows, the intents waiting for the sweep, the served companies' catalog. Before the switch there
-     are few or no side rows: only the sweep (which runs only with the switch on) and erasure make them.
+     are few or no side rows: only the sweep (which runs only with the switch on) and erasure make them. Statement 3
+     counts only companies folder GC serves; a company being deleted keeps its side rows until its purge, never
+     claimed, in the last column.
 
 ### 2.2 The switch
 
@@ -178,9 +210,12 @@ Run statements 2, 3 and 6 again: 2 is still all 0; 6 fell by `removed`.
 
 - **Every hour:** statement 2 (all 0), statement 3 (`marked_now` small, gone within 10 minutes; `due` falling to 0),
   statement 6 (falls only by what the worker removed).
-- **The worker's answers** (the function log): `failed` above 0 more than once, or `stale`: look at the gateway's log
-  for that run. `restored` is fine now and then (an object named again while it was being collected). `stopped` under
-  load is normal: GC gives way to live traffic.
+- **The worker's answers** (`folder_objects` in the pg_net query of 1.4):
+  - `{"error": true}`: the sweep or the claim failed (a database error; the Postgres log has it). Nothing was marked,
+    and the next run tries again. More than once in a row: switch off (2.4) and look.
+  - `failed` above 0 more than once, or `stale`: look at the gateway's log for that run.
+  - `restored` is fine now and then (an object named again while it was being collected).
+  - `stopped` under load is normal: GC gives way to live traffic.
 - **The gateway on node 1:**
   - `$QORPERA_OBJECT_GATEWAY_STATE_ROOT/audit.jsonl` gets one `folder_object_removed` or `folder_object_restored`
     line per collected object; count them against the worker's answers (counts only, no hashes in chat);

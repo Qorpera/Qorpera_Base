@@ -12,8 +12,9 @@ select (select enabled from public.qorpera_folder_gc_settings) as switch_on,
 			and not public.qorpera_folder_gc_company(p.id)) as folder_companies_not_served;
 
 -- 2. NOTHING LIVE IS MISSING (must be 0 in every column, every time). Each live file and each path version names a
--- manifest with a catalog row, and each chunk of those manifests has its own catalog row. A non-zero here before the
--- switch is a fault to understand first; after it, stop the phase (part 2, "Undo") and look.
+-- manifest with a catalog row, each chunk of those manifests has its own catalog row, and none of these objects
+-- (manifest or chunk) carries a live GC mark. A non-zero here before the switch is a fault to understand first; after
+-- it, stop the phase (part 2, "Undo") and look.
 with served as (
 	select f.profile_id, f.environment_id from public.qorpera_company_files f
 	where f.core = 'folder-v2' and public.qorpera_folder_gc_company(f.profile_id)
@@ -23,6 +24,11 @@ with served as (
 	union
 	select s.profile_id, v.manifest_sha256 from served s
 	join public.qorpera_folder_path_versions v on v.environment_id = s.environment_id and v.manifest_sha256 is not null
+), live_objects as (
+	select m.profile_id, m.sha256 from manifests m
+	union
+	select c.profile_id, c.chunk_sha256 from manifests m
+	join public.qorpera_folder_file_chunks c on c.profile_id = m.profile_id and c.manifest_sha256 = m.sha256
 )
 select
 	(select count(*) from manifests m where not exists (select 1 from public.qorpera_profile_objects o
@@ -31,11 +37,13 @@ select
 		on c.profile_id = m.profile_id and c.manifest_sha256 = m.sha256
 		where not exists (select 1 from public.qorpera_profile_objects o
 			where o.profile_id = c.profile_id and o.sha256 = c.chunk_sha256)) as chunks_without_a_catalog_row,
-	(select count(*) from manifests m join public.qorpera_folder_object_gc g
-		on g.profile_id = m.profile_id and g.sha256 = m.sha256 and g.lease_expires_at > now()) as live_manifests_marked;
+	(select count(*) from live_objects l join public.qorpera_folder_object_gc g
+		on g.profile_id = l.profile_id and g.sha256 = l.sha256 and g.lease_expires_at > now()) as live_objects_marked;
 
 -- 3. The GC state of the companies folder GC serves: side rows (an object that lost its last root), by what the
 -- next run does with them. 'due' rows are claimed (25 a run), NAS-backed ones only; a Storage-backed due row is kept.
+-- Side rows of a company folder GC no longer serves (one being deleted, whose purge removes them) are never claimed:
+-- they are counted apart, in the last column.
 select
 	count(*) as side_rows,
 	count(*) filter (where g.lease_expires_at > now()) as marked_now,
@@ -44,15 +52,19 @@ select
 	count(*) filter (where (g.lease_id is null or g.lease_expires_at <= now())
 		and g.unreferenced_since < now() - interval '24 hours' and o.backend <> 'nas-object-gateway') as due_but_kept_storage_backed,
 	count(*) filter (where g.unreferenced_since >= now() - interval '24 hours') as in_grace,
-	coalesce(sum(o.bytes) filter (where g.unreferenced_since < now() - interval '24 hours'), 0) as due_bytes
+	coalesce(sum(o.bytes) filter (where g.unreferenced_since < now() - interval '24 hours'), 0) as due_bytes,
+	(select count(*) from public.qorpera_folder_object_gc x where not public.qorpera_folder_gc_company(x.profile_id))
+		as side_rows_of_companies_not_served
 from public.qorpera_folder_object_gc g
-join public.qorpera_profile_objects o on o.profile_id = g.profile_id and o.sha256 = g.sha256;
+join public.qorpera_profile_objects o on o.profile_id = g.profile_id and o.sha256 = g.sha256
+where public.qorpera_folder_gc_company(g.profile_id);
 
 -- 4. Due rows that something roots again (the claim re-checks and drops their side row instead of collecting them).
 -- Small: it calls the root check once per due row.
 select count(*) as due_but_rooted_again
 from public.qorpera_folder_object_gc g
 where (g.lease_id is null or g.lease_expires_at <= now()) and g.unreferenced_since < now() - interval '24 hours'
+	and public.qorpera_folder_gc_company(g.profile_id)
 	and public.qorpera_folder_object_rooted(g.profile_id, g.sha256);
 
 -- 5. Upload intents: the sweep takes those past expiry plus an hour, 25 a run; their objects that nothing else roots
