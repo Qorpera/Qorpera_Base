@@ -218,11 +218,12 @@ create function pg_temp.ended_item(p_n integer, p_command text, p_reason text, p
 		'command', p_command, 'startedAt', pg_temp.at('20 minutes'), 'reason', p_reason, 'endedAt', pg_temp.at('0 seconds'))
 $$;
 -- The office's report of Ada's screen.
-create function pg_temp.shells(p_busy boolean, p_open jsonb default '[]', p_ended jsonb default '[]') returns jsonb language sql as $$
+create function pg_temp.shells(p_busy boolean, p_open jsonb default '[]', p_ended jsonb default '[]', p_whole boolean default true)
+returns jsonb language sql as $$
 	select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.scope')::jsonb,
 		current_setting('qorpera_test.generation')::bigint,
 		jsonb_build_object('schema', 'qorpera.office-shell-report/v1', 'screens', jsonb_build_array(jsonb_build_object(
-			'screenId', current_setting('qorpera_test.screen'), 'busy', p_busy, 'open', p_open, 'ended', p_ended))))
+			'screenId', current_setting('qorpera_test.screen'), 'busy', p_busy, 'whole', p_whole, 'open', p_open, 'ended', p_ended))))
 $$;
 create function pg_temp.open_work() returns jsonb language sql as $$
 	select public.qorpera_describe_agent_open_work(current_setting('qorpera_test.binding')::jsonb)
@@ -267,7 +268,7 @@ select pg_temp.refused(format('select public.qorpera_report_runtime_office_shell
 	'{"schema":"qorpera.office-shell-report/v1","screens":[]}'), '42501', 'Office shell activity binding differs');
 select pg_temp.refused(format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)',
 	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'),
-	'{"schema":"qorpera.office-shell-report/v1","screens":[{"screenId":"87000000-0000-4000-8000-000000000099","busy":true,"open":[],"ended":[]}]}'),
+	'{"schema":"qorpera.office-shell-report/v1","screens":[{"screenId":"87000000-0000-4000-8000-000000000099","busy":true,"whole":true,"open":[],"ended":[]}]}'),
 	'42501', 'Office shell activity screen differs');
 select pg_temp.check(pg_temp.settled('fence_two', format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)::text',
 	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), '{"schema":"qorpera.office-shell-report/v1","screens":[]}'))
@@ -283,21 +284,30 @@ select pg_temp.refused(pg_temp.report_raw(report), '22023', 'Invalid office shel
 	quote_literal('{"schema":"qorpera.office-shell-report/v1","screens":[],"extra":1}') || '::jsonb',
 	-- 65 distinct screens: only the size bound refuses them (without it, the screen check would answer 42501).
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',(select jsonb_agg(jsonb_build_object(
-		'screenId',('87000000-0000-4000-8000-00000000' || lpad(n::text,4,'0'))::uuid,'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb))
+		'screenId',('87000000-0000-4000-8000-00000000' || lpad(n::text,4,'0'))::uuid,'busy',false,'whole',true,'open','[]'::jsonb,
+			'ended','[]'::jsonb))
 		from generate_series(1,65) n)))
 		|| '::jsonb',
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
-		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb),
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'whole',true,'open','[]'::jsonb,'ended','[]'::jsonb),
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'whole',true,'open','[]'::jsonb,'ended','[]'::jsonb))))
+		|| '::jsonb',
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy','true','whole',true,'open','[]'::jsonb,'ended','[]'::jsonb))))
+		|| '::jsonb',
+	-- A screen without its whole flag, or with one that is not a boolean.
+	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
 		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb))))
 		|| '::jsonb',
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
-		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy','true','open','[]'::jsonb,'ended','[]'::jsonb))))
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'whole','true','open','[]'::jsonb,'ended','[]'::jsonb))))
 		|| '::jsonb',
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
-		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open','[]'::jsonb,'ended','[]'::jsonb,'x',1))))
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'whole',true,'open','[]'::jsonb,'ended','[]'::jsonb,
+			'x',1))))
 		|| '::jsonb',
 	quote_literal(jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(
-		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'open',(select jsonb_agg(
+		jsonb_build_object('screenId',current_setting('qorpera_test.screen'),'busy',false,'whole',false,'open',(select jsonb_agg(
 			pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')) from generate_series(1,65)),'ended','[]'::jsonb))))
 		|| '::jsonb'
 ]) as report \g /dev/null
@@ -312,7 +322,7 @@ select * from dblink('fence_one', $q$select 1 from public.qorpera_profiles where
 do $$
 declare v_answer text := pg_temp.settled('fence_three', format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)::text',
 	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), jsonb_build_object('schema', 'qorpera.office-shell-report/v1',
-		'screens', jsonb_build_array(jsonb_build_object('screenId', current_setting('qorpera_test.screen'), 'busy', false,
+		'screens', jsonb_build_array(jsonb_build_object('screenId', current_setting('qorpera_test.screen'), 'busy', false, 'whole', true,
 			'open', jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')), 'ended', '[]'::jsonb)))));
 begin
 	perform dblink_exec('fence_one', 'rollback');
@@ -424,11 +434,12 @@ select pg_temp.shells(false) \g /dev/null
 select pg_temp.check((pg_temp.command_row(1)).end_reason = 'unknown' and not pg_temp.open_work() ? 'computerStopped',
 	'a command the office no longer lists ends as unknown, and nobody is told it stopped');
 rollback;
--- A list cut at 64 says nothing about what it leaves out.
+-- Lists the office had to cut (a request holds only so much) say nothing about what they leave out, however short.
 begin;
-select pg_temp.shells(false, (select jsonb_agg(pg_temp.open_item(100 + n, 'not started here', '1 minute', '1 minute'))
-	from generate_series(1, 64) n)) \g /dev/null
-select pg_temp.check((pg_temp.command_row(1)).ended_at is null, 'a full list ends nothing it leaves out');
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(5, 'npm run build', '5 minutes', '5 minutes')), '[]', false) \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).ended_at is null and (pg_temp.command_row(5)).id is not null
+	and (pg_temp.command_row(5)).ended_at is null,
+	'a screen that is not whole ends nothing it leaves out, and records what it names');
 rollback;
 -- Any other stop of the computer (the provider's lifecycle request, here a power-off) ends what still runs as closed.
 begin;

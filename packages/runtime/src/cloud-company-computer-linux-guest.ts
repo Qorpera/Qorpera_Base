@@ -59,6 +59,7 @@ import {
 } from "./cloud-company-computer-native-gateway.ts";
 import { CloudCompanyComputerPrivateSurfaceControl } from "./cloud-company-computer-private-surface-control.ts";
 import {
+	COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES,
 	COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
 	companyComputerAuthorityUnanswered,
 	type HttpCloudCompanyComputerRegistry,
@@ -177,6 +178,64 @@ export interface CompanyComputerLinuxGuestOptions {
 
 /** Shell reports in a row (30 s apart) after which ends the registry keeps refusing are let go. */
 const SHELL_REPORT_ATTEMPTS = 10;
+/** The most commands of each kind (open, ended) one report names for a screen. */
+const SHELL_REPORT_ITEMS = 64;
+
+/** One screen's shell in a report: whole when its lists name every command it has, open and ended. */
+export interface CompanyComputerShellReportScreen {
+	screenId: string;
+	busy: boolean;
+	whole: boolean;
+	open: CompanyComputerShellReport["open"];
+	ended: CompanyComputerShellReport["ended"];
+}
+
+/**
+ * Fits a shell report into one registry request of at most maxBytes for its
+ * screens (the transport's bound less the rest of the request). Every screen
+ * and whether it was busy always go; then the ends the platform has not heard
+ * of, oldest first, then the open commands, latest worked first, as many as
+ * fit, at most SHELL_REPORT_ITEMS of each kind a screen. A screen whose lists
+ * were cut is not whole, so the platform ends none of its commands for being
+ * missing; ends that did not fit go with a later report.
+ */
+export function fitCompanyComputerShellReport(
+	screens: readonly {
+		screenId: string;
+		busy: boolean;
+		open: CompanyComputerShellReport["open"];
+		ended: CompanyComputerShellReport["ended"];
+	}[],
+	maxBytes: number,
+): CompanyComputerShellReportScreen[] {
+	const fitted = screens.map(({ screenId, busy }) => ({
+		screenId,
+		busy,
+		whole: false,
+		open: [] as CompanyComputerShellReport["open"],
+		ended: [] as CompanyComputerShellReport["ended"],
+	}));
+	// Each screen with empty lists, and a comma; "false" is the longer flag, so the count stays an upper bound.
+	let bytes = 2 + fitted.reduce((sum, screen) => sum + Buffer.byteLength(JSON.stringify(screen)) + 1, 0);
+	const fits = (list: readonly unknown[], item: unknown): boolean => {
+		const cost = Buffer.byteLength(JSON.stringify(item)) + 1;
+		if (list.length >= SHELL_REPORT_ITEMS || bytes + cost > maxBytes) return false;
+		bytes += cost;
+		return true;
+	};
+	const ends = screens
+		.flatMap((screen, index) => screen.ended.map((item) => ({ index, item })))
+		.sort((a, b) => a.item.endedAt.localeCompare(b.item.endedAt));
+	for (const { index, item } of ends) if (fits(fitted[index].ended, item)) fitted[index].ended.push(item);
+	const open = screens
+		.flatMap((screen, index) => screen.open.map((item) => ({ index, item })))
+		.sort((a, b) => b.item.workedAt.localeCompare(a.item.workedAt));
+	for (const { index, item } of open) if (fits(fitted[index].open, item)) fitted[index].open.push(item);
+	for (const [index, screen] of fitted.entries())
+		screen.whole =
+			screen.open.length === screens[index].open.length && screen.ended.length === screens[index].ended.length;
+	return fitted;
+}
 
 export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #options: CompanyComputerLinuxGuestOptions;
@@ -256,8 +315,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	 * Every 30 seconds the office tells the platform about each screen's shell:
 	 * whether it was busy since the last sample (the one idle rule: about 5% of
 	 * one core, or about 17 KB a second read or written by its commands), the
-	 * commands still open, and those that ended since, each with
-	 * the run that started it. A busy shell is demand: SQL keeps the computer on,
+	 * commands still open, and those that ended since, each with the run that
+	 * started it, as many as fit one request (fitCompanyComputerShellReport).
+	 * A busy shell is demand: SQL keeps the computer on,
 	 * and the screen with its agent, while a report is fresh (90 seconds). A
 	 * shell that only waits is not; when the computer sleeps, its commands end
 	 * and their runs are told. A registry without the report (older kernel)
@@ -297,35 +357,40 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			return {
 				screenId,
 				busy,
-				open: (report?.open ?? []).slice(0, 64),
-				ended: [...(report?.ended ?? []), ...closed.flatMap((old) => old.report().ended)].slice(0, 64),
+				open: report?.open ?? [],
+				ended: [...(report?.ended ?? []), ...closed.flatMap((old) => old.report().ended)],
 				shells: shell ? [shell, ...closed] : closed,
 			};
 		});
 		const speaks = screens.some((screen) => screen.busy || screen.open.length > 0 || screen.ended.length > 0);
 		if (!speaks && !this.#shellReported) return;
+		// One request, whatever the screens hold: what does not fit goes with a later report.
+		const request = {
+			p_scope: this.#options.scope,
+			p_computer_generation: this.#options.computerGeneration,
+			p_report: { schema: "qorpera.office-shell-report/v1", screens: [] as CompanyComputerShellReportScreen[] },
+		};
+		const fitted = fitCompanyComputerShellReport(
+			screens,
+			COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES - Buffer.byteLength(JSON.stringify(request)),
+		);
+		request.p_report.screens = fitted;
+		const reported = fitted.map((screen, index) => ({ ended: screen.ended, shells: screens[index].shells }));
 		let response: unknown;
 		try {
 			response = await this.#options.registry.call(
 				"qorpera_report_runtime_office_shell_activity",
-				{
-					p_scope: this.#options.scope,
-					p_computer_generation: this.#options.computerGeneration,
-					p_report: {
-						schema: "qorpera.office-shell-report/v1",
-						screens: screens.map(({ shells: _shells, ...screen }) => screen),
-					},
-				},
+				request,
 				this.#stop.signal,
 			);
 		} catch {
 			// The next report tries again; sleep ends what is still open. Ends that
 			// still fail after SHELL_REPORT_ATTEMPTS reports are let go, so that
 			// nothing in them can hold up the computer's demand for long.
-			if (++this.#shellReportFailures >= SHELL_REPORT_ATTEMPTS) this.#shellReportsDone(screens);
+			if (++this.#shellReportFailures >= SHELL_REPORT_ATTEMPTS) this.#shellReportsDone(reported);
 			return;
 		}
-		this.#shellReportsDone(screens);
+		this.#shellReportsDone(reported);
 		this.#shellReported = screens.some((screen) => screen.busy || screen.open.length > 0);
 		// The operator paused the company: nothing keeps running in a shell. The
 		// report ended every command as paused, and new commands are refused until the pause ends.
@@ -690,6 +755,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		 * that never touched the browser has no say over a window a member opened. */
 		let driving: CompanyComputerBrowserSession | "attaching" | undefined;
 		let automation: CompanyComputerGuestAutomation | undefined;
+		// One publisher for the session's whole life: a capture it keeps for the perform answer outlives a new automation.
+		const screenshots = this.#options.screenshots(input.run);
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
@@ -895,7 +962,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						},
 						commands: commands!,
 						shell,
-						screenshots: this.#options.screenshots(input.run),
+						screenshots,
 						fileExports: this.#options.fileExports?.(input.run),
 						fileImports: this.#options.fileImports?.(input.run),
 						fillKey: this.#options.fillKey,
@@ -913,6 +980,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		return {
 			close: session.close,
 			ended: () => ended,
+			screenshot: (receiptId) => screenshots.takeInline?.(receiptId),
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,
