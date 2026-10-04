@@ -280,7 +280,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). An agent's screenshot serves folder-v2 since 3l part 3 without storing anything (§6.15) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -1473,6 +1473,37 @@ them at the v172 cut.
 - lifting the machine-event refusals (the pin trigger, `folder_wake_authorized`, `folder_run_resolve`).
 
 The progress, heartbeat and describe calls lock only the session and change no company state.
+
+### 6.15 C1c-3l part 3 as built: a screenshot goes back to the model only (migration 20260930030200, test 891)
+
+Before, an agent's `computer_screenshot` on a folder-v2 computer got as far as the capture: the screen lease, the
+operation and the guest's pixels all worked since 3k. Then `qorpera_native_office_capture` refused with 0A000. That
+happened after the operation's receipt had begun, so the model saw an unconfirmed outcome, and the open receipt fenced
+the run's later operations. The coordinator made it urgent, ahead of 3l part 2.
+
+| Path | Before (folder-v2) | Now |
+|---|---|---|
+| `native_office_capture`, authorize | 0A000 | `{state: authorized, storage: none}`: the runtime uploads no object |
+| `native_office_capture`, publish | 0A000 | the image's identity, with the operation's receipt id as its asset id; no artifact, capture row, retention hold or company object |
+| `read_native_office_capture`, `assert_native_office_captures` | the artifact's capture row | `qorpera_folder_office_capture(binding, asset)`: the completed receipt of this run (its exact result), its computer resource drained, the run's company audience, the computer still available to the agent |
+
+- **The runtime** (`cloud-company-computer-screenshots.ts`): on `storage: none` it skips the object upload. It checks
+  that the answer names its receipt, and keeps the pixels in memory, at most 8 captures, until the boundary has handed
+  them to the model, which happens right after the operation completes. A capture is read once; the boundary checks
+  each issued capture's authority before every model request (the capture-set check), as before.
+- **Nothing is kept beyond the model's context:** after a session restart the screenshot is not available again; the
+  agent takes a new one. Saving a screenshot into the company folder stays with capture and export (C1d, C3).
+- **Test 891** (648's committed fixture, the company's computer up):
+  - A: Ada's screen is acquired, her screenshot authorized and begun under its receipt, the capture authorizes without
+    storage and answers the image under the receipt, the operation finishes and its receipt completes;
+  - B: no artifact, capture row or company object exists;
+  - C: the read and the capture-set check answer the identity; a changed or unknown one is refused;
+  - D: the run's next operation begins (no open receipt fences it);
+  - E: once the computer is in maintenance, the screenshot is no longer readable;
+  - F: exactly 4 bodies name the migration.
+
+  647's refusal list loses the capture. The runtime's unit tests cover the folder-v2 path (no upload, the receipt
+  named, read once from memory) and an unknown storage answer.
 
 ## 7. Traps for C1c-2 and C1c-3
 

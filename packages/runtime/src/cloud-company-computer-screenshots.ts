@@ -89,14 +89,33 @@ export function parseCompanyComputerScreenshotAsset(value: unknown): CompanyComp
 	return { ...asset } as unknown as CompanyComputerScreenshotAsset;
 }
 
+// Folder-v2 captures held for the model, at most this many at a time: the boundary reads each once, right after it
+// is published.
+const HELD_CAPTURES = 8;
+
+/** How the capture authority says to keep the pixels: as a stored object (the published artifact), or not at all
+ * (folder-v2: the model gets them once, and the operation's receipt is the record). */
+function captureStorage(value: unknown): "object" | "none" {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+	const answer = value as Record<string, unknown>;
+	const keys = Object.keys(answer).sort().join();
+	if (answer.state !== "authorized") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+	if (keys === "state") return "object";
+	if (keys === "state,storage" && answer.storage === "none") return "none";
+	throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+}
+
 /** One admitted native run. Upload stages bytes; only the SQL transaction
  * publishes an artifact with the original effect receipt and retention hold.
+ * On a folder-v2 company nothing is stored: the pixels stay in this host until the
+ * model has them, and the effect receipt is the capture's record.
  * Private sign-in surfaces never call this adapter. */
 export class CloudCompanyComputerScreenshots implements CompanyComputerScreenshotPublisher {
 	readonly #run: CloudNativeToolRun;
 	readonly #scope: CompanyComputerScope;
 	readonly #registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
 	readonly #objects: (signal: AbortSignal) => Pick<CloudObjectTransport, "put" | "get">;
+	readonly #held = new Map<string, Uint8Array>();
 
 	constructor(options: {
 		run: CloudNativeToolRun;
@@ -158,19 +177,19 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		return cloudToolRequest(
 			async (signal) => {
 				await this.#run.assertActive(signal);
-				const authorized = record(
+				const storage = captureStorage(
 					await this.#registry.call("qorpera_native_office_capture", { ...args, p_action: "authorize" }, signal),
-					"state",
 				);
-				if (authorized.state !== "authorized") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
 				signal.throwIfAborted();
-				const stored = await this.#objects(signal).put(
-					`${this.#scope.companyId}/${image.sha256}`,
-					bytes,
-					image.mediaType,
-				);
-				if (stored !== "stored" && stored !== "exists") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
-				signal.throwIfAborted();
+				if (storage === "object") {
+					const stored = await this.#objects(signal).put(
+						`${this.#scope.companyId}/${image.sha256}`,
+						bytes,
+						image.mediaType,
+					);
+					if (stored !== "stored" && stored !== "exists") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+					signal.throwIfAborted();
+				}
 				const asset = parseCompanyComputerScreenshotAsset(
 					await this.#registry.call("qorpera_native_office_capture", { ...args, p_action: "publish" }, signal),
 				);
@@ -183,6 +202,12 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 					})
 				)
 					throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+				if (storage === "none") {
+					// The receipt names the capture; the pixels wait here for the model.
+					if (asset.assetId !== receiptId) throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+					this.#held.set(asset.assetId, bytes);
+					while (this.#held.size > HELD_CAPTURES) this.#held.delete(this.#held.keys().next().value as string);
+				}
 				signal.throwIfAborted();
 				return asset;
 			},
@@ -210,7 +235,10 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 				};
 				await this.#run.assertActive(checked);
 				await authorize();
-				const bytes = Uint8Array.from(await this.#objects(checked).get(`${this.#scope.companyId}/${asset.sha256}`));
+				const held = this.#held.get(asset.assetId);
+				const bytes = Uint8Array.from(
+					held ?? (await this.#objects(checked).get(`${this.#scope.companyId}/${asset.sha256}`)),
+				);
 				if (
 					!isDeepStrictEqual(png(bytes, asset.surface), {
 						sha256: asset.sha256,
@@ -222,6 +250,8 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 				)
 					throw new Error("OFFICE_CAPTURE_CHANGED");
 				await authorize();
+				// A held capture goes to the model once; the receipt keeps its record.
+				if (held) this.#held.delete(asset.assetId);
 				return bytes;
 			},
 			AbortSignal.any([signal, this.#run.signal]),
