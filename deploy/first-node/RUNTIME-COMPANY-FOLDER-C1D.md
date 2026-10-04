@@ -127,6 +127,29 @@ included):
   replay is answered at step 0 and is unaffected. Version-1 proofs are exempt: only the SQL test fixtures make them
   for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6).
 
+**Cost (P24d, migration 20260930047000, test 904).** The check costs the same whatever the company stores. It walks the
+proof's objects one by one (a manifest and up to 64 chunks):
+- **Locked:** a binary search of the commit's array, which step 6 sorts `collate "C"`, then a scan only if that misses
+  (an unsorted array costs time and never changes the answer). It runs outside any SQL statement, since a statement
+  would flatten or hash the whole array for every object.
+- **In the catalog with its size:** one primary-key probe.
+
+A new folder's files go through `qorpera_folder_contents_bytes_problem`, a PL/pgSQL loop the commit calls with its own
+array, so no copy of that array is made per file.
+
+Before P24d, one statement over the proof's objects did both checks. The planner hashed the catalog lookup, expecting a
+set-returning function to return 100 rows, so every file read every object the company stores. A new folder of N new
+files over a catalog of 2 × 10,000 objects (manifest and chunk each, platform actor):
+
+| N | before | after (custom plans) | after (generic plans) |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 5.3 s | 0.68 s | 0.51 s |
+| 2,500 | 14.9 s | 1.5 s | 1.15 s |
+| 5,000 | 32.5 s | 3.1 s | 2.3 s |
+| 10,000 | 87 s | 5.9 s | 4.6 s |
+
+The catalog rows read went from N × 20,000 to 20,000 + 2N.
+
 A copy's source files are found by an equality probe on the source key and a range probe under it
 (`key_text > k || '/' and key_text < k || '0'`, both on the `(environment_id, key_text)` index). A source over the
 core's subtree bound (50,000 entries) adds no objects, since step 7 refuses it as `too_large`. With a copy in the
