@@ -1323,6 +1323,7 @@ export class NativeProviderHost {
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
 	readonly #warmIdleMs?: number;
+	readonly #accountMetadata: boolean;
 	#warm?: WarmCredentialRoot;
 	readonly #logins = new Map<string, LoginState>();
 	readonly #metadataShutdown = new AbortController();
@@ -1348,6 +1349,9 @@ export class NativeProviderHost {
 		 * this host serves. Absent: every run opens and wipes its own root.
 		 */
 		warmIdleMs?: number;
+		/** Whether the host keeps its identity's account metadata (default true). A sign-in's login guest does not:
+		 * its credential allows it only the sign-in (G2-3). */
+		accountMetadata?: boolean;
 	}) {
 		if (options.masterKey !== undefined) capsuleKey(options.masterKey);
 		if (options.masterKey === undefined && options.modelLogins === undefined)
@@ -1358,6 +1362,7 @@ export class NativeProviderHost {
 		)
 			throw new Error("Native warm window is invalid");
 		this.#warmIdleMs = options.warmIdleMs;
+		this.#accountMetadata = options.accountMetadata ?? true;
 		requiredUuid(options.computeIdentityId, "Native host Compute Identity id");
 		this.#controlPlane = options.controlPlane;
 		this.#capsules = options.capsules;
@@ -1436,6 +1441,7 @@ export class NativeProviderHost {
 	}
 
 	async refreshAccountMetadata(signal?: AbortSignal): Promise<void> {
+		if (!this.#accountMetadata) return;
 		if (this.#metadataRefresh) return this.#metadataRefresh;
 		if (this.#metadataShutdown.signal.aborted) return;
 		const refresh = this.#refreshAccountMetadata(signal).catch(() => undefined);

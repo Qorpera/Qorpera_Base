@@ -266,6 +266,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 	readonly #signal?: AbortSignal;
 	readonly #requestTimeoutMs: number | undefined;
 	readonly #publishableKey?: string;
+	readonly #identityCredential?: string;
 
 	constructor(
 		baseUrl: string,
@@ -277,6 +278,8 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 			executionBoundary?: NativeProviderExecutionBoundary;
 			/** The project's publishable key, sent with each company execution for the host's calls (G2-2). */
 			publishableKey?: string;
+			/** On an execution host's slot, this run's machine's identity credential, sent with each execution (G2-3). */
+			identityCredential?: string;
 		} = {},
 	) {
 		const base = bridgeUrl(baseUrl);
@@ -291,6 +294,10 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		this.#signal = options.signal;
 		// Sent only when it is a publishable key; a host whose calls need it refuses the execution without it.
 		if (isNativeHostPublishableKey(options.publishableKey)) this.#publishableKey = options.publishableKey;
+		if (options.identityCredential !== undefined) {
+			if (!TOKEN_PATTERN.test(options.identityCredential)) throw new Error("Native identity credential is invalid");
+			this.#identityCredential = options.identityCredential;
+		}
 		// A run has no deadline (founder, 2026-09-24); a timeout is a test or operator choice.
 		this.#requestTimeoutMs = options.requestTimeoutMs;
 		this.executionGuarantees = nativeProviderExecutionGuarantees(options.executionBoundary ?? "test");
@@ -354,7 +361,16 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 				attempt_count: job.attemptCount,
 				...(credential ? { lease_token: credential.leaseToken } : {}),
 			},
-			...(credential ? { native_host: { publishable_key: credential.publishableKey } } : {}),
+			...(credential
+				? {
+						native_host: {
+							publishable_key: credential.publishableKey,
+							...(this.#identityCredential !== undefined
+								? { identity_credential: this.#identityCredential }
+								: {}),
+						},
+					}
+				: {}),
 		});
 	}
 

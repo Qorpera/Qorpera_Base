@@ -1,7 +1,7 @@
 # Runs on the folder core (C4, P28)
 
-Status: part 1 built (§2, §3; migration `20260930018000`), part 2 (§4, §5) and the runtime (§6) designed; 4 October
-2026 (Q1, the coordinator's slice P28). The founder decided on 3 October that production's companies are wiped and the
+Status: built, 4 October 2026 (Q1, the coordinator's slice P28): part 1 (§2, §3; migration `20260930018000`, #756) and
+the runtime (§6, #761, #766). §4 and §5 turned out not to be needed (coordinator, 4 October). The founder decided on 3 October that production's companies are wiped and the
 legacy (`snapshot-v1`) implementation gets no compatibility. So this builds `folder-v2` runs only, with no else-branch
 for the old core.
 
@@ -48,7 +48,8 @@ reads of wakes and turn requests.
 transaction, in core §3's order:
 1. **The work, read without a lock:** at most `limit` items, turn requests and due wakes in one scan order (oldest scan
    first), so neither starves the other. A request behind an earlier one in its conversation, or behind a live turn,
-   is not work this pass. This only names the rows to lock. The items then run in this order.
+   is not work this pass. This only names the rows to lock. The turn requests then run first, then the wakes, each in
+   this order.
 2. **The fence and ranks 0 to 5,** through `qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, the pause
    again (paused: the answer `paused`, nothing written), the company row `KEY SHARE`, then:
    - rank 1: each requester's member row `KEY SHARE`;
@@ -113,31 +114,26 @@ and their tests go with A1's legacy-removal slice.
   uses the founder's ChatGPT login, which answers `provider-default`.
 - At zero hours the company is not listed, and its queued wakes show no reason.
 
-## 4. Plain conversations (P28 part 2)
+## 4. Plain conversations: not needed
 
-`qorpera_append_session_input`, `qorpera_request_session_turn` and its v2 refuse `folder-v2` today (C1c-3a). They get
-`folder-v2` bodies in the folder order:
-1. the fence and rank 0;
-2. the member at rank 1;
-3. the conversation `FOR UPDATE`;
-4. the input;
-5. the turn request, or the binding's pending input, which the materializer picks up.
+Not needed: `folder-v2` conversations are rooms. `qorpera_append_session_input`, `qorpera_request_session_turn` and its
+v2 keep refusing `folder-v2` (0A000, C1c-3a):
+- For one agent, the web opens the agent's thread (`qorpera_agent_thread`); for several, a group chat. Both are rooms,
+  and posting in them already runs on `folder-v2` (C1c-3a's post, then §3's room wakes).
+- The web falls back to `qorpera_request_session_turn_v2` only for a session that is not a room, and nothing creates one
+  on `folder-v2`: `ensureStaffSession` and `appendPrompt` have no caller in the interface.
+- A1's legacy-removal slice can delete the plain-session paths later.
 
-Images and attachments stay refused until C1d gives conversations folder bytes.
+## 5. The first run's dead request: not needed
 
-## 5. The first run's dead request (P28 part 2)
-
-Two notes from part 1's review:
+`qorpera_queue_agent_first_run` returns an existing request whatever its status, so a failed first run cannot be started
+again through `qorpera_start_agent_first_run`. Nothing calls that function, though. A founder whose Co-Founder's first
+run failed posts in its thread, which wakes it (§3's room wakes). Kept here for whoever adds a restart:
 - `qorpera_wake_first_run_once` is unique on `(environment_id, staff_agent_id)` with no status filter. A restart after
   the first run's wake exists would hit it (23505, which the materializer turns into a failed request). A restart must
   either reuse that wake or replace the first-run request only before it has a run.
 - A member-private conversation's run insert takes the member row `FOR SHARE`
-  (`qorpera_require_current_private_audience`), above rank 1's `KEY SHARE`. Part 2 takes that member at rank 1 in
-  `FOR SHARE` for private conversations.
-
-`qorpera_queue_agent_first_run` returns an existing request whatever its status, so a failed first run cannot be started
-again. `qorpera_start_agent_first_run` gets a `folder-v2` order (the fence, then the pause) and replaces a dead request
-for the same kickoff.
+  (`qorpera_require_current_private_audience`), above rank 1's `KEY SHARE`.
 
 ## 6. Runtime (separate PR, P28b)
 
@@ -150,9 +146,10 @@ for the same kickoff.
 
 ## 7. Not in P28
 
-- F2's worker drain (F2-5b-3). F2 adds its call at the start of `qorpera_folder_materialize_company`, where a comment
-  marks the place (core C4).
-- The listener (P29/P31).
+- F2's worker drain (F2-5b-3) and the listener (P29). Each runs in its own transaction, one company at a time, as its
+  own orchestrator step before the materializer's list (coordinator, 4 October). A drain admits wakes, and admission
+  must come after the materializer's ranks, so neither runs inside `qorpera_folder_materialize_company`.
+- Human-task wakes (P31).
 - Machine events (C1c-3i), the observability views (P32), and the edge functions (P26).
 
 ## 8. Switch-on
