@@ -31,7 +31,7 @@ function command(): Parameters<CompanyComputerGuestCommands["run"]>[0] {
 	return {
 		program: "/bin/bash",
 		args: ["--noprofile", "--norc", "-c", "true"],
-		environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+		environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 		workingDirectory: layout.workbenchRoot,
 		timeoutMs: 5000,
 		maxOutputBytes: 16384,
@@ -157,7 +157,14 @@ describe("office command admission (Linux process behavior has a separate real p
 				{ args: ["x".repeat(20001)] },
 				{ stdin: "x".repeat(16385) },
 				{ workingDirectory: "/srv/profiles" },
-				{ environment: { ...command().environment, DISPLAY: ":2" } },
+				// A shell command never gets the screen's display, and xdotool only its own.
+				{ environment: { ...command().environment, DISPLAY: ":1" } },
+				{ program: "/usr/bin/xdotool", args: ["getdisplaygeometry"] },
+				{
+					program: "/usr/bin/xdotool",
+					args: ["getdisplaygeometry"],
+					environment: { ...command().environment, DISPLAY: ":2" },
+				},
 				{ environment: { ...command().environment, LD_PRELOAD: "fake.so" } },
 				{ environment: { ...command().environment, PATH: "/srv/workbench" } },
 				{ timeoutMs: 0 },
