@@ -85,6 +85,23 @@ answers a warning with the live paths whose versions share an erased manifest (b
 can erase copies too (the empty file's manifest is left out). The same manifest query lists deleted copies, as paths
 the member may add.
 
+### 2.5 Conflict copies (P18d, §13)
+P17 keeps a write's or new folder's files on its receipt when its version check failed: rows of
+`qorpera_folder_conflict_copies`, at the path each would have stored (`key_text`), keyed by commit, unit and file. They
+hold bytes of that path's history as versions do, so a root erases them with its versions:
+- **Position.** A copy lies at its commit's `(seq, unit_no)` when the commit saved something. A commit that saved
+  nothing has no seq; its copies were decided against the folder as of its `as_of_seq` (the clock it read under its
+  locks), so they lie after every row of that seq (`qorpera_folder_erasure_copy_before`). So under a deleted root
+  every copy goes; under a live root a copy whose check saw the current life stays with it, and one from before it goes.
+- **A path that never had a version** can hold copies (a write that expected a version at an absent path; a new
+  folder's files under a path that was taken). A live root with no version before its life but such a copy has
+  something to erase; "nothing to erase" needs neither.
+- **The copies warning** (§2.3) counts them on both sides: an erased copy's manifest is looked for among the other
+  paths' versions and copies, and a copy elsewhere holding an erased manifest is named like a version would be.
+- **Locks.** None added. A copy's commit locked its unit's path `FOR UPDATE` and that path's ancestors `KEY SHARE`, as
+  for a saved unit. A new folder's copies lie under the folder's own path, which is the root, an ancestor the request
+  holds `KEY SHARE`, or a path under the root; either way the two met at a path lock, so §2.2's seq argument holds.
+
 ### 2.4 Refused roots
 - none by its top folder any more: P18a refused `agents/`, `rules/` and `tables/`; P18b (§11) erases the first two and
   P18c (§12) `tables/`;
@@ -246,8 +263,8 @@ unlike P18a, writes a journal row). P18b's per-move-unit check of §2.3 and its
 lock placement (rules after the paths, step 7; todos and workers at rank 5 since F2-5b, §11) follow this design. P18b states each of these as a decision
 for the coordinator.
 
-Worker rows (`folder_brief_version`, `folder_results_version`, F2-5b) joined in P18b (§11); when P17 lands, conflict copies
-on receipts are erased with their path; P16a's table index joined in P18c (§12; interfaces have no index before I7);
+Worker rows (`folder_brief_version`, `folder_results_version`, F2-5b) joined in P18b (§11); P17's conflict copies on
+receipts are erased with their path (P18d, §2.5); P16a's table index joined in P18c (§12; interfaces have no index before I7);
 H5's link and delivery rows and the C4 listener's file-change wakes join before they hold paths.
 
 ## 6. Outside the folder tables
@@ -502,3 +519,37 @@ folder leaves its row retired, and a table made again with the same id revives i
   - a known gap shared with the task index: erasing a file inside a deleted table folder first, then the folder, with no
     commit between, leaves the table's row, with the folder's name, since the second request finds no version under its
     root before the cutoff to tie it to. Rare; a later slice can key the rows on the folder's own erasure.
+
+## 13. Built (P18d, migration 20260930045000, test 909)
+
+P17's conflict copies (20260930042000) are erased with their path (§2.5); the coordinator ships both in one release.
+
+- **The request:**
+  - each root's reply entry counts its copies before the cutoff (`conflictCopies`);
+  - a live root refuses "nothing to erase" only with neither versions nor copies;
+  - the copies warning takes the copies' manifests and looks among other paths' copies too.
+- **The step's phase 1,** after the versions and in the same `p_versions` budget, takes the copies under each root
+  before its cutoff:
+  - their manifests and chunks go to the hash table, so phase 5 collects what nothing else roots;
+  - their root's spellings go to the needles;
+  - their commits' runs are noted for phase 4;
+  - then the rows are deleted.
+
+  Phase 1 ends when a step's versions and copies together fall short of the budget. The erasure's `counts` gain
+  `conflictCopies`.
+- **Commit rows** are never deleted, so the copies' `RESTRICT` key to their commit never trips. A conflicting change
+  set's unit loses the path in phase 2 like any other unit (a commit that saved nothing is found by its time).
+
+**Tests (909, on 883's fixture):**
+- a deleted path with a copy kept by a commit that saved nothing, the bytes saved elsewhere named in the warning, and
+  the unit scrubbed;
+- a live root keeping its current life's copy and erasing the one from before;
+- a live root whose only past is a copy at a path that never had a version;
+- a deleted folder with a copy under it, and a copy elsewhere holding erased bytes named in the warning;
+- grants and markers.
+
+**Not tested yet:**
+- a run's copy (its run noted for phase 4);
+- the phase 1 budget split between versions and copies;
+- phase 5's collection of an erased copy's bytes. In 909's fixture the copy's bytes still showed as rooted after the
+  erasure, probably through their staging; that has not been checked, so 909 asserts nothing about it.
