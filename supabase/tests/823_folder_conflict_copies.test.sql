@@ -2,7 +2,7 @@
 -- Company folder core, slice P17: conflict copies on receipts, with their GC root (deploy/first-node/
 -- RUNTIME-COMPANY-FOLDER-CORE.md §3 step 8, §8). What a write or a new folder that conflicted keeps, and only when its
 -- bytes would have passed; the receipt's units unchanged; the root, through the sweep and the claim; reading a copy and
--- committing it again; the replay; the lock text and the grants.
+-- committing it again; the replay; a second environment, and the commit row a copy holds; the lock text and the grants.
 
 create function pg_temp.copies(p_commit jsonb) returns setof public.qorpera_folder_conflict_copies language sql as $$
 	select * from public.qorpera_folder_conflict_copies where commit_id = (p_commit ->> 'commitId')::uuid order by unit_no, file_no
@@ -157,10 +157,13 @@ begin
 			(select jsonb_agg(to_jsonb(c)) from public.qorpera_folder_conflict_copies c); end if;
 
 	-- A reference that disagrees with its own proof is malformed (22023), conflicting or not, and the change set keeps
-	-- nothing: the copy of the unit before it goes with it.
+	-- nothing: the copy of the unit before it goes with it. So for a new folder's file.
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', a, 'p17-none-15',
 		pg_temp.write('Plans/q3.md', pg_temp.stage_v2(a, array['before it'])) ||
 		pg_temp.write('Kept/k.md', pg_temp.stage_v2(a, array['wrong type']) || '{"mediaType":"image/png"}', v_stale)), '22023');
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', a, 'p17-none-16', jsonb_build_array(jsonb_build_object(
+		'op','new_folder','path','Kept/Box','contents', jsonb_build_array(jsonb_build_object('kind','file','path','typed.md',
+			'file', pg_temp.stage_v2(a, array['wrong folder type']) || '{"executable":true}'))))), '22023');
 	if (select count(*) from public.qorpera_folder_conflict_copies) <> v_before then
 		raise exception 'A change set that raises keeps nothing'; end if;
 end $$;
@@ -258,7 +261,53 @@ begin
 		raise exception 'A replay answers the receipt and keeps one copy: % %', r, v_again; end if;
 end $$;
 
--- 7. The lock text, the marker and the grants ----------------------------------------------------------------------------
+-- 7. A second environment, and the commit row ------------------------------------------------------------------------------
+do $$
+declare
+	c_env2 constant uuid := '63400000-0000-4000-8000-000000000022';
+	v_first jsonb; v_second jsonb; v_open jsonb; v_text text; r jsonb; v_version uuid;
+begin
+	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
+	values (c_env2, '63400000-0000-4000-8000-000000000010', 'Second', 1, '63400000-0000-4000-8000-000000000001');
+	perform public.qorpera_folder_enable(c_env2);
+	-- The owner stages two files in the second environment (an intent is one environment's), saves one, and then saves
+	-- the other over a version that has moved on.
+	foreach v_text in array array['second env one', 'second env two'] loop
+		v_open := public.qorpera_folder_open_upload(c_env2, pg_temp.member(1), pg_temp.manifest(array[v_text]));
+		perform public.qorpera_folder_confirm_object(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid, pg_temp.hash(v_text),
+			octet_length(convert_to(v_text, 'utf8')));
+		perform public.qorpera_folder_confirm_object(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid,
+			pg_temp.hash(pg_temp.manifest(array[v_text])), octet_length(convert_to(pg_temp.manifest(array[v_text]), 'utf8')));
+		if v_first is null then
+			v_first := public.qorpera_folder_seal_upload(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid) -> 'file';
+		else
+			v_second := public.qorpera_folder_seal_upload(c_env2, pg_temp.member(1), (v_open ->> 'intentId')::uuid) -> 'file';
+		end if;
+	end loop;
+	perform pg_temp.expect(public.qorpera_folder_commit(c_env2, pg_temp.member(1), 'p17-env2-01', pg_temp.write('two.md', v_first)),
+		1, 'saved');
+	v_version := (select version from public.qorpera_folder_entries where environment_id = c_env2 and key_text = 'two.md');
+	perform pg_temp.expect(public.qorpera_folder_commit(c_env2, pg_temp.member(1), 'p17-env2-02', jsonb_build_array(jsonb_build_object(
+		'op','delete','path','two.md','expectedVersion',v_version))), 1, 'saved');
+	r := public.qorpera_folder_commit(c_env2, pg_temp.member(1), 'p17-env2-03', pg_temp.write('two.md', v_second, v_version));
+	perform pg_temp.expect(r, 1, 'conflict', 'version_changed');
+	-- The copy is the second environment's; it roots its bytes for the whole company, and reads only through its own
+	-- environment.
+	delete from public.qorpera_folder_upload_intents where manifest_sha256 = v_second ->> 'manifestSha256';
+	if (select array_agg(environment_id) from public.qorpera_folder_conflict_copies where commit_id = (r ->> 'commitId')::uuid)
+			is distinct from array[c_env2]
+		or not pg_temp.rooted(v_second ->> 'manifestSha256') or not pg_temp.rooted(pg_temp.hash('second env two')) then
+		raise exception 'A copy in the second environment roots its bytes for the company: %', r; end if;
+	perform pg_temp.download(pg_temp.member(1), v_second ->> 'manifestSha256', c_env2);
+	perform pg_temp.raises(format('select pg_temp.download(%L, %L)', pg_temp.member(1), v_second ->> 'manifestSha256'), '42501');
+	-- A copy holds its commit row, as a path version does: the row cannot go while the copy is there.
+	perform pg_temp.raises(format('delete from public.qorpera_folder_commits where id = %L', r ->> 'commitId'), '23503');
+	if not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_folder_conflict_copies'::regclass and contype = 'f'
+			and confrelid = 'public.qorpera_folder_commits'::regclass and confdeltype = 'r') then
+		raise exception 'A copy restricts its commit row'; end if;
+end $$;
+
+-- 8. The lock text, the marker and the grants ----------------------------------------------------------------------------
 do $$
 declare v_fn regprocedure;
 begin

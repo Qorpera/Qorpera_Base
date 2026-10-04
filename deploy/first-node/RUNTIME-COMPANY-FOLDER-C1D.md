@@ -467,7 +467,7 @@ Two places take no lock, and are safe by roots, not by the mark:
   commits, and its put can land after the quarantine rename. That is harmless: the upload's intent was committed by
   `open` before any put, so it is a root, and the finish answers `restore`.
 - **`authorize_object_download`** answers a marked object as missing. A non-platform download is allowed only for an
-  object an entry or path version roots, and those are never collected.
+  object an entry, path version or conflict copy (P17) roots, and those are never collected.
 
 Since the claim marks under `FOR UPDATE`, a locking reference either holds KEY SHARE first (the claim skips the
 object) or is granted it after the mark is committed (and sees it in its next statement). Once GC has finished, the

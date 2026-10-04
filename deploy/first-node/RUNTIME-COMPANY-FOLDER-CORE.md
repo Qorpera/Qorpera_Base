@@ -416,7 +416,10 @@ is never upgraded. The steps:
      proof, no GC mark, the actor's possession); otherwise nothing is kept.
      The commit's units JSON is unchanged. A copy reads as an old version of
      its path (`qorpera_folder_object_readable`), so whoever may read the
-     path can fetch it and commit it again.
+     path can fetch it and commit it again. A commit that saves nothing takes no clock, so it keeps its copies
+     without step 11's authority re-check: a narrowing journaled while it decided does not undo them. The actor held
+     the bytes and had write authority on the path when the unit was decided, and reading a copy needs read on its
+     path now.
 9. **Check.** An explicit check over the structured units confirms that every
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
