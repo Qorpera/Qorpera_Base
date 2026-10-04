@@ -47,6 +47,8 @@ export interface ObjectGatewayServiceOptions {
 	/** A member's change sets to a folder-v2 company (folder core C4, P34a): the writer check with the member's token,
 	 * then staging and the commit as that member with the service key. */
 	memberFolderCommits?: MemberCompanyAuthority;
+	/** The member commit route's follow-up after a saved commit (F2's P15), on its own database client. */
+	memberFolderFollowUps?: MemberCompanyAuthority;
 	memberFiles?: MemberCompanyAuthority;
 	memberPresence?: MemberCompanyAuthority;
 	memberObservations?: MemberCompanyObservations;
@@ -322,6 +324,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					if (!options.memberFolderCommits || !options.replication) throw new HttpError(404, "Not found");
 					await serveMemberFolderCommit(request, response, {
 						authority: options.memberFolderCommits,
+						...(options.memberFolderFollowUps ? { followUps: options.memberFolderFollowUps } : {}),
 						store: options.store,
 						replication: options.replication,
 						readFallback: (profileId, sha256) => options.authority.readLegacyObject(profileId, sha256),

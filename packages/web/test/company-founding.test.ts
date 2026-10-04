@@ -72,6 +72,26 @@ describe("founding table wire shape", () => {
 		expect(() => parseCompanyFounding(wire({ schema: "qorpera.company-founding/v2" }))).toThrow();
 	});
 
+	it("reads the company's setup and its Co-Founder's first run, and older answers without them", () => {
+		const started = (start: Wire) =>
+			parseCompanyFounding(
+				wire({
+					phase: "started",
+					start: { startedAt: "2026-09-28T18:00:00Z", startedByUserId: me, revision: 4, ...start },
+				}),
+			).start;
+		expect(started({ companyReady: false })).toMatchObject({ companySetup: "pending", firstRun: null });
+		expect(started({ companyReady: true })).toMatchObject({ companySetup: "ready", firstRun: null });
+		expect(started({ companyReady: false, companySetup: "failed", firstRun: null })).toMatchObject({
+			companySetup: "failed",
+		});
+		expect(started({ companyReady: true, companySetup: "ready", firstRun: "waiting_for_login" })).toMatchObject({
+			firstRun: "waiting_for_login",
+		});
+		expect(() => started({ companyReady: true, companySetup: "done" })).toThrow();
+		expect(() => started({ companyReady: true, companySetup: "ready", firstRun: "later" })).toThrow();
+	});
+
 	it("sends each call with the table's id and the revision it was made on", async () => {
 		const { cloud } = fixture();
 		const rpc = vi.mocked(cloud.rpc).mockResolvedValue(wire());
@@ -494,6 +514,74 @@ describe("founding table", () => {
 		text = visibleText(container);
 		expect(text).toContain("Open Nordlys Kaffe");
 	});
+
+	it("says when the company could not be set up, or its Co-Founder could not start, instead of waiting forever", async () => {
+		let start: Wire = { companyReady: false, companySetup: "failed", firstRun: null };
+		mount(() =>
+			wire({
+				phase: "started",
+				vision: "",
+				waitingFor: [],
+				me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+				start: { startedAt: "2026-09-28T18:00:00Z", startedByUserId: me, revision: 4, ...start },
+			}),
+		);
+		await settle();
+		let text = visibleText(container);
+		expect(text).toContain("Nordlys Kaffe could not be set up");
+		expect(text).toContain("Setting up Nordlys Kaffe failed. It waits for us to set it up again");
+		expect(text).not.toContain("Preparing Nordlys Kaffe");
+		// The operator requeued it, and it was made; no login of the starter could pay for the first run.
+		start = { companyReady: true, companySetup: "ready", firstRun: "waiting_for_login" };
+		await controller!.refresh();
+		await settle();
+		text = visibleText(container);
+		expect(text).toContain("Open Nordlys Kaffe");
+		expect(text).toContain("The Co-Founder has not started: no ChatGPT account could pay for its first run.");
+		// A first run that is under way says nothing more.
+		start = { companyReady: true, companySetup: "ready", firstRun: "started" };
+		await controller!.refresh();
+		await settle();
+		expect(visibleText(container)).not.toContain("The Co-Founder has not started");
+		start = { companyReady: true, companySetup: "ready", firstRun: "failed" };
+		await controller!.refresh();
+		await settle();
+		expect(visibleText(container)).toContain("The Co-Founder's first run did not start.");
+	});
+
+	it("keeps reading a made company while its first run is queued, so a failure shows, and stops after", async () => {
+		vi.useFakeTimers();
+		let firstRun = "queued";
+		const reads = vi.fn();
+		mount((name) => {
+			if (name === "qorpera_read_company_founding") reads();
+			return wire({
+				phase: "started",
+				vision: "",
+				waitingFor: [],
+				me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+				start: {
+					startedAt: "2026-09-28T18:00:00Z",
+					startedByUserId: me,
+					revision: 4,
+					companyReady: true,
+					companySetup: "ready",
+					firstRun,
+				},
+			});
+		});
+		await vi.advanceTimersByTimeAsync(10);
+		const first = reads.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(reads.mock.calls.length).toBeGreaterThan(first);
+		firstRun = "failed";
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(visibleText(container)).toContain("The Co-Founder's first run did not start.");
+		// Settled: no more reads.
+		const settled = reads.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(reads.mock.calls.length).toBe(settled);
+	});
 });
 
 describe("hub with founding tables", () => {
@@ -533,40 +621,60 @@ describe("hub with founding tables", () => {
 		hub.dispose();
 	});
 
-	it("keeps today's form when the cloud has no founding lobby", async () => {
-		const { api } = fixture();
+	it("creates no company while the lobby is off or missing, and says it is paused", async () => {
+		const { api, cloud } = fixture();
 		const missing = (name: string) => new CloudRpcError(name, { message: "missing", code: "PGRST202" }, 404);
 		vi.mocked(api.companyFoundingAvailable).mockRejectedValue(missing("qorpera_company_founding_available"));
 		vi.mocked(api.listCompanyFoundings).mockRejectedValue(missing("qorpera_list_company_foundings"));
 		const hub = new HubController(api, me);
 		await hub.refresh();
 		expect(hub.store.get()).toMatchObject({ foundingAvailable: false, tables: [], loaded: true });
-		hub.store.set({ composing: true });
-		const container = document.createElement("div");
-		renderHub(hub, container);
-		expect(visibleText(container)).toContain("Create");
-		expect(visibleText(container)).not.toContain("Open a table");
+		await hub.createCompany("Nordlys Kaffe");
+		expect(cloud.rpc).not.toHaveBeenCalled();
+		expect(hub.store.get().error).toBe("Creating a company is paused. Try again later.");
+		// Switched off on purpose (the lobby's rollback): the same.
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(false);
+		await hub.createCompany("Nordlys Kaffe");
+		expect(cloud.rpc).not.toHaveBeenCalled();
+		expect(hub.store.get().error).toBe("Creating a company is paused. Try again later.");
 		hub.dispose();
 	});
 
-	it("never creates a company at once while it does not know whether tables are on", async () => {
+	it('drops a creation the old "create at once" form left, so it never blocks a table', () => {
+		const { api } = fixture();
+		const key = `qorpera-web-creation/v1/${api.cloud.config.projectUrl}/${me}`;
+		sessionStorage.setItem(key, JSON.stringify({ name: "Old", clientCreationId: id(950) }));
+		const hub = new HubController(api, me);
+		expect(hub.store.get().creationRetry).toBeUndefined();
+		expect(sessionStorage.getItem(key)).toBeNull();
+		hub.dispose();
+		sessionStorage.setItem(key, JSON.stringify({ name: "Table", clientCreationId: id(951), table: true }));
+		const kept = new HubController(api, me);
+		expect(kept.store.get().creationRetry).toEqual({ name: "Table", clientCreationId: id(951) });
+		kept.dispose();
+		sessionStorage.removeItem(key);
+	});
+
+	it("asks whether tables are on at every press, never from an older read", async () => {
 		const { api, cloud } = fixture();
 		vi.mocked(api.companyFoundingAvailable).mockRejectedValue(new Error("Failed to fetch"));
 		vi.mocked(api.listCompanyFoundings).mockRejectedValue(new Error("Failed to fetch"));
-		const create = vi.spyOn(api, "createCompany");
 		const hub = new HubController(api, me);
 		await hub.refresh();
 		expect(hub.store.get().foundingAvailable).toBeUndefined();
 		await hub.createCompany("Nordlys Kaffe");
-		expect(create).not.toHaveBeenCalled();
 		expect(cloud.rpc).not.toHaveBeenCalled();
 		expect(hub.store.get().error).toContain("Failed to fetch");
+		// A tab that read "on" earlier still asks again; the cloud has switched the lobby off since.
+		hub.store.set({ foundingAvailable: true });
+		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(false);
+		await hub.createCompany("Nordlys Kaffe");
+		expect(cloud.rpc).not.toHaveBeenCalled();
 		// Once the cloud answers that tables are on, the same button opens a table.
 		vi.mocked(api.companyFoundingAvailable).mockResolvedValue(true);
 		vi.mocked(cloud.rpc).mockResolvedValue(wire());
 		await hub.createCompany("Nordlys Kaffe");
 		expect(cloud.rpc).toHaveBeenCalledWith("qorpera_open_company_founding", expect.anything());
-		expect(create).not.toHaveBeenCalled();
 		hub.dispose();
 	});
 });
