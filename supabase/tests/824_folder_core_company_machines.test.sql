@@ -561,6 +561,13 @@ insert into c1c3f_patches(fn, digest, patched, original) values
 			|| E' elsif p_provider_kind = ''native'' and public.qorpera_company_is_folder_v2(v_profile) then\n'
 			|| E'  perform public.qorpera_folder_machine_fence(v_profile);\n',
 			''),
+		-- P13 (20260930035000) widened the folder branch to the login kind on top of C1c-3j: undone next.
+		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
+			E' -- office kind. 20260930035000: a sign-in''s or refresh''s login machine too (the gateway''s own call, after the\n'
+			|| E' -- company reservation).\n'
+			|| E' if p_provider_kind in (''machine'', ''coding'', ''office'', ''login'') and public.qorpera_company_is_folder_v2(v_profile) then\n',
+			E' -- office kind.\n'
+			|| E' if p_provider_kind in (''machine'', ''coding'', ''office'') and public.qorpera_company_is_folder_v2(v_profile) then\n'),
 		-- C1c-3j (20260930012000) widened the folder branch to offices on top of C1c-3h: undone next, then C1c-3h's
 		-- patch, then C1c-3f's own.
 		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',

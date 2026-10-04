@@ -77,10 +77,6 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_claim_artifact_gc_plans', 'open', 'Artifact GC plans; takes the fence per plan, and only the next step, the object claim, retains a folder-v2 plan''s objects (F3, 20260930041000).'),
 	('qorpera_renew_artifact_gc_lease', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
 	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).'),
-	('qorpera_reserve_runtime_login_machine', 'open', 'Model login machine (S1, 20260930035000).'),
-	('qorpera_release_runtime_login_machine', 'open', 'Model login machine (S1, 20260930035000).'),
-	('qorpera_reserve_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1, 20260930035000).'),
-	('qorpera_release_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1, 20260930035000).'),
 	('qorpera_activate_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_cancel_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_consent_identity_recovery', 'open', 'Identity recovery (S1).'),
@@ -92,11 +88,8 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_recovery_locked', 'open', 'Identity recovery (S1).'),
 	('qorpera_recovery_member_role', 'open', 'Identity recovery (S1).'),
 	('qorpera_confirm_runtime_identity_retirement', 'open', 'Identity retirement (S1).');
--- A run's own machines: the core test covers only some branches (20260928469240). C1c-3n (20260930046000) moved a run's
--- reservation and the native kind onto the core.
-insert into p13_allowed(name, kind, reason, pin) values
-	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding, office and native test the core; login (S1, 20260930035000) takes the gc fence on folder-v2.',
-		'p_provider_kind in (''machine'', ''coding'', ''office'') and public.qorpera_company_is_folder_v2(v_profile) then');
+-- A run's own machines and the node machine's kinds all test the core since C1c-3n (20260930046000) and P13's sign-in
+-- machines (20260930035000): no partial entry is left.
 
 do $$
 declare v_list text;

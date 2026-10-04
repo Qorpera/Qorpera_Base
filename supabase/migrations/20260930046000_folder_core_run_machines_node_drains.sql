@@ -1,4 +1,4 @@
--- Company folder core, C1c-3n (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.14; found by P13's activation check,
+-- Company folder core, C1c-3n (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.15; found by P13's activation check,
 -- test 838): a run's machine and the node updates on the folder core's order, folder-v2 only.
 --
 -- These still took the gc fence (the company row FOR UPDATE) on folder-v2, which every folder effect holds KEY SHARE:
