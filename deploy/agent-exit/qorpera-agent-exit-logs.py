@@ -574,14 +574,18 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     # A client history part goes only once the checkpoint holds it (read, and its day counted): until then it is what
     # ties addresses to companies from that day on (a count that keeps failing, or a recount cut short, keeps it).
     through, _, read = load_attribution(log_dir)
-    # Days with client history the checkpoint does not hold yet keep their counts too: a recount starts from them.
-    pending = {file_day(name) for name in files if PART.match(name) and name.startswith("clients-")
-               and (name not in read or through is None or file_day(name) > through)}
+    # From the first day with client history the checkpoint does not hold yet (a late part, say, even when writing the
+    # checkpoint failed), every day's client history and counts stay: a recount starts from that day's counts and
+    # replays every part after it.
+    pending = [file_day(name) for name in files if PART.match(name) and name.startswith("clients-")
+               and (name not in read or through is None or file_day(name) > through)]
+    hold_from = min(pending, default=None)
     for name in sorted(files):
         day = file_day(name)
-        if name.startswith("clients-") and (name not in read or through is None or day is None or day > through):
+        held = hold_from is not None and day is not None and day >= hold_from
+        if name.startswith("clients-") and (name not in read or through is None or day is None or day > through or held):
             continue
-        if COUNTS.match(name) and day in pending:
+        if COUNTS.match(name) and held:
             continue
         if day is not None and day < oldest_kept and (PART.match(name) or DNS_PART.match(name) or COUNTS.match(name)):
             os.unlink(os.path.join(log_dir, name))
