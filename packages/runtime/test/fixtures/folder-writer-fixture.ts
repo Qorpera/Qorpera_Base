@@ -179,11 +179,52 @@ export async function folderWriterFixture(
 				workerRequests.push(structuredClone(args.p_request as Record<string, unknown>));
 				method = "qorpera_folder_commit";
 			}
+			// The worker index as SQL pages it (20260930075000): filtered, 16 newest first, each with its cursor.
 			if (method === "qorpera_folder_agent_workers") {
-				const todoKey = (args.p_request as { todoKey: string }).todoKey;
-				const listed = options.workers?.[todoKey];
+				const request = args.p_request as {
+					todoKey: string;
+					workerKey?: string;
+					state?: string;
+					search?: string;
+					cursor?: string;
+				};
+				const listed = options.workers?.[request.todoKey];
 				if (!listed) throw new CloudCompanyFolderRpcError("P0002", "Todo is unavailable");
-				return { schema: "qorpera.folder-agent-workers/v1", todoKey, workers: structuredClone(listed) };
+				const all = listed.map(
+					(worker) =>
+						({ ...structuredClone(worker), cursor: uuidFrom(`worker:${worker.folder}`) }) as Record<
+							string,
+							unknown
+						> & {
+							cursor: string;
+						},
+				);
+				const at = request.cursor ? all.findIndex((worker) => worker.cursor === request.cursor) : -1;
+				if (request.cursor && at < 0)
+					throw new CloudCompanyFolderRpcError("P0002", "Worker cursor is unavailable; list again without it");
+				const search = request.search?.trim().toLowerCase();
+				const rows = all
+					.filter((_worker, index) => index > at)
+					.filter(
+						(worker) =>
+							(request.workerKey === undefined || worker.workerKey === request.workerKey) &&
+							(request.state === undefined ||
+								(request.state === "active"
+									? worker.state === "queued" || worker.state === "running"
+									: worker.state === request.state)) &&
+							(!search ||
+								String(worker.title).toLowerCase().includes(search) ||
+								String(worker.workerKey).includes(search)),
+					);
+				const page = rows.slice(0, 16);
+				const more = rows.length - page.length;
+				return {
+					schema: "qorpera.folder-agent-workers/v1",
+					todoKey: request.todoKey,
+					workers: page,
+					moreWorkers: more,
+					nextCursor: more > 0 ? (page.at(-1)?.cursor ?? null) : null,
+				};
 			}
 			if (method === "qorpera_folder_cancel_agent_worker") {
 				const request = args.p_request as { folder: string; operationKey: string };

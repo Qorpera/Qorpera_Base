@@ -302,7 +302,13 @@ export type CloudCompanyFolderWorkerRequest =
 			readonly context: string | null;
 			readonly sources: readonly string[];
 	  }
-	| { readonly action: "followup"; readonly folder: string; readonly text: string }
+	/** `resultsVersion`: the results the follow-up removes, as read (null: none); other results now make it a conflict. */
+	| {
+			readonly action: "followup";
+			readonly folder: string;
+			readonly text: string;
+			readonly resultsVersion: string | null;
+	  }
 	| {
 			readonly action: "decide";
 			readonly folder: string;
@@ -327,6 +333,14 @@ export interface CloudCompanyFolderWorker {
 	readonly reportedAt: string | null;
 	readonly decision: { readonly decision: string; readonly note: string | null; readonly at: string | null } | null;
 	readonly folder: string;
+}
+
+/** A page of one todo's workers (`agentWorkers`): at most 16, newest first, each with its cursor. */
+export interface CloudCompanyFolderWorkerPage {
+	readonly workers: readonly (CloudCompanyFolderWorker & { readonly cursor: string })[];
+	/** How many more match after this page; `nextCursor` (the last worker's cursor) continues it. */
+	readonly moreWorkers: number;
+	readonly nextCursor: string | null;
 }
 
 /** A read released to the model: its path, the version read, and the receipt it was read under. */
@@ -420,21 +434,33 @@ const nullableString = (value: unknown): value is string | null => value === nul
 
 /** One worker of the worker index (`qorpera_worker_view` with its folder), checked key by key. */
 function folderWorker(value: unknown): CloudCompanyFolderWorker {
-	const worker = record(value, [
-		"workerKey",
-		"title",
-		"state",
-		"sequence",
-		"access",
-		"revival",
-		"outcome",
-		"summary",
-		"needs",
-		"outputs",
-		"reportedAt",
-		"decision",
-		"folder",
-	]);
+	const worker = record(
+		value,
+		[
+			"workerKey",
+			"title",
+			"state",
+			"sequence",
+			"access",
+			"revival",
+			"outcome",
+			"summary",
+			"needs",
+			"outputs",
+			"reportedAt",
+			"decision",
+			"folder",
+		],
+		["cursor"],
+	);
+	// The index keeps each output as `{path}` (a report's files).
+	const outputs = Array.isArray(worker.outputs)
+		? worker.outputs.map((output) =>
+				output && typeof output === "object" && !Array.isArray(output) && typeof output.path === "string"
+					? (output.path as string)
+					: null,
+			)
+		: null;
 	const decision = worker.decision === null ? null : record(worker.decision, ["decision", "note", "at"]);
 	if (
 		typeof worker.workerKey !== "string" ||
@@ -445,8 +471,8 @@ function folderWorker(value: unknown): CloudCompanyFolderWorker {
 		!nullableString(worker.outcome) ||
 		!nullableString(worker.summary) ||
 		!nullableString(worker.needs) ||
-		!Array.isArray(worker.outputs) ||
-		worker.outputs.some((path) => typeof path !== "string") ||
+		outputs === null ||
+		outputs.some((path) => path === null) ||
 		!nullableString(worker.reportedAt) ||
 		typeof worker.folder !== "string" ||
 		(decision !== null &&
@@ -463,7 +489,7 @@ function folderWorker(value: unknown): CloudCompanyFolderWorker {
 		outcome: worker.outcome as string | null,
 		summary: worker.summary as string | null,
 		needs: worker.needs as string | null,
-		outputs: worker.outputs as string[],
+		outputs: outputs as string[],
 		reportedAt: worker.reportedAt as string | null,
 		decision:
 			decision === null
@@ -899,21 +925,42 @@ export class CloudCompanyFolderClient {
 		return { todos, moreTodos, nextCursor };
 	}
 
-	/** The workers of one of the run agent's todos, from the worker index, newest first (F2-5b,
-	 * `qorpera_folder_agent_workers`). A todo the run does not have, or may not read, is SQL's P0002. */
-	async agentWorkers(todoKey: string, signal: AbortSignal): Promise<readonly CloudCompanyFolderWorker[]> {
-		const input = record(await this.#once("qorpera_folder_agent_workers", { p_request: { todoKey } }, signal), [
+	/** A page of one of the run agent's todos' workers from the worker index (F2-5b, `qorpera_folder_agent_workers`,
+	 * 20260930075000): 16 at most, newest first, filtered by key, state and search, after `cursor`. A todo the run does
+	 * not have, or may not read, and a cursor that is not one of its workers, are SQL's P0002. */
+	async agentWorkers(
+		request: {
+			readonly todoKey: string;
+			readonly workerKey?: string;
+			readonly state?: string;
+			readonly search?: string;
+			readonly cursor?: string;
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderWorkerPage> {
+		const input = record(await this.#once("qorpera_folder_agent_workers", { p_request: request }, signal), [
 			"schema",
 			"todoKey",
 			"workers",
+			"moreWorkers",
+			"nextCursor",
 		]);
 		if (
 			input.schema !== "qorpera.folder-agent-workers/v1" ||
-			input.todoKey !== todoKey ||
-			!Array.isArray(input.workers)
+			input.todoKey !== request.todoKey ||
+			!Array.isArray(input.workers) ||
+			input.workers.length > 16
 		)
 			invalid();
-		return input.workers.map(folderWorker);
+		const workers = input.workers.map((value) => {
+			const worker = folderWorker(value);
+			return { ...worker, cursor: uuid((value as { cursor?: unknown }).cursor) };
+		});
+		const moreWorkers = counter(input.moreWorkers);
+		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		if (moreWorkers > 0 !== (nextCursor !== null) || (nextCursor !== null && nextCursor !== workers.at(-1)?.cursor))
+			invalid();
+		return { workers, moreWorkers, nextCursor };
 	}
 
 	/** Cancels one of the run agent's workers (F2-5b, `qorpera_folder_cancel_agent_worker`), a run effect under its own

@@ -11,7 +11,7 @@ import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-auth
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { cloudWorkerTools } from "@qorpera/runtime/cloud-worker-tools";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
@@ -66,7 +66,8 @@ const view = (state = "succeeded", workerKey = "prices", folder = FOLDER) => ({
 	outcome: state === "succeeded" ? "succeeded" : null,
 	summary: state === "succeeded" ? "Alfa 49, Beta…" : null,
 	needs: null,
-	outputs: [],
+	// The index keeps each output as {path} (a report's files).
+	outputs: state === "succeeded" ? [{ path: `${folder}/prices.md` }] : [],
 	reportedAt: state === "succeeded" ? "2026-10-04T10:30:00Z" : null,
 	decision: null,
 	folder,
@@ -182,6 +183,33 @@ it("dispatches into a todo folder that exists without making it again", async ()
 	expect(f.commits[0]?.units.map((unit) => unit.op)).toEqual(["new_folder"]);
 });
 
+it("reports a dispatch by its worker folder: a todo folder another dispatch made meanwhile is no failure", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	// Read missing; made by another dispatch before this one commits: its mkdir is a conflict, its worker folder saves.
+	const stage = f.folder.stage.bind(f.folder);
+	vi.spyOn(f.folder, "stage").mockImplementation(async (units, signal) => {
+		f.folders.add("agents/nora/todos/market-scan");
+		return stage(units, signal);
+	});
+	const result = parse(await f.workers().change(DISPATCH, f.context));
+	expect(f.commits[0]?.units.map((unit) => unit.op)).toEqual(["mkdir", "new_folder"]);
+	expect(result).toMatchObject({ outcome: "saved", worker: { path: FOLDER } });
+	expect(result.next).toContain("end your turn");
+	expect(f.text(`${FOLDER}/brief.md`)).not.toBeNull();
+});
+
+it("follows up a worker that has no results without naming any", async () => {
+	const f = await fixture({ files: { [TODO]: todoText(), [`${FOLDER}/brief.md`]: briefText() } });
+	await f
+		.workers()
+		.change(
+			{ action: "followup", operationKey: "follow-3", todoKey: "market-scan", workerKey: "prices", text: "Go on." },
+			f.context,
+		);
+	expect(f.workerRequests).toEqual([{ action: "followup", folder: FOLDER, text: "Go on.", resultsVersion: null }]);
+	expect(f.commits[0]?.units.map((unit) => unit.op)).toEqual(["write"]);
+});
+
 it.each<[string, Partial<CloudFolderWorkerChange>, Record<string, string>, string]>([
 	["no todo", {}, {}, "You have no todo with that todoKey"],
 	["a closed todo", {}, { [TODO]: todoText("done") }, "That todo is closed"],
@@ -232,6 +260,7 @@ it("follows a worker up: its brief with one more follow-up, and its earlier resu
 	const f = await fixture({
 		files: { [TODO]: todoText(), [`${FOLDER}/brief.md`]: briefText(), [`${FOLDER}/results.md`]: resultsText() },
 	});
+	const read = f.files.get(`${FOLDER}/results.md`)?.version;
 	const result = parse(
 		await f.workers().change(
 			{
@@ -250,7 +279,8 @@ it("follows a worker up: its brief with one more follow-up, and its earlier resu
 		["write", `${FOLDER}/brief.md`],
 		["delete", `${FOLDER}/results.md`],
 	]);
-	expect(f.workerRequests).toEqual([{ action: "followup", folder: FOLDER, text: "Add Delta." }]);
+	// It names the results it removes, as read: a decision that landed since makes it a conflict in SQL.
+	expect(f.workerRequests).toEqual([{ action: "followup", folder: FOLDER, text: "Add Delta.", resultsVersion: read }]);
 	expect(f.reviews.get(commit?.reviewId as string)).toBe(JSON.stringify(commit?.units));
 	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
 	expect(parsed?.ok && parsed.file).toMatchObject({
@@ -377,6 +407,9 @@ it("lists one todo's workers, filtered, and reads one worker's whole result from
 		["prices", FOLDER],
 		["stock", "agents/nora/todos/market-scan/stock"],
 	]);
+	// Outputs as paths; no cursor shown with a worker.
+	expect(all.workers[0]).toMatchObject({ outputs: [`${FOLDER}/prices.md`] });
+	expect(all.workers[0].cursor).toBeUndefined();
 	expect(
 		parse(await f.workers().status({ todoKey: "market-scan", state: "active" }, f.context, fits)).workers,
 	).toHaveLength(1);
@@ -387,6 +420,10 @@ it("lists one todo's workers, filtered, and reads one worker's whole result from
 	const one = parse(await f.workers().status({ todoKey: "market-scan" }, f.context, () => false));
 	expect(one).toMatchObject({ moreWorkers: 1 });
 	expect(one.workers).toHaveLength(1);
+	// The next page continues after the last worker shown.
+	const next = parse(await f.workers().status({ todoKey: "market-scan", cursor: one.nextCursor }, f.context, fits));
+	expect(next).toMatchObject({ moreWorkers: 0, nextCursor: null });
+	expect(next.workers.map((worker: { workerKey: string }) => worker.workerKey)).toEqual(["stock"]);
 	// One worker whole: its results read from the file, and that read released with the result.
 	const whole = parse(await f.workers().status({ todoKey: "market-scan", workerKey: "prices" }, f.context, fits));
 	expect(whole.workers[0]).toMatchObject({ summary: "Alfa 49, Beta 59, Gamma 45.", results: `${FOLDER}/results.md` });
@@ -394,8 +431,8 @@ it("lists one todo's workers, filtered, and reads one worker's whole result from
 	expect((f.releases[0]?.p_reads as { path: string }[])[0]?.path).toBe(`${FOLDER}/results.md`);
 	await refuses(f.workers().status({}, f.context, fits), "name its todoKey", CloudToolArgumentRefusal);
 	await refuses(
-		f.workers().status({ todoKey: "market-scan", cursor: "x" }, f.context, fits),
-		"no pages",
+		f.workers().status({ todoKey: "market-scan", cursor: "0b1c2d3e-4444-4444-8444-444444444444" }, f.context, fits),
+		"cursor must be a nextCursor",
 		CloudToolArgumentRefusal,
 	);
 	await refuses(f.workers().status({ todoKey: "other" }, f.context, fits), "You have no todo with that todoKey");
@@ -452,7 +489,7 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	expect(manage?.description).toContain("holds brief.md");
 	expect(manage?.description).toContain("Coding sessions are not available in this company yet.");
 	expect(manage?.description).not.toContain("species coding");
-	expect(manage?.description).not.toContain("nextCursor");
+	expect(manage?.description).not.toContain("without todoKey, those of open todos");
 	// As the model sends them: JSON, without the empty context.
 	const { context: _context, ...sent } = DISPATCH;
 	const request = manage?.parseArguments(JSON.parse(JSON.stringify(sent)));

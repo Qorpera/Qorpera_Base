@@ -210,8 +210,8 @@ function folderWorkerDescription(description: string): string {
 			"workerKey is the short name you give this worker, such as competitor-prices, and the name of its folder in the todo's folder (lowercase letters, digits and single hyphens), which holds brief.md (what it was asked) and results.md (what it reported, and your decision);",
 		)
 		.replace(
-			/status lists your workers, newest first, .*? if a cursor is refused, start again without it\. Name one todoKey and workerKey to read a full result\./,
-			"status lists the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary; narrow it with state (active, blocked, succeeded, failed or cancelled; active covers queued and running) or search (text in a title or workerKey, any case). Name one todoKey and workerKey to read a full result.",
+			"status lists your workers, newest first, as many as fit one result, each with the start of its summary: without todoKey, those of open todos and any that changed in the last week. Filter it with todoKey, state",
+			"status lists the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary. Filter it with state",
 		)
 		.replace(
 			"Actions: dispatch, status, followup, cancel, decide, archive.",

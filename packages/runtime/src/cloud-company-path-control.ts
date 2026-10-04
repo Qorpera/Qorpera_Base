@@ -186,8 +186,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 										(method === "qorpera_folder_commit" || method === "qorpera_folder_worker_commit")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
-										// page of 32 with theirs cut.
-										response.ok && method === "qorpera_folder_agent_routines"
+										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
+										response.ok &&
+											(method === "qorpera_folder_agent_routines" ||
+												method === "qorpera_folder_agent_workers")
 										? 1024 * 1024
 										: response.ok
 											? 256 * 1024

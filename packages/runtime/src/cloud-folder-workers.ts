@@ -17,6 +17,7 @@ import {
 	type CloudCompanyFolderCommitResult,
 	type CloudCompanyFolderUnit,
 	type CloudCompanyFolderWorker,
+	type CloudCompanyFolderWorkerPage,
 	type CloudCompanyFolderWorkerRequest,
 	sha256,
 } from "./cloud-company-folder-client.ts";
@@ -258,7 +259,7 @@ export class CloudFolderWorkers {
 				request,
 				context,
 				units,
-				{ action: "followup", folder: where.folder, text },
+				{ action: "followup", folder: where.folder, text, resultsVersion: results?.version ?? null },
 				{ action: "followup", todoKey: request.todoKey, workerKey: request.workerKey, text },
 				briefPath,
 				actionReviewId,
@@ -352,7 +353,7 @@ export class CloudFolderWorkers {
 					{ receiptId },
 					performSignal,
 				);
-				const saved = this.#unit(committed);
+				const saved = this.#unit(committed, "first");
 				const output = cloudToolJsonText({
 					schema: "qorpera.worker-report-receipt/v1",
 					runId: this.#identity.runId,
@@ -384,32 +385,36 @@ export class CloudFolderWorkers {
 			throw new CloudToolArgumentRefusal(
 				"In this company status lists the workers of one todo: name its todoKey (manage_todo list shows your todos)",
 			);
-		if (request.cursor !== undefined)
-			throw new CloudToolArgumentRefusal(
-				"In this company status has no pages: narrow it with workerKey, state or search instead of a cursor",
-			);
 		const signal = context.signal;
 		const where = this.#where(request.todoKey, request.workerKey);
-		let workers: readonly CloudCompanyFolderWorker[];
+		let page: CloudCompanyFolderWorkerPage;
 		try {
-			workers = await this.#folder.agentWorkers(request.todoKey, signal);
+			// The index filters and pages (16 at most, newest first): only what one result can show crosses the wire.
+			page = await this.#folder.agentWorkers(
+				{
+					todoKey: request.todoKey,
+					...(request.workerKey === undefined ? {} : { workerKey: request.workerKey }),
+					...(request.state === undefined ? {} : { state: request.state }),
+					...(request.search === undefined ? {} : { search: request.search }),
+					...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+				},
+				signal,
+			);
 		} catch (error) {
-			if (error instanceof CloudCompanyFolderRpcError && error.code === "P0002") throw new CloudToolRefusal(NO_TODO);
+			if (error instanceof CloudCompanyFolderRpcError && error.code === "P0002")
+				throw request.cursor === undefined
+					? new CloudToolRefusal(NO_TODO)
+					: new CloudToolArgumentRefusal(
+							"cursor must be a nextCursor from an earlier page of this todo, unchanged; if it is refused, start again without it",
+						);
 			throw error;
 		}
-		const search = request.search?.toLowerCase();
-		const shown = workers.filter(
-			(worker) =>
-				(request.workerKey === undefined || worker.workerKey === request.workerKey) &&
-				(request.state === undefined ||
-					worker.state === request.state ||
-					(request.state === "active" && (worker.state === "queued" || worker.state === "running"))) &&
-				(search === undefined ||
-					worker.title.toLowerCase().includes(search) ||
-					worker.workerKey.toLowerCase().includes(search)),
-		);
+		const shown = page.workers;
 		const frame = { schema: "qorpera.agent-workers/v1", runId: this.#identity.runId, todoKey: request.todoKey };
-		const view = ({ folder, ...worker }: CloudCompanyFolderWorker) => ({ ...worker, path: folder });
+		const view = ({ folder, cursor: _cursor, ...worker }: CloudCompanyFolderWorker & { cursor?: string }) => ({
+			...worker,
+			path: folder,
+		});
 		if (request.workerKey !== undefined) {
 			const one = shown[0];
 			const resultsPath = `${where.folder}/results.md`;
@@ -454,17 +459,16 @@ export class CloudFolderWorkers {
 			}
 			return { kind: "text", value: output };
 		}
-		const render = (count: number) =>
-			cloudToolJsonText({
+		const render = (count: number) => {
+			const left = page.moreWorkers + shown.length - count;
+			return cloudToolJsonText({
 				...frame,
 				workers: shown.slice(0, count).map(view),
-				moreWorkers: shown.length - count,
-				nextCursor: null,
-				...(shown.length > count
-					? { next: "More workers than fit: narrow status with workerKey, state or search" }
-					: {}),
+				moreWorkers: left,
+				nextCursor: left === 0 ? null : (shown[count - 1]?.cursor ?? null),
 			});
-		// Grown from one worker, so a wide list is never rendered whole.
+		};
+		// Grown from one worker, so a wide page is never rendered whole.
 		let count = Math.min(shown.length, 1);
 		while (count < shown.length && fits(render(count + 1))) count++;
 		return { kind: "text", value: render(count) };
@@ -479,9 +483,10 @@ export class CloudFolderWorkers {
 		return context.actionReviewId;
 	}
 
-	/** The unit that says how the change set went: the first that was not saved, or the last. */
-	#unit(committed: CloudCompanyFolderCommitResult) {
-		const unit = committed.units.find((item) => item.outcome !== "saved") ?? committed.units.at(-1);
+	/** The unit that says how the change set went: a dispatch's worker folder (its last unit; a todo folder another
+	 * dispatch made first is no failure), a follow-up's brief (its first), and the one file of a decision or a report. */
+	#unit(committed: CloudCompanyFolderCommitResult, decisive: "first" | "last") {
+		const unit = decisive === "first" ? committed.units[0] : committed.units.at(-1);
 		if (!unit) throw new Error("Company folder commit answered no unit");
 		return unit;
 	}
@@ -524,7 +529,7 @@ export class CloudFolderWorkers {
 					{ ...(reviewId === undefined ? {} : { reviewId }), receiptId },
 					performSignal,
 				);
-				const saved = this.#unit(committed);
+				const saved = this.#unit(committed, request.action === "dispatch" ? "last" : "first");
 				const output = cloudToolJsonText({
 					schema: "qorpera.agent-worker-receipt/v1",
 					runId: this.#identity.runId,
