@@ -212,7 +212,7 @@ exit and plugs real LXD containers in the creators' way. Afterwards the test mac
 tables, a few sysctls and the network modules a proof could load are compared with before; a difference fails the
 run. (LXD loads `vhost_vsock` for any VM; it is not one of the watched modules.)
 
-Result, 4 October, run 20261003T233548-76214-45756fb5 on node 1's test machine (LXD 6.9 rev 40424 as on the nodes;
+Result, 4 October, run 20261004T010449-27534-09ca610c on node 1's test machine (LXD 6.9 rev 40424 as on the nodes;
 the VM's kernel 7.0.0-34, the nodes' 7.0.0-30), all passed:
 
 | Check | Result |
@@ -229,20 +229,20 @@ Floods from one machine, 20,000 each (each phase capped at 60 s), with `notrack`
 
 | Flood | Time | Exit's table | Node's table | Over the machine's bound |
 | --- | --- | --- | --- | --- |
-| TCP open and close to a site | 15 s | +19,724 | +19,713 (+39,200 without `notrack`) | 0 |
-| SYNs nobody answers | 15 s | +11,275 | +11,275 | 0 |
+| TCP open and close to a site | 13 s | +19,793 | +19,782 (+39,711 without `notrack`) | 0 |
+| SYNs nobody answers | 13 s | +11,313 | +11,306 | 0 |
 | SYNs the exit refuses | 0.6 s | 0 | 0 | 0 |
-| UDP to 20,000 ports | 18 s | +16,393 | +16,384 (+36,396 without) | 3,616 refused |
-| another protocol (253) | 0.3 s | +250 | +250 | 0 |
+| UDP to 20,000 ports | 19 s | +16,392 | +16,388 (+36,386 without) | 3,616 refused |
+| another protocol (253) | 0.3 s | +251 | +250 | 0 |
 | spoofed sources | 0.1 s | 0 | −250 (earlier entries expiring meanwhile; none added) | 0 |
-| IPv6 | 0.3 s | 0 | 0 | 0 |
+| IPv6 | 0.3 s | +2 (the exit's own lookups meanwhile; no IPv6 reaches it) | 0 | 0 |
 
 What the numbers say:
 - Refused, spoofed and IPv6 floods leave nothing in either table; the per-machine bound holds (UDP stopped at 16,384).
 - `notrack` halves what a machine leaves in the node's table.
-- The shared total's cost could not be told apart from load: 5,000 new connections took 9.7 s and then 11.9 s in one
-  run, 10.1 s and then 7.7 s in this one, the second each time while another machine flooded and the exit held over
-  14,000 entries. At this scale it is below the noise.
+- The shared total's cost could not be told apart from load: 5,000 new connections took 9.7 s and then 11.9 s, 10.1 s
+  and then 7.7 s, and 8.8 s and then 13.9 s in three runs, the second each time while another machine flooded and the
+  exit held over 14,000 entries. At this scale it is below the noise.
 - Closed connections are not bounded: one machine opening and closing about 1,300 connections a second leaves about
   20,000 entries in each table, each held for the kernel's default 120 s (TIME_WAIT). Kept up towards many
   destinations, one machine could hold over 150,000 of the node's 262,144. The same entries hold the exit's
