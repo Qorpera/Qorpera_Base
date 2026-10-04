@@ -269,6 +269,7 @@ function fetchProvisioner(
 	requests: Array<{ url: string; body: Record<string, unknown> }>,
 	expectedWork: CloudRunnerWork = work(),
 	loginInVault: boolean | "missing" = false,
+	binds: Array<Record<string, unknown>> = [],
 ): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		expect(init?.redirect).toBe("error");
@@ -281,6 +282,15 @@ function fetchProvisioner(
 		}
 		if (url.includes("qorpera_reserve_runtime_node_machine"))
 			return Response.json(nodeAdmissionFixture(JSON.parse(String(init?.body))));
+		if (url.includes("qorpera_bind_native_identity_credential")) {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			binds.push(body);
+			return Response.json({
+				allocationId: body.p_allocation_id,
+				computeIdentityId: expectedWork.computeIdentityId,
+				holderKind: body.p_holder_kind,
+			});
+		}
 		if (url.includes("qorpera_reserve_runtime_machine") || url.includes("qorpera_release_runtime_machine")) {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			return Response.json({
@@ -1397,8 +1407,9 @@ describe("LXD cloud runner provider", () => {
 		const lxd = new FakeLxd();
 		const guest = new FakeGuest();
 		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
-		const fetchImplementation = fetchProvisioner(requests);
+		const binds: Array<Record<string, unknown>> = [];
 		const request = work();
+		const fetchImplementation = fetchProvisioner(requests, request, false, binds);
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
 
 		const runner = await backend.acquire(runId, request, new AbortController().signal);
@@ -1447,7 +1458,27 @@ describe("LXD cloud runner provider", () => {
 		const activation = await readFile(join(stateRoot, runId, "credentials", "qorpera-runner-activation"), "utf-8");
 		const assignment = await readFile(join(stateRoot, runId, "credentials", "qorpera-runner-assignment"), "utf-8");
 		const nativeBridge = await readFile(join(stateRoot, runId, "credentials", "qorpera-native-bridge"), "utf-8");
+		const nativeIdentity = (
+			await readFile(join(stateRoot, runId, "credentials", "qorpera-native-identity"), "utf-8")
+		).trim();
+		// G2-3: the guest's identity credential, bound by its hash to the machine allocation as a job guest, the same
+		// bind again with each re-reservation.
+		expect(binds.length).toBeGreaterThan(0);
+		for (const bind of binds)
+			expect(bind).toEqual({
+				p_allocation_id: runId,
+				p_provider_adapter: "lxd",
+				p_instance_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+				p_holder_kind: "job_guest",
+				p_credential_sha256: createHash("sha256").update(nativeIdentity).digest("hex"),
+			});
+		expect(new Set(binds.map((bind) => bind.p_instance_sha256)).size).toBe(1);
+		expect(JSON.parse(journalText)).toMatchObject({
+			credentials: { nativeIdentitySha256: createHash("sha256").update(nativeIdentity).digest("hex") },
+		});
+		expect(journalText).not.toContain(nativeIdentity);
 		const createRequestText = JSON.stringify(lxd.createCalls[0]);
+		expect(createRequestText).not.toContain(nativeIdentity);
 		expect(createRequestText).not.toContain(config(stateRoot).supabaseServiceKey);
 		expect(createRequestText).not.toContain(activation.trim());
 		expect(createRequestText).not.toContain(assignment.trim());
@@ -1468,7 +1499,7 @@ describe("LXD cloud runner provider", () => {
 				bootstrapSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
 			},
 		});
-		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.filePushes).toHaveLength(8);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
 		expect(lxd.filePushes.map((file) => file.path)).toEqual([
 			"/var/lib/qorpera-bootstrap/bootstrap.json",
@@ -1477,8 +1508,17 @@ describe("LXD cloud runner provider", () => {
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-runner-activation",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-runner-assignment",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
+		expect(
+			JSON.parse(lxd.filePushes.find((file) => file.path.endsWith("qorpera-native-identity"))?.content ?? "{}"),
+		).toEqual({
+			schema: "qorpera.native-identity-credential/v1",
+			compute_identity_id: request.computeIdentityId,
+			credential: nativeIdentity,
+			publishable_key: "publishable-key",
+		});
 		expect(lxd.execCalls).toEqual([
 			["/usr/bin/test", "-d", "/var/lib/qorpera-bootstrap/credentials"],
 			["/usr/bin/systemctl", "enable", "--now", "qorpera-lxd-runner-bootstrap.service"],
@@ -1489,7 +1529,7 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(requests).toHaveLength(1);
 		expect(lxd.createVolumeCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.filePushes).toHaveLength(8);
 		expect(lxd.execCalls).toHaveLength(2);
 
 		await restarted.deliver(runner, delivery(request));

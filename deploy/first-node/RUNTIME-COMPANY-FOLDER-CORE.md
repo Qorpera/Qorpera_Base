@@ -324,7 +324,8 @@ is never upgraded. The steps:
    3. execution authorities;
    4. rooms, then room members;
    5. the other index rows (sections, routines with their schedule cursors,
-      todos, connections, rules), by table then id;
+      todos, workers, human tasks, contacts, tables (P16), connections,
+      rules), by table then id;
    6. resources, in ancestors-first order of their paths;
    7. grants;
    8. vault rows;
@@ -625,7 +626,9 @@ gives a fixed format:
 - `agents/groups/<name>/group.md`;
 - `connections/*.md`;
 - `rules/*.md`;
-- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, with no index until H2).
+- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, indexed since H2);
+- `interfaces/order.md`, `interfaces/*/interface.toml`, `tables/*/table.toml` and `tables/*/rows.csv` (P16;
+  RUNTIME-INTERFACES.md §6.1, with a table index and no interface index before I7).
 
 STATE-FILES §1 also lists `vision/vision.md` and the worker files. The same table is exported to
 TypeScript. An ordinary file pays for one
@@ -959,6 +962,16 @@ today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
 
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
 under the 4-second result fence (`cloud-native-result-fence.ts`).
+
+**As built (C1e, P24):** `scripts/load-folder-core.mjs` and `.sql`, a new
+script rather than an extension of the snapshot-era one. It covers everything
+above on 648's fixture, except three things. The post-commit worker is not
+built yet (C2's queue). A message's wake stays queued until C4's
+materializer, so on `folder-v2` admission is only the admission row's count.
+Machine admission is not driven. `--probe-only --big-paths N` times one run
+whose read set holds N paths, alone, with function statistics. Its first
+finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
+later slices").
 
 ## 10. What goes, and when
 
