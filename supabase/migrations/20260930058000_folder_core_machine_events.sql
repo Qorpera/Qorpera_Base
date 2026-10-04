@@ -14,8 +14,9 @@
 --   continues a parent run uses them; machine events are the first.
 -- * qorpera_folder_machine_events_due / _company: the shared drains' pair. A company's step takes the folder fence KEY
 --   SHARE, rank 0, its parents' requesters, agents and authorities KEY SHARE (ranks 1 to 3), then the events FOR UPDATE
---   SKIP LOCKED (run-owned rows), the parents' conversations KEY SHARE in id order, and admission; then one wake per parent
---   with up to 8 of its events. One continuation per parent at a time; a stopped parent's events are suppressed, a gone
+--   SKIP LOCKED (run-owned rows), the parents' conversations KEY SHARE in id order, and admission; then, with each parent
+--   checked again under admission, one wake per parent with up to 8 of its events. One continuation per parent at a time
+--   (two steps holding different events of one parent continue it once); a stopped parent's events are suppressed, a gone
 --   one's undeliverable; a running parent's events wait. No clock, nothing stronger than KEY SHARE before the events.
 -- Quiet coding check-ins stay with coding dispatch on folder-v2 (C3): a check-in is a worker-completion wake, which the
 -- same helpers carry. Every patched or new body carries the marker 20260930058000.
@@ -225,11 +226,14 @@ begin
 			perform 1 from public.qorpera_shared_sessions where id = any(coalesce(v_sessions, '{}')) and profile_id = v_profile
 			order by id for key share;
 			perform public.qorpera_folder_admit_wakes(v_profile);
-			-- 5. One wake per parent, its events in at most 6 KiB. A pause at admission cancels the wake and the events wait;
-			-- a parent whose agent, requester or conversation is gone, or whose events cannot be carried, is undeliverable.
+			-- 5. One wake per parent, its events in at most 6 KiB. The parent's state again under admission, which serializes
+			-- the company's wake inserts: another step that holds other events of the same parent may have continued it since
+			-- (one continuation at a time); its events then wait. A pause at admission cancels the wake and the events wait; a
+			-- parent whose agent, requester or conversation is gone, or whose events cannot be carried, is undeliverable.
 			for v_item in select x.value from jsonb_array_elements(v_ready) x loop
 				v_ids := array(select jsonb_array_elements_text(v_item -> 'ids')::uuid);
 				select * into v_run from public.qorpera_execution_runs where id = (v_item ->> 'parent')::uuid;
+				if public.qorpera_folder_parent_continuation(v_run.id, 'machine-event') <> 'ready' then continue; end if;
 				begin
 					v_payload := public.qorpera_machine_event_payload(v_run.id, v_ids);
 					while pg_column_size(v_payload) > 6144 and cardinality(v_ids) > 1 loop
