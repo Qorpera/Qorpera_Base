@@ -23,9 +23,10 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
   first, the client history's last. One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
   pressure; at 90 days a counts file goes after every part it names, and the newest one (the checkpoint) never. Each
-  deleted file has its own record, lost/<name>.json, written whole (temporary file, synced, renamed, folder synced)
-  before the file goes: a record exists complete or not at all, and the next pass first finishes every recorded
-  deletion whose file is still there, whatever the pressure is then (a lookup knows that day is unknown).
+  deleted file has its own record, lost/<name>.json, written whole (temporary file, synced, renamed) before the file
+  goes, and lost/ and the log folder are synced before every deletion: a record exists complete or not at all, and the
+  next pass first finishes every recorded deletion whose file is still there, whatever the pressure is then (a lookup
+  knows that day is unknown). The records count toward the cap, though they never go.
 <run-dir>/logs.json says when it last ran and what it could not do; `qorpera-agent-exit.sh verify` fails while it is
 older than 15 minutes or names a problem (the logs still over their cap, or the disk under its floor, with every
 part it may delete gone; a part it cannot seal; a closed day it cannot count). The logger pauses by itself at the
@@ -176,6 +177,35 @@ def lost_records(log_dir):
 def lost_names(log_dir):
     """Every file a deletion record names."""
     return set(lost_records(log_dir))
+
+
+def record_bytes(log_dir):
+    """The deletion records' size: they count toward the cap like the logs, though they never go."""
+    try:
+        return sum(regular_files(os.path.join(log_dir, LOST)).values())
+    except (FileNotFoundError, NotADirectoryError):
+        return 0
+
+
+def kept_bytes(log_dir):
+    """What the logs hold against their cap: the log folder's files and the deletion records."""
+    return sum(regular_files(log_dir).values()) + record_bytes(log_dir)
+
+
+def sync_folder(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def records_on_disk(log_dir):
+    """Every file goes only after this: lost/ is synced (each record's name in it, also one a pass cut short wrote) and
+    the log folder (lost/'s own name, also when a pass was cut short right after making it). A failed sync raises, so
+    nothing goes."""
+    sync_folder(os.path.join(log_dir, LOST))
+    sync_folder(log_dir)
 
 
 def seal_files(log_dir, now, part_bytes, settle=SETTLE_SECONDS):
@@ -575,33 +605,33 @@ def file_day(name):
 
 
 def delete_recorded(log_dir, now, name, size, reason):
-    """Deletes a file, its record written first: lost/<name>.json, whole (a temporary file, synced, renamed, the folder
-    synced), so a record exists complete or not at all, and a deletion is never unrecorded. A record a pass cut short
-    left is not written again."""
+    """Deletes a file, its record written first: lost/<name>.json, whole (a temporary file, synced, renamed), then
+    lost/ and the log folder synced, so a record exists complete or not at all, and a deletion is never unrecorded. A
+    record a pass cut short left is not written again, but synced all the same."""
     folder = os.path.join(log_dir, LOST)
-    os.makedirs(folder, mode=0o750, exist_ok=True)
+    if not os.path.isdir(folder):
+        os.makedirs(folder, mode=0o750, exist_ok=True)
+        sync_folder(log_dir)
     record = os.path.join(folder, f"{name}.json")
     if not os.path.lexists(record):
         write_json(record, {"ts": now, "recordedAt": time.time_ns(), "file": name, "bytes": size, "day": file_day(name),
                             "reason": reason})
-        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+    records_on_disk(log_dir)
     os.unlink(os.path.join(log_dir, name))
 
 
 def replay_deletions(log_dir):
     """Recorded deletions whose file is still there (a pass cut short between the record and the unlink) are finished
-    first, every pass, whatever the pressure is now: their names are never used again."""
+    first, every pass, whatever the pressure is now: their names are never used again. Their records are synced first
+    (the pass may have been cut short before it synced them)."""
     files = regular_files(log_dir)
-    done = []
-    for name in sorted(lost_names(log_dir)):
-        if name in files and (PART.match(name) or DNS_PART.match(name)):
-            os.unlink(os.path.join(log_dir, name))
-            done.append(name)
-    return done
+    pending = [name for name in sorted(lost_names(log_dir))
+               if name in files and (PART.match(name) or DNS_PART.match(name))]
+    if pending:
+        records_on_disk(log_dir)
+    for name in pending:
+        os.unlink(os.path.join(log_dir, name))
+    return pending
 
 
 def tidy(log_dir, now, cap, floor, free=free_percent):
@@ -643,13 +673,14 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     )
     low_water = floor + LOW_WATER_MARGIN
     for name in candidates:
-        total = sum(files.values())
+        # The records count toward the cap too, though they never go.
+        total = sum(files.values()) + record_bytes(log_dir)
         if total <= cap * CAP_SHARE and free(log_dir) >= low_water:
             break
         reason = "over the cap" if total > cap * CAP_SHARE else "the disk is low"
         delete_recorded(log_dir, now, name, files.pop(name), reason)
         deleted.append(name)
-    still = sum(regular_files(log_dir).values()) > cap or free(log_dir) < floor
+    still = kept_bytes(log_dir) > cap or free(log_dir) < floor
     return deleted, still
 
 
@@ -707,7 +738,7 @@ def tend_locked(log_dir, status, cap, floor, now, part_bytes, settle, free):
         problems.append(f"tidy: {error}"[:300])
         print(f"qorpera-agent-exit-logs: tidy: {error}", file=sys.stderr, flush=True)
     try:
-        result["bytes"] = sum(regular_files(log_dir).values())
+        result["bytes"] = kept_bytes(log_dir)
         result["freePercent"] = round(free(log_dir), 1)
     except OSError as error:
         problems.append(f"cannot read the log folder: {error}"[:300])

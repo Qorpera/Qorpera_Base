@@ -9,9 +9,10 @@ are alive and the conntrack reader watches the exit's current namespace, for `ve
 replaced under it, the logger exits and its unit starts it again in the new one. Never content: only addresses,
 ports, protocol, times and byte counts. E3 joins these lines with the client map and the DNS log.
 
-The node's disk comes first. Every 5 seconds the logger reads the log folder's size and the disk's free share; past
-either line (the logs over their cap, or the disk under its floor) it pauses: it writes no connection or refusal
-lines, only a gap line when it pauses and one when it goes on (with the number of lines it did not write); it empties
+The node's disk comes first. Every 5 seconds the logger reads the logs' size (the log folder's files and the tender's
+deletion records in lost/) and the disk's free share; past either line (the logs over their cap, or the disk under its
+floor) it pauses: it writes no connection or refusal lines, only a gap line when it pauses and one when it goes on
+(with the number of lines it did not write); it empties
 dns.log every 5 seconds (dnsmasq goes on answering; a gap line says how much of the DNS record was not kept); and it
 keeps <pause-file> while it pauses, so `verify` fails and the node takes no new agent road machines. It goes on once
 the logs are under 95% of the cap and the disk 2 points above its floor (qorpera-agent-exit-logs.py `tend` deletes
@@ -51,6 +52,8 @@ INTERNAL = [
 LOST = ("ENOBUFS", "losing events")
 CAP_BYTES = 2 * 1024 * 1024 * 1024
 FLOOR_PERCENT = 10.0
+# The tender's deletion records, one file per deleted file (qorpera-agent-exit-logs.py).
+RECORDS = "lost"
 
 
 def parse_conntrack(line):
@@ -146,12 +149,21 @@ def should_pause(paused, free, size, cap, floor):
     return free < floor or size > cap
 
 
+def folder_bytes(path):
+    with os.scandir(path) as entries:
+        return sum(e.stat(follow_symlinks=False).st_size for e in entries if e.is_file(follow_symlinks=False))
+
+
 def disk_state(log_dir):
-    """The disk's free share (for ordinary users, so root's reserve counts as used) and the log folder's size."""
+    """The disk's free share (for ordinary users, so root's reserve counts as used) and the logs' size: the log
+    folder's files and the tender's deletion records in lost/ (they count toward the cap, though they never go)."""
     st = os.statvfs(log_dir)
     free = st.f_bavail * 100.0 / st.f_blocks if st.f_blocks else 0.0
-    with os.scandir(log_dir) as entries:
-        size = sum(e.stat(follow_symlinks=False).st_size for e in entries if e.is_file(follow_symlinks=False))
+    size = folder_bytes(log_dir)
+    try:
+        size += folder_bytes(os.path.join(log_dir, RECORDS))
+    except (FileNotFoundError, NotADirectoryError):
+        pass
     return free, size
 
 

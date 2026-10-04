@@ -933,6 +933,103 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.deepEqual(JSON.parse(readFileSync(join(ledger, newest), "utf8")).late.map((late) => late.parts), [[`clients-${day}.p002.jsonl.gz`]]);
 	});
 
+	test("nothing goes until its record is synced: a failed sync of lost/ keeps the part, also when a later pass finishes it", () => {
+		const unsynced = mkdtempSync(join(dir, "unsynced-"));
+		writeFileSync(join(unsynced, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
+		const part = `flows-${day}.p001.jsonl.gz`;
+		// The tender in this process, 92 days on (the part expires), every folder sync and unlink noted. In the first two
+		// passes syncing lost/ fails (a disk error), after the record's rename.
+		const script = String.raw`
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("logs", sys.argv[1])
+logs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(logs)
+log_dir, now, part = sys.argv[2], float(sys.argv[3]), sys.argv[4]
+events, failing = [], [True]
+sync, unlink = logs.sync_folder, os.unlink
+def noted_sync(path):
+    events.append(["sync", os.path.relpath(path, log_dir)])
+    if failing[0] and os.path.basename(path) == "lost":
+        raise OSError(5, "Input/output error")
+    sync(path)
+def noted_unlink(path, *args, **kwargs):
+    events.append(["unlink", os.path.relpath(path, log_dir)])
+    unlink(path, *args, **kwargs)
+logs.sync_folder = noted_sync
+os.unlink = noted_unlink
+passes = []
+for fail in (True, True, False):
+    failing[0] = fail
+    events.clear()
+    result = logs.tend(log_dir, os.path.join(log_dir, "s.json"), 1 << 30, 10.0, now=now, settle=0, free=lambda _: 50.0)
+    record = os.path.join(log_dir, "lost", part + ".json")
+    passes.append({"problems": result["problems"], "events": list(events), "files": sorted(os.listdir(log_dir)),
+                   "records": sorted(os.listdir(os.path.join(log_dir, "lost"))),
+                   "record": open(record).read() if os.path.exists(record) else None})
+print(json.dumps(passes))
+`;
+		const r = spawnSync("python3", ["-c", script, logsTool, unsynced, String(t0 + 92 * DAY + 3 * 3600), part], { encoding: "utf8" });
+		assert.equal(r.status, 0, r.stderr);
+		const [first, second, third] = JSON.parse(r.stdout);
+		const unlinked = (pass) => pass.events.some(([what, name]) => what === "unlink" && name === part);
+		// The record is renamed into place, then its sync fails: the part stays. lost/ was made, and the log folder synced.
+		assert.match(first.problems.join(" | "), /tidy: .*Input\/output error/);
+		assert.ok(first.files.includes(part) && !unlinked(first));
+		assert.deepEqual(first.records, [`${part}.json`]);
+		assert.deepEqual(first.events.filter(([what]) => what === "sync"), [["sync", "."], ["sync", "lost"]]);
+		// The next pass finds the recorded deletion; its sync fails too: the part still stays, the record unchanged.
+		assert.match(second.problems.join(" | "), /tidy: .*Input\/output error/);
+		assert.ok(second.files.includes(part) && !unlinked(second));
+		assert.equal(second.record, first.record);
+		// Then the sync works: lost/ and the log folder are synced, and only then does the part go. Its counts go after.
+		assert.deepEqual(third.problems, []);
+		assert.ok(!third.files.includes(part));
+		const at = third.events.findIndex(([what, name]) => what === "unlink" && name === part);
+		assert.deepEqual(third.events.slice(0, at), [["sync", "lost"], ["sync", "."]]);
+		assert.equal(third.record, first.record, "not written again");
+		assert.deepEqual(third.records, [`counts-${day}.json.json`, `counts-${next}.json.json`, `${part}.json`]);
+	});
+
+	test("the deletion records count toward the cap, for the tender and the logger, though they never go", () => {
+		const full = mkdtempSync(join(dir, "records-"));
+		writeFileSync(join(full, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
+		const part = `flows-${day}.p001.jsonl.gz`;
+		const run = (cap) =>
+			spawnSync("python3", [logsTool, "tend", "--log-dir", full, "--status", join(dir, "records.json"), "--now", String(t0 + DAY + 3 * 3600), "--settle", "0", "--free-percent", "50", "--cap-bytes", String(cap)], { encoding: "utf8" });
+		const bytes = (folder) =>
+			readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isFile()).reduce((sum, entry) => sum + statSync(join(folder, entry.name)).size, 0);
+		assert.equal(run(2 ** 30).status, 0);
+		// A cap the logs alone are well under: nothing goes.
+		const cap = Math.ceil(bytes(full) / 0.8) + 100;
+		const quiet = run(cap);
+		assert.equal(quiet.status, 0, quiet.stderr);
+		assert.equal(JSON.parse(quiet.stdout).deleted, 0);
+		// Records of earlier deletions that hold more than the cap by themselves: the counted part goes, and the logs are
+		// still over their cap. The records all stay.
+		const old = "flows-2026-06-01.p001.jsonl.gz";
+		mkdirSync(join(full, "lost"));
+		writeFileSync(join(full, "lost", `${old}.json`), JSON.stringify({ ts: t0, recordedAt: 1, file: old, bytes: 1, day: "2026-06-01", reason: "kept 90 days", pad: "x".repeat(cap) }));
+		const over = run(cap);
+		assert.equal(over.status, 1);
+		const result = JSON.parse(over.stdout);
+		assert.match(result.problems.join(" | "), /over their cap, or the disk under its floor/);
+		assert.ok(!readdirSync(full).includes(part));
+		assert.deepEqual(lostRecords(full).map((record) => [record.file, record.reason]), [[old, "kept 90 days"], [part, "over the cap"]]);
+		assert.equal(result.bytes, bytes(full) + bytes(join(full, "lost")), "logs.json counts the records");
+		// The logger's pressure check counts them too: it pauses.
+		const script = String.raw`
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("logger", sys.argv[1])
+logger = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(logger)
+free, size = logger.disk_state(sys.argv[2])
+print(json.dumps({"size": size, "pause": logger.should_pause(False, 50.0, size, int(sys.argv[3]), 10.0)}))
+`;
+		const r = spawnSync("python3", ["-c", script, logger, full, String(cap)], { encoding: "utf8" });
+		assert.equal(r.status, 0, r.stderr);
+		assert.deepEqual(JSON.parse(r.stdout), { size: result.bytes, pause: true });
+	});
+
 	test("a pass cut short never seals a line twice, and a DNS copy left plain is compressed", () => {
 		const crashed = mkdtempSync(join(dir, "crashed-"));
 		const line = lines([opened("10.210.1.1", t0 + 10)]);
