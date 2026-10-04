@@ -230,42 +230,72 @@ Every company is folder-v2, so a routine is a file, `agents/<handle>/routines/<k
 (RUNTIME-COMPANY-STATE-FILES.md, "routines"), and `qorpera_upsert_cloud_routine` refuses a member's save there ("edit
 those files"). So the agent routines page's switch, Edit and New routine do nothing on a folder-v2 company. The
 coordinator moved the routine editor ahead of P31 (4 October): routines are not under `human-tasks/`, and a founder
-tries them at milestone acceptance. The rest of P34b (rules, sections) waits for P31.
+tries them at milestone acceptance. The rest of P34b (rules, sections) waits for P31. Design review r1 (4 October) is
+folded in below.
 
 **Finding a routine's file** (migration `20260930038000`, SQL test 899). The routine list
-(`qorpera_list_cloud_routines`) reads the index and does not say where a routine's file is.
-`qorpera_member_company_state_folders` also answers `routines: [{routineId, staffAgentId, file}]`: the live routine
-index rows (`folder_retired_at` null, status not `retired`) whose file the member may read, in path order. It is an
-exact-text patch with a body marker. cloud-client's closed parser takes the new key; the web and the SQL ship
-together at the milestone.
+(`qorpera_list_cloud_routines`) reads the index and does not say where a routine's file is; adding the path there would
+show it to every reader of the company, past the path's authority. `qorpera_member_company_state_folders` also
+answers `routines: [{routineId, staffAgentId, file}]`: the routine index rows with `profile_id`, this
+`folder_environment_id`, `folder_retired_at` null, whose file the member may read (`qorpera_folder_actor_allowed`, as
+for agents), `staffAgentId` the row's owner, in path order. The web ships before the SQL (Pages deploys on merge; SQL
+at a release), so cloud-client's parser takes `routines` as optional: missing means no routine file is known and every
+routine reads as read-only.
 
-**Who pays.** The file does not say who pays (STATE-FILES, "Ownership"): the saver's own login that pays for
-unattended work does (`qorpera_company_state_routine_payer`, an active sponsor binding with unattended use allowed).
-A new routine, a resume and any change of what a run pins need it; a pause does not. The commit never sets the login
-up, so the web does it first, as today: the member's chosen account is consented for unattended use and bound
-(`qorpera_consent_provider_connection_autonomous`, `qorpera_create_member_execution_sponsor`), with the same
-account choice and the same ChatGPT plan rules. Then it commits the file as the member (§5's route).
+**Who pays.** The file does not say who pays (STATE-FILES, "Ownership"), and a member's commit carries no sponsor. The
+core takes the routine's own login when it still pays for this member, else the member's newest login that pays for
+unattended work (`qorpera_company_state_routine_payer`). A new routine, a resume and any change of what a run pins need
+one; a pause does not. So on folder-v2 the editor does not offer a choice of account: it says the routine runs on the
+member's own account that works while they're away. When the member has none switched on, it offers their accounts
+that can pay (never a Claude login; a ChatGPT plan only once its member turned on work while away, and never for a
+file-change routine) and switches the chosen one on first (`qorpera_consent_provider_connection_autonomous`,
+`qorpera_create_member_execution_sponsor`), as today. Then it commits the file as the member (§5's route). An exact
+choice among several paying accounts would need the commit to take a preferred login: not in this slice.
 
-**The writes**, each through §5's member commit route, as the member, naming the version it read (a `conflict`
-`version_changed` reads again and retries, at most 3 times, as §5's other editors do):
-- **New routine:** one `write` of `agents/<handle>/routines/<key>.md` (`writeRoutineFile`), with a new id. The key
-  comes from the title (`freeCompanyStateName` over the listed `routines/`); `exists` takes the next key with a new
-  operation key. A `routines/` folder that is missing is made in the same change set (`mkdir` first).
-- **Edit:** rewrites the file with `setCompanyStateSettings`: the title, the trigger's keys (the keys of another
-  `when` removed), `timezone` and `effort`, and the instructions as the body. Every other key and byte stays (`ends`,
-  `runs`, quiet hours, `reply`, notes).
-- **Pause:** `status: paused`, no login needed. Nothing is written when the file already says `paused`.
-- **Resume:** the login first; then `status: active`. When the file already says `active` (a pause the platform
-  recorded in the index only: a member's Stop, a failing model account, a wait for one), the file is saved unchanged,
-  which ends that pause and pays like a resume, as the runtime's `manage_routine` does. While the agent is archived,
-  the switch stays locked (#777).
+**The trigger, both ways.** One exported helper in cloud-client, beside `writeRoutineFile`, maps the editor's shapes
+to the file's keys and back, the inverse of the index's `qorpera_company_state_routine_trigger`, with a test pinned to
+it:
+- every N minutes (5 to 10,080) is `when: every`, `minutes`, and `starts`: now plus the interval for a new routine;
+  for an edit, the file's `starts` exactly as read (present or absent) unless the interval changed or a held start is
+  let go;
+- days at a time is `when: weekly`, `days` (`mon`…`sun`), `time` (`HH:MM`), the top-level `timezone`, and `starts`
+  (a held first run) or none;
+- the keys of the other `when` are removed. `timezone` stays when an edit moves to `every`: quiet hours without their
+  own zone take it.
 
-**What the editor offers.** Every 1 to 10,080 minutes (`when: every`) and days at a time (`when: weekly`, with the
-member's time zone), as today. A file-change routine is refused on folder-v2 until the folder's file events reach
-routines, so the editor stops offering it, and an existing one has no Edit. A member never makes a dynamic routine
-(`when: once`), as the hook rules. A routine the editor cannot show keeps no Edit, as today.
+**The writes**, each through §5's member commit route, as the member:
+- **New routine:** the routines folder is read first; when it is missing, a `mkdir` comes first in the same change
+  set (each unit's outcome is read; a `mkdir` `exists` reads again and retries without it). Then one `write` of
+  `agents/<handle>/routines/<key>.md` (`writeRoutineFile`) with a new id, `reply` (today's default, `required`) and
+  `effort` (`low`, as today) written out. The key comes from the title (`freeCompanyStateName` over the listed
+  routines' file stems, at most 64 characters); the write's `exists` takes the next key with a new operation key,
+  unless the file at that path already carries this draft's id (a lost answer: it is saved).
+- **Edit:** rewrites the file with `setCompanyStateSettings` (the title, the trigger's keys, `timezone`, `reply` from
+  the editor's select) and `withStateBody` (the instructions). `effort`, `ends`, `runs`, quiet hours, notes and every
+  other byte stay as read. When the new parse equals the one it read, nothing is written ("Nothing changed"): an
+  unchanged save would resume a routine the platform paused, which only the switch does. A `version_changed` retries
+  only while the re-read file's editor fields equal those the form opened with; otherwise it stops with "This routine
+  changed while you were editing it" and the form reloads. A transport failure resends the same request with the same
+  operation key (a replay); only an answer that saved nothing frees the key.
+- **Pause:** `status: paused`, no login needed; nothing is written when the file already says `paused`.
+- **Resume:** the login first (above); then `status: active`. When the file already says `active` (a pause the
+  platform recorded in the index only: a member's Stop, a failing login, a wait for one, and P15's `agent_archived`
+  once P15 lets a paid save end it), the file is saved unchanged, which ends that pause and pays like a resume, as the
+  runtime's `manage_routine` does. While the agent is archived the switch stays locked (#777). Turning on a ChatGPT
+  plan does not resume a folder-v2 routine; the member resumes it with the switch.
+- Pause and resume retry a `version_changed` only while the re-read file says `active` or `paused`; a file now
+  `concluded`, or a row now `expired`, stops and the list is read again.
 
-**Answers.** A refusal carries the hook's problems (e.g. "a routine moves only into an agent's routines folder", a
-quiet-hours or trigger problem), shown under the editor; nothing was written. The routines list is read again after
-every save, as today.
+**What the editor offers.** Every 5 to 10,080 minutes and days at a time. A file-change routine is refused on
+folder-v2 until the folder's file events reach routines, so the editor stops offering it and its strings go. Read-only
+cases: a routine with no known file (unreadable, or from before the files) has no switch and no Edit; an ended routine
+(concluded, expired) has neither, as today; a dynamic routine (`once`) keeps its switch (the hook lets a member pause
+it and resume it, paid) and has no Edit; a member never makes one. A routine the editor cannot show keeps no Edit, as
+today.
 
+**Answers.** A refusal carries the hook's problems (English, as in §5), shown under the editor; nothing was written.
+New strings ("Nothing changed", the changed-while-editing line, the account line) get Danish. The routines list is
+read again after every save, as today.
+
+**Follow-up (not this slice).** `qorpera_list_cloud_routines` shows every routine's title and instructions to any
+reader of the company, past the files' authority on folder-v2.
