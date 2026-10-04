@@ -105,7 +105,9 @@ hold bytes of that path's history as versions do, so a root erases them with its
   paths' versions and copies, and a copy elsewhere holding an erased manifest is named like a version would be.
 - **Locks.** None added. A copy's commit locked its unit's path `FOR UPDATE` and that path's ancestors `KEY SHARE`, as
   for a saved unit. A new folder's copies lie under the folder's own path, which is the root, an ancestor the request
-  holds `KEY SHARE`, or a path under the root; either way the two met at a path lock, so §2.2's seq argument holds.
+  holds `KEY SHARE`, or a path under the root. Either way the copy's commit met the request (or, under a live root,
+  the life-start commit) at a path lock: §2.2's seq argument holds for a commit that saved something, and the time
+  argument above for one that saved nothing.
 
 ### 2.4 Refused roots
 - none by its top folder any more: P18a refused `agents/`, `rules/` and `tables/`; P18b (§11) erases the first two and
@@ -201,8 +203,9 @@ through the side rows' foreign key; phase 4's rows are run-owned and taken `SKIP
 step works on the first unfinished one:
 1. **Versions,** then (P18d, §2.5) conflict copies, together up to `p_versions` rows under each root before its cutoff, by the key index; their manifests and
    chunks (by the new chunk index) go to the erasure's hash table; their written paths go to the needles; the run ids
-   of their commits are noted for phase 4, and so are the runs that file-change wakes about those commits started
-   (P29, by the wakes' `(source_id) where source_kind = 'company-file'` index); the first erased version's time is kept on the erasure row (phase 3's lower
+   of their commits are noted for phase 4, and for the versions also the runs that file-change wakes about those
+   commits started (P29, by the wakes' `(source_id) where source_kind = 'company-file'` index; a copy's commit that
+   saved something has those noted in phase 2, and one that saved nothing woke nobody); the first erased version's time is kept on the erasure row (phase 3's lower
    bound); the rows are deleted.
 2. **Commits.** All of the environment's commits before each root's cutoff, with no lower bound: saved ones by
    `(environment_id, seq)` (the cutoff's own commit only in units before its unit), unsaved ones by the new partial

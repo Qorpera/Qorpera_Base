@@ -36,7 +36,7 @@ end $$;
 -- (qorpera_folder_erasure_units). Not by the commit's as_of_seq: that is a plain read taken before its locks, so a
 -- commit that lost a race to the life-start commit, or came after the request, can carry an earlier one (review r1).
 create function public.qorpera_folder_erasure_copy_before(p_root jsonb, p_seq bigint, p_created_at timestamptz, p_unit integer)
-returns boolean language sql immutable set search_path = '' as $$
+returns boolean language sql stable set search_path = '' as $$
 	select case when p_seq is not null then public.qorpera_folder_erasure_before(p_root, p_seq, p_unit)
 		else p_created_at < (p_root ->> 'cutoffAt')::timestamptz end
 $$;
