@@ -183,7 +183,11 @@ do $$
 declare v jsonb; d constant uuid := '84000000-0000-4000-8000-000000000115';
 begin
 	-- (As P18b's erasure leaves a retired worker.)
-	perform pg_temp.fx(format($q$update public.qorpera_runtime_workers set folder_erased_at = clock_timestamp() where id = %L$q$, d));
+	perform pg_temp.fx(format($q$update public.qorpera_runtime_workers set title = 'Erased',
+		worker_key = 'erased.' || replace(id::text, '-', ''), dispatch = public.qorpera_folder_erasure_blank_object(dispatch),
+		result = public.qorpera_folder_erasure_blank_object(result), folder_path = null, folder_key = null,
+		folder_environment_id = null, folder_retired_at = coalesce(folder_retired_at, clock_timestamp()),
+		folder_erased_at = clock_timestamp() where id = %L$q$, d));
 	perform pg_temp.finish((current_setting('qorpera_test.ada4')::jsonb -> 'actor' ->> 'runId')::uuid);
 	v := pg_temp.drain();
 	if (pg_temp.w(d)).completion_state is distinct from 'suppressed' or (v ->> 'suppressed')::integer <> 1
