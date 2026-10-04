@@ -9,11 +9,18 @@ const checkedAt = "2026-10-04T02:00:05Z";
 describe("the agent exit's health file", () => {
 	it("is read as the exit wrote it: healthy, how many problems, when it checked (with milliseconds)", () => {
 		expect(
-			parseAgentExitHealth(health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: [] })),
+			parseAgentExitHealth(
+				health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: [] }),
+			),
 		).toEqual({ healthy: true, problemCount: 0, checkedAt: "2026-10-04T02:00:05.000Z" });
 		expect(
 			parseAgentExitHealth(
-				health({ schema: "qorpera.agent-exit-health/v1", healthy: false, checkedAt, problems: ["no DNS", "logger silent"] }),
+				health({
+					schema: "qorpera.agent-exit-health/v1",
+					healthy: false,
+					checkedAt,
+					problems: ["no DNS", "logger silent"],
+				}),
 			),
 		).toEqual({ healthy: false, problemCount: 2, checkedAt: "2026-10-04T02:00:05.000Z" });
 	});
@@ -26,8 +33,18 @@ describe("the agent exit's health file", () => {
 			health([]),
 			health({ schema: "qorpera.agent-exit-health/v2", healthy: true, checkedAt, problems: [] }),
 			health({ schema: "qorpera.agent-exit-health/v1", healthy: "true", checkedAt, problems: [] }),
-			health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt: "2026-10-04 02:00:05", problems: [] }),
-			health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt: "2026-13-04T02:00:05Z", problems: [] }),
+			health({
+				schema: "qorpera.agent-exit-health/v1",
+				healthy: true,
+				checkedAt: "2026-10-04 02:00:05",
+				problems: [],
+			}),
+			health({
+				schema: "qorpera.agent-exit-health/v1",
+				healthy: true,
+				checkedAt: "2026-13-04T02:00:05Z",
+				problems: [],
+			}),
 			health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: [1] }),
 			health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: [], extra: 1 }),
 		])
@@ -35,7 +52,9 @@ describe("the agent exit's health file", () => {
 	});
 	it("is never healthy with a problem, whatever it says", () => {
 		expect(
-			parseAgentExitHealth(health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: ["x"] })),
+			parseAgentExitHealth(
+				health({ schema: "qorpera.agent-exit-health/v1", healthy: true, checkedAt, problems: ["x"] }),
+			),
 		).toMatchObject({ healthy: false, problemCount: 1 });
 	});
 });
@@ -54,7 +73,12 @@ describe("the agent exit publisher", () => {
 	it("posts the node's identity and the exit's answer, never its problem texts", async () => {
 		const r = registry();
 		const publisher = new RuntimeNodeAgentExitPublisher(nodeId, "a".repeat(64), "b".repeat(64), r, async () =>
-			health({ schema: "qorpera.agent-exit-health/v1", healthy: false, checkedAt, problems: ["qp/m1 (10.210.1.1) …"] }),
+			health({
+				schema: "qorpera.agent-exit-health/v1",
+				healthy: false,
+				checkedAt,
+				problems: ["qp/m1 (10.210.1.1) …"],
+			}),
 		);
 		const report = await publisher.observe(new AbortController().signal);
 		expect(r.calls).toHaveLength(1);
@@ -110,7 +134,13 @@ describe("the agent exit publisher", () => {
 					}),
 			),
 		};
-		const publisher = new RuntimeNodeAgentExitPublisher(nodeId, "a".repeat(64), "b".repeat(64), slow, async () => null);
+		const publisher = new RuntimeNodeAgentExitPublisher(
+			nodeId,
+			"a".repeat(64),
+			"b".repeat(64),
+			slow,
+			async () => null,
+		);
 		const first = publisher.observe(new AbortController().signal);
 		await expect(publisher.observe(new AbortController().signal)).rejects.toThrow("NODE_AGENT_EXIT_REPORT_PENDING");
 		await new Promise((resolve) => setImmediate(resolve));

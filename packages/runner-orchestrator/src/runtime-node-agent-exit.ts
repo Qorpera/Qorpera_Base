@@ -69,7 +69,8 @@ export class RuntimeNodeAgentExitPublisher {
 		machineIdSha256: string,
 		policySha256: string,
 		registry: RuntimeNodeObserverRegistry,
-		read: () => Promise<Buffer | null> = () => readLxdOfficeProtectedFile(AGENT_EXIT_HEALTH_PATH, 65536).catch(() => null),
+		read: () => Promise<Buffer | null> = () =>
+			readLxdOfficeProtectedFile(AGENT_EXIT_HEALTH_PATH, 65536).catch(() => null),
 	) {
 		if (!isUuid(nodeId) || !SHA.test(machineIdSha256) || !SHA.test(policySha256))
 			throw new Error("INVALID_NODE_AGENT_EXIT_PUBLISHER");
