@@ -758,10 +758,11 @@ Needed before any view goes live (C1B §4).
   - S3: the run machine's reservation for a run (partial; the first item of C1c-3n) and its release, the node
     machine's `native` kind (partial) and node update drains (C1c-3n);
   - A1: office activation wakes (C1c-3l);
-  - F3: artifacts (`20260930041000`). A member's `register_artifact_v2`, or a run's artifact output, inserts an
-    artifact with no core test. The artifact triggers, graph completion and the GC plans then take the gc fence. The
-    fix refuses artifacts on folder-v2.
-  Office access (C1c-3k part 2) and the quiet coding check-ins (`20260930026000`) moved off the list on 4 October.
+  Office access (C1c-3k part 2) and the quiet coding check-ins (`20260930026000`) moved off the list on 4 October,
+  and artifacts with `20260930041000`: a member's `register_artifact_v2`, or a run's artifact output, inserted an
+  artifact with no core test, and the artifact triggers, graph completion and the GC plans then took the gc fence.
+  Every artifact path and member function that would take it now refuses folder-v2 first (0A000), which 838 pins, and
+  the artifact entries are `legacy`.
   Each slice removes its lines from 838's list as it moves its sites; a partial line pins its core test's text, so a
   changed test fails until the line is checked again. The test prints the open lines as a NOTICE, which a failing run
   shows.
