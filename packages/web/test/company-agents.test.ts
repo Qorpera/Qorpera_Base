@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { type AgentFile, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { describe, expect, it, vi } from "vitest";
-import { agentFileColour } from "../src/cloud/agent-colours.ts";
+import { AGENT_COLOUR_HEX, agentFileColour } from "../src/cloud/agent-colours.ts";
 import {
 	createWebCompanyAgents,
 	prepareWebCompanyAgentCreation,
@@ -32,6 +34,18 @@ const draft: WebCompanyAgentDraft = {
 	figure: "owl",
 	color: "#123456",
 };
+
+/** The figures' own shades, as the figure model has them (public/assets/avatars/motion-model.js). */
+const NATIVE = {
+	planet: "#5ec0b5",
+	acorn: "#87674c",
+	flame: "#fa752e",
+	rocket: "#f96e2d",
+	crown: "#fcb51b",
+	heart: "#fb672a",
+	ghost: "#312f2d",
+} as const;
+const native = (figure: keyof typeof NATIVE) => NATIVE[figure];
 
 function agentFile(fake: FolderFake, path: string): AgentFile {
 	const parsed = parseCompanyStateFile(path, fake.text(path) ?? "");
@@ -154,6 +168,47 @@ describe("creating an agent", () => {
 		expect(agentFileColour(color)).toBe(colour);
 	});
 
+	it("names the vendored palette's colours (avatar-appearance.js)", () => {
+		const source = readFileSync(new URL("../public/assets/avatars/avatar-appearance.js", import.meta.url), "utf8");
+		const scope: {
+			QORPERA_MOTION_MODEL: object;
+			QORPERA_AVATAR_APPEARANCE?: { palette: { name: string; color: string }[] };
+		} = { QORPERA_MOTION_MODEL: { avatars: [] } };
+		runInNewContext(source, { window: scope });
+		const palette = Array.from(scope.QORPERA_AVATAR_APPEARANCE?.palette ?? [], ({ name, color }) => [
+			name.toLowerCase(),
+			color,
+		]);
+		expect(palette).toEqual(Object.entries(AGENT_COLOUR_HEX));
+	});
+
+	it("writes no colour for the figure's own shade, and a picked palette colour by its name", async () => {
+		const f = setup();
+		const agents = createWebCompanyAgents(f.files, { native });
+		// A new agent's default: the rocket in its own shade (new-conversation.ts), the palette's orange as well.
+		await agents.create(
+			prepareWebCompanyAgentCreation({ ...draft, figure: "rocket", color: NATIVE.rocket }),
+			f.signal,
+		);
+		expect(agentFile(f.fake, "agents/ledger/agent.md")).toMatchObject({ figure: "rocket", colour: null });
+		await agents.create(
+			prepareWebCompanyAgentCreation({
+				...draft,
+				displayName: "Teal",
+				figure: "rocket",
+				color: AGENT_COLOUR_HEX.teal,
+			}),
+			f.signal,
+		);
+		expect(agentFile(f.fake, "agents/teal/agent.md")).toMatchObject({ figure: "rocket", colour: "teal" });
+		// The crown's own gold, picked for the rocket, is the rocket's colour.
+		await agents.create(
+			prepareWebCompanyAgentCreation({ ...draft, displayName: "Gold", figure: "rocket", color: NATIVE.crown }),
+			f.signal,
+		);
+		expect(agentFile(f.fake, "agents/gold/agent.md")).toMatchObject({ figure: "rocket", colour: "gold" });
+	});
+
 	it("takes the next handle when the name is listed, and never a reserved one", async () => {
 		const f = setup();
 		f.fake.mkdir("agents/ledger");
@@ -166,10 +221,19 @@ describe("creating an agent", () => {
 		expect(agentFile(f.fake, "agents/groups-2/agent.md").id).toBe(groups.id);
 	});
 
-	it("takes the next handle, as a new change set, when a folder the member cannot see has the name", async () => {
+	/** Another writer makes these folders just after the member's listing of `agents/`. */
+	function takenAfterListing(f: ReturnType<typeof setup>, ...paths: string[]) {
+		const list = f.fake.folder.list.getMockImplementation()!;
+		f.fake.folder.list.mockImplementationOnce(async (...args) => {
+			const page = await list(...args);
+			for (const path of paths) f.fake.mkdir(path);
+			return page;
+		});
+	}
+
+	it("takes the next handle, as a new change set, when the name was taken since the listing", async () => {
 		const f = setup();
-		f.fake.mkdir("agents/ledger");
-		f.fake.deny("agents/ledger");
+		takenAfterListing(f, "agents/ledger");
 		const creation = prepareWebCompanyAgentCreation(draft);
 		await createWebCompanyAgents(f.files).create(creation, f.signal);
 		expect(f.fake.commits.map((commit) => [commit.operationKey, (commit.units[0] as { path: string }).path])).toEqual(
@@ -183,10 +247,7 @@ describe("creating an agent", () => {
 
 	it("stops after three taken handles and says the agent was not created", async () => {
 		const f = setup();
-		for (const handle of ["ledger", "ledger-2", "ledger-3"]) {
-			f.fake.mkdir(`agents/${handle}`);
-			f.fake.deny(`agents/${handle}`);
-		}
+		takenAfterListing(f, "agents/ledger", "agents/ledger-2", "agents/ledger-3");
 		const error = await createWebCompanyAgents(f.files)
 			.create(prepareWebCompanyAgentCreation(draft), f.signal)
 			.catch((caught: unknown) => caught);
@@ -197,6 +258,19 @@ describe("creating an agent", () => {
 			message: "The agent could not be created.",
 		});
 		expect(f.fake.commits).toHaveLength(3);
+	});
+
+	it("reports a name closed to the member as denied, without trying another", async () => {
+		const f = setup();
+		// The core decides authority before existence: a folder the member may not read or write is `denied`.
+		f.fake.mkdir("agents/ledger");
+		f.fake.deny("agents/ledger");
+		const error = await createWebCompanyAgents(f.files)
+			.create(prepareWebCompanyAgentCreation(draft), f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect(error).toMatchObject({ outcome: "denied", reason: "denied", message: "The agent could not be created." });
+		expect(f.fake.commits).toHaveLength(1);
 	});
 
 	it("finds the agent a lost answer created instead of creating a second one", async () => {
@@ -332,6 +406,51 @@ describe("changing an agent", () => {
 			f.signal,
 		);
 		expect(agentFile(f.fake, path)).toMatchObject({ figure: null, colour: "blue" });
+	});
+
+	it("writes no colour for the figure's own shade, and a colour kept through a change of figure", async () => {
+		const f = setup();
+		const { agent, path } = await created(f, { figure: "rocket", color: "qorpera-teal" });
+		const update = (before: Partial<WebCompanyAgentDraft>, after: Partial<WebCompanyAgentDraft>) =>
+			createWebCompanyAgents(f.files, { saved: () => ({ ...draft, ...before }), native }).update(
+				agent,
+				{ ...draft, ...after },
+				f.signal,
+			);
+		// Back to the rocket's own shade: no colour, so the agent follows its figure's shade again.
+		await update({ figure: "rocket", color: AGENT_COLOUR_HEX.teal }, { figure: "rocket", color: NATIVE.rocket });
+		expect(agentFile(f.fake, path)).toMatchObject({ figure: "rocket", colour: null });
+		// The rocket's orange, kept for the crown, is the crown's colour.
+		await update({ figure: "rocket", color: NATIVE.rocket }, { figure: "crown", color: NATIVE.rocket });
+		expect(agentFile(f.fake, path)).toMatchObject({ figure: "crown", colour: "orange" });
+		// A figure that brings its own shade has no colour.
+		await update({ figure: "crown", color: NATIVE.rocket }, { figure: "planet", color: NATIVE.planet });
+		expect(agentFile(f.fake, path)).toMatchObject({ figure: "planet", colour: null });
+	});
+
+	it("keeps a CRLF agent.md's line breaks, mark and notes when a setting and the body change", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		// The file as an editor on Windows saved it: a byte-order mark, CRLF line breaks and a note.
+		const saved =
+			`\ufeff${f.fake.text(path)!.replace("role: Keeps the books", "role: Keeps the books # in its own words")}`
+				.split("\n")
+				.join("\r\n");
+		f.fake.put(path, saved);
+		await createWebCompanyAgents(f.files).update(
+			agent,
+			{ ...draft, displayName: "Ledger II", charter: "Own the ledger." },
+			f.signal,
+		);
+		const settings = saved.slice(0, saved.indexOf("\r\n---\r\n") + 7);
+		expect(f.fake.text(path)).toBe(
+			`${settings.replace("\r\nname: Ledger\r\n", "\r\nname: Ledger II\r\n")}Own the ledger.\n`,
+		);
+		expect(agentFile(f.fake, path)).toMatchObject({
+			name: "Ledger II",
+			role: "Keeps the books",
+			instructions: "Own the ledger.",
+		});
 	});
 
 	it("writes nothing when nothing changed, and answers the agent's own version", async () => {

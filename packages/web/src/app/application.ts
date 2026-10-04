@@ -15,6 +15,7 @@ import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
+import { nativeColorOf } from "../ui/avatar.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -709,8 +710,8 @@ export function mountApplication(
 					)
 						throw new Error(t("Company access changed."));
 				}),
-				// A field the member did not touch keeps the file's own value.
-				{ saved: savedAgentDraft },
+				// A field the member did not touch keeps the file's own value; a figure's own shade is no colour.
+				{ saved: savedAgentDraft, native: nativeColorOf },
 			);
 		};
 		const agentActions: WorkspaceActions = {

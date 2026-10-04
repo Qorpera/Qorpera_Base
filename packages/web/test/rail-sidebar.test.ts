@@ -997,7 +997,7 @@ describe("group chats in the rail", () => {
 		expect(menuItems()).toEqual(["Pin", "Move to", "Copy conversation ID", "Hide from sidebar"]);
 	});
 	it("renames a group chat through its details and deletes one after confirming", async () => {
-		const updateGroup = vi.fn(async () => {});
+		const updateGroup = vi.fn(async () => true);
 		const deleteGroup = vi.fn(async () => {});
 		const { f, rail, ready } = companyWith(...launchCompany({ updateGroup, deleteGroup }));
 		await ready;

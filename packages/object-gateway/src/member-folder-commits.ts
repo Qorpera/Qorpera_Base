@@ -392,8 +392,10 @@ export async function serveMemberFolderCommit(
 		} | null;
 		if (answer?.schema !== "qorpera.folder-commit/v1" || !Array.isArray(answer.units))
 			throw new ObjectDependencyError(503);
-		// Something was saved (a replay of a saved change set too): what it starts, a hire's first run or an archive's
-		// clean-up, is done before the answer, while the request has time left. The member's slot is free meanwhile.
+		// Something was saved: what it starts, a hire's first run or an archive's clean-up, is done before the answer,
+		// while the request has time left. The member's slot is free meanwhile. A replay of a saved change set is
+		// followed up again on purpose: it is harmless (a subject already followed up has nothing left to do), and a
+		// replay is usually the retry of an answer that was lost, perhaps before its follow-up ran.
 		inFlight.delete(member.actor.userId);
 		held = undefined;
 		const left = FOLLOW_UP_LATEST_MS - (Date.now() - started);

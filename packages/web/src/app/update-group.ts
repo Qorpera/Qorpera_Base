@@ -64,11 +64,15 @@ export function rewriteGroupFile(
 	if (draft.name !== observed.name && draft.name !== file.name) changes.name = draft.name;
 	if (draft.subtitle !== undefined && draft.subtitle !== (observed.subtitle ?? "") && draft.subtitle !== file.subtitle)
 		changes.subtitle = draft.subtitle;
-	if (memberKey(draft.members) !== memberKey(observed.members)) {
-		const agents = draft.members.filter((member) => member.kind === "staff_agent").map((member) => member.id);
-		const people = draft.members.filter((member) => member.kind === "member").map((member) => member.id);
-		if (JSON.stringify(agents) !== JSON.stringify(file.agents)) changes.agents = agents;
-		if (JSON.stringify(people) !== JSON.stringify(file.people)) changes.people = people;
+	// The agents and the people are two lists: each is written only when the member changed it.
+	for (const [setting, kind] of [
+		["agents", "staff_agent"],
+		["people", "member"],
+	] as const) {
+		const of = (members: GroupChatDraft["members"]) => members.filter((member) => member.kind === kind);
+		if (memberKey(of(draft.members)) === memberKey(of(observed.members))) continue;
+		const ids = of(draft.members).map((member) => member.id);
+		if (JSON.stringify(ids) !== JSON.stringify(file[setting])) changes[setting] = ids;
 	}
 	let next = Object.keys(changes).length ? setCompanyStateSettings(text, changes) : text;
 	if (draft.purpose !== observed.purpose.trim() && draft.purpose !== file.purpose.trim())
@@ -76,7 +80,8 @@ export function rewriteGroupFile(
 	return next === text ? null : next;
 }
 
-/** Edits a group chat's `group.md`, naming the version it read. */
+/** Edits a group chat's `group.md`, naming the version it read. Answers whether it wrote: false when the file already
+ * said it all. */
 export function createGroupUpdater(options: {
 	company: CompanyController;
 	folder: (signal: AbortSignal) => WebMemberFolder;
@@ -140,7 +145,7 @@ export function createGroupUpdater(options: {
 				throw new Error(t("Enter a group subtitle of no more than 256 characters."));
 			if (!changes.purpose) throw new Error(t("Enter a description for this group chat."));
 			const folder = options.folder(signal);
-			await rewriteStateFile(
+			return await rewriteStateFile(
 				folder,
 				{
 					locate: () => groupFile(folder, observed.roomId, signal),

@@ -134,12 +134,10 @@ async function gateway(
 			...(options.noFollowUps ? {} : { followUps: authority as never }),
 			store,
 			replication,
-		}).catch(
-			(error: unknown) => {
-				response.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
-				response.end();
-			},
-		);
+		}).catch((error: unknown) => {
+			response.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
+			response.end();
+		});
 	});
 	servers.push(server);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -442,7 +440,10 @@ describe("a member's change set to a folder-v2 company", () => {
 	});
 
 	it("makes no follow-up without its own client, and frees the member's slot before following up", async () => {
-		const none = await gateway({ noFollowUps: true, followUp: () => ({ schema: "qorpera.folder-follow-up/v1", more: false }) });
+		const none = await gateway({
+			noFollowUps: true,
+			followUp: () => ({ schema: "qorpera.folder-follow-up/v1", more: false }),
+		});
 		expect((await none.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
 		expect(none.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toEqual([]);
 		// While the first change set's follow-up runs, the member's next change set is taken, not refused with 429.
@@ -457,7 +458,9 @@ describe("a member's change set to a folder-v2 company", () => {
 			},
 		});
 		const first = slow.send(request([{ op: "mkdir", path: "drafts" }]));
-		await expect.poll(() => slow.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit").length).toBe(1);
+		await expect
+			.poll(() => slow.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit").length)
+			.toBe(1);
 		expect((await slow.send(request([{ op: "mkdir", path: "drafts" }], "web:second-01"))).status).toBe(200);
 		release();
 		expect((await first).status).toBe(200);

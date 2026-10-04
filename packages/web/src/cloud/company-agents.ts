@@ -5,7 +5,7 @@ import {
 	setCompanyStateSettings,
 	writeAgentFile,
 } from "@qorpera/cloud-client/company-state-files";
-import { isStaffCharacterId } from "@qorpera/cloud-client/staff-characters";
+import { isStaffCharacterId, type StaffCharacterId } from "@qorpera/cloud-client/staff-characters";
 import { agentFileColour } from "./agent-colours.ts";
 import type { WebCompanyFiles } from "./company-files.ts";
 import {
@@ -56,15 +56,19 @@ const blankCharter =
  * web-made agent has no first todo: it starts from its instructions when it is first messaged. */
 const AGENT_FOLDERS = ["memory", "skills", "routines", "todos"] as const;
 
-function agentText(draft: WebCompanyAgentCreation): string {
+/** A figure's own shade, as the web draws it. */
+type NativeShade = (figure: StaffCharacterId) => string;
+
+function agentText(draft: WebCompanyAgentCreation, native?: NativeShade): string {
+	const figure = isStaffCharacterId(draft.figure) ? draft.figure : null;
 	return writeAgentFile({
 		id: draft.id,
 		name: draft.displayName,
 		role: draft.role,
 		agentKind: "agent",
 		status: "active",
-		colour: agentFileColour(draft.color),
-		figure: isStaffCharacterId(draft.figure) ? draft.figure : null,
+		colour: agentFileColour(draft.color, figure ? native?.(figure) : undefined),
+		figure,
 		model: null,
 		effort: null,
 		instructions: draft.charter || blankCharter,
@@ -72,7 +76,8 @@ function agentText(draft: WebCompanyAgentCreation): string {
 }
 
 /** Validate before the view retains an attempt and locks its editable fields: the new `agent.md` must be a file the
- * shared parser accepts, at most 64 KiB. The handle is decided at the commit and cannot add a problem. */
+ * shared parser accepts, at most 64 KiB. The handle is decided at the commit and cannot add a problem, nor can the
+ * colour. */
 export function prepareWebCompanyAgentCreation<T extends WebCompanyAgentDraft>(draft: T): T & WebCompanyAgentCreation {
 	const creation = { ...draft, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
 	const parsed = parseStateFile("agents/agent/agent.md", agentText(creation));
@@ -105,9 +110,12 @@ export function createWebCompanyAgents(
 		/** What the editor shows for an agent: a draft field equal to it was not changed, so the file keeps its own
 		 * value (an agent's own edit made meanwhile survives). The web passes its resolved figure and colour. */
 		saved?: (agent: HostedStaffAgent) => WebCompanyAgentDraft;
+		/** A figure's own shade: a draft in its figure's own shade writes no colour. The web passes the figure model's. */
+		native?: NativeShade;
 	} = {},
 ): WebCompanyAgents {
 	const saved = options.saved ?? rosterDraft;
+	const native = options.native;
 	const scope = (signal: AbortSignal) => {
 		const lifetime = AbortSignal.any([files.signal, signal]);
 		const check = () => {
@@ -133,7 +141,7 @@ export function createWebCompanyAgents(
 					reserved: COMPANY_STATE_RESERVED_AGENT_NAMES,
 					key: (handle) => `web:staff-create:${draft.id}:${handle}`,
 					contents: [
-						{ path: "agent.md", kind: "file", text: agentText(draft) },
+						{ path: "agent.md", kind: "file", text: agentText(draft, native) },
 						...AGENT_FOLDERS.map((path) => ({ path, kind: "folder" as const })),
 					],
 					failure: "The agent could not be created.",
@@ -160,12 +168,12 @@ export function createWebCompanyAgents(
 						if (name !== before.displayName && name !== file.name) changes.name = name;
 						const role = draft.role.trim();
 						if (role !== before.role && role !== file.role) changes.role = role;
-						if (draft.figure !== before.figure) {
-							const figure = isStaffCharacterId(draft.figure) ? draft.figure : null;
-							if (figure !== file.figure) changes.figure = figure;
-						}
-						if (draft.color !== before.color) {
-							const colour = agentFileColour(draft.color);
+						const figure = isStaffCharacterId(draft.figure) ? draft.figure : null;
+						if (draft.figure !== before.figure && figure !== file.figure) changes.figure = figure;
+						// A colour kept through a change of figure counts as chosen when the file has none: it was the
+						// old figure's own shade, and the new figure is to wear it.
+						if (draft.color !== before.color || (draft.figure !== before.figure && file.colour === null)) {
+							const colour = agentFileColour(draft.color, figure ? native?.(figure) : undefined);
 							if (colour !== file.colour) changes.colour = colour;
 						}
 						let next = Object.keys(changes).length ? setCompanyStateSettings(text, changes) : text;
