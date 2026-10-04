@@ -441,19 +441,24 @@ function path(value: string): string {
 }
 
 /** A member's client for one folder-v2 environment. */
-/** The live agents' and group chats' files a member may read (P34a, `qorpera_member_company_state_folders`). A
- * folder is its file's parent. */
+/** The live agents', group chats' and routines' files a member may read (P34a, P34r:
+ * `qorpera_member_company_state_folders`). A folder is its file's parent. `routines` is null where the cloud does not
+ * list routines' files yet (the web ships before the SQL): every routine then reads as read-only. */
 export interface CloudMemberCompanyStateFolders {
 	readonly agents: readonly { readonly staffAgentId: string; readonly file: string }[];
 	readonly groups: readonly { readonly roomId: string; readonly file: string }[];
+	readonly routines:
+		| readonly { readonly routineId: string; readonly staffAgentId: string; readonly file: string }[]
+		| null;
 }
 
 export function parseCloudMemberCompanyStateFolders(value: unknown): CloudMemberCompanyStateFolders {
-	const input = closed(value, ["schema", "agents", "groups"], [], "state folders");
+	const input = closed(value, ["schema", "agents", "groups"], ["routines"], "state folders");
 	if (
 		input.schema !== "qorpera.member-company-state-folders/v1" ||
 		!Array.isArray(input.agents) ||
-		!Array.isArray(input.groups)
+		!Array.isArray(input.groups) ||
+		(input.routines !== undefined && !Array.isArray(input.routines))
 	)
 		invalid("state folders");
 	return {
@@ -465,6 +470,17 @@ export function parseCloudMemberCompanyStateFolders(value: unknown): CloudMember
 			const row = closed(item, ["roomId", "file"], [], "group chat folder");
 			return { roomId: idOf(row.roomId, "group chat folder"), file: text(row.file, "group chat folder") };
 		}),
+		routines:
+			input.routines === undefined
+				? null
+				: (input.routines as unknown[]).map((item) => {
+						const row = closed(item, ["routineId", "staffAgentId", "file"], [], "routine file");
+						return {
+							routineId: idOf(row.routineId, "routine file"),
+							staffAgentId: idOf(row.staffAgentId, "routine file"),
+							file: text(row.file, "routine file"),
+						};
+					}),
 	};
 }
 

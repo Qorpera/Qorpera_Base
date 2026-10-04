@@ -735,6 +735,21 @@ export function mountApplication(
 					throw new Error(t("Group chat editing access changed."));
 			}).folder();
 		};
+		// The member's own client for the company's folder under a caller's checks: a routine's file is read and written
+		// with the access its routine calls have (P34r).
+		const memberFolder = (current: () => void, lost: string) => {
+			current();
+			const role = controller.store.get().team?.role;
+			if (!role) throw new Error(lost);
+			return new WebCompanyFiles(
+				cloud,
+				controller.profile,
+				controller.userId,
+				role,
+				controller.signal,
+				current,
+			).folder();
+		};
 		const groupActions: Pick<WorkspaceActions, "updateGroup" | "deleteGroup"> = {
 			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, folder: groupFolder }),
 			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, folder: groupFolder }),
@@ -830,7 +845,10 @@ export function mountApplication(
 								recordRoutineOffer: native.recordRoutineOffer,
 								chatGptPlanAvailable: native.chatGptPlanAvailable,
 							},
-							routines: createWebRoutines(cloud, controller.profile, controller.signal, noticeAccess),
+							// A routine is a file: its resume writes it through the member's own folder client.
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, noticeAccess, () =>
+								memberFolder(noticeAccess, t("Company notification access changed.")),
+							),
 							memberId: controller.userId,
 							canManage: () => controller.store.get().team?.capabilities.authorize === true,
 						}
@@ -1090,7 +1108,15 @@ export function mountApplication(
 								check();
 								return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
 							},
-							routines: createWebRoutines(cloud, controller.profile, controller.signal, checkConversationAccess),
+							// Routines are files (agents/<handle>/routines/<key>.md): the editor and the switch write them
+							// through the member's own folder client, with the same checks as every other routine call.
+							routines: createWebRoutines(
+								cloud,
+								controller.profile,
+								controller.signal,
+								checkConversationAccess,
+								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
+							),
 							...agentActions,
 							...workspaceActions,
 							computer,
