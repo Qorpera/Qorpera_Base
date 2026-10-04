@@ -92,7 +92,7 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_recovery_locked', 'open', 'Identity recovery (S1).'),
 	('qorpera_recovery_member_role', 'open', 'Identity recovery (S1).'),
 	('qorpera_confirm_runtime_identity_retirement', 'open', 'Identity retirement (S1).');
--- A run's own machines: the core test covers only some branches (20260928469240). C1c-3n (20260930034000) moved a run's
+-- A run's own machines: the core test covers only some branches (20260928469240). C1c-3n (20260930046000) moved a run's
 -- reservation and the native kind onto the core.
 insert into p13_allowed(name, kind, reason, pin) values
 	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding, office and native test the core; login (S1, 20260930035000) takes the gc fence on folder-v2.',

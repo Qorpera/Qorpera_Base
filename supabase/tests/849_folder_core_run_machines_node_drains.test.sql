@@ -1,5 +1,5 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- Company folder core, C1c-3n (migration 20260930034000): a run's machine and the node updates on the folder core's
+-- Company folder core, C1c-3n (migration 20260930046000): a run's machine and the node updates on the folder core's
 -- order, folder-v2 only. A run's machine reservation takes its job, then the folder fence and rank 0, the requester and
 -- the identity's machine lock (a sign-in's machine of the identity waits on the same lock); the node reservation of a
 -- run's machine and a release take the folder fence and rank 0. None waits for a folder effect; each waits at the fence
@@ -26,17 +26,15 @@ values ('84900000-0000-4000-8000-0000000000e1', 1, repeat('d', 64), '{}', 'fixtu
 	array['64800000-0000-4000-8000-000000000010'::uuid]);
 set session_replication_role = origin;
 
--- fence_one holds what a folder effect holds (the fence and the company row KEY SHARE), what member management holds (the
--- fence FOR NO KEY UPDATE), what a stop's second phase holds (the fence FOR UPDATE), or a company row KEY SHARE alone;
--- until pg_temp.release().
+-- fence_one holds what a folder effect holds (the fence and the company row KEY SHARE), what member management and a
+-- deletion request hold (the fence FOR NO KEY UPDATE), or what a stop's second phase holds (the fence FOR UPDATE); until
+-- pg_temp.release().
 create function pg_temp.hold(p_what text, p_profile uuid default '64800000-0000-4000-8000-000000000010') returns void language plpgsql as $$
 begin
 	perform dblink_exec('fence_one', 'begin');
-	if p_what in ('effect','members','stop') then
-		perform * from dblink('fence_one', format('select 1 from public.qorpera_folder_fences where profile_id = %L for %s', p_profile,
-			case p_what when 'effect' then 'key share' when 'members' then 'no key update' else 'update' end)) as t(x integer);
-	end if;
-	if p_what in ('effect','row') then
+	perform * from dblink('fence_one', format('select 1 from public.qorpera_folder_fences where profile_id = %L for %s', p_profile,
+		case p_what when 'effect' then 'key share' when 'members' then 'no key update' else 'update' end)) as t(x integer);
+	if p_what = 'effect' then
 		perform * from dblink('fence_one', format('select 1 from public.qorpera_profiles where id = %L for key share', p_profile)) as t(x integer);
 	end if;
 end $$;
@@ -83,19 +81,22 @@ create function pg_temp.sql_call(p_what text) returns text language sql as $$
 			'84900000-0000-4000-8000-0000000000e1', repeat('d', 64), repeat('e', 64)) end
 $$;
 
--- A. Beside a folder effect (the fence and the company row KEY SHARE) none of the six waits.
+-- A. Beside a folder effect (the fence and the company row KEY SHARE) or member management (the fence FOR NO KEY UPDATE)
+-- none of the six waits.
 do $$
-declare v_what text; v_state text;
+declare v_hold text; v_what text; v_state text;
 begin
-	foreach v_what in array array['reserve', 'node', 'release', 'authorize', 'locked', 'admission'] loop
-		perform pg_temp.hold('effect');
-		perform dblink_send_query('fence_two', pg_temp.sql_call(v_what));
-		if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
-			perform pg_temp.release(); perform pg_temp.outcome('fence_two');
-			raise exception 'A: % waited for a folder effect', v_what; end if;
-		v_state := pg_temp.outcome('fence_two');
-		perform pg_temp.release();
-		if v_state like '40P01%' or v_state like '55P03%' then raise exception 'A: % ended with %', v_what, v_state; end if;
+	foreach v_hold in array array['effect', 'members'] loop
+		foreach v_what in array array['reserve', 'node', 'release', 'authorize', 'locked', 'admission'] loop
+			perform pg_temp.hold(v_hold);
+			perform dblink_send_query('fence_two', pg_temp.sql_call(v_what));
+			if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
+				perform pg_temp.release(); perform pg_temp.outcome('fence_two');
+				raise exception 'A: % waited beside %', v_what, v_hold; end if;
+			v_state := pg_temp.outcome('fence_two');
+			perform pg_temp.release();
+			if v_state like '40P01%' or v_state like '55P03%' then raise exception 'A: % beside % ended with %', v_what, v_hold, v_state; end if;
+		end loop;
 	end loop;
 end $$;
 
@@ -140,6 +141,7 @@ begin
 	if pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$)
 		or pg_temp.row_free($q$select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
 			and user_id = '64800000-0000-4000-8000-000000000002'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'$q$)
 		or not pg_temp.row_free($q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'$q$, 'no key update') then
 		perform pg_temp.release(); perform pg_temp.outcome('fence_two'); perform dblink_exec('fence_two', 'rollback');
 		raise exception 'C: the identity''s lock comes after the fence, rank 0 KEY SHARE and the requester'; end if;
@@ -165,8 +167,9 @@ begin
 	if v_state <> 'ok' then raise exception 'D: the resume after the node update, got %', v_state; end if;
 end $$;
 
--- E. A deletion's finisher waits at the fence for a node-update step holding it, then finishes: no deadlock. (The node's
--- update names the company, so the pass keeps it for now rather than purging it.)
+-- E. A deletion's finisher waits at the fence for a node-update step holding it, then finishes: no deadlock. The node's
+-- update names the company, so the pass keeps it for now rather than purging it ('waiting'). The finisher records an
+-- error (a deadlock or a lock timeout too) on the request instead of raising it, so the request is read back.
 select * from dblink('fence_three', pg_temp.sql_request()) as t(r text);
 do $$
 declare v_state text;
@@ -181,6 +184,10 @@ begin
 	perform dblink_exec('fence_two', 'commit');
 	v_state := pg_temp.outcome('fence_three');
 	if v_state <> 'ok' then raise exception 'E: the finisher after the node update, got %', v_state; end if;
+	if not exists (select 1 from public.qorpera_company_deletions where profile_id = '64800000-0000-4000-8000-000000000010'
+			and last_error is null and holdings ->> 'node_updates' = '1' and purged_at is null) then
+		raise exception 'E: the finisher must record the node update as what holds the company, got %',
+			(select to_jsonb(d) from public.qorpera_company_deletions d where profile_id = '64800000-0000-4000-8000-000000000010'); end if;
 end $$;
 
 -- F. Every patched body carries the marker.
@@ -191,7 +198,7 @@ begin
 			'public.qorpera_release_runtime_machine(uuid,text,text)', 'public.qorpera_authorize_node_update_drain(uuid,text,text)',
 			'public.qorpera_node_update_locked(uuid,bigint,text,text)',
 			'public.qorpera_release_node_update_admission(uuid,text,bigint,text)']) f
-		where position('20260930034000' in pg_get_functiondef(f::regprocedure)) = 0) then
+		where position('20260930046000' in pg_get_functiondef(f::regprocedure)) = 0) then
 		raise exception 'F: a patched body lacks its marker'; end if;
 end $$;
 

@@ -555,9 +555,9 @@ end $$;
 -- stronger than KEY SHARE.
 create temporary table c1c3f_patches(n serial, fn text, digest text, patched text, original text) on commit preserve rows;
 insert into c1c3f_patches(fn, digest, patched, original) values
-		-- C1c-3n (20260930034000) added a run machine's branch after the folder one: undone first.
+		-- C1c-3n (20260930046000) added a run machine's branch after the folder one: undone first.
 		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
-			E' -- C1c-3n (20260930034000): a folder-v2 run''s machine (its company reservation took the identity''s machine lock).\n'
+			E' -- C1c-3n (20260930046000): a folder-v2 run''s machine (its company reservation took the identity''s machine lock).\n'
 			|| E' elsif p_provider_kind = ''native'' and public.qorpera_company_is_folder_v2(v_profile) then\n'
 			|| E'  perform public.qorpera_folder_machine_fence(v_profile);\n',
 			''),
