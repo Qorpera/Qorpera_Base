@@ -65,7 +65,7 @@ A run effect. Granted to `service_role` only and reached through the Company Fil
 
 1. **The request,** before any lock: exactly the four keys, a UUID, a tool name, a lower-case SHA-256, and 1 to 1000
    units (the commit's own bound). Anything else is 22023. The recorder does not parse the units: the commit decides
-   every unit, and the digest binds them.
+   every unit, and the digest binds them. The one exception is `update_skill` (step 3).
 2. **The run entry:** `qorpera_folder_tool_run(p_binding, '[]')`. That is the binding, the stop, the run mutex, and
    `qorpera_folder_run_enter` with the company row at rank 0, `KEY SHARE`. A company that is not `folder-v2`, a stopped
    run or a paused company is refused there, replays included (the commit answers replays even then; a writer's
@@ -73,7 +73,11 @@ A run effect. Granted to `service_role` only and reached through the Company Fil
 3. **The approval:** the action review row by id, for this company and this run's agent, `FOR SHARE`. It must be an
    approval of this call that this run may act on:
    - its tool and argument digest are the request's, and the tool is one that writes folder change sets:
-     `hire_agent`, `create_group_chat`, `manage_routine`, `decide_routine` or `company_delete`;
+     `hire_agent`, `create_group_chat`, `manage_routine`, `decide_routine` or `company_delete`. It may also be
+     `update_skill` with effect `destructive` (folder core slice P20, `20260930001200`; coordinator decision, 3 October
+     2026), but only when every unit is a deletion under the run agent's own skills folder. That folder is the folder
+     of its `agent.md` (the staff row's `folder_path`) followed by `/skills/`, compared by folder key. It is a plain
+     read of the staff row, so no new lock;
    - its effect is `delegation` or `destructive`, so an approved email never stands for folder units;
    - it is the run's own allow (`run_id` is this run and `decision = 'allow'`), or a card's allow this run used
      (`answer` is `allow_once` or `always_allow` and `consumed_run_id` is this run).

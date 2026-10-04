@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -130,6 +130,29 @@ esac
 		assert.equal(ok.status, 0, ok.stdout + ok.stderr);
 		assert.match(ok.stdout, /bridge qorpera0: matches \(10\.41\.0\.1\/24\)/);
 		assert.match(ok.stdout, /bridge coding-net: matches \(10\.200\.0\.1\/24\)/);
+
+		bridges({ qorpera0: { route: QORPERA0 }, qagent0: {} });
+		const exitBridge = run(["check"]);
+		assert.equal(exitBridge.status, 0, exitBridge.stdout + exitBridge.stderr);
+		assert.match(exitBridge.stdout, /bridge qagent0: the agent exit's bridge, guarded by the exit; never list it here/);
+		const listed = join(dir, "listed.nft");
+		writeFileSync(listed, rules.replace('"machine-net" }', '"machine-net", "qagent0" }'));
+		const wronglyListed = run(["check"], { QORPERA_GUEST_GUARD_RULES: listed });
+		assert.equal(wronglyListed.status, 1);
+		assert.match(wronglyListed.stdout, /MISMATCH bridge qagent0 is listed in the rules/);
+		// Loading never stops on it (a node keeps its guard at boot); verify says so while the guard is loaded.
+		mode("enforce");
+		assert.equal(run(["enforce"], { QORPERA_GUEST_GUARD_RULES: listed }).status, 0, "enforce loads with qagent0 listed");
+		assert.equal(run(["boot"], { QORPERA_GUEST_GUARD_RULES: listed }).status, 0, "boot loads with qagent0 listed");
+		const listedVerify = run(["verify"], { QORPERA_GUEST_GUARD_RULES: listed });
+		assert.equal(listedVerify.status, 1);
+		assert.match(listedVerify.stderr, /bridge qagent0 is listed in the rules/);
+		assert.equal(run(["verify"]).status, 0, "the shipped rules do not list it");
+		const named = join(dir, "named.nft");
+		writeFileSync(named, rules.replace("table inet", '# "qagent0" is the agent exit\'s bridge.\ntable inet'));
+		assert.equal(run(["check"], { QORPERA_GUEST_GUARD_RULES: named }).status, 0, "a mention outside guest_bridges is fine");
+		mode(undefined);
+		run(["remove"]);
 
 		bridges({ qorpera0: { route: QORPERA0 }, docker0: {} });
 		const unguarded = run(["check"]);
@@ -290,7 +313,6 @@ describe(
 		// br_netfilter is loaded on our nodes, so bridged traffic between two guests reaches the guard there.
 		// The test machine does not load it; QORPERA_GUEST_GUARD_TEST_BR_NETFILTER=1 loads it for this run.
 		let brNetfilter = false;
-		let loadedBrNetfilter = false;
 		let dhcpSeen = [];
 		let nodeNfsPort = 0;
 		const sh = (cmd) => {
@@ -520,9 +542,12 @@ except Exception:
 		};
 
 		before(async () => {
+			// Only in a throwaway VM, and never unloaded: a module load or unload changes the whole machine, and
+			// `modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on it (docker0 included). The
+			// shared test machines' own kernel is never changed (3 October rule).
 			if (process.env.QORPERA_GUEST_GUARD_TEST_BR_NETFILTER === "1" && !existsSync("/proc/sys/net/bridge")) {
+				assert.ok(!hostname().startsWith("qorpera-testvm-"), "load br_netfilter only in a throwaway VM, never on a shared test machine");
 				sh("modprobe br_netfilter");
-				loadedBrNetfilter = true;
 			}
 			for (const name of Object.values(ns)) sh(`ip netns add ${name} && ip -n ${name} link set lo up`);
 			const { node, guest, guest2, coding, lan, tail } = ns;
@@ -613,7 +638,6 @@ except Exception:
 				child.kill("SIGKILL");
 			}
 			for (const name of Object.values(ns)) spawnSync("ip", ["netns", "del", name]);
-			if (loadedBrNetfilter) spawnSync("modprobe", ["-r", "br_netfilter"]);
 			rmSync(state, { recursive: true, force: true });
 		});
 

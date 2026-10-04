@@ -162,7 +162,8 @@ All tables are keyed by company environment.
     `qorpera_folder_key(path)`, and recompute them (`update ... set path =
     path`, which regenerates the keys) before the folder is served again.
     The same step reindexes the expression indexes on the folder key (the
-    resources', and the path versions' that erasure uses, P18).
+    resources', the path versions' that erasure uses, P18, and P18b's
+    `*_folder_key` indexes on staff, rooms, todos, routines and rules).
     `snapshot-v1`'s keys share the exposure.
   - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
     rows hold at most 2,704 bytes. A unit that would store a longer key, or
@@ -305,7 +306,8 @@ is never upgraded. The steps:
      persistent row that admission and effects lock" (20260907000700:1-3).
      Admission itself is serialized on its own row (step 10).
    - The profile row is never locked `FOR UPDATE` or `NOWAIT` on any
-     `folder-v2` path (§9).
+     `folder-v2` path (§9), except deletion's finisher and purge, after
+     the fence `FOR UPDATE` (C1C §6.10).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
    0. the company's profile row, `FOR KEY SHARE` (never stronger, and only this company's), in every
@@ -322,7 +324,8 @@ is never upgraded. The steps:
    3. execution authorities;
    4. rooms, then room members;
    5. the other index rows (sections, routines with their schedule cursors,
-      todos, connections, rules), by table then id;
+      todos, workers, human tasks, contacts, tables (P16), connections,
+      rules), by table then id;
    6. resources, in ancestors-first order of their paths;
    7. grants;
    8. vault rows;
@@ -353,8 +356,13 @@ is never upgraded. The steps:
    - Unique keys a unit introduces (a new agent `id`, a new handle) are
      claimed with `INSERT … ON CONFLICT DO NOTHING`, so a clash becomes an
      outcome at step 7, not an exception.
-   - The vault calls the commit inside its own transaction, and its secret
-     rows are locked here, not before step 1.
+   - The vault never calls the commit (amended 3 October 2026, P22): a vault
+     change marks its connection file due in its own transaction (an
+     insert-only mark), and the object gateway's writer commits the file as
+     the platform afterwards, converging it to the vault's current rows (as
+     "After the commit" below). So no vault change waits for, or fails on, a
+     file. (A commit can still write vault rows itself: hiring or archiving
+     an agent grants or revokes its operations.)
    - The commit then re-resolves every unit's covering resource and
      authorization after these locks. The check before the transaction was
      only advisory.
@@ -408,7 +416,9 @@ is never upgraded. The steps:
 10. **Admission.** If the transaction inserts a wake, it takes the company's
     admission row `FOR NO KEY UPDATE` as its last lock before the clock, and
     inserts its wakes after it. That covers:
-    - the creation commit's first run and the post-commit worker's first runs;
+    - the post-commit worker's first runs, and the creation's first run once
+      C4 (P28) materializes it (the creation commit itself writes the
+      kickoff and its turn request, no wake: CREATION §3);
     - sends, room posts and escalations that wake an agent;
     - routine firing, the materializer and the file drain.
 
@@ -469,7 +479,8 @@ Every writer uses the same commit function, as service_role:
   sections, agent details, routines and group chats, which write files for
   `folder-v2`;
 - the Company Computer's saves;
-- the vault, for connection files;
+- the vault's connection-file writer in the object gateway, for connection
+  files (P22: after the vault change, from its due marks);
 - the reviewed-card approvals;
 - a card's "Always allow" answer, which writes `rules/<rule>.md` as the
   answering owner or admin (2026-09-25 amendment, item 5); and
@@ -615,7 +626,9 @@ gives a fixed format:
 - `agents/groups/<name>/group.md`;
 - `connections/*.md`;
 - `rules/*.md`;
-- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, with no index until H2).
+- `human-tasks/*.md` and `contacts/*.md` (F2's H1; STATE-FILES §2, indexed since H2);
+- `interfaces/order.md`, `interfaces/*/interface.toml`, `tables/*/table.toml` and `tables/*/rows.csv` (P16;
+  RUNTIME-INTERFACES.md §6.1, with a table index and no interface index before I7).
 
 STATE-FILES §1 also lists `vision/vision.md` and the worker files. The same table is exported to
 TypeScript. An ordinary file pays for one
@@ -684,9 +697,13 @@ Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
 - the empty seeded folders.
 
 The same transaction writes the Co-Founder's staff row and exactly one silent
-first-run wake (launch item 3). The company stays hidden until the queue has
+first-run kickoff with its turn request (launch item 3); the first-run wake
+comes when C4 (P28) materializes that turn. The company stays hidden until the
+creation is completed, and, once P15's queue exists, until the queue has
 converged its other side effects, as today's bootstrap job keeps a company
-hidden (`qorpera_finalize_company_bootstrap`).
+hidden (`qorpera_finalize_company_bootstrap`). How creation runs (the
+creation row, the worker, the operator's path):
+`RUNTIME-COMPANY-FOLDER-CREATION.md`.
 
 ### After the commit
 
@@ -888,7 +905,10 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 keys point at `qorpera_profiles`, so a function that locked the profile row
 `FOR UPDATE` and then the fence would deadlock against them (the pattern in
 20260927150000:4-9). So on a `folder-v2` company, no path takes the profile
-row `FOR UPDATE` or `NOWAIT`, whether new or old. That covers:
+row `FOR UPDATE` or `NOWAIT`, whether new or old. The one exception is
+deletion's finisher and purge (C1C §6.10): they take the fence `FOR UPDATE`
+first, so no effect holds the row while they wait, and the purge deletes
+the row. That covers:
 - `qorpera_lock_profile_gc_fence` (20260907000700:7,14), which about 79
   migrations call;
 - the direct sites: 20260926130000:204,806, 20260907000200:15,
@@ -942,6 +962,16 @@ today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
 
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
 under the 4-second result fence (`cloud-native-result-fence.ts`).
+
+**As built (C1e, P24):** `scripts/load-folder-core.mjs` and `.sql`, a new
+script rather than an extension of the snapshot-era one. It covers everything
+above on 648's fixture, except three things. The post-commit worker is not
+built yet (C2's queue). A message's wake stays queued until C4's
+materializer, so on `folder-v2` admission is only the admission row's count.
+Machine admission is not driven. `--probe-only --big-paths N` times one run
+whose read set holds N paths, alone, with function statistics. Its first
+finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
+later slices").
 
 ## 10. What goes, and when
 
@@ -1063,8 +1093,10 @@ identical nodes, and the Interfaces session.
   editors) and F2 (human-task wakes, H2c).
 - **C5:** S3 (the rewrites of §10, the reset function), F3 (the folder service
   #647 and #656 merged and deployed, and the core acceptance script), the
-  coordinator (the proof company and the acceptance) and the coordinator with
-  the Interfaces session (the switch).
+  coordinator (the proof company and the acceptance, including registering the
+  proof company's Company Computer: P38 calls `qorpera_register_runtime_office`
+  as its owner, the folder mode of C1c-3j, decided 3 October 2026) and the
+  coordinator with the Interfaces session (the switch).
 
 Before any `folder-v2` company exists, these must be fixed: #581's N1 (a join
 holds the fence before the invitee check), the read actor refusing a company
@@ -1117,10 +1149,18 @@ For `folder-v2` companies:
     each read or listing is fitted to one tool result before its release, and
     `company_delete` records the automatic review's approval of its call (C2
     R1) and deletes a file or an empty folder.
-- The memory, skills, todo, routine and hiring writers write files. The
+- The memory, skills, todo, routine and hiring writers write files. Memory
+  and skills: slice P20 (`packages/runtime/src/cloud-folder-notebooks.ts`)
+  runs the same composition and tools over a folder-v2 form of the trusted
+  gateway. Each tool call releases its reads under its answer; composition's
+  reads are released once under the composed context, before the first model
+  request. A skill deletion in the agent's own library records its review
+  as `company_delete`'s does (`20260930001200`). The
   platform writes a worker's brief and results at dispatch, follow-up, report
   and decision (F2-5b).
-- The vault writes connection files.
+- The vault writes connection files: it marks a file due, and the object
+  gateway's writer commits it as the platform (P22a marks and claims, P22b
+  the writer, P22c website accounts).
 - The tools the layout amendment retires are removed from the model's tool
   list, or become thin writers of the same files.
 
@@ -1148,7 +1188,8 @@ For `folder-v2` companies:
   - the edge functions handle `folder-v2` (runner-broker's verifier call
     `index.ts:348`, runner-control's `outputSnapshotId` `runner-control.ts:155`,
     member-company-gateway's snapshot route);
-  - the secret broker, deployed separately, writes connection files.
+  - the object gateway's connection-file writer, switched on by its flag
+    (amended 3 October 2026, P22: the secret broker gets no folder access).
 
 ### C5. Proof, reset and switch
 
@@ -1170,7 +1211,8 @@ For `folder-v2` companies:
    switches to `folder-v2` by default.
 
 **Core acceptance (C5).** On a new company:
-- the seeded tree exists, and creation wrote exactly one first-run wake;
+- the seeded tree exists, and creation wrote exactly one kickoff and its
+  turn request; the first-run wake once P28 materializes it;
 - agents read, list, search and write through change sets, and disjoint
   writes never conflict (search is `company_search` on the node's folder
   service, "light threads" item 2, so the folder service is live before the

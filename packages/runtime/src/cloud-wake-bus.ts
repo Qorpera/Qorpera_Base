@@ -202,9 +202,12 @@ export interface CloudWakeEnvelope {
 	readonly policy: CloudWakePolicy;
 	readonly time: Readonly<{ utc: string; local: string; timeZone: string }>;
 	readonly pins: Readonly<{
-		/** Null for a folder-v2 run, which pins no Company File snapshot (folder core C3, P23; C4's companySeq
-		 * follows). */
+		/** Null for a folder-v2 run, which pins no Company File snapshot (folder core C3, P23). */
 		companySnapshotId: string | null;
+		/** A folder-v2 run's pin instead: the folder clock's last_seq when it was materialized, so it was composed as of
+		 * at least that commit (folder core C4, P28). Absent until the database sends it, and then a number: the database
+		 * leaves the key out rather than send null. Never beside a snapshot. */
+		companySeq?: number;
 		staffVersion: number;
 		wakeSchema: typeof CLOUD_WAKE_SCHEMA;
 		runtimeBundleVersion: null;
@@ -266,7 +269,11 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 	const audience = closed(audienceValue, ["kind", "userId", "sessionId"]);
 	const source = closed(wake.source, ["kind", "id", "occurrenceKey"]);
 	const time = closed(wake.time, ["utc", "local", "timeZone"]);
-	const pins = closed(wake.pins, ["companySnapshotId", "staffVersion", "wakeSchema", "runtimeBundleVersion"]);
+	const pins = closedWithOptional(
+		wake.pins,
+		["companySnapshotId", "staffVersion", "wakeSchema", "runtimeBundleVersion"],
+		["companySeq"],
+	);
 	const causal = closed(wake.causal, ["rootId", "agentIds"]);
 	const policy = parseCloudWakePolicy(wake.policy);
 	if (
@@ -282,6 +289,10 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		pins.staffVersion !== identity.staffVersion ||
 		pins.wakeSchema !== CLOUD_WAKE_SCHEMA ||
 		pins.runtimeBundleVersion !== null ||
+		(pins.companySeq !== undefined &&
+			(!Number.isSafeInteger(pins.companySeq) ||
+				(pins.companySeq as number) < 0 ||
+				pins.companySnapshotId !== null)) ||
 		typeof source.occurrenceKey !== "string" ||
 		!source.occurrenceKey ||
 		Buffer.byteLength(source.occurrenceKey) > 256 ||

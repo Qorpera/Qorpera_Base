@@ -484,8 +484,9 @@ they answer 42501 "native host call is refused".
 ### Founding lobby (20260928248200_company_founding_lobby)
 
 A founding team starts one company together. The table is a company row with
-its members; nothing else exists until Start (no Company File, Co-Founder or
-wake), so no agent runs and nothing is charged before it.
+its members and an empty company folder (no seeded files); nothing else exists
+until Start (no Co-Founder or first run), so no agent runs and nothing is
+charged before it (20260930010000).
 
 - `qorpera_company_founding_available()` → boolean. False until new companies
   are created on the company folder; until then the hub keeps
@@ -500,7 +501,11 @@ wake), so no agent runs and nothing is charged before it.
   `started`), `revision`, `seats` (`userId`, `displayName`, `state` `invited` or
   `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
   (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
-  `startedByUserId`, `revision`, `clientStartId`, `companyReady`) once started.
+  `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
+  `companySetup`) once started. `companySetup` is `pending` while the company
+  is set up, `ready` once it is (then `companyReady` is true), or `failed` when
+  setup stopped and waits for Qorpera, or the company was deleted before it was
+  set up; a failed setup keeps the company hidden.
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and
@@ -530,10 +535,17 @@ wake), so no agent runs and nothing is charged before it.
   the table becomes `owner`, unanswered invitations are withdrawn, and the
   description and roles become the company's first files (`vision/vision.md`
   and the Co-Founder's first todo). The first run is paid by the caller's own
-  account.
+  account, read again when the company is set up: with no usable account then,
+  the Co-Founder's first run waits until its starter starts it
+  (`qorpera_start_agent_first_run`).
 - While a table is open, members join only through a seat, email invitations
   are refused and roles do not change; `qorpera_list_hosted_profiles` leaves it
-  out.
+  out, and after Start until `companySetup` is `ready`. The founder who pressed
+  Start cannot leave or step down while setup is `pending` (`42501`, as for any
+  company being set up); a `failed` setup holds nobody.
+- A company name is one line: opening a table, or starting one, with a name
+  that holds a control character or a line separator is refused (`22023`);
+  rename the table, then start it.
 
 ### Mentions (20260928010000_runtime_room_mentions)
 
@@ -553,7 +565,7 @@ wake), so no agent runs and nothing is charged before it.
   caller's mentions in a conversation seen. The author is never told about
   their own post.
 
-### Quotes in a member's message (20260930000100_member_message_quotes)
+### Quotes in a member's message (20260928459100_member_message_quotes)
 
 Contract: the 2026-10-02 amendment "quoted outside content in a member's message" (step I5d, part 1).
 
@@ -767,7 +779,48 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
   work while away".
 
+### The company folder for members (20260930013000_folder_core_member_reads)
+
+Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call
+answers 42501 "Company folder is unavailable" for a caller who is not a member of a folder-v2 company with that
+environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
+looks absent in every answer. Reads only: member writes come with P31.
+
+- `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
+  `20260930013200_folder_core_member_file_page`); `governed` and `legacy` are unchanged. A client reads a `folder`
+  company with the functions below, never with the governed Company File calls.
+
+- `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
+  `entry` null when not found; an entry has
+  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`.
+- `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
+  folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
+  for the next page, null on the last.
+- `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
+  `before`.
+- `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
+  first (1 to 50 examined a page), each `{seq, at, by, paths, more}`: the first 20 readable paths in unit order
+  (`path`, `op`, `kind`, `version`), `more` when there are others or more than 1,000 versions. A change set none of
+  whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
+  `before`.
+- `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
+  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  again from the top.
+- `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
+- `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
+  chunk) of a file the member may read, now or in a version they may read. Clients fetch bytes from the gateway
+  (P27b), not with this call.
+
 ## 3. Realtime
+
+Every private topic's policies on `realtime.messages` also require the row's
+topic to be the joined one (`realtime.messages.topic = (select realtime.topic())`;
+presence and room drafts since migration `20260930017000_realtime_topic_equality`):
+a client joined to one topic reads, and where it may publish writes, only that
+topic's rows. A new private topic's policies must do the same.
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
@@ -805,6 +858,14 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   any active member of the room edits an existing draft. Access is the room post
   rule: an active member of an active room. Drafts never send, wake or sponsor
   anything; the owner sends with `qorpera_post_company_room_message` as before.
+- `qorpera-folder-{environmentId}` — a folder-v2 company's folder changed (migration
+  `20260930013100_folder_core_member_hint`, folder core C4 P30). Private broadcast channel, event `folder`,
+  payload `{"schema":"qorpera.folder-hint/v1","seq":<n>}` and nothing else: the folder's clock reached seq `n` (a
+  change set or an authority change; the same number as the feed's seq and a run's `companySeq`). Members of the
+  company receive it, not while it is being deleted (RLS on `realtime.messages` via `qorpera_folder_hint_member`);
+  nobody publishes but the database. `CloudMemberFolderHints` (cloud-client) follows it.
+  Topic name from `qorpera_folder_hint_topic`. A nudge only: on a hint, ask `qorpera_member_folder_changes` from the
+  position you hold, at most about once a second, and keep a slow poll for hints missed while disconnected.
 - `qorpera-orchestrator-wake-{64 hex}` — **node only, not for clients**
   (migration `20260928319550_runtime_orchestrator_wake`). A runner orchestrator's
   wake-up: while `qorpera_orchestrator_wake_settings.enabled` is on, the database
@@ -823,6 +884,11 @@ only after durable storage.
 - `GET/PUT /v1/member-company-file/…` — logical Company File reads and writes
   through the authority layer
 - `GET/PUT /v1/member-company-objects/…` — content-addressed objects
+- `GET /v1/member-folder-objects/<environmentId>/<sha256>` — a folder-v2 company's bytes for a member (folder core
+  C4, P27b), one manifest or chunk of a file the member may read, now or in a version they may read
+  (`qorpera_member_folder_object`, checked before and after the read). Behind the member company gateway like the
+  other member routes. `CloudMemberFolderClient.readFile` fetches the manifest, then its chunks, and checks each
+  against its hash and the whole against the file's.
 - `/v1/member-session-attachments/…` — attachments on canonical sessions
 - `POST /v1/read-leases/revoke` — revoke a read lease
 - `/v1/native-company-objects/…` — runner-only, not for clients

@@ -613,6 +613,22 @@ describe("authorized envelope", () => {
 		const unpinned = { ...envelope, pins: withoutPin as typeof envelope.pins };
 		expect(() => parseCloudWakeEnvelope(unpinned, authority.identity)).toThrow();
 	});
+	it("admits a folder-v2 wake's companySeq pin, only beside no snapshot (P28)", () => {
+		const { authority, envelope } = fixture();
+		const sequenced = (companySeq: unknown, companySnapshotId: unknown = null) => ({
+			...envelope,
+			pins: { ...envelope.pins, companySnapshotId, companySeq },
+		});
+		expect(parseCloudWakeEnvelope(sequenced(42), authority.identity).pins.companySeq).toBe(42);
+		expect(parseCloudWakeEnvelope(sequenced(0), authority.identity).pins.companySeq).toBe(0);
+		expect(parseCloudWakeEnvelope(envelope, authority.identity).pins.companySeq).toBeUndefined();
+		for (const bad of [-1, 1.5, "42", null, Number.MAX_SAFE_INTEGER + 1])
+			expect(() => parseCloudWakeEnvelope(sequenced(bad), authority.identity)).toThrow();
+		expect(() => parseCloudWakeEnvelope(sequenced(42, randomUUID()), authority.identity)).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...envelope, pins: { ...envelope.pins, companySequence: 42 } }, authority.identity),
+		).toThrow();
+	});
 	it("rejects synthetic runtime bundle pins and repeated causal recipients", () => {
 		const { authority, envelope } = fixture();
 		expect(() =>

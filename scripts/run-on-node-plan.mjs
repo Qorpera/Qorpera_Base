@@ -182,7 +182,7 @@ export const STEPS = [
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
@@ -208,6 +208,10 @@ export const STEPS = [
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
+			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
+			// So does company creation's worker script (P14b).
+			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency)\.ts$/,
+			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),

@@ -548,8 +548,10 @@ agent's folder and has no file of its own.
 shared by all agents: the service, the account, its status, the actions agents
 may take with it, and who connected it and when.
 
-- Only the platform writes these fields, in the same step as the vault record.
-  A save that changes them is refused.
+- Only the platform writes these fields. A vault change marks the file due,
+  and the platform's writer then brings it to the vault's current state
+  (amended 3 October 2026, P22: `deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`
+  §3 step 4). A save that changes them is refused.
 - The vault and the operation grants (11.5) stay the authority for the secret,
   its status and what agents may do. The file shows them.
 - The body says what the connection is for and is company-authored.
@@ -819,9 +821,11 @@ subscriptions, which self-limit.
 > exit's line guard: TCP port 25 is refused, and a brake on bursts of new
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
-> leaves through the agent exit", section 19, item 9). Proposed, pending
-> Jonas: at most 16,384 connections per machine through the exit and 98,304
-> per node, bounds that protect the node (item 4).
+> leaves through the agent exit", section 19, item 9). It also holds the
+> exit's connection bounds (decided by the runtime coordinator on 3 October;
+> Jonas may change them): at most 16,384 open connections per machine through
+> the exit and 98,304 per node, an infrastructure guard for the node's
+> connection table, not a limit on the work (item 4).
 
 ## 8. Wake bus
 
@@ -4679,9 +4683,10 @@ amendment governs. In-place edits are marked "(changed in place)".
 
 Founder decision of 2 October 2026 ("completely agree… let's fix this", then "I approve" for the design page
 "Agent Exit", https://claude.ai/artifact/GPjfKe2YagNeMzkQMrY95r). The page's four choices were set as recommended by
-the runtime coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. Two rules here
-are the design session's proposals of 3 October and wait for Jonas: the connection bounds (item 4) and what happens
-when only the log is down (item 10). Not built yet. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md`. The guest
+the runtime coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. Two rules the
+page did not cover, the connection bounds (item 4) and what happens when only the log is down (item 10), were decided
+by the runtime coordinator on 3 October on Jonas's standing request that it settle his open questions; he may still
+change them. Not built yet. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md`. The guest
 guard (step E-1, enforcing on both nodes since 2 October, `deploy/guest-guard/`) already keeps every guest on our
 bridges away from the NAS, the nodes and every tailnet service it does not list; it stays for our own guests.
 
@@ -4732,26 +4737,27 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
    (item 9). The other refusals answer at once.
 
-   Proposed, pending Jonas: each machine holds at most 16,384 open connections through the exit at once, and the
-   exit on a node at most 98,304 in all. Like 7.4's storage bounds, they protect the node and are not a limit on the
-   work.
-   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October), and in phase 1 each
-     agent connection takes two of them (the bridged leg and the masqueraded leg). The total bounds open connections
-     only: a closed connection stays in both tables for a while (120 seconds by default), and so does a refused
-     attempt (10 seconds for TCP, 30 for UDP, 600 for other protocols). Step E2's proof on a node measures the table
-     under such floods, and the total's cost, before Jonas decides.
+   Each machine holds at most 16,384 open connections through the exit at once, and the exit on a node at most
+   98,304 in all (decided by the runtime coordinator on 3 October; Jonas may change them). They are an
+   infrastructure guard for the node's connection table, far above normal use, and not a limit on the work.
+   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October). In phase 1 each agent
+     connection takes one entry in the exit's own table and one, the masqueraded leg, in the node's; the node does
+     not track the bridged leg (step E2). The total bounds open connections only: a closed connection stays in both
+     tables for a while (120 seconds by default), and a refused attempt in the exit's (10 seconds for TCP, 30 for
+     UDP, 600 for other protocols). Step E2's proof on LXD measures the tables under such floods, and the total's
+     cost, before any node is switched on.
    - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
      bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
    - One company with six busy machines on a node could reach the node's total; until its connections close, every
      other company's new connections on that node are refused.
 5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
    (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
-   - On an execution host, the existing model relay carries them.
-   - In a coding machine, a provider door carries them. It is a new node service for coding machines only. It
-     passes a connection only when the server name in its TLS handshake is one of the providers' names. It reads
-     nothing else. In a coding machine every connection to a provider's name goes through the door, an agent's
-     own included.
-   - On every other agent road machine, a call to an AI service is agent traffic like any other.
+   - On an execution host, the existing model relay carries them. A coding turn's model program runs there too
+     (`deploy/coding-worker/README.md`); its coding machine only runs commands.
+   - No agent road machine runs one of our model programs today, so none needs a door of its own. If one ever
+     does, a provider door for it (a pass-through that reads only the TLS server name) is designed and built
+     before that machine moves to the exit (corrected 3 October, step E2a; design §5).
+   - On an agent road machine, a call to an AI service is agent traffic like any other, an agent's own included.
 6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
    addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
    stay a person's task in the person's own browser (`deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md`). Once the block
@@ -4809,9 +4815,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
       commands there see network errors. Agent traffic never falls back to the platform road. On a Company Computer
       this rests on the computer's own rules: agents' browser, shells, terminal and desktop reach only its agent
       network card, and agents cannot change those rules (item 12's acceptance proves both).
-    - If only the log is down, traffic continues and the time is a gap in the log (item 7). Proposed, pending
-      Jonas: a short gap in the log is preferred over cutting running work. (Each restart of the logger in an update
-      leaves a short gap either way.)
+    - If only the log is down, traffic continues and the time is a gap in the log (item 7); the exit's refusals stay
+      in force. A short gap in the log is preferred over cutting running work (decided by the runtime coordinator on
+      3 October; Jonas may change it). Each restart of the logger in an update leaves a short gap either way.
     - A company rule applies at once, without a restart.
 11. **Companies share the agent addresses.** The line guard and the log keep one company from spoiling them for
     the rest. Addresses per company (IPv6) are a later decision.
@@ -4819,7 +4825,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
     - a Company Computer's browser and one of its shells (with a non-HTTP connection), an agent's machine and a coding
       machine each reach a website through the exit, and the exit's log names their company;
     - the NAS, the nodes, Tailscale and cloud metadata stay unreachable from them, and TCP port 25 is refused;
-    - a coding turn's model traffic leaves through the provider door and is absent from the exit's log;
+    - a coding turn's model traffic leaves through the execution host's model relay and is absent from the exit's
+      log;
     - with the exit failed, none of them reaches the internet; a Company Computer whose agent network card is gone
       does not reach it through its own network either, and its agents cannot change that;
     - a company's block list refuses a name for that company and for no other;
@@ -4843,8 +4850,7 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 - The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
   `rules/network.toml`.
 - 5.6: `rules/` also holds `network.toml` (changed in place).
-- 7.4: the line guard joins what remains, and the connection bounds of item 4 would join it if Jonas agrees
-  (changed in place).
+- 7.4: the line guard and the connection bounds of item 4 join what remains (changed in place).
 - Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
 - Section 23: the agent exit is a network path, with item 10 as its failure behaviour (changed in place).
 

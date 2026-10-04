@@ -2572,7 +2572,8 @@ export class ConversationView {
 						"a",
 						{
 							class: "btn btn-small",
-							href: `#/c/${profileId}/${proposalId ? `proposal/${proposalId}` : "file"}`,
+							// The Company File: a proposal has no page of its own (folder-v2 reviews in chat).
+							href: `#/c/${profileId}/file`,
 						},
 						t("Review"),
 					)

@@ -12,6 +12,7 @@ const runnerId = "33333333-3333-4333-8333-333333333333";
 const assignmentId = "44444444-4444-4444-8444-444444444444";
 const routineId = "55555555-5555-4555-8555-555555555555";
 const occurrenceId = "66666666-6666-4666-8666-666666666666";
+const profileId = "77777777-7777-4777-8777-777777777777";
 const token = "a".repeat(43);
 
 describe("runner orchestrator boundary", () => {
@@ -159,6 +160,79 @@ describe("runner orchestrator boundary", () => {
 				}),
 			);
 		}
+	});
+
+	it("parses the folder-v2 dynamic routines' list and per-routine restore", () => {
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_dynamic_routines", orchestratorId, limit: 250 }),
+			{ action: "folder_dynamic_routines", orchestratorId, limit: 250 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "folder_dynamic_routines",
+				orchestratorId,
+				afterRoutineId: routineId,
+				limit: 1,
+			}),
+			{ action: "folder_dynamic_routines", orchestratorId, afterRoutineId: routineId, limit: 1 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "restore_dynamic_routine",
+				orchestratorId,
+				routineId,
+				expectedVersion: 4,
+			}),
+			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 4 },
+		);
+		for (const limit of [0, 501, 1.5, "10"]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_dynamic_routines", orchestratorId, limit }));
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_dynamic_routines", orchestratorId, afterRoutineId: "x", limit: 1 }),
+		);
+		for (const expectedVersion of [0, 1_000_001, undefined]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion }),
+			);
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "restore_dynamic_routine", orchestratorId, routineId: "x", expectedVersion: 1 }),
+		);
+	});
+
+	it("parses the folder-v2 due companies and one company's materialization", () => {
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_materialize_due", orchestratorId, limit: 100 }),
+			{ action: "folder_materialize_due", orchestratorId, limit: 100 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "folder_materialize_due",
+				orchestratorId,
+				afterProfileId: profileId,
+				limit: 1,
+			}),
+			{ action: "folder_materialize_due", orchestratorId, afterProfileId: profileId, limit: 1 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_materialize_company", orchestratorId, profileId, limit: 16 }),
+			{ action: "folder_materialize_company", orchestratorId, profileId, limit: 16 },
+		);
+		for (const limit of [0, 501, 1.5, "10"]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_materialize_due", orchestratorId, limit }));
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_materialize_due", orchestratorId, afterProfileId: "x", limit: 1 }),
+		);
+		for (const limit of [0, 17, undefined]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({ action: "folder_materialize_company", orchestratorId, profileId, limit }),
+			);
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_materialize_company", orchestratorId, profileId: "x", limit: 1 }),
+		);
 	});
 
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {

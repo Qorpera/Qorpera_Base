@@ -173,6 +173,48 @@ export interface CloudRoutineNextDue {
 	nextDueAt?: string;
 }
 
+/** A folder-v2 company's dynamic routine that may be missing its next run (folder core C1c-3e). */
+export interface CloudFolderDynamicRoutine {
+	routineId: string;
+	version: number;
+}
+
+export interface CloudFolderDynamicRoutinePage {
+	items: readonly CloudFolderDynamicRoutine[];
+	hasMore: boolean;
+	nextAfterRoutineId?: string;
+}
+
+/** What the per-routine restore did: `inserted` its next run, or why it inserted none. */
+export interface CloudFolderDynamicRoutineRun {
+	status:
+		| "inserted"
+		| "pending"
+		| "running"
+		| "changed"
+		| "gone"
+		| "not_folder"
+		| "paused"
+		| "busy"
+		| "stopped"
+		| "ended"
+		| "suspended";
+	occurrenceId?: string;
+}
+
+/** A page of folder-v2 companies with work to turn into runs (folder core C4, P28). */
+export interface CloudFolderMaterializationPage {
+	items: readonly string[];
+	hasMore: boolean;
+	nextAfterProfileId?: string;
+}
+
+/** What one company's materialization did: `done` with the runs it made, or why it made none. */
+export interface CloudFolderMaterialization {
+	state: "done" | "idle" | "paused" | "at_zero" | "not_folder";
+	runIds: readonly string[];
+}
+
 export interface CloudRoutineWakeOccurrence {
 	occurrenceId: string;
 	status: "queued" | "materialized" | "completed" | "failed" | "requires_review" | "cancelled" | "deferred";
@@ -189,6 +231,27 @@ export interface CloudRunnerOrchestratorControlPlane {
 	): Promise<CloudRoutineSchedulePage>;
 	enqueueRoutineWake(input: EnqueueCloudRoutineWakeInput, signal?: AbortSignal): Promise<CloudRoutineWakeOccurrence>;
 	advanceRoutineNextDue(input: AdvanceCloudRoutineNextDueInput, signal?: AbortSignal): Promise<CloudRoutineNextDue>;
+	/** Folder-v2 dynamic routines (folder core C1c-3e): each next run in its own company's transaction. */
+	listFolderDynamicRoutines?(
+		afterRoutineId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutinePage>;
+	restoreFolderDynamicRoutineRun?(
+		routine: CloudFolderDynamicRoutine,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutineRun>;
+	/** Folder-v2 runs (folder core C4, P28): each company's work in its own transaction. */
+	listFolderMaterializationDue?(
+		afterProfileId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderMaterializationPage>;
+	materializeFolderCompany?(
+		profileId: string,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderMaterialization>;
 	reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void>;
 	retainedClaims(orchestratorId: string, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]>;
 	claimNext(
@@ -226,6 +289,15 @@ export interface CloudRoutineScheduleReconcilerOptions {
 	now?: () => Date;
 	pageSize?: number;
 	catchUpLimit?: number;
+	/** How often the folder-v2 dynamic routines are listed (folder core C1c-3e); default 30 s. */
+	folderDynamicIntervalMs?: number;
+}
+
+export interface CloudFolderRunMaterializerOptions {
+	now?: () => Date;
+	pageSize?: number;
+	/** At most this many of one company's items per request (1 to 16; default 16). */
+	companyLimit?: number;
 }
 
 export interface CloudRunnerProviderAdapter {
@@ -339,6 +411,10 @@ type CloudRunnerOrchestratorRequest =
 			expectedLastScheduledFor?: string;
 			nextDueAt: string;
 	  }
+	| { action: "folder_dynamic_routines"; orchestratorId: string; afterRoutineId?: string; limit: number }
+	| { action: "restore_dynamic_routine"; orchestratorId: string; routineId: string; expectedVersion: number }
+	| { action: "folder_materialize_due"; orchestratorId: string; afterProfileId?: string; limit: number }
+	| { action: "folder_materialize_company"; orchestratorId: string; profileId: string; limit: number }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| { action: "claim"; orchestratorId: string; clientClaimId: string; leaseSeconds: number }
@@ -554,6 +630,108 @@ function parseRoutineNextDue(value: unknown): CloudRoutineNextDue {
 			? undefined
 			: responseTimestamp(input.next_due_at, "routine next due time");
 	return { status: input.status, ...(nextDueAt ? { nextDueAt } : {}) };
+}
+
+function parseFolderDynamicRoutinePage(value: unknown): CloudFolderDynamicRoutinePage {
+	const input = record(value, "folder dynamic routine page");
+	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
+		throw new Error("Runner orchestrator returned invalid folder dynamic routine page");
+	}
+	const nextAfterRoutineId =
+		input.next_after_routine_id === null || input.next_after_routine_id === undefined
+			? undefined
+			: responseUuid(input.next_after_routine_id, "folder dynamic routine cursor");
+	if (input.has_more !== (nextAfterRoutineId !== undefined)) {
+		throw new Error("Runner orchestrator returned inconsistent folder dynamic routine pagination");
+	}
+	return {
+		items: input.items.map((value) => {
+			const item = record(value, "folder dynamic routine");
+			if (
+				!Number.isSafeInteger(item.version) ||
+				(item.version as number) < 1 ||
+				(item.version as number) > 1_000_000
+			) {
+				throw new Error("Runner orchestrator returned an invalid folder dynamic routine version");
+			}
+			return {
+				routineId: responseUuid(item.routine_id, "folder dynamic routine id"),
+				version: item.version as number,
+			};
+		}),
+		hasMore: input.has_more,
+		...(nextAfterRoutineId ? { nextAfterRoutineId } : {}),
+	};
+}
+
+const FOLDER_DYNAMIC_ROUTINE_RUN_STATUSES = new Set<CloudFolderDynamicRoutineRun["status"]>([
+	"inserted",
+	"pending",
+	"running",
+	"changed",
+	"gone",
+	"not_folder",
+	"paused",
+	"busy",
+	"stopped",
+	"ended",
+	"suspended",
+]);
+
+function parseFolderDynamicRoutineRun(value: unknown): CloudFolderDynamicRoutineRun {
+	const input = record(value, "folder dynamic routine run");
+	const status = input.status as CloudFolderDynamicRoutineRun["status"];
+	if (!FOLDER_DYNAMIC_ROUTINE_RUN_STATUSES.has(status)) {
+		throw new Error("Runner orchestrator returned an invalid folder dynamic routine status");
+	}
+	const occurrenceId =
+		input.occurrence_id === null || input.occurrence_id === undefined
+			? undefined
+			: responseUuid(input.occurrence_id, "folder dynamic routine occurrence id");
+	if (status === "inserted" && !occurrenceId) {
+		throw new Error("Runner orchestrator returned an inserted folder dynamic routine run without its id");
+	}
+	return { status, ...(occurrenceId ? { occurrenceId } : {}) };
+}
+
+function parseFolderMaterializationPage(value: unknown): CloudFolderMaterializationPage {
+	const input = record(value, "folder materialization page");
+	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
+		throw new Error("Runner orchestrator returned invalid folder materialization page");
+	}
+	const nextAfterProfileId =
+		input.next_after_profile_id === null || input.next_after_profile_id === undefined
+			? undefined
+			: responseUuid(input.next_after_profile_id, "folder materialization cursor");
+	if (input.has_more !== (nextAfterProfileId !== undefined)) {
+		throw new Error("Runner orchestrator returned inconsistent folder materialization pagination");
+	}
+	return {
+		items: input.items.map((value) => responseUuid(record(value, "folder company").profile_id, "folder company id")),
+		hasMore: input.has_more,
+		...(nextAfterProfileId ? { nextAfterProfileId } : {}),
+	};
+}
+
+const FOLDER_MATERIALIZATION_STATES = new Set<CloudFolderMaterialization["state"]>([
+	"done",
+	"idle",
+	"paused",
+	"at_zero",
+	"not_folder",
+]);
+
+function parseFolderMaterialization(value: unknown): CloudFolderMaterialization {
+	const input = record(value, "folder materialization");
+	const state = input.state as CloudFolderMaterialization["state"];
+	if (!FOLDER_MATERIALIZATION_STATES.has(state)) {
+		throw new Error("Runner orchestrator returned an invalid folder materialization state");
+	}
+	if (state === "done" && !Array.isArray(input.run_ids)) {
+		throw new Error("Runner orchestrator returned a folder materialization without its runs");
+	}
+	const runIds = state === "done" ? (input.run_ids as unknown[]) : [];
+	return { state, runIds: runIds.map((id) => responseUuid(id, "folder materialized run id")) };
 }
 
 function parseExecutionSponsor(value: unknown): CloudExecutionSponsorPin {
@@ -1277,16 +1455,29 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	 * scheduling as before for a while, instead of failing every poll, then ask
 	 * again in case the edge function was deployed meanwhile. */
 	#advancePausedUntil = 0;
+	/** The same for the folder-v2 dynamic routines' actions (folder core C1c-3e). */
+	#folderDynamicPausedUntil = 0;
+	/** The folder-v2 dynamic routines are listed at most this often, not on every poll. */
+	readonly #folderDynamicIntervalMs: number;
+	#folderDynamicNextAt = 0;
 
 	constructor(options: CloudRoutineScheduleReconcilerOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
 		this.#pageSize = options.pageSize ?? 250;
 		this.#catchUpLimit = options.catchUpLimit ?? 32;
+		this.#folderDynamicIntervalMs = options.folderDynamicIntervalMs ?? 30_000;
 		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
 			throw new Error("Routine schedule page size is outside the supported range");
 		}
 		if (!Number.isSafeInteger(this.#catchUpLimit) || this.#catchUpLimit < 1 || this.#catchUpLimit > 256) {
 			throw new Error("Routine schedule catch-up limit is outside the supported range");
+		}
+		if (
+			!Number.isSafeInteger(this.#folderDynamicIntervalMs) ||
+			this.#folderDynamicIntervalMs < 0 ||
+			this.#folderDynamicIntervalMs > 3_600_000
+		) {
+			throw new Error("Folder dynamic routine interval is outside the supported range");
 		}
 	}
 
@@ -1353,6 +1544,109 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
 			if (page.hasMore && !afterRoutineId) throw new Error("Routine schedule pagination lost its cursor");
 		} while (afterRoutineId);
+		await this.#restoreFolderDynamicRoutines(controlPlane, failures, signal);
+		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
+	}
+
+	/** A folder-v2 dynamic routine's next run: one restore per listed routine, each in its own company's transaction
+	 * (the legacy tick inside `reconcile` skips folder-v2). One routine's failure never stops the others. */
+	async #restoreFolderDynamicRoutines(
+		controlPlane: CloudRunnerOrchestratorControlPlane,
+		failures: unknown[],
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (!controlPlane.listFolderDynamicRoutines || !controlPlane.restoreFolderDynamicRoutineRun) return;
+		const now = this.#now().getTime();
+		if (now < this.#folderDynamicPausedUntil || now < this.#folderDynamicNextAt) return;
+		this.#folderDynamicNextAt = now + this.#folderDynamicIntervalMs;
+		let afterRoutineId: string | undefined;
+		do {
+			let page: CloudFolderDynamicRoutinePage;
+			try {
+				page = signal
+					? await controlPlane.listFolderDynamicRoutines(afterRoutineId, this.#pageSize, signal)
+					: await controlPlane.listFolderDynamicRoutines(afterRoutineId, this.#pageSize);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
+					this.#folderDynamicPausedUntil = now + ROUTINE_ADVANCE_RETRY_MS;
+				}
+				failures.push(error);
+				return;
+			}
+			for (const routine of page.items) {
+				try {
+					if (signal) await controlPlane.restoreFolderDynamicRoutineRun(routine, signal);
+					else await controlPlane.restoreFolderDynamicRoutineRun(routine);
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					failures.push(error);
+				}
+			}
+			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
+			if (page.hasMore && !afterRoutineId) throw new Error("Folder dynamic routine pagination lost its cursor");
+		} while (afterRoutineId);
+	}
+}
+
+/** Folder-v2 runs (folder core C4, P28): every company with due work in its own request, so each is its own
+ * transaction (one company per admitting transaction, core §3 step 10). The legacy materializers inside `reconcile`
+ * skip folder-v2. One company's failure never stops the others. */
+export class CloudFolderRunMaterializer implements CloudRunnerOccurrenceReconciler {
+	readonly #now: () => Date;
+	readonly #pageSize: number;
+	readonly #companyLimit: number;
+	/** A control plane that answers the list with 400 does not know it yet (its edge function predates this
+	 * orchestrator): report that once and ask again after a while. */
+	#pausedUntil = 0;
+
+	constructor(options: CloudFolderRunMaterializerOptions = {}) {
+		this.#now = options.now ?? (() => new Date());
+		this.#pageSize = options.pageSize ?? 100;
+		this.#companyLimit = options.companyLimit ?? 16;
+		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
+			throw new Error("Folder materialization page size is outside the supported range");
+		}
+		if (!Number.isSafeInteger(this.#companyLimit) || this.#companyLimit < 1 || this.#companyLimit > 16) {
+			throw new Error("Folder materialization company limit is outside the supported range");
+		}
+	}
+
+	async reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void> {
+		if (!controlPlane.listFolderMaterializationDue || !controlPlane.materializeFolderCompany) return;
+		const now = this.#now().getTime();
+		if (now < this.#pausedUntil) return;
+		const failures: unknown[] = [];
+		let afterProfileId: string | undefined;
+		do {
+			let page: CloudFolderMaterializationPage;
+			try {
+				page = signal
+					? await controlPlane.listFolderMaterializationDue(afterProfileId, this.#pageSize, signal)
+					: await controlPlane.listFolderMaterializationDue(afterProfileId, this.#pageSize);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
+					this.#pausedUntil = now + ROUTINE_ADVANCE_RETRY_MS;
+				}
+				failures.push(error);
+				break;
+			}
+			for (const profileId of page.items) {
+				try {
+					if (signal) await controlPlane.materializeFolderCompany(profileId, this.#companyLimit, signal);
+					else await controlPlane.materializeFolderCompany(profileId, this.#companyLimit);
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					failures.push(error);
+				}
+			}
+			const next = page.hasMore ? page.nextAfterProfileId : undefined;
+			if (page.hasMore && !next) throw new Error("Folder materialization pagination lost its cursor");
+			if (next !== undefined && afterProfileId !== undefined && next <= afterProfileId)
+				throw new Error("Folder materialization pagination did not move forward");
+			afterProfileId = next;
+		} while (afterProfileId);
 		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
 	}
 }
@@ -1631,7 +1925,12 @@ export class CloudRunnerOrchestrator {
 		this.#orchestratorId = options.orchestratorId;
 		this.#controlPlane = options.controlPlane;
 		this.#providerAdapter = options.providerAdapter;
-		this.#occurrenceReconcilers = [new CloudRoutineScheduleReconciler(), ...(options.occurrenceReconcilers ?? [])];
+		// The folder materializer first: a routine schedule outage (whose list error ends the pass) never stops runs.
+		this.#occurrenceReconcilers = [
+			new CloudFolderRunMaterializer(),
+			new CloudRoutineScheduleReconciler(),
+			...(options.occurrenceReconcilers ?? []),
+		];
 		this.#claimLeaseSeconds = requiredSeconds(options.claimLeaseSeconds ?? 120, "Orchestration lease", 900);
 		this.#claimRenewalIntervalMs =
 			options.claimRenewalIntervalMs ?? Math.max(10_000, Math.floor((this.#claimLeaseSeconds * 1000) / 3));
@@ -2277,6 +2576,90 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			signal,
 		);
 		return parseRoutineNextDue(advanced);
+	}
+
+	async listFolderDynamicRoutines(
+		afterRoutineId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutinePage> {
+		if (afterRoutineId !== undefined) requiredUuid(afterRoutineId, "Folder dynamic routine cursor");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+			throw new Error("Folder dynamic routine page limit is outside the supported range");
+		}
+		return parseFolderDynamicRoutinePage(
+			await this.#request(
+				{
+					action: "folder_dynamic_routines",
+					orchestratorId: this.#orchestratorId,
+					...(afterRoutineId ? { afterRoutineId } : {}),
+					limit,
+				},
+				signal,
+			),
+		);
+	}
+
+	async restoreFolderDynamicRoutineRun(
+		routine: CloudFolderDynamicRoutine,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDynamicRoutineRun> {
+		requiredUuid(routine.routineId, "Routine id");
+		if (!Number.isSafeInteger(routine.version) || routine.version < 1 || routine.version > 1_000_000) {
+			throw new Error("Routine version is invalid");
+		}
+		return parseFolderDynamicRoutineRun(
+			await this.#request(
+				{
+					action: "restore_dynamic_routine",
+					orchestratorId: this.#orchestratorId,
+					routineId: routine.routineId,
+					expectedVersion: routine.version,
+				},
+				signal,
+			),
+		);
+	}
+
+	async listFolderMaterializationDue(
+		afterProfileId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderMaterializationPage> {
+		if (afterProfileId !== undefined) requiredUuid(afterProfileId, "Folder materialization cursor");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+			throw new Error("Folder materialization page limit is outside the supported range");
+		}
+		const page = parseFolderMaterializationPage(
+			await this.#request(
+				{
+					action: "folder_materialize_due",
+					orchestratorId: this.#orchestratorId,
+					...(afterProfileId ? { afterProfileId } : {}),
+					limit,
+				},
+				signal,
+			),
+		);
+		if (page.items.length > limit) throw new Error("Runner orchestrator returned more folder companies than asked");
+		return page;
+	}
+
+	async materializeFolderCompany(
+		profileId: string,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderMaterialization> {
+		requiredUuid(profileId, "Company id");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16) {
+			throw new Error("Folder materialization limit is outside the supported range");
+		}
+		return parseFolderMaterialization(
+			await this.#request(
+				{ action: "folder_materialize_company", orchestratorId: this.#orchestratorId, profileId, limit },
+				signal,
+			),
+		);
 	}
 
 	async reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void> {

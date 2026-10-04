@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { CompanyBootstrapProvisioner } from "./company-bootstrap.ts";
+import { CompanyFolderCreator } from "./company-folder-creation.ts";
+import { ConnectionFileWriter } from "./connection-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
@@ -53,6 +55,40 @@ const companyBootstrap = new CompanyBootstrapProvisioner({
 	authorizeServiceDownload: (profileId, sha256) => authority.authorizeServiceDownload(profileId, sha256),
 	readLegacyObject: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
 });
+// The vault's connection-file writer (P22b): off unless QORPERA_CONNECTION_FILE_WRITER=1; the coordinator turns it on.
+// Its own database client (its own circuit, so a slow commit never refuses members' file requests) and its own loop.
+const connectionFiles =
+	process.env.QORPERA_CONNECTION_FILE_WRITER === "1"
+		? new ConnectionFileWriter({
+				workerId: process.env.QORPERA_CONNECTION_FILE_WORKER_ID?.trim() || randomUUID(),
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
+				store,
+				replication,
+				readFallback: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
+			})
+		: undefined;
+// Company creation's worker (P14b): off unless QORPERA_COMPANY_FOLDER_CREATOR=1; the coordinator turns it on. Its own
+// database client and its own loop, as the connection-file writer's.
+const companyCreation =
+	process.env.QORPERA_COMPANY_FOLDER_CREATOR === "1"
+		? new CompanyFolderCreator({
+				workerId: process.env.QORPERA_COMPANY_FOLDER_CREATOR_WORKER_ID?.trim() || randomUUID(),
+				// The creation commit is one larger transaction: a longer limit than a member's call, so a slow create
+				// does not open this client's circuit and refuse the release that follows.
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+					requestTimeoutMs: 30_000,
+				}),
+				store,
+				replication,
+			})
+		: undefined;
 const handler = createObjectGatewayHandler({
 	store,
 	authority,
@@ -61,6 +97,7 @@ const handler = createObjectGatewayHandler({
 	replication,
 	folderGc,
 	memberObjects: authority,
+	memberFolderObjects: authority,
 	memberObservations: new MemberCompanyObservations(),
 	memberClientOrigins: JSON.parse(process.env.QORPERA_MEMBER_CLIENT_ORIGINS ?? "[]"),
 	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),
@@ -109,6 +146,39 @@ if (process.argv[2] === "migrate") {
 		void maintain();
 	}, 15_000);
 	void maintain();
+	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
+	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
+	let writing = false;
+	const writeConnectionFiles = async (): Promise<void> => {
+		if (!connectionFiles || writing) return;
+		writing = true;
+		try {
+			await connectionFiles.writeDue(10, AbortSignal.timeout(60_000));
+		} catch {
+			process.stderr.write("Connection file writer requires operator attention\n");
+		} finally {
+			writing = false;
+		}
+	};
+	const connectionFileWrites = setInterval(() => {
+		void writeConnectionFiles();
+	}, 15_000);
+	// Company creation's own loop: one drain at a time, at most five companies and 120 s per tick.
+	let creating = false;
+	const createCompanies = async (): Promise<void> => {
+		if (!companyCreation || creating) return;
+		creating = true;
+		try {
+			await companyCreation.createDue(5, AbortSignal.timeout(120_000));
+		} catch {
+			process.stderr.write("Company creation worker requires operator attention\n");
+		} finally {
+			creating = false;
+		}
+	};
+	const companyCreations = setInterval(() => {
+		void createCompanies();
+	}, 15_000);
 	server.listen(port(process.env), host, () => {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
@@ -116,6 +186,8 @@ if (process.argv[2] === "migrate") {
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
 			clearInterval(maintenance);
+			clearInterval(connectionFileWrites);
+			clearInterval(companyCreations);
 			server.close(() => process.exit(0));
 		});
 	}

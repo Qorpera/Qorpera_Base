@@ -195,13 +195,15 @@ export function cloudActionEffect(
 		case "read_event":
 		case "find_mail":
 			return "read";
+		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
+		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
+		case "update_skill":
+			return args.action === "delete" ? "destructive" : "internal";
 		case "company_write":
 		case "company_mkdir":
 		// A received attachment saved into the company folder, through the same governed gateway (M2c-1).
 		case "save_attachment":
 		case "update_memory":
-		// A skill is guidance in the Company File, written through the same governed gateway.
-		case "update_skill":
 		case "organize_sidebar":
 		// An Ask first rule only makes agents more careful.
 		case "add_review_rule":
@@ -518,6 +520,10 @@ export function describeCloudAction(
 	} else if (tool.name === "company_delete") {
 		title = "Delete from the Company File";
 		target = text(args.path) || null;
+	} else if (tool.name === "update_skill") {
+		title = "Delete a skill";
+		target = text(args.name) || null;
+		add("library", args.scope === "company" ? "the company's skills" : "its own skills");
 	} else if (tool.name === "hire_agent") {
 		title = "Hire a new agent";
 		target = text(args.name) || text(args.displayName) || null;

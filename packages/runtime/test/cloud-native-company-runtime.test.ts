@@ -644,8 +644,10 @@ async function fixture(
 							if (text === undefined) throw new Error("No such folder bytes in this suite");
 							return new TextEncoder().encode(text);
 						},
-						range: async () => {
-							throw new Error("No folder byte ranges in this suite");
+						range: async (file: { fileSha256: string }, offset: number, length: number) => {
+							const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+							if (text === undefined) throw new Error("No such folder bytes in this suite");
+							return new TextEncoder().encode(text).subarray(offset, offset + length);
 						},
 					}),
 				}
@@ -940,7 +942,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v2",
+			schema: "qorpera.hire-overlay/v3",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1215,7 +1217,13 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
-	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_folder_list")).toHaveLength(1);
+	// The routine writer lists the routines folder once (composition lists the notebook and skills, P20).
+	expect(
+		f.pathCall.mock.calls.filter(
+			([method, args]) =>
+				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+		),
+	).toHaveLength(1);
 	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(1);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -1264,6 +1272,28 @@ it.each([true, false])(
 	},
 );
 
+it("releases what a folder-v2 run's composition read under the composed context, before the model starts", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	f.folderFiles.set("agents/nora/memory/profile.md", "- (2026-09-01) I am Nora, the bookkeeper\n");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const calls = f.pathCall.mock.calls;
+	const start = calls.findIndex(([method]) => method === "qorpera_begin_native_company_execution_v2");
+	const released = calls.findIndex(
+		([method, args]) =>
+			method === "qorpera_folder_record_release" &&
+			(args as { p_reads: { path: string }[] }).p_reads.some(
+				(read) => read.path === "agents/nora/memory/profile.md",
+			),
+	);
+	expect(released).toBeGreaterThanOrEqual(0);
+	expect(released).toBeLessThan(start);
+	// Under exactly the context the run starts with.
+	expect((calls[released]![1] as { p_output_sha256: string }).p_output_sha256).toBe(
+		(calls[start]![1] as { p_context_sha256: string }).p_context_sha256,
+	);
+});
+
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
 	const f = await fixture("company-dynamic", false, undefined, false, true);
 	f.context.folder = { agent: "nora", coworkers: {} };
@@ -1297,7 +1327,13 @@ it("has a folder-v2 dynamic routine run find its file by the woken routine's id"
 		),
 	).toBe(true);
 	expect(f.folderReleases).toHaveLength(1);
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_folder_list")).toBe(false);
+	// Found by the routine's id, without listing the routines folder (composition lists the notebook and skills, P20).
+	expect(
+		f.pathCall.mock.calls.some(
+			([method, args]) =>
+				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+		),
+	).toBe(false);
 });
 
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
