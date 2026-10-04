@@ -184,8 +184,15 @@ the migration checks its digest.
 - `qorpera_folder_object_readable`: the hash's manifests (the hash itself, and the manifests whose chunk rows name
   it), then an entry or path version of this environment with one of those manifests whose path the actor may read
   now (`qorpera_folder_actor_allowed`, current authority, for an old version too). So a private folder's old versions
-  stay the owner's. Open's `present` and the commit's possession check use the same function. Since P17 a conflict
-  copy at a path counts as an old version of it, so whoever may read the path can fetch the copy and commit it again.
+  stay the owner's. Open's `present` and the commit's possession check use the same function.
+  - Since P24c (migration 20260930039500, test 854) it checks the first eight live paths that name a hash one by one
+    (content many readable paths share is decided at the first), and only then decides every path that names it once
+    per covering resource (P24b's set-based `qorpera_folder_paths_authority`), so a hash many unreadable paths name
+    costs one pass, not one authority check per path. Open checks it on the upload's own present objects only: in one statement with the
+    company's catalog, a plan that scanned the catalog first ran it on every object the company stores (the C1e load
+    test's second finding: uploads took up to 6.8 s of CPU in about one run in three).
+  - Since P17 (migration 20260930042000) a conflict copy at a path counts as an old version of it in the set-based
+    pass, so whoever may read the path can fetch the copy and commit it again.
 
 It returns `{profileId, bytes}`. The bytes never form a read set: the read receipt comes from `qorpera_folder_read`,
 and releases cover what the model sees. The chunks of a version-1 proof (fixtures, and bytes staged before C1d) have no

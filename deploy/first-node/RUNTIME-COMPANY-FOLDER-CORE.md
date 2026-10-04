@@ -988,7 +988,11 @@ materializer, so on `folder-v2` admission is only the admission row's count.
 Machine admission is not driven. `--probe-only --big-paths N` times one run
 whose read set holds N paths, alone, with function statistics. Its first
 finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
-later slices"). Since C1c-3i every migration change runs it short (run-on-node's
+later slices"). Its second was the upload's presence check, which under a plan
+that scanned the company's catalog first checked every object it stores, fixed
+by P24c (C1D §7). It reports statements running over 2 s with their wait
+events, statements over 1 s with their plans (auto_explain), and PL/pgSQL
+functions by self time over the load. Since C1c-3i every migration change runs it short (run-on-node's
 `folder-core-load` step: 16 runs for 30 s and a 5,000-path read set), in place
 of the snapshot-era pool load.
 
