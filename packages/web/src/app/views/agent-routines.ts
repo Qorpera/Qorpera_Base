@@ -113,6 +113,26 @@ function runLabel(run: CloudRoutineOccurrence): string {
 	return `${status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
 }
 
+/** Why a paused routine waits, in plain words, or null when the cloud gave no reason this page knows. The reasons are
+ * the routine index's (`pause_reason`): a member or its agent paused it, it could not start three times with the access
+ * it had, no model account pays for it, or its agent is archived (F2's P15, which pauses an archived agent's routines). */
+function pauseWords(reason: string | undefined, agentName: string): string | null {
+	switch (reason) {
+		case "member":
+			return t("Paused by a member");
+		case "agent":
+			return t("Paused by {name}", { name: agentName });
+		case "authorization_failed":
+			return t("Paused: it could not start with the access it had");
+		case "needs_model_account":
+			return t("Paused: no model account pays for it");
+		case "agent_archived":
+			return t("Paused: its agent is archived");
+		default:
+			return null;
+	}
+}
+
 function controlLabel(control: Element): string {
 	return control.getAttribute("aria-label") ?? control.textContent ?? "";
 }
@@ -339,6 +359,11 @@ export class AgentRoutines {
 		const ended = routine.status === "expired" || routine.status === "concluded";
 		// A concluded routine plans no more runs; its agent's reason says why.
 		const concluded = routine.status === "concluded" ? routine.conclusion : null;
+		// Why a paused routine waits, while it is paused as the member sees it.
+		const paused =
+			routine.status === "paused" && !this.#runsNow(routine)
+				? pauseWords(routine.pauseReason, this.#agent().displayName)
+				: null;
 		const fact = (label: string, ...value: (Node | string | null)[]) =>
 			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
 		const lever = h("button", {
@@ -374,6 +399,7 @@ export class AgentRoutines {
 					},
 					h("strong", null, routine.title),
 					h("span", null, concluded ?? routine.triggers.map(whenShort).join("; ")),
+					paused ? h("span", { class: "routine-card-paused" }, paused) : null,
 				),
 				// An ended routine is read-only: a member save keeps its end (its expiry or run
 				// limit), so neither Edit nor Resume could start it again. Its agent can. The
@@ -503,17 +529,26 @@ export class AgentRoutines {
 	#setLever(lever: HTMLElement, routine: CloudRoutine, manage: boolean): void {
 		const id = routine.routineId;
 		const on = this.#runsNow(routine);
+		// A routine never runs under an archived agent: turned on, it is paused again at once.
+		const archived = this.#archived();
 		lever.setAttribute("aria-checked", String(on));
-		lever.title = manage
-			? on
-				? t("Pause routine")
-				: t("Resume routine")
-			: t("Only owners and admins can pause or resume routines.");
+		lever.title = !manage
+			? t("Only owners and admins can pause or resume routines.")
+			: archived && !on
+				? t("Reactivate the agent first")
+				: on
+					? t("Pause routine")
+					: t("Resume routine");
 		if (this.#moving === id) lever.setAttribute("aria-busy", "true");
 		else lever.removeAttribute("aria-busy");
-		lever.classList.toggle("is-locked", !manage);
-		if (!manage || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
+		const locked = !manage || (archived && !on);
+		lever.classList.toggle("is-locked", locked);
+		if (locked || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
 		else lever.removeAttribute("aria-disabled");
+	}
+	/** The agent is archived: its routines stay paused until it is active again. */
+	#archived(): boolean {
+		return this.#agent().employmentStatus === "archived";
 	}
 	/** Whether a routine runs, as the member sees it: where its switch was moved,
 	 * else the last read. An editor save keeps this, not the state it opened with. */
@@ -610,7 +645,7 @@ export class AgentRoutines {
 		}
 	}
 	async #toggle(routine: CloudRoutine): Promise<void> {
-		if (this.#busy || !this.#access?.canManage()) return;
+		if (this.#busy || !this.#access?.canManage() || (this.#archived() && !this.#runsNow(routine))) return;
 		const id = routine.routineId;
 		// Where the switch stood: a failed change puts it back there, even if that was a
 		// place it was moved to whose change no read has confirmed yet.
