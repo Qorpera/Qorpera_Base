@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import {
 	isNativeHostPublishableKey,
 	NATIVE_HOST_CALLS,
@@ -85,10 +85,10 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 });
 
 it("lists exactly the calls the host makes between jobs, as the identity entry point allows them", () => {
-	const migration = readFileSync(
-		new URL("../../../supabase/migrations/20260930005000_runtime_native_identity_call.sql", import.meta.url),
-		"utf8",
-	);
+	// By its name, not its number: a release cut renumbers the migrations it ships (v171 moved this one).
+	const migrations = new URL("../../../supabase/migrations/", import.meta.url);
+	const [file] = readdirSync(migrations).filter((name) => name.endsWith("_runtime_native_identity_call.sql"));
+	const migration = readFileSync(new URL(file, migrations), "utf8");
 	const insert = migration.slice(
 		migration.indexOf("insert into public.qorpera_native_identity_calls(name, scope, holder_kinds) values"),
 	);

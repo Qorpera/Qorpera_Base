@@ -356,7 +356,7 @@ end $$;
 -- at the owner's member row (rank 1) is refused; with the owner back, the answer runs on folder-v2: it holds the fence,
 -- the todo, the worker and the session while its transaction is open, and reopens the session for the next turn.
 create temporary table l_member on commit preserve rows as
-	select profile_id, user_id, email, display_name, role from public.qorpera_profile_members
+	select * from public.qorpera_profile_members
 	where profile_id = '64800000-0000-4000-8000-000000000010' and user_id = '64800000-0000-4000-8000-000000000002';
 create function pg_temp.answer_open(p_request uuid) returns void language plpgsql as $$
 begin
@@ -382,8 +382,7 @@ begin
 	v_state := pg_temp.outcome('fence_two');
 	perform dblink_exec('fence_two', 'rollback');
 	set local session_replication_role = replica;
-	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
-	select profile_id, user_id, email, display_name, role from l_member;
+	insert into public.qorpera_profile_members select * from l_member;
 	if v_state not like '42501 Coding session is unavailable%' then
 		raise exception 'L: an owner removed while the answer waited must be refused, got %', v_state; end if;
 end $$;
@@ -407,16 +406,55 @@ begin
 		raise exception 'L: the answer reopens the session for the next turn'; end if;
 end $$;
 
+-- M. The executor's quiet-session archive takes one environment's quiet sessions in one entry: while its transaction is
+-- open it holds that company's fence and both coding workers, and it archives both; the snapshot-v1 session is not its.
+do $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_runtime_workers set state = 'cancelled', result = '{"outcome":"cancelled","outputs":[]}'
+	where id = '82700000-0000-4000-8000-0000000000c2';
+	update public.qorpera_coding_sessions set updated_at = clock_timestamp() - interval '2 hours', busy_at = null
+	where worker_id in ('82700000-0000-4000-8000-0000000000c2', '82700000-0000-4000-8000-0000000000c3',
+		'82700000-0000-4000-8000-0000000000c9');
+	update public.qorpera_runtime_workers set state = 'cancelled', result = '{"outcome":"cancelled","outputs":[]}'
+	where id = '82700000-0000-4000-8000-0000000000c9';
+	update public.qorpera_coding_executors set session_archive_after_seconds = 3600 where owner = 'exec-827';
+end $$;
+do $$
+declare v_count integer;
+begin
+	perform dblink_exec('fence_two', 'begin');
+	select r::integer into v_count from dblink('fence_two', $q$select public.qorpera_archive_quiet_coding_sessions('exec-827')::text$q$)
+		as t(r text);
+	if v_count is distinct from 2 then
+		perform dblink_exec('fence_two', 'rollback'); raise exception 'M: both quiet sessions are archived, got %', v_count; end if;
+	if pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c2'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c3'$q$)
+		or not pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c9'$q$) then
+		perform dblink_exec('fence_two', 'rollback');
+		raise exception 'M: the archive holds its company''s fence and both workers, and nothing of the snapshot-v1 one'; end if;
+	perform dblink_exec('fence_two', 'commit');
+	if (select count(*) from public.qorpera_coding_sessions where archived_at is not null
+			and worker_id in ('82700000-0000-4000-8000-0000000000c2', '82700000-0000-4000-8000-0000000000c3')) <> 2
+		or exists (select 1 from public.qorpera_coding_sessions where archived_at is not null
+			and worker_id = '82700000-0000-4000-8000-0000000000c9') then
+		raise exception 'M: the folder-v2 sessions are archived, the snapshot-v1 one is not'; end if;
+end $$;
+
 -- G. The entry is internal, and every patched body carries the marker.
 do $$
 begin
-	if exists (select 1 from unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r
-		where has_function_privilege(r, 'public.qorpera_lock_coding_worker(uuid)', 'execute')) then
-		raise exception 'G: the coding worker entry must be internal'; end if;
+	if exists (select 1 from unnest(array['public', 'anon', 'authenticated', 'service_role', 'qorpera_secret_broker']) r,
+			unnest(array['public.qorpera_lock_coding_worker(uuid)', 'public.qorpera_lock_coding_workers(uuid[])',
+				'public.qorpera_coding_worker_targets(public.qorpera_runtime_workers)']) f
+		where has_function_privilege(r, f, 'execute')) then
+		raise exception 'G: the coding worker entries must be internal'; end if;
 	if exists (select 1 from unnest(array['public.qorpera_lock_coding_worker(uuid)', 'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
 			'public.qorpera_claim_coding_session(text,integer)', 'public.qorpera_delegate_coding_session(uuid,uuid)',
 			'public.qorpera_answer_coding_session(uuid,text,uuid)', 'public.qorpera_archive_coding_session(uuid,uuid)',
-			'public.qorpera_archive_quiet_coding_sessions(text)', 'public.qorpera_ask_quiet_coding_sessions(text)']) f
+			'public.qorpera_archive_quiet_coding_sessions(text)', 'public.qorpera_ask_quiet_coding_sessions(text)',
+			'public.qorpera_lock_coding_workers(uuid[])']) f
 		where position('20260930026000' in pg_get_functiondef(f::regprocedure)) = 0) then
 		raise exception 'G: a patched body lacks its marker'; end if;
 end $$;

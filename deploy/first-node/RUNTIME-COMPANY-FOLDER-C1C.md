@@ -1337,14 +1337,16 @@ refused with 0A000.
 - a candidate it does not take (an inactive worker, a live lease, another executor's pick, a switched-off node) raises
   QSK01, so its subtransaction, and every lock it took, rolls back (review r1: the fleet pick and the node switch used
   `continue`, which kept the candidate's locks);
-- it waits at most 1 s for any one lock (`lock_timeout`), then skips the candidate, so a company behind a stop or a
-  deletion never makes every claim run into PostgREST's 8 s statement timeout;
+- it waits at most 1 s for any one lock (`lock_timeout`), then skips the candidate and the rest of its company for that
+  call, so a company behind a stop or a deletion costs a claim at most 1 s (review r2);
 - failing an expired lease ends the call, and the next call takes the next candidate.
 
-**The executor's quiet-session archive** (`archive_quiet_coding_sessions`) takes `folder-v2` candidates of one company per
-call too (by company, then in todo order). The quiet check-ins it then asks (`ask_quiet_coding_sessions`, a legacy wake
-inserter with no fence) skip `folder-v2` sessions until 3i-b asks them per company: in the archive's transaction they
-would take its worker and company row more strongly than the entry already holds them.
+**The executor's quiet-session archive** (`archive_quiet_coding_sessions`) takes the quiet `folder-v2` sessions of one
+environment per call, up to 8. It enters their coding workers once, together (`qorpera_lock_coding_workers`: every
+worker's targets merged, so each rank is taken once in its tables' key order, and no rank is taken again after a later
+one, review r2), then archives each session in id order. The legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake
+inserter with no fence that locks other companies' coding rows NOWAIT) run only when the archive entered no company, and
+skip `folder-v2` sessions until 3i-b asks them per company.
 
 **The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
 archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
@@ -1370,7 +1372,9 @@ materializes its wake.
   - J: a non-owner's answer is refused at once while the worker is held (602's race 8);
   - K: a stop's second phase waits for the entry, as for the completion and the answer;
   - L: an owner removed while the answer waits at the owner's member row is refused; the owner's answer then runs,
-    holding the fence, the todo, the worker and the session, and reopens the session.
+    holding the fence, the todo, the worker and the session, and reopens the session;
+  - M: the quiet-session archive holds one company's fence and both quiet workers while it archives both, and leaves the
+    snapshot-v1 session alone.
 - The snapshot-v1 coding tests are deleted:
   - 395, 399, 600, 601, 602 (fleet), 603, 604, 606, 627, 655, 676, 719, 737, 739, 775 and 782;
   - also the coding-claim section of 640.

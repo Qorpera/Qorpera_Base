@@ -648,9 +648,11 @@ function statementTimeouts(lines) {
  * LWLocks, a busy CPU) shows here. */
 const slowStatements = new Map();
 async function sampler(port) {
+	// Diagnostics never fail the run: a sampler that cannot connect or loses its connection stops and says so.
 	const client = new pg.Client({ host: "127.0.0.1", port, user: "postgres", password, database });
-	await client.connect();
+	client.on("error", (error) => process.stdout.write(`sampler connection lost: ${error.message}\n`));
 	try {
+		await client.connect();
 		while (running()) {
 			const { rows } = await client.query(`select query, wait_event_type, wait_event,
 					cardinality(pg_blocking_pids(pid)) > 0 as blocked,
@@ -667,8 +669,10 @@ async function sampler(port) {
 			}
 			await sleep(500);
 		}
+	} catch (error) {
+		process.stdout.write(`sampler stopped: ${error.message}\n`);
 	} finally {
-		await client.end();
+		await client.end().catch(() => undefined);
 	}
 }
 
