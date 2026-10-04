@@ -34,7 +34,9 @@ import {
 	writeConnectionFile,
 	writeContactFile,
 	writeGroupFile,
+	writeHookFile,
 	writeHumanTaskFile,
+	writeMailboxFile,
 	writeRoutineFile,
 	writeRuleFile,
 	writeSectionsFile,
@@ -120,6 +122,11 @@ describe("companyStatePath", () => {
 				"agents/anna-berg/todos/pricing-page/w1/results.md",
 				"agents/groups/launch-team/group.md",
 				"connections/gmail-sales-nordlys-dk.md",
+				"connections/hook-stripe-payments.md",
+				"connections/mailbox-support.md",
+				"Connections/Hook-Forms.MD",
+				"connections/hooks.md",
+				"connections/mailbox.md",
 				"rules/ask-before-emailing-customers.md",
 				"human-tasks/fit-disk-node-2.md",
 				"contacts/maria-jensen.md",
@@ -151,6 +158,11 @@ describe("companyStatePath", () => {
 			"agents/anna-berg/todos/pricing-page/w1/results.md": "worker-results",
 			"agents/groups/launch-team/group.md": "group",
 			"connections/gmail-sales-nordlys-dk.md": "connection",
+			"connections/hook-stripe-payments.md": "hook",
+			"connections/mailbox-support.md": "mailbox",
+			"Connections/Hook-Forms.MD": "hook",
+			"connections/hooks.md": "connection",
+			"connections/mailbox.md": "connection",
 			"rules/ask-before-emailing-customers.md": "rule",
 			"human-tasks/fit-disk-node-2.md": "human-task",
 			"contacts/maria-jensen.md": "contact",
@@ -603,6 +615,88 @@ Plan and ship version 2 by 1 November.
 		expect(
 			keys(refused("agents/groups/launch/group.md", `---\nid: ${GROUP}\nname: Launch\nagents: []\n---\nx\n`)),
 		).toEqual([["agents", "value"]]);
+	});
+});
+
+describe("hook and mailbox files (E1)", () => {
+	const hook = {
+		id: ID,
+		name: "stripe-payments",
+		proof: "stripe" as const,
+		status: "active" as const,
+		maxBodyBytes: 65536,
+		perMinute: 60,
+		createdBy: JONAS,
+		createdAt: "2026-10-04T08:00:00.5Z",
+		purpose: "Payments from Stripe wake the Analyst.",
+	};
+	const box = {
+		id: ID,
+		address: "support@inbox.qorpera.com",
+		status: "paused" as const,
+		createdBy: JONAS,
+		createdAt: "2026-10-04T08:00:00Z",
+		purpose: "",
+	};
+
+	it("reads a hook and a mailbox and writes them back, with the parse the database checks", () => {
+		const parsed = ok("connections/hook-stripe-payments.md", writeHookFile(hook));
+		expect(parsed).toStrictEqual({ kind: "hook", ...hook });
+		// The keys the database's parse shape names (20260930060000).
+		expect(Object.keys(parsed).sort()).toEqual(
+			[
+				"createdAt",
+				"createdBy",
+				"id",
+				"kind",
+				"maxBodyBytes",
+				"name",
+				"perMinute",
+				"proof",
+				"purpose",
+				"status",
+			].sort(),
+		);
+		const mail = ok("connections/mailbox-support.md", writeMailboxFile(box));
+		expect(mail).toStrictEqual({ kind: "mailbox", ...box });
+		expect(Object.keys(mail).sort()).toEqual(
+			["address", "createdAt", "createdBy", "id", "kind", "purpose", "status"].sort(),
+		);
+		// A name YAML would read as something else is quoted, and reads back the same.
+		expect(ok("connections/hook-yes.md", writeHookFile({ ...hook, name: "yes" }))).toMatchObject({ name: "yes" });
+		expect(ok("connections/hook-x.md", writeHookFile({ ...hook, name: "a--b-" }))).toMatchObject({ name: "a--b-" });
+	});
+
+	it("refuses settings outside the hook's own rules, and any other key", () => {
+		const text = writeHookFile(hook);
+		const problems = (from: string, to: string) => keys(refused("connections/hook-p.md", text.replace(from, to)));
+		expect(problems("proof: stripe", "proof: paypal")).toEqual([["proof", "value"]]);
+		expect(problems("status: active", "status: removed")).toEqual([["status", "value"]]);
+		expect(problems("max_body_bytes: 65536", "max_body_bytes: 1023")).toEqual([["max_body_bytes", "value"]]);
+		expect(problems("max_body_bytes: 65536", 'max_body_bytes: "65536"')).toEqual([["max_body_bytes", "value"]]);
+		expect(problems("per_minute: 60", "per_minute: 121")).toEqual([["per_minute", "value"]]);
+		expect(problems("name: stripe-payments", "name: Stripe")).toEqual([["name", "value"]]);
+		expect(problems("per_minute: 60", "per_minute: 60\naddress: x")).toEqual([["address", "unknown_key"]]);
+		expect(problems(`created_by: ${JONAS}`, "created_by: someone")).toEqual([["created_by", "value"]]);
+		const mail = writeMailboxFile(box);
+		expect(keys(refused("connections/mailbox-s.md", mail.replace("support@inbox.qorpera.com", "Support@x")))).toEqual(
+			[["address", "value"]],
+		);
+		expect(
+			keys(refused("connections/mailbox-s.md", mail.replace("status: paused", "status: active\nproof: mail"))),
+		).toEqual([["proof", "unknown_key"]]);
+		// A vault connection's file at a hook's name is read as a hook's file, which it is not.
+		const vault = writeConnectionFile({
+			id: ID,
+			service: "gmail",
+			account: "a@b.dk",
+			status: "connected",
+			actions: [],
+			connectedBy: JONAS,
+			connectedAt: "2026-10-04T08:00:00Z",
+			purpose: "",
+		});
+		expect(keys(refused("connections/hook-gmail.md", vault))).toContainEqual(["service", "unknown_key"]);
 	});
 });
 

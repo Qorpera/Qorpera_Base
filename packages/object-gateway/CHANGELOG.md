@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- The connection-file writer writes hooks' and mailboxes' files too (folder core C4, E1; migration `20260930060000`): a claim's `subjectKind` picks the kind, the settings' allow-list (never a hook's address or a secret), the file's prefix and the operation key; a new hook or mailbox file starts with its purpose (`body`); the finish names the kind. A claim without `subjectKind` (a database before E1) is a vault account's, and a vault account's finish names no kind, so the gateway can roll before the migration.
 
 - Company creation's worker kicks the follow-up queue (folder core slice P15; migration `20260930022000`): after a completed creation it calls `qorpera_folder_follow_up_now` for the new Co-Founder in a call of its own, so the Co-Founder gets its default grant and its first-run turn at once. Best effort: a refused or failed kick changes nothing, and the queue's 2-second step converges the Co-Founder anyway.
 

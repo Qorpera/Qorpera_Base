@@ -4016,12 +4016,15 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    applies only to its signing secret: a member captures it. Owners, admins
    and agents create and remove hooks; an agent's new hook passes the
    automatic review as a new connection. For `folder-v2` companies a hook is
-   described by its connection file, `connections/hook-<name>.md` (5.6), which
-   the platform writes in the same step as the hook; the prefix keeps hook
-   names apart from account connections. The database keeps the address, the
-   limits and the delivery receipts as runtime state. Until the core's writer
-   lands, hooks exist only for `snapshot-v1` companies, whose connections are
-   rows.
+   described by its connection file, `connections/hook-<name>.md` (5.6), and
+   a mailbox by `connections/mailbox-<name>.md`; the platform's writer brings
+   the file in line with the hook within seconds of each change, as it does an
+   account's (amended 4 October 2026, E1: core §3, "the vault never calls the
+   commit"). The prefixes keep hooks' and mailboxes' files apart from account
+   connections. The file never shows the hook's address or a signing secret.
+   The database keeps the address, the limits and the delivery receipts as
+   runtime state, and every tool that acts on a hook reads the hook, never
+   its file.
 3. **Only verified deliveries wake, and the intake is bounded.** A delivery is
    a duplicate when a verified delivery of the same hook carries the same
    sender id; without a sender id, when the same body arrived within 10

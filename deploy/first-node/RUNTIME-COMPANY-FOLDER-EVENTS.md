@@ -1,7 +1,8 @@
 # Hooks, mailboxes and event wakes on the folder core (C4, Q1)
 
-Status: plan, agreed 4 October 2026 (Q1, qorpera-cb, with the coordinator, F2 and A1; §10). Nothing here is built yet.
-Reserved: E1 is migration `20260930060000` with SQL test 912; E2 is migration `20260930061000` with SQL test 913.
+Status: plan agreed 4 October 2026 (Q1, qorpera-cb, with the coordinator, F2 and A1; §10). **E1 built** (migration
+`20260930060000`, SQL test 912; the parser's two kinds; the writer by kind). E2 reserved: migration `20260930061000`, SQL
+test 913.
 
 ## 0. Why
 
@@ -64,101 +65,115 @@ never calls the commit", core §3, 3 October). So item 2's "the platform writes 
 
 Every tool that acts on a hook (intake, wakes, `list_hooks`, `send_mail`) reads the hook row, never the file.
 
-### 3.2 The files
+### 3.2 The files (as built)
 
-| Kind | Path | Settings, written only by the platform | Body |
-|---|---|---|---|
-| hook | `connections/hook-<stem>.md` | `id` (the hook's uuid), `service: hook`, `name`, `proof` (`address`, `stripe`, `github` or `hmac-sha256`), `status` (`active` or `paused`), `max_body_kib`, `per_minute`, `created_by`, `created_at` | the hook's purpose; members and agents may edit it |
-| mailbox | `connections/mailbox-<stem>.md` | `id` (the mailbox's hook uuid), `service: mailbox`, `address` (`<local>@<mail domain>`), `status`, `created_by`, `created_at` | the mailbox's purpose |
+Two structured kinds, `hook` and `mailbox`, at `connections/hook-<name>.md` and `connections/mailbox-<name>.md`. The
+format is in `RUNTIME-COMPANY-STATE-FILES.md` §2:
+- hook settings: `id`, `name`, `proof`, `status`, `max_body_bytes`, `per_minute`, `created_by`, `created_at`;
+- mailbox settings: `id`, `address`, `status`, `created_by`, `created_at`;
+- the body is the company's, and a new file starts with the purpose given at creation.
 
-- **What a file never holds:** the hook's address (it is a capability, shown only to owners and admins, as today), a
-  signing secret, or anything from the vault.
-- **The stem:** the hook name or the mailbox's local part, mapped to the folder's name rule (lowercase letters, digits,
-  single hyphens). It is cut so that the whole name stays within 64 characters (59 after `hook-`, 56 after `mailbox-`).
-  On a clash the writer adds `-2`, `-3` …, as P22 does for accounts.
-- **Removal:** a removed hook or mailbox has no file. The writer deletes the file, as it does for a revoked secret.
+- **What a file never holds:** the hook's address (a capability, shown only to owners and admins, as today), a signing
+  secret, or anything from the vault.
+- **The name:** the hook's name or the mailbox's local part, mapped to the folder's name rule and cut to fit 64
+  characters with the prefix. On a clash the writer adds `-2`, `-3` …, as for accounts.
+- **Removal:** a removed hook or mailbox has no file; the writer deletes it, as it does a revoked secret's.
 - **Pausing:** a paused hook keeps its file with `status: paused`.
 - **An agent's routine names a hook by `id`** (§4.1). The file is where agents find that id. Hook names are freed on
   removal, so a name could later point at a different hook; an id cannot.
 
-### 3.3 The connection-file machinery gains hooks
+### 3.3 The connection-file machinery gains hooks (as built)
 
-P22 is keyed by a uuid, the vault secret's id (`qorpera_folder_connection_file_marks`, `_work`, `_index`), and the index
-has no foreign key to the vault (`20260928249140:24-41`). So E1 extends P22 rather than adding a second writer. A1, which
-owns P22, agreed on 4 October. F2 owns the writer (P22b).
+E1 extends P22 rather than adding a second writer. A1, who owns P22, agreed on 4 October; F2 owns the writer (P22b).
 
-- **A kind, not an overloaded id:**
-  - `_marks`, `_work` and `_index` gain `subject_kind` (`vault`, `hook` or `mailbox`, default `vault`). On `_work` and
-    `_index` it becomes part of the key: (kind, id).
-  - The state function branches on the kind, never on "no vault secret has this id". That test would turn ambiguous once
-    a secret is purged, and it would blur a revoked secret's "no file" with a hook's.
-- **Marks:** triggers on `qorpera_event_hooks` mark (`hook` or `mailbox`, the hook's id) due.
-  - They fire only in a folder-v2 environment, and only when a field the file shows changes: insert; `status`, `purpose`,
-    `max_body_bytes` or `per_minute`. A mailbox is a hook row with `proof = 'mail'`, so the kind follows `proof`.
-  - P22a's invariants stay (`20260928469150:1-36`): a mark is a plain insert with a generated key that waits on nothing.
-    Its only foreign key is the company row, which every folder-v2 hook change already holds KEY SHARE (§3.4).
-- **The claim:**
-  - It still never waits for a hook change or a company being deleted.
-  - It creates work rows in one order, kind then id.
-  - It locks only work rows, the marks it consumes, and the companies it key-shares SKIP LOCKED. It never touches a hook
-    row, so the hook functions' order (§3.4) can't meet it in a cycle.
-- **State:** `qorpera_folder_connection_file_state(kind, id)` reads the hook, and its mailbox row if it has one, and answers
-  the allow-list above. It never answers the address, a signing secret, a token or a verification secret. A removed hook
-  or mailbox answers "no file", as a revoked secret does. Finish is unchanged except for the kind.
-- **Rules:** the connection rules (`20260928249140:198-232`) gain a hook branch.
-  - A file whose stem starts `hook-` or `mailbox-` must name a hook of this company and environment: `proof = 'mail'`
-    exactly for `mailbox-`.
-  - Only the platform creates or deletes such a file, and only to match the hook row (live → present, removed → absent).
-  - Members and agents change the body only.
-  - A move must keep the prefix and stay inside `connections/`.
-  - No vault file may take either prefix. The rules refuse it, and the name derivation
-    (`qorpera_folder_connection_file_state`) gives a vault connection whose natural name starts with `hook-` or
-    `mailbox-` a `connection-` prefix instead. A test shows that a website account on a site named `hook-x` or
-    `mailbox-y` never lands on a hook's file. This reserves the prefixes, which `RUNTIME-EVENT-INTAKE.md:96-99` promised
-    but nothing yet does.
-- **The writer** (`packages/object-gateway/src/connection-files.ts`) and the parser
-  (`packages/cloud-client/src/company-state-files.ts` `connection()`) gain the two allow-lists. The writer stays behind
-  `QORPERA_CONNECTION_FILE_WRITER`, which the coordinator switches on with the first live test.
+- **The prefixes are kinds.** The path's kind is decided before a vault connection's (`qorpera_structured_path_kind`,
+  `companyStatePath`).
+  - A file at either prefix is a hook's or a mailbox's.
+  - A move from one prefix to another is a kind change, which the folder refuses.
+  - The vault's name derivation gives a natural name that starts with `hook-` or `mailbox-` a `connection-` prefix (test
+    912).
+  - This reserves the prefixes, as `RUNTIME-EVENT-INTAKE.md:96-99` promised.
+- **A kind, not an overloaded id.**
+  - P22's marks and work gain `subject_kind` (`vault`, `hook` or `mailbox`, default `vault`), and the work row's key is
+    (kind, id).
+  - The claim reads the state by kind: `qorpera_folder_connection_file_state(secret)` for the vault, and
+    `qorpera_folder_hook_file_state(kind, id, environment)` for a hook or a mailbox. It never asks whether a vault secret
+    has the id.
+  - The claim answers `subjectKind`, and for a hook or a mailbox also `body`. Its operation key is
+    `hook-file:<id>:<generation>` or `mailbox-file:<id>:<generation>`.
+  - `qorpera_finish_connection_file` takes `p_subject_kind` (default `vault`).
+  - P22a's invariants stay:
+    - a mark is a plain insert that waits on nothing;
+    - the claim creates work rows in (kind, id) order, locks only work rows, its marks and the companies it key-shares,
+      SKIP LOCKED, and never touches a hook row;
+    - P14a's creation guard is kept.
+- **Marks:** triggers on `qorpera_event_hooks` mark a folder-v2 hook due on insert and on a change of `status`, `name`,
+  `max_body_bytes` or `per_minute`. The kind follows `proof` (`mail` is a mailbox).
+- **The index:** `qorpera_folder_hook_index` (environment, id), its own table in the human-task index's style:
+  - apply writes it, repoints it on a move and retires it on a delete;
+  - verify checks it;
+  - erasure deletes a retired row under its roots.
+- **Rules:** `qorpera_company_state_hook_rules`, which require that:
+  - the id is a hook of this company and environment, of the file's kind;
+  - a file at a key keeps its id, and a hook has one file;
+  - a member or an agent changes only the body, compared with the last parse the index trusts;
+  - a platform write's settings equal the hook's state exactly;
+  - only the platform deletes a file, and only once the hook is removed.
+- **The writer** (`packages/object-gateway/src/connection-files.ts`) and the parser (`company-state-files.ts`) gain the
+  two allow-lists and the two kinds.
+  - The writer reads a claim from before E1's migration (no `subjectKind`) as a vault's, and finishes a vault's claim
+    without naming a kind, so the gateway can roll first.
+  - It stays behind `QORPERA_CONNECTION_FILE_WRITER`.
 
-### 3.4 Creating, pausing and removing on folder-v2
+### 3.4 Creating, pausing and removing on folder-v2 (as built)
 
-The old functions take the company row `FOR NO KEY UPDATE`, which the folder core forbids (core §3: never stronger than
-KEY SHARE). Each of them gets a folder-v2 branch in core §3's order:
+The old functions take the company row `FOR NO KEY UPDATE`, which the folder core forbids on folder-v2 (core §3: never
+stronger than KEY SHARE). Each gets a folder-v2 branch in core §3's order; the snapshot-v1 path is unchanged:
 
-1. the role check and a plain read of the company's core and deletion state (a company being deleted answers 55000, as
-   today);
-2. `qorpera_folder_company_enter(env, profile, targets, refuse_paused => false)`: the fence KEY SHARE, the company row KEY
-   SHARE (rank 0), and the acting member KEY SHARE (rank 1). Creating a hook starts no work, so a paused company may
-   still create one, as on the old core.
-3. **Pause and remove:** the hook row `FOR NO KEY UPDATE` at rank 5, where hooks take their place among the connection
-   rows in the structured lock's table order (an exact-text patch adds `qorpera_event_hooks` to
-   `qorpera_folder_structured_lock`, after the tables already there);
-4. **Create only:** a per-company advisory transaction lock on `qorpera.event-hooks:<profile>`, taken last. It serializes
-   the caps (50 live hooks, 20 mailboxes), which the company row lock used to. Only these functions take it, and they
-   wait on nothing after it, so it can't form a cycle.
-5. the insert or update, and the mailbox row, as today. The file mark comes from the trigger.
+1. the role check, as today;
+2. `qorpera_folder_company_enter(env, profile, targets, false)`: the fence KEY SHARE, the company row KEY SHARE (rank 0),
+   and the acting member KEY SHARE (rank 1). Creating a hook starts no work, so a paused company may still create one;
+   then the deletion and role recheck;
+3. **Pause and remove:** the hook row `FOR NO KEY UPDATE` at rank 5, through the same call. `qorpera_event_hooks` is last
+   in `qorpera_folder_structured_lock`'s table order, where E2's routine saves take it `FOR SHARE`;
+4. **Create only:** the advisory transaction lock `qorpera.event-hooks:<profile>`, taken last. It serializes the caps (50
+   live hooks, 20 mailboxes) and the live names, which the company row lock used to. Only these functions take it, and
+   they wait on nothing after it;
+5. the insert or update, and the mailbox row, as today. The file's mark comes from the trigger.
 
-The rest is unchanged: grants (owners and admins, through `authenticated`), names, reserved names, the mail domain, the
-Qorpera-name refusal, limits and addresses.
+The rest is unchanged:
+- grants (owners and admins, through `authenticated`), names, reserved names, the mail domain, the Qorpera-name refusal,
+  limits and addresses;
+- the `qorpera_folder_enable_internal` check that a company with live hooks can't *become* folder-v2.
 
-Unchanged too: the `qorpera_folder_enable_internal` check that a company with live hooks can't *become* folder-v2. It
-guards converting an old company, which no longer happens.
+### 3.5 Tests (E1, as built)
 
-### 3.5 Tests (E1)
-
-- **A new SQL test, on the 634 or 856 fixture:**
-  - create, pause, resume and remove a hook and a mailbox on folder-v2;
-  - the caps under concurrency (dblink: two creates at 49 live hooks, exactly one wins);
-  - the refusals: not an owner or admin, a company being deleted, a reserved name, no mail domain;
-  - the marks; the claim's state for a hook and a mailbox (no address, no secret);
-  - the rules: the platform creates and deletes the file; a member edits the body; prefix theft, a wrong `proof`, and a
-    move out of `connections/` are refused;
-  - the lock order, by a probe that a folder commit and a hook removal never deadlock.
-- **Beside 852 and 853 (P22's vault tests):** hook and mailbox cases for marks, claim, state and the prefix collision.
-  852 and 853 run again unchanged, to show the vault answers didn't move.
-- **Existing tests:** the snapshot-v1 hook and mailbox tests stay green. 708/731's folder refusals change to the new
-  expectations.
-- **TypeScript:** the writer's allow-lists and the parser's two kinds.
+- **SQL test 912, on 852's fixture:**
+  - **Creating:** creating a hook and a mailbox on folder-v2 holds the company's advisory lock and marks each by kind. A
+    contributor is refused, as are taken names and addresses and the 50-hook cap.
+  - **Claims:**
+    - each claim's settings, path, body and operation key;
+    - the hook's address in no claim;
+    - the platform's writes indexed, and finish by kind.
+  - **Rules:**
+    - a member changes the body only, never a setting;
+    - one file per hook;
+    - the id is this company's hook of the file's kind;
+    - the platform's settings match the hook;
+    - only the platform deletes, once the hook is removed;
+    - a rename within the prefix follows, and any other move is a kind change;
+    - a vault website account at `hook-x.example.com` is named `connection-hook-x-example-com`.
+  - **Pausing and removing:** a pause and a removal each mark the hook. The claim shows it paused, then absent; the
+    platform's delete retires the row; a vault finish never closes a hook's claim.
+  - **Privileges:** the new functions are the platform's alone.
+  - **Mutation-checked:** a member's setting change, and an address in the claim, each fail it.
+- **Existing tests:**
+  - 730 and 732 now expect a folder company's hook and mailbox to be created;
+  - 852 names the finish's new signature;
+  - 856 §7 keeps only P14a's guard of the rewritten claim (no pin of old text, founder decision 3 October).
+- **TypeScript:**
+  - the parser's two kinds, round trips and refusals;
+  - the writer's claim parsing by kind, a new hook file's body, commits as `hook`, and finish with and without the kind.
 
 ## 4. E2: event wakes (F2-6b, the event drain, the gate and the read)
 

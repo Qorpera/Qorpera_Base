@@ -832,9 +832,9 @@ begin
 	end;
 end $$;
 
--- 7. Snapshot-v1 (and P22a's claim) keep their text: each body with its patch reversed is the definition before this
--- migration (the hub's with P15's change to it, 20260930022000; structured_apply is folder-v2 only and P15 patches it
--- again, so it has no pin) -----------
+-- 7. Snapshot-v1 keeps its text: each body with its patch reversed is the definition before this migration (the hub's
+-- with P15's change to it, 20260930022000; structured_apply is folder-v2 only and P15 patches it again, so it has no pin;
+-- E1, 20260930060000, writes P22a's claim whole, so it keeps only P14a's guard) -----------
 
 do $$
 declare v_case record; v_definition text;
@@ -913,18 +913,7 @@ $o$,
 			-- 20260930010000 (P14a): pending, ready or failed.
 			'companySetup',public.qorpera_folder_company_setup(p_profile_id)) end);$n$,
 			$o$'companyReady',public.qorpera_folder_company_ready(p_profile_id)) end);$o$,
-			'ea4506f6503174c2d7a28f904afacb4f'),
-		('public.qorpera_claim_connection_file(uuid,integer)',
-			$n$		and (work.lease_until is null or work.lease_until < clock_timestamp())
-		and (work.not_before is null or work.not_before <= clock_timestamp())
-		-- 20260930010000 (P14a): not while the company's folder-v2 creation is not made yet.
-		and not exists (select 1 from public.qorpera_folder_company_creations as creation
-			where creation.profile_id = work.profile_id and creation.state is distinct from 'completed')
-$n$,
-			$o$		and (work.lease_until is null or work.lease_until < clock_timestamp())
-		and (work.not_before is null or work.not_before <= clock_timestamp())
-$o$,
-			'6447847d7aa0ffc3ab138d82a8de7e51')) as c(signature, inserted, original, md5) loop
+			'ea4506f6503174c2d7a28f904afacb4f')) as c(signature, inserted, original, md5) loop
 		v_definition := pg_get_functiondef(v_case.signature::regprocedure);
 		-- C1c-3g (20260930015000) patches stop_company_work after P14a: reverse that patch here first.
 		if v_case.signature = 'public.qorpera_stop_company_work(uuid)' then
@@ -944,6 +933,11 @@ $o$,
 			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then
 			raise exception 'The patch of % is not the only change', v_case.signature; end if;
 	end loop;
+	-- The connection-file claim is written whole by E1 (20260930060000), with P14a's guard kept: no pin of its old text
+	-- (founder decision, 3 October 2026), only the guard.
+	if position('creation.state is distinct from ''completed''' in
+			pg_get_functiondef('public.qorpera_claim_connection_file(uuid,integer)'::regprocedure)) = 0 then
+		raise exception 'The connection-file claim lost P14a''s creation guard'; end if;
 	-- qorpera_folder_enable is replaced whole: a role check around the internal body.
 	if position('20260930010000' in pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure)) = 0
 		or position('qorpera_folder_enable_internal(p_environment_id)' in pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure)) = 0 then
