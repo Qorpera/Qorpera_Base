@@ -190,7 +190,9 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   ties addresses to companies), the open files and the counts go only after 90 days, and a client history part only
   once its day was counted with it. Each deleted file is a line in `lost.jsonl`, so a lookup knows that day is
   unknown. A day counted again after parts of its connection log went keeps the numbers it was first counted with, and
-  says so (`lateClientHistory`); only who is plugged in moves on.
+  says so (`lateClientHistory`); only who is plugged in moves on. A recount writes its starting point to
+  `attribution.json` before it counts anything, and the counts it starts from stay until it is done, so a pass cut
+  short goes on from where it stopped.
 
 The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
 (`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool

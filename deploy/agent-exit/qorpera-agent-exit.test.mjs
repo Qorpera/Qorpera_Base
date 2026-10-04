@@ -861,6 +861,23 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.equal(run(old, far).status, 0);
 		assert.equal(read(old, "attribution.json").open["10.210.1.1"].company, "cB", "cA's unplug and cB's plug were kept");
 		assert.ok(!readdirSync(old).some((name) => name.startsWith("clients-")), "read now, and past 90 days");
+
+		// Cut short on the first day counted again, past 90 days: the rewind is on disk first, so the expiry after it
+		// keeps both days' history and the counts the recount starts from.
+		const first = fixture();
+		assert.equal(run(first, t0 + 2 * DAY + 3 * 3600).status, 0);
+		writeFileSync(join(first, `clients-${day}.jsonl`), lines([machine("10.210.1.2", "cC", "mC", t0 + 250)]));
+		mkdirSync(join(first, `.counts-${day}.json.tmp`));
+		run(first, far);
+		assert.equal(read(first, "attribution.json").through, "2026-08-31", "back to the day before the first late one");
+		for (const kept of [`clients-${day}.p001.jsonl.gz`, `clients-${day}.p002.jsonl.gz`, `clients-${next}.p001.jsonl.gz`, `counts-${day}.json`, `counts-${next}.json`])
+			assert.ok(readdirSync(first).includes(kept), `${kept}: ${readdirSync(first).join(" ")}`);
+		rmSync(join(first, `.counts-${day}.json.tmp`), { recursive: true });
+		assert.equal(run(first, far).status, 0);
+		const recovered = read(first, "attribution.json");
+		assert.deepEqual([recovered.open["10.210.1.1"].company, recovered.open["10.210.1.2"].company], ["cB", "cC"]);
+		assert.deepEqual(recovered.lateUnapplied, []);
+		assert.ok(!readdirSync(first).some((name) => name.startsWith("clients-") || name === `counts-${day}.json`));
 	});
 
 	test("late history for a day whose counts are gone is marked unapplied, and no good numbers are counted again", () => {

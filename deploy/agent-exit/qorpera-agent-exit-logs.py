@@ -418,8 +418,8 @@ def deleted_early(log_dir):
     return days
 
 
-def flows_lost_early(log_dir):
-    """Days that lost a part of their connection log before their 90 days (over the cap, or the disk low)."""
+def flows_lost(log_dir):
+    """Days that lost a part of their connection log (before their 90 days, or at them)."""
     days = set()
     try:
         with open(os.path.join(log_dir, "lost.jsonl"), encoding="utf-8") as f:
@@ -428,7 +428,7 @@ def flows_lost_early(log_dir):
                     entry = json.loads(line)
                 except ValueError:
                     continue
-                if (isinstance(entry, dict) and entry.get("reason") != EXPIRED and isinstance(entry.get("day"), str)
+                if (isinstance(entry, dict) and isinstance(entry.get("day"), str)
                         and str(entry.get("file", "")).startswith("flows-")):
                     days.add(entry["day"])
     except FileNotFoundError:
@@ -488,9 +488,9 @@ def start_of(log_dir, day, files):
 def count_closed_days(log_dir, now, host):
     """Counts each closed day after the last one counted, in order, and carries who is plugged in from day to day. A
     client history part for a day already counted that was not there then makes it count again from that day: the
-    checkpoint goes back to that day's start, with only the parts of earlier days as read, and each day written moves
-    it on, so a pass cut short goes on from where it stopped. A day whose connection log lost parts early keeps the
-    numbers it was counted with, whatever pass counts it again."""
+    checkpoint goes back to that day's start (with only the parts of earlier days as read) and is written so before any
+    day is counted again, and each day written moves it on, so a pass cut short goes on from where it stopped. A day
+    whose connection log lost parts keeps the numbers it was counted with, whatever pass counts it again."""
     files = regular_files(log_dir)
     through, plugged, read = load_attribution(log_dir)
     client_parts = {name: m.group(2) for name in files if (m := PART.match(name)) and m.group(1) == "clients"}
@@ -506,18 +506,21 @@ def count_closed_days(log_dir, now, host):
         day = rewind[0]
         plugged = saved_start(log_dir, day)
         read = {name for name in read if name in client_parts and client_parts[name] < day} | newly
+        through = next_day(day, -1)
     else:
         day = next_day(through) if through else first_day(log_dir, files)
-    if newly and not rewind:
+    if rewind or newly:
+        # The rewind (or what cannot be applied) is on disk before anything is counted again: a pass cut short, and
+        # the expiry after it, see the checkpoint as it now is.
         write_json(os.path.join(log_dir, "attribution.json"),
                    {"schema": "qorpera.agent-exit-attribution/v1", "through": through, "open": plugged,
                     "clientParts": sorted(read & set(client_parts)), "lateUnapplied": sorted(unapplied)})
     counted = 0
-    lost_early = flows_lost_early(log_dir)
+    lost = flows_lost(log_dir)
     while day is not None and now >= day_start(day) + DAY + GRACE:
         path = os.path.join(log_dir, f"counts-{day}.json")
         saved = None
-        if day in lost_early:
+        if day in lost:
             try:
                 with open(path, encoding="utf-8") as f:
                     saved = json.load(f)
@@ -528,7 +531,7 @@ def count_closed_days(log_dir, now, host):
             # plugged in moves on with the late history.
             end = advance(log_dir, day, plugged, files)
             write_json(path, saved | {"attributionAtStart": plugged, "lateClientHistory":
-                                      "not counted again: parts of this day's connection log were deleted early"})
+                                      "not counted again: parts of this day's connection log were deleted"})
         else:
             counts, end = count_day(log_dir, day, plugged, files)
             write_json(path, {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now),
@@ -571,9 +574,14 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     # A client history part goes only once the checkpoint holds it (read, and its day counted): until then it is what
     # ties addresses to companies from that day on (a count that keeps failing, or a recount cut short, keeps it).
     through, _, read = load_attribution(log_dir)
+    # Days with client history the checkpoint does not hold yet keep their counts too: a recount starts from them.
+    pending = {file_day(name) for name in files if PART.match(name) and name.startswith("clients-")
+               and (name not in read or through is None or file_day(name) > through)}
     for name in sorted(files):
         day = file_day(name)
         if name.startswith("clients-") and (name not in read or through is None or day is None or day > through):
+            continue
+        if COUNTS.match(name) and day in pending:
             continue
         if day is not None and day < oldest_kept and (PART.match(name) or DNS_PART.match(name) or COUNTS.match(name)):
             os.unlink(os.path.join(log_dir, name))
