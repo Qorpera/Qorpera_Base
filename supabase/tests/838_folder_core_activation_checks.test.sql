@@ -77,7 +77,6 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_claim_artifact_gc_plans', 'open', 'Artifact GC plans; takes the fence per plan, and only the next step, the object claim, retains a folder-v2 plan''s objects (F3, 20260930041000).'),
 	('qorpera_renew_artifact_gc_lease', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
 	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).'),
-	('qorpera_release_runtime_machine', 'open', 'Run machine release (S3, C1c-3n).'),
 	('qorpera_activate_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_cancel_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_consent_identity_recovery', 'open', 'Identity recovery (S1).'),
@@ -88,16 +87,9 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_prepare_identity_key_backup', 'open', 'Identity recovery (S1).'),
 	('qorpera_recovery_locked', 'open', 'Identity recovery (S1).'),
 	('qorpera_recovery_member_role', 'open', 'Identity recovery (S1).'),
-	('qorpera_confirm_runtime_identity_retirement', 'open', 'Identity retirement (S1).'),
-	('qorpera_authorize_node_update_drain', 'open', 'Node update drain (S3, C1c-3n).'),
-	('qorpera_node_update_locked', 'open', 'Node update drain (S3, C1c-3n).'),
-	('qorpera_release_node_update_admission', 'open', 'Node update drain (S3, C1c-3n).');
--- A run's own machines: the core test covers only some branches (20260928469240).
-insert into p13_allowed(name, kind, reason, pin) values
-	('qorpera_reserve_runtime_machine', 'partial', 'Only the office branch (no run) tests the core; a run''s own reservation, which every run machine makes, takes the gc fence on folder-v2 (S3, first item of C1c-3n).',
-		'if p_run_id is null and public.qorpera_company_is_folder_v2(v_profile) then'),
-	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding, office and login (20260930035000) test the core; native (S3, C1c-3n) takes the gc fence on folder-v2.',
-		'p_provider_kind in (''machine'', ''coding'', ''office'', ''login'') and public.qorpera_company_is_folder_v2(v_profile) then');
+	('qorpera_confirm_runtime_identity_retirement', 'open', 'Identity retirement (S1).');
+-- A run's own machines and the node machine's kinds all test the core since C1c-3n (20260930046000) and P13's sign-in
+-- machines (20260930035000): no partial entry is left.
 
 do $$
 declare v_list text;
