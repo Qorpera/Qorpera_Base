@@ -99,6 +99,8 @@ const RUN_KINDS = new Set([
 	"list",
 	"release",
 	"write-upload",
+	"write-upload-reused",
+	"subtree-upload",
 	"receipt-begin",
 	"commit",
 	"commit-retry",
@@ -173,6 +175,8 @@ function percentile(values, fraction) {
 }
 
 let pool;
+let statsClient;
+let logLinesBeforeLoad = 0;
 let end = 0;
 const running = () => performance.now() < end;
 
@@ -253,9 +257,10 @@ const commit = (kind, runRow, key, units, receipt = null) =>
 		PATH_DEADLINE,
 		{ expected: ["paused", "busy"] },
 	);
-const seal = (runRow, text) =>
+// The upload's kind says what it carried: new bytes, bytes the company has (reused), or a subtree's file.
+const seal = (runRow, text, kind = "write-upload") =>
 	call(
-		"write-upload",
+		kind,
 		"qorpera_folder_seal_upload",
 		"select loadfolder.seal($1::jsonb, $2) as value",
 		[runRow.actor, text],
@@ -330,7 +335,8 @@ async function agentRun(runRow, others, gcTexts) {
 /** A tool's write as the runtime does it: the gateway stores the bytes, then a receipt, the commit, its completion. */
 async function write(runRow, round, gcTexts) {
 	const text = round % 8 === 0 ? pick(gcTexts) : `Run ${runRow.n}, change ${round}, ${randomUUID()}.\n`;
-	const sealed = await seal(runRow, text);
+	const reused = round % 8 === 0;
+	const sealed = await seal(runRow, text, reused ? "write-upload-reused" : "write-upload");
 	if (sealed.failure || sealed.value?.state !== "sealed") return;
 	const receipt = randomUUID();
 	const input = sha256(`${runRow.n}:${round}`);
@@ -375,7 +381,7 @@ async function write(runRow, round, gcTexts) {
 
 /** A folder of 20 files, then its subtree deleted as the agent saw it. */
 async function subtree(runRow, round) {
-	const sealed = await seal(runRow, `Subtree file of run ${runRow.n}.\n`);
+	const sealed = await seal(runRow, `Subtree file of run ${runRow.n}.\n`, "subtree-upload");
 	if (sealed.failure || sealed.value?.state !== "sealed") return;
 	const path = `load/work/${runRow.handle}/s${round}`;
 	const contents = Array.from({ length: 20 }, (_, index) => ({ path: `f${index}.md`, kind: "file", file: sealed.value.file }));
@@ -558,7 +564,7 @@ async function bigRun(runRow, bigId) {
 	}
 }
 
-/** PL/pgSQL function statistics (track_functions = pl), flushed from this backend first. */
+/** Function statistics (track_functions = all: SQL functions too), flushed from this backend first. */
 async function functionTimes(client) {
 	await client.query("select pg_stat_force_next_flush()");
 	await client.query("select pg_stat_clear_snapshot()");
@@ -641,6 +647,32 @@ function statementTimeouts(lines) {
 		counts.set(key, (counts.get(key) ?? 0) + 1);
 	}
 	return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+/** Statements over 1 s that auto_explain logged, nested ones included: by text (whitespace folded), with the longest. */
+function slowPlans(lines) {
+	const counts = new Map();
+	for (let index = 0; index < lines.length; index += 1) {
+		const found = /LOG: {2}duration: ([0-9.]+) ms {2}plan:/.exec(lines[index]);
+		if (!found) continue;
+		let text = "";
+		const plan = [];
+		for (let next = index + 1; next < lines.length && next < index + 80; next += 1) {
+			if (!/^\t/.test(lines[next])) break;
+			const query = /Query Text: (.*)$/.exec(lines[next]);
+			if (query && !text) text = query[1].replace(/\s+/g, " ").trim().slice(0, 160);
+			// The plan starts at its first costed node; the query text's own continuation lines come before it.
+			else if (plan.length || /\(cost=/.test(lines[next])) plan.push(lines[next].replace(/^\t/, ""));
+		}
+		const entry = counts.get(text) ?? { count: 0, maxMs: 0, plan: [] };
+		entry.count += 1;
+		if (Number(found[1]) > entry.maxMs) {
+			entry.maxMs = Math.round(Number(found[1]));
+			entry.plan = plan.slice(0, 40);
+		}
+		counts.set(text, entry);
+	}
+	return [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
 }
 
 /** Statements running over 2 s, sampled every 500 ms on a connection of its own: by call and what each waited on (a lock,
@@ -754,7 +786,15 @@ try {
 		"log_lock_waits=on",
 		"-c",
 		"deadlock_timeout=1s",
-		...(options.probeOnly ? ["-c", "track_functions=pl"] : []),
+		// Where the time goes: PL/pgSQL functions' totals, and every statement over 1 s, nested ones too, with its text.
+		"-c",
+		"track_functions=all",
+		"-c",
+		"shared_preload_libraries=auto_explain",
+		"-c",
+		"auto_explain.log_min_duration=1000",
+		"-c",
+		"auto_explain.log_nested_statements=on",
 	]);
 	for (let ready = 0, attempt = 0; ready < 2; attempt += 1) {
 		if (attempt > 120) throw new Error("Disposable PostgreSQL did not become ready within 60 seconds");
@@ -799,6 +839,10 @@ try {
 	pool.on("connect", (client) => {
 		client.query("set statement_timeout = '8s'; set lock_timeout = '8s'").catch(() => undefined);
 	});
+	statsClient = new pg.Client({ host: "127.0.0.1", port: Number(port), user: "postgres", password, database });
+	await statsClient.connect();
+	const functionsBeforeLoad = await functionTimes(statsClient);
+	logLinesBeforeLoad = serverLog().length;
 	end = performance.now() + (options.probeOnly ? 0 : options.seconds * 1000);
 	const started = performance.now();
 	const bigRow = runs.find((row) => row.big);
@@ -817,6 +861,19 @@ try {
 	const seconds = (performance.now() - started) / 1000;
 	await pool.end();
 	pool = undefined;
+	// The pool's connections flushed their statistics as they closed.
+	const loadFunctions = Object.entries(await functionTimes(statsClient))
+		.map(([name, value]) => ({
+			name,
+			calls: value.calls - (functionsBeforeLoad[name]?.calls ?? 0),
+			selfMs: Math.round(value.self - (functionsBeforeLoad[name]?.self ?? 0)),
+			totalMs: Math.round(value.total - (functionsBeforeLoad[name]?.total ?? 0)),
+		}))
+		.filter((row) => row.calls > 0)
+		.sort((a, b) => b.selfMs - a.selfMs)
+		.slice(0, 12);
+	await statsClient.end();
+	statsClient = undefined;
 
 	// The big run alone: no load, no statement timeout. Each probe is one transaction.
 	const quiet = {};
@@ -922,6 +979,15 @@ try {
 		psql(`select coalesce(json_object_agg(status, n), '{}') from (select status, count(*) n from public.qorpera_wake_occurrences
 			where profile_id = '${COMPANY}' and created_at >= '${loadBegan}' group by status) x;`),
 	);
+	// The objects the most paths name (entries and path versions), for reading the upload's presence check.
+	const referenced = psql(`select count(distinct x.path) || ' paths name ' || left(x.manifest_sha256, 12) || coalesce(' (' || min(x.path) || ' …)', '')
+		from (select manifest_sha256, path from public.qorpera_folder_entries where environment_id = '${ENVIRONMENT}' and kind = 'file'
+			union all select manifest_sha256, path from public.qorpera_folder_path_versions where environment_id = '${ENVIRONMENT}'
+				and manifest_sha256 is not null) x
+		group by x.manifest_sha256 order by count(distinct x.path) desc limit 4;`)
+		.trim()
+		.split("\n")
+		.filter(Boolean);
 	const slruAfter = slru();
 	const deadlocksAfter = Number(psql(`select deadlocks from pg_stat_database where datname = '${database}';`).trim());
 	const multixact = Object.fromEntries(
@@ -934,6 +1000,8 @@ try {
 	const cycles = deadlockCycles(lines);
 	const waits = lockWaits(lines);
 	const timeouts = statementTimeouts(lines);
+	// Only what the load ran: the log before it is the migrations and the fixture.
+	const plans = slowPlans(lines.slice(logLinesBeforeLoad));
 	const { lines: table, summary } = report(seconds);
 	const leaked = leaks();
 	const drains = stops.map((stop) => stop.drainMs);
@@ -971,6 +1039,17 @@ try {
 	if (slowStatements.size) process.stdout.write("statements over 2 s (sampled every 0.5 s), by call and what they waited on:\n");
 	for (const [key, entry] of [...slowStatements.entries()].sort((a, b) => b[1].samples - a[1].samples).slice(0, 15))
 		process.stdout.write(`  ${entry.samples} samples, up to ${entry.maxMs} ms: ${key}\n`);
+	if (plans.length) process.stdout.write("statements over 1 s, nested ones too (auto_explain), by text:\n");
+	for (const [text, entry] of plans.slice(0, 12)) {
+		process.stdout.write(`  ${entry.count} x, up to ${entry.maxMs} ms: ${text}\n`);
+		// The plan of the slowest, for the load's own calls (not the fixture's setup).
+		if (/qorpera_profile_objects|upload_intent|object_readable|path_versions/.test(entry.plan.join(" ")) || /^select coalesce\(jsonb_agg\(p\.sha256/.test(text))
+			for (const line of entry.plan) process.stdout.write(`      ${line}\n`);
+	}
+	process.stdout.write(`the objects most paths name: ${referenced.join("; ")}\n`);
+	process.stdout.write("PL/pgSQL functions by self time over the load:\n");
+	for (const row of loadFunctions)
+		process.stdout.write(`  ${row.name}: ${row.calls} calls, self ${row.selfMs} ms, total ${row.totalMs} ms\n`);
 	if (timeouts.length) process.stdout.write("statement timeouts from the server log, by where they were (PL/pgSQL frames, innermost first):\n");
 	for (const [key, count] of timeouts.slice(0, 12)) process.stdout.write(`  ${count} x ${key}\n`);
 	if (cycles.length) process.stdout.write("deadlocks from the server log (who waited for whom, and the row the cancelled call waited for):\n");
@@ -996,6 +1075,8 @@ try {
 		lockWaits: waits.reduce((total, [, count]) => total + count, 0),
 		slowStatements: Object.fromEntries(slowStatements),
 		statementTimeouts: Object.fromEntries(timeouts),
+		slowPlans: Object.fromEntries(plans.slice(0, 20).map(([text, entry]) => [text, { count: entry.count, maxMs: entry.maxMs }])),
+		loadFunctions,
 		summary,
 	};
 	process.stdout.write(`== load-folder-core ${JSON.stringify(result)}\n`);
@@ -1027,5 +1108,6 @@ try {
 	}
 } finally {
 	await pool?.end();
+	await statsClient?.end().catch(() => undefined);
 	spawnSync("docker", ["rm", "--force", "--volumes", containerName]);
 }

@@ -726,6 +726,45 @@ Needed before any view goes live (C1B §4).
   - only the four named functions touch `qorpera_execution_run_budgets`, and every `folder-v2` dispatcher that takes
     the run mutex takes it before the job (C1C §5.2);
   - no deferred constraints or triggers on the folder core's tables.
+
+  **Built in slice P13 (SQL test 838; no migration).** The founder's decision of 3 October 2026 drops the snapshot-v1
+  digests. The test reads the installed functions, so every hosted-db run checks them, a release branch's included:
+  - no function of the folder core takes the gc fence, or the company row `FOR UPDATE` or `NOWAIT`. Any other
+    function that does must test the core first, or be on the test's list with a reason: the fence itself, a legacy
+    path that folder-v2 never reaches, an open folder-v2 site with its owner, or a partial one (it tests the core
+    first, but a folder-v2 branch still takes the lock). A listed function that is gone or now tests the core first
+    (a partial one: no longer takes the lock) must come off the list;
+  - every function that changes a job's status or lease owner takes the job `FOR UPDATE` first (or in the same
+    statement);
+  - only the run mutex's functions name `qorpera_execution_run_budgets`. On folder-v2, `qorpera_folder_tool_run` takes
+    it `FOR UPDATE` before it enters the run (and takes the job), and the receipt begin and the transcript's callers go
+    through `qorpera_folder_tool_run` first;
+  - the folder fence `FOR UPDATE`, or updated, only in the pause's and deletion's drains and resume; `FOR NO KEY
+    UPDATE` only in member management, creation, the operator's start, founding and deletion's entry; never
+    `FOR SHARE`;
+  - no deferrable constraints or triggers on `qorpera_folder_%` tables. On the other tables the folder core's
+    functions write, each deferred constraint is listed with why it is light: an empty foreign key on agents, the
+    native presence clean-up (SKIP LOCKED), the coding turn checks and a session input's foreign key.
+
+  Every list fails on a stale entry, so a renamed function or table never passes silently. The test reads function
+  text with comments removed, and counts a function as testing the core when a core literal or a call into the
+  folder core comes before its first such lock. That is a careful reading, not a proof: the list's reasons are the
+  evidence. The full rank order and lock upgrades inside folder-v2 bodies are not read from text; the race tests
+  (633, 644, 648, 812 and the slices' own) and the C1e load test check those by running them.
+
+  The open sites on 4 October 2026 (inventory §16, and the review of #779), by owner:
+  - S1: the model login and account refresh machines and the node machine's `login` kind (partial; sign-in machines,
+    `20260930035000`), identity recovery and retirement;
+  - S3: the run machine's reservation for a run (partial; the first item of C1c-3n) and its release, the node
+    machine's `native` kind (partial) and node update drains (C1c-3n);
+  - A1: office activation wakes (C1c-3l);
+  - F3: artifacts (`20260930041000`). A member's `register_artifact_v2`, or a run's artifact output, inserts an
+    artifact with no core test. The artifact triggers, graph completion and the GC plans then take the gc fence. The
+    fix refuses artifacts on folder-v2.
+  Office access (C1c-3k part 2) and the quiet coding check-ins (`20260930026000`) moved off the list on 4 October.
+  Each slice removes its lines from 838's list as it moves its sites; a partial line pins its core test's text, so a
+  changed test fails until the line is checked again. The test prints the open lines as a NOTICE, which a failing run
+  shows.
 - **Deletion drains the folder fence** for `folder-v2` (C1C §5.5): the folder pause's second phase, with no gc fence.
 
 ### 6.1 Inventory, split and decisions (2026-09-29)
