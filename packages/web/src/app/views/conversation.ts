@@ -1,5 +1,6 @@
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
 	type ActionReviewAnswer,
@@ -49,9 +50,11 @@ import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
+import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
+import { keepCaretOutOfQuotes } from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
@@ -197,6 +200,10 @@ export class ConversationView {
 	#mention: { start: number; end: number; options: MentionTarget[]; active: number } | undefined;
 	/** In a group chat, which agents will answer the message being written. */
 	readonly #mentionNote = h("p", { class: "composer-mention-note", role: "status", hidden: true });
+	/** While the draft holds quotes of outside content: that they travel as quoted, never as the member's words. */
+	readonly #quoteNote = h("p", { class: "composer-quote-note", role: "status", hidden: true });
+	/** The quotes the field's copy last set apart, so a change in them alone redraws it. */
+	#piecesShown = "[]";
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -329,10 +336,18 @@ export class ConversationView {
 				}
 			},
 			oninput: () => {
+				// A change that reached into a quote removes the whole quote; the field shows what is kept.
+				const composer = this.#composer;
+				const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
+				const kept = company.editDraft(sessionId, composer.value, caret);
+				if (kept.text !== composer.value) {
+					composer.value = kept.text;
+					if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
+				}
 				this.#autosize();
-				company.conversation(sessionId).set({ draft: this.#composer.value });
 				this.#sharedDrafts.input();
 				this.#updateMention();
+				this.#renderQuoteNote();
 			},
 		});
 		// Moving the caret with the keys or a click opens or closes the names as well.
@@ -375,7 +390,9 @@ export class ConversationView {
 				this.#renderedKey = "";
 				this.update();
 			},
+			quotes: () => this.#quotePieces(),
 		});
+		keepCaretOutOfQuotes(this.#composer, () => this.#quotePieces(), this.#lifetime.signal);
 		this.#send = h(
 			"button",
 			{
@@ -519,6 +536,7 @@ export class ConversationView {
 			this.#sharedDrafts.el,
 			this.#composerShell,
 			this.#mentionNote,
+			this.#quoteNote,
 			this.#attachments.status,
 		);
 		this.#identity = h("button", {
@@ -1041,14 +1059,38 @@ export class ConversationView {
 		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
 	}
 
-	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. */
+	/** The quotes of outside content in the text the composer shows: the draft's, while the field shows the draft. */
+	#composerQuotes(): MessageQuote[] {
+		const draft = this.#company.conversation(this.#sessionId).get().draft ?? "";
+		return draft === this.#composer.value ? this.#company.draftQuotes(this.#sessionId) : [];
+	}
+
+	#quotePieces(): QuotePiece[] {
+		return quotePieces(this.#composer.value, this.#composerQuotes());
+	}
+
+	/** While the draft holds quotes: that they go as quoted, and when there are more than a message carries. */
+	#renderQuoteNote(): void {
+		const count = this.#composerQuotes().length;
+		const text =
+			count > QUOTES_MAX
+				? t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX })
+				: count
+					? t("Text in «» is quoted from an email. Agents read it as quoted, never as your words.")
+					: "";
+		this.#quoteNote.hidden = !text;
+		if (this.#quoteNote.textContent !== text) this.#quoteNote.textContent = text;
+	}
+
+	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. A name
+	 * inside a quote names nobody. */
 	#renderMentionNote(): void {
 		const targets = this.#company.mentionTargets(this.#sessionId);
 		const named =
 			targets.filter((target) => target.kind === "agent").length > 1
 				? [
 						...new Map(
-							findMentions(this.#composer.value, targets)
+							findMentions(this.#composer.value, targets, this.#composerQuotes())
 								.filter((mention) => mention.target.kind === "agent")
 								.map((mention) => [mention.target.id, mention.target.name]),
 						).values(),
@@ -1073,13 +1115,16 @@ export class ConversationView {
 		];
 	}
 
-	/** A member's message with its mentions set apart, this member's own name most of all. */
-	#withMentions(text: string): (string | HTMLElement)[] {
+	/** A member's message with its mentions set apart, this member's own name most of all, and its quotes of outside
+	 * content shown as quoted. A name inside a quote names nobody. */
+	#withMentions(text: string, quotes: readonly MessageQuote[] = []): (string | HTMLElement)[] {
 		const me = this.#company.userId;
-		return mentionParts(text, this.#shownMentionTargets()).map((part) =>
-			typeof part === "string"
-				? part
-				: h(
+		const marks: { start: number; end: number; node: HTMLElement }[] = [];
+		for (const part of mentionParts(text, this.#shownMentionTargets(), quotes))
+			if (typeof part !== "string")
+				marks.push({
+					...part,
+					node: h(
 						"span",
 						{
 							class: part.targets.some((target) => target.kind === "member" && target.id === me)
@@ -1088,7 +1133,27 @@ export class ConversationView {
 						},
 						text.slice(part.start, part.end),
 					),
-		);
+				});
+		for (const piece of quotePieces(text, quotes))
+			marks.push({
+				start: piece.from,
+				end: piece.to,
+				node: h(
+					"span",
+					{ class: "message-quote", title: t("Quoted from an email") },
+					text.slice(piece.from, piece.to),
+				),
+			});
+		marks.sort((a, b) => a.start - b.start);
+		const parts: (string | HTMLElement)[] = [];
+		let at = 0;
+		for (const mark of marks) {
+			if (mark.start > at) parts.push(text.slice(at, mark.start));
+			parts.push(mark.node);
+			at = mark.end;
+		}
+		if (at < text.length) parts.push(text.slice(at));
+		return parts;
 	}
 
 	#submit(): void {
@@ -1216,7 +1281,9 @@ export class ConversationView {
 			conversation.sending ||
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			needsText ||
-			Boolean(attachmentIssue);
+			Boolean(attachmentIssue) ||
+			// More quotes than a message carries: the note under the field says so.
+			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX;
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
@@ -1238,6 +1305,10 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		// The same text can come to hold a quote it did not (a teammate's draft brought its record): the copy follows.
+		const pieces = JSON.stringify(this.#quotePieces());
+		if (pieces !== this.#piecesShown) this.#skills.sync();
+		this.#piecesShown = pieces;
 		if (this.#composer.disabled) this.#closeMention();
 		// A teammate's words can land in this composer (shared drafts) while names are shown:
 		// where the name being typed now starts is read again, or the names close.
@@ -1245,6 +1316,7 @@ export class ConversationView {
 		// The same for an open skill menu.
 		this.#skills.refresh();
 		this.#renderMentionNote();
+		this.#renderQuoteNote();
 		this.#sharedDrafts.update();
 	}
 
@@ -1412,6 +1484,7 @@ export class ConversationView {
 					sequence: Number.MAX_SAFE_INTEGER,
 					authorUserId: item.authorUserId,
 					text: item.text,
+					...(item.quotes ? { quotes: item.quotes } : {}),
 					attachmentCount: item.attachmentCount ?? 0,
 					createdAt: item.createdAt,
 					pending: "queued",
@@ -1617,7 +1690,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -2200,7 +2273,13 @@ export class ConversationView {
 				item.kind === "agent"
 					? markdownBubbles(item.text)
 					: item.text || !item.attachmentCount
-						? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
+						? [
+								h(
+									"div",
+									{ class: "text" },
+									...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
+								),
+							]
 						: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.

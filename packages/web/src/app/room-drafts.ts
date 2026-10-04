@@ -1,5 +1,6 @@
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError } from "../cloud/client.ts";
+import { type MessageQuote, sameQuotes } from "../cloud/quotes.ts";
 import type { RealtimePhase } from "../cloud/realtime.ts";
 import {
 	ROOM_DRAFT_BYTES,
@@ -7,6 +8,7 @@ import {
 	type RoomDraftSubscription,
 	type RoomDraftWrite,
 } from "../cloud/room-drafts.ts";
+import { placeQuotes, withQuoteRecords } from "./quotes.ts";
 import { Store } from "./state.ts";
 import { applyEdit, diffText, mergeText, type TextEdit, transform } from "./text-merge.ts";
 
@@ -35,16 +37,22 @@ function wellFormed(text: string): string {
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 }
 
-/** Where this browser's text stands: in the cloud, not yet (tried again), or too long to share. */
-export type DraftStatus = "saved" | "retrying" | "too-long";
+/** Where this browser's text stands: in the cloud, not yet (tried again), too long to share, or holding a quote the
+ * cloud would not keep. */
+export type DraftStatus = "saved" | "retrying" | "too-long" | "refused";
+
+/** The cloud will not take the text as it is: it waits for the member to change it. */
+const givenUp = (status: DraftStatus) => status === "too-long" || status === "refused";
 
 export interface DraftHost {
 	/** The text this browser shows for the draft. */
 	text(): string;
+	/** That text's quotes of outside content (app/quotes.ts); none when left out. */
+	quotes?(): readonly MessageQuote[];
 	/** Where the editor's caret stands in that text, when it has one. */
 	caret(): number | undefined;
-	/** Show the merged text; `edit` turned the shown text into it. */
-	show(text: string, edit: TextEdit): void;
+	/** Show the merged text and its quotes; `edit` turned the shown text into it. */
+	show(text: string, edit: TextEdit, quotes: readonly MessageQuote[]): void;
 	/** The draft is not there to edit any more. */
 	gone(): void;
 	/** The member is composing a letter (an input method); the text must not change under it. */
@@ -53,14 +61,21 @@ export interface DraftHost {
 	status?(status: DraftStatus): void;
 }
 
+/** A draft as the cloud confirmed it: its text and the quotes that text holds. */
+export interface ConfirmedDraft {
+	revision: number;
+	body: string;
+	quotes: readonly MessageQuote[];
+}
+
 export class DraftSync {
 	readonly roomId: string;
 	readonly ownerUserId: string;
-	readonly #write: (base: number, body: string) => Promise<RoomDraftWrite>;
+	readonly #write: (base: number, body: string, quotes: readonly MessageQuote[]) => Promise<RoomDraftWrite>;
 	readonly #written: (draft: RoomDraft) => void;
 	#host: DraftHost;
 	/** The draft as the cloud last confirmed it; every change of this browser is diffed from it. */
-	#server: { revision: number; body: string };
+	#server: ConfirmedDraft;
 	#writing = false;
 	/** The newest draft the cloud announced while this browser could not merge it (writing, composing). */
 	#newest: RoomDraft | undefined;
@@ -75,14 +90,14 @@ export class DraftSync {
 	constructor(
 		roomId: string,
 		ownerUserId: string,
-		start: { revision: number; body: string },
+		start: { revision: number; body: string; quotes?: readonly MessageQuote[] },
 		host: DraftHost,
-		write: (base: number, body: string) => Promise<RoomDraftWrite>,
+		write: (base: number, body: string, quotes: readonly MessageQuote[]) => Promise<RoomDraftWrite>,
 		written: (draft: RoomDraft) => void,
 	) {
 		this.roomId = roomId;
 		this.ownerUserId = ownerUserId;
-		this.#server = { ...start };
+		this.#server = { revision: start.revision, body: start.body, quotes: start.quotes ?? [] };
 		this.#host = host;
 		this.#write = write;
 		this.#written = written;
@@ -93,7 +108,7 @@ export class DraftSync {
 	}
 
 	/** The draft as the cloud last confirmed it. */
-	get confirmed(): { revision: number; body: string } {
+	get confirmed(): ConfirmedDraft {
 		return { ...this.#server };
 	}
 
@@ -112,12 +127,22 @@ export class DraftSync {
 
 	/** Nothing of this browser's is on its way or waiting to go. */
 	get settled(): boolean {
-		return !this.#writing && !this.#timer && !this.#newest && wellFormed(this.#host.text()) === this.#server.body;
+		return !this.#writing && !this.#timer && !this.#newest && this.#confirmed();
 	}
 
 	/** The text shown where this draft is edited now. */
 	text(): string {
 		return this.#host.text();
+	}
+
+	/** That text's quotes. */
+	quotes(): readonly MessageQuote[] {
+		return this.#host.quotes?.() ?? [];
+	}
+
+	/** The text shown here, and its quotes, are what the cloud last confirmed. */
+	#confirmed(): boolean {
+		return wellFormed(this.#host.text()) === this.#server.body && sameQuotes(this.quotes(), this.#server.quotes);
 	}
 
 	/** Edit the draft somewhere else from now on (the same draft opened again). */
@@ -144,9 +169,9 @@ export class DraftSync {
 		this.#merge(draft);
 	}
 
-	/** Resolves once this browser's changes are written, or the draft is gone, or the text is too long to share. */
+	/** Resolves once this browser's changes are written, or the draft is gone, or the cloud will not take the text. */
 	flushed(): Promise<void> {
-		if (this.#stopped || this.#status === "too-long" || this.settled) return Promise.resolve();
+		if (this.#stopped || givenUp(this.#status) || this.settled) return Promise.resolve();
 		return new Promise((resolve) => this.#settled.push(resolve));
 	}
 
@@ -164,13 +189,20 @@ export class DraftSync {
 		if (newest.revision > this.#server.revision) this.#merge(newest);
 	}
 
-	/** Take the cloud's draft as the base and replay this browser's own change on it. */
-	#merge(draft: { revision: number; body: string }): void {
+	/** Take the cloud's draft as the base and replay this browser's own change on it. The merged text's quotes are
+	 * found by their words (app/quotes.ts): a quote either side kept is kept, and one either side removed is gone
+	 * with its words. */
+	#merge(draft: { revision: number; body: string; quotes?: readonly MessageQuote[] }): void {
 		const shown = this.#host.text();
+		const mine = this.quotes();
 		const { text, edit } = mergeText(this.#server.body, shown, draft.body, this.#host.caret());
-		this.#server = { revision: draft.revision, body: draft.body };
-		if (text !== shown) this.#host.show(text, edit);
-		if (wellFormed(text) !== draft.body) this.#schedule(0);
+		const quotes = placeQuotes(
+			text,
+			withQuoteRecords(withQuoteRecords([], shown, mine), draft.body, draft.quotes ?? []),
+		);
+		this.#server = { revision: draft.revision, body: draft.body, quotes: draft.quotes ?? [] };
+		if (text !== shown || !sameQuotes(quotes, mine)) this.#host.show(text, edit, quotes);
+		if (!this.#confirmed()) this.#schedule(0);
 	}
 
 	#schedule(delay: number): void {
@@ -190,7 +222,7 @@ export class DraftSync {
 		this.#status = status;
 		this.#host.status?.(status);
 		// A text the cloud will not take is given up until the member changes it.
-		if (status === "too-long") for (const resolve of this.#settled.splice(0)) resolve();
+		if (givenUp(status)) for (const resolve of this.#settled.splice(0)) resolve();
 	}
 
 	async #flush(): Promise<void> {
@@ -198,7 +230,8 @@ export class DraftSync {
 		if (this.#stopped || this.#writing || this.#host.busy?.()) return;
 		this.#mergeHeld();
 		const body = wellFormed(this.#host.text());
-		if (body === this.#server.body) {
+		const quotes = this.quotes();
+		if (this.#confirmed()) {
 			this.#setStatus("saved");
 			this.#resolveSettled();
 			return;
@@ -212,7 +245,7 @@ export class DraftSync {
 		let result: RoomDraftWrite | undefined;
 		let refused = false;
 		try {
-			result = await this.#write(this.#server.revision, body);
+			result = await this.#write(this.#server.revision, body, quotes);
 			this.#failures = 0;
 		} catch (error) {
 			// Refused or missing on this cloud: the draft is not this member's to write.
@@ -225,7 +258,8 @@ export class DraftSync {
 		}
 		if (this.#stopped) return;
 		if (refused) {
-			this.#setStatus("too-long");
+			// With quotes, it was the quotes the cloud would not keep (a mail thread it no longer shows, say).
+			this.#setStatus(quotes.length ? "refused" : "too-long");
 			return;
 		}
 		this.#setStatus(result ? "saved" : "retrying");
@@ -243,7 +277,11 @@ export class DraftSync {
 		let head = this.#newest;
 		this.#newest = undefined;
 		if (result.status === "ok") {
-			this.#server = { revision: result.draft.revision, body: result.draft.body };
+			this.#server = {
+				revision: result.draft.revision,
+				body: result.draft.body,
+				quotes: result.draft.quotes ?? [],
+			};
 			if (head && head.revision <= this.#server.revision) head = undefined;
 		} else if (!head || result.draft.revision >= head.revision) head = result.draft;
 		if (head) {
@@ -255,7 +293,7 @@ export class DraftSync {
 			// A stale answer is the cloud's draft now, even at a revision this browser thought it had passed.
 			this.#merge(head);
 		}
-		if (wellFormed(this.#host.text()) !== this.#server.body) this.#schedule(WRITE_DELAY_MS);
+		if (!this.#confirmed()) this.#schedule(WRITE_DELAY_MS);
 		else this.#resolveSettled();
 	}
 }
@@ -433,7 +471,9 @@ export interface RoomDraftsHooks {
 	 * member can post there and this member can write. */
 	sharedRoom(sessionId: string): string | undefined;
 	draft(sessionId: string): string;
-	setDraft(sessionId: string, text: string): void;
+	/** The draft's quotes of outside content (app/quotes.ts). */
+	quotes(sessionId: string): readonly MessageQuote[];
+	setDraft(sessionId: string, text: string, quotes: readonly MessageQuote[]): void;
 }
 
 /** The company's shared drafts, for this member. */
@@ -542,8 +582,12 @@ export class RoomDrafts {
 		if (room) this.#own(sessionId, room)?.changed();
 	}
 
-	/** Open another member's draft to write in it, starting from `text`. Nothing here sends it. */
-	edit(sessionId: string, ownerUserId: string, host: DraftHost): { sync: DraftSync; text: string } | undefined {
+	/** Open another member's draft to write in it, starting from `text` and its quotes. Nothing here sends it. */
+	edit(
+		sessionId: string,
+		ownerUserId: string,
+		host: DraftHost,
+	): { sync: DraftSync; text: string; quotes: readonly MessageQuote[] } | undefined {
 		const room = this.room(sessionId);
 		const draft = room?.draft(ownerUserId);
 		if (!room || !draft || ownerUserId === this.#userId) return undefined;
@@ -551,19 +595,20 @@ export class RoomDrafts {
 		const current = room.syncs.get(ownerUserId);
 		if (current && !current.stopped) {
 			const text = current.text();
+			const quotes = current.quotes();
 			current.rehost(host);
-			return { sync: current, text };
+			return { sync: current, text, quotes };
 		}
 		const sync = new DraftSync(
 			room.roomId,
 			ownerUserId,
 			draft,
 			host,
-			(base, body) => this.#api.putRoomDraft(room.roomId, ownerUserId, base, body),
+			(base, body, quotes) => this.#api.putRoomDraft(room.roomId, ownerUserId, base, body, quotes),
 			(written) => room.apply(written, "own"),
 		);
 		room.syncs.set(ownerUserId, sync);
-		return { sync, text: draft.body };
+		return { sync, text: draft.body, quotes: draft.quotes ?? [] };
 	}
 
 	/** Stop editing another member's draft once what was typed there is written. */
@@ -594,16 +639,17 @@ export class RoomDrafts {
 			existing?.confirmed ?? { revision: 0, body: "" },
 			{
 				text: () => this.#hooks.draft(sessionId),
+				quotes: () => this.#hooks.quotes(sessionId),
 				caret: () => this.#editors.get(sessionId)?.caret(),
 				busy: () => this.#editors.get(sessionId)?.busy() ?? false,
-				show: (text, edit) => {
+				show: (text, edit, quotes) => {
 					this.#sending.get(sessionId)?.push(edit);
 					for (const listener of this.#shown.get(sessionId) ?? []) listener(text, edit);
-					this.#hooks.setDraft(sessionId, text);
+					this.#hooks.setDraft(sessionId, text, quotes);
 				},
 				gone: () => {},
 			},
-			(base, body) => this.#api.putRoomDraft(room.roomId, this.#userId, base, body),
+			(base, body, quotes) => this.#api.putRoomDraft(room.roomId, this.#userId, base, body, quotes),
 			(written) => room.apply(written, "own"),
 		);
 		room.syncs.set(this.#userId, sync);

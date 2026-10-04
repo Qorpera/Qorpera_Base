@@ -152,10 +152,18 @@
 .composer-shell .composer-input { white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; visibility: hidden; padding: 11px 0 8px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-shell.is-expanded .composer-highlight { padding: 0; }
-.composer-field.has-skills .composer-highlight { visibility: visible; }
-.composer-field.has-skills .composer-input { color: transparent; caret-color: var(--text); }
-.composer-field.has-skills .composer-input::selection { color: HighlightText; background: Highlight; }
+.composer-field:is(.has-skills, .has-quotes) .composer-highlight { visibility: visible; }
+.composer-field:is(.has-skills, .has-quotes) .composer-input { color: transparent; caret-color: var(--text); }
+.composer-field:is(.has-skills, .has-quotes) .composer-input::selection { color: HighlightText; background: Highlight; }
 .composer-skill { color: var(--blue); }
+/* A quote of outside content (an email's words) lies in the same copy: one piece in its «» marks, tinted as quoted.
+ * Only colours change, never the font or spacing, so the copy keeps the field's wrapping. */
+.composer-quote { color: var(--text-muted); background: var(--hover); border-radius: 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.composer-quote-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.composer-quote-note[hidden] { display: none; }
+/* The same quotes in written messages: set apart as quoted, never read as the member's own words. */
+.message-quote { padding: 0 3px; border-radius: 5px; background: var(--hover); color: var(--text-muted); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.mine .message-quote { background: rgb(255 255 255 / 18%); color: inherit; font-style: italic; }
 /* The same names in written messages: blue in an agent's or another member's bubble; in the
  * member's own bubble, whose colour the member picks (blue, green or grey), a light chip in the
  * bubble's own text colour, which reads on any of them. */
@@ -250,6 +258,8 @@
 .draft-panel-close { flex: none; width: 28px; height: 28px; min-height: 28px; }
 .draft-panel-status { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .draft-panel-status[hidden] { display: none; }
+.draft-panel-quotes { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.draft-panel-quotes[hidden] { display: none; }
 .draft-panel-input { display: block; width: 100%; min-height: 21px; max-height: 147px; padding: 0 4px 0 0; border: 0; border-radius: 0; background: transparent; outline: 0; resize: none; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
 /* The Model panel (models, effort and speed) fits without scrolling on an ordinary window. */
 .composer-menu:has(> .composer-models:not([hidden])) { max-height: min(452px, 72dvh); }

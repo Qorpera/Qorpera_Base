@@ -34,6 +34,9 @@ export interface SkillMentionOptions {
 	readonly opened?: () => void;
 	/** A new list of skills arrived (so written messages can mark their names). */
 	readonly listed?: () => void;
+	/** The text's quotes of outside content, marks included, in UTF-16 units: the copy sets them apart as quoted,
+	 * and a "/name" inside one is no skill (app/quotes.ts). */
+	readonly quotes?: () => readonly { readonly from: number; readonly to: number }[];
 }
 
 /** Blocks that end a word: text in two of them never runs together. */
@@ -61,8 +64,9 @@ export function markSkillNames(root: ParentNode, names: ReadonlySet<string>): vo
 					: neighbour.data.slice(0, 1)
 				: "";
 	for (const [index, text] of texts.entries()) {
-		// Code, links, an "@" name and a name already marked are left as they are.
-		if (text === "\n" || text.parentElement?.closest("code, pre, a, kbd, .mention, .message-skill")) continue;
+		// Code, links, an "@" name, a quote of outside content and a name already marked are left as they are.
+		if (text === "\n" || text.parentElement?.closest("code, pre, a, kbd, .mention, .message-skill, .message-quote"))
+			continue;
 		const before = edge(texts[index - 1], text, true);
 		const after = edge(texts[index + 1], text, false);
 		const value = text.data;
@@ -94,7 +98,8 @@ interface Ranked {
 /** Calls a skill from the composer (contract 15.2): typing "/" offers the conversation's
  * skills, picking one writes "/name", and a written name shows in blue. The field stays a
  * plain textarea; while the text names a skill, its characters turn transparent and a copy
- * of the same text, with the names coloured, lies over them. Without a loader it does nothing. */
+ * of the same text, with the names coloured, lies over them. The same copy sets the text's
+ * quotes of outside content apart. Without a loader it offers and colours no skills. */
 export class SkillMentions {
 	/** The textarea and the coloured copy of its text. */
 	readonly field: HTMLElement;
@@ -109,6 +114,7 @@ export class SkillMentions {
 	readonly #ownerName: () => string | undefined;
 	readonly #opened: () => void;
 	readonly #listed: () => void;
+	readonly #quotes: () => readonly { readonly from: number; readonly to: number }[];
 	#skills: readonly SkillSuggestion[] | undefined;
 	#loadedAt = 0;
 	#failedAt = Number.NEGATIVE_INFINITY;
@@ -132,25 +138,26 @@ export class SkillMentions {
 		this.#ownerName = options.ownerName;
 		this.#opened = options.opened ?? (() => {});
 		this.#listed = options.listed ?? (() => {});
+		this.#quotes = options.quotes ?? (() => []);
 		this.#highlight = h("div", { class: "composer-highlight", "aria-hidden": "true" });
 		this.field = h("div", { class: "composer-field" }, this.#highlight, input);
 		const id = `skill-menu-${++menus}`;
 		this.#list = h("div", { class: "skill-list", id, role: "listbox", "aria-label": t("Skills") });
 		this.#note = h("p", { class: "skill-menu-note", hidden: true });
 		this.menu = h("div", { class: "skill-menu", hidden: true }, this.#list, this.#note);
+		input.addEventListener(
+			"scroll",
+			() => {
+				this.#highlight.scrollTop = input.scrollTop;
+			},
+			{ signal },
+		);
 		if (!load) return;
 		input.addEventListener(
 			"input",
 			() => {
 				this.sync();
 				this.#update();
-			},
-			{ signal },
-		);
-		input.addEventListener(
-			"scroll",
-			() => {
-				this.#highlight.scrollTop = input.scrollTop;
 			},
 			{ signal },
 		);
@@ -163,25 +170,37 @@ export class SkillMentions {
 	/** Redraws the coloured copy. Call it whenever the text or the field's size changes without
 	 * an input event (a restored draft, a resize that shows or hides the field's scrollbar). */
 	sync(): void {
-		if (!this.#load) return;
 		const text = this.#input.value;
-		const known = this.names();
-		const parts: (Node | string)[] = [];
-		let last = 0;
-		for (const match of text.matchAll(TOKEN)) {
+		const quotes = this.#quotes().filter((quote) => quote.from >= 0 && quote.to <= text.length);
+		const known = this.#load ? this.names() : new Set<string>();
+		// Quotes and skill names in the order they stand; a "/name" inside a quote is the quote's.
+		const marks: { from: number; to: number; className: string }[] = quotes.map((quote) => ({
+			...quote,
+			className: "composer-quote",
+		}));
+		for (const match of this.#load ? text.matchAll(TOKEN) : []) {
 			const [, before = "", name = ""] = match;
-			if (!known.has(name)) continue;
 			const start = match.index + before.length;
 			const end = start + name.length + 1;
-			parts.push(text.slice(last, start), h("span", { class: "composer-skill" }, text.slice(start, end)));
-			last = end;
+			if (known.has(name) && !quotes.some((quote) => start < quote.to && end > quote.from))
+				marks.push({ from: start, to: end, className: "composer-skill" });
 		}
-		const marked = parts.length > 0;
-		this.field.classList.toggle("has-skills", marked);
-		if (!marked) {
+		marks.sort((a, b) => a.from - b.from);
+		const parts: (Node | string)[] = [];
+		let last = 0;
+		for (const mark of marks) {
+			parts.push(text.slice(last, mark.from), h("span", { class: mark.className }, text.slice(mark.from, mark.to)));
+			last = mark.to;
+		}
+		this.field.classList.toggle(
+			"has-skills",
+			marks.some((mark) => mark.className === "composer-skill"),
+		);
+		this.field.classList.toggle("has-quotes", quotes.length > 0);
+		if (!marks.length) {
 			this.#highlight.replaceChildren();
 			// A draft that names skills gets its colour once the list is known.
-			if (this.#skills === undefined && MAY_NAME_SKILL.test(text)) void this.#fetch();
+			if (this.#load && this.#skills === undefined && MAY_NAME_SKILL.test(text)) void this.#fetch();
 			return;
 		}
 		// A final line break takes up its line in the field only with a character after it.

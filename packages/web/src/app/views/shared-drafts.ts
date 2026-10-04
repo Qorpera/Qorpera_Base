@@ -3,8 +3,10 @@ import { h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
+import { keepQuotesWhole, placeQuotes, type QuoteRecord, quotePieces, withQuoteRecords } from "../quotes.ts";
 import { DRAFT_TYPING_MS, type DraftStatus, type DraftSync, type RoomDraftRoom } from "../room-drafts.ts";
 import { moveIndex, type TextEdit } from "../text-merge.ts";
+import { keepCaretOutOfQuotes } from "./composer-quotes.ts";
 
 /* Other members' unsent messages, right above the composer. Each shows as a
  * notch with the member's picture, typing while they type; pointing at it opens
@@ -43,6 +45,8 @@ interface OpenDraft {
 	sync: DraftSync;
 	el: HTMLElement;
 	input: HTMLTextAreaElement;
+	/** Ends the panel's own listeners when it closes. */
+	lifetime: AbortController;
 }
 
 export class SharedDrafts {
@@ -77,7 +81,12 @@ export class SharedDrafts {
 		composer.addEventListener("compositionend", () => {
 			this.#composing = false;
 			// A browser may end the letter without another input event: take the text as it stands.
-			company.conversation(sessionId).set({ draft: composer.value });
+			const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
+			const kept = company.editDraft(sessionId, composer.value, caret);
+			if (kept.text !== composer.value) {
+				composer.value = kept.text;
+				if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
+			}
 			this.input();
 		});
 		// Another member's words arrive in the member's own draft without moving their caret.
@@ -281,15 +290,35 @@ export class SharedDrafts {
 					? t("Not saved yet. Trying again…")
 					: now === "too-long"
 						? t("Too long to share. Shorten it to share your changes.")
-						: "";
+						: now === "refused"
+							? t("A quote in it can't be shared. Remove the quote to share your changes.")
+							: "";
 		};
+		// The draft's quotes of outside content stay whole here too: found by their records' words (app/quotes.ts),
+		// the caret kept out of them, and a change that reaches into one removes it.
+		let records: readonly QuoteRecord[] = [];
+		let before = "";
+		const quotes = () => placeQuotes(input.value, records);
+		const quoted = h(
+			"p",
+			{ class: "draft-panel-quotes", hidden: true },
+			t("Text in «» is quoted from an email. Agents read it as quoted, never as your words."),
+		);
+		const showQuoted = () => {
+			quoted.hidden = !quotes().length;
+		};
+		const lifetime = new AbortController();
 		const state: { composing: boolean } = { composing: false };
 		const opened = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
 			text: () => input.value,
+			quotes,
 			caret: () => (document.activeElement === input ? input.selectionEnd : undefined),
 			busy: () => state.composing,
-			show: (text, edit) => {
+			show: (text, edit, shown) => {
+				records = withQuoteRecords(records, text, shown);
 				showKeepingCaret(input, text, edit);
+				before = input.value;
+				showQuoted();
 				this.#autosize(input);
 			},
 			gone: () => {
@@ -300,11 +329,23 @@ export class SharedDrafts {
 		if (!opened) return;
 		const { sync } = opened;
 		input.value = opened.text;
+		records = withQuoteRecords([], opened.text, opened.quotes);
+		before = opened.text;
 		showStatus(sync.status);
+		showQuoted();
 		input.addEventListener("input", () => {
+			const caret = input.selectionStart === input.selectionEnd ? input.selectionEnd : undefined;
+			const kept = keepQuotesWhole(before, quotePieces(before, placeQuotes(before, records)), input.value, caret);
+			if (kept.text !== input.value) {
+				input.value = kept.text;
+				if (kept.caret !== undefined) input.setSelectionRange(kept.caret, kept.caret);
+			}
+			before = input.value;
+			showQuoted();
 			sync.changed();
 			this.#autosize(input);
 		});
+		keepCaretOutOfQuotes(input, () => quotePieces(input.value, quotes()), lifetime.signal);
 		input.addEventListener("compositionstart", () => {
 			state.composing = true;
 		});
@@ -346,9 +387,10 @@ export class SharedDrafts {
 				),
 			),
 			input,
+			quoted,
 			status,
 		);
-		this.#open = { ownerUserId, sync, el, input };
+		this.#open = { ownerUserId, sync, el, input, lifetime };
 		this.el.append(el);
 		this.#render();
 		this.#autosize(input);
@@ -362,6 +404,7 @@ export class SharedDrafts {
 		const open = this.#open;
 		if (!open) return;
 		this.#open = undefined;
+		open.lifetime.abort();
 		const focused = open.el.contains(document.activeElement);
 		open.el.remove();
 		void this.#company.roomDrafts.leave(open.sync);

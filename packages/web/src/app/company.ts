@@ -15,6 +15,7 @@ import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganiz
 import type { PageCursor } from "../cloud/pagination.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { CloudPresenceHandle, PresenceMember } from "../cloud/presence.ts";
+import { type MessageQuote, QUOTES_MAX, sameQuotes } from "../cloud/quotes.ts";
 import {
 	type RealtimePhase,
 	type RealtimeResource,
@@ -47,6 +48,15 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import {
+	appendQuoted,
+	keepQuotesWhole,
+	placeQuotes,
+	type QuotedText,
+	type QuoteRecord,
+	quotePieces,
+	withQuoteRecords,
+} from "./quotes.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store, throttle } from "./state.ts";
 
@@ -182,6 +192,9 @@ export interface ConversationState {
 	sending: boolean;
 	sendError?: string;
 	draft?: string;
+	/** The records of the quotes the draft holds, and of those it held since it was last sent: wherever their words
+	 * stand in «» marks in the draft, that is the quote (app/quotes.ts; `draftQuotes`). */
+	quoteRecords?: readonly QuoteRecord[];
 	/** Local selected bytes, staged only after an explicit send. */
 	attachments?: File[];
 	executionSponsor?: SessionExecutionSponsor;
@@ -189,6 +202,8 @@ export interface ConversationState {
 		clientInputId: string;
 		clientRequestId: string;
 		text: string;
+		/** The text's quotes: a retry sends exactly these. */
+		quotes?: readonly MessageQuote[];
 		files: File[];
 		executionSponsor: SessionExecutionSponsor;
 		roomTarget?: RoomMessageTarget;
@@ -202,6 +217,7 @@ export interface ConversationState {
 		clientInputId: string;
 		inputId?: string;
 		text: string;
+		quotes?: readonly MessageQuote[];
 		attachmentCount?: number;
 		createdAt: string;
 		authorUserId: string;
@@ -457,7 +473,12 @@ export class CompanyController {
 		this.roomDrafts = new RoomDrafts(api, userId, this.#abort.signal, {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
 			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
-			setDraft: (sessionId, text) => this.conversation(sessionId).set({ draft: text }),
+			quotes: (sessionId) => this.draftQuotes(sessionId),
+			setDraft: (sessionId, text, quotes) =>
+				this.conversation(sessionId).set((state) => ({
+					draft: text,
+					quoteRecords: withQuoteRecords(state.quoteRecords ?? [], text, quotes),
+				})),
 		});
 		this.#writeInput =
 			writeInput ??
@@ -515,7 +536,13 @@ export class CompanyController {
 		this.#abort.abort();
 		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
-			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
+			store.set({
+				draft: "",
+				quoteRecords: undefined,
+				attachments: [],
+				retrySend: undefined,
+				executionSponsor: undefined,
+			});
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
@@ -654,6 +681,7 @@ export class CompanyController {
 						pending: [],
 						optimistic: [],
 						draft: "",
+						quoteRecords: undefined,
 						attachments: [],
 						projection: { items: [], hiddenCount: 0, lastSequence: 0 },
 						hasEarlier: false,
@@ -2022,6 +2050,32 @@ export class CompanyController {
 		await this.answerInteraction(sessionId, interactionId, "provided", {});
 	}
 
+	/** The quotes of outside content in a conversation's draft: its records' words wherever they stand in «» marks. */
+	draftQuotes(sessionId: string): MessageQuote[] {
+		const state = this.conversation(sessionId, false).get();
+		return placeQuotes(state.draft ?? "", state.quoteRecords ?? []);
+	}
+
+	/** The member changed the draft's text in a composer; `caret` is where theirs stands. A change that reaches into a
+	 * quote removes the whole quote (app/quotes.ts). Returns the text kept, which the composer shows, and its caret. */
+	editDraft(sessionId: string, text: string, caret?: number): { text: string; caret: number | undefined } {
+		const store = this.conversation(sessionId, false);
+		const before = store.get().draft ?? "";
+		const kept = keepQuotesWhole(before, quotePieces(before, this.draftQuotes(sessionId)), text, caret);
+		store.set({ draft: kept.text });
+		return kept;
+	}
+
+	/** Put a message button's text after the conversation's draft, its outside values as quotes. Nothing is sent. */
+	addToDraft(sessionId: string, addition: QuotedText): void {
+		const store = this.conversation(sessionId);
+		const state = store.get();
+		const next = appendQuoted(state.draft ?? "", state.quoteRecords ?? [], addition);
+		if (placeQuotes(next.text, next.records).length > QUOTES_MAX)
+			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
+		store.set({ draft: next.text, quoteRecords: next.records });
+	}
+
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
 		if (this.#stopped || viewSignal?.aborted) return false;
 		try {
@@ -2031,8 +2085,16 @@ export class CompanyController {
 		}
 		const store = this.conversation(sessionId);
 		const trimmed = text.trim();
+		// The quotes of the text as sent: its records' words in their marks, counted from the trimmed start.
+		const quotes = placeQuotes(trimmed, store.get().quoteRecords ?? []);
 		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
+		if (quotes.length > QUOTES_MAX) {
+			store.set({
+				sendError: t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX }),
+			});
+			return false;
+		}
 		const problem = sessionAttachmentProblem(files);
 		if (problem) {
 			store.set({ sendError: attachmentProblemText(problem) });
@@ -2041,7 +2103,9 @@ export class CompanyController {
 		const retry = store.get().retrySend;
 		const sameFiles = (other: readonly File[]) =>
 			other.length === files.length && other.every((file, index) => file === files[index]);
-		const sameRequest = retry?.text === trimmed && sameFiles(retry.files);
+		// The cloud compares a repeated call's whole body, quotes included.
+		const sameRequest =
+			retry?.text === trimmed && sameFiles(retry.files) && sameQuotes(retry.quotes ?? [], quotes);
 		if (retry && !sameRequest) {
 			store.set({
 				draft: text,
@@ -2104,6 +2168,7 @@ export class CompanyController {
 				{
 					clientInputId,
 					text: trimmed,
+					...(quotes.length ? { quotes } : {}),
 					attachmentCount: files.length,
 					createdAt: new Date().toISOString(),
 					authorUserId: this.#userId,
@@ -2112,23 +2177,39 @@ export class CompanyController {
 		}));
 		try {
 			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
-			const receipt = roomTarget
-				? await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor, roomTarget)
-				: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
+			const receipt = quotes.length
+				? await this.#writeInput(
+						sessionId,
+						clientInputId,
+						trimmed,
+						signal,
+						files,
+						executionSponsor,
+						roomTarget,
+						quotes,
+					)
+				: roomTarget
+					? await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor, roomTarget)
+					: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
 			if (this.#stopped) return false;
 			signal.throwIfAborted();
-			store.set((state) => ({
-				sending: false,
-				retrySend: undefined,
-				draft: this.roomDrafts.sent(sessionId, text, state.draft ?? "", true),
-				attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
-				optimistic: reconcileOptimistic({
-					...state,
-					optimistic: state.optimistic.map((item) =>
-						item.clientInputId === clientInputId ? { ...item, inputId: receipt.inputId } : item,
-					),
-				}),
-			}));
+			store.set((state) => {
+				const rest = this.roomDrafts.sent(sessionId, text, state.draft ?? "", true);
+				return {
+					sending: false,
+					retrySend: undefined,
+					draft: rest,
+					// The records go with the sent text; words another member added meanwhile keep theirs.
+					quoteRecords: rest ? state.quoteRecords : undefined,
+					attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
+					optimistic: reconcileOptimistic({
+						...state,
+						optimistic: state.optimistic.map((item) =>
+							item.clientInputId === clientInputId ? { ...item, inputId: receipt.inputId } : item,
+						),
+					}),
+				};
+			});
 			this.roomDrafts.settle(sessionId);
 			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
@@ -2146,6 +2227,7 @@ export class CompanyController {
 					clientInputId,
 					clientRequestId,
 					text: trimmed,
+					...(quotes.length ? { quotes } : {}),
 					files,
 					executionSponsor,
 					...(roomTarget ? { roomTarget } : {}),

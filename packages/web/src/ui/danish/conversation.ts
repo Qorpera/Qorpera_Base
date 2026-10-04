@@ -23,6 +23,16 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending messages is not available yet. Your draft stays here.":
 		"Beskeder kan ikke sendes endnu. Din kladde bliver her.",
 	"The message could not be confirmed. Try again.": "Beskeden kunne ikke bekræftes. Prøv igen.",
+	// Quotes of outside content in a message (conversation.ts, shared-drafts.ts, company.ts)
+	"Text in «» is quoted from an email. Agents read it as quoted, never as your words.":
+		"Tekst i «» er citeret fra en mail. Agenterne læser den som citat, aldrig som dine ord.",
+	"A message can hold at most {count} quotes. Remove some to send it.":
+		"En besked kan højst rumme {count} citater. Fjern nogle for at sende den.",
+	"That message already quotes as much as one message can. Send it or remove a quote first.":
+		"Den besked citerer allerede så meget, som én besked kan. Send den, eller fjern et citat først.",
+	"Quoted from an email": "Citeret fra en mail",
+	"A quote in it can't be shared. Remove the quote to share your changes.":
+		"Et citat i den kan ikke deles. Fjern citatet for at dele dine ændringer.",
 	// Mentions: "@" and a name in a message (conversation.ts, ui/mentions.ts, shell.ts)
 	"People and agents to mention": "Personer og agenter, du kan nævne",
 	"Only {names} will answer": "Kun {names} svarer",

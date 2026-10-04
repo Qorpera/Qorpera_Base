@@ -8,6 +8,7 @@ import { SESSION_PROMPT_SCHEMA } from "./api.ts";
 import type { Cloud } from "./client.ts";
 import { createWebNativeSubscription } from "./native-subscription.ts";
 import { UUID_PATTERN } from "./parse.ts";
+import { type MessageQuote, parseQuotes } from "./quotes.ts";
 import { createWebRoomMessages } from "./room-messages.ts";
 import { createWebSessionAttachments, sessionAttachmentIssue } from "./session-attachments.ts";
 /** A user-selected, observed member sponsorship. Scalars are retained for exact replay. */
@@ -74,6 +75,8 @@ export type SessionInputWriter = (
 	files?: readonly File[],
 	executionSponsor?: SessionExecutionSponsor,
 	roomTarget?: RoomMessageTarget,
+	/** The text's quotes of outside content (cloud/quotes.ts); a message without any leaves them out. */
+	quotes?: readonly MessageQuote[],
 ) => Promise<Pick<SessionTurnRequestResult, "inputId">>;
 
 /** Only queues member input. A tab never executes the resulting staff work. */
@@ -96,8 +99,10 @@ export function createWebSessionInputWriter(
 		!UUID_PATTERN.test(profileId)
 	)
 		throw new Error("Invalid member input configuration.");
-	return (sessionId, clientInputId, text, signal, files = [], executionSponsor, roomTarget) => {
+	return (sessionId, clientInputId, text, signal, files = [], executionSponsor, roomTarget, quotes = []) => {
 		const room = roomTarget ? { ...roomTarget } : undefined;
+		// Checked as the cloud checks them, and copied: a retry sends exactly these.
+		const quoted = quotes.length ? parseQuotes(quotes.map((quote) => ({ ...quote })), text) : undefined;
 		return withCloudDeadline(
 			async (deadline) => {
 				if (
@@ -107,6 +112,7 @@ export function createWebSessionInputWriter(
 					new TextEncoder().encode(text).length > 65536
 				)
 					throw new Error("Message is empty or too large.");
+				if (quotes.length && !quoted) throw new Error("Message quotes are invalid.");
 				if (
 					!executionSponsor ||
 					!UUID_PATTERN.test(executionSponsor.sponsorBindingId) ||
@@ -154,6 +160,7 @@ export function createWebSessionInputWriter(
 							clientInputId,
 							text,
 							...(images.length ? { images } : {}),
+							...(quoted ? { quotes: quoted } : {}),
 							sponsorBindingId: sponsor.sponsorBindingId,
 							sponsorVersion: sponsor.sponsorVersion,
 						},
@@ -166,7 +173,8 @@ export function createWebSessionInputWriter(
 						sessionId,
 						clientInputId,
 						clientRequestId: clientInputId,
-						body: { schema: SESSION_PROMPT_SCHEMA, text, images },
+						// A quoted message carries no displayText (the web never sends one).
+						body: { schema: SESSION_PROMPT_SCHEMA, text, images, ...(quoted ? { quotes: quoted } : {}) },
 						sponsorMode: "member_connection",
 						sponsorBindingId: sponsor.sponsorBindingId,
 						sponsorVersion: sponsor.sponsorVersion,
