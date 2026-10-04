@@ -1682,10 +1682,58 @@ each `else`.
   - E1 and E4 set a lock timeout, so a wait there fails the test instead of hanging it;
   - F: the descriptor's new computer waits at the agents before the seat lock;
   - G: exactly 5 bodies name the migration.
-- **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
-  up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
-  folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
-  ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
+- **Not here (part 2, §6.18):** the office-activation wake that wakes the agent once its computer is up.
+
+### 6.18 C1c-3l part 2 as built: the agent wakes when its computer is up (migration 20260930030100, test 892)
+
+The coordinator's P06c, second PR. When an agent's `computer_start` has to wait for the computer, its start records a
+waiter (§6.16). Once the agent's turn has ended and the computer is up, a wake continues the agent's work. On folder-v2
+that wake was refused, and nothing delivered the waiter. Folder-v2 only: the statement that was there before stays in
+each `else`.
+
+- **The drain** (`office_wakes`), plugged into the shared folder-drains step (P29a, `RUNTIME-COMPANY-FOLDER-LISTENER.md`
+  §9) after `listen`:
+  - `qorpera_folder_office_wakes_due(p_after_environment, p_limit)` lists the folder-v2 companies that have a waiting
+    waiter whose start's turn has ended. It is plain reads, and leaves out companies that are paused or being deleted.
+  - `qorpera_folder_office_wakes_company(p_environment_id, p_limit ≤ 64)` handles one company in one transaction, in
+    rank order:
+    1. it reads the work without a lock;
+    2. it takes the folder fence and the company row `KEY SHARE`, then the starts' requesters, agents and their execution
+       authorities `KEY SHARE` (`qorpera_folder_company_enter`, as the materializer does);
+    3. it takes the waiters `FOR UPDATE SKIP LOCKED`, so a second drain of the company skips them, and then the
+       admission;
+    4. per waiter: a failed or cancelled start, or a replaced computer, cancels it; a computer not yet up skips it; an
+       authorized one gets a queued `office-activation` wake, and the waiter is delivered.
+
+    It answers `busy` on a lock error, `paused`, `idle`, `deleting` or `not_folder`, otherwise
+    `{state: "drained", delivered, cancelled, skipped}`. No computer row is locked. The wake's authority is read again
+    when it becomes a run, and on every tool call of that run.
+  - The edge function's `FOLDER_DRAINS` gets `office_wakes` (maximum 64), and the orchestrator's `CLOUD_FOLDER_DRAINS`
+    gets `{name: "office_wakes", companyLimit: 16}`.
+  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
+- **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
+  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. The old check took
+  the company row and every row `NOWAIT`. That would turn a screen heartbeat (the computer `FOR UPDATE`) into a refused
+  tool call of the woken run.
+- **The wake source.** `'office-activation'` leaves the folder-v2 refusal lists of `qorpera_pin_wake_occurrence`,
+  `qorpera_folder_wake_authorized` and `qorpera_folder_run_resolve`. `qorpera_folder_wake_authorized` checks an
+  office-activation wake's ancestry (`qorpera_office_activation_wake_ancestry`). Each edit anchors on its own token
+  only, so P29's and 3i-b's edits of the same lists apply in either order.
+- **Test 892** (648's committed fixture; Ada's start waits for the company's computer, which comes up):
+  - A: nothing is due while Ada's turn runs; once it has ended the company is due, unless it is paused;
+  - B: the drain waits behind a folder stop at the fence, and behind a member change at the start's requester, each time
+    holding neither the waiter nor the admission. It then delivers one queued wake for Ada, and a second drain is idle;
+  - C: with the computer held `FOR UPDATE` (a screen heartbeat), the folder wake check answers at once. Once the computer
+    is no longer active, the wake is not authorized;
+  - D: the run the wake becomes resolves as Ada's agent run for that wake;
+  - E: a start whose turn failed is cancelled, not woken;
+  - F: only the service role drains, and a page over 500 or a company limit over 64 is refused;
+  - G: exactly the patched and new functions name the migration.
+- **Other tests:**
+  - 656 now reverses the pin trigger's new comment;
+  - 656 and 634 check that a machine event is still refused on folder-v2 (634 also checks that a hand-built office
+    activation with no waiter behind it is refused by its ancestry);
+  - the edge function's and the orchestrator's tests cover the new entries.
 
 ## 7. Traps for C1c-2 and C1c-3
 

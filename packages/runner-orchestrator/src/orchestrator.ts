@@ -222,6 +222,8 @@ export interface CloudFolderDrainSpec {
 /** The drains the orchestrator runs, in order. Another drain adds its entry here and in the edge function's table. */
 export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freeze([
 	Object.freeze({ name: "listen", companyLimit: 32 }),
+	// C1c-3l part 2: an agent's waiters for a Company Computer it started (RUNTIME-COMPANY-FOLDER-C1C.md §6.18).
+	Object.freeze({ name: "office_wakes", companyLimit: 16 }),
 ]);
 
 /** A page of folder-v2 environments with work for one drain. */

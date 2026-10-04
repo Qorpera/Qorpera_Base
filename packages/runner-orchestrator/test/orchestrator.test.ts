@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	CLOUD_FOLDER_DRAINS,
 	type CloudFolderDrainPage,
 	type CloudFolderDrainResult,
 	CloudFolderDrains,
@@ -885,6 +886,13 @@ describe("cloud runner orchestrator", () => {
 		await expect(control.listFolderDrainDue("listen", undefined, 100)).rejects.toThrow(
 			"inconsistent folder drain pagination",
 		);
+	});
+
+	it("runs the listener, then the office wakes, each with its own company limit", () => {
+		expect(CLOUD_FOLDER_DRAINS).toEqual([
+			{ name: "listen", companyLimit: 32 },
+			{ name: "office_wakes", companyLimit: 16 },
+		]);
 	});
 
 	it("runs each folder drain's companies in their own requests; a drain's outage or a company's failure stops no other", async () => {

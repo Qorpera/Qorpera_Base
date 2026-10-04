@@ -572,9 +572,12 @@ begin
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run(c_a, 'agent', c_member, 'worker-dispatch', p,
 		pg_temp.worker(c_a, p, 'coding', 'read', '63400000-0000-4000-8000-000000000004')), 'coding-other-owner', c_refused), '42501');
 
-	-- Office activation still waits for C1b-3.
+	-- A machine event still waits for C1c-3i part b. An office activation serves folder-v2 since C1c-3l part 2
+	-- (20260930030100, 892); this hand-built one has no waiter behind it, so its ancestry refuses it.
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run(c_a, 'agent', c_member, 'machine-event', p),
+		'machine-1', c_refused), '0A000');
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run(c_a, 'agent', c_member, 'office-activation', p),
-		'office-1', c_refused), '0A000');
+		'office-1', c_refused), '42501');
 	if exists (select 1 from public.qorpera_folder_entries where environment_id = c_env and key_text = 'refused') then
 		raise exception 'A refused run applied a unit'; end if;
 end $$;

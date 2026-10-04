@@ -9,6 +9,12 @@ const MAX_BODY_BYTES = 128 * 1024;
  * the orchestrator's list; an edge function without its entry answers 400, which pauses that drain alone. */
 export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; company: string; maximum: number }>>> = Object.freeze({
 	listen: Object.freeze({ due: "qorpera_folder_listen_due", company: "qorpera_folder_listen_company", maximum: 256 }),
+	// C1c-3l part 2: wake an agent once the Company Computer it started is up (RUNTIME-COMPANY-FOLDER-C1C.md §6.18).
+	office_wakes: Object.freeze({
+		due: "qorpera_folder_office_wakes_due",
+		company: "qorpera_folder_office_wakes_company",
+		maximum: 64,
+	}),
 });
 
 export type RunnerOrchestratorRequest =

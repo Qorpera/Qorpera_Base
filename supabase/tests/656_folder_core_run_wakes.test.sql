@@ -102,7 +102,7 @@ begin
 		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tif current_setting(''qorpera.folder_wake_admission'', true) is distinct from new.profile_id::text then\n'
 		|| E'\t\t\traise exception ''Folder wake admission is required'' using errcode = ''55000''; end if;\n'
-		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'') then\n'
+		|| E'\t\tif new.source_kind in (/* C1c-3l 20260930030100: office-activation serves folder-v2 */ ''machine-event'') then\n'
 		|| E'\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n'
 		|| E'\telse\n'
 		|| E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'
@@ -229,7 +229,8 @@ begin
 			clock_timestamp(), clock_timestamp(), '{}')$f$, c_profile, c_env), '55000', 'Folder wake admission is required');
 	-- Sources whose ancestry checks lock rows refuse on folder-v2 until they get folder modes, admitted or not.
 	perform public.qorpera_folder_admit_wakes(c_profile);
-	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''office-activation'''),
+	-- (An office activation serves folder-v2 since C1c-3l part 2, 20260930030100; a machine event still waits.)
+	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''machine-event'''),
 		'65600000-0000-4000-8000-0000000000e1', '65600000-0000-4000-8000-0000000000e3'), 'admission-test', 'admission-office'),
 		'0A000', 'This wake source does not serve folder-v2 yet');
 	perform set_config('qorpera.folder_wake_admission', '', true);

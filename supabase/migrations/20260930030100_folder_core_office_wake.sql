@@ -1,6 +1,6 @@
 -- Company folder core, C1c-3l part 2 (the coordinator's audit P06c): the office-activation wake on folder-v2. Once an
 -- agent's start has brought the Company Computer up, a wake continues the agent's work (deploy/first-node/
--- RUNTIME-COMPANY-FOLDER-C1C.md §6.14; plan outputs/company-accounts/p06-office-folder-v2-plan.md). Builds on C1c-3l
+-- RUNTIME-COMPANY-FOLDER-C1C.md §6.18; plan outputs/company-accounts/p06-office-folder-v2-plan.md). Builds on C1c-3l
 -- part 1 (20260930030000).
 --
 -- Folder-v2 only (the founder's decision of 3 October): each patch is a folder-v2 branch or removes a folder-v2 refusal;

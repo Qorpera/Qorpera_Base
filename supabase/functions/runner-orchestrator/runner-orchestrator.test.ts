@@ -273,6 +273,19 @@ describe("runner orchestrator boundary", () => {
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId: "x", limit: 1 }),
 		);
+		// C1c-3l part 2's office wakes: at most 64 waiters of one company per request.
+		assert.deepEqual(FOLDER_DRAINS.office_wakes, {
+			due: "qorpera_folder_office_wakes_due",
+			company: "qorpera_folder_office_wakes_company",
+			maximum: 64,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 64 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 64 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 65 }),
+		);
 	});
 
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {
