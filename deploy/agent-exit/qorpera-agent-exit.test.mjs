@@ -33,6 +33,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const logger = join(here, "qorpera-agent-exit-log.py");
 const plugTool = join(here, "qorpera-agent-plug.py");
 const logsTool = join(here, "qorpera-agent-exit-logs.py");
+// The deletion records of a log folder (lost/<name>.json), in the order they were written.
+const lostRecords = (folder) =>
+	(existsSync(join(folder, "lost")) ? readdirSync(join(folder, "lost")) : [])
+		.filter((name) => name.endsWith(".json") && !name.startsWith("."))
+		.map((name) => JSON.parse(readFileSync(join(folder, "lost", name), "utf8")))
+		.sort((a, b) => a.recordedAt - b.recordedAt);
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
 test("the installer pins the files in this folder", () => {
@@ -750,7 +756,7 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		const r = tend(t0 + 2 * DAY + 3600 * 9, "--cap-bytes", "1");
 		assert.equal(r.status, 1, "still over a 1-byte cap: a problem");
 		assert.match(r.result.problems[0], /over their cap, or the disk under its floor/);
-		const lost = readFileSync(join(log, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		const lost = lostRecords(log);
 		const order = lost.map((entry) => entry.file);
 		assert.deepEqual(order, [
 			`flows-${day}.p001.jsonl.gz`,
@@ -881,30 +887,44 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.ok(counted.length > 80);
 		for (const name of counted)
 			assert.deepEqual(JSON.parse(readFileSync(join(expiring, name), "utf8")).late, [], `${name}: nothing counted twice`);
-		const lost = readFileSync(join(expiring, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line).file);
+		const lost = lostRecords(expiring).map((record) => record.file);
 		for (const [part, counts] of [[`flows-${day}.p001.jsonl.gz`, `counts-${day}.json`], [`clients-${day}.p001.jsonl.gz`, `counts-${day}.json`], [`flows-${next}.p001.jsonl.gz`, `counts-${next}.json`]])
 			assert.ok(lost.indexOf(part) >= 0 && lost.indexOf(part) < lost.indexOf(counts), lost.join(" "));
 	});
 
-	test("a deletion is never unrecorded: the ledger line comes first, once, and a deleted name is never used again", () => {
+	test("a deletion is never unrecorded: its record comes first, whole, and a deleted name is never used again", () => {
 		const ledger = mkdtempSync(join(dir, "ledger-"));
 		writeFileSync(join(ledger, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
 		writeFileSync(join(ledger, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
 		writeFileSync(join(ledger, `flows-${next}.jsonl`), lines([opened("10.210.1.1", t0 + DAY + 200)]));
 		const run = (now) =>
 			spawnSync("python3", [logsTool, "tend", "--log-dir", ledger, "--status", join(dir, "ledger.json"), "--now", String(now), "--settle", "0", "--free-percent", "50"], { encoding: "utf8" });
-		assert.equal(run(t0 + 2 * DAY + 3 * 3600).status, 0);
+		const counted = t0 + 2 * DAY + 3 * 3600;
+		assert.equal(run(counted).status, 0);
+		// A pass cut short under pressure, after the second day's record and before its unlink. The pressure is gone
+		// now: the recorded deletion is finished all the same, first, and not recorded twice.
+		const pending = `flows-${next}.p001.jsonl.gz`;
+		mkdirSync(join(ledger, "lost"));
+		writeFileSync(join(ledger, "lost", `${pending}.json`), JSON.stringify({ ts: counted, recordedAt: 1, file: pending, bytes: 1, day: next, reason: "over the cap" }));
+		assert.equal(run(counted + 3600).status, 0);
+		assert.ok(!readdirSync(ledger).includes(pending));
+		assert.ok(readdirSync(ledger).includes(`flows-${day}.p001.jsonl.gz`), "no pressure, no expiry: the rest stays");
+		assert.equal(lostRecords(ledger).length, 1);
+		// 92 days on, the first day expires. A record that cannot be written (a folder where its temporary file goes):
+		// that file is not deleted.
 		const later = t0 + 92 * DAY + 3 * 3600;
-		// The ledger cannot be written: nothing is deleted.
-		mkdirSync(join(ledger, "lost.jsonl"));
+		const blocked = join(ledger, "lost", `.flows-${day}.p001.jsonl.gz.json.tmp`);
+		mkdirSync(blocked);
 		assert.equal(run(later).status, 1);
-		assert.ok(readdirSync(ledger).includes(`flows-${day}.p001.jsonl.gz`), "kept without its ledger line");
-		rmSync(join(ledger, "lost.jsonl"), { recursive: true });
-		// A pass cut short after writing a line and before its unlink: the next pass deletes it, with no second line.
-		writeFileSync(join(ledger, "lost.jsonl"), lines([{ ts: later, file: `flows-${day}.p001.jsonl.gz`, bytes: 1, day, reason: "kept 90 days" }]));
+		assert.ok(readdirSync(ledger).includes(`flows-${day}.p001.jsonl.gz`), "kept without its record");
+		assert.ok(!lostRecords(ledger).some((record) => record.file === `flows-${day}.p001.jsonl.gz`));
+		rmSync(blocked, { recursive: true });
+		// Then each deletion with its own record.
 		assert.equal(run(later).status, 0);
-		const lost = readFileSync(join(ledger, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line).file);
-		assert.equal(lost.filter((name) => name === `flows-${day}.p001.jsonl.gz`).length, 1);
+		assert.deepEqual(
+			lostRecords(ledger).map((record) => record.file).sort(),
+			[`clients-${day}.p001.jsonl.gz`, `counts-${day}.json`, `counts-${next}.json`, `flows-${day}.p001.jsonl.gz`, pending].sort(),
+		);
 		assert.ok(!readdirSync(ledger).some((name) => name.startsWith("flows-") || name.startsWith("clients-")));
 		// The first day's counts are gone too; a late part for it gets a name never used before, and is counted late.
 		writeFileSync(join(ledger, `clients-${day}.jsonl`), lines([machine("10.210.1.2", "cC", "mC", t0 + 300)]));
@@ -956,7 +976,7 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.equal(low.status, 1);
 		assert.ok(!readdirSync(fresh).includes(`flows-${kept}.p001.jsonl.gz`), "the disk is low");
 		assert.ok(readdirSync(fresh).includes(`counts-${kept}.json`), "counts stay");
-		const reasons = readFileSync(join(fresh, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line).reason);
+		const reasons = lostRecords(fresh).map((record) => record.reason);
 		assert.deepEqual([...new Set(reasons)], ["kept 90 days", "the disk is low"]);
 	});
 });

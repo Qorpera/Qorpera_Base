@@ -23,7 +23,9 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
   first, the client history's last. One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
   pressure; at 90 days a counts file goes after every part it names, and the newest one (the checkpoint) never. Each
-  deleted file is a line in lost.jsonl, written before the file goes (its day is unknown to a lookup from then on).
+  deleted file has its own record, lost/<name>.json, written whole (temporary file, synced, renamed, folder synced)
+  before the file goes: a record exists complete or not at all, and the next pass first finishes every recorded
+  deletion whose file is still there, whatever the pressure is then (a lookup knows that day is unknown).
 <run-dir>/logs.json says when it last ran and what it could not do; `qorpera-agent-exit.sh verify` fails while it is
 older than 15 minutes or names a problem (the logs still over their cap, or the disk under its floor, with every
 part it may delete gone; a part it cannot seal; a closed day it cannot count). The logger pauses by itself at the
@@ -140,28 +142,40 @@ def compress(source, final):
 
 
 def next_part(files, kind, day, used=()):
-    """The next part number for a day: past every part there is, and every one a counts file or lost.jsonl names (a
-    name is never used twice, so a part deleted after it was counted is never mistaken for a new one)."""
+    """The next part number for a day: past every part there is, and every one a counts file or a deletion record names
+    (a name is never used twice, so a part deleted after it was counted is never mistaken for a new one)."""
     numbers = [int(m.group(3)) for name in [*files, *used] if (m := PART.match(name) or SEALING.match(name))
                and m.group(1) == kind and m.group(2) == day]
     return max(numbers, default=0) + 1
 
 
-def lost_names(log_dir):
-    """Every file lost.jsonl names."""
-    names = set()
+LOST = "lost"
+LOST_RECORD = re.compile(r"^(?!\.)(.+)\.json$")
+
+
+def lost_records(log_dir):
+    """File name to its deletion record (lost/<name>.json): every file deleted, with when, why and its size."""
+    records = {}
     try:
-        with open(os.path.join(log_dir, "lost.jsonl"), encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(entry, dict) and isinstance(entry.get("file"), str):
-                    names.add(entry["file"])
-    except FileNotFoundError:
-        pass
-    return names
+        entries = list(os.scandir(os.path.join(log_dir, LOST)))
+    except (FileNotFoundError, NotADirectoryError):
+        return records
+    for entry in entries:
+        m = LOST_RECORD.match(entry.name)
+        if not m or not entry.is_file(follow_symlinks=False):
+            continue
+        try:
+            with open(entry.path, encoding="utf-8") as f:
+                value = json.load(f)
+        except (OSError, ValueError):
+            value = {}
+        records[m.group(1)] = value if isinstance(value, dict) else {}
+    return records
+
+
+def lost_names(log_dir):
+    """Every file a deletion record names."""
+    return set(lost_records(log_dir))
 
 
 def seal_files(log_dir, now, part_bytes, settle=SETTLE_SECONDS):
@@ -436,19 +450,11 @@ EXPIRED = f"kept {KEEP_DAYS} days"
 
 
 def deleted_early(log_dir):
-    """Day to the number of its files deleted before their 90 days (over the cap, or the disk low), from lost.jsonl."""
+    """Day to the number of its files deleted before their 90 days (over the cap, or the disk low), from the records."""
     days = {}
-    try:
-        with open(os.path.join(log_dir, "lost.jsonl"), encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(entry, dict) and entry.get("reason") != EXPIRED and isinstance(entry.get("day"), str):
-                    days[entry["day"]] = days.get(entry["day"], 0) + 1
-    except FileNotFoundError:
-        pass
+    for record in lost_records(log_dir).values():
+        if record.get("reason") != EXPIRED and isinstance(record.get("day"), str):
+            days[record["day"]] = days.get(record["day"], 0) + 1
     return days
 
 
@@ -569,17 +575,33 @@ def file_day(name):
 
 
 def delete_recorded(log_dir, now, name, size, reason):
-    """Deletes a file, its lost.jsonl line written (and synced) first: a deletion is never unrecorded. A line written
-    by a pass cut short before its unlink is not written twice."""
-    if name not in lost_names(log_dir):
-        line = json.dumps({"ts": now, "file": name, "bytes": size, "day": file_day(name), "reason": reason},
-                          sort_keys=True, separators=(",", ":"))
-        fd = os.open(os.path.join(log_dir, "lost.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o640)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+    """Deletes a file, its record written first: lost/<name>.json, whole (a temporary file, synced, renamed, the folder
+    synced), so a record exists complete or not at all, and a deletion is never unrecorded. A record a pass cut short
+    left is not written again."""
+    folder = os.path.join(log_dir, LOST)
+    os.makedirs(folder, mode=0o750, exist_ok=True)
+    record = os.path.join(folder, f"{name}.json")
+    if not os.path.lexists(record):
+        write_json(record, {"ts": now, "recordedAt": time.time_ns(), "file": name, "bytes": size, "day": file_day(name),
+                            "reason": reason})
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     os.unlink(os.path.join(log_dir, name))
+
+
+def replay_deletions(log_dir):
+    """Recorded deletions whose file is still there (a pass cut short between the record and the unlink) are finished
+    first, every pass, whatever the pressure is now: their names are never used again."""
+    files = regular_files(log_dir)
+    done = []
+    for name in sorted(lost_names(log_dir)):
+        if name in files and (PART.match(name) or DNS_PART.match(name)):
+            os.unlink(os.path.join(log_dir, name))
+            done.append(name)
+    return done
 
 
 def tidy(log_dir, now, cap, floor, free=free_percent):
@@ -588,7 +610,7 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     last. A connection log or client history part goes only once a counts file names it (the one rule, at 90 days and
     under pressure alike); the open files and the counts never go under pressure. Returns what it deleted, and whether,
     after that, the logs are still over their cap or the disk under the floor: the lines where the logger pauses."""
-    deleted = []
+    deleted = replay_deletions(log_dir)
     files = regular_files(log_dir)
     counted = counted_parts(log_dir, files)
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
@@ -653,6 +675,10 @@ def tend_locked(log_dir, status, cap, floor, now, part_bytes, settle, free):
     for name in regular_files(log_dir):
         if TEMPORARY.match(name):
             os.unlink(os.path.join(log_dir, name))
+    if os.path.isdir(os.path.join(log_dir, LOST)):
+        for name in regular_files(os.path.join(log_dir, LOST)):
+            if TEMPORARY.match(name):
+                os.unlink(os.path.join(log_dir, LOST, name))
     steps = (
         ("sealed", lambda: seal_files(log_dir, now, part_bytes, settle)),
         ("dnsRotated", lambda: rotate_dns(log_dir, now, part_bytes)),
