@@ -18,6 +18,7 @@ import type { CompanyComputerGuestEndpoint } from "./cloud-company-computer-endp
 import {
 	COMPANY_COMPUTER_NATIVE_MAX_REQUEST,
 	COMPANY_COMPUTER_NATIVE_MAX_RESPONSE,
+	COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE,
 	COMPANY_COMPUTER_NATIVE_SCHEMA,
 	type CompanyComputerNativeDescriptor,
 	officeNativeRecord,
@@ -35,6 +36,8 @@ export interface CompanyComputerNativeGuestSession {
 	/** True once the guest itself ended this session (its screen was drained)
 	 * and finished reaping it. The same lease may then open a fresh one. */
 	ended?(): boolean;
+	/** A screenshot published without storage (folder-v2): its pixels, once, for the perform answer. */
+	screenshot?(receiptId: string): Uint8Array | undefined;
 }
 /** The guest refused to create a session and created nothing; the gateway keeps no capacity for it. */
 export class CompanyComputerGuestSessionRefusedError extends Error {
@@ -375,11 +378,17 @@ export class CompanyComputerNativeGateway {
 				...(fill ? { fill } : {}),
 			});
 			await session.run.assertActive(combined);
+			// A screenshot stored nowhere travels in its answer, the only answer that may carry pixels.
+			const image =
+				operation.tool === "computer_screenshot"
+					? session.guest.screenshot?.(receipt.receiptId as string)
+					: undefined;
 			return {
 				schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
 				receiptId: receipt.receiptId,
 				idempotencyKey: receipt.idempotencyKey,
 				content,
+				...(image ? { image: Buffer.from(image).toString("base64") } : {}),
 			};
 		})();
 		session.active.add(result);
@@ -437,7 +446,13 @@ export class CompanyComputerNativeGateway {
 				25000,
 			);
 			const bytes = Buffer.from(JSON.stringify(result));
-			if (bytes.length > COMPANY_COMPUTER_NATIVE_MAX_RESPONSE) throw new Error("OFFICE_NATIVE_RESPONSE_TOO_LARGE");
+			if (
+				bytes.length >
+				(result && typeof result === "object" && "image" in result
+					? COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE
+					: COMPANY_COMPUTER_NATIVE_MAX_RESPONSE)
+			)
+				throw new Error("OFFICE_NATIVE_RESPONSE_TOO_LARGE");
 			response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
 			response.end(bytes);
 		} catch {

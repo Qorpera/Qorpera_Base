@@ -1437,6 +1437,55 @@ describe("a new routine's file (P34r)", () => {
 		expect(fake.commits[1]).toEqual(fake.commits[0]);
 		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
 	});
+	it("opens a new routine that a lost answer made on its file when someone changed it before the draft's change", async () => {
+		const fake = seeded({ text: null });
+		const f = mountFolder([], { fake });
+		// The list is the index's: each routine file in the folder, by its index id and its file's id.
+		f.routines.list.mockImplementation(async () =>
+			(fake.stateFolders().routines ?? []).map((item) =>
+				indexed(fake.text(item.file)!, {
+					routineId: item.routineId,
+					clientRoutineId: parsed(fake.text(item.file), item.file).id,
+				}),
+			),
+		);
+		await openEditor(f.view, "New routine");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		fake.loseAnswer();
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() =>
+			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
+		);
+		// Someone renames the routine the lost answer made, and the member changes their draft.
+		const made = "agents/nora/routines/weekly-close.md";
+		const renamed = fake.put(made, fake.text(made)!.replace("title: Weekly close", "title: Friday close"));
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
+		click(f.view.el, "Save routine");
+		// The replay is saved; the draft's change since meets the rename, and the form opens on the routine's file.
+		await vi.waitFor(() => expect(status(f.view.el)).toBe("This routine changed while you were editing it."));
+		expect(f.view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		expect(field(f.view.el, "Routine name").value).toBe("Friday close");
+		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").value).toBe("Close the week.");
+		expect(fake.commits).toHaveLength(3);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual([made]);
+		// The next Save edits the file as it is now.
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		expect(fake.commits).toHaveLength(4);
+		expect(fake.commits[3]!.operationKey).toMatch(/^web:routine-update:/);
+		expect(fake.commits[3]!.units).toEqual([
+			{ op: "write", path: made, text: expect.any(String), expectedVersion: renamed },
+		]);
+		expect(parsed(fake.text(made), made)).toMatchObject({
+			title: "Friday close",
+			instructions: "Close the week, with totals.",
+		});
+		expect(fake.children("agents/nora/routines")).toEqual([made]);
+		f.stop.abort();
+	});
 	it("saves no trigger a member's editor does not make, such as a file change", async () => {
 		const fake = seeded({ text: null });
 		const f = writer(fake);
