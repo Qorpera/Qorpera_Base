@@ -296,10 +296,10 @@ begin
 	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second creator waits for the first'; end if;
 	perform dblink_exec('auth_one', 'commit');
 	r := pg_temp.result('auth_two');
-	if r -> 'units' -> 0 ->> 'outcome' <> 'conflict' or not exists (select 1 from public.qorpera_folder_conflict_copies
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'conflict' or not exists (select 1 from public.qorpera_folder_conflict_copies
 			where commit_id = (r ->> 'commitId')::uuid) then raise exception 'The second keeps a copy: %', r; end if;
-	if (select as_of_seq from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid)
-			>= (select seq from public.qorpera_folder_commits where operation_key = 'erace-z-one') then
+	if not coalesce((select as_of_seq from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid)
+			< (select seq from public.qorpera_folder_commits where operation_key = 'erace-z-one'), false) then
 		raise exception 'Its clock was read before the first committed'; end if;
 	begin
 		perform public.qorpera_folder_erase('63500000-0000-4000-8000-000000000020', pg_temp.member(1), '["er/z.md"]', 'erace-erase-z');

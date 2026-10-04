@@ -27,7 +27,7 @@ $$;
 create function pg_temp.conflict(p_key text, p_unit jsonb) returns jsonb language plpgsql as $$
 declare r jsonb := pg_temp.commit(pg_temp.owner(), p_key, jsonb_build_array(p_unit));
 begin
-	if r -> 'units' -> 0 ->> 'outcome' <> 'conflict' then raise exception 'Expected a conflict: %', r; end if;
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'conflict' then raise exception 'Expected a conflict: %', r; end if;
 	return r;
 end $$;
 
@@ -177,13 +177,13 @@ begin
 		jsonb_build_object('kind','file','path','a.md','file',pg_temp.stage('n a')),
 		jsonb_build_object('kind','file','path','b.md','file',pg_temp.stage('n b')))));
 	if (select array_agg(file_no order by file_no) from public.qorpera_folder_conflict_copies where commit_id = (c ->> 'commitId')::uuid)
-		<> array[1, 2] then raise exception 'A new folder keeps its two files: %', c; end if;
+		is distinct from array[1, 2] then raise exception 'A new folder keeps its two files: %', c; end if;
 	r := pg_temp.erase(array['cc/n/a.md'], 'erase-cc-n-a');
 	perform pg_temp.same(r -> 'roots' -> 0 ->> 'versions', '0', 'a path that never had a version');
 	perform pg_temp.same(r -> 'roots' -> 0 ->> 'conflictCopies', '1', 'holds one copy');
 	perform pg_temp.drain((r ->> 'erasureId')::uuid);
 	if (select array_agg(file_no order by file_no) from public.qorpera_folder_conflict_copies where commit_id = (c ->> 'commitId')::uuid)
-		<> array[2] then raise exception 'Only the erased file''s copy goes'; end if;
+		is distinct from array[2] then raise exception 'Only the erased file''s copy goes'; end if;
 end $$;
 
 -- 7. Phase 5 with folder GC serving the company: an erased copy's own bytes are enqueued, bytes another copy holds are not --
@@ -209,7 +209,7 @@ begin
 	r := pg_temp.erase(array['cc/p.md'], 'erase-cc-p');
 	perform pg_temp.same(r -> 'roots' -> 0 ->> 'conflictCopies', '2', 'both copies at cc/p.md');
 	e := pg_temp.drain((r ->> 'erasureId')::uuid);
-	if e.state <> 'done' or not exists (select 1 from public.qorpera_folder_object_gc
+	if e.state is distinct from 'done' or not exists (select 1 from public.qorpera_folder_object_gc
 			where profile_id = '70700000-0000-4000-8000-000000000010' and sha256 = v_unique)
 		or exists (select 1 from public.qorpera_folder_object_gc
 			where profile_id = '70700000-0000-4000-8000-000000000010' and sha256 = v_shared) then
