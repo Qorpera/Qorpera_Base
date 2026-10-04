@@ -1749,7 +1749,9 @@ decisions of 4 October). It replaces §9's payer rule: nobody pays in someone el
   Interfaces', later).
 - **The run.** The agent's public thread for the payer, reply optional (`continuation` when there is a
   thread). The payload is `{schema 'qorpera.human-task-wake/v1', taskId, reason, commitId, dueAt}`, and when the
-  run may read the task's file, its path, title, status and due. The skill text says when an agent is woken.
+  run may read the task's file, its path, title, status and due. Showing them is a read of the task's file: the wake
+  read records it first (once per version, with the authority it was read under), so the run's effects recheck it and
+  erasure finds the run (review r1). The skill text says when an agent is woken.
 - **Runtime (same PR).** The wake bus accepts the source and its closed payload; the prompt's wake protocol
   explains it; `FOLDER_DRAINS` and `CLOUD_FOLDER_DRAINS` gain `human_tasks`.
 - **Later:** removing old markers (keep those of live wakes); Interfaces lifts the gateway's hold on

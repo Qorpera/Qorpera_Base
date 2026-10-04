@@ -577,7 +577,8 @@ begin
 end $$;
 
 do $$
-declare w public.qorpera_wake_occurrences; a jsonb; e jsonb;
+declare w public.qorpera_wake_occurrences; a jsonb; b jsonb; e jsonb; v_state text; v_id uuid;
+	v public.qorpera_folder_erasures%rowtype;
 begin
 	-- Nora's wake for the declined task (section 3).
 	w := pg_temp.woken('91500000-0000-4000-8000-0000000000e1', 'declined', '70700000-0000-4000-8000-0000000000a1', 'declined');
@@ -586,7 +587,8 @@ begin
 			case when w.session_id is null then 'optional' else 'continuation' end) then
 		raise exception 'Optional in the agent''s own thread, no mouth without one: %',
 			public.qorpera_runtime_wake_policy_internal((a ->> 'runId')::uuid); end if;
-	e := public.qorpera_read_native_wake(pg_temp.native(a));
+	b := pg_temp.native(a);
+	e := public.qorpera_read_native_wake(b);
 	if e -> 'source' ->> 'kind' is distinct from 'human-task'
 		or e -> 'source' ->> 'id' is distinct from '91500000-0000-4000-8000-0000000000e1'
 		or e ->> 'actorUserId' is distinct from '70700000-0000-4000-8000-000000000002' or e ->> 'actorStaffId' is not null
@@ -597,7 +599,38 @@ begin
 			"title":"Fit the new disk","status":"declined"}'
 		or e -> 'payload' ->> 'reason' is distinct from 'declined' or e -> 'payload' -> 'dueAt' is distinct from 'null' then
 		raise exception 'The run''s wake: %', e; end if;
-	-- The task is shown only while the run may read its file.
+	-- Showing the task was a read of its file at its version, recorded once with its authority (a second read adds none).
+	select * into w from public.qorpera_wake_occurrences where id = w.id;
+	perform public.qorpera_read_native_wake(b);
+	if (select count(*) from public.qorpera_folder_run_read_records rr where rr.run_id = (a ->> 'runId')::uuid) <> 1
+		or not exists (select 1 from public.qorpera_folder_run_read_records rr where rr.run_id = (a ->> 'runId')::uuid
+			and rr.release_id = public.qorpera_folder_human_task_release_id(w.id, (select folder_path_version
+				from public.qorpera_folder_human_task_index where id = '91500000-0000-4000-8000-0000000000e1'))
+			and rr.reads -> 0 ->> 'path' = 'human-tasks/fit-disk.md' and rr.reads -> 0 -> 'authority' ->> 'resourceId' is not null)
+		or not exists (select 1 from public.qorpera_folder_run_reads r where r.run_id = (a ->> 'runId')::uuid) then
+		raise exception 'The task read is recorded: %', (select jsonb_agg(to_jsonb(rr)) from public.qorpera_folder_run_read_records rr
+			where rr.run_id = (a ->> 'runId')::uuid); end if;
+	-- The run may still act. Once the task's file is no longer readable to it (its grant revoked), it may not, and the task
+	-- is not shown.
+	perform pg_temp.saved(pg_temp.commit(a, 'p31-run-act-1', jsonb_build_array(jsonb_build_object('op','mkdir','path','p31-before'))));
+	update public.qorpera_company_path_grants set revoked_at = clock_timestamp()
+	where principal_kind = 'staff_agent' and principal_id = '70700000-0000-4000-8000-0000000000a1' and revoked_at is null;
+	if public.qorpera_folder_human_task_wake_payload(w, public.qorpera_folder_listener_actor(w.profile_id, w.staff_agent_id,
+			w.requested_by_user_id, w.session_id)) -> 'task' <> 'null' then
+		raise exception 'A task the run may not read is not shown'; end if;
+	begin
+		e := pg_temp.commit(a, 'p31-run-act-2', jsonb_build_array(jsonb_build_object('op','mkdir','path','p31-after')));
+		v_state := coalesce(e -> 'units' -> 0 ->> 'outcome', e::text);
+	exception when insufficient_privilege then
+		v_state := sqlerrm;
+	end;
+	perform pg_temp.is(v_state, 'A read is no longer readable', 'the run''s effect after its task read was narrowed');
+	update public.qorpera_company_path_grants set revoked_at = null
+	where principal_kind = 'staff_agent' and principal_id = '70700000-0000-4000-8000-0000000000a1' and revoked_at is not null;
+	if public.qorpera_folder_human_task_wake_payload(w, public.qorpera_folder_listener_actor(w.profile_id, w.staff_agent_id,
+			w.requested_by_user_id, w.session_id)) -> 'task' ->> 'path' is distinct from 'human-tasks/fit-disk.md' then
+		raise exception 'A task the run may read is shown'; end if;
+	-- A private resource over the task's file hides it too.
 	insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id, policy, created_by_user_id)
 	values ('70700000-0000-4000-8000-000000000020', 'human-tasks/fit-disk.md', 'exact', 'member_private',
 		'70700000-0000-4000-8000-000000000002', 'normal', '70700000-0000-4000-8000-000000000002');
@@ -606,11 +639,7 @@ begin
 		raise exception 'A task the run may not read is not shown'; end if;
 	delete from public.qorpera_company_path_resources
 	where environment_id = '70700000-0000-4000-8000-000000000020' and path = 'human-tasks/fit-disk.md';
-	if public.qorpera_folder_human_task_wake_payload(w, public.qorpera_folder_listener_actor(w.profile_id, w.staff_agent_id,
-			w.requested_by_user_id, w.session_id)) -> 'task' ->> 'path' is distinct from 'human-tasks/fit-disk.md' then
-		raise exception 'A task the run may read is shown'; end if;
 	-- Once its run is admitted, a later change of the task does not take the wake's authority away; before, it does.
-	select * into w from public.qorpera_wake_occurrences where id = w.id;
 	perform pg_temp.fx(format('update public.qorpera_folder_human_task_index set retired_at = clock_timestamp() where id = %L',
 		'91500000-0000-4000-8000-0000000000e1'));
 	if not public.qorpera_folder_wake_authorized(w) then raise exception 'A running task wake keeps its authority'; end if;
@@ -618,6 +647,17 @@ begin
 	if public.qorpera_folder_wake_authorized(w) then raise exception 'A task wake not yet run needs its task'; end if;
 	perform pg_temp.fx(format('update public.qorpera_folder_human_task_index set retired_at = null where id = %L',
 		'91500000-0000-4000-8000-0000000000e1'));
+	-- Erasing the (final, removed) task's file finds the run that read it through its wake.
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'p31-remove-1', jsonb_build_array(pg_temp.del('human-tasks/fit-disk.md'))));
+	v_id :=(public.qorpera_folder_erase('70700000-0000-4000-8000-000000000020', pg_temp.owner(), '["human-tasks/fit-disk.md"]',
+		'erase-fit-disk') ->> 'erasureId')::uuid;
+	for i in 1 .. 60 loop
+		select * into v from public.qorpera_folder_erasures where id = v_id;
+		exit when v.state <> 'working';
+		perform public.qorpera_folder_erasure_step(3, 3, 3);
+	end loop;
+	if not exists (select 1 from public.qorpera_folder_erasure_runs where erasure_id = v_id and run_id = (a ->> 'runId')::uuid) then
+		raise exception 'The run that read an erased task through its wake is noted: %', to_jsonb(v); end if;
 end $$;
 
 -- 12. Grants, the marks' privacy and the drain's lock text --------------------------------------------------------------------

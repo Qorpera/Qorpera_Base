@@ -139,8 +139,16 @@ returns boolean language sql stable security definer set search_path = '' as $$
 			and p_wake.requested_by_user_id = coalesce(p_mark.payer_user_id, t.started_by_user_id))
 $$;
 
+-- The release under which a task wake's run records its read of the task's file at one version (one per version shown).
+create function public.qorpera_folder_human_task_release_id(p_wake_id uuid, p_version uuid)
+returns uuid language sql immutable set search_path = '' as $$
+	-- 20260930065000 (P31).
+	select md5('human-task:' || p_wake_id::text || ':' || p_version::text)::uuid
+$$;
+
 -- The wake's payload as its run reads it: the stored ids, and the task's path, title, status and due when the run may read
--- the task's file (a wake row never holds a path, so erasure needs no scrub).
+-- the task's file and has recorded that read (qorpera_folder_read_wake records it first). A wake row never holds a path,
+-- so erasure needs no scrub; the read record is what erasure finds.
 create function public.qorpera_folder_human_task_wake_payload(p_wake public.qorpera_wake_occurrences, p_actor jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_task public.qorpera_folder_human_task_index%rowtype; v_shown jsonb := null;
@@ -149,7 +157,9 @@ begin
 	select * into v_task from public.qorpera_folder_human_task_index
 	where environment_id = p_wake.environment_id and id = p_wake.source_id and retired_at is null;
 	if v_task.id is not null
-		and public.qorpera_folder_actor_allowed(p_wake.environment_id, p_wake.profile_id, p_actor, v_task.folder_path, 'read') then
+		and public.qorpera_folder_actor_allowed(p_wake.environment_id, p_wake.profile_id, p_actor, v_task.folder_path, 'read')
+		and exists (select 1 from public.qorpera_folder_run_read_records rr where rr.run_id = p_wake.run_id
+			and rr.release_id = public.qorpera_folder_human_task_release_id(p_wake.id, v_task.folder_path_version)) then
 		v_shown := jsonb_build_object('path', v_task.folder_path, 'title', v_task.title, 'status', v_task.status,
 			'due', to_char(v_task.due_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));
 	end if;
@@ -161,6 +171,7 @@ revoke all on function public.qorpera_folder_human_task_due_key(uuid, timestampt
 	public.qorpera_folder_human_task_sponsor(uuid, uuid, uuid),
 	public.qorpera_folder_human_task_wake_marker(public.qorpera_wake_occurrences),
 	public.qorpera_folder_human_task_wake_fits(public.qorpera_wake_occurrences, public.qorpera_folder_human_task_wakes),
+	public.qorpera_folder_human_task_release_id(uuid, uuid),
 	public.qorpera_folder_human_task_wake_payload(public.qorpera_wake_occurrences, jsonb)
 	from public, anon, authenticated, service_role;
 
@@ -605,6 +616,35 @@ select pg_temp.p31_replace('public.qorpera_folder_read_wake(jsonb)'::regprocedur
 		from public.qorpera_folder_human_task_wakes m
 		where m.environment_id = v_wake.environment_id and m.occurrence_key = v_wake.occurrence_key;
 	end if;$new$);
+select pg_temp.p31_replace('public.qorpera_folder_read_wake(jsonb)'::regprocedure,
+	$old$	v_reads jsonb; v_pairs jsonb; v_payload jsonb; v_routine jsonb := null; v_sender uuid; v_actor_user uuid;$old$,
+	$new$	v_reads jsonb; v_pairs jsonb; v_payload jsonb; v_routine jsonb := null; v_sender uuid; v_actor_user uuid;
+	v_p31_release uuid;$new$);
+select pg_temp.p31_replace('public.qorpera_folder_read_wake(jsonb)'::regprocedure,
+	$old$	perform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id, v_tool -> 'resolved');$old$,
+	$new$	-- 20260930065000 (P31): showing a human task to its wake's run is a read of the task's file at its version. It is
+	-- recorded first, once per version shown (its own release), with the authority it was read under, so the run's
+	-- effects recheck it and erasure finds the run; the payload shows only a recorded read.
+	if v_wake.source_kind = 'human-task' then
+		select jsonb_build_array(jsonb_build_object('path', t.folder_path, 'version', t.folder_path_version,
+				'authority', public.qorpera_folder_read_receipt(t.environment_id, t.profile_id, v_tool -> 'resolved', t.folder_path))),
+			public.qorpera_folder_human_task_release_id(v_wake.id, t.folder_path_version)
+		into v_reads, v_p31_release
+		from public.qorpera_folder_human_task_index t
+		where t.environment_id = v_wake.environment_id and t.id = v_wake.source_id and t.retired_at is null
+			and public.qorpera_folder_actor_allowed(t.environment_id, t.profile_id, v_tool -> 'resolved', t.folder_path, 'read');
+		if v_reads is not null and v_reads -> 0 -> 'authority' <> 'null'::jsonb
+			and not exists (select 1 from public.qorpera_folder_run_read_records
+				where run_id = v_run.id and release_id = v_p31_release) then
+			v_pairs := public.qorpera_folder_release_pairs(v_run.environment_id, v_run.profile_id, v_tool -> 'resolved', v_reads);
+			perform public.qorpera_folder_write_read_set(v_run.environment_id, v_run.id, v_pairs -> 'upserts', null, null);
+			insert into public.qorpera_folder_run_read_records(run_id, release_id, environment_id, resource_id, reads, output_sha256)
+			select v_run.id, v_p31_release, v_run.environment_id, (f -> 'authority' ->> 'resourceId')::uuid, jsonb_agg(f),
+				repeat('0', 64)
+			from jsonb_array_elements(v_pairs -> 'filed') f group by 4;
+		end if;
+	end if;
+	perform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id, v_tool -> 'resolved');$new$);
 select pg_temp.p31_replace('public.qorpera_folder_read_wake(jsonb)'::regprocedure,
 	$old$			then public.qorpera_folder_file_wake_changes(v_wake, v_tool -> 'resolved') else v_wake.payload end)$old$,
 	$new$			then public.qorpera_folder_file_wake_changes(v_wake, v_tool -> 'resolved')
