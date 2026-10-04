@@ -2,8 +2,9 @@
 -- for 15 minutes is a run without progress like any other.
 --
 -- qorpera_run_no_progress_since (20260928459150) left out a run whose newest observation, "writing" pulses aside, was a
--- tool call's start (qorpera_run_waiting_on_tool), so that a long build would count as work. That exemption never fired:
--- every tool call records its context authority's start and finish right after its own start. Nor is it needed: no
+-- tool call's start (qorpera_run_waiting_on_tool), so that a long build would count as work. That exemption fired only
+-- for a call queued behind one still running: every tool call records its context authority's start and finish right
+-- after its own start, so a running call's start was never the newest record. Nor is it needed: no
 -- built-in tool keeps a call open that long. Builds and commands go through machine_run and coding commands, which return
 -- a handle at once; the longest waits inside a call are machine_read's (at most 300 s) and an action review's hold
 -- (5 minutes). A tool call open for 15 minutes is a hang, and the contract tells a member of a run with no progress for
