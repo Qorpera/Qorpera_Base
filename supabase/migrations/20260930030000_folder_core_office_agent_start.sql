@@ -12,8 +12,15 @@
 --   the members (rank 1) and agents (rank 2) that any current start of the company's computers names, and the run's own
 --   agent, plus every active agent KEY SHARE (a new computer's default access takes them). An agent's return (its row,
 --   then the seat lock through the hire's walk, then the computers) then waits at the agent's row, never in a cycle.
--- * A start of the computer that appears after that read names someone the prelude did not lock: the start refuses with
---   55P03 ("try again"), which the runtime treats as no answer.
+-- * A start of the computer that appears after that read names someone the prelude did not lock. The start-source check
+--   then shares that member as before (a member's writers never take a seat lock or a computer, so the wait is safe),
+--   and that agent without waiting (FOR SHARE NOWAIT): an agent's return holds its row and wants the seat lock, so a wait
+--   could deadlock. The start therefore joins a start that appeared meanwhile, and refuses (55P03) only when that agent's
+--   row is being written at that very moment. The same check covers a member's start (C1c-3j) against an agent's start.
+-- * 3j's prelude (qorpera_folder_office_enter) runs again inside calls that already hold the computer (a member's start
+--   calls its before-idle body, a provider's wrapper its unbound body). Nested, it takes a start's agent without waiting:
+--   the outer prelude took the same agent unless a start appeared in between, and then a wait could deadlock with that
+--   agent's return.
 -- * The start takes no gc fence (its tool run holds the folder fence and the company row KEY SHARE); the descriptor's new
 --   computer takes the company's agents KEY SHARE before the seat lock, as a member's new computer does (C1c-3k); the
 --   descriptor's gate accepts a ready folder-v2 Company File.
@@ -66,9 +73,6 @@ begin
 			from public.qorpera_profile_staff as staff
 			where staff.profile_id = v_run.profile_id and staff.employment_status = 'active'), '[]'::jsonb);
 	perform public.qorpera_folder_tool_run(p_binding, v_targets);
-	-- The start checks its start of the computer against these (55P03 for one named after this read).
-	perform set_config('qorpera.office_start_held',
-		jsonb_build_object('members', to_jsonb(v_members), 'staff', to_jsonb(v_staff))::text, true);
 end $$;
 revoke all on function public.qorpera_folder_office_start_enter(jsonb) from public, anon, authenticated, service_role;
 
@@ -92,19 +96,62 @@ begin
 		|| E'\tif not public.qorpera_binding_is_folder_v2(p_binding) then\n'
 		|| E'\tperform public.qorpera_lock_profile_gc_fence((v_authority#>>''{identity,companyId}'')::uuid);\n'
 		|| E'\tend if;\n', 1);
-	perform pg_temp.c1c3l_replace('public.qorpera_native_office_start(jsonb,text,text,uuid,text)',
-		E'\t\treturning * into v_intent;\n'
+end $$;
+
+-- 2b. The start-source check: on folder-v2 the start's agent without waiting ----------------------------------------------
+
+do $$
+begin
+	perform pg_temp.c1c3l_replace(
+		'public.qorpera_assert_runtime_office_start_source(public.qorpera_runtime_offices,public.qorpera_runtime_office_start_intents)',
+		E'\t\tperform 1 from public.qorpera_runtime_office_access access\n'
+		|| E'\t\t\tjoin public.qorpera_profile_staff staff on staff.profile_id=access.profile_id and staff.staff_agent_id=access.staff_agent_id\n'
+		|| E'\t\t\twhere access.office_id=p_office.id and access.profile_id=p_office.profile_id\n'
+		|| E'\t\t\tand access.staff_agent_id=p_intent.requested_by_staff_agent_id and access.grant_id=p_intent.grant_id\n'
+		|| E'\t\t\tand access.version=p_intent.grant_version and access.state=''active'' and staff.employment_status=''active''\n'
+		|| E'\t\t\tfor share of access,staff;\n',
+		E'\t\t-- C1c-3l (20260930030000): on folder-v2 every caller shared this agent before the computer, unless its start\n'
+		|| E'\t\t-- appeared after the caller\'s read; then without waiting, since a return holds the row and wants the seat lock.\n'
+		|| E'\t\tif public.qorpera_company_is_folder_v2(p_office.profile_id) then\n'
+		|| E'\t\t\tperform 1 from public.qorpera_runtime_office_access access\n'
+		|| E'\t\t\t\tjoin public.qorpera_profile_staff staff on staff.profile_id=access.profile_id and staff.staff_agent_id=access.staff_agent_id\n'
+		|| E'\t\t\t\twhere access.office_id=p_office.id and access.profile_id=p_office.profile_id\n'
+		|| E'\t\t\t\tand access.staff_agent_id=p_intent.requested_by_staff_agent_id and access.grant_id=p_intent.grant_id\n'
+		|| E'\t\t\t\tand access.version=p_intent.grant_version and access.state=''active'' and staff.employment_status=''active''\n'
+		|| E'\t\t\t\tfor share of access,staff nowait;\n'
+		|| E'\t\telse\n'
+		|| E'\t\tperform 1 from public.qorpera_runtime_office_access access\n'
+		|| E'\t\t\tjoin public.qorpera_profile_staff staff on staff.profile_id=access.profile_id and staff.staff_agent_id=access.staff_agent_id\n'
+		|| E'\t\t\twhere access.office_id=p_office.id and access.profile_id=p_office.profile_id\n'
+		|| E'\t\t\tand access.staff_agent_id=p_intent.requested_by_staff_agent_id and access.grant_id=p_intent.grant_id\n'
+		|| E'\t\t\tand access.version=p_intent.grant_version and access.state=''active'' and staff.employment_status=''active''\n'
+		|| E'\t\t\tfor share of access,staff;\n'
+		|| E'\t\tend if;\n', 1);
+end $$;
+
+-- 2c. 3j's prelude, nested: the start's agent without waiting -------------------------------------------------------------
+
+do $$
+begin
+	perform pg_temp.c1c3l_replace('public.qorpera_folder_office_enter(uuid,uuid,uuid)',
+		E'\tif v_intent.requested_by_staff_agent_id is not null then\n'
+		|| E'\t\tperform 1 from public.qorpera_profile_staff as staff\n'
+		|| E'\t\twhere staff.profile_id = v_office.profile_id and staff.staff_agent_id = v_intent.requested_by_staff_agent_id\n'
+		|| E'\t\tfor share;\n'
 		|| E'\tend if;\n',
-		E'\t\treturning * into v_intent;\n'
+		E'\t-- C1c-3l (20260930030000): run again inside a call that already holds the computer, the prelude takes the agent of\n'
+		|| E'\t-- a start that appeared since the first run without waiting (a wait could deadlock with that agent\'s return).\n'
+		|| E'\tif v_intent.requested_by_staff_agent_id is not null\n'
+		|| E'\t\tand current_setting(''qorpera.folder_office_entered'', true) is not distinct from v_office.id::text then\n'
+		|| E'\t\tperform 1 from public.qorpera_profile_staff as staff\n'
+		|| E'\t\twhere staff.profile_id = v_office.profile_id and staff.staff_agent_id = v_intent.requested_by_staff_agent_id\n'
+		|| E'\t\tfor share nowait;\n'
+		|| E'\telsif v_intent.requested_by_staff_agent_id is not null then\n'
+		|| E'\t\tperform 1 from public.qorpera_profile_staff as staff\n'
+		|| E'\t\twhere staff.profile_id = v_office.profile_id and staff.staff_agent_id = v_intent.requested_by_staff_agent_id\n'
+		|| E'\t\tfor share;\n'
 		|| E'\tend if;\n'
-		|| E'\t-- C1c-3l (20260930030000): on folder-v2 a start of this computer that names someone the prelude did not lock\n'
-		|| E'\t-- appeared after its read: try again.\n'
-		|| E'\tif public.qorpera_binding_is_folder_v2(p_binding) and (\n'
-		|| E'\t\t(v_intent.requested_by_user_id is not null and not coalesce(current_setting(''qorpera.office_start_held'', true)::jsonb\n'
-		|| E'\t\t\t-> ''members'' ? v_intent.requested_by_user_id::text, false))\n'
-		|| E'\t\tor (v_intent.requested_by_staff_agent_id is not null and not coalesce(current_setting(''qorpera.office_start_held'', true)::jsonb\n'
-		|| E'\t\t\t-> ''staff'' ? v_intent.requested_by_staff_agent_id::text, false))) then\n'
-		|| E'\t\traise exception ''The Company Computer''''s start changed while this one waited'' using errcode = ''55P03''; end if;\n', 1);
+		|| E'\tperform set_config(''qorpera.folder_office_entered'', v_office.id::text, true);\n', 1);
 end $$;
 
 -- 3. The descriptor ------------------------------------------------------------------------------------------------------
