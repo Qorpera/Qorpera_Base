@@ -206,7 +206,6 @@ export function brokenQuotes(
 	});
 }
 
-
 /** The broken pieces of `after` (`brokenQuotes`) whose words it holds broken more often than `before` did. */
 function newlyBroken(before: string, after: string, records: readonly QuoteRecord[]): [number, number][] {
 	const count = (text: string) => {
