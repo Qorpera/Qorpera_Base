@@ -18,6 +18,8 @@ set local lock_timeout = '3s';
 
 create index qorpera_folder_commits_member_time on public.qorpera_folder_commits(environment_id, created_at desc, id desc)
 	where actor_kind = 'member' and run_id is null;
+-- A view's commits during a leased turn name the turn's run in turn_run_id, not run_id (C1b-3).
+create index qorpera_folder_commits_turn_run on public.qorpera_folder_commits(turn_run_id) where turn_run_id is not null;
 
 -- 1. The run ----------------------------------------------------------------------------------------------------------
 
@@ -87,6 +89,7 @@ begin
 	select jsonb_agg(item order by created_at desc,id desc) into v_items from (
 		select r.id,r.created_at,jsonb_build_object('receiptId',r.id,'assignmentId',r.assignment_id,'status',r.status,
 			'requiresCompanyRevision',r.requires_company_revision,'outputSnapshotId',r.output_snapshot_id,
+			'folderCommitId',r.folder_commit_id,
 			'proposalId',r.proposal_id,'companyPathProposalId',r.company_path_proposal_id,
 			'createdAt',r.created_at,'completedAt',r.completed_at,'recoveryResolution',r.recovery_resolution,
 			'recoveryResolvedByUserId',r.recovery_resolved_by_user_id,'recoveryResolvedAt',r.recovery_resolved_at) as item
@@ -107,13 +110,15 @@ begin
 					order by pv.unit_no,pv.version limit 32) v),'[]'::jsonb),
 			'versionsTruncated',(select count(*) > 32 from (select 1 from public.qorpera_folder_path_versions pv
 				where pv.commit_id=c.id limit 33) n)) as item
-		from public.qorpera_folder_commits c where c.run_id=p_run_id order by c.created_at desc,c.id desc limit p_limit+1
+		from public.qorpera_folder_commits c where c.run_id=p_run_id or c.turn_run_id=p_run_id
+		order by c.created_at desc,c.id desc limit p_limit+1
 	) page;
 	v_pages := v_pages || jsonb_build_object('commits',public.qorpera_operational_page(v_items,p_limit));
 	-- The run's change sets that were reviewed: the class SQL decided, and a member's answer to an 'ask'.
 	select jsonb_agg(item order by created_at desc,id desc) into v_items from (
 		select r.id,r.created_at,jsonb_build_object('reviewId',r.id,'changeSetSha256',r.change_set_sha256,
-			'units',to_jsonb(r.units),'decision',r.decision,'answer',r.answer,'answeredByUserId',r.answered_by_user_id,
+			'unitCount',cardinality(r.units),'units',to_jsonb(r.units[1:32]),'unitsTruncated',cardinality(r.units) > 32,
+			'decision',r.decision,'answer',r.answer,'answeredByUserId',r.answered_by_user_id,
 			'answeredAt',r.answered_at,'createdAt',r.created_at) as item
 		from public.qorpera_folder_reviews r where r.run_id=p_run_id order by r.created_at desc,r.id desc limit p_limit+1
 	) page;
@@ -123,8 +128,12 @@ begin
 	select jsonb_agg(item order by created_at desc,release_id desc,resource_id desc) into v_items from (
 		select r.release_id,r.resource_id,r.created_at,jsonb_build_object('releaseId',r.release_id,'resourceId',r.resource_id,
 			'readCount',jsonb_array_length(r.reads),
-			'versions',coalesce((select jsonb_agg(e.value -> 'version' order by e.ordinality)
-				from jsonb_array_elements(r.reads) with ordinality e where e.ordinality <= 32),'[]'::jsonb),
+			-- The runner reports each version; only a well-formed id is shown (anything else as null), never its text.
+			'versions',coalesce((select jsonb_agg(case when jsonb_typeof(r.reads -> (n - 1) -> 'version') = 'string'
+					and (r.reads -> (n - 1) ->> 'version') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+					then to_jsonb((r.reads -> (n - 1) ->> 'version')::uuid) end order by n)
+				from generate_series(1, least(jsonb_array_length(r.reads), 32)) n),'[]'::jsonb),
+			'versionsTruncated',jsonb_array_length(r.reads) > 32,
 			'outputSha256',r.output_sha256,'createdAt',r.created_at,'semantics','released_read_set_not_nas_io') as item
 		from public.qorpera_folder_run_read_records r where r.run_id=p_run_id
 		order by r.created_at desc,r.release_id desc,r.resource_id desc limit p_limit+1
@@ -207,7 +216,7 @@ begin
 			'diagnosticExportGapReported',exists(select 1 from public.qorpera_runtime_observations where run_id=p_run_id
 				and operation='diagnostic_export' and phase='finish' and observation ->> 'status'<>'succeeded'),
 			'unreportedDiagnosticLoss','unknown','counterUpdatesMustNotBeSummed',true,'unknownCountersRemainNull',true,
-			'diagnosticStatusIsCanonicalOutcome',false,'readResourceVersionHistory','exact_path_versions_in_read_sets'),
+			'diagnosticStatusIsCanonicalOutcome',false,'readResourceVersionHistory','read_set_versions_as_the_runner_reported_them'),
 		'retention',jsonb_build_object('diagnosticDays',30,'clock','server_ingested_at','activeJobsPreserved',true,
 			'purge','explicit_bounded_operator_invocation','authorityRecordsPruned',false));
 end
@@ -241,6 +250,7 @@ begin
 		'environmentId',v_environment,'queriedAt',statement_timestamp(),'limit',p_limit,
 		'commands',public.qorpera_operational_page(v_items,p_limit),
 		'coverage',jsonb_build_object('source','members_folder_commits',
+			'agentCommitsOutsideARun','not_listed_here_see_the_run_query_by_turn_run',
 			'deniedAttempts','not_recorded','applyDuration','not_recorded','memberReadAttempts','not_recorded',
 			'noRunIsInvented',true,'noModelOrSponsorIsInferred',true),
 		'retention','canonical_authority_history_not_subject_to_diagnostic_purge');

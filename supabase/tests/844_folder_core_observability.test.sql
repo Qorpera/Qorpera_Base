@@ -11,7 +11,6 @@
 do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_a constant uuid := '63400000-0000-4000-8000-0000000000a1';
-	v_grant public.qorpera_company_path_grants%rowtype := pg_temp.agent_grant((pg_temp.root()).id, c_a);
 	v jsonb := pg_temp.run(c_a, 'human', '63400000-0000-4000-8000-000000000002'); l jsonb; r jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p32-setup', jsonb_build_array(
@@ -20,6 +19,10 @@ begin
 		jsonb_build_object('op','write','path','p32/b.txt','file',pg_temp.stage('beta')))), 3, 'saved');
 	l := public.qorpera_folder_list(c_env, v, 'p32', null, 10);
 	perform pg_temp.release(v, '84400000-0000-4000-8000-0000000000e1', l -> 'entries', repeat('1', 64));
+	-- A release whose version is text the runner made up: filed as given, shown only as null (closed metadata).
+	perform public.qorpera_folder_record_release(c_env, v, '84400000-0000-4000-8000-0000000000e2',
+		(select jsonb_agg(jsonb_build_object('path', e ->> 'path', 'version', 'LEAKED_p32/a.txt', 'authority', e -> 'authority'))
+			from jsonb_array_elements(l -> 'entries') e), repeat('2', 64));
 	r := pg_temp.commit(v, 'p32-run-commit', '[{"op":"mkdir","path":"p32/out"},{"op":"mkdir","path":"p32/out/notes"}]');
 	perform pg_temp.expect(r, 2, 'saved');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(2), 'p32-member-commit', '[{"op":"mkdir","path":"p32/by-member"}]'), 1, 'saved');
@@ -62,12 +65,24 @@ begin
 		or c ->> 'decision' <> 'ask' or c ->> 'answer' <> 'allow' or c -> 'units' <> '[1]'::jsonb
 		or c ->> 'answeredByUserId' <> '63400000-0000-4000-8000-000000000001' then
 		raise exception 'The run''s review is not shown: %', c; end if;
-	-- The released read set: one covering resource, both files' versions.
-	c := q #> '{sections,readSets,items,0}';
-	if jsonb_array_length(q #> '{sections,readSets,items}') <> 1 or c ->> 'releaseId' <> '84400000-0000-4000-8000-0000000000e1'
-		or (c ->> 'readCount')::integer <> 2 or jsonb_array_length(c -> 'versions') <> 2 or c ->> 'outputSha256' <> repeat('1', 64)
-		or c ->> 'resourceId' <> (pg_temp.root()).id::text then
-		raise exception 'The run''s read set is not shown: %', c; end if;
+	if (c ->> 'unitCount')::integer <> 1 or (c ->> 'unitsTruncated')::boolean then
+		raise exception 'The review''s units are not counted: %', c; end if;
+	-- The released read sets: one covering resource each, both files' versions; the made-up versions come back null.
+	if jsonb_array_length(q #> '{sections,readSets,items}') <> 2 then
+		raise exception 'Both releases are shown: %', q #> '{sections,readSets}'; end if;
+	select item into c from jsonb_array_elements(q #> '{sections,readSets,items}') item
+	where item ->> 'releaseId' = '84400000-0000-4000-8000-0000000000e1';
+	if (c ->> 'readCount')::integer <> 2 or c ->> 'outputSha256' <> repeat('1', 64) or (c ->> 'versionsTruncated')::boolean
+		or c ->> 'resourceId' <> (pg_temp.root()).id::text
+		or (select array_agg(x.value ->> 'version' order by x.value ->> 'version') from jsonb_array_elements(
+				(select reads from public.qorpera_folder_run_read_records where run_id = (v ->> 'runId')::uuid
+					and release_id = '84400000-0000-4000-8000-0000000000e1')) x)
+			is distinct from (select array_agg(x #>> '{}' order by x #>> '{}') from jsonb_array_elements(c -> 'versions') x) then
+		raise exception 'The run''s read set is not shown with its versions: %', c; end if;
+	select item into c from jsonb_array_elements(q #> '{sections,readSets,items}') item
+	where item ->> 'releaseId' = '84400000-0000-4000-8000-0000000000e2';
+	if c -> 'versions' <> '[null,null]'::jsonb or q::text ~ 'LEAKED' then
+		raise exception 'A made-up version is shown as text: %', c; end if;
 	-- Not completed: no result, so no output commit.
 	if q -> 'canonicalResult' <> 'null'::jsonb or q #>> '{canonicalJob,status}' <> 'leased' then
 		raise exception 'An unfinished run shows a result: %', q -> 'canonicalResult'; end if;
@@ -94,6 +109,20 @@ begin
 	q := public.qorpera_get_runtime_operational_run((v ->> 'runId')::uuid);
 	if q::text ~ 'p32/|p32-|"path"|operationKey|"reads"' then
 		raise exception 'The run query exposed a path or an operation key'; end if;
+end $$;
+
+-- A view's commit during the leased turn names the run in turn_run_id (C1b-3): it is the run's work too.
+do $$
+declare v jsonb := current_setting('qorpera_test.p32_run')::jsonb; q jsonb;
+begin
+	perform pg_temp.fx(format($f$insert into public.qorpera_folder_commits(id, environment_id, seq, operation_key, actor_kind,
+		actor_id, units, session_kind, view_id, view_kind, turn_run_id) values ('84400000-0000-4000-8000-0000000000c1',
+		'63400000-0000-4000-8000-000000000020', null, 'p32-view-commit', 'staff_agent', '63400000-0000-4000-8000-0000000000a1', '[]',
+		'coding', extensions.gen_random_uuid(), 'coding_session', %L)$f$, v ->> 'runId'));
+	q := public.qorpera_get_runtime_operational_run((v ->> 'runId')::uuid);
+	if not exists (select 1 from jsonb_array_elements(q #> '{sections,commits,items}') c
+		where c ->> 'commitId' = '84400000-0000-4000-8000-0000000000c1') then
+		raise exception 'A view''s commit during the turn is not the run''s work'; end if;
 end $$;
 
 -- 2. The company query: the members' own commits only ------------------------------------------------------------------

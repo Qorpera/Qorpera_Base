@@ -33,7 +33,7 @@ or billing data is synthesized here.
 | Native model invocation | Start/end/status/safe error for the logical turn, including its tool work, retries and compaction. Available native thread-total counters are retained as snapshots. |
 | Major tools | Separate attempt IDs and timing, safe outcome/category, and validated read or operation-receipt links. Protected proposals remain proposed; confirmed receipt/message replays are not new effects. |
 | Enforcement | Run/context authorization and native result-fence observations. Post-effect result-release denial is separate from an already-confirmed effect. A passed pre-request fence is not proof that the provider received a request. |
-| Human Company File | Canonical member-command/actor/resource/revision queries, complemented by the gateway's bounded request-observation window for read/apply attempts, including denials and transport failures. |
+| Human Company File | Canonical member commits on the company folder (since `20260930032000`; member-command/actor/resource/revision queries before), complemented by the gateway's bounded request-observation window for read/apply attempts, including denials and transport failures. |
 | Provider node | Current CPU delta, OS memory and provider-root-filesystem free space, each with its own sample time, availability and freshness. Existing gateway dependency health reports storage/authority failures separately. |
 
 `qorpera.runtime-observation/v1` is a closed metadata object. It contains UUID
