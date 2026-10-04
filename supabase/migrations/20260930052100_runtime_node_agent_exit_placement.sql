@@ -1,18 +1,36 @@
 -- Agent exit E2d, part 2 of 2: exit health in placement (20260930052100). Contract: section 19, 2026-10-03 amendment
 -- "agent traffic leaves through the agent exit", item 10 (a node whose exit is not healthy takes no new agent road
 -- machines; a machine that cannot move starts on its node). Needs part 1 (20260930052000) and, before it is applied,
--- every node's exit healthy through it (deploy/agent-exit/ROLLOUT.md): there is no switch, so a node without a healthy
--- exit takes no new Company Computer or agent's machine from here on.
+-- every node's exit healthy through it and the node release whose providers wait on the new refusal
+-- (deploy/agent-exit/ROLLOUT.md): there is no switch, so a node without a healthy exit takes no new Company Computer or
+-- agent's machine from here on.
 --
 -- - qorpera_reserve_runtime_node_machine refuses NODE_AGENT_EXIT_UNHEALTHY for a new Company Computer (`office`) or
---   agent's machine (`machine`), and for the wake of an agent's machine (admission then moves it, as for a full node;
---   one tied to its repository's node waits). The wake of a Company Computer and every coding machine pass: they
---   cannot move (a Company Computer keeps its allocation, a coding machine its member's storage), so they start on
---   their node, without internet while its exit is down;
+--   agent's machine (`machine`), and for the wake of an agent's machine (admission then moves it, as for a full node).
+--   The wake of a Company Computer or of an agent's machine tied to its repository's node, and every coding machine,
+--   pass: they cannot move (a Company Computer keeps its allocation, the others their repository's or member's
+--   storage), so they start on their node, without internet while its exit is down. The check comes after the node's
+--   observation: an observer that stopped reads as NODE_OBSERVATION_UNAVAILABLE, whose grace keeps a sleeping machine
+--   on its node while the node may only be looking away;
 -- - the candidates of new agents' machines, of new Company Computers and of new coding machines (the executor pick's
 --   fresh branch) leave such a node out.
 
 set local lock_timeout = '3s';
+
+-- Not before every node's exit is healthy (deploy/agent-exit/ROLLOUT.md): there is no switch, so applied too early this
+-- would keep every new Company Computer and agent's machine off a node. A database without such a node (a new one, a
+-- test) passes.
+do $guard$
+begin
+	if exists (select 1 from public.qorpera_runtime_nodes node where node.enabled
+		and exists (select 1 from public.qorpera_runtime_node_providers provider where provider.node_id = node.id
+			and provider.provider_kind in ('office', 'machine', 'coding'))
+		and not public.qorpera_runtime_node_agent_exit_ready(node.id)) then
+		raise exception 'Agent exit placement: an enabled node has no healthy, current exit (deploy/agent-exit/ROLLOUT.md)'
+			using errcode = '55000';
+	end if;
+end
+$guard$;
 
 -- The demand's last refusal may now say NODE_AGENT_EXIT_UNHEALTHY.
 do $check$
@@ -43,12 +61,16 @@ $$;
 
 select pg_temp.agent_exit_placement_patch_20260930052100(
 	'public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)'::regprocedure,
-	$old$ then v_reason:='COMPUTER_HOURS_EXHAUSTED';$old$,
-	$new$ then v_reason:='COMPUTER_HOURS_EXHAUSTED';
+	$old$ then v_reason:='NODE_HARDWARE_CHANGED';$old$,
+	$new$ then v_reason:='NODE_HARDWARE_CHANGED';
  -- Agent exit health (20260930052100): a new Company Computer or agent's machine, or an agent's machine's wake, needs
- -- the node's exit; a Company Computer's wake and every coding machine cannot move and pass.
+ -- the node's exit; a Company Computer's wake, a repository-tied machine's wake and every coding machine cannot move
+ -- and pass.
  elsif p_provider_kind in ('office','machine') and (v_demand.reserved_at is null
-  or (p_provider_kind='machine' and v_demand.suspended_at is not null))
+  or (p_provider_kind='machine' and v_demand.suspended_at is not null and not exists(
+   select 1 from public.qorpera_company_machine_placements placement
+   join public.qorpera_company_machines machine on machine.id=placement.machine_id
+   where placement.id=v_allocation.company_machine_placement_id and machine.repository_worker_id is not null)))
   and not public.qorpera_runtime_node_agent_exit_ready(v_node.id) then v_reason:='NODE_AGENT_EXIT_UNHEALTHY';$new$);
 
 select pg_temp.agent_exit_placement_patch_20260930052100(

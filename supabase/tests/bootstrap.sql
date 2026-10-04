@@ -165,8 +165,8 @@ grant execute on function storage.foldername(text) to anon, authenticated, servi
 -- Test databases only (never a migration): every node the tests observe also reports a healthy agent exit
 -- (deploy/agent-exit; migration 20260930052000). From 20260930052100 on, a node without one takes no new Company
 -- Computer or agent's machine and no new coding machine, so without this every test that places one would need its
--- own exit report. The node's observation row is the moment: each insert or update of it reports a healthy, current
--- exit for that node. Tests of the exit's health itself switch this off for their transaction with
+-- own exit report. The node's observation row is the moment: each insert or update of it reports a healthy exit for
+-- that node, as current as the observation (a test that ages the observation ages the exit with it). Tests of the exit's health itself switch this off for their transaction with
 -- `select set_config('qorpera_test.agent_exit_real', 'on', true);` (supabase/tests/896, 897).
 create schema qorpera_test_support;
 create function qorpera_test_support.agent_exit_healthy() returns trigger language plpgsql as $$
@@ -174,7 +174,7 @@ begin
 	if to_regclass('public.qorpera_runtime_node_agent_exit') is not null
 		and current_setting('qorpera_test.agent_exit_real', true) is distinct from 'on' then
 		insert into public.qorpera_runtime_node_agent_exit (node_id, observation_id, observed_at, checked_at, healthy, problem_count)
-		values (new.node_id, extensions.gen_random_uuid(), clock_timestamp(), clock_timestamp(), true, 0)
+		values (new.node_id, extensions.gen_random_uuid(), new.observed_at, new.observed_at, true, 0)
 		on conflict (node_id) do update set observation_id = excluded.observation_id, observed_at = excluded.observed_at,
 			checked_at = excluded.checked_at, healthy = true, problem_count = 0, received_at = clock_timestamp();
 	end if;

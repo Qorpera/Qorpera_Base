@@ -1,8 +1,9 @@
 -- Agent exit E2d, part 1 of 2: the exit's health reaches the database (20260930052000). Inert: nothing reads it until
 -- part 2 (20260930052100) puts it in placement. Contract: section 19, 2026-10-03 amendment "agent traffic leaves through
 -- the agent exit", item 10. Design: deploy/first-node/RUNTIME-AGENT-EXIT.md §3 ("Health"), §12. Rollout:
--- deploy/agent-exit/ROLLOUT.md: every node's exit, then this migration, then the node observer that posts to it; part 2
--- only once every node reports a healthy exit (there is no switch).
+-- deploy/agent-exit/ROLLOUT.md: every node's exit, then this migration, then the node observer that posts to it, then
+-- the node release whose providers know the new refusal; part 2 last, once every node reports a healthy exit (there is
+-- no switch).
 --
 -- The node observer reads the exit's own answer (/run/qorpera-agent-exit/health.json, written every 10 s by
 -- `qorpera-agent-exit.sh health`) and posts it through qorpera_observe_runtime_node_agent_exit, apart from the node's
@@ -66,8 +67,10 @@ begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Node observer required' using errcode = '42501'; end if;
 	perform public.qorpera_assert_runtime_node_agent_exit(p_observation);
 	v_id := (p_observation->>'nodeId')::uuid; v_observation := (p_observation->>'observationId')::uuid;
+	-- The observer names its policy by its own digest (officeDigest), as for node health.
 	if not exists (select 1 from public.qorpera_runtime_nodes n join public.qorpera_runtime_node_inventory_policies p on p.node_id = n.id
-		where n.id = v_id and n.machine_id_sha256 = p_observation->>'machineIdSha256' and p.policy_sha256 = p_observation->>'policySha256') then
+		where n.id = v_id and n.machine_id_sha256 = p_observation->>'machineIdSha256'
+			and public.qorpera_node_health_policy_matches(p.policy, p.policy_sha256, p_observation->>'policySha256')) then
 		raise exception 'Agent exit health host or policy differs' using errcode = '42501';
 	end if;
 	v_at := public.qorpera_node_health_time(p_observation->'observedAt');

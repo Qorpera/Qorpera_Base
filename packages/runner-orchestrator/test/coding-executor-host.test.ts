@@ -768,6 +768,7 @@ describe("a coding turn on its member's machine", () => {
 		"PREVIOUS_MACHINE_AWAKE",
 		"MACHINE_PLAN_CHANGED",
 		"COMPUTER_HOURS_EXHAUSTED",
+		"NODE_AGENT_EXIT_UNHEALTHY",
 	])("waits out a %s refusal in the queue instead of failing the turn", async (reason) => {
 		const f = await fixture();
 		f.state.runRefusal = reason;

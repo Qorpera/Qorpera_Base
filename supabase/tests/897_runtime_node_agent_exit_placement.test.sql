@@ -1,8 +1,10 @@
 -- @fixture 628_runtime_company_machines.test.sql until "-- 4. Full: the next machine waits in line, unplaced, with its place and its reason."
 -- Agent exit E2d part 2 (20260930052100): a node whose exit is not healthy takes no new agent road machine.
 --   * Agents' machines: no new one is placed there (it waits as for room), a sleeping one does not wake there (refused
---     NODE_AGENT_EXIT_UNHEALTHY) and moves to a node whose exit is healthy; one already reserved keeps going. A node
---     that never reported its exit takes nothing.
+--     NODE_AGENT_EXIT_UNHEALTHY) and moves to a node whose exit is healthy; one already reserved keeps going, and one
+--     tied to its repository's node wakes there. A node that never reported its exit takes nothing. An observer that
+--     stopped is not an exit that is down: the node's observation is checked first, and its grace keeps a sleeping
+--     machine on its node.
 --   * Company Computers: no new one there (the node is not a candidate, and its reservation is refused); a sleeping one
 --     wakes on its node (it cannot move).
 --   * Coding machines are never refused (they cannot move); only the executor pick's fresh branch asks for the exit.
@@ -68,6 +70,16 @@ begin
 			v_place.instance_sha256, repeat('c',64), 2000, 4294967296) ->> 'reason' = 'NODE_AGENT_EXIT_UNHEALTHY'
 		and (select last_refusal from public.qorpera_runtime_node_demands where allocation_id = v_place.id) = 'NODE_AGENT_EXIT_UNHEALTHY',
 		'The reservation is refused, with the reason on the demand');
+	-- Tied to its repository's node, it wakes there (without internet while the exit is down). Rolled back.
+	begin
+		perform pg_temp.synthetic(format('update public.qorpera_company_machines set repository_worker_id = %L where id = %L',
+			'89700000-0000-4000-8000-0000000000d1', (pg_temp.machine('build-a')).id));
+		perform pg_temp.wake_assert(public.qorpera_reserve_runtime_node_machine(v_place.id, 'machine', 'machine-fixture',
+			repeat('f',64), v_place.instance_sha256, repeat('c',64), 2000, 4294967296) ->> 'state' = 'reserved',
+			'A repository-tied machine wakes on its node');
+		raise sqlstate 'P0T97';
+	exception when sqlstate 'P0T97' then null;
+	end;
 	perform pg_temp.wake_assert(public.qorpera_admit_executor_machines('mx-a', repeat('c', 64)) = '[]'::jsonb
 		and (pg_temp.placement('build-a')).owner = 'mx-a', 'Node A admits nothing while its exit is down');
 end $$;
@@ -99,7 +111,31 @@ begin
 		'Both are placed on node B, whose exit is healthy: ' || v_admitted::text);
 end $$;
 
--- 4. Coding machines are never refused for their node's exit: a new one and a sleeping one's wake both pass on node A.
+-- 4. An observer that stops is not an exit that is down. Node B's observation and its exit answer both go stale while
+--    exit-new sleeps there, and node A (healthy again) could take it: its wake reads NODE_OBSERVATION_UNAVAILABLE, and
+--    the grace for a node that may only be looking away keeps it on node B.
+do $$
+declare v_stop jsonb;
+begin
+	perform pg_temp.agent_exit('30000000-0000-4000-8000-000000000410', true);
+	perform pg_temp.observe_a();
+	perform public.qorpera_native_machine_manage(pg_temp.binding(), '{"action":"stop","machine":"exit-new"}');
+	perform pg_temp.custody('exit-new', 'stop');
+	v_stop := pg_temp.suspend('exit-new');
+	perform pg_temp.wake_assert(v_stop ->> 'state' = 'suspended', 'exit-new sleeps on node B: ' || v_stop::text);
+	update public.qorpera_runtime_node_observations set observed_at = clock_timestamp() - interval '2 minutes'
+	where node_id = '30000000-0000-4000-8000-000000000420';
+	update public.qorpera_runtime_node_agent_exit set observed_at = clock_timestamp() - interval '2 minutes',
+		checked_at = clock_timestamp() - interval '2 minutes'
+	where node_id = '30000000-0000-4000-8000-000000000420';
+	perform pg_temp.start('m-exit-wake-b', '{"machine":"exit-new"}');
+	perform pg_temp.wake_assert(pg_temp.custody('exit-new', 'run') ->> 'reason' = 'NODE_OBSERVATION_UNAVAILABLE'
+		and public.qorpera_admit_executor_machines('mx-a', repeat('c', 64)) = '[]'::jsonb
+		and (pg_temp.placement('exit-new')).owner = 'mx-b', 'A stopped observer keeps the sleeping machine on its node');
+	perform pg_temp.agent_exit('30000000-0000-4000-8000-000000000410', false);
+end $$;
+
+-- 5. Coding machines are never refused for their node's exit: a new one and a sleeping one's wake both pass on node A.
 select public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000410', repeat('c',64), 'coding', 'coding-exit',
 	repeat('3',64), 4000, 8589934592);
 select pg_temp.synthetic($sql$insert into public.qorpera_runtime_machine_allocations(id, profile_id, coding_machine_id, provider_adapter,
@@ -123,7 +159,7 @@ select pg_temp.wake_assert((length(d) - length(replace(d, 'qorpera_runtime_node_
 	'The pick filters only a new member''s machine')
 from pg_get_functiondef('public.qorpera_coding_executor_pick(uuid)'::regprocedure) d;
 
--- 5. Company Computers: node A is no candidate for a new one while its exit is down (for the other kinds it still is),
+-- 6. Company Computers: node A is no candidate for a new one while its exit is down (for the other kinds it still is),
 --    a new one's reservation there is refused, and a sleeping one wakes there.
 select public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000410', repeat('c',64), 'office',
 	'89700000-0000-4000-8000-0000000000f1', repeat('9',64), 4000, 8589934592);
@@ -156,7 +192,7 @@ begin
 		repeat('9',64), repeat('5',64)) ->> 'state' = 'reserved', 'A sleeping Company Computer wakes on its node, exit or not');
 end $$;
 
--- 6. A stale answer counts as no exit: the node is ready again only with a current one.
+-- 7. A stale answer counts as no exit: the node is ready again only with a current one.
 update public.qorpera_runtime_node_agent_exit set healthy = true, problem_count = 0, observed_at = clock_timestamp() - interval '61 seconds',
 	checked_at = clock_timestamp() - interval '61 seconds'
 where node_id = '30000000-0000-4000-8000-000000000410';

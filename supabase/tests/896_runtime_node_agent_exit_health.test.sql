@@ -30,9 +30,14 @@ select public.qorpera_enroll_runtime_node_inventory(jsonb_build_object('schema',
 	'socketPath','/var/snap/lxd/common/lxd/unix.socket','socketGid',0,'certificateSha256',repeat('e',64),'serverName','lxd',
 	'serverVersion','6.9','architecture','x86_64'),'operatingCpuMillis',2000,'operatingMemoryBytes',4294967296,'infrastructure','[]'::jsonb));
 reset role;
--- The node's inventory policy, as the observer holds it.
-select set_config('qorpera_test.exit_policy', (select policy_sha256 from public.qorpera_runtime_node_inventory_policies
+-- The node's inventory policy by the observer's digest (officeDigest: compact JSON, sorted keys), and as the database
+-- stores it (PostgreSQL's jsonb text); both name it, as for node health.
+select set_config('qorpera_test.exit_policy', (select encode(extensions.digest(public.qorpera_node_health_policy_json(policy), 'sha256'), 'hex')
+	from public.qorpera_runtime_node_inventory_policies where node_id = '89600000-0000-4000-8000-000000000010'), true);
+select set_config('qorpera_test.exit_policy_stored', (select policy_sha256 from public.qorpera_runtime_node_inventory_policies
 	where node_id = '89600000-0000-4000-8000-000000000010'), true);
+select pg_temp.wake_assert(current_setting('qorpera_test.exit_policy') <> current_setting('qorpera_test.exit_policy_stored'),
+	'The two digests differ, so both are tried');
 
 create function pg_temp.ms(p_at timestamptz) returns text language sql as $$
 	select to_char(p_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
@@ -95,6 +100,9 @@ from (values
 	(pg_temp.exit_report(true, 3, 0, 0, '{"nodeId":"89600000-0000-4000-8000-000000000099"}'), '42501', 'an unknown node')
 ) as r(report, state, what);
 select pg_temp.wake_assert(pg_temp.exit_ready(), 'Refused answers left the healthy one in place');
+select pg_temp.wake_assert(pg_temp.exit_refusal(pg_temp.exit_report(true, 3, 0, 0,
+	jsonb_build_object('policySha256', current_setting('qorpera_test.exit_policy_stored')))) = 'ok',
+	'The stored digest names the policy too');
 
 -- 3. An unhealthy answer (or one the observer could not read: no check) stops the exit being ready.
 select pg_temp.exit_post(pg_temp.exit_report(false, 2, 3));

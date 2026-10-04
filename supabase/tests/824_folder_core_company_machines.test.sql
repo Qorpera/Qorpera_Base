@@ -557,13 +557,17 @@ create temporary table c1c3f_patches(n serial, fn text, digest text, patched tex
 insert into c1c3f_patches(fn, digest, patched, original) values
 		-- The agent exit's refusal (20260930052100), the newest patch of the reservation: undone first.
 		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
-			$patched$ then v_reason:='COMPUTER_HOURS_EXHAUSTED';
+			$patched$ then v_reason:='NODE_HARDWARE_CHANGED';
  -- Agent exit health (20260930052100): a new Company Computer or agent's machine, or an agent's machine's wake, needs
- -- the node's exit; a Company Computer's wake and every coding machine cannot move and pass.
+ -- the node's exit; a Company Computer's wake, a repository-tied machine's wake and every coding machine cannot move
+ -- and pass.
  elsif p_provider_kind in ('office','machine') and (v_demand.reserved_at is null
-  or (p_provider_kind='machine' and v_demand.suspended_at is not null))
+  or (p_provider_kind='machine' and v_demand.suspended_at is not null and not exists(
+   select 1 from public.qorpera_company_machine_placements placement
+   join public.qorpera_company_machines machine on machine.id=placement.machine_id
+   where placement.id=v_allocation.company_machine_placement_id and machine.repository_worker_id is not null)))
   and not public.qorpera_runtime_node_agent_exit_ready(v_node.id) then v_reason:='NODE_AGENT_EXIT_UNHEALTHY';$patched$,
-			$original$ then v_reason:='COMPUTER_HOURS_EXHAUSTED';$original$),
+			$original$ then v_reason:='NODE_HARDWARE_CHANGED';$original$),
 		-- C1c-3n (20260930046000) added a run machine's branch after the folder one: undone next.
 		('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)', '6b177644e5a6533559d1ff78dfdcbc4b',
 			E' -- C1c-3n (20260930046000): a folder-v2 run''s machine (its company reservation took the identity''s machine lock).\n'
