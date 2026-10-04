@@ -2,11 +2,7 @@ import { type KeyObject, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, open, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import {
-	readBoundedCloudResponse,
-	supabaseServiceHeaders,
-	withCloudDeadline,
-} from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
 	type IdentityRecoveryReceipt,
 	parseIdentityRecoveryReceipt,
@@ -96,12 +92,13 @@ export function parseIdentityRecoveryRuntimeState(value: unknown): IdentityRecov
 	return state;
 }
 
+/** The identity's recovery state, asked through the holder's identity credential (G2-3): `fetcher` is the native
+ * host's dispatch, which sends it to qorpera_native_identity_call. */
 export async function fetchIdentityRecoveryRuntimeState(
 	baseUrl: string,
-	serviceKey: string,
 	computeIdentityId: string,
+	fetcher: typeof fetch,
 	signal?: AbortSignal,
-	fetcher = fetch,
 ): Promise<IdentityRecoveryRuntimeState> {
 	const base = new URL(baseUrl);
 	if (
@@ -119,7 +116,7 @@ export async function fetchIdentityRecoveryRuntimeState(
 				method: "POST",
 				redirect: "error",
 				signal: deadline,
-				headers: { ...supabaseServiceHeaders(serviceKey), "content-type": "application/json" },
+				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ p_compute_identity_id: recoveryUuid(computeIdentityId) }),
 			});
 			if (!response.ok) {

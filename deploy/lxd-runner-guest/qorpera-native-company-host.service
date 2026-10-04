@@ -16,6 +16,7 @@ Environment=NODE_EXTRA_CA_CERTS=/run/credentials/qorpera-native-company-host.ser
 EnvironmentFile=/var/lib/qorpera-bootstrap/native-provider.env
 LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
+LoadCredential=qorpera-native-identity:/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity
 LoadCredential=qorpera-native-object-token:/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token
 LoadCredential=qorpera-office-native:/var/lib/qorpera-bootstrap/credentials/qorpera-office-native
 LoadCredential=qorpera-coding-command:/var/lib/qorpera-bootstrap/credentials/qorpera-coding-command
