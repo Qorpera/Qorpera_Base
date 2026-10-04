@@ -78,10 +78,6 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_renew_artifact_gc_lease', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
 	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).'),
 	('qorpera_release_runtime_machine', 'open', 'Run machine release (S3, C1c-3n).'),
-	('qorpera_reserve_runtime_login_machine', 'open', 'Model login machine (S1, 20260930035000).'),
-	('qorpera_release_runtime_login_machine', 'open', 'Model login machine (S1, 20260930035000).'),
-	('qorpera_reserve_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1, 20260930035000).'),
-	('qorpera_release_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1, 20260930035000).'),
 	('qorpera_activate_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_cancel_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_consent_identity_recovery', 'open', 'Identity recovery (S1).'),
@@ -100,8 +96,8 @@ insert into p13_allowed(name, kind, reason) values
 insert into p13_allowed(name, kind, reason, pin) values
 	('qorpera_reserve_runtime_machine', 'partial', 'Only the office branch (no run) tests the core; a run''s own reservation, which every run machine makes, takes the gc fence on folder-v2 (S3, first item of C1c-3n).',
 		'if p_run_id is null and public.qorpera_company_is_folder_v2(v_profile) then'),
-	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding and office test the core; native (S3, C1c-3n) and login (S1, 20260930035000) take the gc fence on folder-v2.',
-		'p_provider_kind in (''machine'', ''coding'', ''office'') and public.qorpera_company_is_folder_v2(v_profile) then');
+	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding, office and login (20260930035000) test the core; native (S3, C1c-3n) takes the gc fence on folder-v2.',
+		'p_provider_kind in (''machine'', ''coding'', ''office'', ''login'') and public.qorpera_company_is_folder_v2(v_profile) then');
 
 do $$
 declare v_list text;
