@@ -175,7 +175,7 @@ for spec in sys.argv[2:]:
     where, status, address, company, machine, member, host = spec.split(":")
     project, name = where.split("/")
     nic = {"type": "nic", "nictype": "bridged", "parent": "qagent0", "name": "eth0",
-           "hwaddr": "0e:51:%02x:%02x:%02x:%02x" % tuple(int(x) for x in address.split(".")), "ipv4.address": address,
+           "hwaddr": "0e:51:%02x:%02x:%02x:%02x" % tuple(int(x) for x in address.split(".")),
            "ipv6.address": "none", "security.mac_filtering": "true", "security.ipv6_filtering": "true",
            "security.port_isolation": "true"}
     config = {"user.qorpera.company_id": company, "user.qorpera.machine_id": machine}
@@ -375,6 +375,18 @@ connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
 wait_for "grep -q '1.1.1.1:443 192.168.1.42' $work/lan-peers"
 grep -q '1.1.1.1:443 10\.' "$work/lan-peers" && fail "a site saw an inside address"
 pass "a website is reached, and sees the node's address (phase 1)"
+# A connection the site closes first: both tables hold it in TIME_WAIT for at most 30 seconds (the kernel's default
+# is 120).
+time_wait_left() { "$@" conntrack -L -p tcp --state TIME_WAIT -d 1.1.1.1 2>/dev/null | awk '$4 == "TIME_WAIT" {print $3}' | sort -n | tail -1; }
+# Read the greeting, then close: an unread greeting would make the close a reset (CLOSE, not TIME_WAIT).
+ip netns exec agent python3 -c 'import socket; s = socket.create_connection(("1.1.1.1", 443), 3); s.recv(16); s.close()' ||
+	fail "the agent machine cannot reach a website"
+wait_for "[[ -n \$(time_wait_left ip netns exec qexit) ]]"
+exit_left=$(time_wait_left ip netns exec qexit)
+wait_for "[[ -n \$(time_wait_left) ]]"
+node_left=$(time_wait_left)
+((exit_left <= 30 && node_left <= 30)) || fail "a closed agent connection is held ${exit_left}s in the exit and ${node_left}s on the node"
+pass "a closed agent connection is held at most 30 seconds in both tables (exit ${exit_left}s, node ${node_left}s left)"
 if ((br_netfilter)); then
 	ip netns exec qexit conntrack -L -s 10.210.1.1 2>/dev/null | grep -q 'dport=443' || fail "the exit did not track the connection"
 	host_legs=$(conntrack -L -s 10.210.1.1 2>/dev/null | grep -c . || true)
@@ -425,9 +437,13 @@ ip netns exec agent python3 "$work/lldp.py" eth0 10.210.1.1 192.168.1.42 9999
 sleep 1
 [[ -s $work/node-udp ]] && fail "an LLDP-addressed frame reached the node: $(cat "$work/node-udp")"
 # Link-local frames would otherwise teach the bridge any MAC they carry, before any hook.
+unbound_before=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
 ip netns exec agent python3 "$work/lldp.py" eth0 10.210.1.1 192.168.1.42 9999 0e:51:0a:d2:01:ee
 sleep 0.5
 bridge fdb show br qagent0 | grep -q 0e:51:0a:d2:01:ee && fail "an LLDP-addressed frame taught the bridge a MAC"
+# Dropped by the bridge rules, so it went through them (group_fwd_mask): without it the counter would not move.
+unbound_after=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
+((unbound_after > unbound_before)) || fail "an LLDP-addressed frame did not go through the bridge rules"
 pass "an LLDP-addressed frame from a machine reaches nothing on the node and teaches the bridge no MAC"
 ip netns exec agent python3 "$work/raw.py" 10.210.1.1 192.168.1.40 253
 connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
@@ -575,7 +591,6 @@ for twin in "-p tcp --dport 8443" "-p udp --dport 9999" "-p icmp"; do
 done
 # Spoofing from one plugged card (the agent machine, 10.210.1.1) against another (10.210.1.2), whose MAC the exit knows.
 wait_for "ip -n qexit neigh show 10.210.1.2 | grep -q 0e:51:0a:d2:01:02"
-dropped_before=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
 for op in 1 2; do ip netns exec agent python3 "$work/garp.py" eth0 "$op" 10.210.1.2; done
 ip netns exec agent python3 "$work/garp.py" eth0 2 10.210.1.1 0e:51:0a:d2:01:02
 ip netns exec agent python3 "$work/decline.py" 10.210.1.1 0e:51:0a:d2:01:02 10.210.1.2
@@ -583,8 +598,6 @@ sleep 1
 ip -n qexit neigh show 10.210.1.2 | grep -q 0e:51:0a:d2:01:02 || fail "gratuitous ARP moved another machine's address: $(ip -n qexit neigh)"
 ip -n qexit neigh show 10.210.1.1 | grep -q 0e:51:0a:d2:01:02 && fail "an ARP sender MAC moved the agent's address: $(ip -n qexit neigh)"
 grep -q DHCPDECLINE "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log" && fail "a machine declined another's lease: $(grep DHCP "$QORPERA_AGENT_EXIT_LOG_DIR/dns.log")"
-dropped_after=$(nft list counter bridge qorpera_agent_exit_bridge dropped_unbound | grep -o 'packets [0-9]*' | cut -d' ' -f2)
-((dropped_after >= dropped_before + 4)) || fail "the spoofs were not dropped at the bridge ($dropped_before, $dropped_after)"
 new_before=$(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -o '10.210.1.1 counter packets [0-9]*')
 ip -n agent link set eth0 down
 ip -n agent link set eth0 address 0e:51:0a:d2:01:fd
@@ -611,11 +624,20 @@ nft add table bridge flood_count
 nft add chain bridge flood_count seen '{ type filter hook forward priority 100; }'
 nft add rule bridge flood_count seen oifname "pv0" ether daddr 0e:51:0a:d2:01:01 counter
 bridge fdb del 0e:51:0a:d2:01:01 dev va0 master 2>/dev/null || true
+bridge fdb show br qagent0 | grep -q "0e:51:0a:d2:01:01 dev va0" && fail "the agent's MAC is still in the bridge table"
 ip netns exec qexit busybox ping -c 1 -W 1 10.210.1.1 >/dev/null 2>&1 || true
 nft list chain bridge flood_count seen | grep -q 'packets 0 ' ||
 	fail "the exit's frame to a forgotten MAC reached another machine: $(nft list chain bridge flood_count seen)"
 nft delete table bridge flood_count
 pass "a frame from the exit to a MAC the bridge has forgotten reaches no other machine"
+# Machine to machine: the bridge rules alone keep them apart (this proof's cards have no port isolation).
+background plugged "$work/peer.out" python3 "$work/udpseen.py" "$work/peer-udp" 10.210.1.2 9999
+ip -n agent neigh replace 10.210.1.2 lladdr 0e:51:0a:d2:01:02 dev eth0 nud permanent
+ip netns exec agent python3 "$work/udp.py" 10.210.1.2 9999
+sleep 1
+[[ -s $work/peer-udp ]] && fail "a machine reached another on the bridge: $(cat "$work/peer-udp")"
+ip -n agent neigh del 10.210.1.2 dev eth0
+pass "a machine reaches no other machine on the bridge, even knowing its MAC"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vm1:Stopped:10.210.1.2:c1:m1:u1:"
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/plug-stopped/10.210.1.2"
 ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null | grep -q 1.1.1.1 && fail "the exit kept a sleeping machine's connections"

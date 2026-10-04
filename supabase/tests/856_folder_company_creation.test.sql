@@ -62,7 +62,7 @@ begin
 		or has_table_privilege('service_role','public.qorpera_folder_company_creations','SELECT')
 		or has_table_privilege('anon','public.qorpera_folder_company_creations','SELECT') then
 		raise exception 'The creation rows are readable directly'; end if;
-	if public.qorpera_company_founding_available() then raise exception 'Creation is on before C5'; end if;
+	if not public.qorpera_company_founding_available() then raise exception 'Creation is off (P39 turned it on)'; end if;
 end $$;
 -- The worker's calls refuse anyone but the service role, even with the grant.
 select pg_temp.as_user('85600000-0000-4000-8000-000000000001');
@@ -70,7 +70,7 @@ select pg_temp.refused($$select public.qorpera_folder_company_creation_claim('85
 select pg_temp.refused($$select public.qorpera_folder_company_create('85600000-0000-4000-8000-0000000000f1',
 	'85600000-0000-4000-8000-0000000000f1',1,'[{}]')$$,'42501');
 
--- The switch, for this test only (C5 turns it on).
+-- The switch (on since 20260930031000, P39); set again so the test does not depend on the migration.
 create or replace function public.qorpera_company_founding_available()
 returns boolean language sql stable security definer set search_path = '' as $$
 	select true
@@ -508,6 +508,9 @@ begin
 	-- No wake at creation: C4 (P28) materializes it.
 	if exists (select 1 from public.qorpera_wake_occurrences where profile_id = v_profile) then
 		raise exception 'The creation wrote a wake'; end if;
+	-- The table says the first run waits for the materializer (20260930039000).
+	if public.qorpera_folder_company_first_run_state(v_profile) is distinct from 'queued' then
+		raise exception 'The first run is not shown as queued: %', public.qorpera_folder_company_first_run_state(v_profile); end if;
 	-- A replay answers the stored result and writes nothing.
 	v_replay := pg_temp.create('85600000-0000-4000-8000-0000000000f1', v_claim, pg_temp.seed_units(v_claim));
 	if v_replay is distinct from v_result || '{"replay":true}' or (select count(*) from public.qorpera_session_inputs where session_id = v_thread) is distinct from 1 then
@@ -520,8 +523,9 @@ declare v_profile uuid := current_setting('qorpera_test.table')::uuid; v_table j
 begin
 	if not public.qorpera_folder_company_ready(v_profile) then raise exception 'A completed creation is not ready'; end if;
 	v_table := pg_temp.table_json('85600000-0000-4000-8000-000000000002', v_profile);
-	if v_table -> 'start' ->> 'companySetup' is distinct from 'ready' or (v_table -> 'start' ->> 'companyReady')::boolean is not true then
-		raise exception 'The table does not show the company ready: %', v_table -> 'start'; end if;
+	if v_table -> 'start' ->> 'companySetup' is distinct from 'ready' or (v_table -> 'start' ->> 'companyReady')::boolean is not true
+		or v_table -> 'start' ->> 'firstRun' is distinct from 'queued' then
+		raise exception 'The table does not show the company ready, its first run queued: %', v_table -> 'start'; end if;
 	if not pg_temp.listed('85600000-0000-4000-8000-000000000001', v_profile)
 		or not pg_temp.listed('85600000-0000-4000-8000-000000000002', v_profile) then
 		raise exception 'A ready company is not listed for its founders'; end if;
@@ -536,7 +540,8 @@ begin
 	select * into strict v_first from public.qorpera_agent_first_runs where profile_id = (v_claim ->> 'profileId')::uuid;
 	if v_result ->> 'state' is distinct from 'completed'
 		or exists (select 1 from public.qorpera_session_turn_requests where input_id = v_first.input_id)
-		or (select author_user_id from public.qorpera_session_inputs where id = v_first.input_id) is distinct from '85600000-0000-4000-8000-000000000003' then
+		or (select author_user_id from public.qorpera_session_inputs where id = v_first.input_id) is distinct from '85600000-0000-4000-8000-000000000003'
+		or public.qorpera_folder_company_first_run_state((v_claim ->> 'profileId')::uuid) is distinct from 'waiting_for_login' then
 		raise exception 'Without a usable login the kickoff stays pending: %', v_result; end if;
 	-- A company opened outside the lobby is listed for its owner once ready.
 	if not pg_temp.listed('85600000-0000-4000-8000-000000000003', (v_claim ->> 'profileId')::uuid) then
@@ -905,6 +910,14 @@ $o$,
 			v_definition := replace(v_definition,
 				E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n',
 				E'\tif found then\n');
+		end if;
+		-- The lobby hardening (20260930039000) adds firstRun after P14a's companySetup: reverse that patch here first.
+		if v_case.signature = 'public.qorpera_company_founding_json(uuid)' then
+			v_definition := replace(v_definition,
+				E'\'companySetup\',public.qorpera_folder_company_setup(p_profile_id),\n'
+				|| E'\t\t\t-- 20260930039000: how the Co-Founder\'s first run stands.\n'
+				|| E'\t\t\t\'firstRun\',public.qorpera_folder_company_first_run_state(p_profile_id)) end);',
+				E'\'companySetup\',public.qorpera_folder_company_setup(p_profile_id)) end);');
 		end if;
 		if position(v_case.inserted in v_definition) = 0
 			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then

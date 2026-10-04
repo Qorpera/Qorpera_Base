@@ -644,8 +644,8 @@ describe("the coding composition of a native turn", () => {
 		}
 	});
 	it("accepts the context the kernel really returns for a session stuck before the fix", () => {
-		// Captured from qorpera_read_coding_turn_context by scripts/test-coding-turn-backfill.mjs, which
-		// fails when the kernel's answer drifts from this file.
+		// Captured from qorpera_read_coding_turn_context by scripts/test-coding-turn-backfill.mjs, which C1c-3i removed with
+		// the snapshot-v1 coding path; the sample stays as a shape the parser must keep accepting.
 		const sample: unknown = JSON.parse(
 			readFileSync(new URL("./fixtures/coding-turn-context-backfilled.json", import.meta.url), "utf8"),
 		);

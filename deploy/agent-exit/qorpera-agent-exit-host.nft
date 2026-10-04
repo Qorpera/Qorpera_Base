@@ -8,7 +8,9 @@
 # machine and the exit's br0) has qagent0 as both input and output interface and is never matched by the forward
 # chain. The node does not track it either: the exit tracks every agent connection in its own namespace (and bounds
 # them there), and with br_netfilter the node's own table would otherwise hold a second entry for each one, and for
-# every attempt the exit refuses or drops, outside the exit's bounds.
+# every attempt the exit refuses or drops, outside the exit's bounds. The masqueraded leg of an agent TCP connection,
+# which the node does track, is held 30 seconds once closed, as in the exit (the node's own traffic keeps the kernel's
+# defaults).
 
 table inet qorpera_agent_exit_host {
 	set internal4 {
@@ -23,6 +25,17 @@ table inet qorpera_agent_exit_host {
 	chain raw_prerouting {
 		type filter hook prerouting priority raw; policy accept;
 		iifname "qagent0" notrack
+	}
+
+	ct timeout agent_tcp {
+		protocol tcp
+		l3proto ip
+		policy = { time_wait : 30 }
+	}
+
+	chain timeouts {
+		type filter hook prerouting priority filter; policy accept;
+		iifname "qx-up" ip saddr 10.209.255.2 meta l4proto tcp ct state new ct timeout set "agent_tcp"
 	}
 
 	chain forward {

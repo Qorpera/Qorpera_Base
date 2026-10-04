@@ -332,7 +332,9 @@ is never upgraded. The steps:
    9. unique-key claims, by kind then key.
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
-   every session the transaction will write, `FOR UPDATE` in id order; and the company's operation clock, which the
+   every session the transaction will write, `FOR UPDATE` in id order: the conversations, then the coding sessions
+   (C1c-3i), then the turn inputs, as C4's materializer (P28) takes them; and the company's operation
+   clock, which the
    first session write takes (an insert, a title or status change, or an event). Admission and the folder clock stay last.
 
    These numbers are the lock ranks, and all nine come before paths (step 5),
@@ -961,8 +963,8 @@ against exactly that (20260927150000:1-37, 20260927130000). So:
   (as 20260927162900:89-110 does); and
 - it is load-tested before any company uses it.
 
-**The load test.** It extends `scripts/load-company-file-fence.mjs`, which
-today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
+**The load test.** It replaces `scripts/load-company-file-fence.mjs` (removed in
+C1c-3i), which ran on tmpfs, drove one sequential agent and excused 55P03. It must:
 - run on a real disk;
 - drive 32 to 64 concurrent runs mixing change sets, reads, listings, stop,
   wakes, ACL narrowing, subtree deletes, the post-commit worker and GC;
@@ -983,7 +985,9 @@ materializer, so on `folder-v2` admission is only the admission row's count.
 Machine admission is not driven. `--probe-only --big-paths N` times one run
 whose read set holds N paths, alone, with function statistics. Its first
 finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
-later slices").
+later slices"). Since C1c-3i every migration change runs it short (run-on-node's
+`folder-core-load` step: 16 runs for 30 s and a 5,000-path read set), in place
+of the snapshot-era pool load.
 
 ## 10. What goes, and when
 

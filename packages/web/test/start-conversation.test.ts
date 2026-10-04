@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
-import type {
-	CloudMemberCompanyEdit,
-	CloudMemberCompanyFileClient,
-} from "@qorpera/cloud-client/cloud-member-company-editor";
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { createConversationStarter } from "../src/app/start-conversation.ts";
+import { WebCompanyFolderRejectedError } from "../src/cloud/company-folder-writes.ts";
+import { UUID_PATTERN } from "../src/cloud/parse.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
+import { folderFake } from "./folder-fake.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -50,6 +50,9 @@ const observed: NativeExecutionConnections = {
 	],
 };
 
+/** The group chat's folder the two fixture agents get: its name is theirs, joined. */
+const GROUP = "agents/groups/fixture-agent-other-agent";
+
 function setup() {
 	const f = fixture();
 	const write = vi.fn<SessionInputWriter>(async () => ({ inputId: id(120) }));
@@ -57,30 +60,14 @@ function setup() {
 	const other = { ...staff, id: id(20), displayName: "Other agent" };
 	company.store.set({ team, staff: [staff, other], sessions: [], loading: false });
 	cleanup.push(() => company.stop());
-	let document: { path: string; text: string } | undefined;
-	const editor = {
-		read: vi.fn(async (path: string) =>
-			path === "organization/rooms"
-				? { path, kind: "directory", version: id(109), text: "" }
-				: document
-					? { path, kind: "file", version: id(110), text: document.text }
-					: { path, kind: "absent", version: null, text: "" },
-		),
-		edit: vi.fn(async (input: CloudMemberCompanyEdit) => {
-			if (input.operation === "write") document = input;
-			return { commandId: id(111), state: "review_required", result: null };
-		}),
-		review: vi.fn(async () => ({
-			commandId: id(111),
-			state: "applied",
-			result: { snapshotId: id(112), version: id(110) },
-		})),
-	};
-	vi.mocked(f.api.listSessions).mockImplementation(async () =>
-		document
-			? [{ ...session, executionScope: { roomId: (JSON.parse(document.text) as { roomId: string }).roomId } }]
-			: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(130), agentThread: true } }],
-	);
+	const fake = folderFake();
+	// The commit's hook opens the room and its conversation for each group.md.
+	vi.mocked(f.api.listSessions).mockImplementation(async () => {
+		const room = fake.stateFolders().groups[0];
+		return room
+			? [{ ...session, executionScope: { roomId: room.roomId } }]
+			: [{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(130), agentThread: true } }];
+	});
 	vi.spyOn(f.api, "agentThread").mockResolvedValue({
 		roomId: id(130),
 		sessionId: session.sessionId,
@@ -91,19 +78,19 @@ function setup() {
 	const selectSessionAccount = vi.fn(async (): Promise<string | undefined> => id(90));
 	const refreshAccountMetadata = vi.fn(async (): Promise<void> => undefined);
 	const current = vi.fn();
-	const getEditor = vi.fn(async () => editor as unknown as CloudMemberCompanyFileClient);
+	const folder = vi.fn((_signal: AbortSignal) => fake.folder);
 	const start = createConversationStarter({
 		company,
 		native: { listConnections, selectSessionAccount, refreshAccountMetadata },
-		editor: getEditor,
+		folder,
 		current,
 		send: (sessionId, text, signal) => company.sendPrompt(sessionId, text, signal),
 	});
 	return {
 		...f,
 		company,
-		editor,
-		getEditor,
+		fake,
+		folder,
 		listConnections,
 		selectSessionAccount,
 		refreshAccountMetadata,
@@ -113,6 +100,12 @@ function setup() {
 		other,
 		signal: new AbortController().signal,
 	};
+}
+
+function groupFile(fake: ReturnType<typeof folderFake>, path = `${GROUP}/group.md`) {
+	const parsed = parseCompanyStateFile(path, fake.text(path) ?? "");
+	if (!parsed?.ok || parsed.file.kind !== "group") throw new Error(`${path} does not parse`);
+	return parsed.file;
 }
 
 describe("starting a conversation on first send", () => {
@@ -137,27 +130,30 @@ describe("starting a conversation on first send", () => {
 		expect(f.api.agentThread).not.toHaveBeenCalled();
 		expect(f.write).not.toHaveBeenCalled();
 	});
-	it("creates the missing rooms directory before the first governed room document", async () => {
-		const f = setup();
-		f.editor.read.mockResolvedValueOnce({ path: "organization/rooms", kind: "absent", version: null, text: "" });
-		expect(await f.start([staff.id, f.other.id], "Hello group", f.signal)).toBe(session.sessionId);
-		expect(f.editor.edit.mock.calls.map(([edit]) => edit.operation)).toEqual(["mkdir", "write"]);
-		expect(f.editor.edit.mock.calls[0]?.[0]).toMatchObject({ path: "organization/rooms", expectedVersion: null });
-		expect(f.editor.review).toHaveBeenCalledTimes(2);
-	});
-	it("creates a governed room containing exactly the member and selected agents, then sends to its session", async () => {
+	it("creates a group chat folder with exactly the member and the selected agents, then sends to its session", async () => {
 		const f = setup();
 		expect(await f.start([staff.id, f.other.id, staff.id], "Hello group", f.signal)).toBe(session.sessionId);
-		const edit = f.editor.edit.mock.calls[0]![0];
-		if (edit.operation !== "write") throw new Error("Expected room write");
-		const document = JSON.parse(edit.text) as { roomId: string; members: unknown[] };
-		expect(edit.path).toBe(`organization/rooms/${document.roomId}.json`);
-		expect(document.members).toEqual([
-			{ kind: "member", id: userA.id },
-			{ kind: "staff_agent", id: staff.id },
-			{ kind: "staff_agent", id: f.other.id },
-		]);
-		expect(f.editor.review).toHaveBeenCalledOnce();
+		expect(f.fake.commits).toHaveLength(1);
+		const file = groupFile(f.fake);
+		expect(f.fake.commits[0]).toEqual({
+			operationKey: `web:room-create:${file.id}:fixture-agent-other-agent`,
+			units: [
+				{
+					op: "new_folder",
+					path: GROUP,
+					contents: [{ path: "group.md", kind: "file", text: f.fake.text(`${GROUP}/group.md`) }],
+				},
+			],
+		});
+		expect(file).toEqual({
+			kind: "group",
+			id: expect.stringMatching(UUID_PATTERN),
+			name: "Fixture agent, Other agent",
+			subtitle: null,
+			agents: [staff.id, f.other.id],
+			people: [userA.id],
+			purpose: "A group conversation with the selected agents.",
+		});
 		expect(f.write).toHaveBeenCalledWith(
 			session.sessionId,
 			expect.any(String),
@@ -165,15 +161,22 @@ describe("starting a conversation on first send", () => {
 			expect.any(AbortSignal),
 			[],
 			expect.objectContaining({ sponsorBindingId: id(100) }),
-			{ roomId: document.roomId, environmentId: profileA.environmentId, agentThread: false, images: false },
+			{ roomId: file.id, environmentId: profileA.environmentId, agentThread: false, images: false },
 		);
 		expect(f.company.conversation(session.sessionId, false).get().draft).toBe("");
+	});
+	it("takes the next free handle when a group chat with the same name exists", async () => {
+		const f = setup();
+		f.fake.mkdir(GROUP);
+		await f.start([staff.id, f.other.id], "Hello group", f.signal);
+		expect(f.fake.commits[0]?.units[0]).toMatchObject({ op: "new_folder", path: `${GROUP}-2` });
+		expect(groupFile(f.fake, `${GROUP}-2/group.md`).agents).toEqual([staff.id, f.other.id]);
 	});
 	it("uses the canonical agent thread for one recipient without writing a room", async () => {
 		const f = setup();
 		expect(await f.start([staff.id], "Hello", f.signal)).toBe(session.sessionId);
 		expect(f.api.agentThread).toHaveBeenCalledWith(profileA.environmentId, staff.id);
-		expect(f.getEditor).not.toHaveBeenCalled();
+		expect(f.folder).not.toHaveBeenCalled();
 		expect(f.write).toHaveBeenCalledOnce();
 	});
 	it.each(["agent", "group"])(
@@ -266,29 +269,64 @@ describe("starting a conversation on first send", () => {
 		const request = f.write.mock.calls[0];
 		expect(await f.company.sendPrompt(session.sessionId, "Keep this", f.signal)).toBe(true);
 		expect(f.write.mock.calls[1]?.slice(0, 3)).toEqual(request?.slice(0, 3));
-		expect(f.editor.edit).toHaveBeenCalledOnce();
+		expect(f.fake.commits).toHaveLength(1);
 	});
 	it("recovers the same room when session discovery fails after creation", async () => {
 		const f = setup();
 		vi.mocked(f.api.listSessions).mockRejectedValueOnce(new Error("Unavailable"));
 		await expect(f.start([staff.id, f.other.id], "Keep this", f.signal)).rejects.toThrow("still opening");
 		expect(f.write).not.toHaveBeenCalled();
+		const room = groupFile(f.fake).id;
+		// The same recipients, in another order, are the same draft: its group chat is found, not made again.
 		expect(await f.start([f.other.id, staff.id], "Keep this", f.signal)).toBe(session.sessionId);
-		expect(f.editor.edit).toHaveBeenCalledOnce();
-		expect(f.editor.read.mock.calls[3]?.[0]).toBe(f.editor.read.mock.calls[1]?.[0]);
+		expect(f.fake.commits).toHaveLength(1);
+		expect(f.fake.children("agents/groups")).toEqual([GROUP]);
+		expect(f.write.mock.calls[0]?.[6]).toMatchObject({ roomId: room });
 	});
-	it("recovers an applied room after its approval response was lost", async () => {
+	it("finds the group chat a lost answer created instead of creating a second one", async () => {
 		const f = setup();
-		f.editor.review.mockRejectedValueOnce(new Error("Lost approval response"));
-		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toThrow("Lost approval response");
+		f.fake.loseAnswer();
+		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toThrow("Failed to fetch");
 		expect(await f.start([staff.id, f.other.id], "Hello", f.signal)).toBe(session.sessionId);
-		expect(f.editor.edit).toHaveBeenCalledOnce();
+		expect(f.fake.commits).toHaveLength(1);
+		expect(f.fake.children("agents/groups")).toEqual([GROUP]);
+	});
+	it("sends the same change set again when the first never reached the core", async () => {
+		const f = setup();
+		f.fake.failCommit();
+		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toThrow("Failed to fetch");
+		expect(await f.start([staff.id, f.other.id], "Hello", f.signal)).toBe(session.sessionId);
+		expect(f.fake.commits).toHaveLength(2);
+		expect(f.fake.commits[1]).toEqual(f.fake.commits[0]);
+	});
+	it("says the group chat was not created, with the hook's problems, and keeps the message", async () => {
+		const f = setup();
+		f.fake.answer("refused", "hook", ["an agent in it is archived"]);
+		const error = await f.start([staff.id, f.other.id], "Hello", f.signal).catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect((error as Error).message).toBe(
+			"The group chat could not be created. Your message is still here: an agent in it is archived.",
+		);
+		expect(f.write).not.toHaveBeenCalled();
+		expect(f.fake.has(GROUP)).toBe(false);
+	});
+	it("makes a new group chat on the next try after a refusal, never a replay of the refused one", async () => {
+		const f = setup();
+		f.fake.answer("refused", "hook", ["try again later"]);
+		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toBeInstanceOf(
+			WebCompanyFolderRejectedError,
+		);
+		expect(await f.start([staff.id, f.other.id], "Hello", f.signal)).toBe(session.sessionId);
+		const [refused, created] = f.fake.commits;
+		expect(created?.operationKey).not.toBe(refused?.operationKey);
+		expect(created?.operationKey).toBe(`web:room-create:${groupFile(f.fake).id}:fixture-agent-other-agent`);
+		expect(f.write).toHaveBeenCalledOnce();
 	});
 	it("rejects unavailable model accounts before creating a room", async () => {
 		const f = setup();
 		f.listConnections.mockResolvedValueOnce({ connections: [] });
 		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toThrow("Connect a model account");
-		expect(f.getEditor).not.toHaveBeenCalled();
+		expect(f.folder).not.toHaveBeenCalled();
 	});
 	it("rechecks recipients and company access after account discovery", async () => {
 		const f = setup();
@@ -298,7 +336,18 @@ describe("starting a conversation on first send", () => {
 		f.company.store.set({ staff: [staff] });
 		account.resolve(observed);
 		await expect(result).rejects.toThrow("Choose active agents");
-		expect(f.getEditor).not.toHaveBeenCalled();
+		expect(f.folder).not.toHaveBeenCalled();
+	});
+	it("checks access again after reading the group chats, before creating one", async () => {
+		const f = setup();
+		const stateFolders = f.fake.folder.stateFolders.getMockImplementation()!;
+		f.fake.folder.stateFolders.mockImplementationOnce(async (...args) => {
+			const answer = await stateFolders(...args);
+			f.company.store.set({ accessLost: true });
+			return answer;
+		});
+		await expect(f.start([staff.id, f.other.id], "Hello", f.signal)).rejects.toThrow("permission");
+		expect(f.fake.commits).toHaveLength(0);
 	});
 	it("does not create a room when contributor authority cannot approve it", async () => {
 		const f = setup();
@@ -318,7 +367,7 @@ describe("starting a conversation on first send", () => {
 		view.abort();
 		account.resolve(observed);
 		await expect(result).rejects.toThrow();
-		expect(f.getEditor).not.toHaveBeenCalled();
+		expect(f.folder).not.toHaveBeenCalled();
 		expect(f.write).not.toHaveBeenCalled();
 	});
 });
