@@ -42,7 +42,7 @@ the live definitions they found.
 | One head per company (`qorpera_company_files.head_snapshot_id`); every write checks and moves it, and fails with PT409 after 4 tries | Each path has its own version; a change checks only the versions of the paths it touches |
 | Every write rebuilds the full tree manifest (`qorpera.company-tree/v1`, 8 MiB, about 25,000 files), verifies it with an O(n²) parent check, stores a full jsonb copy, and records a reachability graph of every object in the company | A commit touches only its own paths. No manifest, tree copy or per-write graph exists |
 | One path per operation (`qorpera.company-path-mutation/v1`) | A change set of units: write, mkdir, new folder with contents, delete, move, copy |
-| Every call, reads included, locks the profile row, the wake-admission fence and the Company File row `FOR UPDATE` (`qorpera_company_path_actor`, 20260920030500:371, 53 callers) | Reads take no company-wide lock. Nothing locks the profile row exclusively. Effects take the company's folder fence `FOR KEY SHARE`; stop and resume take it `FOR UPDATE` |
+| Every call, reads included, locks the profile row, the wake-admission fence and the Company File row `FOR UPDATE` (`qorpera_company_path_actor`, 20260920030500:371, 53 callers) | Reads take no company-wide lock. Nothing locks the profile row exclusively (P15's name copy alone takes it `FOR NO KEY UPDATE SKIP LOCKED`, §3 step 3). Effects take the company's folder fence `FOR KEY SHARE`; stop and resume take it `FOR UPDATE` |
 | Each run rechecks every path it read, one by one, under that lock (`qorpera_company_path_assert_context`) | Read sets are kept by covering resource and grant, each with a revision, a few rows per run |
 | Change events walk a linear chain of revisions, one path per event (`qorpera_drain_company_file_wakes`) | A journal with a per-company sequence number; one event lists all its units |
 | Review is chosen by tool name in the runtime (`cloud-action-review.ts:148-209`) | Folder units are classified by path and by what changes, and SQL refuses an agent's reviewed unit without its review |
@@ -938,7 +938,9 @@ rules here. The check refuses any `folder-v2` path that:
   indexes, paths, objects, admission, clock (the incident of 27 September was
   a cross-row order problem, 20260927150000:4-9, and "job before fence",
   :33-37, becomes enforced);
-- locks the profile row exclusively;
+- locks the profile row exclusively (the one named exception, P15's name
+  copy, `FOR NO KEY UPDATE SKIP LOCKED` alone in its own transaction, §3
+  step 3, is listed by name);
 - strengthens a lock on a row it already holds, in any mode; or
 - ends a lease without `FOR UPDATE`.
 

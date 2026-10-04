@@ -1810,7 +1810,8 @@ and revoke its secret grants. What remains:
   2. the subject: the oldest marked subject of such a company whose work row it can take (the row inserted if missing,
      then `FOR UPDATE SKIP LOCKED`; a row another transaction holds is passed over with its marks), its marks consumed
      (`SKIP LOCKED`) and the row made dirty, and due when a mark came with a commit (a mark with no commit, firing's,
-     keeps a back-off); else the oldest due dirty work row, `FOR UPDATE SKIP LOCKED`. A first
+     keeps a back-off: a taken subject not yet due is left dirty for its time, and the step tries the next marked
+     subject); else the oldest due dirty work row, `FOR UPDATE SKIP LOCKED`. A first
      mark's new row can make two takers wait for each other's insert briefly, in subject order, as P22a's claim does;
   3. the agent converge inside one exception block. Inside, nothing writes a row that references the folder clock, so
      nothing there takes or updates the clock row, whose savepoints meet PostgreSQL's multixact error; the rows it
@@ -1846,8 +1847,8 @@ and revoke its secret grants. What remains:
   does not add. The step is the safety net.
 - A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`.
 - **Throughput:** the step converges one subject every 2 seconds across all companies (about 30 a minute); kicks cover
-  creation and members' saves at once. P24's load test measures the backlog; if it grows, the step converges several
-  subjects of different companies a pass (their locks are disjoint).
+  creation and members' saves at once. P24's load test measures the backlog; if it grows, more steps run side by side
+  (one subject each, one company per transaction, as core §3 requires; `SKIP LOCKED` keeps them apart).
 - The job runs as the database owner with no JWT. Every helper the converge calls checks no `auth.role()`; the
   service-role wrappers do.
 
@@ -2008,7 +2009,6 @@ notices stay out (no slice yet).
   against the step on one subject, and on the commit side a reactivation against a post in the thread; and contention
   (eight clients converging hires and archives, copying the name and committing on one company, against effects that
   key-share those rows: no multixact error).
-  (A converge's journal row is one row listing every grant it inserted.)
 - 879: the triggers' folder-v2 guards (default grant, connectors, secret revocation, routines stop, pair sessions), the
   rank-11 targets (rename, archive, retire, reactivation, restore), an assertion that an agent unit's apply takes no row
   lock after the paths beyond those already held, and the step and its cron job;
