@@ -21,19 +21,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyController } from "../src/app/company.ts";
 import { AgentRoutines, routineAccessFor } from "../src/app/views/agent-routines.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
-import type { Cloud } from "../src/cloud/client.ts";
+import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFolderRejectedError } from "../src/cloud/company-folder-writes.ts";
+import type { WebMemberConnection } from "../src/cloud/native-subscription.ts";
 import {
 	createWebRoutines,
+	parseRoutinePayer,
 	type WebRoutine,
 	WebRoutineChangedError,
 	type WebRoutineDraft,
 	WebRoutineEndedError,
 	type WebRoutineFile,
 	WebRoutineGoneError,
+	WebRoutineLoginRefusedError,
+	type WebRoutinePayer,
 	type WebRoutines,
 } from "../src/cloud/routines.ts";
-import { fmtTime } from "../src/ui/dom.ts";
+import { fmtDate, fmtTime } from "../src/ui/dom.ts";
 import { profileA, settle, staff } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
@@ -181,8 +185,13 @@ function seeded(options: { text?: string | null; routinesFolder?: boolean; lists
 	if (options.text !== null) fake.put(PATH, options.text ?? routineText());
 	return fake;
 }
-/** The routines over a folder fake, as the web makes them. `log` has each cloud call and each commit in order. */
-function writer(fake: FolderFake, rows: () => unknown[] = () => []) {
+/** The routines over a folder fake, as the web makes them. `log` has each cloud call and each commit in order; `more`
+ * answers the calls the fake has no answer of its own for. */
+function writer(
+	fake: FolderFake,
+	rows: () => unknown[] = () => [],
+	more?: (name: string, args: Record<string, unknown>) => unknown,
+) {
 	const log: string[] = [];
 	const calls: Array<[string, Record<string, unknown>]> = [];
 	const commit = fake.folder.commit.getMockImplementation()!;
@@ -197,6 +206,7 @@ function writer(fake: FolderFake, rows: () => unknown[] = () => []) {
 			if (name === CONSENT) return { connection_id: args.p_connection_id, allow_autonomous: true, version: 2 };
 			if (name === SPONSOR) return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
 			if (name === "qorpera_list_cloud_routines") return rows();
+			if (more) return more(name, args);
 			throw new Error(`Unexpected call ${name}`);
 		}),
 	} as unknown as Cloud;
@@ -244,6 +254,11 @@ function mocked(items: CloudRoutine[]) {
 		open: vi.fn(async (item: CloudRoutine) => openedOf(item)),
 		save: vi.fn(async (): Promise<"saved" | "unchanged"> => "saved"),
 		setEnabled: vi.fn(async () => {}),
+		// A cloud without the payer calls, unless a test says who pays.
+		payer: vi.fn(async (_routineId: string): Promise<WebRoutinePayer | null> => null),
+		setLogin: vi.fn(
+			async (_routineId: string, _account: WebMemberConnection): Promise<WebRoutinePayer | null> => null,
+		),
 	} satisfies WebRoutines;
 }
 function mount(items: CloudRoutine[], manage = true, connections: NativeMemberConnection[] = [account]) {
@@ -260,10 +275,16 @@ function mount(items: CloudRoutine[], manage = true, connections: NativeMemberCo
 /** The page over the real routines and a folder fake: the list is the index's (given here), the files the folder's. */
 function mountFolder(
 	items: CloudRoutine[],
-	options: { fake?: FolderFake; connections?: NativeMemberConnection[]; rows?: () => unknown[] } = {},
+	options: {
+		fake?: FolderFake;
+		connections?: NativeMemberConnection[];
+		rows?: () => unknown[];
+		more?: (name: string, args: Record<string, unknown>) => unknown;
+		memberId?: string;
+	} = {},
 ) {
 	const fake = options.fake ?? seeded();
-	const w = writer(fake, options.rows);
+	const w = writer(fake, options.rows, options.more);
 	const routines = {
 		...w.routines,
 		list: vi.fn(async () => items),
@@ -271,10 +292,18 @@ function mountFolder(
 		open: vi.fn(w.routines.open),
 		save: vi.fn(w.routines.save),
 		setEnabled: vi.fn(w.routines.setEnabled),
+		// Who pays is read here, so the cloud's log has only what the member did; a test says who pays.
+		payer: vi.fn(async (_routineId: string): Promise<WebRoutinePayer | null> => null),
+		setLogin: vi.fn(w.routines.setLogin),
 	} satisfies WebRoutines;
 	const view = new AgentRoutines(
 		() => staff,
-		{ routines, accounts: async () => ({ connections: options.connections ?? [account] }), canManage: () => true },
+		{
+			routines,
+			accounts: async () => ({ connections: options.connections ?? [account] }),
+			canManage: () => true,
+			...(options.memberId ? { memberId: options.memberId } : {}),
+		},
 		w.stop.signal,
 	);
 	document.body.append(view.el);
@@ -2223,5 +2252,405 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 			{ p_profile_id: profileA.profileId, p_connection_id: account.connectionId, p_allow_autonomous: true },
 		]);
 		f.stop.abort();
+	});
+});
+
+describe("who pays for a routine (20260930064000)", () => {
+	const MEMBER = "10000000-0000-4000-8000-000000000041";
+	const OTHER_MEMBER = "10000000-0000-4000-8000-000000000042";
+	const GET = "qorpera_get_routine_payer";
+	const SET = "qorpera_set_routine_login";
+	const SINCE = "2026-10-03T08:00:00.123456+00:00";
+	/** The cloud's answer of who pays for the routine: the member's own login, which pays. */
+	const answer = (update: Record<string, unknown> = {}) => ({
+		schema: "qorpera.routine-payer/v1",
+		routineId: ROUTINE_ID,
+		routineVersion: 2,
+		status: "active",
+		pauseReason: null,
+		connectionId: account.connectionId,
+		payer: "member",
+		payerUserId: MEMBER,
+		savedByUserId: MEMBER,
+		canPay: true,
+		since: SINCE,
+		changedByUserId: null,
+		changeReason: null,
+		...update,
+	});
+	const paid = (update: Record<string, unknown> = {}) => parseRoutinePayer(answer(update), ROUTINE_ID);
+	/** A routine whose login cannot pay waits for one. */
+	const waits = { status: "paused", pauseReason: "needs_model_account", canPay: false };
+	const waiting = (): WebRoutine => ({ ...routine({ status: "paused" }), pauseReason: "needs_model_account" });
+	const plan = (allowAutonomous: boolean) =>
+		({
+			...account,
+			connectionId: "10000000-0000-4000-8000-000000000011",
+			connectionVersion: 3,
+			provider: "openai",
+			loginKind: "chatgpt_plan",
+			allowAutonomous,
+		}) as unknown as WebMemberConnection;
+	const refused = (code: string, message: string) => new CloudRpcError(SET, { message, code }, 403);
+	/** A card's "Who pays", or null when it has none. */
+	const whoPays = (card: Element) =>
+		[...card.querySelectorAll(".routine-card-fact")]
+			.find((item) => item.querySelector("dt")?.textContent === "Who pays")
+			?.querySelector("dd") ?? null;
+	/** What "Choose a login" says, under its choices. */
+	const note = (root: Element) => root.querySelector(".routine-login [role=status]")?.textContent;
+	/** Opens the first card and its "Choose a login". */
+	async function choose(view: AgentRoutines) {
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Choose a login"));
+		view.el.querySelector<HTMLButtonElement>(".routine-card-summary")!.click();
+		click(view.el, "Choose a login");
+		await vi.waitFor(() =>
+			expect(view.el.querySelector(".routine-login select, .routine-login [role=status]")).not.toBeNull(),
+		);
+	}
+
+	it("reads who pays strictly, and nothing else", () => {
+		expect(paid()).toEqual({
+			routineId: ROUTINE_ID,
+			routineVersion: 2,
+			status: "active",
+			pauseReason: null,
+			connectionId: account.connectionId,
+			payer: "member",
+			payerUserId: MEMBER,
+			savedByUserId: MEMBER,
+			canPay: true,
+			since: SINCE,
+			changedByUserId: null,
+			changeReason: null,
+		});
+		// A company account names no member; a routine with no login behind it has no payer.
+		expect(
+			paid({ payer: "company", payerUserId: null, changedByUserId: OTHER_MEMBER, changeReason: "pick" }),
+		).toMatchObject({ payer: "company", payerUserId: null, changedByUserId: OTHER_MEMBER, changeReason: "pick" });
+		expect(paid({ connectionId: null, payer: null, payerUserId: null, ...waits })).toMatchObject({
+			payer: null,
+			canPay: false,
+			pauseReason: "needs_model_account",
+		});
+		for (const bad of [
+			null,
+			[],
+			"qorpera.routine-payer/v1",
+			answer({ schema: "qorpera.routine-payer/v2" }),
+			answer({ routineId: OTHER_FILE }),
+			answer({ routineVersion: 0 }),
+			answer({ routineVersion: "2" }),
+			answer({ status: "waiting" }),
+			answer({ pauseReason: "Needs a login!" }),
+			answer({ connectionId: "c1" }),
+			answer({ payerUserId: null }),
+			answer({ payer: "company" }),
+			answer({ payer: "agent" }),
+			answer({ connectionId: null }),
+			answer({ savedByUserId: null }),
+			answer({ canPay: "no" }),
+			answer({ since: "yesterday" }),
+			answer({ since: null }),
+			answer({ changedByUserId: MEMBER }),
+			answer({ changedByUserId: MEMBER, changeReason: "swap" }),
+			answer({ changedByUserId: "someone", changeReason: "save" }),
+		])
+			expect(() => parseRoutinePayer(bad, ROUTINE_ID), JSON.stringify(bad)).toThrow("Invalid cloud response");
+	});
+
+	it("asks a cloud without the payer calls once, and never again while the page lives", async () => {
+		const missing = vi.fn(async (name: string) => {
+			throw new CloudRpcError(name, { message: "Could not find the function", code: "PGRST202" }, 404);
+		});
+		const cloud = { rpc: missing } as unknown as Cloud;
+		const make = () =>
+			createWebRoutines(
+				cloud,
+				profileA,
+				new AbortController().signal,
+				() => {},
+				() => folderFake().folder,
+			);
+		const routines = make();
+		expect(await routines.payer(ROUTINE_ID)).toBeNull();
+		expect(await routines.payer(OTHER_FILE)).toBeNull();
+		// Another client on the same cloud (another conversation's) asks no more; nor does a pick, which binds nothing.
+		expect(await make().payer(ROUTINE_ID)).toBeNull();
+		expect(await routines.setLogin(ROUTINE_ID, account)).toBeNull();
+		expect(missing.mock.calls.map(([name]) => name)).toEqual([GET]);
+		// A cloud with the read answers it.
+		const f = writer(seeded(), undefined, (name) => (name === GET ? answer() : undefined));
+		expect(await f.routines.payer(ROUTINE_ID)).toEqual(paid());
+		expect(f.calls).toEqual([[GET, { p_routine_id: ROUTINE_ID }]]);
+
+		// The page reads the first routine alone: on such a cloud the rest are not asked, and no card says who pays.
+		const page = mount([routine(), routine({ routineId: OTHER_FILE, title: "Other" })]);
+		await vi.waitFor(() => expect(page.routines.payer).toHaveBeenCalledTimes(1));
+		await settle();
+		expect(page.routines.payer).toHaveBeenCalledTimes(1);
+		expect(cards(page.view.el).map(whoPays)).toEqual([null, null]);
+		expect(page.view.el.querySelector(".surface-status")).toBeNull();
+	});
+
+	it("says who pays for each routine and since when: you, another member or the company", async () => {
+		const items = ["51", "52", "53", "54"].map((n, index) =>
+			routine({ routineId: `10000000-0000-4000-8000-0000000000${n}`, title: `Routine ${index + 1}` }),
+		);
+		const answers = new Map<string, WebRoutinePayer>(
+			[
+				{},
+				{ payerUserId: OTHER_MEMBER },
+				{ payer: "company", payerUserId: null },
+				// A member the team list does not name.
+				{ payerUserId: "10000000-0000-4000-8000-000000000043" },
+			].map((update, index): [string, WebRoutinePayer] => [
+				items[index]!.routineId,
+				{ ...paid(update), routineId: items[index]!.routineId },
+			]),
+		);
+		const routines = mocked(items);
+		routines.payer.mockImplementation(async (routineId) => answers.get(routineId) ?? null);
+		const view = new AgentRoutines(
+			() => staff,
+			{
+				routines,
+				accounts: async () => ({ connections: [account] }),
+				canManage: () => true,
+				memberId: MEMBER,
+				memberName: (userId) => (userId === OTHER_MEMBER ? "Anna" : undefined),
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await vi.waitFor(() => expect(whoPays(cards(view.el)[0]!)).not.toBeNull());
+		const date = fmtDate(SINCE);
+		expect(cards(view.el).map((card) => whoPays(card)?.textContent)).toEqual([
+			`Paid by you since ${date}`,
+			`Paid by Anna since ${date}`,
+			`Paid by the company since ${date}`,
+			`Paid by a member since ${date}`,
+		]);
+		// One read per routine for the list read; a login that pays offers no choice.
+		expect(routines.payer).toHaveBeenCalledTimes(4);
+		expect(view.el.textContent).not.toContain("Choose a login");
+
+		// A read that fails says nothing for its routine, and no error; the others still say who pays.
+		const failing = mount(items.slice(0, 2));
+		failing.routines.payer.mockImplementation(async (routineId) => {
+			if (routineId === items[0]!.routineId) throw new Error("offline");
+			return answers.get(routineId) ?? null;
+		});
+		await vi.waitFor(() => expect(whoPays(cards(failing.view.el)[1]!)).not.toBeNull());
+		expect(whoPays(cards(failing.view.el)[0]!)).toBeNull();
+		expect(failing.view.el.querySelector(".surface-status")).toBeNull();
+	});
+
+	it("chooses a login for a routine whose login can't pay: consent and binding, then the pick, then the list again", async () => {
+		const picked = { changedByUserId: MEMBER, changeReason: "pick", since: "2026-10-04T09:00:00.000Z" };
+		const f = mountFolder([waiting()], {
+			memberId: MEMBER,
+			more: (name) => {
+				if (name !== SET) throw new Error(`Unexpected call ${name}`);
+				return answer(picked);
+			},
+		});
+		// It waits on another login of the member's, which cannot pay.
+		f.routines.payer.mockResolvedValue(paid({ ...waits, connectionId: "10000000-0000-4000-8000-0000000000c3" }));
+		await choose(f.view);
+		expect(whoPays(cards(f.view.el)[0]!)?.textContent).toContain(`Paid by you since ${fmtDate(SINCE)}`);
+		const picker = field<HTMLSelectElement>(f.view.el, "Login");
+		expect([...picker.options].map((option) => [option.value, option.textContent])).toEqual([
+			[account.connectionId, "ChatGPT · owner@example.invalid"],
+		]);
+		expect(f.view.el.querySelector(".routine-login small")?.textContent).toBe(
+			`Choosing a login lets ${staff.displayName} use it for this routine while you are away. Pause the routine to stop it.`,
+		);
+		// Nothing is asked of the cloud until the member uses the login.
+		expect(f.log).toEqual([]);
+		f.routines.payer.mockResolvedValue(paid(picked));
+		click(f.view.el, "Use this login");
+		await vi.waitFor(() => expect(f.log).toEqual([CONSENT, SPONSOR, SET]), { timeout: 3000 });
+		expect(f.calls.at(-1)).toEqual([SET, { p_routine_id: ROUTINE_ID, p_connection_id: account.connectionId }]);
+		expect(f.routines.setLogin).toHaveBeenCalledWith(ROUTINE_ID, account);
+		// The card and the list are read again.
+		await vi.waitFor(() => expect(f.routines.list).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() =>
+			expect(whoPays(cards(f.view.el)[0]!)?.textContent).toBe(
+				`Paid by you since ${fmtDate("2026-10-04T09:00:00.000Z")}`,
+			),
+		);
+		expect(f.view.el.querySelector(".routine-login")).toBeNull();
+		expect(f.view.el.querySelector(".surface-status")).toBeNull();
+		f.stop.abort();
+	});
+
+	it("keeps the choice open and says why a login was refused; one the member may not change says so on the list", async () => {
+		let refusal: Error = new Error("offline");
+		const f = mountFolder([waiting()], {
+			more: (name) => {
+				if (name !== SET) throw new Error(`Unexpected call ${name}`);
+				throw refusal;
+			},
+		});
+		f.routines.payer.mockResolvedValue(paid(waits));
+		await choose(f.view);
+		for (const [error, said] of [
+			[
+				refused("22023", "This login cannot pay for this routine"),
+				"This login can't pay for work while you're away right now. Choose another one.",
+			],
+			[
+				refused("42501", "A ChatGPT plan cannot pay for a listener"),
+				"A ChatGPT plan can't pay for routines that start on a file change or a webhook.",
+			],
+			[refused("42501", "This login cannot pay for this routine"), "You can only choose one of your own logins."],
+			[new Error("offline"), "The login could not be chosen. Try again."],
+		] as const) {
+			refusal = error;
+			click(f.view.el, "Use this login");
+			await vi.waitFor(() => expect(note(f.view.el)).toBe(said), { timeout: 3000 });
+			// Still open, on the same login.
+			expect(field<HTMLSelectElement>(f.view.el, "Login").value).toBe(account.connectionId);
+		}
+		refusal = refused("42501", "Routine is unavailable");
+		click(f.view.el, "Use this login");
+		await vi.waitFor(
+			() =>
+				expect(f.view.el.querySelector(":scope > .surface-status")?.textContent).toBe(
+					"You can't change who pays for this routine.",
+				),
+			{ timeout: 3000 },
+		);
+		expect(f.view.el.querySelector(".routine-login select")).toBeNull();
+		// Each try gave the login its consent and binding first, and the list was read again after each.
+		expect(f.log.filter((name) => name === SET)).toHaveLength(5);
+		expect(f.log.filter((name) => name === CONSENT)).toHaveLength(5);
+		await vi.waitFor(() => expect(f.routines.list).toHaveBeenCalledTimes(6));
+		f.stop.abort();
+	});
+
+	it("consents a Codex login and binds a plan that is on before the pick, and names each refusal", async () => {
+		let reply: unknown = answer({ changedByUserId: MEMBER, changeReason: "pick" });
+		const f = writer(seeded(), undefined, (name) => {
+			if (name !== SET) throw new Error(`Unexpected call ${name}`);
+			if (reply instanceof Error) throw reply;
+			return reply;
+		});
+		expect(await f.routines.setLogin(ROUTINE_ID, account)).toEqual(
+			paid({ changedByUserId: MEMBER, changeReason: "pick" }),
+		);
+		expect(f.calls).toEqual([
+			[
+				CONSENT,
+				{ p_profile_id: profileA.profileId, p_connection_id: account.connectionId, p_allow_autonomous: true },
+			],
+			[
+				SPONSOR,
+				expect.objectContaining({
+					p_provider_connection_id: account.connectionId,
+					p_provider_connection_version: 2,
+					p_allow_autonomous: true,
+				}),
+			],
+			[SET, { p_routine_id: ROUTINE_ID, p_connection_id: account.connectionId }],
+		]);
+		// A ChatGPT plan its member turned on is bound without asking for consent again; one not turned on is never
+		// turned on here, and nothing is asked.
+		f.calls.length = 0;
+		await f.routines.setLogin(ROUTINE_ID, plan(true));
+		expect(f.calls.map(([name]) => name)).toEqual([SPONSOR, SET]);
+		f.calls.length = 0;
+		await expect(f.routines.setLogin(ROUTINE_ID, plan(false))).rejects.toThrow("Turn on “Work while you're away”");
+		expect(f.calls).toEqual([]);
+		for (const [code, message, reason] of [
+			["42501", "Routine is unavailable", "unavailable"],
+			["42501", "This login cannot pay for this routine", "not_yours"],
+			["22023", "This login cannot pay for this routine", "cannot_pay"],
+			["42501", "A ChatGPT plan cannot pay for a listener", "plan_listener"],
+		] as const) {
+			reply = refused(code, message);
+			const error = await f.routines.setLogin(ROUTINE_ID, account).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(WebRoutineLoginRefusedError);
+			expect(error).toMatchObject({ reason });
+		}
+		// Anything else is no refusal of the login, and comes through as it was; an answer for another routine is not read.
+		const other = refused("22023", "Something else");
+		reply = other;
+		await expect(f.routines.setLogin(ROUTINE_ID, account)).rejects.toBe(other);
+		reply = answer({ routineId: OTHER_FILE });
+		await expect(f.routines.setLogin(ROUTINE_ID, account)).rejects.toThrow("Invalid cloud response");
+	});
+
+	it("says what to do when no login can pay, and offers the choice only to an owner or admin while it waits", async () => {
+		const claude = {
+			...account,
+			connectionId: "10000000-0000-4000-8000-0000000000c1",
+			provider: "anthropic",
+			nativeHarness: "claude-code",
+		} as unknown as NativeMemberConnection;
+		const listener = (): WebRoutine => ({
+			...routine({
+				status: "paused",
+				triggers: [
+					parseCloudRoutineTrigger({
+						id: "agent",
+						kind: "listener",
+						source: "company-file",
+						path: "finance/invoices",
+						match: "subtree",
+						timeZone: "Europe/Copenhagen",
+					}),
+				],
+			}),
+			pauseReason: "needs_model_account",
+		});
+		for (const [item, connections, said] of [
+			[
+				waiting(),
+				[claude],
+				"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+			],
+			[waiting(), [plan(false)], "Turn on “Work while you're away” for this ChatGPT plan in Settings first."],
+			[listener(), [plan(true)], "A ChatGPT plan can't pay for routines that start on a file change or a webhook."],
+		] as const) {
+			const f = mount([item], true, [...connections] as unknown as NativeMemberConnection[]);
+			f.routines.payer.mockResolvedValue(paid(waits));
+			await choose(f.view);
+			expect(note(f.view.el)).toBe(said);
+			expect(f.view.el.querySelector(".routine-login select")).toBeNull();
+			// Cancel puts the button back.
+			click(f.view.el, "Cancel");
+			expect(f.view.el.querySelector(".routine-login .btn")?.textContent).toBe("Choose a login");
+			expect(f.routines.setLogin).not.toHaveBeenCalled();
+			f.stop.abort();
+			document.body.replaceChildren();
+		}
+		// A Claude login is never offered; a plan that is on is, for a routine on a schedule, first as the one that works
+		// while its member is away.
+		const both = mount([waiting()], true, [claude, account, plan(true)] as unknown as NativeMemberConnection[]);
+		both.routines.payer.mockResolvedValue(paid(waits));
+		await choose(both.view);
+		const picker = field<HTMLSelectElement>(both.view.el, "Login");
+		expect([...picker.options].map((option) => option.value)).toEqual([
+			"10000000-0000-4000-8000-000000000011",
+			account.connectionId,
+		]);
+		expect(picker.value).toBe("10000000-0000-4000-8000-000000000011");
+		both.stop.abort();
+		document.body.replaceChildren();
+		// A member who cannot manage routines, and a routine whose login pays, get no choice.
+		for (const [manage, update] of [
+			[false, waits],
+			[true, {}],
+		] as const) {
+			const f = mount([waiting()], manage);
+			f.routines.payer.mockResolvedValue(paid(update));
+			await vi.waitFor(() => expect(whoPays(cards(f.view.el)[0]!)).not.toBeNull());
+			expect(whoPays(cards(f.view.el)[0]!)?.textContent).toBe(`Paid by a member since ${fmtDate(SINCE)}`);
+			expect(f.view.el.textContent).not.toContain("Choose a login");
+			f.stop.abort();
+			document.body.replaceChildren();
+		}
 	});
 });

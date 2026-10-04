@@ -20,12 +20,15 @@ import {
 	WebRoutineEndedError,
 	type WebRoutineFile,
 	WebRoutineGoneError,
+	type WebRoutineLoginRefusal,
+	WebRoutineLoginRefusedError,
 	WebRoutineNoPayerError,
+	type WebRoutinePayer,
 	type WebRoutines,
 } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
-import { button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { button, fmtDate, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { phrase, presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
@@ -38,8 +41,10 @@ export interface AgentRoutineAccess {
 	accounts: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 	/** Owners and admins create, change, pause and resume routines. */
 	canManage: () => boolean;
-	/** A member's name, for a routine that started again when they turned on work while away. */
+	/** A member's name, for a routine that started again when they turned on work while away, or whose login pays. */
 	memberName?: (userId: string) => string | undefined;
+	/** The signed-in member: a routine paid by their own login reads "Paid by you". */
+	memberId?: string;
 }
 
 /** Routine access for the signed-in member, or none when the page was not given the routine calls. */
@@ -55,6 +60,7 @@ export function routineAccessFor(
 		accounts: (signal) => accounts.listConnections(signal),
 		canManage: () => company.store.get().team?.capabilities.authorize === true,
 		memberName: (userId) => company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
+		memberId: company.userId,
 	};
 }
 
@@ -148,6 +154,20 @@ function pauseWords(reason: string | undefined, agentName: string): string | nul
 			return t("Paused when its agent was archived");
 		default:
 			return null;
+	}
+}
+
+/** Why a login was refused for a routine, in plain words (20260930064000). */
+function refusalWords(reason: WebRoutineLoginRefusal): string {
+	switch (reason) {
+		case "cannot_pay":
+			return t("This login can't pay for work while you're away right now. Choose another one.");
+		case "plan_listener":
+			return t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.");
+		case "not_yours":
+			return t("You can only choose one of your own logins.");
+		case "unavailable":
+			return t("You can't change who pays for this routine.");
 	}
 }
 
@@ -252,6 +272,12 @@ export class AgentRoutines {
 	/** The routines whose file this member finds: only those have a switch and Edit. */
 	#files: ReadonlySet<string> = new Set();
 	#accounts: WebMemberConnection[] = [];
+	/** Who pays for each listed routine, read after each list read (20260930064000). A routine whose read failed, or
+	 * a cloud without the read, has none, and its card says nothing of it. */
+	#payers: ReadonlyMap<string, WebRoutinePayer> = new Map();
+	/** The routine whose "Choose a login" is open: the member's own logins that can pay for it, the one chosen, and
+	 * what the control says (what to do when none can, or why a choice was refused). */
+	#choosing: { routineId: string; logins: WebMemberConnection[]; chosen: string; note: string } | undefined;
 	#busy = false;
 	#editing = false;
 	/** Until the first read answers, an empty list means "not known yet". */
@@ -326,6 +352,30 @@ export class AgentRoutines {
 		}
 		this.#loaded = true;
 		if (!this.#editing) this.#list();
+		// Who pays comes after the list, which never waits for it.
+		if (read === this.#shown) void this.#readPayers(read);
+	}
+	/** Reads who pays for each listed routine, once per list read: the first alone, so a cloud without the read is
+	 * asked once. A failed read says nothing for its routine. */
+	async #readPayers(read: number): Promise<void> {
+		const routines = this.#access?.routines;
+		const [first, ...rest] = this.#routines;
+		if (!routines || !first) return;
+		const payers = new Map<string, WebRoutinePayer>();
+		const one = async (routine: WebRoutine) => {
+			const paid = await routines.payer(routine.routineId).catch(() => undefined);
+			if (paid) payers.set(routine.routineId, paid);
+			return paid;
+		};
+		if ((await one(first)) !== null) await Promise.all(rest.map(one));
+		if (this.#signal.aborted || read !== this.#shown) return;
+		// Nothing to show before or after (a cloud without the read) draws nothing again.
+		const drawn = this.#payers.size > 0;
+		this.#payers = payers;
+		// A routine whose login pays again needs no choice (one being used ends with its own answer).
+		if (this.#choosing && !this.#busy && payers.get(this.#choosing.routineId)?.canPay !== false)
+			this.#choosing = undefined;
+		if ((drawn || payers.size > 0) && !this.#editing && !this.#busy) this.#list();
 	}
 	#list(): void {
 		this.#editing = false;
@@ -396,6 +446,10 @@ export class AgentRoutines {
 			routine.status === "paused" && !this.#runsNow(routine)
 				? pauseWords(routine.pauseReason, this.#agent().displayName)
 				: null;
+		// Who pays, and since when (20260930064000). A routine whose login cannot pay waits for one: an owner or admin
+		// chooses one of their own logins here.
+		const paid = this.#payers.get(id);
+		const choice = paid && !paid.canPay && manage && known && !ended ? this.#loginChoice(routine) : null;
 		const fact = (label: string, ...value: (Node | string | null)[]) =>
 			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
 		const lever = h("button", {
@@ -521,11 +575,70 @@ export class AgentRoutines {
 										fmtTime(routine.resumedAt),
 									)
 								: null,
+							paid && (paid.payer || choice)
+								? fact(t("Who pays"), paid.payer ? this.#paidBy(paid) : null, choice)
+								: null,
 							fact(t("Last run"), last ? runLabel(last) : t("Has not run yet")),
 						),
 					),
 				),
 			),
+		);
+	}
+	/** "Paid by you since 4 Oct": the member's own login, another member's, or a company account. */
+	#paidBy(paid: WebRoutinePayer): string {
+		const date = fmtDate(paid.since);
+		if (paid.payer === "company") return t("Paid by the company since {date}", { date });
+		if (paid.payerUserId === this.#access?.memberId) return t("Paid by you since {date}", { date });
+		return t("Paid by {name} since {date}", {
+			name: (paid.payerUserId && this.#access?.memberName?.(paid.payerUserId)) || t("a member"),
+			date,
+		});
+	}
+	/** "Choose a login" for a routine whose login cannot pay: a button, and once pressed, the member's own logins that
+	 * can pay for it, or what to do when none can. */
+	#loginChoice(routine: WebRoutine): HTMLElement {
+		const choosing = this.#choosing?.routineId === routine.routineId ? this.#choosing : undefined;
+		if (!choosing)
+			return h(
+				"div",
+				{ class: "routine-login" },
+				button(t("Choose a login"), () => void this.#openChoice(routine), { small: true, disabled: this.#busy }),
+			);
+		const note = choosing.note ? h("p", { role: "status" }, choosing.note) : null;
+		const cancel = button(t("Cancel"), () => this.#closeChoice(), { small: true, disabled: this.#busy });
+		if (!choosing.logins.length)
+			return h("div", { class: "routine-login" }, note, h("div", { class: "routine-login-actions" }, cancel));
+		const picker = h(
+			"select",
+			{ "aria-label": t("Login"), disabled: this.#busy },
+			...accountLabels(choosing.logins).map((label, index) =>
+				h("option", { value: choosing.logins[index]!.connectionId }, label),
+			),
+		) as HTMLSelectElement;
+		picker.value = choosing.chosen;
+		picker.onchange = () => {
+			choosing.chosen = picker.value;
+		};
+		const use = button(t("Use this login"), () => void this.#useLogin(routine), {
+			small: true,
+			primary: true,
+			disabled: this.#busy,
+		});
+		return h(
+			"div",
+			{ class: "routine-login" },
+			picker,
+			h(
+				"small",
+				null,
+				t(
+					"Choosing a login lets {name} use it for this routine while you are away. Pause the routine to stop it.",
+					{ name: this.#agent().displayName },
+				),
+			),
+			note,
+			h("div", { class: "routine-login-actions" }, cancel, use),
 		);
 	}
 	/** Opens one card and closes the one that was open, in place. */
@@ -719,13 +832,7 @@ export class AgentRoutines {
 				payer = this.#accounts.find((item) => canPayForRoutine(item, listening));
 				if (!payer) {
 					failed = true;
-					failure = !this.#accounts.length
-						? t(
-								"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
-							)
-						: listening
-							? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
-							: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+					failure = this.#noLogin(listening);
 				}
 			}
 			if (!failed) await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
@@ -753,6 +860,85 @@ export class AgentRoutines {
 					this.#list();
 				}
 			}
+		}
+	}
+	/** What to do when none of the member's accounts can pay for a routine (`listening`: one that starts on a file
+	 * change or a webhook). */
+	#noLogin(listening: boolean): string {
+		return !this.#accounts.length
+			? t(
+					"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+				)
+			: listening
+				? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
+				: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+	}
+	/** Opens "Choose a login" on the member's own logins that can pay for the routine: never a Claude login, and a
+	 * ChatGPT plan only once its member turned on work while away, and never for a file-change or webhook routine. The
+	 * web lists no company accounts, so a routine is moved to one elsewhere. */
+	async #openChoice(routine: WebRoutine): Promise<void> {
+		if (this.#busy || this.#editing || !this.#access?.canManage()) return;
+		if (!(await this.#loadAccounts()) || this.#signal.aborted || this.#editing) return;
+		const listening = routine.triggers.some((item) => item.kind === "listener");
+		const logins = this.#accounts.filter((item) => canPayForRoutine(item, listening));
+		this.#choosing = {
+			routineId: routine.routineId,
+			logins,
+			chosen: logins[0]?.connectionId ?? "",
+			note: logins.length ? "" : this.#noLogin(listening),
+		};
+		this.#list();
+		this.#focusChoice(routine.routineId);
+	}
+	#closeChoice(): void {
+		const id = this.#choosing?.routineId;
+		if (this.#busy || !id) return;
+		this.#choosing = undefined;
+		this.#list();
+		this.#focusChoice(id);
+	}
+	/** Focus stays with the choice as it opens or closes: its first control. */
+	#focusChoice(routineId: string): void {
+		this.#cardFor(routineId)
+			?.querySelector<HTMLElement>(".routine-login select, .routine-login .btn")
+			?.focus({ preventScroll: true });
+	}
+	/** Runs the routine on the chosen login: its consent and binding first, as a save's, then the pick. A refused login
+	 * keeps the choice open and says why. The list and who pays are read again either way. */
+	async #useLogin(routine: WebRoutine): Promise<void> {
+		const access = this.#access;
+		const choosing = this.#choosing;
+		if (this.#busy || !access?.canManage() || !choosing || choosing.routineId !== routine.routineId) return;
+		const account = choosing.logins.find((item) => item.connectionId === choosing.chosen);
+		if (!account) return;
+		this.#busy = true;
+		choosing.note = "";
+		this.#list();
+		let failure = "";
+		try {
+			const paid = await access.routines.setLogin(routine.routineId, account);
+			if (this.#signal.aborted) return;
+			this.#choosing = undefined;
+			// The card says who pays now at once. Null: the cloud has no pick, and nothing of it shows.
+			if (paid) this.#payers = new Map(this.#payers).set(routine.routineId, paid);
+		} catch (error) {
+			if (this.#signal.aborted) return;
+			if (error instanceof WebRoutineLoginRefusedError && error.reason === "unavailable") {
+				// No login would do: the list says why.
+				this.#choosing = undefined;
+				failure = refusalWords(error.reason);
+			} else
+				choosing.note =
+					error instanceof WebRoutineLoginRefusedError
+						? refusalWords(error.reason)
+						: t("The login could not be chosen. Try again.");
+		} finally {
+			this.#busy = false;
+		}
+		await this.#refresh();
+		if (failure && !this.#signal.aborted && !this.#editing) {
+			this.#message = failure;
+			this.#list();
 		}
 	}
 	/** Opens the editor on a new routine, or on a routine's file as it is now: the read whose version a save names.
