@@ -76,7 +76,8 @@ begin
 		'22023', 'only a member erases');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts/no-mail.md'], 'erase-0003', pg_temp.member(2))$q$),
 		'42501', 'a contributor does not erase');
-	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['tables/t'], 'erase-0005b')$q$), '0A000', 'tables/ waits for I6');
+	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['tables/t'], 'erase-0005b')$q$), 'ok',
+		'tables/ is erased like any other path since P18c (886)');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['contacts', 'contacts/no-mail.md'], 'erase-0006')$q$),
 		'22023', 'a root inside another');
 	perform pg_temp.is(pg_temp.fails($q$select pg_temp.erase(array['members/70700000-0000-4000-8000-000000000002/private'], 'erase-0007')$q$),

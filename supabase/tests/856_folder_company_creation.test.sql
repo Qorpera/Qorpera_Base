@@ -76,7 +76,7 @@ begin
 		or has_table_privilege('service_role','public.qorpera_folder_company_creations','SELECT')
 		or has_table_privilege('anon','public.qorpera_folder_company_creations','SELECT') then
 		raise exception 'The creation rows are readable directly'; end if;
-	if public.qorpera_company_founding_available() then raise exception 'Creation is on before C5'; end if;
+	if not public.qorpera_company_founding_available() then raise exception 'Creation is off (P39 turned it on)'; end if;
 end $$;
 -- The worker's calls refuse anyone but the service role, even with the grant.
 select pg_temp.as_user('85600000-0000-4000-8000-000000000001');
@@ -84,7 +84,7 @@ select pg_temp.refused($$select public.qorpera_folder_company_creation_claim('85
 select pg_temp.refused($$select public.qorpera_folder_company_create('85600000-0000-4000-8000-0000000000f1',
 	'85600000-0000-4000-8000-0000000000f1',1,'[{}]')$$,'42501');
 
--- The switch, for this test only (C5 turns it on).
+-- The switch (on since 20260930031000, P39); set again so the test does not depend on the migration.
 create or replace function public.qorpera_company_founding_available()
 returns boolean language sql stable security definer set search_path = '' as $$
 	select true

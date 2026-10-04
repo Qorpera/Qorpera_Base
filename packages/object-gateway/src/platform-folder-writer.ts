@@ -14,7 +14,7 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * platform. Each call goes to the database with the service key; nothing here holds a lease or a lock.
  */
 
-export const PLATFORM_ACTOR = Object.freeze({ kind: "platform" });
+export const PLATFORM_ACTOR: { readonly kind: "platform" } = Object.freeze({ kind: "platform" });
 const SHA256 = /^[0-9a-f]{64}$/;
 /** A chunk and the manifest's bound (C1D §2): 64 chunks of 4 MiB. */
 const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -121,8 +121,14 @@ function sealedFile(value: unknown): PlatformFileReference {
 	return file as unknown as PlatformFileReference;
 }
 
+/** Who stages and commits: the platform, or a member whose own actor the database answered for their token
+ * (`qorpera_member_folder_writer`, the member commit route, folder core C4 P34a). */
+export type FolderWriterActor = { readonly kind: "platform" } | { readonly kind: "member"; readonly userId: string };
+
 export interface PlatformFolderWriterOptions {
 	readonly authority: Pick<MemberCompanyAuthority, "publisher">;
+	/** The platform when left out. */
+	readonly actor?: FolderWriterActor;
 	readonly store: Pick<FileSystemObjectStore, "get">;
 	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
 	/** Where an object this gateway's store lacks (or cannot reach for a moment) is read instead: its Storage copy, as
@@ -132,12 +138,14 @@ export interface PlatformFolderWriterOptions {
 
 export class PlatformFolderWriter {
 	readonly #options: PlatformFolderWriterOptions;
+	readonly #actor: FolderWriterActor;
 
 	constructor(options: PlatformFolderWriterOptions) {
 		this.#options = options;
+		this.#actor = options.actor ?? PLATFORM_ACTOR;
 	}
 
-	/** Stages `bytes` as the platform in one folder-v2 environment and returns the file's reference for a commit. */
+	/** Stages `bytes` as the writer's actor in one folder-v2 environment and returns the file's reference for a commit. */
 	async stage(
 		environmentId: string,
 		bytes: Uint8Array,
@@ -167,7 +175,7 @@ export class PlatformFolderWriter {
 		objects.set(manifestSha256, manifestBytes);
 		const open = (await this.#rpc(
 			"qorpera_folder_open_upload",
-			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_manifest: manifestText },
+			{ p_environment_id: environmentId, p_actor: this.#actor, p_manifest: manifestText },
 			signal,
 		)) as { schema?: unknown; intentId?: unknown; manifestSha256?: unknown; present?: unknown } | null;
 		if (
@@ -247,7 +255,7 @@ export class PlatformFolderWriter {
 		return bytes;
 	}
 
-	/** Commits `units` as the platform under `operationKey`; the answer is the commit's (`qorpera.folder-commit/v1`). */
+	/** Commits `units` as the writer's actor under `operationKey`; the answer is the commit's (`qorpera.folder-commit/v1`). */
 	commit(
 		environmentId: string,
 		operationKey: string,
@@ -256,7 +264,7 @@ export class PlatformFolderWriter {
 	): Promise<unknown> {
 		return this.#rpc(
 			"qorpera_folder_commit",
-			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_operation_key: operationKey, p_units: units },
+			{ p_environment_id: environmentId, p_actor: this.#actor, p_operation_key: operationKey, p_units: units },
 			signal,
 		);
 	}
@@ -264,7 +272,7 @@ export class PlatformFolderWriter {
 	async #object(environmentId: string, hash: string, signal: AbortSignal): Promise<Uint8Array> {
 		const answer = (await this.#rpc(
 			"qorpera_folder_authorize_object_download",
-			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_sha256: hash },
+			{ p_environment_id: environmentId, p_actor: this.#actor, p_sha256: hash },
 			signal,
 		)) as { schema?: unknown; profileId?: unknown; bytes?: unknown } | null;
 		if (
@@ -298,7 +306,7 @@ export class PlatformFolderWriter {
 			"qorpera_folder_authorize_object_upload",
 			{
 				p_environment_id: environmentId,
-				p_actor: PLATFORM_ACTOR,
+				p_actor: this.#actor,
 				p_intent: intentId,
 				p_sha256: hash,
 				p_bytes: bytes,
@@ -319,7 +327,7 @@ export class PlatformFolderWriter {
 			"qorpera_folder_confirm_object",
 			{
 				p_environment_id: environmentId,
-				p_actor: PLATFORM_ACTOR,
+				p_actor: this.#actor,
 				p_intent: intentId,
 				p_sha256: hash,
 				p_bytes: bytes,
@@ -337,7 +345,7 @@ export class PlatformFolderWriter {
 	): Promise<{ state: "sealed"; file: PlatformFileReference } | { state: "incomplete"; missing: string[] }> {
 		const value = (await this.#rpc(
 			"qorpera_folder_seal_upload",
-			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_intent: intentId },
+			{ p_environment_id: environmentId, p_actor: this.#actor, p_intent: intentId },
 			signal,
 		)) as { schema?: unknown; state?: unknown; intentId?: unknown; missing?: unknown; file?: unknown } | null;
 		if (value?.schema !== "qorpera.folder-seal/v1" || value.intentId !== intentId)

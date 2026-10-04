@@ -186,8 +186,8 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 values (current_setting('qorpera_test.profile_leave')::uuid,'85700000-0000-4000-8000-000000000002','race-bo@example.test','Bo',
 	'contributor');
 
--- The lobby's table for two racing Starts: Anna and Bo, both Ready with their own logins. The switch is on for this
--- section only.
+-- The lobby's table for two racing Starts: Anna and Bo, both Ready with their own logins. The switch is on (since
+-- 20260930031000, P39); it is set again here so this section does not depend on the migration.
 create or replace function public.qorpera_company_founding_available()
 returns boolean language sql stable security definer set search_path = '' as $$
 	select true
@@ -257,7 +257,8 @@ begin
 end $$;
 create or replace function public.qorpera_company_founding_available()
 returns boolean language sql stable security definer set search_path = '' as $$
-	select false
+	-- 20260930031000 (P39): new companies start at a founding table, on folder-v2.
+	select true
 $$;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['make_one','make_two']) name;
 -- The one creation the two Starts made: one first run and one kickoff, paid by Anna (who pressed Start first).
@@ -467,6 +468,6 @@ begin
 	if exists (select 1 from public.qorpera_profiles where created_by_user_id::text like '85700000-%')
 		or exists (select 1 from public.qorpera_folder_company_creations c where not exists (select 1 from public.qorpera_profiles p where p.id = c.profile_id))
 		or exists (select 1 from auth.users where id::text like '85700000-%')
-		or public.qorpera_company_founding_available() then
+		or not public.qorpera_company_founding_available() then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

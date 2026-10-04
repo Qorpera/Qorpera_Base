@@ -263,6 +263,8 @@ describe("public member Company File gateway", () => {
 		["a folder object without its hash", request(`/v1/member-folder-objects/${id}`), 404],
 		["a folder object with a version", request(`/v1/member-folder-objects/${id}/${id}/${"b".repeat(64)}`), 404],
 		["a folder object write", request(`/v1/member-folder-objects/${id}/${"b".repeat(64)}`, { method: "PUT" }), 405],
+		["a folder commit read", request(`/v1/member-folder-commits/${id}`), 405],
+		["a folder commit with a tail", request(`/v1/member-folder-commits/${id}/${id}`, { method: "POST" }), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forwardMemberCompanyGateway(req, {
@@ -380,6 +382,31 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(response.status, 502);
 		assert.equal(cancelled, true);
+	});
+	it("forwards a member's folder commit exactly", async () => {
+		const body = JSON.stringify({
+			schema: "qorpera.member-folder-commit/v1",
+			operationKey: "web:1",
+			// Past the governed routes' 256 KiB: a change set may carry up to 512 KiB of text.
+			units: [{ op: "write", path: "notes.txt", text: "x".repeat(300 * 1024) }],
+		});
+		const response = await forwardMemberCompanyGateway(
+			request(`/v1/member-folder-commits/${id}`, {
+				method: "POST",
+				body,
+				headers: { "content-type": "application/json" },
+			}),
+			{
+				upstreamUrl,
+				fetchImplementation: async (url, init) => {
+					assert.equal(new URL(String(url)).pathname, `/v1/member-folder-commits/${id}`);
+					assert.equal(init?.method, "POST");
+					assert.equal(new TextDecoder().decode(init?.body as Uint8Array), body);
+					return Response.json({ schema: "qorpera.folder-commit/v1", units: [] });
+				},
+			},
+		);
+		assert.equal(response.status, 200);
 	});
 	for (const kind of ["edits", "proposals"])
 		it(`forwards exact ${kind} review requests`, async () => {
