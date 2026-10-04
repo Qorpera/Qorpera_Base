@@ -2741,6 +2741,129 @@ describe("who pays for a routine (20260930064000)", () => {
 		g.stop.abort();
 	});
 
+	it("holds an open choice while Edit opens: Use this login and Cancel wait, and the draft survives later answers", async () => {
+		for (const press of ["Use this login", "Cancel"] as const) {
+			const f = mount([waiting()]);
+			f.routines.payer.mockResolvedValue(paid(waits));
+			await choose(f.view);
+			// A list read already on its way, and the routine's file read for Edit, both answer later.
+			const list = deferred<CloudRoutine[]>();
+			const file = deferred<WebRoutineFile>();
+			f.routines.list.mockReturnValueOnce(list.promise);
+			f.routines.open.mockReturnValueOnce(file.promise);
+			f.view.refresh();
+			click(f.view.el, "Edit");
+			// While the editor opens, the list's controls wait: the choice (Cancel too), Edit, New routine, the switch.
+			const button = (label: string) =>
+				[...f.view.el.querySelectorAll("button")].find((item) => item.textContent === label)!;
+			const held = ["Use this login", "Cancel", "Edit", "New routine"].map((label) => button(label).disabled);
+			expect(held).toEqual([true, true, true, true]);
+			expect(field<HTMLSelectElement>(f.view.el, "Login").disabled).toBe(true);
+			expect(f.view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBe("true");
+			button(press).click();
+			await settle();
+			expect(f.routines.setLogin).not.toHaveBeenCalled();
+			expect(f.view.el.querySelector(".routine-login select")).not.toBeNull();
+			// The file answers and the editor opens; a draft entered then stays through the list read and who pays.
+			file.resolve(openedOf(waiting()));
+			await vi.waitFor(() => expect(f.view.el.querySelector(".routine-editor")).not.toBeNull());
+			field(f.view.el, "Routine name").value = "My draft";
+			list.resolve([waiting()]);
+			await vi.waitFor(() => expect(f.routines.payer).toHaveBeenCalledTimes(2));
+			await settle();
+			expect(f.view.el.querySelector(".routine-editor")).not.toBeNull();
+			expect(field(f.view.el, "Routine name").value).toBe("My draft");
+			// Leaving the editor gives the list back, the choice as it was and free again.
+			click(f.view.el, "Cancel");
+			expect(f.view.el.querySelector(".routine-editor")).toBeNull();
+			expect(field<HTMLSelectElement>(f.view.el, "Login").disabled).toBe(false);
+			f.stop.abort();
+			document.body.replaceChildren();
+		}
+	});
+
+	it("keeps an editor that opens again after a change in charge: the old form's Cancel and Save wait", async () => {
+		const f = mount([routine()]);
+		await openEditor(f.view);
+		const file = deferred<WebRoutineFile>();
+		f.routines.save.mockRejectedValueOnce(new WebRoutineChangedError("changed"));
+		f.routines.open.mockReturnValueOnce(file.promise);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.routines.open).toHaveBeenCalledTimes(2));
+		// While the routine's file is read again, the form on screen is no longer the editor's: its buttons do nothing.
+		click(f.view.el, "Cancel");
+		click(f.view.el, "Save routine");
+		await settle();
+		expect(f.routines.save).toHaveBeenCalledTimes(1);
+		expect(f.view.el.querySelector(".routine-editor")).not.toBeNull();
+		file.resolve(openedOf(routine()));
+		await vi.waitFor(() => expect(status(f.view.el)).toBe("This routine changed while you were editing it."));
+		field(f.view.el, "Routine name").value = "My draft";
+		f.view.refresh();
+		await settle();
+		expect(field(f.view.el, "Routine name").value).toBe("My draft");
+		f.stop.abort();
+	});
+
+	it("lets no answer speak on a screen the member left, and keeps an open choice through a failed re-read", async () => {
+		// A switch change fails; its list read answers only after the member opened the editor and left it again: the
+		// failure is not said on a list the member came back to.
+		const f = mount([routine()]);
+		await listed(f.view);
+		const list = deferred<CloudRoutine[]>();
+		f.routines.setEnabled.mockRejectedValueOnce(new Error("offline"));
+		f.routines.list.mockReturnValueOnce(list.promise);
+		click(f.view.el, "Morning brief");
+		await vi.waitFor(() => expect(f.routines.list).toHaveBeenCalledTimes(2));
+		await openEditor(f.view);
+		click(f.view.el, "Cancel");
+		list.resolve([routine()]);
+		await settle();
+		expect(f.view.el.querySelector(".routine-editor")).toBeNull();
+		expect(f.view.el.querySelector(":scope > .surface-status")).toBeNull();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		f.stop.abort();
+		document.body.replaceChildren();
+
+		// Who pays is read again and that read fails: the open choice stays, with what the last read said.
+		const g = mount([waiting()]);
+		g.routines.payer.mockResolvedValue(paid(waits));
+		await choose(g.view);
+		g.routines.payer.mockRejectedValue(new Error("offline"));
+		g.view.refresh();
+		await vi.waitFor(() => expect(g.routines.payer).toHaveBeenCalledTimes(2));
+		await settle();
+		expect(g.view.el.querySelector(".routine-login select")).not.toBeNull();
+		expect(whoPays(cards(g.view.el)[0]!)?.textContent).toContain(`Paid by a member since ${fmtDate(SINCE)}`);
+		g.stop.abort();
+		document.body.replaceChildren();
+
+		// The editor's own read of the logins fails while it opens: the list says why, and its controls are free.
+		const routines = mocked([routine()]);
+		const view = new AgentRoutines(
+			() => staff,
+			{
+				routines,
+				accounts: vi.fn(async (): Promise<NativeExecutionConnections> => {
+					throw new Error("offline");
+				}),
+				canManage: () => true,
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await listed(view);
+		click(view.el, "Edit");
+		await vi.waitFor(() =>
+			expect(view.el.querySelector(":scope > .surface-status")?.textContent).toBe(
+				"Your model accounts could not be read. Try again.",
+			),
+		);
+		expect(view.el.querySelector(".routine-editor")).toBeNull();
+		expect(view.el.querySelector<HTMLButtonElement>(".routine-card-edit")!.disabled).toBe(false);
+		expect(view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBeNull();
+	});
+
 	it("holds Edit, New routine and the switch while Choose a login reads the logins, so a failed read closes no draft", async () => {
 		for (const start of ["choose", "switch"] as const) {
 			const pending = deferred<NativeExecutionConnections>();
