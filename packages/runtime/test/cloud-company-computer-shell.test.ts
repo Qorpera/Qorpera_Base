@@ -303,19 +303,19 @@ describe("what the platform hears of a shell", () => {
 
 	it("is busy above 5% of one core, or 512 KiB moved, in a 30-second sample", () => {
 		const before = { cpuTicks: 1000, ioBytes: 1_000_000, at: 0 };
-		const after = (cpuTicks: number, ioBytes: number, at = 30000) => ({ cpuTicks, ioBytes, at });
+		const later = (cpuTicks: number, ioBytes: number, at = 30000) => ({ cpuTicks, ioBytes, at });
 		// 30 seconds: 1.5 processor-seconds (150 ticks) is busy, a tick less is not.
-		expect(companyComputerShellBusy(before, after(1150, 1_000_000))).toBe(true);
-		expect(companyComputerShellBusy(before, after(1149, 1_000_000))).toBe(false);
+		expect(companyComputerShellBusy(before, later(1150, 1_000_000))).toBe(true);
+		expect(companyComputerShellBusy(before, later(1149, 1_000_000))).toBe(false);
 		// A slow download: little processor, 512 KiB moved is busy, a byte less is not.
-		expect(companyComputerShellBusy(before, after(1002, 1_000_000 + 512 * 1024))).toBe(true);
-		expect(companyComputerShellBusy(before, after(1002, 1_000_000 + 512 * 1024 - 1))).toBe(false);
+		expect(companyComputerShellBusy(before, later(1002, 1_000_000 + 512 * 1024))).toBe(true);
+		expect(companyComputerShellBusy(before, later(1002, 1_000_000 + 512 * 1024 - 1))).toBe(false);
 		// A waiting server: a few ticks and a few bytes.
-		expect(companyComputerShellBusy(before, after(1003, 1_000_100))).toBe(false);
+		expect(companyComputerShellBusy(before, later(1003, 1_000_100))).toBe(false);
 		// No time passed, or time ran backwards, or counters fell (a process left the tree): never busy.
-		expect(companyComputerShellBusy(before, after(5000, 9_000_000, 0))).toBe(false);
-		expect(companyComputerShellBusy(before, after(5000, 9_000_000, -1))).toBe(false);
-		expect(companyComputerShellBusy(before, after(10, 10))).toBe(false);
+		expect(companyComputerShellBusy(before, later(5000, 9_000_000, 0))).toBe(false);
+		expect(companyComputerShellBusy(before, later(5000, 9_000_000, -1))).toBe(false);
+		expect(companyComputerShellBusy(before, later(10, 10))).toBe(false);
 	});
 
 	it("reads the bytes a process read and wrote, and nothing from what it cannot read", () => {

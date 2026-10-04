@@ -4599,7 +4599,9 @@ amendment governs. In-place edits are marked "(changed in place)".
      coordinator: a slow download is working; a waiting server, a prompt or
      a loaded page moves about nothing).
      - That is measured for each command, coding session or computer's shell.
-       Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`).
+       Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
+       coding sessions take the data signal with the idle rule's coding
+       part.
      - On an agent's machine, programs outside its commands, such as
        containers, count by the processor share of the whole machine beyond
        its commands' own use (about 2% of the machine). That share belongs to

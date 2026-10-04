@@ -592,7 +592,9 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(shell.description).not.toContain("15 seconds");
 		expect(shell.description).toContain("public internet");
 		// One idle rule: only a busy shell keeps the machine awake; the next run is told what sleep stopped.
-		expect(shell.description).toContain("Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake");
+		expect(shell.description).toContain(
+			"Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake",
+		);
 		expect(shell.description).toContain("your next run is told");
 	});
 

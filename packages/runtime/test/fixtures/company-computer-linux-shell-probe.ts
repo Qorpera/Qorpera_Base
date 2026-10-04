@@ -333,6 +333,18 @@ printf isolated`),
 	);
 	assert.equal(companyComputerShellBusy(before, during), true, "the download is busy by the data it moves");
 	assert.equal((await stop(download.sessionId)).state, "stopped");
+	// A download left running in the background, after its command has ended, still counts: it lives on under the
+	// namespace's init, outside the shell host's tree.
+	assert.equal(
+		await done(
+			"nohup curl -sS --limit-rate 64k -o /tmp/large-background http://127.0.0.1:8002/ >/dev/null 2>&1 & echo $! > /tmp/background.pid; echo left",
+		),
+		"left\n",
+	);
+	before = await sample();
+	await delay(3000);
+	assert.equal(companyComputerShellBusy(before, await sample()), true, "a background download is busy by its data");
+	assert.equal(await done("kill $(cat /tmp/background.pid) && echo stopped"), "stopped\n");
 	assert.equal((await stop(serving.sessionId)).state, "stopped");
 	before = await sample();
 	await delay(3000);

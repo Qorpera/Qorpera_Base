@@ -899,11 +899,14 @@ export interface CompanyComputerShellUsage {
 	 */
 	cpuTicks: number;
 	/**
-	 * Bytes the shell's commands passed to read and write calls (network, disk
-	 * and pipes alike), finished children's included: every process below the
-	 * shell host, never the host itself (it reads /proc and relays output even
-	 * when nothing runs). A command that ends moves its count to the host, so
-	 * the sum can go down; that sample is simply not busy.
+	 * Bytes the shell's processes passed to read and write calls on files,
+	 * pipes and the terminal (/proc/<pid>/io rchar + wchar; a socket's send and
+	 * recv do not count, but a download writes what it receives): every process
+	 * of the namespace except the shell host, which relays every command's
+	 * output. A background program left running under the namespace's init
+	 * counts too. Counts of a reaped process move to its parent: when that is
+	 * the host (a command that ended), the sum goes down, and that sample is
+	 * simply not busy.
 	 */
 	ioBytes: number;
 }
@@ -935,9 +938,10 @@ export function companyComputerProcessIoBytes(io: string): number {
 
 /**
  * Each shell's usage, read from outside its namespace in one pass over /proc:
- * every process under its Bubblewrap monitor (anonymous resident memory and
- * threads), and the /tmp they see. The measure matches the pressure below:
- * memory the kernel cannot reclaim without swap. A process that exits
+ * every process under its Bubblewrap monitor (anonymous resident memory,
+ * threads and processor time, and the bytes all but the shell host read and
+ * wrote), and the /tmp they see. The memory measure matches the pressure
+ * below: memory the kernel cannot reclaim without swap. A process that exits
  * meanwhile counts as nothing.
  */
 export async function readCompanyComputerShellUsage(
@@ -960,23 +964,23 @@ export async function readCompanyComputerShellUsage(
 	const usages = new Map<number, CompanyComputerShellUsage>();
 	for (const rootPid of rootPids) {
 		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0, ioBytes: 0 };
-		// Each process, and whether it is a command's: below the shell host.
-		const pending: { pid: number; command: boolean }[] = [{ pid: rootPid, command: false }];
+		// Each process, and whether it is below the shell host (whose own bytes are its commands' relayed output).
+		const pending: { pid: number; belowHost: boolean }[] = [{ pid: rootPid, belowHost: false }];
 		let inside: number | undefined;
 		while (pending.length) {
-			const { pid, command } = pending.pop()!;
+			const { pid, belowHost } = pending.pop()!;
 			const host =
-				!command &&
+				!belowHost &&
 				(await readCompanyComputerLinuxMetadata(`/proc/${pid}/cmdline`, 4096).catch(() => "")).includes(
 					"\0--shell-host",
 				);
-			pending.push(...(children.get(pid) ?? []).map((child) => ({ pid: child, command: command || host })));
+			pending.push(...(children.get(pid) ?? []).map((child) => ({ pid: child, belowHost: belowHost || host })));
 			if (pid !== rootPid) inside ??= pid;
 			const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
 			usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
 			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
 			usage.cpuTicks += ticks.get(pid) ?? 0;
-			if (command)
+			if (!host)
 				usage.ioBytes += companyComputerProcessIoBytes(
 					await readCompanyComputerLinuxMetadata(`/proc/${pid}/io`, 4096).catch(() => ""),
 				);

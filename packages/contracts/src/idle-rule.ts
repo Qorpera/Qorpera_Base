@@ -13,7 +13,8 @@ export const IDLE_RULE_BUSY_CORE_SHARE = 0.05;
 
 /**
  * Busy by data moved: at least 512 KiB read or written in a 30-second sample, about 17 KB a second, counted as the
- * bytes the program's processes pass to read and write calls (network, disk and pipes alike). A slow download, an
+ * bytes the program's processes pass to read and write calls on files, pipes and terminals (a download writes what it
+ * receives; a socket's send and recv alone do not count). A slow download, an
  * npm install waiting on the network or an upload is working even when it uses little processor; a waiting server,
  * a prompt waiting on a person or a browser tab on a loaded page moves about nothing (the coordinator, 4 October 2026).
  */
