@@ -4,12 +4,13 @@
 #   node scripts/run-on-node.mjs --machine node01 --sudo --no-install --no-status -- \
 #     bash deploy/agent-exit/test/prove-lxd-vm.sh </dev/null
 #
-# Nothing of it touches the test machine's own kernel or network. It makes a throwaway VM in the test machine's LXD,
-# with no network card at all (so LXD adds no link, rule or module there), and runs test/prove-lxd.sh inside it. That
-# VM has its own kernel and its own LXD: it loads br_netfilter, builds the exit and plugs real LXD containers in, as
-# a node would. Everything the VM needs (LXD's snaps, the container image, two packages, this folder) is fetched on
-# the test machine and pushed in, because the VM has no network. The test machine's links, loaded modules, nft tables
-# and the sysctls that matter are compared before and after; any difference fails the run. Everything it made is
+# It changes nothing of the test machine's own network: it makes a throwaway VM in the test machine's LXD, with no
+# network card at all (so LXD adds no link or rule for it), and runs test/prove-lxd.sh inside it. That VM has its own
+# kernel and its own LXD: it loads br_netfilter, builds the exit and plugs real LXD containers in, as a node would.
+# Everything the VM needs (LXD's snaps, the container image, two packages, this folder) is fetched on the test machine
+# and pushed in, because the VM has no network. Before and after, the test machine's links (but Docker's), nft table
+# names, a few sysctls and the network modules a proof could load are compared: one of those changing, or any module
+# going away, fails the run. (LXD itself loads vhost_vsock for any VM; it is not one of them.) Everything it made is
 # removed at the end, also on failure. Prints PASS lines, the inner proof's RESULT line, then ALL PASSED.
 set -euo pipefail
 
@@ -30,8 +31,9 @@ lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
 command -v lxc >/dev/null || fail "no LXD here"
 # The project first: it is this run's claim on the names (a second run stops here and removes nothing of this one).
-lxc project create "$PROJECT" -c features.images=true -c features.profiles=false -c features.storage.volumes=true \
-	</dev/null >/dev/null 2>&1 || fail "LXD project $PROJECT exists: another E2b proof runs here"
+claim=$(lxc project create "$PROJECT" -c features.images=true -c features.profiles=false \
+	-c features.storage.volumes=true </dev/null 2>&1) ||
+	fail "cannot claim LXD project $PROJECT (another E2b proof may run here): $claim"
 
 # What the test machine looks like, before and after: the run must change none of it. Other runs on the machine come
 # and go meanwhile (Docker's veth and br- links, modules Docker loads), so those are left out of the comparison of

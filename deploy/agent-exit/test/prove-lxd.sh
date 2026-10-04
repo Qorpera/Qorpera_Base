@@ -173,6 +173,24 @@ exit_mac=$(ip -n qexit -br link show br0 | awk '{print $3}')
 host_if=$(lx config get m1 volatile.eth0.host_name)
 in_m m1 ip neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
 new_count() { ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client | grep -o "$1 counter packets [0-9]*" || true; }
+# What m1 sends from its port, counted in bridge prerouting before every filter (LXD's and ours): a refused check also
+# shows its probe left the machine. Outputs are captured, never piped into grep -q (with pipefail an early exit fails).
+probe_start() {
+	nft add table bridge qae2b_probe
+	nft add chain bridge qae2b_probe seen '{ type filter hook prerouting priority -400; }'
+	nft add rule bridge qae2b_probe seen iifname "$host_if" "$@" counter
+}
+probe_sent() {
+	local out
+	out=$(nft list chain bridge qae2b_probe seen)
+	nft delete table bridge qae2b_probe
+	[[ $out =~ packets\ [1-9] ]]
+}
+# Gives m1's card another MAC (or its own back) and keeps its address, route and the exit as a static neighbour.
+set_mac() {
+	in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $1; ip link set eth0 up; ip addr replace $a1/16 dev eth0
+		ip route replace default via 10.210.0.1 dev eth0 onlink; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+}
 # LXD's own layers on each machine's port, each tested with ours opened for it (the reconciler stopped meanwhile, so
 # it cannot close them again): port isolation, its MAC filter and its IPv6 filter must hold by themselves.
 for port in "$(lx config get m1 volatile.eth0.host_name)" "$(lx config get m2 volatile.eth0.host_name)"; do
@@ -182,15 +200,24 @@ kill "$plug_pid"
 wait "$plug_pid" 2>/dev/null || true
 nft add element bridge qorpera_agent_exit_bridge ports "{ \"$host_if\" . 0e:51:0a:d2:99:98 }"
 nft add element bridge qorpera_agent_exit_bridge clients "{ 0e:51:0a:d2:99:98 . $a1 }"
-in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address 0e:51:0a:d2:99:98; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+# Our rules know the new MAC and address, so only LXD's MAC filter can stop it: the exit must forward nothing.
+before=$(new_count "$a1")
+set_mac 0e:51:0a:d2:99:98
+probe_start ether saddr 0e:51:0a:d2:99:98 tcp dport 80
 reach m1 198.51.100.1 80 && fail "LXD's MAC filter let another MAC through"
-in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $mac1; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+probe_sent || fail "the probe with another MAC never left m1"
+[[ $(new_count "$a1") == "$before" ]] || fail "LXD's MAC filter let another MAC through to the exit"
+set_mac "$mac1"
+# Our rules let m1's IPv6 through, so only LXD's IPv6 filter can stop it before forward priority 100.
 nft insert rule bridge qorpera_agent_exit_bridge forward iifname "$host_if" ether type ip6 accept
 nft add table bridge qae2b_lxd6
 nft add chain bridge qae2b_lxd6 seen '{ type filter hook forward priority 100; }'
 nft add rule bridge qae2b_lxd6 seen iifname "$host_if" ether type ip6 counter
+probe_start ether type ip6
 in_m m1 sh -c 'sysctl -qw net.ipv6.conf.eth0.disable_ipv6=0; ping -6 -c 3 -W 1 ff02::1%eth0' >/dev/null 2>&1 || true
-nft list chain bridge qae2b_lxd6 seen | grep -q 'packets 0 ' || fail "LXD's IPv6 filter let IPv6 through: $(nft list chain bridge qae2b_lxd6 seen)"
+probe_sent || fail "m1 sent no IPv6 to test LXD's IPv6 filter with"
+lxd6=$(nft list chain bridge qae2b_lxd6 seen)
+[[ $lxd6 == *"packets 0 "* ]] || fail "LXD's IPv6 filter let IPv6 through: $lxd6"
 nft delete table bridge qae2b_lxd6
 handle=$(nft -a list chain bridge qorpera_agent_exit_bridge forward | awk '/ether type ip6 accept/ {print $NF}')
 nft delete rule bridge qorpera_agent_exit_bridge forward handle "$handle"
@@ -213,18 +240,23 @@ in_m m1 ip addr del "$a2/32" dev eth0
 [[ $(new_count "$a2") == "$a2_before" ]] || fail "the exit forwarded a connection from another machine's address"
 # Another MAC than its own.
 before=$(new_count "$a1")
-in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address 0e:51:0a:d2:99:99; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+set_mac 0e:51:0a:d2:99:99
+probe_start ether saddr 0e:51:0a:d2:99:99 tcp dport 80
 reach m1 198.51.100.1 80 && fail "a machine got out with another MAC"
+probe_sent || fail "the probe with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "the exit saw a machine's address from another MAC"
-in_m m1 sh -c "ip link set eth0 down; ip link set eth0 address $mac1; ip link set eth0 up; ip addr replace $a1/16 dev eth0; ip route replace default via 10.210.0.1; ip neigh replace 10.210.0.1 lladdr $exit_mac dev eth0 nud permanent"
+set_mac "$mac1"
 wait_for "reach m1 198.51.100.1 80" 100
 # IPv6: none of it reaches the bridge.
 nft add table bridge qae2b_count
 # After LXD's filters and ours (forward, priority 100): nothing of a machine's IPv6 is left.
 nft add chain bridge qae2b_count seen '{ type filter hook forward priority 100; }'
 nft add rule bridge qae2b_count seen iifname "$host_if" ether type ip6 counter
+probe_start ether type ip6
 in_m m1 sh -c 'sysctl -qw net.ipv6.conf.eth0.disable_ipv6=0; ping -6 -c 3 -W 1 ff02::1%eth0' >/dev/null 2>&1 || true
-nft list chain bridge qae2b_count seen | grep -q 'packets 0 ' || fail "a machine's IPv6 got through: $(nft list chain bridge qae2b_count seen)"
+probe_sent || fail "m1 sent no IPv6 to test with"
+count6=$(nft list chain bridge qae2b_count seen)
+[[ $count6 == *"packets 0 "* ]] || fail "a machine's IPv6 got through: $count6"
 nft delete table bridge qae2b_count
 pass "another address, another machine's address, another MAC or any IPv6 from a machine's card gets nothing through"
 cat >"$work/spoof.py" <<'EOF'
@@ -266,10 +298,11 @@ in_m m1 python3 /root/spoof.py garp "$a1" "$mac2"
 # family's filter is -200) and goes no further: dnsmasq would log it.
 nft add table bridge qae2b_dhcp
 nft add chain bridge qae2b_dhcp seen '{ type filter hook forward priority -300; }'
-nft add rule bridge qae2b_dhcp seen iifname "$host_if" udp dport 67 counter
+nft add rule bridge qae2b_dhcp seen iifname "$host_if" udp dport 67 @th,96,32 0x5150 counter
 in_m m1 python3 /root/spoof.py decline "$a1" "$mac2" "$a2" "$exit_mac"
 sleep 0.5
-nft list chain bridge qae2b_dhcp seen | grep -Eq 'packets [1-9]' || fail "the DHCPDECLINE never reached the bridge"
+decline=$(nft list chain bridge qae2b_dhcp seen)
+[[ $decline =~ packets\ [1-9] ]] || fail "the DHCPDECLINE never reached the bridge"
 nft delete table bridge qae2b_dhcp
 for stolen in "$mac2" "$exit_mac"; do in_m m1 python3 /root/spoof.py frame "$stolen"; done
 sleep 1
@@ -435,8 +468,8 @@ read -r idle _ < <(in_m m1 python3 /root/flood.py churn 5000)
 in_m m2 sh -c 'nohup python3 /root/flood.py silent 16000 >/dev/null 2>&1 &'
 wait_for "test \$(ip netns exec qexit conntrack -C) -gt 14000" 300
 read -r busy _ < <(in_m m1 python3 /root/flood.py churn 5000)
-results+=("{\"cost\":\"5000 connections\",\"seconds_with_an_empty_table\":$idle,\"seconds_with_16000_open\":$busy}")
-echo "cost: 5000 connections in ${idle}s with an empty table, ${busy}s with 16,000 open"
+results+=("{\"cost\":\"5000 connections\",\"seconds_with_an_empty_table\":$idle,\"seconds_with_over_14000_and_a_flood\":$busy}")
+echo "cost: 5000 connections in ${idle}s with an empty table, ${busy}s with over 14,000 entries and m2 still flooding"
 wait_for "bash $tool verify >/dev/null 2>&1" 300
 pass "the floods ran within their caps; the exit stayed healthy"
 echo "RESULT {\"kernel\":\"$(uname -r)\",\"lxd\":\"$(snap list lxd | awk 'NR==2 {print $2":"$3}')\",\"floods\":[$(IFS=,; echo "${results[*]}")]}"

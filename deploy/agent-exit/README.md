@@ -210,7 +210,7 @@ network card in it, pushes in LXD 6.9 rev 40424 (the nodes' revision), a contain
 offline), and runs `test/prove-lxd.sh` inside. That VM has its own kernel and LXD: it loads br_netfilter, builds the
 exit and plugs real LXD containers in the creators' way. Afterwards the test machine's links (but Docker's), nft
 tables, a few sysctls and the network modules a proof could load are compared with before; a difference fails the
-run. (LXD itself uses `vhost_vsock` for any VM; both test machines already have it.)
+run. (LXD loads `vhost_vsock` for any VM; it is not one of the watched modules.)
 
 Result, 4 October, run 20261003T233548-76214-45756fb5 on node 1's test machine (LXD 6.9 rev 40424 as on the nodes;
 the VM's kernel 7.0.0-34, the nodes' 7.0.0-30), all passed:
@@ -219,7 +219,7 @@ the VM's kernel 7.0.0-34, the nodes' 7.0.0-30), all passed:
 | --- | --- |
 | Plug | two containers plugged in the creators' way get their addresses by DHCP from the exit; the card carries only the MAC (LXD refuses `ipv4.address` on an unmanaged parent without its IPv4 filter) |
 | Reach | the stand-in internet through the exit; our networks refused; the node holds no bridged leg (`notrack`) |
-| LXD's own layers | each machine's port isolated; LXD's MAC filter and IPv6 filter each stop a spoof on their own, with the exit's rules opened for it |
+| LXD's own layers | each machine's port isolated; with the exit's rules opened for it, LXD's MAC filter alone stops a probe from another MAC (counted leaving the machine, never reaching the exit) and LXD's IPv6 filter alone stops IPv6 (counted leaving, never forwarded) |
 | Spoofing | another address and another machine's address towards the internet (the exit forwards and counts nothing from them), another MAC, any IPv6, gratuitous ARP for another machine, a spoofed ARP sender MAC, a DHCPDECLINE from port 68 naming another machine's MAC (seen reaching the bridge, never dnsmasq), another machine's MAC or the exit's taken (`bridge fdb`): none gets through |
 | Flooding | a frame from the exit to a MAC the bridge has forgotten reaches no other machine |
 | Default deny | a new machine gets nothing until the reconciler has it in the rules; with the reconciler down and the pairs flushed nothing passes, and restarted it sets them right within a pass; an `up` reload keeps running machines' traffic by itself |
@@ -234,7 +234,7 @@ Floods from one machine, 20,000 each (each phase capped at 60 s), with `notrack`
 | SYNs the exit refuses | 0.6 s | 0 | 0 | 0 |
 | UDP to 20,000 ports | 18 s | +16,393 | +16,384 (+36,396 without) | 3,616 refused |
 | another protocol (253) | 0.3 s | +250 | +250 | 0 |
-| spoofed sources | 0.1 s | 0 | about 0 (entries expiring meanwhile) | 0 |
+| spoofed sources | 0.1 s | 0 | −250 (earlier entries expiring meanwhile; none added) | 0 |
 | IPv6 | 0.3 s | 0 | 0 | 0 |
 
 What the numbers say:
@@ -254,13 +254,13 @@ What the numbers say:
 
 - E3 (log shipping): rotate `dns.log` by copying and truncating it, not by renaming it and sending SIGUSR2. dnsmasq's
   unprivileged user cannot create a file in the 0750 log directory, so a reopen would fail and logging would stop.
-- E2b: the per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine
-  to its address. A reload of the rules starts both counts again from zero. The total is one shared list in the
-  kernel: E2b measures its cost under load, and the tables under floods (TCP open and close, UDP, other protocols,
-  spoofed sources, IPv6) with `notrack` on, before any node is switched on. The node's table holds 262,144 entries
-  (read on both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. E2b
-  runs in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel modules there changes
-  the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on it).
+- The per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine to its
+  address. A reload of the rules starts both counts again from zero. The node's table holds 262,144 entries (read on
+  both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. Closed
+  connections are not bounded (E2b's floods above): a follow-up gives agent connections a shorter TIME_WAIT. Proofs
+  that change a kernel run in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel
+  modules there changes the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every
+  bridge on it).
 - E2c: a creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses
   an address it stored (`plug` is the only source of a machine's address). Plugging while the old instance still
   exists, then deleting and making it again, can let the reconciler unplug the address in between. Its unit joins the
