@@ -7,6 +7,7 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import type {
 	CompanyComputerEffectContext,
 	CompanyComputerOperation,
+	CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
@@ -92,6 +93,10 @@ async function fixture(
 		accountFills?: CompanyComputerAccountFills;
 		/** The database refuses a screenshot at its authorize with these words (folder-v2, C1c-3l part 3). */
 		refuseScreenshots?: string;
+		/** The guest's screenshots published without storage (folder-v2, P06d), by receipt. */
+		screenshots?: Map<string, Uint8Array>;
+		/** The capture the database reads back for the run. */
+		capture?: () => unknown;
 	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
@@ -142,6 +147,7 @@ async function fixture(
 		if (method === "qorpera_native_office_descriptor")
 			return Response.json(options.unavailable ? { state: "unavailable" } : descriptor);
 		if (method === "qorpera_native_office_start_descriptor") return Response.json({ state: "unavailable" });
+		if (method === "qorpera_read_native_office_capture") return Response.json(options.capture?.());
 		if (method === "qorpera_native_office_screen" && body.p_action === "release") {
 			released = true;
 			return Response.json({ state: "released" });
@@ -179,10 +185,16 @@ async function fixture(
 		new AbortController().signal,
 	);
 	cleanups.push(async () => run.close());
-	const perform = vi.fn(async (_action: unknown, _lease: unknown, _context: CompanyComputerEffectContext) => {
-		order.push("guest:perform");
-		return { kind: "text" as const, value: "test" };
-	});
+	const perform = vi.fn(
+		async (
+			_action: unknown,
+			_lease: unknown,
+			_context: CompanyComputerEffectContext,
+		): Promise<CompanyComputerToolContent> => {
+			order.push("guest:perform");
+			return { kind: "text" as const, value: "test" };
+		},
+	);
 	const physicalClose = vi.fn(async () => {
 		order.push("guest:close");
 	});
@@ -215,6 +227,15 @@ async function fixture(
 				}),
 				close: physicalClose,
 				ended: () => guest.ended,
+				...(options.screenshots
+					? {
+							screenshot: (receiptId: string) => {
+								const bytes = options.screenshots?.get(receiptId);
+								options.screenshots?.delete(receiptId);
+								return bytes;
+							},
+						}
+					: {}),
 			};
 		},
 	);
@@ -376,6 +397,141 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		expect(f.createSession).not.toHaveBeenCalled();
 		expect(f.perform).not.toHaveBeenCalled();
 		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
+	});
+	it("carries a screenshot stored nowhere from the office to the model in its perform answer, past the JSON bound", async () => {
+		// A 1 x 1 page capture's PNG header, padded well past the 48 KiB answer bound (only the header is read).
+		const png = Buffer.alloc(256 * 1024, 7);
+		Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1sAAAAASUVORK5CYII=",
+			"base64",
+		).copy(png);
+		const screenshots = new Map<string, Uint8Array>();
+		let asset: Record<string, unknown> | undefined;
+		const f = await fixture({ capabilities: ["shell", "browser"], screenshots, capture: () => asset });
+		f.perform.mockImplementation(async (_action, lease, context) => {
+			f.order.push("guest:perform");
+			// The guest's publisher: nothing stored, the receipt names the capture, the pixels wait for the answer.
+			asset = {
+				assetId: context.receiptId,
+				sha256: createHash("sha256").update(png).digest("hex"),
+				bytes: png.length,
+				mediaType: "image/png",
+				screenId: (lease as typeof f.lease).binding.screenId,
+				surface: "browser",
+				width: 1,
+				height: 1,
+			};
+			screenshots.set(context.receiptId, Uint8Array.from(png));
+			return { kind: "json", value: asset as never };
+		});
+		const control: CloudNativeToolOperationControlPlane = {
+			beginToolOperation: vi.fn(async (binding, input) => ({
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "executing",
+				result: null,
+				output_snapshot_id: null,
+				proposal_id: null,
+			})),
+			completeToolOperation: vi.fn(async (binding, input) => ({
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "completed",
+				result: input.result,
+			})),
+		};
+		const objects = vi.fn(async (): Promise<Response> => {
+			throw new Error("A screenshot stored nowhere is never fetched");
+		});
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			registry: f.registry,
+			objectGateway: {
+				baseUrl: "https://objects.qorpera.test",
+				token: randomBytes(32).toString("base64url"),
+				fetch: objects,
+			},
+		});
+		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
+		if (!session?.captures) throw new Error("Missing admitted office session with captures");
+		cleanups.push(session.close);
+		const tool = session.tools.find((tool) => tool.name === "computer_screenshot")!;
+		const content = await tool.execute(
+			{ operationKey: "native-office:shot", action: { kind: "screenshot", surface: "browser" } },
+			{ companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal },
+		);
+		// The model's text is the capture's identity; the receipt keeps only that.
+		expect(content).toEqual({ kind: "json", value: asset });
+		expect(JSON.stringify(vi.mocked(control.completeToolOperation).mock.calls[0][1].result)).not.toContain(
+			png.toString("base64").slice(0, 64),
+		);
+		expect(screenshots.size).toBe(0);
+		await expect(session.captures.issue("call-1", "envelope", content, f.run.signal)).resolves.toBe(
+			`data:image/png;base64,${png.toString("base64")}`,
+		);
+		expect(f.order.filter((step) => step.startsWith("qorpera_read_native_office_capture"))).toHaveLength(2);
+		expect(objects).not.toHaveBeenCalled();
+	});
+	it("takes pixels only in a screenshot's answer, and only exactly the published capture's under its receipt", async () => {
+		const f = await fixture();
+		const png = Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1sAAAAASUVORK5CYII=",
+			"base64",
+		);
+		const shot: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_screenshot",
+			arguments: { kind: "screenshot", surface: "browser" },
+		};
+		const asset = {
+			assetId: f.context.receiptId,
+			sha256: createHash("sha256").update(png).digest("hex"),
+			bytes: png.length,
+			mediaType: "image/png",
+			screenId: f.lease.binding.screenId,
+			surface: "browser",
+			width: 1,
+			height: 1,
+		};
+		const answer = (content: unknown, image: unknown) => ({
+			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			content,
+			image,
+		});
+		const holdInline = vi.fn();
+		const endpoint = (body: unknown) =>
+			new HttpCompanyComputerNativeEndpoint({
+				run: f.run,
+				descriptor: f.descriptor,
+				url: f.url,
+				token: f.token,
+				registry: f.registry,
+				fetch: vi.fn(async () => Response.json(body)),
+				screenshots: { holdInline },
+			});
+		const image = png.toString("base64");
+		// Any other operation's answer carries no pixels.
+		await expect(
+			endpoint(answer({ kind: "text", value: "test" }, image)).perform(f.operation, f.lease, f.context),
+		).rejects.toThrow("INVALID_OFFICE_NATIVE_MESSAGE");
+		for (const [content, pixels] of [
+			[{ kind: "json", value: { ...asset, assetId: randomUUID() } }, image],
+			[{ kind: "text", value: JSON.stringify(asset) }, image],
+			[{ kind: "json", value: asset }, `${image}!`],
+			[{ kind: "json", value: asset }, image.slice(1)],
+			[{ kind: "json", value: asset }, 7],
+		] as const)
+			await expect(endpoint(answer(content, pixels)).perform(shot, f.lease, f.context)).rejects.toThrow(
+				"INVALID_OFFICE_NATIVE_RESULT",
+			);
+		expect(holdInline).not.toHaveBeenCalled();
+		await expect(
+			endpoint(answer({ kind: "json", value: asset }, image)).perform(shot, f.lease, f.context),
+		).resolves.toEqual({ kind: "json", value: asset });
+		expect(holdInline).toHaveBeenCalledWith(asset, png);
 	});
 	it("reaches the computer the run is placed on through a company route", async () => {
 		const f = await fixture();
