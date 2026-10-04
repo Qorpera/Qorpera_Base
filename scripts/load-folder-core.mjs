@@ -624,6 +624,58 @@ function lockWaits(lines) {
 	return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
 
+/** Where each statement the 8 s statement timeout cancelled was: the PL/pgSQL frames of its CONTEXT, innermost first. */
+function statementTimeouts(lines) {
+	const counts = new Map();
+	for (let index = 0; index < lines.length; index += 1) {
+		if (!lines[index].includes("ERROR:  canceling statement due to statement timeout")) continue;
+		let context = "";
+		for (let next = index + 1; next < lines.length && next < index + 12; next += 1) {
+			if (/ERROR: {2}|LOG: {2}/.test(lines[next])) break;
+			if (/CONTEXT: {2}/.test(lines[next]) || (context && /^\t/.test(lines[next]))) context += ` ${lines[next].trim()}`;
+		}
+		const frames = [...context.matchAll(/PL\/pgSQL function (?:public\.|loadfolder\.)?([a-z0-9_]+)\([^)]*\) line (\d+)/g)]
+			.map(([, fn, line]) => `${fn}:${line}`)
+			.join(" < ");
+		const key = frames || context.trim().slice(0, 120) || "(no context)";
+		counts.set(key, (counts.get(key) ?? 0) + 1);
+	}
+	return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+/** Statements running over 2 s, sampled every 500 ms on a connection of its own: by call and what each waited on (a lock,
+ * an I/O or LWLock wait, or none: CPU), with the longest seen. A wait the server's log_lock_waits does not report (I/O,
+ * LWLocks, a busy CPU) shows here. */
+const slowStatements = new Map();
+async function sampler(port) {
+	// Diagnostics never fail the run: a sampler that cannot connect or loses its connection stops and says so.
+	const client = new pg.Client({ host: "127.0.0.1", port, user: "postgres", password, database });
+	client.on("error", (error) => process.stdout.write(`sampler connection lost: ${error.message}\n`));
+	try {
+		await client.connect();
+		while (running()) {
+			const { rows } = await client.query(`select query, wait_event_type, wait_event,
+					cardinality(pg_blocking_pids(pid)) > 0 as blocked,
+					extract(epoch from clock_timestamp() - query_start) * 1000 as ms
+				from pg_stat_activity where state = 'active' and pid <> pg_backend_pid() and backend_type = 'client backend'
+					and clock_timestamp() - query_start > interval '2 seconds'`);
+			for (const row of rows) {
+				const call = /public\.(qorpera_[a-z0-9_]+)\s*\(/.exec(row.query)?.[1] ?? /(loadfolder\.[a-z_]+)\s*\(/.exec(row.query)?.[1] ?? row.query.trim().slice(0, 40);
+				const key = `${call} ${row.blocked ? "blocked on " : ""}${row.wait_event_type ? `${row.wait_event_type}:${row.wait_event}` : "running (CPU)"}`;
+				const entry = slowStatements.get(key) ?? { samples: 0, maxMs: 0 };
+				entry.samples += 1;
+				entry.maxMs = Math.max(entry.maxMs, Math.round(Number(row.ms)));
+				slowStatements.set(key, entry);
+			}
+			await sleep(500);
+		}
+	} catch (error) {
+		process.stdout.write(`sampler stopped: ${error.message}\n`);
+	} finally {
+		await client.end().catch(() => undefined);
+	}
+}
+
 const slru = () =>
 	JSON.parse(
 		psql(
@@ -760,6 +812,7 @@ try {
 		gc(),
 		foreignKeyInsert(),
 		foreignKeyInsert(),
+		sampler(Number(port)),
 	]);
 	const seconds = (performance.now() - started) / 1000;
 	await pool.end();
@@ -880,6 +933,7 @@ try {
 	const lines = serverLog();
 	const cycles = deadlockCycles(lines);
 	const waits = lockWaits(lines);
+	const timeouts = statementTimeouts(lines);
 	const { lines: table, summary } = report(seconds);
 	const leaked = leaks();
 	const drains = stops.map((stop) => stop.drainMs);
@@ -914,6 +968,11 @@ try {
 	process.stdout.write(`multixact SLRU (deltas): ${JSON.stringify(multixact)}; deadlocks (pg_stat_database) ${deadlocksAfter - deadlocksBefore}\n`);
 	if (waits.length) process.stdout.write("lock waits over 1 s (log_lock_waits), by the waiting call:\n");
 	for (const [key, count] of waits.slice(0, 15)) process.stdout.write(`  ${count} x ${key}\n`);
+	if (slowStatements.size) process.stdout.write("statements over 2 s (sampled every 0.5 s), by call and what they waited on:\n");
+	for (const [key, entry] of [...slowStatements.entries()].sort((a, b) => b[1].samples - a[1].samples).slice(0, 15))
+		process.stdout.write(`  ${entry.samples} samples, up to ${entry.maxMs} ms: ${key}\n`);
+	if (timeouts.length) process.stdout.write("statement timeouts from the server log, by where they were (PL/pgSQL frames, innermost first):\n");
+	for (const [key, count] of timeouts.slice(0, 12)) process.stdout.write(`  ${count} x ${key}\n`);
 	if (cycles.length) process.stdout.write("deadlocks from the server log (who waited for whom, and the row the cancelled call waited for):\n");
 	for (const [key, count] of cycles.slice(0, 12)) process.stdout.write(`  ${count} x ${key}\n`);
 	const result = {
@@ -935,6 +994,8 @@ try {
 		gc: Object.fromEntries(gcOutcomes),
 		multixact,
 		lockWaits: waits.reduce((total, [, count]) => total + count, 0),
+		slowStatements: Object.fromEntries(slowStatements),
+		statementTimeouts: Object.fromEntries(timeouts),
 		summary,
 	};
 	process.stdout.write(`== load-folder-core ${JSON.stringify(result)}\n`);

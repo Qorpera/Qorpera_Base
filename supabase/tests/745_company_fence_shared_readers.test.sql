@@ -1,4 +1,4 @@
--- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers"
+-- @fixture 602_runtime_coding_lock_order.test.sql until "-- END COMMITTED FIXTURE"
 -- Readers of a company share its profile fence (20260928339380_company_fence_shared_readers). A call that
 -- entered through a reader RPC (PostgREST's request.path) takes the company's profile row, wake admission row
 -- and Company File row FOR SHARE; every other call takes them as before. Two agents of 602's path gateway
@@ -9,8 +9,8 @@
 -- fence ends at 1500 ms, the Company File write path's at 2 s (under the lease validator's own 25 s), with
 -- lock_not_available.
 
--- A second agent of the company with its own run and native binding (scripts/load-company-fence-pool.sql makes
--- its load agents the same way).
+-- A second agent of the company with its own run and native binding (the former scripts/load-company-fence-pool.sql
+-- made its load agents the same way).
 create function pg_temp.fence_agent(p_staff uuid, p_name text) returns jsonb language plpgsql as $$
 declare v_base public.qorpera_execution_runs%rowtype; v_session uuid := extensions.gen_random_uuid();
 	v_input uuid := extensions.gen_random_uuid(); v_run uuid := extensions.gen_random_uuid(); v_job uuid;
