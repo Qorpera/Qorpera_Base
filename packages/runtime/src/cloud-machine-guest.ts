@@ -504,7 +504,8 @@ const OWN_UNITS = ["qorpera.slice", "lxd-agent.service"];
 /** At most this many processes of one command are read for the bytes they moved. */
 const COMMAND_PROCESSES_READ = 4096;
 /** At most this many running commands are measured each look, whichever the executor listed (its list holds the
- * oldest 64 open ones); the reply stays within the executor's 64 KiB. */
+ * oldest 64 open ones), so the reply stays within the executor's 64 KiB. With more running, the looks page through them
+ * all: each look starts after the last command the one before measured (its cursor). */
 export const MACHINE_GUEST_RUNNING_MEASURED = 256;
 /** The ended commands' output tails share this many bytes in one reply; each keeps at most 2000. */
 const ENDED_TAIL_BUDGET = 16384;
@@ -546,18 +547,21 @@ async function commandUsage(
 		.filter((pid) => /^[1-9][0-9]*$/.test(pid))
 		.slice(0, COMMAND_PROCESSES_READ);
 	for (const pid of pids) {
-		const argv = (await systemFile(ports, `/proc/${pid}/cmdline`).catch(() => "")).split("\0");
+		// Linux ends every argument, the last one too, with a NUL.
+		const argv = (await systemFile(ports, `/proc/${pid}/cmdline`).catch(() => "")).replace(/\0$/, "").split("\0");
 		if (argv.at(-3) === (ports.helper ?? PATHS.helper) && argv.at(-2) === "execute" && argv.at(-1) === commandId)
 			continue;
 		ioBytes += idleRuleProcessIoBytes(await systemFile(ports, `/proc/${pid}/io`).catch(() => ""));
 	}
 	return { commandId, cpuUsec, ioBytes };
 }
-/** Every running command's use, from the commands' slice: each command unit's cgroup there, at most
- * MACHINE_GUEST_RUNNING_MEASURED of them. A command whose use cannot be read is left out (not busy). */
+/** The running commands' use, from the commands' slice: each command unit's cgroup there, in id order after the cursor,
+ * at most MACHINE_GUEST_RUNNING_MEASURED, and the cursor for the next look (null once the last one was measured: the next
+ * look starts over). A command whose use cannot be read is left out (not busy). */
 async function runningUsage(
 	ports: MachineGuestPorts,
-): Promise<{ commandId: string; cpuUsec: number; ioBytes: number }[]> {
+	after: string | null,
+): Promise<{ running: { commandId: string; cpuUsec: number; ioBytes: number }[]; next: string | null }> {
 	const slice = join(ports.cgroupRoot ?? "/sys/fs/cgroup", "qorpera.slice", PATHS.slice);
 	const unit = new RegExp(
 		`^${PATHS.unitPrefix}([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\\.service$`,
@@ -566,27 +570,33 @@ async function runningUsage(
 		await (ports.listSystemDirectory ?? ((path: string) => readdir(path)))(slice).catch(() => [] as string[])
 	)
 		.flatMap((name) => unit.exec(name)?.[1] ?? [])
-		.sort()
-		.slice(0, MACHINE_GUEST_RUNNING_MEASURED);
+		.filter((commandId) => after === null || commandId > after)
+		.sort();
+	const page = commandIds.slice(0, MACHINE_GUEST_RUNNING_MEASURED);
 	const running: { commandId: string; cpuUsec: number; ioBytes: number }[] = [];
-	for (const commandId of commandIds)
+	for (const commandId of page)
 		running.push(
 			...(await commandUsage(ports, commandId, join(slice, `${PATHS.unitPrefix}${commandId}.service`))
 				.then((usage) => [usage])
 				.catch(() => [])),
 		);
-	return running;
+	return { running, next: commandIds.length > page.length ? (page.at(-1) ?? null) : null };
 }
 
 /** One look inside for the executor's pass: how each listed command stands
- * (only the ended ones are reported, with the end of their output), what every
- * running command used so far, listed or not, and the processor time of the
- * whole machine and of its own units, from which the executor sees busy
- * commands and busy work outside them (the one idle rule). The clock is the
- * boot's (uptime). */
-export async function observeMachine(commandIds: readonly string[], ports: MachineGuestPorts = {}) {
+ * (only the ended ones are reported, with the end of their output), what the
+ * running commands used so far, listed or not (a page of them after `after`,
+ * with the cursor for the next look), and the processor time of the whole
+ * machine and of its own units, from which the executor sees busy commands and
+ * busy work outside them (the one idle rule). The clock is the boot's (uptime). */
+export async function observeMachine(
+	commandIds: readonly string[],
+	ports: MachineGuestPorts = {},
+	after: string | null = null,
+) {
 	requireRoot(ports);
-	if (commandIds.length > 64) throw new Error("MACHINE_GUEST_OBSERVATION_INVALID");
+	if (commandIds.length > 64 || (after !== null && !UUID.test(after)))
+		throw new Error("MACHINE_GUEST_OBSERVATION_INVALID");
 	const guest = await identity(ports);
 	const ended: { commandId: string; state: string; exitCode: number | null; outputTail: string }[] = [];
 	let tailBytes = ENDED_TAIL_BUDGET;
@@ -612,7 +622,7 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 			ended.push({ commandId, state: current.state, exitCode: current.exitCode, outputTail });
 		}
 	}
-	const running = await runningUsage(ports);
+	const { running, next } = await runningUsage(ports, after);
 	const at = await (ports.nowMs ?? uptimeMs)();
 	const cpu = (await (ports.readCpu ?? (() => readFile("/proc/stat", "utf8")))())
 		.split("\n")[0]
@@ -638,6 +648,7 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 			ownUsec,
 		},
 		running,
+		next,
 		ended,
 	};
 }
@@ -746,8 +757,8 @@ export async function runMachineGuestCli(argv: readonly string[], ports: Machine
 						? { tail: true, limit: Number(c ?? 4096) }
 						: { offset: Number(b), limit: Number(c ?? 4096) };
 			result = await readMachineCommand(a, read, ports);
-		} else if (second === "observe" && rest.length === 1)
-			result = await observeMachine(a === "-" ? [] : a.split(","), ports);
+		} else if (second === "observe" && (rest.length === 1 || rest.length === 2))
+			result = await observeMachine(a === "-" ? [] : a.split(","), ports, b === undefined || b === "-" ? null : b);
 		else throw new Error("INVALID_MACHINE_GUEST_ARGUMENTS");
 	} catch (error) {
 		result = { schema: "qorpera.machine-guest-refusal/v1", code: codingErrorCode(error) };

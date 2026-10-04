@@ -14,9 +14,8 @@
 --    worker's: the conversation that dispatched it), is told once in its open work (machineStopped). Busy outside work
 --    is told to the agent that started the machine, in the conversation of the run that started it.
 -- Check-ins (item 5) follow on S3's per-company delivery (3i-b), with qorpera_machine_checkins.
--- 4. A stop that has begun (its custody granted and the machine still wanted stopped, or asleep at zero hours) records
---    no ends the guest shows: they are the stop's own work, and the suspension ends those commands with the stop's
---    reason. The executor's list says so (stopping), and the executor takes no last look then.
+-- 4. The stop custody ends what still runs, with the stop's cause, when it is granted: before the executor stops the
+--    programs. So a power-off that fails, followed by a wake or hours added, never turns them into ordinary ends.
 -- Lock order: unchanged. The record keeps its custody's order (the machine, then the placement, then the command
 -- rows). Ends run where the caller holds the machine row, as before. The told list takes command and outside-stop
 -- rows with SKIP LOCKED only.
@@ -91,18 +90,6 @@ revoke all on function public.qorpera_company_machine_start_conversation() from 
 create trigger qorpera_company_machine_start_conversation before insert on public.qorpera_company_machines
 	for each row execute function public.qorpera_company_machine_start_conversation();
 
--- Whether a stop of the placement has begun: its custody was granted, and the machine is still wanted stopped (or
--- deleted), or asleep after the company ran out of computer hours. Ends the guest shows then are the stop's work.
-create function public.qorpera_company_machine_stopping(p_placement public.qorpera_company_machine_placements,
-	p_machine public.qorpera_company_machines)
-returns boolean language sql stable security definer set search_path = '' as $$
-	-- 20260930055000.
-	select p_placement.stop_authorized_at is not null and (p_machine.desired_state <> 'running'
-		or public.qorpera_computer_hour_finish_window_over(p_machine.profile_id, clock_timestamp()))
-$$;
-revoke all on function public.qorpera_company_machine_stopping(public.qorpera_company_machine_placements, public.qorpera_company_machines)
-	from public, anon, authenticated, service_role, qorpera_secret_broker;
-
 -- Ends every open command of a machine that stopped, restarted or moved, with why, and queues the notifications they
 -- asked for; or, observed, the ones the guest saw end. A command the guest does not know yet may still be on its way
 -- there: it is lost only two minutes after its start was last sent. Busy outside work ends with a stop or restart
@@ -148,7 +135,7 @@ $$;
 -- The executor's look inside a running machine: the commands that ended since (each {commandId, state, exitCode,
 -- outputTail}), the running commands it saw busy (their ids, at most 256: only this machine's open ones count), and
 -- whether work outside its commands was busy. Busy work keeps a task machine awake (the idle clock), and when each
--- was last busy is kept. While a stop has begun nothing is recorded (stopping): the suspension ends what still runs.
+-- was last busy is kept. Commands a stop already ended (its custody) stay ended with its cause.
 drop function public.qorpera_record_company_machine_commands(uuid, text, text, text, uuid, jsonb, boolean);
 create function public.qorpera_record_company_machine_commands(p_placement_id uuid, p_owner text, p_binding_text text,
 	p_machine_id_sha256 text, p_boot_id uuid, p_ended jsonb, p_busy_commands jsonb, p_outside_busy boolean)
@@ -174,7 +161,6 @@ begin
 	-- Only what the executor saw in the current placement's current boot counts.
 	if v_placement.removed_at is not null or v_placement.retired_at is not null or v_placement.boot_id is distinct from p_boot_id then
 		return '{"state":"stale"}'::jsonb; end if;
-	if public.qorpera_company_machine_stopping(v_placement, v_machine) then return '{"state":"stopping"}'::jsonb; end if;
 	v_count := public.qorpera_end_company_machine_commands(v_machine, 'observed', p_ended);
 	update public.qorpera_company_machine_commands set busy_at = v_at
 	where machine_id = v_machine.id and ended_at is null
@@ -201,11 +187,6 @@ begin
 		raise exception 'Machine idle rule integration differs: %', p_target; end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
--- The executor's list says whether a stop has begun.
-select pg_temp.machine_idle_patch('public.qorpera_list_executor_machines(text,text)'::regprocedure,
-	$old$			'stopDue',(placement.retired_at is not null or machine.desired_state <> 'running') and state.reserved,$old$,
-	$new$			'stopDue',(placement.retired_at is not null or machine.desired_state <> 'running') and state.reserved,
-			'stopping',public.qorpera_company_machine_stopping(placement, machine), -- 20260930055000$new$);
 -- The executor's list: a task machine is due to sleep after its quiet window whatever still runs on it.
 select pg_temp.machine_idle_patch('public.qorpera_list_executor_machines(text,text)'::regprocedure,
 	$old$				and not exists (select 1 from public.qorpera_company_machine_commands where machine_id = machine.id and ended_at is null)
@@ -218,6 +199,13 @@ select pg_temp.machine_idle_patch('public.qorpera_authorize_executor_machine(uui
 $old$,
 	$new$				-- A command that only waits keeps nothing awake (20260930055000).
 $new$);
+-- Granting the stop ends what still runs there, with the stop's cause, before the executor stops the programs.
+select pg_temp.machine_idle_patch('public.qorpera_authorize_executor_machine(uuid,text,text,text,text)'::regprocedure,
+	$old$		update public.qorpera_company_machine_placements set stop_authorized_at = clock_timestamp() where id = v_placement.id;$old$,
+	$new$		update public.qorpera_company_machine_placements set stop_authorized_at = clock_timestamp() where id = v_placement.id;
+		-- Its programs stop now: they end here with the stop's cause (20260930055000), so a power-off that fails, then a
+		-- wake or hours added, never turns them into ends of their own.
+		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;$new$);
 
 -- The agent's machine commands that a stop or restart ended, and busy outside work on machines it started, that belong
 -- to this run's conversation: oldest first, at most 32 a run. A row belongs to the first run that took it; the same
@@ -283,9 +271,7 @@ do $$ declare v_owner name; begin
 			execute format('grant select, update on public.qorpera_company_machine_commands, public.qorpera_company_machines to %I',
 				v_owner);
 			execute format('grant execute on function public.qorpera_take_agent_machine_stopped(public.qorpera_execution_runs), '
-				'public.qorpera_computer_hour_finish_window_over(uuid,timestamptz), '
-				'public.qorpera_company_machine_stopping(public.qorpera_company_machine_placements, public.qorpera_company_machines) '
-				'to %I', v_owner);
+				'public.qorpera_computer_hour_finish_window_over(uuid,timestamptz) to %I', v_owner);
 		end if;
 	end loop;
 end $$;

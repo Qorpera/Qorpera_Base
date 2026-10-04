@@ -252,10 +252,11 @@ describe("machine command guest", () => {
 		m.files.set(`${group}/cgroup.procs`, "500\n501\n502\n");
 		m.files.set(
 			"/proc/500/cmdline",
-			`/usr/bin/node\0/opt/qorpera-machine/cloud-machine-guest.mjs\0execute\0${running}`,
+			// As Linux shows it: every argument ends with a NUL.
+			`/usr/bin/node\0/opt/qorpera-machine/cloud-machine-guest.mjs\0execute\0${running}\0`,
 		);
 		m.files.set("/proc/500/io", "rchar: 9000000\nwchar: 9000000\n");
-		m.files.set("/proc/501/cmdline", "/bin/bash\0-l\0-c\0sleep 1000");
+		m.files.set("/proc/501/cmdline", "/bin/bash\0-l\0-c\0sleep 1000\0");
 		m.files.set("/proc/501/io", "rchar: 4096\nwchar: 1024\nsyscr: 7\n");
 		m.files.set("/proc/502/io", "rchar: 100\nwchar: 0\n");
 		// The other running command's unit has no readable processor time: left out, not busy. Something in the slice
@@ -272,6 +273,7 @@ describe("machine command guest", () => {
 			// /proc/stat in USER_HZ (100 a second): 150 of 1000 ticks busy; the own units' cgroups, in microseconds.
 			cpu: { busyUsec: 1_500_000, totalUsec: 10_000_000, ownUsec: 10_000_000 },
 			running: [{ commandId: running, cpuUsec: 2_500_000, ioBytes: 5220 }],
+			next: null,
 			ended: [
 				{ commandId: done, state: "succeeded", exitCode: 0, outputTail: "" },
 				{ commandId: never, state: "lost", exitCode: null, outputTail: "" },
@@ -283,7 +285,7 @@ describe("machine command guest", () => {
 		expect(await observeMachine([], m.ports)).toMatchObject({ cpu: { ownUsec: 0 } });
 	});
 
-	it("measures every running command, also the ones beyond the executor's list of 64", async () => {
+	it("measures every running command, also the ones beyond the executor's list, a page of 256 a look", async () => {
 		const m = await machine();
 		await prepareMachineGuest(m.machineId, 1, m.ports);
 		const slice = "/sys/fs/cgroup/qorpera.slice/qorpera-machine.slice";
@@ -291,10 +293,15 @@ describe("machine command guest", () => {
 		for (const [n, id] of ids.entries())
 			m.files.set(`${slice}/qorpera-machine-command-${id}.service/cpu.stat`, `usage_usec ${n}\n`);
 		// The executor lists none of them: SQL's list holds only the oldest 64 open commands.
-		const observed = await observeMachine([], m.ports);
-		expect(observed.running).toHaveLength(256);
-		expect(observed.running.map((item) => item.commandId)).toEqual(ids.slice(0, 256));
-		expect(observed.running[70]).toEqual({ commandId: ids[70], cpuUsec: 70, ioBytes: 0 });
+		const first = await observeMachine([], m.ports);
+		expect(first.running.map((item) => item.commandId)).toEqual(ids.slice(0, 256));
+		expect(first.running[70]).toEqual({ commandId: ids[70], cpuUsec: 70, ioBytes: 0 });
+		expect(first.next).toBe(ids[255]);
+		// The next look carries on after it, and says it reached the end: the one after starts over.
+		const second = await observeMachine([], m.ports, first.next);
+		expect(second.running.map((item) => item.commandId)).toEqual(ids.slice(256));
+		expect(second.next).toBeNull();
+		await expect(observeMachine([], m.ports, "not-a-cursor")).rejects.toThrow("MACHINE_GUEST_OBSERVATION_INVALID");
 	});
 
 	it("keeps the ended commands' output tails within one reply", async () => {

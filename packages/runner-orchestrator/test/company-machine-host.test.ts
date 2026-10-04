@@ -80,7 +80,6 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		sleepDue: false,
 		stopDue: false,
 		removeDue: false,
-		stopping: false,
 	};
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const refusals = new Map<string, string>();
@@ -169,6 +168,8 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 									schema: "qorpera.machine-observation/v2",
 									machineId: id(2),
 									bootId: boot,
+									// The guest's paging cursor: one look measures every running command unless a test says otherwise.
+									next: null,
 									...(observed as object),
 								}
 							: {
@@ -391,33 +392,95 @@ describe("company machine host", () => {
 		});
 		f.busy.add("qorpera_record_company_machine_commands");
 		f.entry.sleepDue = true;
-		const before = f.calls.length;
+		let before = f.calls.length;
 		expect((await f.host.pass(f.signal))[0]).toMatchObject({ state: "not-now" });
-		const methods = f.calls.slice(before).map((call) => call.method);
+		let methods = f.calls.slice(before).map((call) => call.method);
 		expect(methods).toContain("qorpera_record_company_machine_commands");
 		// No stop custody, no stop: the machine keeps running, programs and all, until a pass records what it saw.
 		expect(methods).not.toContain("qorpera_authorize_executor_machine");
 		expect(f.instance()?.status).toBe("Running");
+		// The next pass looks quiet, but the busy work seen before still goes to SQL first, before any stop custody.
+		f.busy.clear();
+		f.observe({
+			at: 20_000,
+			ended: [],
+			running: [{ commandId: id(7), cpuUsec: 5_000_100, ioBytes: 0 }],
+			cpu: { busyUsec: 5_000_100, totalUsec: 40_000_000, ownUsec: 5_000_100 },
+		});
+		before = f.calls.length;
+		await f.host.pass(f.signal);
+		methods = f.calls.slice(before).map((call) => call.method);
+		const recordedAt = methods.indexOf("qorpera_record_company_machine_commands");
+		expect(recordedAt).toBeGreaterThan(-1);
+		expect(f.calls[before + recordedAt].args).toMatchObject({ p_busy_commands: [id(7)] });
+		expect(recordedAt).toBeLessThan(methods.indexOf("qorpera_authorize_executor_machine"));
 	});
 
-	it("takes no last look at a stop that has begun, so what the stop ended is not recorded as ended on its own", async () => {
+	it("carries busy work a record did not reach SQL with even when the guest then does not answer", async () => {
 		const f = await fixture();
 		await f.host.pass(f.signal);
 		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		f.observe({ at: 0, ended: [], running: [], cpu: { busyUsec: 0, totalUsec: 0, ownUsec: 0 } });
 		await f.host.pass(f.signal);
-		// An earlier pass stopped the programs and then failed to power the VM off: the guest shows the command failed.
-		f.observe({
-			at: 10_000,
-			ended: [{ commandId: id(7), state: "failed", exitCode: 143, outputTail: "Terminated" }],
-			running: [],
-			cpu: { busyUsec: 0, totalUsec: 20e6, ownUsec: 0 },
+		// Outside work was busy, but its record finds the company's locks busy.
+		f.observe({ at: 10_000, ended: [], running: [], cpu: { busyUsec: 5e6, totalUsec: 20e6, ownUsec: 0 } });
+		f.busy.add("qorpera_record_company_machine_commands");
+		await f.host.pass(f.signal);
+		f.busy.clear();
+		// The guest no longer answers; before the machine sleeps, what was seen is recorded.
+		f.observe(null);
+		f.entry.sleepDue = true;
+		const before = f.calls.length;
+		await f.host.pass(f.signal);
+		const calls = f.calls.slice(before);
+		const recordedAt = calls.findIndex((call) => call.method === "qorpera_record_company_machine_commands");
+		expect(calls[recordedAt]?.args).toMatchObject({ p_ended: [], p_busy_commands: [], p_outside_busy: true });
+		expect(recordedAt).toBeLessThan(calls.findIndex((call) => call.method === "qorpera_authorize_executor_machine"));
+	});
+
+	it("pages through more running commands than one look measures, each against its own last sample", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [] });
+		const ids = Array.from({ length: 300 }, () => randomUUID()).sort();
+		const busy = ids[280];
+		// The guest answers a page of 256 after the cursor it is given, as cloud-machine-guest does.
+		const pages: string[] = [];
+		let seconds = 0;
+		const page = (cursor: string | undefined) => {
+			const after = cursor === undefined || cursor === "-" ? ids : ids.filter((id) => id > cursor);
+			const measured = after.slice(0, 256);
+			return {
+				running: measured.map((commandId) => ({
+					commandId,
+					cpuUsec: commandId === busy ? seconds * 1e6 : 0,
+					ioBytes: 0,
+				})),
+				next: after.length > measured.length ? (measured.at(-1) ?? null) : null,
+			};
+		};
+		for (let pass = 0; pass < 4; pass++) {
+			seconds += 10;
+			const cursor = pass === 0 ? "-" : pages.at(-1);
+			const answered = page(cursor);
+			pages.push(answered.next ?? "-");
+			f.observe({
+				at: seconds * 1000,
+				ended: [],
+				...answered,
+				cpu: { busyUsec: 0, totalUsec: seconds * 2e6, ownUsec: 0 },
+			});
+			await f.host.pass(f.signal);
+			// The executor asked for the page after the previous look's cursor.
+			const asked = f.client.execInstance.mock.calls.filter((call) => call[2][3] === "observe").at(-1)?.[2];
+			expect(asked?.[5]).toBe(cursor);
+		}
+		// The busy command sorts after the first 256: seen on the second and fourth looks, busy between them.
+		expect(
+			f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1)?.args,
+		).toMatchObject({
+			p_busy_commands: [busy],
 		});
-		Object.assign(f.entry, { sleepDue: true, stopping: true });
-		const execs = f.client.execInstance.mock.calls.length;
-		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
-		expect(f.client.execInstance.mock.calls.slice(execs).map((call) => call[2][3])).not.toContain("observe");
-		expect(f.methods()).not.toContain("qorpera_record_company_machine_commands");
-		expect(f.methods()).toContain("qorpera_suspend_company_machine");
 	});
 
 	it("still sleeps when the guest does not answer its last look", async () => {

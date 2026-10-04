@@ -213,13 +213,20 @@ select pg_temp.idle();
 select pg_temp.check(pg_temp.custody('qorpera_authorize_executor_machine', ', ''stop''') ->> 'intent' = 'stop'
 	and (pg_temp.machine()).desired_state = 'stopped' and (pg_temp.machine()).desired_by = 'kernel',
 	'the stop custody agrees: the kernel wants the idle task machine stopped');
--- The stop has begun. Should the guest still be reached (its programs stopped, the power-off not yet done), what it
--- shows is the stop's work: nothing is recorded, and the suspension ends those commands with the stop's reason.
-select pg_temp.check((pg_temp.entry() ->> 'stopping')::boolean
-	and pg_temp.record(jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1), 'state', 'failed', 'exitCode', 143,
-		'outputTail', 'Terminated')), jsonb_build_array(pg_temp.command(1)), true) = '{"state":"stopping"}'
-	and (pg_temp.command_row(1)).ended_at is null and (pg_temp.command_row(1)).busy_at is null,
-	'a record while the stop has begun records nothing');
+-- Granting the stop ended what still runs, with its cause, before the executor stops the programs. Should the power-off
+-- then fail and the machine be woken (a member's Start) or its hours be added, what the guest shows of the stopped
+-- programs changes nothing.
+select pg_temp.check((select c.state = 'lost' and c.end_reason = 'slept' from pg_temp.command_row(1) c)
+	and (pg_temp.command_row(3)).end_reason = 'slept', 'the stop custody ends what still runs as slept');
+savepoint woken;
+update public.qorpera_company_machines set desired_state = 'running', desired_by = 'member'
+where id = '87300000-0000-4000-8000-0000000000a1';
+update public.qorpera_company_machine_placements set stop_authorized_at = null where id = (pg_temp.placement()).id;
+select pg_temp.check(pg_temp.record(jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1), 'state', 'failed',
+		'exitCode', 143, 'outputTail', 'Terminated')), jsonb_build_array(pg_temp.command(1)), false) ->> 'ended' = '0'
+	and (select c.state = 'lost' and c.end_reason = 'slept' and c.busy_at is null and c.exit_code is null from pg_temp.command_row(1) c),
+	'woken before the power-off, the guest''s view of a stopped program changes nothing');
+rollback to savepoint woken;
 select pg_temp.check(pg_temp.custody('qorpera_suspend_company_machine') ->> 'state' = 'suspended', 'the machine sleeps');
 select pg_temp.check((select c.state = 'lost' and c.end_reason = 'slept' from pg_temp.command_row(1) c)
 	and (pg_temp.command_row(3)).end_reason = 'slept' and (pg_temp.command_row(2)).end_reason is null,
