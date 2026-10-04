@@ -559,7 +559,9 @@ describe("agent todo and worker tools", () => {
 			f.call.mockRejectedValueOnce(new CloudCompanyPathRpcRefusal("Run is unavailable"));
 			const denied = await f.boundary.invoke("w2", "qorpera", "manage_worker", { ...dispatch, operationKey: "d2" });
 			expect(body(denied).content.text).toBe("REFUSED: NOT_AVAILABLE: Run is unavailable");
-			f.call.mockRejectedValueOnce(new CloudControlRpcRefused("0A000", "Settings \u2192 General has no \u{1F600} here"));
+			f.call.mockRejectedValueOnce(
+				new CloudControlRpcRefused("0A000", "Settings \u2192 General has no \u{1F600} here"),
+			);
 			const odd = await f.boundary.invoke("w3", "qorpera", "manage_worker", { ...dispatch, operationKey: "d3" });
 			expect(body(odd).content.text).toBe("REFUSED: NOT_AVAILABLE: this is not available now");
 			// Anything else stays an unknown outcome.

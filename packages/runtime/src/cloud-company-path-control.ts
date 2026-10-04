@@ -189,7 +189,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				// may have committed. The folder client retries a folder call with the same key; a run's authority and
 				// read-set checks ask again (control calls, 4 Oct 2026); nothing else retries.
 				const unreadable = (message: string): CloudRuntimeDiagnosticError =>
-					new CloudRuntimeDiagnosticError(response.status >= 500 ? "transport_unavailable" : "invalid_response", message);
+					new CloudRuntimeDiagnosticError(
+						response.status >= 500 ? "transport_unavailable" : "invalid_response",
+						message,
+					);
 				const reader = response.body?.getReader();
 				if (!reader)
 					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");

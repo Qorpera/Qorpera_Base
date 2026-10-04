@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS } from "@qorpera/runtime/cloud-native-result-fence";
 import {
 	CLOUD_NATIVE_FENCE_BUDGET_MS,
@@ -10,7 +11,6 @@ import {
 	parseCloudNativeToolAuthority,
 	parseCloudNativeToolBinding,
 } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -214,7 +214,9 @@ it("closes at once on a refusal, and asks no more once the authority would lapse
 	expect(reader.describeToolAuthority.mock.calls.length).toBeLessThan(10);
 	// A refused read is never asked again.
 	const second = await admit();
-	second.reader.describeToolAuthority.mockRejectedValueOnce(new CloudControlRpcRefused("55000", "Company execution is paused"));
+	second.reader.describeToolAuthority.mockRejectedValueOnce(
+		new CloudControlRpcRefused("55000", "Company execution is paused"),
+	);
 	await expect(second.run.assertActive(second.run.signal)).rejects.toThrow("Cloud tool authority unavailable");
 	expect(second.reader.describeToolAuthority).toHaveBeenCalledTimes(2);
 	expect(second.run.signal.aborted).toBe(true);

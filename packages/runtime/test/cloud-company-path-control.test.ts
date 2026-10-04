@@ -265,19 +265,24 @@ describe("Company File bounded control transport", () => {
 		[400, "P0001", "That todo is closed", "authority_unavailable"],
 		[409, "QRC01", "Company folder view changed", "authority_unavailable"],
 		[400, "22023", "Worker request is invalid", "invalid_arguments"],
-	] as const)("keeps a refusal the database raised as a refusal, never a lost connection (%i %s)", async (status, code, message, category) => {
-		const transport = vi.fn<typeof fetch>(async () => Response.json({ code, message, details: null, hint: null }, { status }));
-		const error = await fixture(transport)
-			.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
-			.catch((error: unknown) => error);
-		expect(error).toBeInstanceOf(CloudControlRpcRefused);
-		expect((error as CloudControlRpcRefused).code).toBe(code);
-		expect((error as CloudControlRpcRefused).detail).toBe(message);
-		expect((error as CloudControlRpcRefused).category).toBe(category);
-		expect(String(error)).not.toContain(message);
-		expect(cloudControlRetryable(error)).toBe(false);
-		expect(transport).toHaveBeenCalledOnce();
-	});
+	] as const)(
+		"keeps a refusal the database raised as a refusal, never a lost connection (%i %s)",
+		async (status, code, message, category) => {
+			const transport = vi.fn<typeof fetch>(async () =>
+				Response.json({ code, message, details: null, hint: null }, { status }),
+			);
+			const error = await fixture(transport)
+				.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(CloudControlRpcRefused);
+			expect((error as CloudControlRpcRefused).code).toBe(code);
+			expect((error as CloudControlRpcRefused).detail).toBe(message);
+			expect((error as CloudControlRpcRefused).category).toBe(category);
+			expect(String(error)).not.toContain(message);
+			expect(cloudControlRetryable(error)).toBe(false);
+			expect(transport).toHaveBeenCalledOnce();
+		},
+	);
 
 	it.each([
 		[500, { code: "40001", message: "could not serialize access", details: null, hint: null }],

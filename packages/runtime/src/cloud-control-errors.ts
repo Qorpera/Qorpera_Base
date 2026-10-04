@@ -79,15 +79,21 @@ export function cloudControlBackoffMs(attempt: number): number {
 	return Math.min(2_000, 250 * 2 ** Math.min(attempt, 8));
 }
 
-/** An error response's body, if it is small enough to be a PostgREST error (4 KiB); else empty. Never throws. */
+/** An error response's body, if it is small enough to be a PostgREST error (4 KiB) and arrives within 500 ms; else
+ * empty. A stalled body is cancelled, never waited for. Never throws. */
 export async function cloudControlErrorBody(response: Response): Promise<string> {
 	const reader = response.body?.getReader();
 	if (!reader) return "";
 	const chunks: Uint8Array[] = [];
 	let bytes = 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const stalled = new Promise<"stalled">((resolve) => {
+		timer = setTimeout(() => resolve("stalled"), 500);
+	});
 	try {
 		for (;;) {
-			const next = await reader.read();
+			const next = await Promise.race([reader.read(), stalled]);
+			if (next === "stalled") return "";
 			if (next.done) break;
 			bytes += next.value.byteLength;
 			if (bytes > 4096) return "";
@@ -97,6 +103,7 @@ export async function cloudControlErrorBody(response: Response): Promise<string>
 	} catch {
 		return "";
 	} finally {
+		clearTimeout(timer);
 		void reader.cancel().catch(() => undefined);
 	}
 }

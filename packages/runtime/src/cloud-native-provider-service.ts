@@ -722,7 +722,11 @@ export class SupabaseNativeProviderControlPlane
 						error = undefined;
 					}
 					if (error && cloudControlRefusalCode(error.code))
-						throw new CloudControlRpcRefused(error.code, error.message, `Native control-plane RPC failed (${response.status})`);
+						throw new CloudControlRpcRefused(
+							error.code,
+							error.message,
+							`Native control-plane RPC failed (${response.status})`,
+						);
 					if (
 						(error && cloudControlTransientCode(error.code)) ||
 						(!error && (response.status >= 500 || response.status === 408 || response.status === 429))
