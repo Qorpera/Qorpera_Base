@@ -1,7 +1,11 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- Company folder core C1c-3l part 3 (20260930030200): an agent's screenshot of the Company Computer on a folder-v2
--- company is refused at authorize, before its operation's receipt begins, and at every later step; the run goes on.
--- Folder-v2 only (the founder's decision of 3 October). 648's committed fixture; everything is removed at the end.
+-- Company folder core P06d part 2 (20260930057000): an agent's screenshot of the Company Computer on a folder-v2
+-- company, stored nowhere. Its capture authorizes with storage none and publishes the image's identity under the
+-- operation's receipt; nothing is stored; the office resource keeps the resources it was taken under. The read, the
+-- capture-set check and the context view accept it while the agent's access, the computer's privacy and the browser
+-- grant are as they were, also with the computer not running, and refuse it once any of them changed, for another
+-- run's receipt, or a changed identity. Folder-v2 only (the founder's decision of 3 October). 648's committed fixture;
+-- everything is removed at the end.
 
 create function pg_temp.claims(p_conn text, p_role text, p_user text default null) returns void language plpgsql as $$
 begin
@@ -123,67 +127,176 @@ create function pg_temp.sha(p_envelope text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_envelope, 'UTF8'), 'sha256'), 'hex')
 $$;
 
--- A. Ada's screenshot (of either surface) is refused at authorize, before any receipt, in words for the model: the run
---    has no receipt for it.
-do $$
-declare v_answer text;
-begin
-	v_answer := pg_temp.operation(pg_temp.envelope('shot-1', '{"kind":"screenshot","surface":"desktop"}'), 'authorize', null);
-	if v_answer::jsonb is distinct from jsonb_build_object('state', 'refused', 'message',
-			'Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.') then
-		raise exception 'A: a folder-v2 screenshot is refused at authorize: %', v_answer; end if;
-	v_answer := pg_temp.operation(pg_temp.envelope('shot-1', '{"kind":"screenshot","surface":"browser"}'), 'authorize', null);
-	if v_answer::jsonb ->> 'state' is distinct from 'refused' then
-		raise exception 'A: a folder-v2 browser screenshot is refused at authorize: %', v_answer; end if;
-	if exists (select 1 from public.qorpera_run_operation_receipts where run_id = '64800000-0000-4000-8000-0000000000f1'
-			and logical_operation_key like 'computer_screenshot:%') then
-		raise exception 'A: no receipt begins for the refused screenshot'; end if;
-end $$;
 
--- B. The run goes on: its other operations on the computer still authorize, and its next operation begins, runs and
---    completes.
-do $$
-declare v_envelope text := pg_temp.envelope('screen-1', '{"kind":"screen","action":"open"}');
-	v_receipt uuid := '89100000-0000-4000-8000-0000000000e2'; v_answer text; v_begun jsonb;
+-- The office capture's answer, or its error as "<sqlstate> <message>".
+create function pg_temp.capture(p_envelope text, p_action text, p_receipt uuid, p_image jsonb) returns text language plpgsql as $$
+begin
+	return public.qorpera_native_office_capture(current_setting('qorpera_test.binding')::jsonb,
+		current_setting('qorpera_test.scope')::jsonb, current_setting('qorpera_test.lease')::jsonb, p_envelope, p_receipt, repeat('9', 64),
+		p_image, p_action)::text;
+exception when others then return sqlstate || ' ' || sqlerrm;
+end $$;
+-- A call's answer, or its error as "<sqlstate> <message>".
+create function pg_temp.answer(p_sql text) returns text language plpgsql as $$
+declare v text;
+begin
+	execute p_sql into v;
+	return v;
+exception when others then return sqlstate || ' ' || sqlerrm;
+end $$;
+create function pg_temp.read(p_asset uuid) returns text language sql as $$
+	select pg_temp.answer(format('select public.qorpera_read_native_office_capture(%L, %L)::text',
+		current_setting('qorpera_test.binding'), p_asset))
+$$;
+create function pg_temp.assert(p_assets jsonb) returns text language sql as $$
+	select pg_temp.answer(format('select public.qorpera_assert_native_office_captures(%L, %L)::text',
+		current_setting('qorpera_test.binding'), p_assets))
+$$;
+-- Ada takes a desktop screenshot under operation key p_key, as the runtime and the office service do: the operation's
+-- authorize and begin, the capture's authorize and publish, the finish, and the receipt completed with the answer.
+create function pg_temp.shoot(p_key text, p_receipt uuid) returns jsonb language plpgsql as $$
+declare v_envelope text := pg_temp.envelope(p_key, '{"kind":"screenshot","surface":"desktop"}'); v_answer text; v_asset jsonb;
+	v_image jsonb := jsonb_build_object('sha256', encode(extensions.digest(p_key, 'sha256'), 'hex'), 'bytes', 4096,
+		'mediaType', 'image/png', 'width', 1920, 'height', 1200);
 begin
 	v_answer := pg_temp.operation(v_envelope, 'authorize', null);
-	if v_answer is distinct from '{"state": "authorized"}' then
-		raise exception 'B: the run''s screen operation still authorizes: %', v_answer; end if;
-	v_begun := public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, v_receipt,
-		'computer_screen:screen-1', pg_temp.sha(v_envelope), repeat('9', 64), false);
-	if v_begun ->> 'state' is distinct from 'executing' then raise exception 'B: the run''s next operation begins: %', v_begun; end if;
-	v_answer := pg_temp.operation(v_envelope, 'begin', v_receipt);
-	if v_answer !~ '"state": "admitted"' then raise exception 'B: the screen operation is admitted: %', v_answer; end if;
-	v_answer := pg_temp.operation(v_envelope, 'finish', v_receipt);
-	if v_answer is distinct from '{"state": "drained"}' then raise exception 'B: the screen operation finishes: %', v_answer; end if;
-	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, v_receipt,
-		pg_temp.sha(v_envelope), jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'inputSha256', pg_temp.sha(v_envelope),
-			'content', jsonb_build_object('kind', 'json', 'value', '{"opened": true}'::jsonb)));
+	if v_answer is distinct from '{"state": "authorized"}' then raise exception 'Shot %: authorized: %', p_key, v_answer; end if;
+	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, p_receipt,
+		'computer_screenshot:' || p_key, pg_temp.sha(v_envelope), repeat('9', 64), false);
+	v_answer := pg_temp.operation(v_envelope, 'begin', p_receipt);
+	if v_answer !~ '"state": "admitted"' then raise exception 'Shot %: admitted: %', p_key, v_answer; end if;
+	v_answer := pg_temp.capture(v_envelope, 'authorize', p_receipt, v_image);
+	if v_answer is distinct from '{"state": "authorized", "storage": "none"}' then
+		raise exception 'Shot %: the capture is stored nowhere: %', p_key, v_answer; end if;
+	v_answer := pg_temp.capture(v_envelope, 'publish', p_receipt, v_image);
+	if v_answer !~ '^[{]' then raise exception 'Shot %: published: %', p_key, v_answer; end if;
+	v_asset := v_answer::jsonb;
+	if v_asset is distinct from v_image || jsonb_build_object('assetId', p_receipt,
+			'screenId', current_setting('qorpera_test.lease')::jsonb #>> '{binding,screenId}', 'surface', 'desktop') then
+		raise exception 'Shot %: the identity under the receipt: %', p_key, v_asset; end if;
+	v_answer := pg_temp.operation(v_envelope, 'finish', p_receipt);
+	if v_answer is distinct from '{"state": "drained"}' then raise exception 'Shot %: finished: %', p_key, v_answer; end if;
+	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, p_receipt, pg_temp.sha(v_envelope),
+		jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'inputSha256', pg_temp.sha(v_envelope),
+			'content', jsonb_build_object('kind', 'json', 'value', v_asset)));
+	return v_asset;
+end $$;
+-- Ada's run has its launch provenance, so its context views record (652's recipe).
+set session_replication_role = replica;
+insert into public.qorpera_native_execution_launches(run_id, runtime_bundle_id, runtime_bundle_sha256, binary_sha256, reasoning_effort,
+	reasoning_policy_sha256, tool_catalog_text, context_sha256, context_bytes)
+values ('64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(), repeat('b', 64), repeat('c', 64), 'low', repeat('d', 64),
+	'{}', repeat('e', 64), 1);
+set session_replication_role = origin;
+
+-- A. Ada's desktop screenshot is stored nowhere: its identity is published under the operation's receipt, the receipt
+--    completes with it, its office resource keeps the resources it was taken under, and no artifact, capture row or
+--    company object exists.
+do $$
+declare v_asset jsonb := pg_temp.shoot('shot-1', '91000000-0000-4000-8000-0000000000e1');
+begin
+	perform set_config('qorpera_test.asset', v_asset::text, false);
+	if (select target_resources from public.qorpera_runtime_office_resources where receipt_id = '91000000-0000-4000-8000-0000000000e1')
+			is distinct from public.qorpera_native_office_descriptor(current_setting('qorpera_test.binding')::jsonb) -> 'resources' then
+		raise exception 'A: the resource keeps the resources the screenshot was taken under'; end if;
+	if exists (select 1 from public.qorpera_artifacts where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_runtime_office_captures where receipt_id = '91000000-0000-4000-8000-0000000000e1')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '64800000-0000-4000-8000-000000000010'
+			and sha256 = v_asset ->> 'sha256') then
+		raise exception 'A: a folder-v2 screenshot stores nothing'; end if;
 end $$;
 
--- C. A screenshot whose receipt began anyway (a runtime that skipped authorize) is refused at begin and at check too,
---    and takes no office resource.
+-- B. The receipt is the capture's record: the read and the capture-set check answer it; a changed identity, an unknown
+--    one, and another run's receipt are refused.
 do $$
-declare v_envelope text := pg_temp.envelope('shot-2', '{"kind":"screenshot","surface":"desktop"}'); v_answer text;
+declare v_asset jsonb := current_setting('qorpera_test.asset')::jsonb; v_answer text;
 begin
-	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.binding')::jsonb,
-		'89100000-0000-4000-8000-0000000000e3', 'computer_screenshot:shot-2', pg_temp.sha(v_envelope), repeat('9', 64), false);
-	v_answer := pg_temp.operation(v_envelope, 'begin', '89100000-0000-4000-8000-0000000000e3');
-	if v_answer is distinct from '0A000 Screenshots are not available on this computer yet' then
-		raise exception 'C: a begun folder-v2 screenshot is refused at begin: %', v_answer; end if;
-	v_answer := pg_temp.operation(v_envelope, 'check', '89100000-0000-4000-8000-0000000000e3');
-	if v_answer is distinct from '0A000 Screenshots are not available on this computer yet' then
-		raise exception 'C: a begun folder-v2 screenshot is refused at check: %', v_answer; end if;
-	if exists (select 1 from public.qorpera_runtime_office_resources where receipt_id = '89100000-0000-4000-8000-0000000000e3') then
-		raise exception 'C: the refused screenshot takes no office resource'; end if;
+	if pg_temp.read((v_asset ->> 'assetId')::uuid)::jsonb is distinct from v_asset then raise exception 'B: the read answers it'; end if;
+	if pg_temp.assert(jsonb_build_array(v_asset))::jsonb is distinct from jsonb_build_object('state', 'authorized', 'assets',
+			jsonb_build_array(v_asset)) then raise exception 'B: the capture set is authorized'; end if;
+	v_answer := pg_temp.assert(jsonb_build_array(v_asset || '{"width": 1}'));
+	if v_answer !~ '^42501 Office capture authority changed' then raise exception 'B: a changed identity is refused: %', v_answer; end if;
+	v_answer := pg_temp.read(extensions.gen_random_uuid());
+	if v_answer !~ '^42501 ' then raise exception 'B: an unknown screenshot is refused: %', v_answer; end if;
+	set local session_replication_role = replica;
+	-- (Replica mode: the other run need not exist for the receipt to name it.)
+	update public.qorpera_run_operation_receipts set run_id = extensions.gen_random_uuid() where id = (v_asset ->> 'assetId')::uuid;
+	v_answer := pg_temp.assert(jsonb_build_array(v_asset));
+	if v_answer !~ '^42501 ' then raise exception 'B: another run''s receipt is refused: %', v_answer; end if;
+	update public.qorpera_run_operation_receipts set run_id = '64800000-0000-4000-8000-0000000000f1'
+	where id = (v_asset ->> 'assetId')::uuid;
 end $$;
 
--- D. Exactly the patched function names this migration.
+-- C. The computer not running (here in maintenance) does not withdraw the screenshot: an idle power-off must not end
+--    the run at its next model request.
+set session_replication_role = replica;
+update public.qorpera_runtime_offices set state = 'maintenance' where id = current_setting('qorpera_test.office_id')::uuid;
+set session_replication_role = origin;
+do $$
+declare v_asset jsonb := current_setting('qorpera_test.asset')::jsonb;
+begin
+	if pg_temp.read((v_asset ->> 'assetId')::uuid)::jsonb is distinct from v_asset then
+		raise exception 'C: a screenshot of a computer that is not running is still readable'; end if;
+end $$;
+set session_replication_role = replica;
+update public.qorpera_runtime_offices set state = 'active' where id = current_setting('qorpera_test.office_id')::uuid;
+set session_replication_role = origin;
+
+-- D. A privacy change, a member's private session, a changed or revoked grant each withdraw it.
+do $$
+declare v_asset jsonb := current_setting('qorpera_test.asset')::jsonb; v_change text; v_answer text;
+begin
+	set local session_replication_role = replica;
+	foreach v_change in array array[
+		'update public.qorpera_runtime_offices set privacy_version = privacy_version + 1 where id = %L',
+		'update public.qorpera_runtime_offices set privacy_state = ''private'' where id = %L',
+		'update public.qorpera_runtime_office_access set version = version + 1 where office_id = %L',
+		'update public.qorpera_runtime_office_access set state = ''revoked'' where office_id = %L'] loop
+		begin
+			execute format(v_change, current_setting('qorpera_test.office_id'));
+			v_answer := pg_temp.read((v_asset ->> 'assetId')::uuid);
+			if v_answer !~ '^42501 Office capture authority changed' then
+				raise exception 'D: % withdraws the screenshot: %', v_change, v_answer; end if;
+			raise exception 'undo' using errcode = 'QTU01';
+		exception when sqlstate 'QTU01' then null;
+		end;
+	end loop;
+	if pg_temp.read((v_asset ->> 'assetId')::uuid)::jsonb is distinct from v_asset then raise exception 'D: each change was undone'; end if;
+end $$;
+
+-- E. The folder-v2 context view records a view with the screenshot, and refuses a changed one.
+do $$
+declare v_asset jsonb := current_setting('qorpera_test.asset')::jsonb; v_view jsonb; v_answer text;
+begin
+	v_view := jsonb_build_object('schema', 'qorpera.native-context-view/v1', 'requestId', 'req-1', 'threadId', 't', 'turnId', null,
+		'purpose', 'turn', 'outputs', jsonb_build_array(jsonb_build_object('callId', 'c1', 'kind', 'function_call_output',
+			'sha256', repeat('8', 64), 'bytes', 10, 'readId', null, 'readSha256', null, 'includedBytes', null, 'includedSha256', null,
+			'capture', v_asset)));
+	v_answer := pg_temp.answer(format('select public.qorpera_record_native_context_view(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000020', current_setting('qorpera_test.binding'), v_view));
+	if v_answer !~ '"ordinal": 1' then raise exception 'E: the view with the screenshot records: %', v_answer; end if;
+	v_answer := pg_temp.answer(format('select public.qorpera_record_native_context_view(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000020', current_setting('qorpera_test.binding'),
+		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-2"'), '{outputs,0,capture,width}', '1')));
+	if v_answer !~ '^42501 Office capture authority changed' then raise exception 'E: a changed screenshot is refused: %', v_answer; end if;
+end $$;
+
+-- F. A set of 64 screenshots is checked with one authority read, well within the runtime's 3 s budget for a batch.
+do $$
+declare v_asset jsonb := current_setting('qorpera_test.asset')::jsonb; v_at timestamptz := clock_timestamp(); v_answer text;
+begin
+	v_answer := pg_temp.assert((select jsonb_agg(v_asset) from generate_series(1, 64)));
+	if v_answer !~ '"state": "authorized"' or clock_timestamp() - v_at > interval '2 seconds' then
+		raise exception 'F: 64 screenshots are checked at once (% ms): %',
+			extract(milliseconds from clock_timestamp() - v_at), left(v_answer, 200); end if;
+end $$;
+
+-- G. Exactly the patched functions and the new one name this migration.
 do $$
 begin
-	if (select count(*) from pg_proc where prosrc ~ '20260930030200') <> 1 then
-		raise exception 'D: the office operation names 20260930030200 (found %)',
-			(select count(*) from pg_proc where prosrc ~ '20260930030200'); end if;
+	if (select count(*) from pg_proc where prosrc ~ '20260930057000') <> 6 then
+		raise exception 'G: 5 patched functions and 1 new one name 20260930057000 (found %)',
+			(select count(*) from pg_proc where prosrc ~ '20260930057000'); end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
