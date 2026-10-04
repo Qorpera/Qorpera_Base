@@ -19,6 +19,7 @@ async function main(): Promise<void> {
 				adapterId: "lxd",
 				supabaseUrl: "https://example.invalid",
 				supabaseServiceKey: "synthetic-key",
+				supabasePublishableKey: "sb_publishable_synthetic",
 				stateRoot: process.argv[3]!,
 				project: "qorpera-runners",
 				loginProfile: "qorpera-login-v1",

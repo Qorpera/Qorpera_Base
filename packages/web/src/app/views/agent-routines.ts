@@ -10,8 +10,19 @@ import {
 	describeCloudRoutineTrigger,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
+import { WebCompanyFolderRejectedError, withProblems } from "../../cloud/company-folder-writes.ts";
 import { planLogin, type WebMemberConnection } from "../../cloud/native-subscription.ts";
-import type { WebRoutine, WebRoutines } from "../../cloud/routines.ts";
+import {
+	canPayForRoutine,
+	claudeLogin,
+	type WebRoutine,
+	WebRoutineChangedError,
+	WebRoutineEndedError,
+	type WebRoutineFile,
+	WebRoutineGoneError,
+	WebRoutineNoPayerError,
+	type WebRoutines,
+} from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
 import { button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
@@ -47,18 +58,24 @@ export function routineAccessFor(
 	};
 }
 
-type Shape = "interval" | "weekly" | "file";
+type Shape = "interval" | "weekly";
 const UNITS = { minutes: 1, hours: 60, days: 1440 } as const;
+/** An interval runs every 5 minutes at most and once a week at least (the routine file's `minutes`). */
+const INTERVAL_MINUTES = { min: 5, max: 10_080 } as const;
 
-/** The editor shows a routine's one trigger: an interval, days at a time, or a file
- * change. Anything else (more triggers, a time window, a hook's events) has no
- * shape here, and a save would drop what the editor cannot show. */
-function editorShape(routine: CloudRoutine): Shape | undefined {
-	const [trigger, ...more] = routine.triggers;
-	if (!trigger || more.length) return undefined;
-	if (trigger.kind === "listener") return trigger.source === "company-file" ? "file" : undefined;
+/** The shape of a schedule the editor makes: every so many minutes, or days at a time. */
+function shapeOf(trigger: CloudRoutineTrigger): Shape | undefined {
 	if (trigger.kind !== "schedule" || "windowStart" in trigger) return undefined;
 	return "localTime" in trigger ? "weekly" : "interval";
+}
+
+/** The editor shows a routine's one trigger: an interval or days at a time. Anything else (more triggers, a time
+ * window, a file change, a hook's events) has no shape here, and a save would drop what the editor cannot show. A
+ * file change is not offered: a folder-v2 company's routines do not start on one until the folder's file events reach
+ * routines. */
+function editorShape(routine: CloudRoutine): Shape | undefined {
+	const [trigger, ...more] = routine.triggers;
+	return trigger && !more.length ? shapeOf(trigger) : undefined;
 }
 
 /** The cloud lists one row per connection version; the picker offers each account
@@ -111,6 +128,27 @@ const RUN_LABELS: Record<string, string> = {
 function runLabel(run: CloudRoutineOccurrence): string {
 	const status = Object.hasOwn(RUN_LABELS, run.status) ? t(RUN_LABELS[run.status]!) : run.status;
 	return `${status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
+}
+
+/** Why a paused routine waits, in plain words, or null when the cloud gave no reason this page knows. The reasons are
+ * the routine index's (`pause_reason`): a member or its agent paused it, it could not start with the access it had, no
+ * model account pays for it, or its agent was archived (F2's P15, which pauses an archived agent's routines; the pause
+ * stays until a member resumes the routine, also after the agent is active again). */
+function pauseWords(reason: string | undefined, agentName: string): string | null {
+	switch (reason) {
+		case "member":
+			return t("Paused by a member");
+		case "agent":
+			return t("Paused by {name}", { name: agentName });
+		case "authorization_failed":
+			return t("Paused: it could not start with the access it had");
+		case "needs_model_account":
+			return t("Paused: no model account pays for it");
+		case "agent_archived":
+			return t("Paused when its agent was archived");
+		default:
+			return null;
+	}
 }
 
 function controlLabel(control: Element): string {
@@ -199,8 +237,9 @@ function movedStart(
 		: new Date(Date.parse(startAt) + after - before).toISOString();
 }
 
-/** The Routines page of an agent's details: standing work the cloud starts on
- * a schedule or when a Company File path changes. */
+/** The Routines page of an agent's details: standing work the cloud starts on a schedule. Each routine is a file in
+ * the company's folder, `agents/<handle>/routines/<key>.md`, which the switch and the editor write as the member
+ * (folder core C4, P34r). */
 export class AgentRoutines {
 	readonly el = h("section", { class: "agent-page agent-routines" });
 	/** The agent as it is now, so a rename shows here without reopening. */
@@ -210,6 +249,8 @@ export class AgentRoutines {
 	readonly #back: (() => void) | undefined;
 	#routines: WebRoutine[] = [];
 	#runs: CloudRoutineOccurrence[] = [];
+	/** The routines whose file this member finds: only those have a switch and Edit. */
+	#files: ReadonlySet<string> = new Set();
 	#accounts: WebMemberConnection[] = [];
 	#busy = false;
 	#editing = false;
@@ -262,13 +303,21 @@ export class AgentRoutines {
 		// A read that went out before a switch was moved may predate the change.
 		const changes = this.#changes;
 		try {
-			const [routines, runs] = await Promise.all([access.routines.list(), access.routines.runs()]);
+			const [routines, runs, files] = await Promise.all([
+				access.routines.list(),
+				access.routines.runs(),
+				// Routines whose files could not be found are read-only; the list still shows.
+				access.routines
+					.files()
+					.catch((): ReadonlySet<string> => new Set()),
+			]);
 			if (this.#signal.aborted || read < this.#shown) return;
 			this.#shown = read;
 			this.#routines = routines.filter(
 				(item) => item.staffAgentId === this.#agent().id && item.status !== "retired",
 			);
 			this.#runs = runs;
+			this.#files = files;
 			if (changes === this.#changes && !this.#busy) this.#flipped.clear();
 			this.#message = "";
 		} catch {
@@ -337,8 +386,16 @@ export class AgentRoutines {
 		// A dynamic routine has one next run at a time, chosen by its agent after each run.
 		const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
 		const ended = routine.status === "expired" || routine.status === "concluded";
+		// A routine is its file: one this member does not find (out of their reach, from before the files, or a cloud
+		// that does not list them yet) cannot be changed from here.
+		const known = this.#files.has(id);
 		// A concluded routine plans no more runs; its agent's reason says why.
 		const concluded = routine.status === "concluded" ? routine.conclusion : null;
+		// Why a paused routine waits, while it is paused as the member sees it.
+		const paused =
+			routine.status === "paused" && !this.#runsNow(routine)
+				? pauseWords(routine.pauseReason, this.#agent().displayName)
+				: null;
 		const fact = (label: string, ...value: (Node | string | null)[]) =>
 			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
 		const lever = h("button", {
@@ -374,14 +431,18 @@ export class AgentRoutines {
 					},
 					h("strong", null, routine.title),
 					h("span", null, concluded ?? routine.triggers.map(whenShort).join("; ")),
+					paused ? h("span", { class: "routine-card-paused" }, paused) : null,
 				),
 				// An ended routine is read-only: a member save keeps its end (its expiry or run
 				// limit), so neither Edit nor Resume could start it again. Its agent can. The
-				// editor has no shape for a dynamic routine: its agent changes it.
-				manage && !ended && !dynamic && editorShape(routine) ? edit : null,
+				// editor has no shape for a dynamic routine: its agent changes it, and a member
+				// may pause and resume it.
+				manage && known && !ended && !dynamic && editorShape(routine) ? edit : null,
 				ended
 					? h("span", { class: "routine-card-state" }, routine.status === "concluded" ? t("Done") : t("Ended"))
-					: lever,
+					: known
+						? lever
+						: null,
 			),
 			h(
 				"div",
@@ -503,17 +564,26 @@ export class AgentRoutines {
 	#setLever(lever: HTMLElement, routine: CloudRoutine, manage: boolean): void {
 		const id = routine.routineId;
 		const on = this.#runsNow(routine);
+		// A routine never runs under an archived agent: turned on, it is paused again at once.
+		const archived = this.#archived();
 		lever.setAttribute("aria-checked", String(on));
-		lever.title = manage
-			? on
-				? t("Pause routine")
-				: t("Resume routine")
-			: t("Only owners and admins can pause or resume routines.");
+		lever.title = !manage
+			? t("Only owners and admins can pause or resume routines.")
+			: archived && !on
+				? t("Reactivate the agent first")
+				: on
+					? t("Pause routine")
+					: t("Resume routine");
 		if (this.#moving === id) lever.setAttribute("aria-busy", "true");
 		else lever.removeAttribute("aria-busy");
-		lever.classList.toggle("is-locked", !manage);
-		if (!manage || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
+		const locked = !manage || (archived && !on);
+		lever.classList.toggle("is-locked", locked);
+		if (locked || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
 		else lever.removeAttribute("aria-disabled");
+	}
+	/** The agent is archived: its routines stay paused until it is active again. */
+	#archived(): boolean {
+		return this.#agent().employmentStatus === "archived";
 	}
 	/** Whether a routine runs, as the member sees it: where its switch was moved,
 	 * else the last read. An editor save keeps this, not the state it opened with. */
@@ -591,15 +661,21 @@ export class AgentRoutines {
 		try {
 			const result = await this.#access!.accounts(this.#signal);
 			if (this.#signal.aborted) return false;
-			// A ChatGPT plan its member has not turned on for work while away comes last: a routine
-			// cannot run on it (Codex accounts keep their order).
-			const waits = (item: WebMemberConnection) => planLogin(item) && item.allowAutonomous !== true;
+			// A Claude login never pays for a routine. An account switched on for work while away comes first, as the
+			// one a routine runs on; a ChatGPT plan its member has not turned on comes last: a routine cannot run on it
+			// (Codex accounts keep their order).
 			const accounts = latestVersions(
 				result.connections.filter(
-					(item) => item.connectionStatus === "active" && item.authorizationState === "active",
+					(item) =>
+						item.connectionStatus === "active" && item.authorizationState === "active" && !claudeLogin(item),
 				),
 			);
-			this.#accounts = [...accounts.filter((item) => !waits(item)), ...accounts.filter(waits)];
+			const on = (item: WebMemberConnection) => canPayForRoutine(item) && item.allowAutonomous === true;
+			this.#accounts = [
+				...accounts.filter(on),
+				...accounts.filter((item) => !on(item) && canPayForRoutine(item)),
+				...accounts.filter((item) => !canPayForRoutine(item)),
+			];
 			return true;
 		} catch {
 			if (!this.#signal.aborted) {
@@ -610,7 +686,13 @@ export class AgentRoutines {
 		}
 	}
 	async #toggle(routine: CloudRoutine): Promise<void> {
-		if (this.#busy || !this.#access?.canManage()) return;
+		if (
+			this.#busy ||
+			!this.#access?.canManage() ||
+			!this.#files.has(routine.routineId) ||
+			(this.#archived() && !this.#runsNow(routine))
+		)
+			return;
 		const id = routine.routineId;
 		// Where the switch stood: a failed change puts it back there, even if that was a
 		// place it was moved to whose change no read has confirmed yet.
@@ -623,33 +705,45 @@ export class AgentRoutines {
 		this.#flipped.set(id, enabled);
 		this.#message = "";
 		this.#setControls();
+		let failed = false;
 		let failure = "";
 		const listening = routine.triggers.some((item) => item.kind === "listener");
 		try {
-			if (await this.#loadAccounts()) {
-				// The routine's own payer is tried first. The account it falls back to must be able to pay
-				// for it: a ChatGPT plan only once its member turned on work while away, and never for a
-				// file-change or webhook routine.
-				const payer = this.#accounts.find(
-					(item) => !planLogin(item) || (item.allowAutonomous === true && !listening),
-				);
-				await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
-			} else failure = this.#message;
-		} catch {
-			failure = !this.#accounts.length
-				? t(
-						"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
-					)
-				: !this.#accounts.some((item) => !planLogin(item) || (item.allowAutonomous === true && !listening))
-					? listening
-						? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
-						: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
-					: t("The routine could not be changed. Try again.");
+			// A pause needs no login. A resume runs on the first account that can pay: a ChatGPT plan only once its
+			// member turned on work while away, and never for a file-change or webhook routine.
+			let payer: WebMemberConnection | undefined;
+			if (enabled && !(await this.#loadAccounts())) {
+				failed = true;
+				failure = this.#message;
+			} else if (enabled) {
+				payer = this.#accounts.find((item) => canPayForRoutine(item, listening));
+				if (!payer) {
+					failed = true;
+					failure = !this.#accounts.length
+						? t(
+								"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+							)
+						: listening
+							? t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.")
+							: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+				}
+			}
+			if (!failed) await this.#access.routines.setEnabled(routine, payer, enabled, crypto.randomUUID());
+		} catch (error) {
+			failed = true;
+			// A routine that ended meanwhile shows as ended once the list is read again. A refusal saved nothing; the
+			// file's or the hook's problems say why, in English.
+			failure =
+				error instanceof WebRoutineEndedError
+					? ""
+					: error instanceof WebCompanyFolderRejectedError
+						? withProblems(t("The routine could not be changed."), error.problems)
+						: t("The routine could not be changed. Try again.");
 		} finally {
 			this.#busy = false;
 			this.#moving = undefined;
-			if (failure && previous === undefined) this.#flipped.delete(id);
-			else if (failure) this.#flipped.set(id, previous!);
+			if (failed && previous === undefined) this.#flipped.delete(id);
+			else if (failed) this.#flipped.set(id, previous!);
 			if (!this.#signal.aborted) {
 				this.#setControls();
 				await this.#refresh();
@@ -661,43 +755,65 @@ export class AgentRoutines {
 			}
 		}
 	}
-	async #edit(routine: CloudRoutine | undefined): Promise<void> {
-		if (this.#busy || this.#editing || !this.#access?.canManage()) return;
-		const shape = routine ? editorShape(routine) : "weekly";
-		if (!shape) return;
+	/** Opens the editor on a new routine, or on a routine's file as it is now: the read whose version a save names.
+	 * `notice` stands on its status line, such as why the form opened again. */
+	async #edit(routine: CloudRoutine | undefined, notice = ""): Promise<void> {
+		const access = this.#access;
+		if (this.#busy || this.#editing || !access?.canManage()) return;
+		if (routine && (!editorShape(routine) || !this.#files.has(routine.routineId))) return;
 		this.#editing = true;
+		let opened: WebRoutineFile | undefined;
+		if (routine) {
+			try {
+				opened = await access.routines.open(routine);
+				if (!opened.trigger) throw new Error("The editor does not make this routine's schedule");
+			} catch {
+				if (this.#signal.aborted) return;
+				this.#editing = false;
+				await this.#refresh();
+				if (this.#signal.aborted || this.#editing) return;
+				this.#message = t("This routine could not be opened.");
+				this.#list();
+				return;
+			}
+		}
 		if (!(await this.#loadAccounts())) {
 			this.#editing = false;
 			return;
 		}
 		if (this.#signal.aborted) return;
-		const first = routine?.triggers[0];
+		// The form shows the file: its schedule, name, instructions and reply.
+		const first = opened?.trigger;
+		const shape: Shape = (first && shapeOf(first)) ?? "weekly";
 		// A member's new routine runs at low effort, like a conversation; an edit keeps
-		// the routine's own, which its agent may have set to medium or high.
-		const effort = routine?.effort ?? "low";
-		const clientRoutineId = routine?.clientRoutineId ?? crypto.randomUUID();
-		let saveId = crypto.randomUUID();
+		// the file's own, which its agent may have set to medium or high.
+		const effort = opened?.file.effort ?? "low";
+		// One id per draft, so a retry is the same routine. One save id per form: a change set whose answer never
+		// came is sent again as it was by the next Save, and only an answer frees it.
+		const clientRoutineId = opened?.file.id ?? crypto.randomUUID();
+		const saveId = crypto.randomUUID();
 		const zone = presentationTimeZone();
 		const title = h("input", {
 			type: "text",
 			maxlength: "160",
-			value: routine?.title ?? "",
+			value: opened?.file.title ?? "",
 			"aria-label": t("Routine name"),
 		});
+		// The file allows 32,768 bytes of instructions. Each character is at least one byte, so this bound never cuts text
+		// that fits; the file's parse says when longer characters take it past.
 		const prompt = h(
 			"textarea",
-			{ rows: 5, maxlength: "8000", "aria-label": t("What to do"), value: routine?.prompt ?? "" },
-			routine?.prompt ?? "",
+			{ rows: 5, maxlength: "32768", "aria-label": t("What to do"), value: opened?.file.instructions ?? "" },
+			opened?.file.instructions ?? "",
 		);
 		const when = h(
 			"select",
 			{ "aria-label": t("When it runs") },
 			h("option", { value: "weekly" }, t("On chosen days at a set time")),
 			h("option", { value: "interval" }, t("Every so often")),
-			h("option", { value: "file" }, t("When something in the Company File changes")),
 		);
 		when.value = shape;
-		const minutes = first && first.kind === "schedule" && !("localTime" in first) ? first.intervalMinutes : 60;
+		const minutes = first?.kind === "schedule" && shape === "interval" ? first.intervalMinutes : 60;
 		const unit = h(
 			"select",
 			{ "aria-label": t("Interval unit") },
@@ -708,11 +824,17 @@ export class AgentRoutines {
 		unit.value = minutes % 1440 === 0 ? "days" : minutes % 60 === 0 ? "hours" : "minutes";
 		const every = h("input", {
 			type: "number",
-			min: "1",
-			max: "10080",
 			value: String(minutes / UNITS[unit.value as keyof typeof UNITS]),
 			"aria-label": t("Interval"),
 		});
+		// The bounds follow the unit: 5 to 10,080 minutes, 1 to 168 hours, 1 to 7 days.
+		const bound = () => {
+			const per = UNITS[unit.value as keyof typeof UNITS];
+			every.min = String(Math.ceil(INTERVAL_MINUTES.min / per));
+			every.max = String(Math.floor(INTERVAL_MINUTES.max / per));
+		};
+		unit.addEventListener("change", bound);
+		bound();
 		const chosen = new Set<CloudRoutineWeekday>(
 			first && "localTime" in first ? first.weekdays : ["monday", "tuesday", "wednesday", "thursday", "friday"],
 		);
@@ -730,25 +852,13 @@ export class AgentRoutines {
 			value: first && "localTime" in first ? first.localTime : "09:00",
 			"aria-label": t("Time"),
 		});
+		// The file's own zone, also for an interval whose file keeps one: its quiet hours may go by it.
 		const timeZone = h("input", {
 			type: "text",
-			value: first && "timeZone" in first ? first.timeZone : zone,
+			value: opened?.file.timezone ?? zone,
 			"aria-label": t("Time zone"),
 			maxlength: "128",
 		});
-		const path = h("input", {
-			type: "text",
-			value: first?.kind === "listener" && first.source === "company-file" ? first.path : "",
-			placeholder: "finance/invoices",
-			"aria-label": t("Company File path"),
-		});
-		const match = h(
-			"select",
-			{ "aria-label": t("What counts as a change") },
-			h("option", { value: "subtree" }, t("This folder and everything in it")),
-			h("option", { value: "exact" }, t("Exactly this file")),
-		);
-		match.value = first?.kind === "listener" && first.source === "company-file" ? first.match : "subtree";
 		const reply = h(
 			"select",
 			{ "aria-label": t("Reply") },
@@ -757,42 +867,47 @@ export class AgentRoutines {
 			h("option", { value: "silent" }, t("Work silently")),
 		);
 		reply.value = first?.replyPolicy ?? "required";
-		const account = h(
+		// Who pays: the routine runs on the member's own account that works while they're away. Only when none is
+		// switched on does the member choose one here, which saving switches on.
+		const own = this.#accounts.find((item) => canPayForRoutine(item) && item.allowAutonomous === true);
+		const choices = own ? [] : this.#accounts.filter((item) => canPayForRoutine(item));
+		const picker = h(
 			"select",
 			{ "aria-label": t("Model account") },
-			...accountLabels(this.#accounts).map((label, index) =>
-				h("option", { value: this.#accounts[index]!.connectionId }, label),
-			),
+			...accountLabels(choices).map((label, index) => h("option", { value: choices[index]!.connectionId }, label)),
 		) as HTMLSelectElement;
-		// What saving means for the chosen account: a ChatGPT plan works while its member is away only
-		// once they turned that on in Settings; saving turns it on for no account but a Codex login.
-		const accountNote = h("small");
-		const describeAccount = () => {
-			const chosen = this.#accounts.find((item) => item.connectionId === account.value);
-			// A file-change or webhook routine never runs on a plan.
-			const listening = when.value === "file";
-			accountNote.textContent =
-				!chosen || !planLogin(chosen)
-					? t(
-							"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
-							{ name: this.#agent().displayName },
-						)
-					: listening
-						? t(
-								"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
-							)
-						: chosen.allowAutonomous === true
-							? t(
-									"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.",
-									{
-										name: this.#agent().displayName,
-									},
-								)
-							: t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
-		};
-		account.addEventListener("change", describeAccount);
-		when.addEventListener("change", describeAccount);
-		describeAccount();
+		const payer = () => own ?? choices.find((item) => item.connectionId === picker.value);
+		// Nothing here can pay: connect an account, or turn on a ChatGPT plan (the only kind left once Claude is not).
+		const noPayer = () =>
+			this.#accounts.length
+				? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
+				: t("Connect a model account in Settings first.");
+		const payment = own
+			? h("p", { class: "muted" }, t("This routine runs on your own account that works while you're away."))
+			: choices.length
+				? h(
+						"label",
+						null,
+						t("Runs on"),
+						picker,
+						h(
+							"small",
+							null,
+							t(
+								"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
+								{ name: this.#agent().displayName },
+							),
+						),
+					)
+				: h(
+						"p",
+						{ class: "muted" },
+						this.#accounts.length
+							? t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.")
+							: t(
+									"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
+								),
+					);
 		const intervalFields = h("div", { class: "routine-inline" }, t("Every"), every, unit);
 		const weeklyFields = h(
 			"div",
@@ -800,7 +915,6 @@ export class AgentRoutines {
 			days,
 			h("div", { class: "routine-inline" }, t("at"), time, timeZone),
 		);
-		const fileFields = h("div", { class: "routine-when" }, path, match);
 		// A first run an agent held back (firstRunAt) that is still ahead: shown, and the member may let it go.
 		const held =
 			first?.kind === "schedule" && "startAt" in first && first.startAt && Date.parse(first.startAt) > Date.now()
@@ -829,33 +943,32 @@ export class AgentRoutines {
 		const sync = () => {
 			intervalFields.hidden = when.value !== "interval";
 			weeklyFields.hidden = when.value !== "weekly";
-			fileFields.hidden = when.value !== "file";
 			waiting.hidden = !held || when.value !== shape;
 		};
 		when.onchange = sync;
 		sync();
-		const status = h("p", { class: "surface-status", role: "status" });
+		const status = h("p", { class: "surface-status", role: "status" }, notice);
+		// A new interval's first run is one interval from the form's first Save, and a new routine's trigger keeps one id,
+		// so a retry sends the same draft.
+		const triggerId = first?.id ?? crypto.randomUUID();
+		const starts = new Map<number, string>();
+		const next = (interval: number) => {
+			const at =
+				starts.get(interval) ??
+				new Date(Math.ceil((Date.now() + interval * 60_000) / 60_000) * 60_000).toISOString();
+			starts.set(interval, at);
+			return at;
+		};
 		const trigger = (): CloudRoutineTrigger => {
 			const replyPolicy = reply.value === "required" ? {} : { replyPolicy: reply.value as CloudRoutineReplyPolicy };
-			const id = first?.id ?? crypto.randomUUID();
 			// Only while the box shows: it belongs to the routine's own kind of schedule.
 			const letGo = !waiting.hidden && !wait.checked;
-			if (when.value === "file")
-				return parseCloudRoutineTrigger({
-					id,
-					kind: "listener",
-					source: "company-file",
-					path: path.value.trim().replace(/^\/+|\/+$/g, ""),
-					match: match.value,
-					timeZone: timeZone.value.trim() || zone,
-					...replyPolicy,
-				});
 			if (when.value === "weekly")
 				return parseCloudRoutineTrigger({
-					id,
+					id: triggerId,
 					kind: "schedule",
 					intervalMinutes: 1440,
-					// Once past, the scheduler ignores a weekly start, so a past one is kept as it is.
+					// Once past, the scheduler ignores a weekly start, so a past one is kept as it is; one let go is removed.
 					startAt: !letGo && first && "localTime" in first ? (heldStart() ?? first.startAt) : undefined,
 					weekdays: CLOUD_ROUTINE_WEEKDAYS.filter((day) => chosen.has(day)),
 					localTime: time.value,
@@ -863,20 +976,20 @@ export class AgentRoutines {
 					...replyPolicy,
 				});
 			const intervalMinutes = Math.round(Number(every.value) * UNITS[unit.value as keyof typeof UNITS]);
+			// While the interval stays, so does the file's first-run time as read (or its absence), and a held one let
+			// go is removed. A new interval's first run is one interval away, not at once.
 			const kept =
-				first && first.kind === "schedule" && !("localTime" in first) && "startAt" in first
-					? first.startAt
+				first?.kind === "schedule" &&
+				!("localTime" in first) &&
+				!("windowStart" in first) &&
+				first.intervalMinutes === intervalMinutes
+					? first
 					: undefined;
-			const next = (minutes: number) =>
-				new Date(Math.ceil((Date.now() + minutes * 60_000) / 60_000) * 60_000).toISOString();
-			const soon = next(1);
 			return parseCloudRoutineTrigger({
-				id,
+				id: triggerId,
 				kind: "schedule",
 				intervalMinutes,
-				// The first run is one interval from now, not at once. Letting a held first run
-				// go starts the routine within two minutes instead, never after the held time.
-				startAt: letGo && held ? (held < soon ? held : soon) : (kept ?? next(intervalMinutes)),
+				startAt: kept ? (letGo ? undefined : kept.startAt) : next(intervalMinutes),
 				...replyPolicy,
 			});
 		};
@@ -886,8 +999,7 @@ export class AgentRoutines {
 		};
 		const cancel = button(t("Cancel"), leave);
 		const submit = async () => {
-			if (this.#busy || !this.#access?.canManage()) return;
-			const chosenAccount = this.#accounts.find((item) => item.connectionId === account.value);
+			if (this.#busy || !access.canManage()) return;
 			let built: CloudRoutineTrigger;
 			try {
 				built = trigger();
@@ -895,36 +1007,25 @@ export class AgentRoutines {
 				status.textContent =
 					when.value === "interval"
 						? t("Choose an interval between 5 minutes and 7 days.")
-						: when.value === "weekly"
-							? t("Choose at least one day, a time and a time zone such as Europe/Copenhagen.")
-							: t("Enter a Company File path such as finance/invoices.");
+						: t("Choose at least one day, a time and a time zone such as Europe/Copenhagen.");
 				return;
 			}
 			if (!title.value.trim() || !prompt.value.trim()) {
 				status.textContent = t("Give the routine a name and say what to do.");
 				return;
 			}
-			if (!chosenAccount) {
-				status.textContent = t("Connect a model account in Settings first.");
+			// A new routine always needs a login; an edit only when it changes something.
+			const account = payer();
+			if (!opened && !account) {
+				status.textContent = noPayer();
 				return;
-			}
-			if (planLogin(chosenAccount)) {
-				if (built.kind === "listener") {
-					status.textContent = t(
-						"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
-					);
-					return;
-				}
-				if (chosenAccount.allowAutonomous !== true) {
-					status.textContent = t("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
-					return;
-				}
 			}
 			this.#busy = true;
 			save.disabled = cancel.disabled = true;
 			status.textContent = t("Saving…");
+			let after: "reopen" | "made" | "gone" | undefined;
 			try {
-				await this.#access.routines.save(
+				const saved = await access.routines.save(
 					{
 						clientRoutineId,
 						staffAgentId: this.#agent().id,
@@ -932,24 +1033,66 @@ export class AgentRoutines {
 						prompt: prompt.value.trim(),
 						trigger: built,
 						effort,
-						enabled: routine ? this.#runsNow(routine) : true,
+						...(opened ? { opened } : {}),
 					},
-					chosenAccount,
+					account,
 					saveId,
 				);
 				if (this.#signal.aborted) return;
+				// Nothing is written: an unchanged save would resume a routine the platform paused, which only the
+				// switch does.
+				if (saved === "unchanged") {
+					status.textContent = t("Nothing changed.");
+					return;
+				}
 				this.#busy = false;
 				this.#editing = false;
 				this.#message = "";
 				await this.#refresh();
-			} catch {
-				// A changed draft is a new save; the same draft may be retried as itself.
-				saveId = crypto.randomUUID();
-				if (!this.#signal.aborted)
-					status.textContent = t("The routine could not be saved. Your draft is still here.");
+			} catch (error) {
+				if (this.#signal.aborted) return;
+				// A new routine's save meets a change only once a lost answer's replay made the routine: this form is then
+				// that routine's.
+				if (error instanceof WebRoutineChangedError) after = routine ? "reopen" : "made";
+				else if (error instanceof WebRoutineGoneError && routine) after = "gone";
+				else
+					status.textContent =
+						error instanceof WebRoutineNoPayerError
+							? noPayer()
+							: error instanceof WebCompanyFolderRejectedError
+								? // Nothing was written; the file's or the hook's problems say why, in English.
+									withProblems(t("The routine could not be saved."), error.problems)
+								: t("The routine could not be saved. Your draft is still here.");
 			} finally {
 				this.#busy = false;
-				save.disabled = cancel.disabled = false;
+				// A form whose new routine was made stays shut until it opens on that routine: its save id is done, and a
+				// Save as a new routine would find the routine there and write nothing of the draft.
+				save.disabled = cancel.disabled = after === "made";
+			}
+			if (after === "reopen") {
+				// Someone changed what the form shows: it opens again on what the file says now.
+				this.#editing = false;
+				await this.#edit(routine, t("This routine changed while you were editing it."));
+			} else if (after === "made") {
+				// The list says which routine this form made (the index keeps the file's id); the form opens again on its
+				// file, as an edit of it. The form stays while the list is read.
+				await this.#refresh();
+				if (this.#signal.aborted || !this.el.contains(status)) return;
+				this.#editing = false;
+				const notice = t("This routine changed while you were editing it.");
+				const made = this.#routines.find((item) => item.clientRoutineId === clientRoutineId);
+				if (made) await this.#edit(made, notice);
+				// The form is still this one: the routine is not listed yet, or not one the editor opens. The list says why
+				// the form closed, unless its read failed.
+				if (this.#signal.aborted || !this.el.contains(status)) return;
+				this.#message ||= notice;
+				this.#list();
+			} else if (after === "gone") {
+				this.#editing = false;
+				await this.#refresh();
+				if (this.#signal.aborted || this.#editing) return;
+				this.#message = t("This routine is no longer available.");
+				this.#list();
 			}
 		};
 		replace(
@@ -963,19 +1106,10 @@ export class AgentRoutines {
 				h("label", null, t("When"), when),
 				intervalFields,
 				weeklyFields,
-				fileFields,
 				waiting,
 				h("label", null, t("Reply"), reply),
 				h("div", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
-				this.#accounts.length
-					? h("label", null, t("Runs on"), account, accountNote)
-					: h(
-							"p",
-							{ class: "muted" },
-							t(
-								"Connect a model account in Settings → My connections first. A routine runs on a member's own account.",
-							),
-						),
+				payment,
 				status,
 				h("div", { class: "surface-actions" }, cancel, save),
 			),

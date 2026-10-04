@@ -3,6 +3,14 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BODY_BYTES = 128 * 1024;
 
+/** The per-company folder drains (folder core C4, P29: deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): each name
+ * the orchestrator may ask for, its due list's and one company's RPC (`(p_after_environment uuid, p_limit integer)` and
+ * `(p_environment_id uuid, p_limit integer)`), and the most one company's request may take. A drain plugs in here and in
+ * the orchestrator's list; an edge function without its entry answers 400, which pauses that drain alone. */
+export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; company: string; maximum: number }>>> = Object.freeze({
+	listen: Object.freeze({ due: "qorpera_folder_listen_due", company: "qorpera_folder_listen_company", maximum: 256 }),
+});
+
 export type RunnerOrchestratorRequest =
 	| {
 			action: "rotate_control";
@@ -54,6 +62,20 @@ export type RunnerOrchestratorRequest =
 			action: "folder_materialize_due";
 			orchestratorId: string;
 			afterProfileId?: string;
+			limit: number;
+	  }
+	| {
+			action: "folder_drain_due";
+			orchestratorId: string;
+			drain: string;
+			afterEnvironmentId?: string;
+			limit: number;
+	  }
+	| {
+			action: "folder_drain_company";
+			orchestratorId: string;
+			drain: string;
+			environmentId: string;
 			limit: number;
 	  }
 	| {
@@ -115,6 +137,11 @@ function integer(value: unknown, label: string, maximum: number): number {
 		throw new Error(`Invalid ${label}`);
 	}
 	return value as number;
+}
+
+function folderDrain(value: unknown): string {
+	if (typeof value !== "string" || !Object.hasOwn(FOLDER_DRAINS, value)) throw new Error("Invalid folder drain");
+	return value;
 }
 
 function text(value: unknown, label: string, maximumBytes: number): string {
@@ -256,6 +283,27 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				profileId: uuid(input.profileId, "company id"),
 				limit: integer(input.limit, "materialization limit", 16),
 			};
+		// The per-company folder drains, one company per request (folder core C4, P29).
+		case "folder_drain_due":
+			return {
+				action: input.action,
+				orchestratorId,
+				drain: folderDrain(input.drain),
+				...(input.afterEnvironmentId === null || input.afterEnvironmentId === undefined
+					? {}
+					: { afterEnvironmentId: uuid(input.afterEnvironmentId, "environment cursor") }),
+				limit: integer(input.limit, "environment page limit", 500),
+			};
+		case "folder_drain_company": {
+			const drain = folderDrain(input.drain);
+			return {
+				action: input.action,
+				orchestratorId,
+				drain,
+				environmentId: uuid(input.environmentId, "environment id"),
+				limit: integer(input.limit, "folder drain limit", FOLDER_DRAINS[drain].maximum),
+			};
+		}
 		case "reconcile":
 		case "retained":
 			return { action: input.action, orchestratorId };

@@ -185,6 +185,12 @@ the migration checks its digest.
   it), then an entry or path version of this environment with one of those manifests whose path the actor may read
   now (`qorpera_folder_actor_allowed`, current authority, for an old version too). So a private folder's old versions
   stay the owner's. Open's `present` and the commit's possession check use the same function.
+  - Since P24c (migration 20260930039500, test 854) it checks the first eight live paths that name a hash one by one
+    (content many readable paths share is decided at the first), and only then decides every path that names it once
+    per covering resource (P24b's set-based `qorpera_folder_paths_authority`), so a hash many unreadable paths name
+    costs one pass, not one authority check per path. Open checks it on the upload's own present objects only: in one statement with the
+    company's catalog, a plan that scanned the catalog first ran it on every object the company stores (the C1e load
+    test's second finding: uploads took up to 6.8 s of CPU in about one run in three).
 
 It returns `{profileId, bytes}`. The bytes never form a read set: the read receipt comes from `qorpera_folder_read`,
 and releases cover what the model sees. The chunks of a version-1 proof (fixtures, and bytes staged before C1d) have no
@@ -326,7 +332,8 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Later roots come with C2:** proposals and review cards, conflict copies on receipts, retention holds, erasure. C2
   adds them to the one root check (§9.3) under the rules of §9.4.
 - **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:221-234; artifact GC
-  at :236-251 retains everything for folder-v2, and a folder-v2 company is enabled untouched, so it has no artifacts).
+  at :236-251 retains everything for folder-v2). A folder-v2 company has no artifacts: since `20260930041000` every
+  path that makes one refuses folder-v2 (§9.3).
   That stays. Folder GC is its own lane, and it takes no company fence.
 - **Order of landing:** #573, then #594 (the 2 s budget; C1d-2a's patches are made on top of it), then C1d-2a, then C1d-2b.
 
@@ -385,8 +392,11 @@ switched on before step 3. Manifests of manifests (core §7) will need a recursi
 here; that comes with them.
 
 **The catalog of a folder-v2 company holds only folder objects.** Every other feature that stores bytes refuses
-folder-v2 before it writes: native and office uploads (the C1c-1 guard, 20260928259430:79-80), session attachments
-(the path-gateway check), the member whole-tree lane and bootstrap. Any feature that later stores bytes for a
+folder-v2 before it writes: member and native uploads (the C1c-1 guards, 20260928259430:79-84), session attachments
+(the path-gateway check), the member whole-tree lane and bootstrap, office capture, export and import, and, since
+`20260930041000`, artifacts: `register_artifact(_v2)`, the runner broker's output objects and artifact registration,
+and the member functions that would take the gc fence over an artifact (index, hold, graph completion, GC plan cancel)
+answer 0A000 first (838 pins it). Any feature that later stores bytes for a
 folder-v2 company (C3 and C4: chat images, screenshots, mail attachments, checkpoints) must add its root here first.
 C1d-2a pins this with a test that no table outside the folder core references a folder-v2 profile's catalog rows. A
 23503 at finish (a RESTRICT reference) is answered `restore`.

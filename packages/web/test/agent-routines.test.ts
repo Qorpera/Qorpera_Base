@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
+import type { CloudMemberFolderCommit, CloudMemberFolderUnit } from "@qorpera/cloud-client/cloud-member-folder";
 import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { cloudRoutineTriggerOfFile, routineFileTrigger } from "@qorpera/cloud-client/cloud-routine-file";
 import {
 	type CloudRoutine,
 	CloudRoutineClient,
@@ -9,14 +11,31 @@ import {
 	parseCloudRoutine,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
+import {
+	parseCompanyStateFile,
+	type RoutineFile,
+	writeAgentFile,
+	writeRoutineFile,
+} from "@qorpera/cloud-client/company-state-files";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyController } from "../src/app/company.ts";
 import { AgentRoutines, routineAccessFor } from "../src/app/views/agent-routines.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { Cloud } from "../src/cloud/client.ts";
-import { createWebRoutines, type WebRoutine, type WebRoutines } from "../src/cloud/routines.ts";
+import { WebCompanyFolderRejectedError } from "../src/cloud/company-folder-writes.ts";
+import {
+	createWebRoutines,
+	type WebRoutine,
+	WebRoutineChangedError,
+	type WebRoutineDraft,
+	WebRoutineEndedError,
+	type WebRoutineFile,
+	WebRoutineGoneError,
+	type WebRoutines,
+} from "../src/cloud/routines.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { profileA, settle, staff } from "./fixtures.ts";
+import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 const account = {
 	connectionId: "10000000-0000-4000-8000-000000000001",
@@ -26,9 +45,19 @@ const account = {
 	authorizationState: "active",
 	providerAccountReference: "owner@example.invalid",
 } as unknown as NativeMemberConnection;
+/** The routine's id in the index, and its file's own id (the index's client routine id). */
+const ROUTINE_ID = "10000000-0000-4000-8000-000000000002";
+const FILE_ID = "10000000-0000-4000-8000-000000000003";
+/** Another routine's file id. */
+const OTHER_FILE = "10000000-0000-4000-8000-0000000000e1";
+/** The agent's folder in the company's folder, and the routine's file in it. */
+const AGENT_PATH = "agents/nora/agent.md";
+const PATH = "agents/nora/routines/morning-brief.md";
+const CONSENT = "qorpera_consent_provider_connection_autonomous";
+const SPONSOR = "qorpera_create_member_execution_sponsor";
 const routine = (update: Partial<CloudRoutine> = {}): CloudRoutine => ({
-	routineId: "10000000-0000-4000-8000-000000000002",
-	clientRoutineId: "10000000-0000-4000-8000-000000000003",
+	routineId: ROUTINE_ID,
+	clientRoutineId: FILE_ID,
 	version: 1,
 	status: "active",
 	staffAgentId: staff.id,
@@ -59,13 +88,166 @@ const routine = (update: Partial<CloudRoutine> = {}): CloudRoutine => ({
 	conclusion: null,
 	...update,
 });
-function mount(items: CloudRoutine[], manage = true, connections: NativeMemberConnection[] = [account]) {
-	const routines = {
+/** The routine's file, as the index's routine above reads it. */
+function routineFile(update: Partial<Omit<RoutineFile, "kind">> = {}): Omit<RoutineFile, "kind"> {
+	return {
+		id: FILE_ID,
+		title: "Morning brief",
+		status: "active",
+		trigger: { when: "weekly", days: ["mon"], time: "08:30", starts: null },
+		timezone: "Europe/Copenhagen",
+		ends: null,
+		runs: null,
+		quiet: null,
+		effort: "low",
+		reply: "required",
+		conclusion: null,
+		instructions: "Summarise what changed.",
+		...update,
+	};
+}
+const routineText = (update: Partial<Omit<RoutineFile, "kind">> = {}) => writeRoutineFile(routineFile(update));
+function parsed(text: string | undefined, path = PATH): RoutineFile {
+	const result = parseCompanyStateFile(path, text ?? "");
+	if (!result?.ok || result.file.kind !== "routine")
+		throw new Error(`${path} is not a routine: ${JSON.stringify(result)}`);
+	return result.file;
+}
+/** The index's routine for a file, as the routine list reads it. */
+function indexed(text: string, update: Partial<CloudRoutine> = {}): CloudRoutine {
+	const file = parsed(text);
+	return routine({
+		title: file.title,
+		prompt: file.instructions,
+		triggers: [cloudRoutineTriggerOfFile(file)!],
+		effort: file.effort,
+		status: file.status,
+		...update,
+	});
+}
+/** A routine as the index lists it, for a pause or resume that reads the list again. */
+const indexRow = (status: string) => ({
+	routine_id: ROUTINE_ID,
+	client_routine_id: FILE_ID,
+	version: 1,
+	status,
+	staff_agent_id: staff.id,
+	title: "Morning brief",
+	prompt: "Summarise what changed.",
+	triggers: [
+		{
+			id: "file",
+			kind: "schedule",
+			intervalMinutes: 1440,
+			weekdays: ["monday"],
+			localTime: "08:30",
+			timeZone: "Europe/Copenhagen",
+		},
+	],
+	effort: "low",
+	sponsor_binding_id: "10000000-0000-4000-8000-000000000004",
+	sponsor_version: 1,
+	logical_computer_id: null,
+	required_capability: "agent_turn",
+	job_type: "agent_turn",
+	publication_mode: "automatic",
+	review_policy_key: null,
+	reviewer_staff_ids: [],
+	created_at: "2026-09-17T06:00:00.000Z",
+	updated_at: "2026-09-17T06:00:00.000Z",
+});
+/** The company's folder with the agent's folder and, unless told otherwise, the routine's file. */
+function seeded(options: { text?: string | null; routinesFolder?: boolean; listsRoutines?: boolean } = {}): FolderFake {
+	const fake = folderFake({
+		routineIds: (fileId) => (fileId === FILE_ID ? ROUTINE_ID : fileId),
+		listsRoutines: options.listsRoutines ?? true,
+	});
+	fake.put(
+		AGENT_PATH,
+		writeAgentFile({
+			id: staff.id,
+			name: "Nora",
+			role: "Designer",
+			agentKind: "agent",
+			status: "active",
+			colour: null,
+			figure: null,
+			model: null,
+			effort: null,
+			instructions: "Design.",
+		}),
+	);
+	if (options.routinesFolder !== false) fake.mkdir("agents/nora/routines");
+	if (options.text !== null) fake.put(PATH, options.text ?? routineText());
+	return fake;
+}
+/** The routines over a folder fake, as the web makes them. `log` has each cloud call and each commit in order. */
+function writer(fake: FolderFake, rows: () => unknown[] = () => []) {
+	const log: string[] = [];
+	const calls: Array<[string, Record<string, unknown>]> = [];
+	const commit = fake.folder.commit.getMockImplementation()!;
+	fake.folder.commit.mockImplementation(async (...args) => {
+		log.push("commit");
+		return commit(...args);
+	});
+	const cloud = {
+		rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+			calls.push([name, args]);
+			log.push(name);
+			if (name === CONSENT) return { connection_id: args.p_connection_id, allow_autonomous: true, version: 2 };
+			if (name === SPONSOR) return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+			if (name === "qorpera_list_cloud_routines") return rows();
+			throw new Error(`Unexpected call ${name}`);
+		}),
+	} as unknown as Cloud;
+	const stop = new AbortController();
+	return {
+		log,
+		calls,
+		stop,
+		routines: createWebRoutines(
+			cloud,
+			profileA,
+			stop.signal,
+			() => {},
+			() => fake.folder,
+		),
+	};
+}
+/** What the editor opens for a listed routine, without a folder. */
+function openedOf(item: CloudRoutine): WebRoutineFile {
+	const [trigger] = item.triggers;
+	const mapped = trigger ? routineFileTrigger(trigger) : null;
+	const fields = routineFile({
+		id: item.clientRoutineId,
+		title: item.title,
+		instructions: item.prompt,
+		effort: item.effort as RoutineFile["effort"],
+		reply: trigger?.replyPolicy ?? "required",
+		...(mapped ? { trigger: mapped.trigger, timezone: mapped.timezone } : {}),
+	});
+	return {
+		routineId: item.routineId,
+		path: PATH,
+		version: "f0000000-0000-4000-8000-000000000999",
+		text: writeRoutineFile(fields),
+		file: { kind: "routine", ...fields },
+		...(mapped && trigger ? { trigger } : {}),
+	};
+}
+/** Routine calls that answer at once: every listed routine has a file. */
+function mocked(items: CloudRoutine[]) {
+	return {
 		list: vi.fn(async () => items),
 		runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
-		save: vi.fn(async () => {}),
+		files: vi.fn(async (): Promise<ReadonlySet<string>> => new Set(items.map((item) => item.routineId))),
+		open: vi.fn(async (item: CloudRoutine) => openedOf(item)),
+		save: vi.fn(async (): Promise<"saved" | "unchanged"> => "saved"),
 		setEnabled: vi.fn(async () => {}),
 	} satisfies WebRoutines;
+}
+function mount(items: CloudRoutine[], manage = true, connections: NativeMemberConnection[] = [account]) {
+	const routines = mocked(items);
 	const stop = new AbortController();
 	const view = new AgentRoutines(
 		() => staff,
@@ -75,38 +257,28 @@ function mount(items: CloudRoutine[], manage = true, connections: NativeMemberCo
 	document.body.append(view.el);
 	return { routines, view, stop };
 }
-/** The editor over the real save; each upsert the cloud receives is kept. */
-function mountSaving(items: CloudRoutine[]) {
-	const upserts: Record<string, unknown>[] = [];
-	const cloud = {
-		rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
-			if (name === "qorpera_consent_provider_connection_autonomous")
-				return { connection_id: account.connectionId, allow_autonomous: true, version: 2 };
-			if (name === "qorpera_create_member_execution_sponsor")
-				return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
-			if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
-			upserts.push(args);
-			return {
-				routine_id: "10000000-0000-4000-8000-000000000002",
-				client_routine_id: args.p_client_routine_id,
-				version: upserts.length + 1,
-				status: "active",
-			};
-		}),
-	} as unknown as Cloud;
-	const stop = new AbortController();
+/** The page over the real routines and a folder fake: the list is the index's (given here), the files the folder's. */
+function mountFolder(
+	items: CloudRoutine[],
+	options: { fake?: FolderFake; connections?: NativeMemberConnection[]; rows?: () => unknown[] } = {},
+) {
+	const fake = options.fake ?? seeded();
+	const w = writer(fake, options.rows);
 	const routines = {
-		...createWebRoutines(cloud, profileA, stop.signal, () => {}),
+		...w.routines,
 		list: vi.fn(async () => items),
-		runs: vi.fn(async () => []),
+		runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
+		open: vi.fn(w.routines.open),
+		save: vi.fn(w.routines.save),
+		setEnabled: vi.fn(w.routines.setEnabled),
 	} satisfies WebRoutines;
 	const view = new AgentRoutines(
 		() => staff,
-		{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
-		stop.signal,
+		{ routines, accounts: async () => ({ connections: options.connections ?? [account] }), canManage: () => true },
+		w.stop.signal,
 	);
 	document.body.append(view.el);
-	return { upserts, view, stop };
+	return { ...w, fake, routines, view };
 }
 const click = (root: Element, label: string) =>
 	[...root.querySelectorAll("button")]
@@ -118,6 +290,51 @@ const controls = (card: Element) =>
 		item.getAttribute("role") === "switch" ? `switch:${item.getAttribute("aria-checked")}` : item.textContent,
 	);
 const cards = (root: Element) => [...root.querySelectorAll<HTMLElement>(".routine-card")];
+const field = <T extends HTMLElement = HTMLInputElement>(root: Element, label: string) =>
+	root.querySelector<T>(`[aria-label="${label}"]`)!;
+/** The editor's status line. */
+const status = (root: Element) => root.querySelector(".routine-editor .surface-status")?.textContent;
+/** Waits for the list's first read to show its routines. */
+const listed = (view: AgentRoutines) => vi.waitFor(() => expect(cards(view.el).length).toBeGreaterThan(0));
+/** Opens the editor with this button and waits for its form. */
+async function openEditor(view: AgentRoutines, label = "Edit") {
+	await vi.waitFor(() =>
+		expect([...view.el.querySelectorAll("button")].some((item) => item.textContent === label)).toBe(true),
+	);
+	click(view.el, label);
+	await vi.waitFor(() => expect(view.el.querySelector(".routine-editor")).not.toBeNull());
+}
+/** A draft for a new routine, as the editor makes it. */
+const newDraft = (update: Partial<WebRoutineDraft> = {}): WebRoutineDraft => ({
+	clientRoutineId: "10000000-0000-4000-8000-0000000000d1",
+	staffAgentId: staff.id,
+	title: "Weekly close",
+	prompt: "Close the week.",
+	trigger: parseCloudRoutineTrigger({
+		id: "new",
+		kind: "schedule",
+		intervalMinutes: 1440,
+		weekdays: ["monday", "friday"],
+		localTime: "16:00",
+		timeZone: "Europe/Copenhagen",
+	}),
+	effort: "low",
+	...update,
+});
+/** An edit's draft of an opened routine file. */
+const editDraft = (opened: WebRoutineFile, update: Partial<WebRoutineDraft> = {}): WebRoutineDraft => ({
+	clientRoutineId: opened.file.id,
+	staffAgentId: staff.id,
+	title: opened.file.title,
+	prompt: opened.file.instructions,
+	trigger: opened.trigger!,
+	effort: opened.file.effort,
+	opened,
+	...update,
+});
+/** Each unit of a change set as its op and path. */
+const paths = (units: readonly CloudMemberFolderUnit[]) =>
+	units.map((unit) => [unit.op, unit.op === "move" ? unit.from : unit.path]);
 afterEach(() => {
 	document.body.replaceChildren();
 	localStorage.clear();
@@ -261,12 +478,7 @@ describe("agent routines section", () => {
 			const view = new AgentRoutines(
 				() => staff,
 				{
-					routines: {
-						list: vi.fn(async () => [...items]),
-						runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
-						save: vi.fn(async () => {}),
-						setEnabled: vi.fn(async () => {}),
-					},
+					routines: mocked([...items]),
 					accounts: async () => ({ connections: [account] }),
 					canManage: () => true,
 					memberName: name,
@@ -355,6 +567,7 @@ describe("agent routines section", () => {
 			profileA,
 			new AbortController().signal,
 			() => {},
+			() => folderFake().folder,
 		).list();
 		expect(listed.find((item) => item.routineId === "10000000-0000-4000-8000-000000000025")).toMatchObject({
 			resumeReason: "plan_turned_on",
@@ -505,7 +718,7 @@ describe("agent routines section", () => {
 		expect(rows[1]!.textContent).not.toContain("When to run");
 		expect(controls(rows[1]!)).toEqual([]);
 	});
-	it("saves a new weekday routine on the chosen account with one stable identity across a retry", async () => {
+	it("saves a new weekday routine on the chosen account, as the same save across a retry", async () => {
 		const f = mount([]);
 		await settle();
 		click(f.view.el, "New routine");
@@ -519,83 +732,20 @@ describe("agent routines section", () => {
 		click(f.view.el, "Save routine");
 		await settle();
 		expect(f.routines.save).toHaveBeenCalledTimes(2);
-		const [first, second] = f.routines.save.mock.calls as unknown as Array<
-			[{ clientRoutineId: string; trigger: unknown; enabled: boolean }, unknown, string]
-		>;
+		const [first, second] = f.routines.save.mock.calls as unknown as Array<[WebRoutineDraft, unknown, string]>;
 		expect(second![0].clientRoutineId).toBe(first![0].clientRoutineId);
-		expect(second![2]).not.toBe(first![2]);
+		// The same save id: a change set whose answer never came goes again as it was.
+		expect(second![2]).toBe(first![2]);
 		expect(second![1]).toBe(account);
+		expect(second![0].opened).toBeUndefined();
 		expect(second![0]).toMatchObject({
-			enabled: true,
+			effort: "low",
 			trigger: {
 				kind: "schedule",
 				weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
 				localTime: "09:00",
 			},
 		});
-	});
-	it("keeps the effort an agent chose when a member edits the routine", async () => {
-		// An agent may set a routine up at medium or high; a member edit used to save it as low.
-		const upserts: Record<string, unknown>[] = [];
-		const cloud = {
-			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
-				if (name === "qorpera_consent_provider_connection_autonomous")
-					return { connection_id: account.connectionId, allow_autonomous: true, version: 2 };
-				if (name === "qorpera_create_member_execution_sponsor")
-					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
-				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
-				upserts.push(args);
-				return {
-					routine_id: "10000000-0000-4000-8000-000000000002",
-					client_routine_id: args.p_client_routine_id,
-					version: upserts.length + 1,
-					status: "active",
-				};
-			}),
-		} as unknown as Cloud;
-		const stop = new AbortController();
-		const cloudRoutines = createWebRoutines(cloud, profileA, stop.signal, () => {});
-		const routines = {
-			list: vi.fn(async () => [routine({ effort: "high" })]),
-			runs: vi.fn(async () => []),
-			save: vi.fn(cloudRoutines.save),
-			setEnabled: vi.fn(cloudRoutines.setEnabled),
-		} satisfies WebRoutines;
-		const view = new AgentRoutines(
-			() => staff,
-			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
-			stop.signal,
-		);
-		document.body.append(view.el);
-		await settle();
-		click(view.el, "Edit");
-		await settle();
-		expect(view.el.textContent).toContain("Effort: High");
-		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Morning brief, shorter";
-		click(view.el, "Save routine");
-		await vi.waitFor(() => expect(upserts).toHaveLength(1), { timeout: 3000 });
-		expect(routines.save).toHaveBeenCalledWith(
-			expect.objectContaining({ title: "Morning brief, shorter", effort: "high" }),
-			account,
-			expect.any(String),
-		);
-		expect(upserts[0]).toMatchObject({
-			p_client_routine_id: routine().clientRoutineId,
-			p_title: "Morning brief, shorter",
-			p_effort: "high",
-		});
-		// A routine a member starts from scratch keeps the low default.
-		await vi.waitFor(() => expect(view.el.querySelector("h2")?.textContent).toBe("Routines"));
-		click(view.el, "New routine");
-		await settle();
-		expect(view.el.textContent).toContain("Effort: Low");
-		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
-		view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
-		click(view.el, "Save routine");
-		await vi.waitFor(() => expect(upserts).toHaveLength(2), { timeout: 3000 });
-		expect(upserts[1]).toMatchObject({ p_title: "Weekly close", p_effort: "low" });
-		expect(upserts[1]!.p_client_routine_id).not.toBe(routine().clientRoutineId);
-		stop.abort();
 	});
 	it("refuses a routine save that does not say its effort, before asking the cloud", async () => {
 		const rpc = vi.fn(async () => ({}));
@@ -702,9 +852,10 @@ describe("agent routines section", () => {
 		expect(lever.getAttribute("aria-busy")).toBe("true");
 		expect(lever.getAttribute("title")).toBe("Resume routine");
 		await settle();
+		// A pause needs no login.
 		expect(f.routines.setEnabled).toHaveBeenCalledWith(
 			expect.objectContaining({ title: "Morning brief" }),
-			account,
+			undefined,
 			false,
 			expect.any(String),
 		);
@@ -721,6 +872,71 @@ describe("agent routines section", () => {
 		expect(readOnly.routines.setEnabled).not.toHaveBeenCalled();
 		expect([...readOnly.view.el.querySelectorAll("button")].map((item) => item.textContent)).not.toContain(
 			"New routine",
+		);
+	});
+	it("says why a paused routine waits, and keeps an archived agent's switch off until the agent is back", async () => {
+		const paused = (n: number, pauseReason?: string): WebRoutine => ({
+			...routine({
+				routineId: `10000000-0000-4000-8000-00000000010${n}`,
+				clientRoutineId: `10000000-0000-4000-8000-00000000020${n}`,
+				title: `Routine ${n}`,
+				status: "paused",
+			}),
+			...(pauseReason ? { pauseReason } : {}),
+		});
+		const items = [
+			paused(1, "member"),
+			paused(2, "agent"),
+			paused(3, "authorization_failed"),
+			paused(4, "needs_model_account"),
+			paused(5, "agent_archived"),
+			paused(6, "something_new"),
+			paused(7),
+		];
+		const reasons = (root: Element) =>
+			cards(root).map((card) => card.querySelector(".routine-card-paused")?.textContent ?? null);
+		const f = mount(items);
+		await settle();
+		expect(reasons(f.view.el)).toEqual([
+			"Paused by a member",
+			`Paused by ${staff.displayName}`,
+			"Paused: it could not start with the access it had",
+			"Paused: no model account pays for it",
+			"Paused when its agent was archived",
+			null,
+			null,
+		]);
+		// An active agent's paused routine resumes from its switch as before.
+		const lever = cards(f.view.el)[4]!.querySelector('[role="switch"]')!;
+		expect(lever.getAttribute("aria-disabled")).toBeNull();
+		expect(lever.getAttribute("title")).toBe("Resume routine");
+
+		// Under an archived agent a routine never runs: its switch is off and locked, and says what comes first.
+		const routines = mocked([paused(5, "agent_archived"), routine()]);
+		const view = new AgentRoutines(
+			() => ({ ...staff, employmentStatus: "archived" }),
+			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		const [off, on] = cards(view.el).map((card) => card.querySelector<HTMLButtonElement>('[role="switch"]')!);
+		expect(off!.getAttribute("aria-disabled")).toBe("true");
+		expect(off!.classList.contains("is-locked")).toBe(true);
+		expect(off!.getAttribute("title")).toBe("Reactivate the agent first");
+		off!.click();
+		await settle();
+		expect(routines.setEnabled).not.toHaveBeenCalled();
+		// A routine still on (until the cloud pauses it) can be paused.
+		expect(on!.getAttribute("aria-disabled")).toBeNull();
+		expect(on!.getAttribute("title")).toBe("Pause routine");
+		on!.click();
+		await settle();
+		expect(routines.setEnabled).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Morning brief" }),
+			undefined,
+			false,
+			expect.any(String),
 		);
 	});
 	it("shows the switch as the cloud reads it after a change, and where it was moved while no read has come back", async () => {
@@ -833,32 +1049,23 @@ describe("agent routines section", () => {
 		await settle();
 		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 	});
-	it.each([
-		["while the read after the change is still out", "held"],
-		["when the read after the change failed", "failed"],
-	] as const)("an editor save keeps a switch the member just turned off, %s", async (_, read) => {
-		const f = mount([routine()]);
-		await settle();
-		const held: Array<(items: CloudRoutine[]) => void> = [];
-		if (read === "held")
-			f.routines.list.mockImplementationOnce(
-				() =>
-					new Promise<CloudRoutine[]>((resolve) => {
-						held.push(resolve);
-					}),
-			);
-		else f.routines.list.mockRejectedValueOnce(new Error("offline"));
+	it("an edit never writes the status: a routine the member just paused stays paused", async () => {
+		const f = mountFolder([routine()]);
+		await listed(f.view);
 		click(f.view.el, "Morning brief");
-		await settle();
-		click(f.view.el, "Edit");
-		await settle();
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1));
+		expect(parsed(f.fake.text(PATH)).status).toBe("paused");
+		await vi.waitFor(() => expect(f.view.el.querySelector('[role="switch"]')?.getAttribute("aria-busy")).toBeNull());
+		await openEditor(f.view);
 		f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value =
 			"Summarise what changed, briefly.";
 		click(f.view.el, "Save routine");
-		await settle();
-		expect(f.routines.save).toHaveBeenCalledTimes(1);
-		const [draft] = f.routines.save.mock.calls[0] as unknown as [{ enabled: boolean; prompt: string }];
-		expect(draft).toMatchObject({ enabled: false, prompt: "Summarise what changed, briefly." });
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(2));
+		expect(parsed(f.fake.text(PATH))).toMatchObject({
+			status: "paused",
+			instructions: "Summarise what changed, briefly.",
+		});
+		f.stop.abort();
 	});
 	it("keeps focus on a switch through the redraw after its change", async () => {
 		const f = mount([routine()]);
@@ -873,22 +1080,21 @@ describe("agent routines section", () => {
 		expect(document.activeElement).toBe(lever);
 		expect(lever?.getAttribute("aria-checked")).toBe("false");
 	});
-	it("keeps saying why when the model accounts could not be read for a switch", async () => {
-		const routines = {
-			list: vi.fn(async () => [routine()]),
-			runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
-			save: vi.fn(async () => {}),
-			setEnabled: vi.fn(async () => {}),
-		} satisfies WebRoutines;
+	it("reads the model accounts for a resume only, and keeps saying why when they could not be read", async () => {
+		const routines = mocked([
+			routine({ status: "paused" }),
+			routine({
+				routineId: "10000000-0000-4000-8000-000000000017",
+				clientRoutineId: "10000000-0000-4000-8000-000000000018",
+				title: "Evening wrap",
+			}),
+		]);
+		const accounts = vi.fn(async () => {
+			throw new Error("offline");
+		});
 		const view = new AgentRoutines(
 			() => staff,
-			{
-				routines,
-				accounts: async () => {
-					throw new Error("offline");
-				},
-				canManage: () => true,
-			},
+			{ routines, accounts, canManage: () => true },
 			new AbortController().signal,
 		);
 		document.body.append(view.el);
@@ -896,10 +1102,20 @@ describe("agent routines section", () => {
 		click(view.el, "Morning brief");
 		await settle();
 		expect(routines.setEnabled).not.toHaveBeenCalled();
-		expect(controls(cards(view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		expect(controls(cards(view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		expect(view.el.querySelector(".surface-status")?.textContent).toBe(
 			"Your model accounts could not be read. Try again.",
 		);
+		// A pause needs no login: it goes ahead without the accounts.
+		click(view.el, "Evening wrap");
+		await settle();
+		expect(routines.setEnabled).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Evening wrap" }),
+			undefined,
+			false,
+			expect.any(String),
+		);
+		expect(accounts).toHaveBeenCalledTimes(1);
 	});
 	it("puts a switch that could not be changed back, and keeps saying why", async () => {
 		const f = mount([routine()]);
@@ -1023,12 +1239,7 @@ describe("agent routines section", () => {
 	});
 	it("steps back from the editor to the list, and from the list to the page it was opened from", async () => {
 		const back = vi.fn();
-		const routines = {
-			list: vi.fn(async () => [routine()]),
-			runs: vi.fn(async () => []),
-			save: vi.fn(async () => {}),
-			setEnabled: vi.fn(async () => {}),
-		} satisfies WebRoutines;
+		const routines = mocked([routine()]);
 		const view = new AgentRoutines(
 			() => staff,
 			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
@@ -1036,10 +1247,9 @@ describe("agent routines section", () => {
 			back,
 		);
 		document.body.append(view.el);
-		await settle();
-		click(view.el, "Edit");
-		await settle();
+		await openEditor(view);
 		expect(view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		expect(routines.open).toHaveBeenCalledWith(expect.objectContaining({ routineId: ROUTINE_ID }));
 		view.refresh();
 		await settle();
 		expect(view.el.querySelector("h2")?.textContent).toBe("Edit routine");
@@ -1056,26 +1266,674 @@ describe("agent routines section", () => {
 	});
 });
 
+describe("a new routine's file (P34r)", () => {
+	it("writes the file in the agent's routines folder, its name from the title, after the consent and binding", async () => {
+		const fake = seeded();
+		fake.put(
+			"agents/nora/routines/weekly-close.md",
+			writeRoutineFile(routineFile({ id: OTHER_FILE, title: "Weekly close" })),
+		);
+		const f = mountFolder([], { fake });
+		await openEditor(f.view, "New routine");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		// The name is free among the listed routines' file names, without their .md.
+		const path = "agents/nora/routines/weekly-close-2.md";
+		const [commit] = fake.commits;
+		expect(commit!.operationKey).toMatch(/^web:routine-create:[0-9a-f-]{36}$/);
+		expect(commit!.units).toEqual([{ op: "write", path, text: expect.any(String) }]);
+		// The reply and the effort are written out: a member's routine replies every time, at low effort.
+		const text = (commit!.units[0] as { text: string }).text;
+		expect(text).toContain("\nreply: required\n");
+		expect(text).toContain("\neffort: low\n");
+		const file = parsed(fake.text(path), path);
+		expect(file).toMatchObject({
+			title: "Weekly close",
+			status: "active",
+			trigger: { when: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], time: "09:00", starts: null },
+			effort: "low",
+			reply: "required",
+			instructions: "Close the week.",
+		});
+		expect(file.id).not.toBe(OTHER_FILE);
+		expect(f.log).toEqual([CONSENT, SPONSOR, "commit"]);
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		f.stop.abort();
+	});
+	it("makes the routines folder first, in the same change set, when the agent has none", async () => {
+		const fake = seeded({ routinesFolder: false, text: null });
+		const f = writer(fake);
+		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
+		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([
+			[
+				["mkdir", "agents/nora/routines"],
+				["write", "agents/nora/routines/weekly-close.md"],
+			],
+		]);
+		expect(fake.kind("agents/nora/routines")).toBe("folder");
+		expect(
+			parsed(fake.text("agents/nora/routines/weekly-close.md"), "agents/nora/routines/weekly-close.md"),
+		).toMatchObject({
+			id: newDraft().clientRoutineId,
+			trigger: { when: "weekly", days: ["mon", "fri"], time: "16:00", starts: null },
+			timezone: "Europe/Copenhagen",
+		});
+	});
+	it("reads each unit's outcome: a folder made since the read leaves the write saved; else it goes again without the mkdir", async () => {
+		const fake = seeded({ routinesFolder: false, text: null });
+		const read = fake.folder.read.getMockImplementation()!;
+		fake.folder.read.mockImplementationOnce(async (...args) => {
+			const answer = await read(...args);
+			fake.mkdir("agents/nora/routines");
+			return answer;
+		});
+		const f = writer(fake);
+		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
+		expect(fake.commits).toHaveLength(1);
+		expect(fake.has("agents/nora/routines/weekly-close.md")).toBe(true);
+
+		// The mkdir is exists and the write was not saved: the folder is read again and the write goes alone.
+		const other = seeded({ routinesFolder: false, text: null });
+		const g = writer(other);
+		other.folder.commit.mockImplementationOnce(async (_key, units) => {
+			other.mkdir("agents/nora/routines");
+			return {
+				commitId: "10000000-0000-4000-8000-0000000000f1",
+				seq: null,
+				replay: false,
+				units: units.map((unit, index) => ({
+					unit: index + 1,
+					op: unit.op,
+					path: unit.op === "move" ? unit.from : unit.path,
+					to: null,
+					version: null,
+					outcome: index === 0 ? "conflict" : "refused",
+					reason: index === 0 ? "exists" : "parent_missing",
+					problems: [],
+				})),
+			} satisfies CloudMemberFolderCommit;
+		});
+		await expect(g.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
+		const sent = other.folder.commit.mock.calls.map(([, units]) => paths(units));
+		expect(sent).toEqual([
+			[
+				["mkdir", "agents/nora/routines"],
+				["write", "agents/nora/routines/weekly-close.md"],
+			],
+			[["write", "agents/nora/routines/weekly-close.md"]],
+		]);
+	});
+	it("takes the next name, with a new operation key, when another writer took the file since the listing", async () => {
+		const fake = seeded({ text: null });
+		const list = fake.folder.list.getMockImplementation()!;
+		fake.folder.list.mockImplementationOnce(async (...args) => {
+			const page = await list(...args);
+			fake.put(
+				"agents/nora/routines/weekly-close.md",
+				writeRoutineFile(routineFile({ id: OTHER_FILE, title: "Weekly close" })),
+			);
+			return page;
+		});
+		const f = writer(fake);
+		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
+		expect(fake.commits.map((commit) => paths(commit.units))).toEqual([
+			[["write", "agents/nora/routines/weekly-close.md"]],
+			[["write", "agents/nora/routines/weekly-close-2.md"]],
+		]);
+		expect(fake.commits[1]!.operationKey).not.toBe(fake.commits[0]!.operationKey);
+		expect(parsed(fake.text("agents/nora/routines/weekly-close.md"), "agents/nora/routines/weekly-close.md").id).toBe(
+			OTHER_FILE,
+		);
+		expect(
+			parsed(fake.text("agents/nora/routines/weekly-close-2.md"), "agents/nora/routines/weekly-close-2.md").id,
+		).toBe(newDraft().clientRoutineId);
+	});
+	it("sends a change set whose answer was lost again as it was; a file there with the draft's id is this routine", async () => {
+		const fake = seeded({ text: null });
+		const f = writer(fake);
+		fake.loseAnswer();
+		await expect(f.routines.save(newDraft(), account, "save-1")).rejects.toThrow("Failed to fetch");
+		await expect(f.routines.save(newDraft(), account, "save-1")).resolves.toBe("saved");
+		expect(fake.commits).toHaveLength(2);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		// A save that does not know that change set finds the draft's id at the name it takes: it is saved.
+		fake.folder.list.mockResolvedValueOnce({ asOfSeq: fake.seq, entries: [], next: null });
+		await expect(f.routines.save(newDraft(), account, "save-2")).resolves.toBe("saved");
+		expect(fake.commits).toHaveLength(3);
+		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+	});
+	it("saves a new routine whose answer was lost with the next Save, as one file, and the list comes back", async () => {
+		const fake = seeded({ text: null });
+		const f = mountFolder([], { fake });
+		await openEditor(f.view, "New routine");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		fake.loseAnswer();
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() =>
+			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
+		);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		// The second Save sends the same change set again, under its key: a replay of the routine it made.
+		expect(fake.commits).toHaveLength(2);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+		expect(f.view.el.textContent).not.toContain("Nothing changed.");
+		f.stop.abort();
+	});
+	it("is saved when a lost change set's replay saved the routine, though the draft's change since adds nothing", async () => {
+		const fake = seeded({ text: null });
+		const f = writer(fake);
+		fake.loseAnswer();
+		await expect(f.routines.save(newDraft(), account, "save-1")).rejects.toThrow("Failed to fetch");
+		// Another trigger id is the same draft (the file does not keep it); a title the file trims makes the same file.
+		const again = newDraft({ title: "Weekly close ", trigger: { ...newDraft().trigger, id: "another" } });
+		await expect(f.routines.save(again, account, "save-1")).resolves.toBe("saved");
+		expect(fake.commits).toHaveLength(2);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual(["agents/nora/routines/weekly-close.md"]);
+	});
+	it("opens a new routine that a lost answer made on its file when someone changed it before the draft's change", async () => {
+		const fake = seeded({ text: null });
+		const f = mountFolder([], { fake });
+		// The list is the index's: each routine file in the folder, by its index id and its file's id.
+		f.routines.list.mockImplementation(async () =>
+			(fake.stateFolders().routines ?? []).map((item) =>
+				indexed(fake.text(item.file)!, {
+					routineId: item.routineId,
+					clientRoutineId: parsed(fake.text(item.file), item.file).id,
+				}),
+			),
+		);
+		await openEditor(f.view, "New routine");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		fake.loseAnswer();
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() =>
+			expect(status(f.view.el)).toBe("The routine could not be saved. Your draft is still here."),
+		);
+		// Someone renames the routine the lost answer made, and the member changes their draft.
+		const made = "agents/nora/routines/weekly-close.md";
+		const renamed = fake.put(made, fake.text(made)!.replace("title: Weekly close", "title: Friday close"));
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
+		click(f.view.el, "Save routine");
+		// The replay is saved; the draft's change since meets the rename, and the form opens on the routine's file.
+		await vi.waitFor(() => expect(status(f.view.el)).toBe("This routine changed while you were editing it."));
+		expect(f.view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		expect(field(f.view.el, "Routine name").value).toBe("Friday close");
+		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").value).toBe("Close the week.");
+		expect(fake.commits).toHaveLength(3);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(fake.children("agents/nora/routines")).toEqual([made]);
+		// The next Save edits the file as it is now.
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week, with totals.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		expect(fake.commits).toHaveLength(4);
+		expect(fake.commits[3]!.operationKey).toMatch(/^web:routine-update:/);
+		expect(fake.commits[3]!.units).toEqual([
+			{ op: "write", path: made, text: expect.any(String), expectedVersion: renamed },
+		]);
+		expect(parsed(fake.text(made), made)).toMatchObject({
+			title: "Friday close",
+			instructions: "Close the week, with totals.",
+		});
+		expect(fake.children("agents/nora/routines")).toEqual([made]);
+		f.stop.abort();
+	});
+	it("saves no trigger a member's editor does not make, such as a file change", async () => {
+		const fake = seeded({ text: null });
+		const f = writer(fake);
+		const trigger = parseCloudRoutineTrigger({
+			id: "f",
+			kind: "listener",
+			source: "company-file",
+			path: "finance/invoices",
+			match: "subtree",
+			timeZone: "UTC",
+		});
+		await expect(f.routines.save(newDraft({ trigger }), account, "save-1")).rejects.toThrow(
+			"every few minutes or on chosen days",
+		);
+		expect(f.calls).toEqual([]);
+		expect(fake.commits).toEqual([]);
+	});
+});
+
+describe("an edit of a routine's file (P34r)", () => {
+	it("rewrites only what the edit changes, and keeps every other byte", async () => {
+		const before = routineText({
+			ends: "2027-01-01T00:00:00Z",
+			runs: 40,
+			quiet: { start: "22:00", end: "07:00", timezone: "Europe/Copenhagen" },
+			effort: "high",
+			reply: "optional",
+		}).replace("effort: high", "effort: high # the agent's choice");
+		const fake = seeded({ text: before });
+		const version = fake.version(PATH);
+		const f = mountFolder([indexed(before)], { fake });
+		await openEditor(f.view);
+		// The form is the file's: an agent's effort shows, and stays.
+		expect(f.view.el.textContent).toContain("Effort: High");
+		expect(field<HTMLSelectElement>(f.view.el, "Reply").value).toBe("optional");
+		field(f.view.el, "Routine name").value = "Morning digest";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Summarise what changed, in three lines.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(fake.commits[0]!.operationKey).toMatch(/^web:routine-update:/);
+		expect(fake.commits[0]!.units).toEqual([
+			{ op: "write", path: PATH, text: expect.any(String), expectedVersion: version },
+		]);
+		expect(fake.text(PATH)).toBe(
+			before
+				.replace("title: Morning brief", "title: Morning digest")
+				.replace("Summarise what changed.", "Summarise what changed, in three lines."),
+		);
+		expect(f.log).toEqual([CONSENT, SPONSOR, "commit"]);
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		f.stop.abort();
+	});
+	it("keeps the effort an agent chose, and a member's new routine starts at low", async () => {
+		const text = routineText({ effort: "high" });
+		const fake = seeded({ text });
+		const f = mountFolder([indexed(text)], { fake });
+		await openEditor(f.view);
+		field(f.view.el, "Routine name").value = "Morning brief, shorter";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning brief, shorter", effort: "high" });
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		await openEditor(f.view, "New routine");
+		expect(f.view.el.textContent).toContain("Effort: Low");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
+		const made = "agents/nora/routines/weekly-close.md";
+		expect(parsed(fake.text(made), made)).toMatchObject({ title: "Weekly close", effort: "low" });
+		expect(parsed(fake.text(made), made).id).not.toBe(FILE_ID);
+		f.stop.abort();
+	});
+	it("writes nothing when nothing changed, and asks for no login", async () => {
+		const f = mountFolder([routine()]);
+		await openEditor(f.view);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(status(f.view.el)).toBe("Nothing changed."));
+		expect(f.fake.commits).toEqual([]);
+		expect(f.calls).toEqual([]);
+		expect(f.view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		f.stop.abort();
+	});
+	it("retries a version_changed while what the form shows is as it opened, keeping the other change", async () => {
+		const fake = seeded();
+		const f = mountFolder([routine()], { fake });
+		await openEditor(f.view);
+		// Meanwhile someone pauses the routine and gives it quiet hours: nothing the form shows.
+		const quiet = { start: "22:00", end: "07:00", timezone: "Europe/Copenhagen" };
+		fake.put(PATH, routineText({ status: "paused", quiet }));
+		field(f.view.el, "Routine name").value = "Morning digest";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(2));
+		expect(fake.commits[1]!.operationKey).not.toBe(fake.commits[0]!.operationKey);
+		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning digest", status: "paused", quiet });
+		await vi.waitFor(() => expect(f.view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		f.stop.abort();
+	});
+	it("stops when someone changed what the form shows, and opens the form again on the file", async () => {
+		const fake = seeded();
+		const f = mountFolder([routine()], { fake });
+		await openEditor(f.view);
+		fake.put(PATH, routineText({ title: "Morning digest" }));
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Summarise it all.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(status(f.view.el)).toBe("This routine changed while you were editing it."));
+		expect(fake.commits).toHaveLength(1);
+		expect(field(f.view.el, "Routine name").value).toBe("Morning digest");
+		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").value).toBe("Summarise what changed.");
+		expect(parsed(fake.text(PATH)).instructions).toBe("Summarise what changed.");
+		f.stop.abort();
+	});
+	it("says why a refusal saved nothing, in the hook's words, under the editor", async () => {
+		const f = mountFolder([routine()]);
+		await openEditor(f.view);
+		field(f.view.el, "Routine name").value = "Morning digest";
+		f.fake.answer("refused", "structured_rule", ["timezone Mars/Olympus is not a time zone the database knows"]);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() =>
+			expect(status(f.view.el)).toBe(
+				"The routine could not be saved: timezone Mars/Olympus is not a time zone the database knows.",
+			),
+		);
+		expect(parsed(f.fake.text(PATH)).title).toBe("Morning brief");
+		f.stop.abort();
+	});
+	it("sends a change set again with its key after a transport failure; only an answer that saved nothing frees it", async () => {
+		const fake = seeded();
+		const f = writer(fake);
+		const opened = await f.routines.open(routine());
+		expect(opened).toMatchObject({ routineId: ROUTINE_ID, path: PATH, version: fake.version(PATH) });
+		const draft = editDraft(opened, { title: "Morning digest" });
+		fake.failCommit();
+		await expect(f.routines.save(draft, account, "save-1")).rejects.toThrow("Failed to fetch");
+		fake.answer("refused", "structured_rule", ["the title is not allowed"]);
+		const refused = await f.routines.save(draft, account, "save-1").catch((error: unknown) => error);
+		expect(refused).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect((refused as WebCompanyFolderRejectedError).problems).toEqual(["the title is not allowed"]);
+		await expect(f.routines.save(draft, account, "save-1")).resolves.toBe("saved");
+		const keys = fake.commits.map((commit) => commit.operationKey);
+		expect(keys).toHaveLength(3);
+		expect(keys[1]).toBe(keys[0]);
+		expect(fake.commits[1]!.units).toEqual(fake.commits[0]!.units);
+		expect(keys[2]).not.toBe(keys[1]);
+		expect(parsed(fake.text(PATH)).title).toBe("Morning digest");
+	});
+	it("writes a draft changed after a lost answer on top of what that change set wrote", async () => {
+		const fake = seeded();
+		const f = writer(fake);
+		const opened = await f.routines.open(routine());
+		fake.loseAnswer();
+		await expect(f.routines.save(editDraft(opened, { title: "Morning digest" }), account, "save-1")).rejects.toThrow(
+			"Failed to fetch",
+		);
+		await expect(
+			f.routines.save(editDraft(opened, { title: "Morning digest", prompt: "Brief me." }), account, "save-1"),
+		).resolves.toBe("saved");
+		expect(fake.commits).toHaveLength(3);
+		expect(fake.commits[1]).toEqual(fake.commits[0]);
+		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning digest", instructions: "Brief me." });
+	});
+	it("checks a change made since a lost answer against what that change set wrote, at the version its replay gives", async () => {
+		const fake = seeded();
+		const f = writer(fake);
+		const opened = await f.routines.open(routine());
+		fake.loseAnswer();
+		await expect(f.routines.save(editDraft(opened, { title: "Morning digest" }), account, "save-1")).rejects.toThrow(
+			"Failed to fetch",
+		);
+		const written = fake.version(PATH);
+		// Meanwhile someone changes what the form shows: the edit stops instead of writing over it.
+		fake.put(PATH, routineText({ title: "Evening brief" }));
+		const changed = editDraft(opened, { title: "Morning digest", prompt: "Brief me." });
+		await expect(f.routines.save(changed, account, "save-1")).rejects.toBeInstanceOf(WebRoutineChangedError);
+		expect(fake.commits).toHaveLength(3);
+		expect(fake.commits[2]!.units).toEqual([
+			{ op: "write", path: PATH, text: expect.any(String), expectedVersion: written },
+		]);
+		expect(parsed(fake.text(PATH))).toMatchObject({
+			title: "Evening brief",
+			instructions: "Summarise what changed.",
+		});
+
+		// A change to what the form does not show is kept under the edit.
+		const other = seeded();
+		const g = writer(other);
+		const again = await g.routines.open(routine());
+		other.loseAnswer();
+		await expect(g.routines.save(editDraft(again, { title: "Morning digest" }), account, "save-2")).rejects.toThrow(
+			"Failed to fetch",
+		);
+		other.put(PATH, routineText({ title: "Morning digest", status: "paused" }));
+		await expect(
+			g.routines.save(editDraft(again, { title: "Morning digest", prompt: "Brief me." }), account, "save-2"),
+		).resolves.toBe("saved");
+		expect(other.commits).toHaveLength(4);
+		expect(parsed(other.text(PATH))).toMatchObject({
+			title: "Morning digest",
+			status: "paused",
+			instructions: "Brief me.",
+		});
+	});
+	it("forgets a save that failed with nothing unanswered: the next save with its id starts from what it opened", async () => {
+		const fake = seeded();
+		const f = writer(fake);
+		const opened = await f.routines.open(routine());
+		fake.answer("refused", "structured_rule", ["the title is not allowed"]);
+		await expect(
+			f.routines.save(editDraft(opened, { title: "Morning digest" }), account, "save-1"),
+		).rejects.toBeInstanceOf(WebCompanyFolderRejectedError);
+		// Someone renames the routine, and it is opened again: a save under the same id edits that read, not the first.
+		fake.put(PATH, routineText({ title: "Evening brief" }));
+		const reopened = await f.routines.open(routine());
+		await expect(f.routines.save(editDraft(reopened, { prompt: "Brief me." }), account, "save-1")).resolves.toBe(
+			"saved",
+		);
+		expect(fake.commits).toHaveLength(2);
+		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Evening brief", instructions: "Brief me." });
+	});
+});
+
+describe("pausing and resuming a routine's file (P34r)", () => {
+	it("pauses by writing status: paused with no login, and writes nothing when the file already says paused", async () => {
+		const f = mountFolder([routine()]);
+		await listed(f.view);
+		const before = f.fake.text(PATH)!;
+		click(f.view.el, "Morning brief");
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1));
+		expect(f.fake.text(PATH)).toBe(before.replace("status: active", "status: paused"));
+		expect(f.fake.commits[0]!.operationKey).toMatch(/^web:routine-pause:/);
+		expect(f.calls).toEqual([]);
+		f.stop.abort();
+		document.body.replaceChildren();
+
+		const paused = mountFolder([routine()], { fake: seeded({ text: routineText({ status: "paused" }) }) });
+		await listed(paused.view);
+		click(paused.view.el, "Morning brief");
+		await vi.waitFor(() => expect(paused.routines.setEnabled).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() =>
+			expect(paused.view.el.querySelector('[role="switch"]')?.getAttribute("aria-busy")).toBeNull(),
+		);
+		expect(paused.fake.commits).toEqual([]);
+		expect(paused.view.el.querySelector(".surface-status")).toBeNull();
+		paused.stop.abort();
+	});
+	it("resumes after the consent and binding; an active file is saved as it is, ending a pause the index alone records", async () => {
+		const f = mountFolder([routine({ status: "paused" })], {
+			fake: seeded({ text: routineText({ status: "paused" }) }),
+		});
+		await listed(f.view);
+		click(f.view.el, "Morning brief");
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1));
+		expect(parsed(f.fake.text(PATH)).status).toBe("active");
+		expect(f.fake.commits[0]!.operationKey).toMatch(/^web:routine-resume:/);
+		expect(f.log).toEqual([CONSENT, SPONSOR, "commit"]);
+		f.stop.abort();
+		document.body.replaceChildren();
+
+		// No model account paid, so the platform paused it in the index only: the file still says active.
+		const index = mountFolder([
+			{ ...routine({ status: "paused" }), pauseReason: "needs_model_account" } as WebRoutine,
+		]);
+		await listed(index.view);
+		const text = index.fake.text(PATH);
+		const version = index.fake.version(PATH);
+		click(index.view.el, "Morning brief");
+		await vi.waitFor(() => expect(index.fake.commits).toHaveLength(1));
+		expect(index.fake.commits[0]!.units).toEqual([{ op: "write", path: PATH, text, expectedVersion: version }]);
+		expect(index.log).toEqual([CONSENT, SPONSOR, "commit"]);
+		index.stop.abort();
+	});
+	it("says why the hook refused a resume, in its words, and puts the switch back", async () => {
+		const f = mountFolder([routine({ status: "paused" })], {
+			fake: seeded({ text: routineText({ status: "paused" }) }),
+		});
+		await listed(f.view);
+		f.fake.answer("refused", "structured_rule", ["no login of yours pays for this routine's runs"]);
+		click(f.view.el, "Morning brief");
+		await vi.waitFor(() =>
+			expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
+				"The routine could not be changed: no login of yours pays for this routine's runs.",
+			),
+		);
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(parsed(f.fake.text(PATH)).status).toBe("paused");
+		f.stop.abort();
+	});
+	it("retries while the file is active or paused, and stops at a file concluded or a routine the index has ended", async () => {
+		const rows = vi.fn(() => [indexRow("active")]);
+		const fake = seeded();
+		const f = writer(fake, rows);
+		const commit = fake.folder.commit.getMockImplementation()!;
+		// Someone renames the routine between the read and the pause.
+		fake.folder.commit.mockImplementationOnce(async (...args) => {
+			fake.put(PATH, routineText({ title: "Morning digest" }));
+			return commit(...args);
+		});
+		await f.routines.setEnabled(routine(), undefined, false, "pause-1");
+		expect(fake.commits.map((item) => item.operationKey)).toEqual([
+			"web:routine-pause:pause-1:1",
+			"web:routine-pause:pause-1:2",
+		]);
+		expect(parsed(fake.text(PATH))).toMatchObject({ title: "Morning digest", status: "paused" });
+		expect(rows).toHaveBeenCalledTimes(1);
+
+		// A file concluded meanwhile: nothing is written over it.
+		fake.folder.commit.mockImplementationOnce(async (...args) => {
+			fake.put(PATH, routineText({ status: "concluded", conclusion: "Done for the year." }));
+			return commit(...args);
+		});
+		await expect(f.routines.setEnabled(routine(), account, true, "resume-1")).rejects.toBeInstanceOf(
+			WebRoutineEndedError,
+		);
+		expect(parsed(fake.text(PATH)).status).toBe("concluded");
+
+		// A routine the index now reads as expired stops too.
+		fake.put(PATH, routineText({ status: "paused" }));
+		rows.mockReturnValue([indexRow("expired")]);
+		fake.folder.commit.mockImplementationOnce(async (...args) => {
+			fake.put(PATH, routineText({ status: "paused", title: "Morning digest" }));
+			return commit(...args);
+		});
+		const writes = fake.commits.length;
+		await expect(f.routines.setEnabled(routine(), account, true, "resume-2")).rejects.toBeInstanceOf(
+			WebRoutineEndedError,
+		);
+		expect(fake.commits).toHaveLength(writes + 1);
+		expect(parsed(fake.text(PATH))).toMatchObject({ status: "paused", title: "Morning digest" });
+	});
+	it("leaves a routine without a file it can find read-only: no switch, no Edit", async () => {
+		const other = routine({
+			routineId: "10000000-0000-4000-8000-000000000017",
+			clientRoutineId: "10000000-0000-4000-8000-000000000018",
+			title: "Evening wrap",
+		});
+		const f = mountFolder([routine(), other]);
+		await vi.waitFor(() => expect(cards(f.view.el)).toHaveLength(2));
+		expect(cards(f.view.el).map(controls)).toEqual([["Edit", "switch:true"], []]);
+		f.stop.abort();
+		document.body.replaceChildren();
+
+		// A cloud whose state folders read does not list routines' files yet: every routine is read-only.
+		const older = mountFolder([routine()], { fake: seeded({ listsRoutines: false }) });
+		await vi.waitFor(() => expect(cards(older.view.el)).toHaveLength(1));
+		expect(cards(older.view.el).map(controls)).toEqual([[]]);
+		await expect(older.routines.setEnabled(routine(), account, true, "resume-1")).rejects.toBeInstanceOf(
+			WebRoutineGoneError,
+		);
+		await expect(older.routines.open(routine())).rejects.toBeInstanceOf(WebRoutineGoneError);
+		expect(older.calls).toEqual([]);
+		expect(older.fake.commits).toEqual([]);
+		older.stop.abort();
+		document.body.replaceChildren();
+
+		// The files could not be read this time: the list still shows, read-only, without an error.
+		const unread = seeded();
+		unread.folder.stateFolders.mockRejectedValueOnce(new Error("Company folder is unavailable (503)"));
+		const g = mountFolder([routine()], { fake: unread });
+		await vi.waitFor(() => expect(cards(g.view.el)).toHaveLength(1));
+		expect(cards(g.view.el).map(controls)).toEqual([[]]);
+		expect(g.view.el.querySelector(".surface-status")).toBeNull();
+		g.stop.abort();
+	});
+});
+
+describe("the routine editor's choices", () => {
+	it("offers every few minutes or days at a time, never a file change, and minutes from 5", async () => {
+		const f = mount([]);
+		await openEditor(f.view, "New routine");
+		// The instructions may be as long as the file allows.
+		expect(field<HTMLTextAreaElement>(f.view.el, "What to do").maxLength).toBe(32768);
+		const when = field<HTMLSelectElement>(f.view.el, "When it runs");
+		expect([...when.options].map((option) => option.value)).toEqual(["weekly", "interval"]);
+		expect(f.view.el.querySelector('[aria-label="Company File path"]')).toBeNull();
+		const every = field(f.view.el, "Interval");
+		const unit = field<HTMLSelectElement>(f.view.el, "Interval unit");
+		expect([unit.value, every.value, every.min, every.max]).toEqual(["hours", "1", "1", "168"]);
+		for (const [name, bounds] of [
+			["minutes", ["5", "10080"]],
+			["days", ["1", "7"]],
+		] as const) {
+			unit.value = name;
+			unit.dispatchEvent(new Event("change"));
+			expect([every.min, every.max]).toEqual(bounds);
+		}
+		when.value = "interval";
+		when.dispatchEvent(new Event("change"));
+		unit.value = "minutes";
+		every.value = "2";
+		field(f.view.el, "Routine name").value = "Ping";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Check the inbox.";
+		click(f.view.el, "Save routine");
+		await settle();
+		expect(status(f.view.el)).toBe("Choose an interval between 5 minutes and 7 days.");
+		expect(f.routines.save).not.toHaveBeenCalled();
+	});
+	it("runs on the member's own account that works while they're away; the picker shows only when none is on", async () => {
+		const on = {
+			...account,
+			connectionId: "10000000-0000-4000-8000-0000000000c1",
+			connectionVersion: 4,
+			providerAccountReference: "on@example.invalid",
+			allowAutonomous: true,
+		} as unknown as NativeMemberConnection;
+		const claude = {
+			...account,
+			connectionId: "10000000-0000-4000-8000-0000000000c2",
+			provider: "anthropic",
+			nativeHarness: "claude-code",
+			allowAutonomous: true,
+		} as unknown as NativeMemberConnection;
+		const f = mountFolder([], { fake: seeded({ text: null }), connections: [claude, account, on] });
+		await openEditor(f.view, "New routine");
+		expect(f.view.el.querySelector('[aria-label="Model account"]')).toBeNull();
+		expect(f.view.el.textContent).toContain("This routine runs on your own account that works while you're away.");
+		field(f.view.el, "Routine name").value = "Weekly close";
+		field<HTMLTextAreaElement>(f.view.el, "What to do").value = "Close the week.";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1));
+		// The account that is on gets today's idempotent consent and binding; a Claude login never pays.
+		expect(f.calls[0]).toEqual([
+			CONSENT,
+			{ p_profile_id: profileA.profileId, p_connection_id: on.connectionId, p_allow_autonomous: true },
+		]);
+		f.stop.abort();
+		document.body.replaceChildren();
+
+		// None is on: the member chooses, and a Claude login is not offered.
+		const g = mount([], true, [claude, account]);
+		await openEditor(g.view, "New routine");
+		const options = [...g.view.el.querySelectorAll<HTMLOptionElement>('[aria-label="Model account"] option')];
+		expect(options.map((option) => option.value)).toEqual([account.connectionId]);
+		expect(g.view.el.textContent).not.toContain("This routine runs on your own account");
+	});
+});
+
 describe("a member edit of an agent's routine", () => {
 	// Monday 5 October, 08:30 in Copenhagen: the first run the agent held the routine back to.
-	const firstRunAt = "2026-10-05T06:30:00.000Z";
-	const weekly = {
-		id: "agent",
-		kind: "schedule",
-		intervalMinutes: 1440,
-		startAt: firstRunAt,
-		weekdays: ["monday", "wednesday"],
-		localTime: "08:30",
-		timeZone: "Europe/Copenhagen",
-		replyPolicy: "optional",
-	} as const;
-	const every = {
-		id: "agent",
-		kind: "schedule",
-		intervalMinutes: 90,
-		startAt: firstRunAt,
-		replyPolicy: "silent",
-	} as const;
+	const firstRunAt = "2026-10-05T06:30:00Z";
+	const weekly = routineFile({
+		trigger: { when: "weekly", days: ["mon", "wed"], time: "08:30", starts: firstRunAt },
+		reply: "optional",
+	});
+	const every = routineFile({
+		trigger: { when: "every", minutes: 90, starts: firstRunAt },
+		timezone: null,
+		reply: "silent",
+	});
 	beforeEach(() => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		// Half a minute before the hour: a new interval start rounds up to 11:00 however long a test takes.
@@ -1088,44 +1946,33 @@ describe("a member edit of an agent's routine", () => {
 		vi.unstubAllEnvs();
 	});
 	const type = (form: Element, label: string, value: string) => {
-		const field = form.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
-		field.value = value;
-		field.dispatchEvent(new Event("input"));
+		const input = form.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+		input.value = value;
+		input.dispatchEvent(new Event("input"));
 	};
 	const waiting = (form: Element) => form.querySelector<HTMLLabelElement>(".routine-wait")!;
-	/** Edits the one routine with this trigger and returns what the cloud received. */
-	async function saveEdited(trigger: unknown, change: (form: HTMLElement) => void) {
-		const f = mountSaving([routine({ triggers: [parseCloudRoutineTrigger(trigger)] })]);
-		await settle();
-		click(f.view.el, "Edit");
-		await settle();
+	/** Edits the routine with this file and answers its text before and after, and the file as written. */
+	async function saveEdited(file: Omit<RoutineFile, "kind">, change: (form: HTMLElement) => void) {
+		const before = writeRoutineFile(file);
+		const f = mountFolder([indexed(before)], { fake: seeded({ text: before }) });
+		await openEditor(f.view);
 		change(f.view.el);
 		click(f.view.el, "Save routine");
-		await vi.waitFor(() => expect(f.upserts).toHaveLength(1), { timeout: 3000 });
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
 		f.stop.abort();
-		return f.upserts[0]!;
+		document.body.replaceChildren();
+		const after = f.fake.text(PATH)!;
+		return { before, after, file: parsed(after) };
 	}
 
 	it.each([
 		["weekly", weekly],
 		["every", every],
-		[
-			"file_change",
-			{
-				id: "agent",
-				kind: "listener",
-				source: "company-file",
-				path: "finance/invoices",
-				match: "subtree",
-				timeZone: "Europe/Copenhagen",
-				replyPolicy: "optional",
-			},
-		],
-	] as const)("keeps a %s trigger as the agent set it when only the name changes", async (_, trigger) => {
+		["every, without a first-run time", routineFile({ trigger: { when: "every", minutes: 90, starts: null } })],
+	] as const)("keeps a %s trigger as the agent set it when only the name changes", async (_, file) => {
 		// A weekly routine lost the first-run date the agent chose, so the edit ran it at once.
-		const upsert = await saveEdited(trigger, (form) => type(form, "Routine name", "Morning brief, shorter"));
-		expect(upsert.p_title).toBe("Morning brief, shorter");
-		expect(upsert.p_triggers).toEqual([trigger]);
+		const saved = await saveEdited(file, (form) => type(form, "Routine name", "Morning brief, shorter"));
+		expect(saved.after).toBe(saved.before.replace("title: Morning brief", "title: Morning brief, shorter"));
 	});
 	it("moves a held first run with the clock time, so an earlier time still runs on the chosen day", async () => {
 		const earlier = await saveEdited(weekly, (form) => {
@@ -1135,25 +1982,34 @@ describe("a member edit of an agent's routine", () => {
 			expect(waiting(form).textContent).toMatch(/Oct 5, 08:00/);
 		});
 		// Monday 08:00 in Copenhagen; kept at 08:30, the first run would slip to Wednesday.
-		expect(earlier.p_triggers).toEqual([{ ...weekly, localTime: "08:00", startAt: "2026-10-05T06:00:00.000Z" }]);
+		expect(earlier.file.trigger).toEqual({
+			when: "weekly",
+			days: ["mon", "wed"],
+			time: "08:00",
+			starts: "2026-10-05T06:00:00Z",
+		});
 		const elsewhere = await saveEdited(weekly, (form) => type(form, "Time zone", "America/New_York"));
-		expect(elsewhere.p_triggers).toEqual([
-			{ ...weekly, timeZone: "America/New_York", startAt: "2026-10-05T12:30:00.000Z" },
-		]);
+		expect(elsewhere.file).toMatchObject({
+			timezone: "America/New_York",
+			trigger: { ...weekly.trigger, starts: "2026-10-05T12:30:00Z" },
+		});
 	});
 	it("keeps the agent's instant when the moved time has already passed that day", async () => {
 		// 10:00 in Copenhagen on the held day; the agent held the first run until 15:00.
 		vi.setSystemTime(new Date("2026-10-05T08:00:00.000Z"));
-		const afternoon = { ...weekly, localTime: "15:00", startAt: "2026-10-05T13:00:00.000Z" } as const;
-		const upsert = await saveEdited(afternoon, (form) => {
+		const afternoon = routineFile({
+			...weekly,
+			trigger: { when: "weekly", days: ["mon", "wed"], time: "15:00", starts: "2026-10-05T13:00:00Z" },
+		});
+		const saved = await saveEdited(afternoon, (form) => {
 			type(form, "Time", "09:00");
 			expect(waiting(form).textContent).toMatch(/^Wait until 03:00.PM before/);
 		});
 		// Moved to 09:00 it would lie behind the save and run the routine at once.
-		expect(upsert.p_triggers).toEqual([{ ...afternoon, localTime: "09:00" }]);
+		expect(saved.file.trigger).toEqual({ ...afternoon.trigger, time: "09:00" });
 	});
 	it("leaves a held first run unmoved while the time or zone cannot be read", async () => {
-		const upsert = await saveEdited(weekly, (form) => {
+		const saved = await saveEdited(weekly, (form) => {
 			type(form, "Time", "");
 			expect(waiting(form).textContent).toMatch(/Oct 5, 08:30/);
 			type(form, "Time", "08:30");
@@ -1161,26 +2017,35 @@ describe("a member edit of an agent's routine", () => {
 			type(form, "Time zone", "Mars/Olympus");
 			expect(waiting(form).textContent).toMatch(/Oct 5, 08:30/);
 		});
-		expect(upsert.p_triggers).toEqual([{ ...weekly, timeZone: "Mars/Olympus" }]);
+		expect(saved.file).toMatchObject({ timezone: "Mars/Olympus", trigger: weekly.trigger });
 	});
-	it("lets a member drop a held first run, which never makes it later", async () => {
+	it("lets a member drop a held first run, which removes it", async () => {
 		const drop = (form: HTMLElement) => {
 			waiting(form).querySelector("input")!.checked = false;
 		};
-		expect((await saveEdited(weekly, drop)).p_triggers).toEqual([{ ...weekly, startAt: undefined }]);
-		// An interval starts within two minutes instead of one interval from now,
-		expect((await saveEdited(every, drop)).p_triggers).toEqual([{ ...every, startAt: "2026-09-25T10:01:00.000Z" }]);
-		const week = { ...every, intervalMinutes: 10080, startAt: "2026-09-27T10:00:00.000Z" } as const;
-		expect((await saveEdited(week, drop)).p_triggers).toEqual([{ ...week, startAt: "2026-09-25T10:01:00.000Z" }]);
-		// and a held start sooner than that stays.
-		const shortly = { ...every, startAt: "2026-09-25T10:00:00.000Z" } as const;
-		expect((await saveEdited(shortly, drop)).p_triggers).toEqual([shortly]);
+		expect((await saveEdited(weekly, drop)).file.trigger).toEqual({ ...weekly.trigger, starts: null });
+		expect((await saveEdited(every, drop)).file.trigger).toEqual({ when: "every", minutes: 90, starts: null });
+		const week = routineFile({
+			...every,
+			trigger: { when: "every", minutes: 10080, starts: "2026-09-27T10:00:00Z" },
+		});
+		const dropped = await saveEdited(week, drop);
+		expect(dropped.file.trigger).toEqual({ when: "every", minutes: 10080, starts: null });
+		expect(dropped.after).not.toMatch(/^starts:/m);
 	});
-	it("offers no wait once the first run is reached, or for another kind of schedule", async () => {
-		const reached = { ...weekly, startAt: "2026-09-21T06:30:00.000Z" };
-		const past = await saveEdited(reached, (form) => expect(waiting(form).hidden).toBe(true));
+	it("starts a new interval one interval from now, and keeps a first run reached or of another kind of schedule", async () => {
+		const longer = await saveEdited(every, (form) => type(form, "Interval", "120"));
+		expect(longer.file.trigger).toEqual({ when: "every", minutes: 120, starts: "2026-09-25T12:00:00Z" });
+		const reached = routineFile({
+			...weekly,
+			trigger: { when: "weekly", days: ["mon", "wed"], time: "08:30", starts: "2026-09-21T06:30:00Z" },
+		});
+		const past = await saveEdited(reached, (form) => {
+			expect(waiting(form).hidden).toBe(true);
+			type(form, "Routine name", "Morning brief, shorter");
+		});
 		// Kept as it is: the scheduler ignores a weekly start it has passed.
-		expect(past.p_triggers).toEqual([reached]);
+		expect(past.file.trigger).toEqual(reached.trigger);
 		const switched = await saveEdited(weekly, (form) => {
 			// Unchecked first: a hidden box no longer acts.
 			waiting(form).querySelector("input")!.checked = false;
@@ -1189,16 +2054,37 @@ describe("a member edit of an agent's routine", () => {
 			when.dispatchEvent(new Event("change"));
 			expect(waiting(form).hidden).toBe(true);
 		});
-		// The weekly date does not become the interval's anchor, and the interval starts one interval from now.
-		expect(switched.p_triggers).toEqual([
-			{
-				id: "agent",
-				kind: "schedule",
-				intervalMinutes: 60,
-				startAt: "2026-09-25T11:00:00.000Z",
-				replyPolicy: "optional",
-			},
-		]);
+		// The weekly date does not become the interval's anchor, and the interval starts one interval from now. The zone
+		// stays: quiet hours without their own zone take it.
+		expect(switched.file).toMatchObject({
+			trigger: { when: "every", minutes: 60, starts: "2026-09-25T11:00:00Z" },
+			timezone: "Europe/Copenhagen",
+			reply: "optional",
+		});
+		expect(switched.after).not.toMatch(/^(days|time):/m);
+	});
+	it("offers an interval's own zone for days at a time, and keeps its quiet hours in the zone they go by", async () => {
+		// The file keeps a zone that is not the viewer's, and its quiet hours have none of their own.
+		const quiet = { start: "22:00", end: "07:00", timezone: "America/New_York" };
+		const kept = routineFile({ ...every, timezone: "America/New_York", quiet });
+		const toWeekly = (form: HTMLElement) => {
+			const when = form.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
+			when.value = "weekly";
+			when.dispatchEvent(new Event("change"));
+		};
+		const same = await saveEdited(kept, (form) => {
+			expect(form.querySelector<HTMLInputElement>('[aria-label="Time zone"]')!.value).toBe("America/New_York");
+			toWeekly(form);
+		});
+		expect(same.file).toMatchObject({ trigger: { when: "weekly" }, timezone: "America/New_York", quiet });
+		expect(same.after).not.toMatch(/^quiet_timezone:/m);
+		// The member names another zone: the routine runs by it, and quiet hours stay as they were read.
+		const moved = await saveEdited(kept, (form) => {
+			toWeekly(form);
+			type(form, "Time zone", "Europe/Copenhagen");
+		});
+		expect(moved.file).toMatchObject({ timezone: "Europe/Copenhagen", quiet });
+		expect(moved.after).toMatch(/^quiet_timezone: America\/New_York$/m);
 	});
 });
 
@@ -1213,136 +2099,12 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 			loginKind: "chatgpt_plan",
 			allowAutonomous,
 		}) as unknown as NativeMemberConnection;
-	function mountPlan(items: CloudRoutine[], connections: NativeMemberConnection[]) {
-		const calls: Array<[string, Record<string, unknown>]> = [];
-		const cloud = {
-			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
-				calls.push([name, args]);
-				if (name === "qorpera_consent_provider_connection_autonomous")
-					return { connection_id: args.p_connection_id, allow_autonomous: true, version: 2 };
-				if (name === "qorpera_create_member_execution_sponsor")
-					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
-				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
-				return {
-					routine_id: "10000000-0000-4000-8000-000000000002",
-					client_routine_id: args.p_client_routine_id,
-					version: 2,
-					status: "active",
-				};
-			}),
-		} as unknown as Cloud;
-		const stop = new AbortController();
-		const routines = {
-			...createWebRoutines(cloud, profileA, stop.signal, () => {}),
-			list: vi.fn(async () => items),
-			runs: vi.fn(async () => []),
-		} satisfies WebRoutines;
-		const view = new AgentRoutines(
-			() => staff,
-			{ routines, accounts: async () => ({ connections }), canManage: () => true },
-			stop.signal,
-		);
-		document.body.append(view.el);
-		return { calls, view, stop };
-	}
 	async function draft(view: AgentRoutines) {
-		await settle();
-		click(view.el, "New routine");
-		await settle();
+		await openEditor(view, "New routine");
 		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
 		view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
 	}
-	it("never turns on work while away for a plan: the editor says where to turn it on", async () => {
-		const f = mountPlan([], [plan(false)]);
-		await draft(f.view);
-		const picker = f.view.el.querySelector<HTMLSelectElement>('[aria-label="Model account"]')!;
-		expect(picker.selectedOptions[0]!.textContent).toBe("ChatGPT plan · member@example.invalid");
-		expect(f.view.el.textContent).toContain(
-			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
-		);
-		click(f.view.el, "Save routine");
-		await settle();
-		// The editor's own refusal, on its status line (the note says the same).
-		expect([...f.view.el.querySelectorAll("p.surface-status")].map((item) => item.textContent)).toContain(
-			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
-		);
-		expect(f.calls).toEqual([]);
-		f.stop.abort();
-	});
-	it("binds a plan its member turned on without asking for consent again", async () => {
-		const f = mountPlan([], [plan(true)]);
-		await draft(f.view);
-		expect(f.view.el.textContent).toContain(
-			`${staff.displayName} uses your ChatGPT plan for this routine while you are away.`,
-		);
-		click(f.view.el, "Save routine");
-		await vi.waitFor(() => expect(f.calls.map(([name]) => name)).toContain("qorpera_upsert_cloud_routine"), {
-			timeout: 3000,
-		});
-		expect(f.calls.map(([name]) => name)).not.toContain("qorpera_consent_provider_connection_autonomous");
-		expect(f.calls.find(([name]) => name === "qorpera_create_member_execution_sponsor")![1]).toMatchObject({
-			p_provider_connection_id: "10000000-0000-4000-8000-000000000011",
-			p_provider_connection_version: 3,
-			p_allow_autonomous: true,
-		});
-		f.stop.abort();
-	});
-	it("keeps a file-change routine off a plan", async () => {
-		const f = mountPlan(
-			[
-				routine({
-					triggers: [
-						parseCloudRoutineTrigger({
-							id: "agent",
-							kind: "listener",
-							source: "company-file",
-							path: "finance/invoices",
-							match: "subtree",
-							timeZone: "Europe/Copenhagen",
-							replyPolicy: "optional",
-						}),
-					],
-				}),
-			],
-			[plan(true)],
-		);
-		await settle();
-		click(f.view.el, "Edit");
-		await settle();
-		click(f.view.el, "Save routine");
-		await settle();
-		expect(f.view.el.textContent).toContain(
-			"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
-		);
-		expect(f.calls).toEqual([]);
-		f.stop.abort();
-	});
-	/** The cloud over the real routines client, with the first routine write refused (the routine's
-	 * own payer is not the member's), so the switch falls back to an account. */
-	function fallbackRoutines() {
-		const calls: string[] = [];
-		let upserts = 0;
-		const cloud = {
-			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
-				calls.push(name);
-				if (name === "qorpera_consent_provider_connection_autonomous")
-					return { connection_id: args.p_connection_id, allow_autonomous: true, version: 9 };
-				if (name === "qorpera_create_member_execution_sponsor")
-					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
-				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
-				upserts += 1;
-				if (upserts === 1) throw new Error("not your payer");
-				return {
-					routine_id: "10000000-0000-4000-8000-000000000002",
-					client_routine_id: args.p_client_routine_id,
-					version: 2,
-					status: "active",
-				};
-			}),
-		} as unknown as Cloud;
-		return { calls, routines: createWebRoutines(cloud, profileA, new AbortController().signal, () => {}) };
-	}
-	const fileRoutine = () =>
+	const fileRoutine = (update: Partial<CloudRoutine> = {}) =>
 		routine({
 			triggers: [
 				parseCloudRoutineTrigger({
@@ -1355,38 +2117,63 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 					replyPolicy: "optional",
 				}),
 			],
+			...update,
 		});
-	it("never consents a plan on the switch's fallback, and never binds one for a file routine", async () => {
-		let f = fallbackRoutines();
-		await expect(f.routines.setEnabled(routine(), plan(false), true, crypto.randomUUID())).rejects.toThrow(
+	it("never turns on work while away for a plan: the editor says where to turn it on", async () => {
+		const f = mountFolder([], { fake: seeded({ text: null }), connections: [plan(false)] });
+		await draft(f.view);
+		// A plan not turned on cannot pay, so there is nothing to choose.
+		expect(f.view.el.querySelector('[aria-label="Model account"]')).toBeNull();
+		expect(f.view.el.textContent).toContain(
+			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+		);
+		click(f.view.el, "Save routine");
+		await settle();
+		expect(status(f.view.el)).toBe("Turn on “Work while you're away” for this ChatGPT plan in Settings first.");
+		expect(f.calls).toEqual([]);
+		expect(f.fake.commits).toEqual([]);
+		f.stop.abort();
+	});
+	it("binds a plan its member turned on without asking for consent again", async () => {
+		const f = mountFolder([], { fake: seeded({ text: null }), connections: [plan(true)] });
+		await draft(f.view);
+		expect(f.view.el.textContent).toContain("This routine runs on your own account that works while you're away.");
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
+		expect(f.calls.map(([name]) => name)).toEqual([SPONSOR]);
+		expect(f.calls[0]![1]).toMatchObject({
+			p_provider_connection_id: "10000000-0000-4000-8000-000000000011",
+			p_provider_connection_version: 3,
+			p_allow_autonomous: true,
+		});
+		f.stop.abort();
+	});
+	it("never consents a plan for a resume, and never binds one for a file routine", async () => {
+		let f = writer(seeded({ text: routineText({ status: "paused" }) }));
+		await expect(f.routines.setEnabled(routine({ status: "paused" }), plan(false), true, "r1")).rejects.toThrow(
 			"Turn on “Work while you're away”",
 		);
-		expect(f.calls).toEqual(["qorpera_upsert_cloud_routine"]);
-		f = fallbackRoutines();
-		await expect(f.routines.setEnabled(fileRoutine(), plan(true), true, crypto.randomUUID())).rejects.toThrow(
+		expect(f.log).toEqual([]);
+		f = writer(seeded({ text: routineText({ status: "paused" }) }));
+		await expect(f.routines.setEnabled(fileRoutine({ status: "paused" }), plan(true), true, "r2")).rejects.toThrow(
 			"can't pay for routines that start on a file change",
 		);
-		expect(f.calls).toEqual(["qorpera_upsert_cloud_routine"]);
-		// A Codex login falls back as before: consent, bind, save.
-		f = fallbackRoutines();
-		await f.routines.setEnabled(routine(), account, true, crypto.randomUUID());
-		expect(f.calls).toEqual([
-			"qorpera_upsert_cloud_routine",
-			"qorpera_consent_provider_connection_autonomous",
-			"qorpera_create_member_execution_sponsor",
-			"qorpera_upsert_cloud_routine",
-		]);
+		expect(f.log).toEqual([]);
+		// A Codex login is consented and bound as before, then the file is written.
+		f = writer(seeded({ text: routineText({ status: "paused" }) }));
+		await f.routines.setEnabled(routine({ status: "paused" }), account, true, "r3");
+		expect(f.log).toEqual([CONSENT, SPONSOR, "commit"]);
 	});
-	it("pauses or resumes on the routine's own payer first, falling back only to an account that can pay", async () => {
+	it("pauses with no account, resumes on the first account that can pay, and says what to do when none can", async () => {
 		// A Codex login comes before a plan for a file routine.
-		const both = mount([fileRoutine()], true, [plan(true), account]);
+		const both = mount([fileRoutine({ status: "paused" })], true, [plan(true), account]);
 		await settle();
 		click(both.view.el, "Morning brief");
 		await settle();
-		expect(both.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), account, false, expect.any(String));
+		expect(both.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), account, true, expect.any(String));
 		both.stop.abort();
 		document.body.replaceChildren();
-		// With only a plan that is not turned on, the routine's own payer still pauses it.
+		// A pause needs no login.
 		const only = mount([routine()], true, [plan(false)]);
 		await settle();
 		click(only.view.el, "Morning brief");
@@ -1395,69 +2182,44 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 		expect(only.view.el.querySelector(".surface-status")).toBeNull();
 		only.stop.abort();
 		document.body.replaceChildren();
-		// When the routine's own payer cannot, it says what to do.
-		const refused = mount([routine()], true, [plan(false)]);
-		refused.routines.setEnabled.mockRejectedValueOnce(new Error("not your payer"));
-		await settle();
-		click(refused.view.el, "Morning brief");
-		await settle();
-		expect(refused.view.el.querySelector(".surface-status")?.textContent).toBe(
-			"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
-		);
-		refused.stop.abort();
-		document.body.replaceChildren();
-		const file = mount([fileRoutine()], true, [plan(true)]);
-		file.routines.setEnabled.mockRejectedValueOnce(new Error("not your payer"));
-		await settle();
-		click(file.view.el, "Morning brief");
-		await settle();
-		expect(file.view.el.querySelector(".surface-status")?.textContent).toBe(
-			"A ChatGPT plan can't pay for routines that start on a file change or a webhook.",
-		);
-		file.stop.abort();
+		for (const [items, connections, said] of [
+			[
+				[routine({ status: "paused" })],
+				[plan(false)],
+				"Turn on “Work while you're away” for this ChatGPT plan in Settings first.",
+			],
+			[
+				[fileRoutine({ status: "paused" })],
+				[plan(true)],
+				"A ChatGPT plan can't pay for routines that start on a file change or a webhook.",
+			],
+			[
+				[routine({ status: "paused" })],
+				[],
+				"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+			],
+		] as const) {
+			const f = mount([...items], true, [...connections]);
+			await settle();
+			click(f.view.el, "Morning brief");
+			await settle();
+			expect(f.routines.setEnabled).not.toHaveBeenCalled();
+			// The switch is back where it stood.
+			expect(controls(cards(f.view.el)[0]!)).toContain("switch:false");
+			expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(said);
+			f.stop.abort();
+			document.body.replaceChildren();
+		}
 	});
-	it("keeps a file routine off a plan when it is saved directly, and its note says so as the trigger changes", async () => {
-		const f = fallbackRoutines();
-		await expect(
-			f.routines.save(
-				{
-					clientRoutineId: "10000000-0000-4000-8000-000000000009",
-					staffAgentId: staff.id,
-					title: "Invoices",
-					prompt: "File them.",
-					trigger: fileRoutine().triggers[0]!,
-					effort: "low",
-					enabled: true,
-				},
-				plan(true),
-				crypto.randomUUID(),
-			),
-		).rejects.toThrow("can't pay for routines that start on a file change");
-		expect(f.calls).toEqual([]);
-		const view = mountPlan([], [plan(true)]);
-		await draft(view.view);
-		const when = view.view.el.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
-		when.value = "file";
-		when.dispatchEvent(new Event("change"));
-		expect(view.view.el.textContent).toContain(
-			"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.",
-		);
-		view.stop.abort();
-	});
-	it("offers a Codex login first and a plan without work while away last; a Codex login is consented as before", async () => {
-		const f = mountPlan([], [plan(false), account]);
+	it("offers a Codex login, not a plan that is not turned on; a Codex login is consented as before", async () => {
+		const f = mountFolder([], { fake: seeded({ text: null }), connections: [plan(false), account] });
 		await draft(f.view);
 		const picker = f.view.el.querySelector<HTMLSelectElement>('[aria-label="Model account"]')!;
-		expect([...picker.options].map((option) => option.value)).toEqual([
-			account.connectionId,
-			"10000000-0000-4000-8000-000000000011",
-		]);
+		expect([...picker.options].map((option) => option.value)).toEqual([account.connectionId]);
 		click(f.view.el, "Save routine");
-		await vi.waitFor(() => expect(f.calls.map(([name]) => name)).toContain("qorpera_upsert_cloud_routine"), {
-			timeout: 3000,
-		});
+		await vi.waitFor(() => expect(f.fake.commits).toHaveLength(1), { timeout: 3000 });
 		expect(f.calls[0]).toEqual([
-			"qorpera_consent_provider_connection_autonomous",
+			CONSENT,
 			{ p_profile_id: profileA.profileId, p_connection_id: account.connectionId, p_allow_autonomous: true },
 		]);
 		f.stop.abort();

@@ -52,6 +52,12 @@ export const AGENTS: Record<string, string> = {
 	"Resume routine": "Genoptag rutinen",
 	"Only owners and admins can pause or resume routines.":
 		"Kun ejere og administratorer kan sætte rutiner på pause eller genoptage dem.",
+	"Reactivate the agent first": "Genaktivér agenten først",
+	"Paused by a member": "Sat på pause af et medlem",
+	"Paused by {name}": "Sat på pause af {name}",
+	"Paused: it could not start with the access it had": "På pause: den kunne ikke starte med den adgang, den havde",
+	"Paused: no model account pays for it": "På pause: ingen modelkonto betaler for den",
+	"Paused when its agent was archived": "Sat på pause, da dens agent blev arkiveret",
 	"{every} between {start} and {end}, {days} ({zone})": "{every} mellem {start} og {end}, {days} ({zone})",
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
@@ -70,6 +76,7 @@ export const AGENTS: Record<string, string> = {
 	"Routines will appear here.": "Rutiner vises her.",
 	"Your model accounts could not be read. Try again.": "Dine modelkonti kunne ikke hentes. Prøv igen.",
 	"The routine could not be changed. Try again.": "Rutinen kunne ikke ændres. Prøv igen.",
+	"The routine could not be changed.": "Rutinen kunne ikke ændres.",
 	"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.":
 		"Forbind først en modelkonto i Indstillinger; en rutine kører på kontoen hos det medlem, der sidst gemte den.",
 	"Routine name": "Rutinens navn",
@@ -77,7 +84,6 @@ export const AGENTS: Record<string, string> = {
 	"When it runs": "Hvornår den kører",
 	"On chosen days at a set time": "På valgte dage på et fast tidspunkt",
 	"Every so often": "Med jævne mellemrum",
-	"When something in the Company File changes": "Når noget i Virksomhedsfilen ændres",
 	"Interval unit": "Intervallets enhed",
 	minutes: "minutter",
 	hours: "timer",
@@ -85,10 +91,6 @@ export const AGENTS: Record<string, string> = {
 	Interval: "Interval",
 	Days: "Dage",
 	Time: "Tidspunkt",
-	"Company File path": "Sti i Virksomhedsfilen",
-	"What counts as a change": "Hvad der tæller som en ændring",
-	"This folder and everything in it": "Denne mappe og alt i den",
-	"Exactly this file": "Præcis denne fil",
 	Reply: "Svar",
 	"Always post a reply in the conversation": "Skriv altid et svar i samtalen",
 	"Reply only when there is something to say": "Svar kun, når der er noget at sige",
@@ -101,18 +103,20 @@ export const AGENTS: Record<string, string> = {
 	"Choose an interval between 5 minutes and 7 days.": "Vælg et interval mellem 5 minutter og 7 dage.",
 	"Choose at least one day, a time and a time zone such as Europe/Copenhagen.":
 		"Vælg mindst én dag, et tidspunkt og en tidszone som Europe/Copenhagen.",
-	"Enter a Company File path such as finance/invoices.": "Skriv en sti i Virksomhedsfilen som finance/invoices.",
 	"Give the routine a name and say what to do.": "Giv rutinen et navn, og skriv, hvad den skal gøre.",
 	"Connect a model account in Settings first.": "Forbind først en modelkonto i Indstillinger.",
 	"A ChatGPT plan can't pay for routines that start on a file change or a webhook.":
 		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook.",
-	"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.":
-		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook. Vælg en anden konto.",
 	"Turn on “Work while you're away” for this ChatGPT plan in Settings first.":
 		"Slå først “Arbejd, mens du er væk” til for ChatGPT-abonnementet i Indstillinger.",
-	"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.":
-		"{name} bruger dit ChatGPT-abonnement til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
+	"This routine runs on your own account that works while you're away.":
+		"Rutinen kører på din egen konto, der arbejder, mens du er væk.",
 	"The routine could not be saved. Your draft is still here.": "Rutinen kunne ikke gemmes. Din kladde er her stadig.",
+	"The routine could not be saved.": "Rutinen kunne ikke gemmes.",
+	"Nothing changed.": "Intet er ændret.",
+	"This routine changed while you were editing it.": "Rutinen blev ændret, mens du redigerede den.",
+	"This routine could not be opened.": "Rutinen kunne ikke åbnes.",
+	"This routine is no longer available.": "Rutinen findes ikke længere.",
 	"Edit routine": "Rediger rutine",
 	"Back to routines": "Tilbage til rutiner",
 	"What should {name} do?": "Hvad skal {name} gøre?",
@@ -155,13 +159,6 @@ export const AGENTS: Record<string, string> = {
 	"Enter a group name of no more than 256 characters.": "Skriv et gruppenavn på højst 256 tegn.",
 	"Enter a group subtitle of no more than 256 characters.": "Skriv en undertitel på højst 256 tegn.",
 	"Enter a description for this group chat.": "Skriv en beskrivelse af gruppechatten.",
-	"This group chat document has changed. Reopen its details before saving.":
-		"Gruppechattens dokument er ændret. Åbn detaljerne igen, før du gemmer.",
-	"Invalid group participant.": "Ugyldig deltager i gruppen.",
-	"This group chat changed while you were editing. Reopen its details before saving.":
-		"Gruppechatten blev ændret, mens du redigerede. Åbn detaljerne igen, før du gemmer.",
-	"The group details are too long. Shorten the description.":
-		"Gruppedetaljerne er for lange. Gør beskrivelsen kortere.",
 	"The group chat changes could not be saved.": "Ændringerne i gruppechatten kunne ikke gemmes.",
 
 	// Coding sessions (ui/coding-session.ts, ui/coding-session-thread.ts)

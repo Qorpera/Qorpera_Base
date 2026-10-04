@@ -125,10 +125,27 @@ create function pg_temp.vision(p_name text) returns jsonb language sql as $$
 		(select version from public.qorpera_folder_entries where environment_id = '70400000-0000-4000-8000-000000000020'
 			and key_text = 'vision/vision.md'))
 $$;
+-- P15: the follow-up queue, run at once after a commit that marked something, as its step would: each marked subject
+-- taken, then each dirty one converged (the company first, then the agents).
+create function pg_temp.follow_ups(p_env uuid) returns void language plpgsql as $$
+declare v_subject record; v_work public.qorpera_folder_follow_ups%rowtype;
+begin
+	for v_subject in select distinct m.subject_kind, m.subject_id from public.qorpera_folder_follow_up_marks m
+		where m.environment_id = p_env loop
+		v_work := public.qorpera_folder_follow_up_take(p_env, v_subject.subject_kind, v_subject.subject_id);
+	end loop;
+	for v_work in select * from public.qorpera_folder_follow_ups w where w.environment_id = p_env and w.dirty
+		order by w.subject_kind = 'agent', w.subject_id loop
+		perform public.qorpera_folder_follow_up_converge(v_work);
+	end loop;
+end $$;
 create function pg_temp.commit(p_actor jsonb, p_key text, p_units jsonb) returns jsonb language plpgsql as $$
+declare v_result jsonb;
 begin
 	perform pg_temp.possess('70400000-0000-4000-8000-000000000020', p_actor, p_units);
-	return public.qorpera_folder_commit('70400000-0000-4000-8000-000000000020', p_actor, p_key, p_units);
+	v_result := public.qorpera_folder_commit('70400000-0000-4000-8000-000000000020', p_actor, p_key, p_units);
+	perform pg_temp.follow_ups('70400000-0000-4000-8000-000000000020');
+	return v_result;
 end $$;
 create function pg_temp.owner() returns jsonb language sql as $$
 	select '{"kind":"member","userId":"70400000-0000-4000-8000-000000000001"}'::jsonb

@@ -5,8 +5,10 @@ import {
 	CloudMemberFolderClient,
 	CloudMemberFolderHints,
 	cloudMemberFolderHintTopic,
+	parseCloudMemberCompanyStateFolders,
 	parseCloudMemberFolderBy,
 	parseCloudMemberFolderChanges,
+	parseCloudMemberFolderCommit,
 	parseCloudMemberFolderHint,
 	parseCloudMemberFolderHistory,
 	parseCloudMemberFolderList,
@@ -422,6 +424,182 @@ describe("the member folder client", () => {
 		const outage = client(() => new Response(null, { status: 503 })).folder.read("a", signal);
 		await expect(outage).rejects.toThrow("unavailable (503)");
 		await expect(outage).rejects.not.toBeInstanceOf(CloudMemberFolderAccessDenied);
+	});
+});
+
+describe("member writes (P34a)", () => {
+	const agent = "63000000-0000-4000-8000-0000000000c1";
+	const room = "63000000-0000-4000-8000-0000000000b1";
+	const commitId = "63000000-0000-4000-8000-0000000000d1";
+
+	it("reads the agents' and group chats' files as test 898 pins them", () => {
+		const answer = {
+			schema: "qorpera.member-company-state-folders/v1",
+			agents: [{ staffAgentId: agent, file: "agents/nora/agent.md" }],
+			groups: [{ roomId: room, file: "agents/groups/launch/group.md" }],
+		};
+		// Before P34r's SQL the answer has no routines: routines' files are not known.
+		expect(parseCloudMemberCompanyStateFolders(answer)).toEqual({
+			agents: [{ staffAgentId: agent, file: "agents/nora/agent.md" }],
+			groups: [{ roomId: room, file: "agents/groups/launch/group.md" }],
+			routines: null,
+		});
+		expect(parseCloudMemberCompanyStateFolders({ ...answer, agents: [], groups: [] })).toEqual({
+			agents: [],
+			groups: [],
+			routines: null,
+		});
+		// As test 899 pins them.
+		const routine = { routineId: commitId, staffAgentId: agent, file: "agents/nora/routines/inbox.md" };
+		expect(parseCloudMemberCompanyStateFolders({ ...answer, routines: [routine] }).routines).toEqual([routine]);
+		expect(parseCloudMemberCompanyStateFolders({ ...answer, routines: [] }).routines).toEqual([]);
+		for (const bad of [
+			{ ...answer, schema: "qorpera.member-company-state-folders/v2" },
+			{ ...answer, extra: 1 },
+			{ ...answer, agents: [{ staffAgentId: agent, file: "agents/nora/agent.md", path: "x" }] },
+			{ ...answer, groups: [{ roomId: "nope", file: "agents/groups/launch/group.md" }] },
+			{ ...answer, routines: {} },
+			{ ...answer, routines: [{ routineId: commitId, file: "agents/nora/routines/inbox.md" }] },
+			{
+				...answer,
+				routines: [{ routineId: commitId, staffAgentId: "nope", file: "agents/nora/routines/inbox.md" }],
+			},
+		])
+			expect(() => parseCloudMemberCompanyStateFolders(bad)).toThrow();
+	});
+
+	it("reads a commit's answer unit by unit, as the core gives it", () => {
+		const units = [
+			{ op: "write", path: "agents/nora/agent.md", text: "x" },
+			{ op: "delete", path: "agents/otto", expectedVersion: version, asOfSeq: 3 },
+		] as const;
+		expect(
+			parseCloudMemberFolderCommit(
+				{
+					schema: "qorpera.folder-commit/v1",
+					commitId,
+					seq: 9,
+					replay: false,
+					units: [
+						{ unit: 1, op: "write", path: "agents/nora/agent.md", outcome: "saved", version },
+						{
+							unit: 2,
+							op: "delete",
+							path: "agents/otto",
+							outcome: "refused",
+							reason: "structured_rule",
+							problems: [
+								{ code: "value", message: "a todo here has a worker at work; cancel the worker first" },
+							],
+						},
+					],
+				},
+				units,
+			),
+		).toEqual({
+			commitId,
+			seq: 9,
+			replay: false,
+			units: [
+				{
+					unit: 1,
+					op: "write",
+					path: "agents/nora/agent.md",
+					to: null,
+					version,
+					outcome: "saved",
+					reason: null,
+					problems: [],
+				},
+				{
+					unit: 2,
+					op: "delete",
+					path: "agents/otto",
+					to: null,
+					version: null,
+					outcome: "refused",
+					reason: "structured_rule",
+					problems: [
+						{
+							line: null,
+							key: null,
+							code: "value",
+							message: "a todo here has a worker at work; cancel the worker first",
+						},
+					],
+				},
+			],
+		});
+		const refused = {
+			schema: "qorpera.folder-commit/v1",
+			commitId,
+			seq: null,
+			replay: false,
+			units: [{ unit: 1, op: "write", path: "a", outcome: "refused", reason: "x" }],
+		};
+		expect(parseCloudMemberFolderCommit(refused, [{ op: "write", path: "a", text: "" }]).seq).toBeNull();
+		for (const bad of [
+			{ ...refused, seq: 4 },
+			{ ...refused, units: [] },
+			{ ...refused, units: [{ unit: 1, op: "mkdir", path: "a", outcome: "refused", reason: "x" }] },
+			{ ...refused, units: [{ unit: 1, op: "write", path: "a", outcome: "saved", reason: "x" }] },
+			{ ...refused, units: [{ unit: 1, op: "write", path: "a", outcome: "lost", reason: "x" }] },
+			{ ...refused, extra: true },
+		])
+			expect(() => parseCloudMemberFolderCommit(bad, [{ op: "write", path: "a", text: "" }])).toThrow();
+	});
+
+	it("sends a change set to the gateway's member commit route with the member's own token", async () => {
+		const units = [{ op: "mkdir", path: "drafts" }] as const;
+		const { folder, calls } = client(() =>
+			Response.json({
+				schema: "qorpera.folder-commit/v1",
+				commitId,
+				seq: 4,
+				replay: false,
+				units: [{ unit: 1, op: "mkdir", path: "drafts", outcome: "saved", version }],
+			}),
+		);
+		const result = await folder.commit("web:1", units, new AbortController().signal);
+		expect(result.units[0]?.outcome).toBe("saved");
+		expect(calls[0]!.url).toBe(`https://objects.test/v1/member-folder-commits/${env}`);
+		expect(calls[0]!.init.method).toBe("POST");
+		expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe("Bearer member-token");
+		expect(new Headers(calls[0]!.init.headers).get("apikey")).toBeNull();
+		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+			schema: "qorpera.member-folder-commit/v1",
+			operationKey: "web:1",
+			units: [{ op: "mkdir", path: "drafts" }],
+		});
+		expect(() => folder.commit("has space", units, new AbortController().signal)).toThrow();
+		expect(() => folder.commit("web:2", [], new AbortController().signal)).toThrow();
+		const denied = client(() => new Response(null, { status: 403 })).folder.commit(
+			"web:3",
+			units,
+			new AbortController().signal,
+		);
+		await expect(denied).rejects.toBeInstanceOf(CloudMemberFolderAccessDenied);
+		// A lock conflict keeps its status, so the caller sends the same change set again with the same key.
+		const busy = client(() => new Response(null, { status: 409 })).folder.commit(
+			"web:4",
+			units,
+			new AbortController().signal,
+		);
+		await expect(busy).rejects.toMatchObject({ status: 409 });
+		await expect(busy).rejects.not.toBeInstanceOf(CloudMemberFolderAccessDenied);
+	});
+
+	it("reads the files through the member function", async () => {
+		const { folder, calls } = client(() =>
+			Response.json({ schema: "qorpera.member-company-state-folders/v1", agents: [], groups: [] }),
+		);
+		expect(await folder.stateFolders(new AbortController().signal)).toEqual({
+			agents: [],
+			groups: [],
+			routines: null,
+		});
+		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_company_state_folders");
+		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ p_environment_id: env });
 	});
 });
 

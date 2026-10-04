@@ -40,7 +40,17 @@ export interface CompanyFounding {
 		canManage: boolean;
 		canStart: boolean;
 	};
-	start: { startedAt: string; startedByUserId: string | null; revision: number; companyReady: boolean } | null;
+	start: {
+		startedAt: string;
+		startedByUserId: string | null;
+		revision: number;
+		companyReady: boolean;
+		/** The company's creation: still running, made, or failed (it waits for the operator). */
+		companySetup: "pending" | "ready" | "failed";
+		/** How the Co-Founder's first run stands once the company is made (null before, or on a cloud that does not
+		 * say): waiting for its run, started, never queued because no login of the starter could pay, or failed. */
+		firstRun: "queued" | "started" | "waiting_for_login" | "failed" | null;
+	} | null;
 }
 
 export interface FoundingTableEntry {
@@ -110,6 +120,20 @@ export function parseCompanyFounding(value: unknown): CompanyFounding {
 					startedByUserId: start.startedByUserId === null ? null : uuid(start.startedByUserId, "starter"),
 					revision: revision(start.revision),
 					companyReady: flag(start.companyReady, "company ready"),
+					companySetup:
+						start.companySetup === undefined
+							? flag(start.companyReady, "company ready")
+								? "ready"
+								: "pending"
+							: oneOf(start.companySetup, ["pending", "ready", "failed"] as const, "company setup"),
+					firstRun:
+						start.firstRun === undefined || start.firstRun === null
+							? null
+							: oneOf(
+									start.firstRun,
+									["queued", "started", "waiting_for_login", "failed"] as const,
+									"first run",
+								),
 				}
 			: null,
 	};
@@ -135,7 +159,7 @@ export class CompanyFoundingApi {
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
 	}
-	/** False until new companies are created on the company folder; the hub then keeps its old form. */
+	/** Whether new companies can start at a founding table now; false while the cloud has paused creating them. */
 	async available(): Promise<boolean> {
 		return flag(await this.#cloud.rpc("qorpera_company_founding_available"), "founding available");
 	}

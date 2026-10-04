@@ -8,7 +8,8 @@ import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts"
  * deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §2). Reads go to the member functions over PostgREST with the
  * member's own token; bytes come from the object gateway's member folder route, one manifest or chunk at a time, each
  * checked against its hash. Every answer is parsed with closed key sets, the shapes test 834 pins on the real SQL.
- * Browser-safe. Reads only: member writes come with P31.
+ * A member's change set goes to the object gateway's member commit route (P34a, §5), which stages it and commits it as
+ * the member; a change under human-tasks/ waits for P31. Browser-safe.
  */
 
 const SHA = SHA256_HEX_PATTERN;
@@ -22,15 +23,23 @@ const MAX_MANIFEST_BYTES = 32 * 1024;
 /** A full page of 1,000 entries or changes with long paths fits. */
 const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-export class CloudMemberFolderError extends Error {}
+export class CloudMemberFolderError extends Error {
+	/** The HTTP status that refused the call, or null when no answer did. A change set answered 409 (a lock conflict)
+	 * is sent again with the same operation key; 423 means the company is paused or being deleted. */
+	readonly status: number | null;
+	constructor(message: string, status: number | null = null) {
+		super(message);
+		this.status = status;
+	}
+}
 
 /** The database or the gateway refused this member (401 or 403): not an outage. */
 export class CloudMemberFolderAccessDenied extends CloudMemberFolderError {}
 
 function refusal(status: number, what: string): CloudMemberFolderError {
 	return status === 401 || status === 403
-		? new CloudMemberFolderAccessDenied(`${what} access is refused (${status})`)
-		: new CloudMemberFolderError(`${what} is unavailable (${status})`);
+		? new CloudMemberFolderAccessDenied(`${what} access is refused (${status})`, status)
+		: new CloudMemberFolderError(`${what} is unavailable (${status})`, status);
 }
 
 function invalid(what: string): never {
@@ -432,6 +441,169 @@ function path(value: string): string {
 }
 
 /** A member's client for one folder-v2 environment. */
+/** The live agents', group chats' and routines' files a member may read (P34a, P34r:
+ * `qorpera_member_company_state_folders`). A folder is its file's parent. `routines` is null where the cloud does not
+ * list routines' files yet (the web ships before the SQL): every routine then reads as read-only. */
+export interface CloudMemberCompanyStateFolders {
+	readonly agents: readonly { readonly staffAgentId: string; readonly file: string }[];
+	readonly groups: readonly { readonly roomId: string; readonly file: string }[];
+	readonly routines:
+		| readonly { readonly routineId: string; readonly staffAgentId: string; readonly file: string }[]
+		| null;
+}
+
+export function parseCloudMemberCompanyStateFolders(value: unknown): CloudMemberCompanyStateFolders {
+	const input = closed(value, ["schema", "agents", "groups"], ["routines"], "state folders");
+	if (
+		input.schema !== "qorpera.member-company-state-folders/v1" ||
+		!Array.isArray(input.agents) ||
+		!Array.isArray(input.groups) ||
+		(input.routines !== undefined && !Array.isArray(input.routines))
+	)
+		invalid("state folders");
+	return {
+		agents: input.agents.map((item) => {
+			const row = closed(item, ["staffAgentId", "file"], [], "agent folder");
+			return { staffAgentId: idOf(row.staffAgentId, "agent folder"), file: text(row.file, "agent folder") };
+		}),
+		groups: input.groups.map((item) => {
+			const row = closed(item, ["roomId", "file"], [], "group chat folder");
+			return { roomId: idOf(row.roomId, "group chat folder"), file: text(row.file, "group chat folder") };
+		}),
+		routines:
+			input.routines === undefined
+				? null
+				: (input.routines as unknown[]).map((item) => {
+						const row = closed(item, ["routineId", "staffAgentId", "file"], [], "routine file");
+						return {
+							routineId: idOf(row.routineId, "routine file"),
+							staffAgentId: idOf(row.staffAgentId, "routine file"),
+							file: text(row.file, "routine file"),
+						};
+					}),
+	};
+}
+
+/** One unit of a member's change set, as the member commit route takes it (P34a). Text is UTF-8, at most 64 KiB a
+ * file and 512 KiB a change set; the route stages it and gives every state file its parse. */
+export type CloudMemberFolderUnit =
+	| { readonly op: "write"; readonly path: string; readonly text: string; readonly expectedVersion?: string }
+	| { readonly op: "mkdir"; readonly path: string }
+	| {
+			readonly op: "new_folder";
+			readonly path: string;
+			readonly contents: readonly (
+				| { readonly path: string; readonly kind: "folder" }
+				| { readonly path: string; readonly kind: "file"; readonly text: string }
+			)[];
+	  }
+	| { readonly op: "delete"; readonly path: string; readonly expectedVersion?: string; readonly asOfSeq?: number }
+	| {
+			readonly op: "move";
+			readonly from: string;
+			readonly to: string;
+			readonly expectedVersion?: string;
+			readonly asOfSeq?: number;
+	  };
+
+export type CloudMemberFolderOutcome = "saved" | "conflict" | "refused" | "denied" | "waiting_for_review";
+const OUTCOMES: readonly CloudMemberFolderOutcome[] = ["saved", "conflict", "refused", "denied", "waiting_for_review"];
+
+/** A refusal's problems: a state file's parser codes, or the hook's rule codes, each `{line, key, code, message}`. */
+export interface CloudMemberFolderProblem {
+	readonly line: number | null;
+	readonly key: string | null;
+	readonly code: string;
+	readonly message: string;
+}
+
+export interface CloudMemberFolderUnitResult {
+	readonly unit: number;
+	readonly op: CloudMemberFolderUnit["op"];
+	readonly path: string;
+	readonly to: string | null;
+	readonly version: string | null;
+	readonly outcome: CloudMemberFolderOutcome;
+	readonly reason: string | null;
+	readonly problems: readonly CloudMemberFolderProblem[];
+}
+
+/** The core's answer to a change set (`qorpera.folder-commit/v1`): each unit saved or not on its own; `seq` null when
+ * none was saved. */
+export interface CloudMemberFolderCommit {
+	readonly commitId: string;
+	readonly seq: number | null;
+	readonly replay: boolean;
+	readonly units: readonly CloudMemberFolderUnitResult[];
+}
+
+function problems(value: unknown): CloudMemberFolderProblem[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || value.length > 51) invalid("commit problems");
+	// The commit strips nulls from each outcome: a problem without a line or key comes back without those keys.
+	return value.map((item) => {
+		const problem = closed(item, ["code", "message"], ["line", "key"], "commit problem");
+		const line = problem.line ?? null;
+		const key = problem.key ?? null;
+		if (
+			(line !== null && (!Number.isSafeInteger(line) || (line as number) < 1)) ||
+			(key !== null && typeof key !== "string") ||
+			typeof problem.code !== "string" ||
+			typeof problem.message !== "string"
+		)
+			invalid("commit problem");
+		return { line: line as number | null, key: key as string | null, code: problem.code, message: problem.message };
+	});
+}
+
+export function parseCloudMemberFolderCommit(
+	value: unknown,
+	units: readonly CloudMemberFolderUnit[],
+): CloudMemberFolderCommit {
+	const input = closed(value, ["schema", "commitId", "seq", "replay", "units"], [], "commit");
+	if (
+		input.schema !== "qorpera.folder-commit/v1" ||
+		typeof input.replay !== "boolean" ||
+		!Array.isArray(input.units) ||
+		input.units.length !== units.length
+	)
+		invalid("commit");
+	const results = input.units.map((item, index): CloudMemberFolderUnitResult => {
+		const unit = closed(
+			item,
+			["unit", "op", "path", "outcome"],
+			["to", "version", "reason", "problems"],
+			"commit unit",
+		);
+		if (
+			unit.unit !== index + 1 ||
+			unit.op !== units[index]?.op ||
+			typeof unit.path !== "string" ||
+			!OUTCOMES.includes(unit.outcome as CloudMemberFolderOutcome) ||
+			(unit.to !== undefined && typeof unit.to !== "string") ||
+			(unit.reason !== undefined && typeof unit.reason !== "string") ||
+			(unit.outcome === "saved") !== (unit.reason === undefined)
+		)
+			invalid("commit unit");
+		return {
+			unit: index + 1,
+			op: unit.op as CloudMemberFolderUnit["op"],
+			path: unit.path,
+			to: (unit.to as string | undefined) ?? null,
+			version: unit.version === undefined ? null : idOf(unit.version, "commit unit version"),
+			outcome: unit.outcome as CloudMemberFolderOutcome,
+			reason: (unit.reason as string | undefined) ?? null,
+			problems: problems(unit.problems),
+		};
+	});
+	const committed = input.seq === null ? null : seq(input.seq, "commit seq", 1);
+	if ((committed === null) !== results.every((unit) => unit.outcome !== "saved")) invalid("commit");
+	return { commitId: idOf(input.commitId, "commit id"), seq: committed, replay: input.replay, units: results };
+}
+
+/** A member's change set's operation key: what makes a retry of the same change set a replay, never a second change. */
+const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+
 export class CloudMemberFolderClient {
 	readonly #environmentId: string;
 	readonly #controlOrigin: string;
@@ -508,6 +680,55 @@ export class CloudMemberFolderClient {
 			{ p_path: path(pathValue), p_before: before, p_limit: limit },
 			signal,
 		).then((value) => parseCloudMemberFolderPathHistory(value, limit));
+	}
+
+	/** The live agents' and group chats' files the member may read (P34a). */
+	stateFolders(signal: AbortSignal): Promise<CloudMemberCompanyStateFolders> {
+		return this.#call("qorpera_member_company_state_folders", {}, signal).then(parseCloudMemberCompanyStateFolders);
+	}
+
+	/** Commits `units` as the member through the object gateway (P34a): each unit saved, refused or in conflict on its
+	 * own. Send the same `operationKey` again to retry the same change set. A change under human-tasks/ is refused
+	 * (access denied) until P31. */
+	commit(
+		operationKey: string,
+		units: readonly CloudMemberFolderUnit[],
+		signal: AbortSignal,
+	): Promise<CloudMemberFolderCommit> {
+		if (!OPERATION_KEY.test(operationKey) || !Array.isArray(units) || units.length < 1 || units.length > 16)
+			throw new CloudMemberFolderError("Invalid company folder change set");
+		const body = JSON.stringify({ schema: "qorpera.member-folder-commit/v1", operationKey, units });
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const token = await this.#token(requestSignal);
+				const init: RequestInit & Pick<Request, "cache"> = {
+					method: "POST",
+					headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+					body,
+					signal: requestSignal,
+					redirect: "error",
+					cache: "no-store",
+				};
+				const response = await this.#fetch(
+					`${this.#objectOrigin}/v1/member-folder-commits/${this.#environmentId}`,
+					init,
+				);
+				if (response.status !== 200) {
+					void response.body?.cancel().catch(() => undefined);
+					throw refusal(response.status, "Company folder change");
+				}
+				const bytes = await readBoundedCloudResponse(response, MAX_ANSWER_BYTES, requestSignal);
+				let value: unknown;
+				try {
+					value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+				} catch {
+					invalid("commit");
+				}
+				return parseCloudMemberFolderCommit(value, units);
+			},
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
 	/** The change sets, newest first. */

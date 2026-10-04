@@ -1803,7 +1803,7 @@ describe("companyStateSeedTree", () => {
 				"agents/co-founder/agent.md",
 				tree.find((entry) => entry.path === "agents/co-founder/agent.md")?.text ?? "",
 			),
-		).toMatchObject({ id: ANNA, agentKind: "co-founder", status: "active", colour: "blue", figure: "crown" });
+		).toMatchObject({ id: ANNA, agentKind: "co-founder", status: "active", colour: null, figure: "crown" });
 		expect(ok("agents/sections.md", tree.find((entry) => entry.path === "agents/sections.md")?.text ?? "")).toEqual({
 			kind: "sections",
 			sections: [],

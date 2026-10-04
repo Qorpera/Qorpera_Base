@@ -86,11 +86,13 @@ try {
 	const signatures={qorpera_provision_execution_runner:["p_run_id","p_client_runner_id","p_provider_adapter","p_activation_token_sha256"],
 		qorpera_reserve_runtime_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_run_id","p_runner_id"],
 		qorpera_reserve_runtime_node_machine:["p_allocation_id","p_provider_kind","p_provider_id","p_policy_sha256","p_instance_sha256","p_machine_id_sha256","p_cpu_millis","p_memory_bytes"],
-		qorpera_release_runtime_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256"]};
+		qorpera_release_runtime_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256"],
+		// G2-3: the guest's identity credential, bound by its hash right after the reservation.
+		qorpera_bind_native_identity_credential:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_holder_kind","p_credential_sha256"]};
 	const fetcher=async (input,init)=>{
 		init.signal?.throwIfAborted();
 		const url=new URL(String(input));assert.equal(url.origin,"https://fixture.invalid");assert.equal(init.redirect,"error");
-		const name=url.pathname.slice("/rest/v1/rpc/".length),args=JSON.parse(String(init.body)),keys=signatures[name];assert(keys);
+		const name=url.pathname.slice("/rest/v1/rpc/".length),args=JSON.parse(String(init.body)),keys=signatures[name];assert(keys,`unexpected database call ${name}`);
 		assert.deepEqual(Object.keys(args).sort(),[...keys].sort());
 		const result=JSON.parse(sql(`${service} select public.${name}(${keys.map(key=>quoted(args[key])).join(",")});`));
 		if(name==="qorpera_reserve_runtime_machine") companyCalls++;

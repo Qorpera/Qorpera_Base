@@ -50,6 +50,7 @@ function database(
 		claims?: unknown[];
 		answer?: unknown;
 		createThrows?: Error;
+		followUpThrows?: Error;
 		sealIncomplete?: boolean;
 		openInvalid?: boolean;
 	} = {},
@@ -71,6 +72,9 @@ function database(
 					return { schema: "qorpera.company-creation-release/v1", released: true };
 				case "qorpera_folder_company_creation_fail":
 					return { schema: "qorpera.company-creation-fail/v1", failed: true };
+				case "qorpera_folder_follow_up_now":
+					if (options.followUpThrows) throw options.followUpThrows;
+					return { schema: "qorpera.folder-follow-up/v1", result: "done" };
 				case "qorpera_folder_open_upload":
 					if (options.openInvalid) return { schema: "qorpera.folder-upload/v0" };
 					manifest = args.p_manifest as string;
@@ -288,6 +292,31 @@ describe("CompanyFolderCreator", () => {
 		).toEqual(["text/plain", "text/plain"]);
 		expect(named("qorpera_folder_company_creation_release")).toHaveLength(0);
 		expect(named("qorpera_folder_company_creation_fail")).toHaveLength(0);
+	});
+
+	it("kicks the follow-up queue for the new Co-Founder after a completed creation, best effort", async () => {
+		const { creator, calls, named } = database({ claims: [claim()] });
+		expect(await creator.createOne()).toBe(true);
+		expect(named("qorpera_folder_follow_up_now").map((call) => call.args)).toEqual([
+			{ p_environment_id: environmentId, p_subject_kind: "agent", p_subject_id: cofounderId },
+		]);
+		// After the create, in its own call.
+		expect(calls.at(-1)?.method).toBe("qorpera_folder_follow_up_now");
+		// A kick that fails changes nothing: the queue's step converges the Co-Founder.
+		const refused = database({ claims: [claim()], followUpThrows: new ObjectDependencyError(409) });
+		expect(await refused.creator.createOne()).toBe(true);
+		expect(refused.named("qorpera_folder_follow_up_now")).toHaveLength(1);
+		expect(refused.named("qorpera_folder_company_creation_release")).toHaveLength(0);
+		expect(refused.named("qorpera_folder_company_creation_fail")).toHaveLength(0);
+		// No kick for any other answer.
+		for (const state of ["failed", "stale", "retry"]) {
+			const other = database({
+				claims: [claim()],
+				answer: { schema: "qorpera.company-creation/v1", creationId, state, problem: "refused" },
+			});
+			expect(await other.creator.createOne()).toBe(true);
+			expect(other.named("qorpera_folder_follow_up_now")).toHaveLength(0);
+		}
 	});
 
 	it("reports nothing due", async () => {

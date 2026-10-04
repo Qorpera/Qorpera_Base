@@ -2548,7 +2548,7 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 				role: "Co-Founder",
 				agentKind: "co-founder",
 				status: "active",
-				colour: "blue",
+				colour: null,
 				figure: "crown",
 				model: null,
 				effort: null,

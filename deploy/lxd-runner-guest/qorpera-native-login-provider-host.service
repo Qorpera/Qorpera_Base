@@ -14,6 +14,8 @@ Environment=HOME=/var/lib/qorpera-native-provider
 EnvironmentFile=/var/lib/qorpera-bootstrap/native-provider.env
 LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
+LoadCredential=qorpera-native-identity:/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity
+LoadCredential=qorpera-native-identity-state:/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity-state
 LoadCredential=qorpera-native-provider-master-key:/var/lib/qorpera/identity/qorpera-native-provider-master-key
 LoadCredential=qorpera-native-identity-epoch:/var/lib/qorpera-bootstrap/native-identity-epoch.json
 LoadCredential=qorpera-identity-recovery-ca:/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca

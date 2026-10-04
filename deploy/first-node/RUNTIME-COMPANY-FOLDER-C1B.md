@@ -398,6 +398,27 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     version `FOR UPDATE`, so every path that reserves takes them here, before
     ranks 6 to 9 and the conversations. On `folder-v2` that is the run
     materializer (`qorpera_folder_materialize_company`, P28).
+
+    **Sign-ins** (P13, migration `20260930035000`): a sign-in
+    (`qorpera_native_provider_login_sessions`) or an account refresh request
+    (`qorpera_native_account_refresh_requests`) sits at rank 5 just before
+    item 6, `FOR UPDATE`. Its own epoch trigger, its completion and its repin
+    take it before the model login and the identity. A sign-in's or refresh's
+    machine also takes **the identity's machine lock**, a transaction advisory
+    lock rather than a row, after rank 1 and before the sign-in:
+    `pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' ||
+    <compute identity id>::text, 0))`. It keeps two machines of one identity
+    (one disk) apart, which the gc fence did before. A run's own machine
+    reservation takes the same lock, with the same key, when it leaves the gc
+    fence (C1c-3n).
+
+    One exception, which identity recovery (P13's second part) must respect:
+    a new sign-in's insert takes the identity `FOR SHARE` (its epoch trigger)
+    and then cancels the requester's earlier pending sign-ins of that identity
+    (`qorpera_supersede_member_provider_logins`), so it takes those sign-ins
+    after the identity. A path that holds a sign-in and then waits for the
+    identity in a mode that conflicts with `FOR SHARE` (`FOR NO KEY UPDATE`,
+    `FOR UPDATE`) must not hold an earlier pending sign-in of the same user.
 - **Keys.** A uuid table's key is the uuid as text (resources, grants,
   rooms, routines). Keys with no single uuid are encoded:
   - members: `profile_id:user_id`;
@@ -1150,6 +1171,12 @@ by a machine.
   - Coding commits during a leased turn record the turn (`turn_run_id` on the
     commit), for attribution. Their authority is still the coding rule's,
     and `run_id` stays empty: the save acts detached.
+  - **Amended by P29 (4 October 2026):** `turn_run_id` is also the causal
+    parent of the wakes such a commit causes (file-change wakes,
+    `RUNTIME-COMPANY-FOLDER-LISTENER.md` §5), so self-trigger fencing applies
+    to it: an agent's coding save never wakes that agent, and a chain keeps
+    its provenance instead of starting fresh. Nothing bounds a chain's length
+    since 24 September (LISTENER §5).
 - **Every view commit rechecks the view's read set at rank 10**, and one
   run's set besides (`qorpera_folder_view_reads_current`, same rules as the
   run's). The run's set is checked under that run's own authority (its
