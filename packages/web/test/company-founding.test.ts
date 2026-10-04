@@ -529,7 +529,7 @@ describe("founding table", () => {
 		await settle();
 		let text = visibleText(container);
 		expect(text).toContain("Nordlys Kaffe could not be set up");
-		expect(text).toContain("Setting up Nordlys Kaffe failed.");
+		expect(text).toContain("Setting up Nordlys Kaffe failed. It waits for us to set it up again");
 		expect(text).not.toContain("Preparing Nordlys Kaffe");
 		// The operator requeued it, and it was made; no login of the starter could pay for the first run.
 		start = { companyReady: true, companySetup: "ready", firstRun: "waiting_for_login" };
@@ -543,6 +543,44 @@ describe("founding table", () => {
 		await controller!.refresh();
 		await settle();
 		expect(visibleText(container)).not.toContain("The Co-Founder has not started");
+		start = { companyReady: true, companySetup: "ready", firstRun: "failed" };
+		await controller!.refresh();
+		await settle();
+		expect(visibleText(container)).toContain("The Co-Founder's first run did not start.");
+	});
+
+	it("keeps reading a made company while its first run is queued, so a failure shows, and stops after", async () => {
+		vi.useFakeTimers();
+		let firstRun = "queued";
+		const reads = vi.fn();
+		mount((name) => {
+			if (name === "qorpera_read_company_founding") reads();
+			return wire({
+				phase: "started",
+				vision: "",
+				waitingFor: [],
+				me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+				start: {
+					startedAt: "2026-09-28T18:00:00Z",
+					startedByUserId: me,
+					revision: 4,
+					companyReady: true,
+					companySetup: "ready",
+					firstRun,
+				},
+			});
+		});
+		await vi.advanceTimersByTimeAsync(10);
+		const first = reads.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(reads.mock.calls.length).toBeGreaterThan(first);
+		firstRun = "failed";
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(visibleText(container)).toContain("The Co-Founder's first run did not start.");
+		// Settled: no more reads.
+		const settled = reads.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(reads.mock.calls.length).toBe(settled);
 	});
 });
 
@@ -600,6 +638,21 @@ describe("hub with founding tables", () => {
 		expect(cloud.rpc).not.toHaveBeenCalled();
 		expect(hub.store.get().error).toBe("Creating a company is paused. Try again later.");
 		hub.dispose();
+	});
+
+	it('drops a creation the old "create at once" form left, so it never blocks a table', () => {
+		const { api } = fixture();
+		const key = `qorpera-web-creation/v1/${api.cloud.config.projectUrl}/${me}`;
+		sessionStorage.setItem(key, JSON.stringify({ name: "Old", clientCreationId: id(950) }));
+		const hub = new HubController(api, me);
+		expect(hub.store.get().creationRetry).toBeUndefined();
+		expect(sessionStorage.getItem(key)).toBeNull();
+		hub.dispose();
+		sessionStorage.setItem(key, JSON.stringify({ name: "Table", clientCreationId: id(951), table: true }));
+		const kept = new HubController(api, me);
+		expect(kept.store.get().creationRetry).toEqual({ name: "Table", clientCreationId: id(951) });
+		kept.dispose();
+		sessionStorage.removeItem(key);
 	});
 
 	it("asks whether tables are on at every press, never from an older read", async () => {

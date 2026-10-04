@@ -503,10 +503,16 @@ charged before it (20260930010000).
   `joined`, `role`, `ready`, `modelLoginReady`, `creator`), `waitingFor`, `me`
   (`state`, `canEdit`, `canManage`, `canStart`) and `start` (`startedAt`,
   `startedByUserId`, `revision`, `clientStartId`, `companyReady`,
-  `companySetup`) once started. `companySetup` is `pending` while the company
-  is set up, `ready` once it is (then `companyReady` is true), or `failed` when
-  setup stopped and waits for Qorpera, or the company was deleted before it was
-  set up; a failed setup keeps the company hidden.
+  `companySetup`, `firstRun`) once started. `companySetup` is `pending` while
+  the company is set up, `ready` once it is (then `companyReady` is true), or
+  `failed` when setup stopped and waits for Qorpera, or the company was deleted
+  before it was set up; a failed setup keeps the company hidden. `firstRun`
+  (20260930039000) is how the Co-Founder's first run stands once the company is
+  made: `queued` (its turn request waits for a run), `started` (a run took the
+  kickoff, whatever that run's outcome), `waiting_for_login` (no login of the
+  starter could pay when the company was made, so nothing was queued), `failed`
+  (the request or the kickoff failed, or the request was cancelled), or null
+  before the company is made.
   Anyone with a seat, invited or joined, may read it; after Start only founders
   who are still members.
 - `qorpera_list_company_foundings()` → the caller's open tables and
@@ -515,7 +521,10 @@ charged before it (20260930010000).
   p_company_name, p_vision)`, `qorpera_set_founder_role(p_profile_id,
   p_expected_revision, p_role)` (at most 300 characters) and
   `qorpera_set_founder_ready(p_profile_id, p_expected_revision, p_ready)`.
-  A stale revision is `PT412`. Ready needs the caller's own usable ChatGPT
+  A stale revision is `PT412`. A name is refused (`22023`) as Open and the
+  seed refuse it: more than 120 characters, a control character or line
+  separator, or nothing but spaces (20260930039000). Ready needs the caller's
+  own usable ChatGPT
   account (`55000` otherwise; a missing `p_ready` is `22023`) and holds only
   for that revision: a change to the name, description, a role or who sits at
   the table clears every Ready.

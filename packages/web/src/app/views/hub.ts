@@ -7,6 +7,7 @@ import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../..
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
+import { lobbyError } from "../founding.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
@@ -231,7 +232,7 @@ export class HubController {
 			void this.refresh();
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
 		} catch (error) {
-			this.store.set({ creating: undefined, creationRetry: this.#creation, error: describeError(error) });
+			this.store.set({ creating: undefined, creationRetry: this.#creation, error: lobbyError(error) });
 		}
 	}
 }
@@ -393,9 +394,11 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 						{ class: "hub-lead" },
 						invited
 							? t("Join a company you have been invited to, or start one of your own.")
-							: t(
-									"Give it a name. Your co-founders join you at its table, and it starts when everyone is ready.",
-								),
+							: state.foundingAvailable === false
+								? t("Creating a company is paused. Try again later.")
+								: t(
+										"Give it a name. Your co-founders join you at its table, and it starts when everyone is ready.",
+									),
 					),
 					invited ? h("div", { class: "invite-list" }, ...invitations) : null,
 					invited ? h("div", { class: "hub-or", "aria-hidden": "true" }, h("span", null, t("or"))) : null,
@@ -454,7 +457,13 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					},
 					h("span", { class: "company-new-mark", "aria-hidden": "true" }, "+"),
 					h("span", { class: "company-name" }, t("New company")),
-					h("span", { class: "muted small" }, t("Opens a table for you and your co-founders")),
+					h(
+						"span",
+						{ class: "muted small" },
+						state.foundingAvailable === false
+							? t("Creating a company is paused. Try again later.")
+							: t("Opens a table for you and your co-founders"),
+					),
 				);
 	replace(
 		container,

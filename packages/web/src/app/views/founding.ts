@@ -755,7 +755,7 @@ export class FoundingView {
 							? notice(
 									"danger",
 									t(
-										"Setting up {name} failed. We have been told and are looking at it; nothing you did caused it.",
+										"Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.",
 										{
 											name: table.companyName,
 										},

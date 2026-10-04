@@ -9,8 +9,9 @@
 --
 -- And L2: the founders' table says how the Co-Founder's first run stands (start.firstRun), so the web can say when it
 -- could not start on its own, instead of a silent thread: `queued` (its turn request waits for the materializer),
--- `started` (a run took the kickoff), `waiting_for_login` (no usable login when the company was created, so no turn
--- request), `failed` (the request or the kickoff failed), or null before the creation wrote the first run.
+-- `started` (a run took the kickoff, whatever that run's outcome: a failed run shows in the thread), `waiting_for_login`
+-- (no usable login when the company was created, so no turn request), `failed` (the request or the kickoff failed, or
+-- the request was cancelled or its kickoff released), or null before the creation wrote the first run.
 -- The inserted text names this migration (20260930039000), for deploy guards.
 
 set local lock_timeout = '3s';
