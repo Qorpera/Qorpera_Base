@@ -147,7 +147,7 @@ begin
 	v_count := public.qorpera_end_company_machine_commands(v_machine, 'observed', p_ended);
 	update public.qorpera_company_machine_commands set busy_at = v_at
 	where machine_id = v_machine.id and ended_at is null
-		and id in (select (id #>> '{}')::uuid from jsonb_array_elements(p_busy_commands) id);
+		and id in (select (busy.value #>> '{}')::uuid from jsonb_array_elements(p_busy_commands) busy);
 	get diagnostics v_busy = row_count;
 	if v_busy > 0 or p_outside_busy then
 		update public.qorpera_company_machines set last_used_at = v_at,

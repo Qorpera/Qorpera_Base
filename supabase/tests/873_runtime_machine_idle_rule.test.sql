@@ -96,9 +96,10 @@ $$;
 -- A command as qorpera_authorize_machine_command records its start.
 create function pg_temp.started(p_n integer, p_head text, p_run uuid default '64800000-0000-4000-8000-0000000000f1') returns void
 language sql as $$
-	insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify)
+	insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify,
+		requested_by_user_id)
 	values (pg_temp.command(p_n), '87300000-0000-4000-8000-0000000000a1', p_run, '64800000-0000-4000-8000-0000000000a1',
-		(pg_temp.placement()).id, p_head, false)
+		(pg_temp.placement()).id, p_head, false, '64800000-0000-4000-8000-000000000002')
 $$;
 create function pg_temp.command_row(p_n integer) returns public.qorpera_company_machine_commands language sql as $$
 	select * from public.qorpera_company_machine_commands where id = pg_temp.command(p_n)
@@ -138,6 +139,17 @@ select pg_temp.check(pg_temp.record('[]', jsonb_build_array(pg_temp.command(2)),
 select pg_temp.idle();
 select pg_temp.check(pg_temp.record('[]', jsonb_build_array(extensions.gen_random_uuid()), false) ->> 'busy' = '0'
 	and (pg_temp.machine()).last_used_at < clock_timestamp() - interval '1 hour', 'a busy id that is no open command here counts nothing');
+-- A busy id of another machine's command counts nothing here either.
+begin;
+insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+	started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state)
+values ('87300000-0000-4000-8000-0000000000a2', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'm-873b',
+	'Another', '64800000-0000-4000-8000-0000000000a1', '64800000-0000-4000-8000-0000000000f1', extensions.gen_random_uuid(),
+	'64800000-0000-4000-8000-000000000002', 1, 1073741824, 10737418240, 'standard', 'task', 'stopped');
+update public.qorpera_company_machine_commands set machine_id = '87300000-0000-4000-8000-0000000000a2' where id = pg_temp.command(1);
+select pg_temp.check(pg_temp.record('[]', jsonb_build_array(pg_temp.command(1)), false) ->> 'busy' = '0'
+	and (pg_temp.command_row(1)).busy_at is null, 'another machine''s command is not this one''s');
+rollback;
 select pg_temp.check(pg_temp.record('[]', '[]', true) ->> 'busy' = '0'
 	and (pg_temp.machine()).last_used_at > clock_timestamp() - interval '1 minute'
 	and (pg_temp.machine()).outside_busy_at > clock_timestamp() - interval '1 minute',
@@ -235,9 +247,9 @@ begin
 		and jsonb_array_length(v_work -> 'machineStopped') = 1, 'what another run took is not told again');
 	-- At most 32 a run, oldest first.
 	insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify,
-		started_at, ended_at, state, end_reason)
+		requested_by_user_id, started_at, ended_at, state, end_reason)
 	select extensions.gen_random_uuid(), '87300000-0000-4000-8000-0000000000a1', (pg_temp.run()).id, (pg_temp.run()).staff_agent_id,
-		(pg_temp.placement()).id, 'job ' || n, clock_timestamp() - interval '2 hours',
+		(pg_temp.placement()).id, 'job ' || n, false, '64800000-0000-4000-8000-000000000002', clock_timestamp() - interval '2 hours',
 		clock_timestamp() - interval '1 hour' + n * interval '1 second', 'lost', 'slept'
 	from generate_series(1, 40) n;
 	v_work := pg_temp.open_work();
