@@ -33,7 +33,7 @@ or billing data is synthesized here.
 | Native model invocation | Start/end/status/safe error for the logical turn, including its tool work, retries and compaction. Available native thread-total counters are retained as snapshots. |
 | Major tools | Separate attempt IDs and timing, safe outcome/category, and validated read or operation-receipt links. Protected proposals remain proposed; confirmed receipt/message replays are not new effects. |
 | Enforcement | Run/context authorization and native result-fence observations. Post-effect result-release denial is separate from an already-confirmed effect. A passed pre-request fence is not proof that the provider received a request. |
-| Human Company File | Canonical member-command/actor/resource/revision queries, complemented by the gateway's bounded request-observation window for read/apply attempts, including denials and transport failures. |
+| Human Company File | Canonical member commits on the company folder (since `20260930032000`; member-command/actor/resource/revision queries before), complemented by the gateway's bounded request-observation window for read/apply attempts, including denials and transport failures. |
 | Provider node | Current CPU delta, OS memory and provider-root-filesystem free space, each with its own sample time, availability and freshness. Existing gateway dependency health reports storage/authority failures separately. |
 
 `qorpera.runtime-observation/v1` is a closed metadata object. It contains UUID
@@ -60,8 +60,8 @@ Direct observation-table/sequence access is also revoked from API roles.
 | Interface | Result |
 | --- | --- |
 | `qorpera_record_runtime_observation(run_id, observation)` | Immutable attempt/phase ingestion with a closed, exact acknowledgement. Duplicate delivery cannot create another event; changed replay is rejected. |
-| `qorpera_get_runtime_operational_run(run_id, limit)` | Linked canonical run/job/admission/assignment/compute/bundle and bounded diagnostic, receipt, revision, read, proposal and public-send sections. |
-| `qorpera_get_company_operational_commands(company_id, limit)` | Canonical human command status, actor/resource/version and exact applied-revision linkage without copying the command or file. |
+| `qorpera_get_runtime_operational_run(run_id, limit)` | Linked canonical run/job/admission/assignment/compute/bundle and bounded diagnostic, receipt, commit, review, read-set and public-send sections. Since migration `20260930032000` (schema v2, folder core C4 P32) the company work is the folder core's: `commits` (the run's folder commits, and a coding view's commits during its leased turn marked `turnRunId`, with their path versions, never a path or operation key), `reviews` (the class SQL decided and a member's answer), `readSets` (the read records its releases filed, as versions), `canonicalResult.outputCommitId` and `identity.companySeq`. |
+| `qorpera_get_company_operational_commands(company_id, limit)` | Since `20260930032000` (schema v2): the company's members' own folder commits (seq, actor, requester, approver, units, time), without copying the change or a file. A company that is not `folder-v2` is refused. |
 | `qorpera_purge_runtime_observations(limit)` | Bounded deletion of eligible optional diagnostics only; never authority, receipts, reads, revisions or public sends. |
 | `qorpera_record_runtime_observation_batch(run_id, observations)` | Migration `20260928319370`. Up to 50 events of one run in one call, each recorded, replayed or refused by the single-row function exactly as one call would be; one receipt or refusal (`22023`, `42501`, `23505`) per event, in order. The runtime sends only this; the single-row function stays for older runners. |
 | `qorpera_run_runtime_observation_retention()` | Migration `20260928319370`. The purge's rows only, 200 at a time, at most 25 batches and about two seconds a call, one call at a time. Run by pg_cron; service-only by hand. |
