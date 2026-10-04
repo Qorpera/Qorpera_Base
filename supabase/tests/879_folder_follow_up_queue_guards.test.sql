@@ -68,7 +68,7 @@ begin
 			or has_table_privilege(v_role, 'public.qorpera_folder_follow_ups', 'select,insert,update,delete') then
 			raise exception 'The queue''s tables are open to %', v_role; end if;
 		foreach v_fn in array array[
-			'public.qorpera_folder_converge_agent(uuid,uuid,uuid)', 'public.qorpera_folder_converge_company(uuid)',
+			'public.qorpera_folder_converge_agent(uuid,uuid,uuid,boolean)', 'public.qorpera_folder_converge_company(uuid)',
 			'public.qorpera_folder_follow_up_take(uuid,text,uuid)', 'public.qorpera_folder_follow_up_converge(public.qorpera_folder_follow_ups)',
 			'public.qorpera_folder_follow_up_open(uuid)', 'public.qorpera_folder_follow_up_step()',
 			'public.qorpera_folder_follow_up_kick(uuid,text,uuid)', 'public.qorpera_folder_follow_up_mark_firing(uuid,uuid)',

@@ -1925,7 +1925,8 @@ For an **active agent whose folder is live**:
     active, so the member whose change made the agent active authors and pays, even when the mark of an earlier save
     that left it archived is consumed in the same step. It is set once, while still null; a mark with no `by` (routine
     firing's) never sets it. If that member has left, the kickoff is authored by the owner
-    with no turn request, and `last_problem` says why; an owner starts it as today.
+    with no turn request, and `last_problem` says why; an owner starts it as today. The work row keeps that first run
+    manual (`first_run_manual`), so no later converge (an archive and a reactivation) queues it on the owner's login.
   - **Start** (`qorpera_start_agent_first_run`) must not queue a turn before the grant: P28 part 2, which gives Start
     its folder-v2 order (C4-RUNS §5), takes the session before the input and refuses with a retry while the agent's
     subject has marks or a dirty work row, or its default grant is missing. If it kicks the converge, it does so in a

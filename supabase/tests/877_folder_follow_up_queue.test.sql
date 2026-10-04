@@ -286,6 +286,15 @@ begin
 		raise exception 'A hirer gone: % / %', v, to_jsonb(w); end if;
 	perform pg_temp.fx($q$insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
 		('70700000-0000-4000-8000-000000000010','70700000-0000-4000-8000-000000000002','todos-member@example.test','Member','contributor')$q$);
+	-- That first run stays its owner's to start: archived and reactivated later, the queue still queues no turn, though the
+	-- owner has a login.
+	if not (pg_temp.work(a5)).first_run_manual then raise exception 'The owner''s stand-in first run is not kept manual'; end if;
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'archive-a5-0001', jsonb_build_array(pg_temp.agent('ed', a5, 'archived'))), 1, 'saved');
+	perform pg_temp.step();
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'reactivate-a5-0001', jsonb_build_array(pg_temp.agent('ed', a5, 'active'))), 1, 'saved');
+	v := pg_temp.step();
+	if v ->> 'result' is distinct from 'done' or pg_temp.turn(a5) is not null or not (pg_temp.work(a5)).first_run_manual then
+		raise exception 'A later converge charged someone for a manual first run: % / %', v, to_jsonb(pg_temp.turn(a5)); end if;
 end $$;
 
 -- 5. Saved archived by one member and activated by another before the step: the activating member authors and pays -------
@@ -581,10 +590,15 @@ begin
 		or (select name from public.qorpera_profiles where id = '70700000-0000-4000-8000-000000000010') is distinct from 'Nordlys Kaffe'
 		or (pg_temp.work('70700000-0000-4000-8000-000000000010', 'company')).dirty then
 		raise exception 'The step copies the name: %', v; end if;
-	-- A save that keeps the name marks nothing.
+	-- Every vision write marks the company (a comparison with the copied name could miss a rename back while a copy is in
+	-- flight, 878 K); one that keeps the name converges to nothing.
 	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'rename-0002', jsonb_build_array(pg_temp.write('vision/vision.md', 'vision',
 		E'# Nordlys Kaffe\n\nCoffee.\n', '{"kind":"vision","name":"Nordlys Kaffe"}', pg_temp.version('vision/vision.md')))), 1, 'saved');
-	if pg_temp.marked('70700000-0000-4000-8000-000000000010', 'company') <> 0 then raise exception 'An unchanged name marks the company'; end if;
+	if pg_temp.marked('70700000-0000-4000-8000-000000000010', 'company') <> 1 then raise exception 'A vision write marks the company'; end if;
+	v := pg_temp.step();
+	if v ->> 'result' is distinct from 'done'
+		or (select name from public.qorpera_profiles where id = '70700000-0000-4000-8000-000000000010') is distinct from 'Nordlys Kaffe' then
+		raise exception 'An unchanged name converges to nothing: %', v; end if;
 end $$;
 
 -- 11. The commit kick: one subject a call, the company's first, until none remain ------------------------------------------

@@ -75,6 +75,9 @@ create table public.qorpera_folder_follow_ups (
 	failing_since timestamptz,
 	-- The member whose change made the agent active: the author and payer of its first run.
 	hired_by_user_id uuid,
+	-- A first run its owner authored because no member was named, or the one named had left: never queued on anyone's
+	-- login by the queue, at any later converge either (its author starts it).
+	first_run_manual boolean not null default false,
 	updated_at timestamptz not null default clock_timestamp(),
 	primary key (environment_id, subject_kind, subject_id)
 );
@@ -98,11 +101,10 @@ select pg_temp.p15_replace('public.qorpera_folder_structured_apply(uuid,uuid,int
 					v_version, v_entry -> 'parse', v_actor);$old$,
 	$new$				on conflict (environment_id) do update set name = excluded.name, vision_path_version = excluded.vision_path_version,
 					vision_seeded = false, commit_id = excluded.commit_id, updated_at = clock_timestamp();
-				-- 20260930022000 (P15): the company's name reaches qorpera_profiles through the follow-up queue.
-				if (select p.name from public.qorpera_profiles p where p.id = v_profile) is distinct from v_entry -> 'parse' ->> 'name' then
-					insert into public.qorpera_folder_follow_up_marks(environment_id, subject_kind, subject_id, by_user_id, commit_id)
-					values (p_environment_id, 'company', v_profile, v_user, p_commit_id);
-				end if;
+				-- 20260930022000 (P15): the company's name reaches qorpera_profiles through the follow-up queue. Every vision
+				-- write marks it: a comparison with the copied name could miss a rename back while a copy is in flight.
+				insert into public.qorpera_folder_follow_up_marks(environment_id, subject_kind, subject_id, by_user_id, commit_id)
+				values (p_environment_id, 'company', v_profile, v_user, p_commit_id);
 			elsif v_kind = 'agent' then
 				-- 20260930022000 (P15): the agent's follow-up mark when the save hires, archives, reactivates or restores it.
 				select s.employment_status, s.folder_retired_at is not null into v_p15_status, v_p15_retired
@@ -354,7 +356,8 @@ select pg_temp.p15_replace('public.qorpera_list_hosted_profiles()'::regprocedure
 -- and compares the row under its lock with what it read: a change since ends as a retry, which counts no attempt. It never
 -- takes the folder clock: it returns the default grant's journal changes, which the caller writes at its top level.
 -- Answers {result: done | retry | dirty, changes, problem}.
-create function public.qorpera_folder_converge_agent(p_environment_id uuid, p_staff_agent_id uuid, p_hired_by uuid)
+create function public.qorpera_folder_converge_agent(p_environment_id uuid, p_staff_agent_id uuid, p_hired_by uuid,
+	p_first_run_manual boolean)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_profile uuid; v_staff public.qorpera_profile_staff%rowtype; v_locked public.qorpera_profile_staff%rowtype;
@@ -387,7 +390,9 @@ begin
 				v_problem := case when v_author is null then 'no_hirer' else 'hirer_left' end; v_author := v_owner; end if;
 		else
 			select * into v_input from public.qorpera_session_inputs where id = v_first.input_id;
-			v_turn := v_input.kind = 'kickoff' and v_input.completed_at is null and v_input.failed_at is null
+			-- (Never for a first run its owner authored in place of a member: no login was chosen for it.)
+			v_turn := not coalesce(p_first_run_manual, false) and v_input.kind = 'kickoff' and v_input.completed_at is null
+				and v_input.failed_at is null
 				and v_input.execution_run_id is null and v_input.turn_id is null
 				and not exists (select 1 from public.qorpera_session_turn_requests r where r.input_id = v_input.id);
 			v_author := v_input.author_user_id;
@@ -545,9 +550,9 @@ begin
 				where s.profile_id = v_profile and s.staff_agent_id = p_staff_agent_id::text and s.status = 'closed'));
 	end if;
 	return jsonb_build_object('result', case when v_skipped then 'dirty' else 'done' end, 'changes', v_changes,
-		'problem', v_problem);
+		'problem', v_problem, 'firstRunManual', v_kickoff and v_problem is not null);
 end $$;
-revoke all on function public.qorpera_folder_converge_agent(uuid, uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_folder_converge_agent(uuid, uuid, uuid, boolean) from public, anon, authenticated, service_role;
 
 -- Converging the company's name: a plain compare first; only when they differ, the company row FOR NO KEY UPDATE SKIP
 -- LOCKED (core §3's one named exception), the compare again and the update. Called at the step's top level, never inside
@@ -620,7 +625,8 @@ begin
 		v_out := public.qorpera_folder_converge_company(p_work.environment_id);
 	else
 		begin
-			v_out := public.qorpera_folder_converge_agent(p_work.environment_id, p_work.subject_id, p_work.hired_by_user_id);
+			v_out := public.qorpera_folder_converge_agent(p_work.environment_id, p_work.subject_id, p_work.hired_by_user_id,
+				p_work.first_run_manual);
 			-- (An answer that changed nothing, a retry included, lists no changes.)
 			v_out := v_out || jsonb_build_object('changes', coalesce(v_out -> 'changes', '[]'::jsonb));
 			if jsonb_typeof(v_out -> 'changes') is distinct from 'array'
@@ -655,6 +661,7 @@ begin
 		last_problem = case when v_result in ('done', 'failed') then v_out ->> 'problem' else last_problem end,
 		last_attempt_at = clock_timestamp(),
 		converged_at = case when v_result = 'done' then clock_timestamp() else converged_at end,
+		first_run_manual = first_run_manual or (v_result = 'done' and coalesce((v_out ->> 'firstRunManual')::boolean, false)),
 		failing_since = case when v_result = 'failed' then coalesce(failing_since, clock_timestamp())
 			when v_result = 'done' then null else failing_since end,
 		updated_at = clock_timestamp()

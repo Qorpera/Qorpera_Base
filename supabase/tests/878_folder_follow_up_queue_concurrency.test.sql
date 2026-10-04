@@ -448,6 +448,34 @@ begin
 				where owner_staff_agent_id = a4); end if;
 end $$;
 
+-- K. A rename back while a copy is in flight: the first rename's copy is still uncommitted when the name goes back; the
+-- second save marks the company all the same (every vision write does), so the copy that ends last is the current name.
+
+select pg_temp.expect(pg_temp.save(pg_temp.owner(), 'race-rename-k1', jsonb_build_array(pg_temp.vision('Nordlys Kappa'))), 1, 'saved') \g /dev/null
+do $$
+declare v_text text;
+begin
+	-- The copy of the first rename, held open.
+	perform dblink_exec('rrace_hold', 'begin');
+	select r into v_text from dblink('rrace_hold', current_setting('qorpera_test.step')) as t(r text);
+	if v_text::jsonb -> 'converged' ->> 'subjectKind' is distinct from 'company' or v_text::jsonb -> 'converged' ->> 'result' is distinct from 'done' then
+		raise exception 'Fixture: the copy in flight: %', v_text; end if;
+end $$;
+-- The name goes back meanwhile (the committed company row still has the old name).
+select pg_temp.expect(pg_temp.save(pg_temp.owner(), 'race-rename-k2', jsonb_build_array(pg_temp.vision('Nordlys Round 16'))), 1, 'saved') \g /dev/null
+do $$
+declare v_text text;
+begin
+	perform dblink_exec('rrace_hold', 'commit');
+	if (select name from public.qorpera_profiles where id = '70900000-0000-4000-8000-000000000010') is distinct from 'Nordlys Kappa' then
+		raise exception 'Fixture: the first copy landed'; end if;
+	select r into v_text from dblink('rrace_sched', current_setting('qorpera_test.step')) as t(r text);
+	if (select name from public.qorpera_profiles where id = '70900000-0000-4000-8000-000000000010') is distinct from 'Nordlys Round 16'
+		or (select name from public.qorpera_folder_company_index where environment_id = '70900000-0000-4000-8000-000000000020')
+			is distinct from 'Nordlys Round 16' then
+		raise exception 'A rename back was lost: %', v_text; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['rrace_sched','rrace_save','rrace_hold','rrace_step2','rrace_name']) name;
 
 -- The committed fixture leaves the shared suite database.
