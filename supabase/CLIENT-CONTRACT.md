@@ -799,7 +799,7 @@ Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPA
 answers 42501 "Company folder is unavailable" for a caller who is not a member of a folder-v2 company with that
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
 looks absent in every answer. Members write through the object gateway's member commit route (P34a,
-`20260930021000_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
+`20260928479130_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
 a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,
