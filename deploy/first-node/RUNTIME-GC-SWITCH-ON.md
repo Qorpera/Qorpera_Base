@@ -189,7 +189,9 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
 
 ### 2.1 Before the switch
 
-1. **v172 has rolled.** It carries P17 (conflict copies root their bytes) and P18d (erasure of conflict copies).
+1. **v172 has rolled** (live 4 October). P17 (conflict copies) and P18d (their erasure) ride v173, and folder GC
+   need not wait for them: until P17 is live nothing keeps a conflict copy, and P17's own migration adds the copies to
+   the root check (`qorpera_folder_object_rooted`) before it keeps any.
 2. **Part 1 is done:** the worker runs on its schedule with both gateway secrets, and the mux's `/v1/folder-gc/`
    location answers 401 without a token (1.3, step 1).
 3. **The gateway is healthy:** `GET /healthz` on node 1's gateway: `folderGc.degraded` false and
