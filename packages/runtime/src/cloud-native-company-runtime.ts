@@ -354,9 +354,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// Only a typed, cloud-authorized file event selects an initial path.
 				// Other paths become relevant through live file tools; do not guess them
 				// from untrusted message text or enumerate the whole company.
+				const changes =
+					wake.kind === "routine" && wake.source.kind === "company-file" ? wake.payload.changes : undefined;
+				const firstChange = Array.isArray(changes)
+					? (changes[0] as Record<string, unknown> | undefined)
+					: undefined;
 				const initialPresence =
-					wake.kind === "routine" && wake.source.kind === "company-file" && typeof wake.payload.path === "string"
-						? await observeCloudCompanyPathPresence(presence, wake.payload.path, "object", "reading", signal)
+					typeof firstChange?.path === "string"
+						? await observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
 						: undefined;
 				const gateway = new CloudCompanyPathGateway({
 					presence,
