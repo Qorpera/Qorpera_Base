@@ -191,6 +191,9 @@ delete from public.qorpera_session_turn_requests where profile_id = '70900000-00
 delete from public.qorpera_agent_first_runs where profile_id = '70900000-0000-4000-8000-000000000010';
 delete from public.qorpera_session_inputs where session_id in (select id from public.qorpera_shared_sessions
 	where profile_id = '70900000-0000-4000-8000-000000000010');
+-- P15's follow-up queue rows (no foreign keys).
+delete from public.qorpera_folder_follow_up_marks where environment_id = '70900000-0000-4000-8000-000000000020';
+delete from public.qorpera_folder_follow_ups where environment_id = '70900000-0000-4000-8000-000000000020';
 delete from public.qorpera_shared_sessions where profile_id = '70900000-0000-4000-8000-000000000010';
 delete from public.qorpera_profile_staff where profile_id = '70900000-0000-4000-8000-000000000010';
 set session_replication_role = origin;
