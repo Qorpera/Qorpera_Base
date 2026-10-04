@@ -90,9 +90,14 @@ P17 keeps a write's or new folder's files on its receipt when its version check 
 `qorpera_folder_conflict_copies`, at the path each would have stored (`key_text`), keyed by commit, unit and file. They
 hold bytes of that path's history as versions do, so a root erases them with its versions:
 - **Position.** A copy lies at its commit's `(seq, unit_no)` when the commit saved something. A commit that saved
-  nothing has no seq; its copies were decided against the folder as of its `as_of_seq` (the clock it read under its
-  locks), so they lie after every row of that seq (`qorpera_folder_erasure_copy_before`). So under a deleted root
-  every copy goes; under a live root a copy whose check saw the current life stays with it, and one from before it goes.
+  nothing has no seq and is placed by its time, as phase 2 places it to scrub its units: before the root's `cutoffAt`
+  (the request's as-of time for a deleted root, the life-start commit's time for a live one;
+  `qorpera_folder_erasure_copy_before`). The commit row is written after its path locks, and the copy's commit meets
+  the request, or the life-start commit, at a path lock, so the times follow the order in which they held the path. Its
+  `as_of_seq` would not do: it is a plain read before the commit's locks, so a commit that lost a race to create the
+  path, or came after the request, carries an earlier one (review r1; tests 884 E7 and 909 §5). So under a deleted
+  root every copy made before the request goes and one made after it stays; under a live root a copy made in the
+  current life stays with it, and one from before it goes.
 - **A path that never had a version** can hold copies (a write that expected a version at an absent path; a new
   folder's files under a path that was taken). A live root with no version before its life but such a copy has
   something to erase; "nothing to erase" needs neither.
@@ -142,7 +147,7 @@ web's "Erase" is the Interfaces session's). In order:
 8. **Writes.** The erasure row and its needles (§4.1); §5's index rows; the claims step 5 inserted are deleted. No
    clock lock, no journal row, no fence (member commits take none; core §9 "reads and GC never").
 
-It returns `{erasureId, asOfSeq, roots: [{path, cutoffSeq, cutoffUnit, versions}], copies: [{environmentId, path, live}]}`: the per-root count of versions
+It returns `{erasureId, asOfSeq, roots: [{path, cutoffSeq, cutoffUnit, versions, conflictCopies}], copies: [{environmentId, path, live}]}`: the per-root count of versions (and, since P18d, of conflict copies)
 to erase, so a mistyped root shows as zero rather than completing silently (a root named only by refused saves has
 zero versions and still has its units scrubbed), and §2.3's copy warning.
 
@@ -194,7 +199,7 @@ After the erasure row, phases 1, 2, 3 and 5 lock nothing but history rows nobody
 `units` updates, whose `FOR NO KEY UPDATE` never blocks foreign-key `KEY SHARE`) and, last, catalog rows `KEY SHARE`
 through the side rows' foreign key; phase 4's rows are run-owned and taken `SKIP LOCKED`. Phases run in order; each
 step works on the first unfinished one:
-1. **Versions.** Up to `p_versions` rows under each root before its cutoff, by the key index; their manifests and
+1. **Versions,** then (P18d, §2.5) conflict copies, together up to `p_versions` rows under each root before its cutoff, by the key index; their manifests and
    chunks (by the new chunk index) go to the erasure's hash table; their written paths go to the needles; the run ids
    of their commits are noted for phase 4, and so are the runs that file-change wakes about those commits started
    (P29, by the wakes' `(source_id) where source_kind = 'company-file'` index); the first erased version's time is kept on the erasure row (phase 3's lower
@@ -537,23 +542,30 @@ P17's conflict copies (20260930042000) are erased with their path (§2.5); the c
   - their manifests and chunks go to the hash table, so phase 5 collects what nothing else roots;
   - their root's spellings go to the needles;
   - their commits' runs are noted for phase 4;
-  - then the rows are deleted.
+  - then the rows are deleted, keyed by commit, unit and file.
 
   Phase 1 ends when a step's versions and copies together fall short of the budget. The erasure's `counts` gain
   `conflictCopies`.
 - **Commit rows** are never deleted, so the copies' `RESTRICT` key to their commit never trips. A conflicting change
-  set's unit loses the path in phase 2 like any other unit (a commit that saved nothing is found by its time).
+  set's unit loses the path in phase 2 like any other unit, by the same position rule.
+- **Review r1** (Opus, REQUEST CHANGES): placing a copy from a commit that saved nothing by its `as_of_seq` erased
+  copies of a live root's current life and copies made after the request. It is now placed by the commit's time.
 
-**Tests (909, on 883's fixture):**
-- a deleted path with a copy kept by a commit that saved nothing, the bytes saved elsewhere named in the warning, and
-  the unit scrubbed;
-- a live root keeping its current life's copy and erasing the one from before;
-- a live root whose only past is a copy at a path that never had a version;
-- a deleted folder with a copy under it, and a copy elsewhere holding erased bytes named in the warning;
-- grants and markers.
+**Tests:**
+- **909, on 883's fixture:**
+  - a deleted path with a copy kept by a commit that saved nothing, the bytes saved elsewhere named in the warning,
+    the unit scrubbed, and the bytes waiting in the hash table while GC does not serve the company;
+  - a live root keeping its current life's copy and erasing the one from before;
+  - a live root whose only past is a copy at a path that never had a version;
+  - a deleted folder with a copy under it, and a copy elsewhere holding erased bytes named in the warning;
+  - a copy whose commit read an older clock but held the path in the current life (nothing to erase), and a copy
+    made after the request (kept, with its path);
+  - a change set that saves one unit and keeps a copy of another (the seq branch);
+  - a new folder's two files, of which erasing one path takes that file only;
+  - phase 5 with folder GC serving the company and the staging intents expired: an erased copy's own bytes get a GC
+    side row, and bytes another copy still holds get none;
+  - the position rule, grants and markers.
+- **884 E7 (dblink):** two members create one path at once. The loser waits on the path lock and keeps a copy whose
+  commit read the clock before the winner committed; erasing the path has nothing to erase.
 
-**Not tested yet:**
-- a run's copy (its run noted for phase 4);
-- the phase 1 budget split between versions and copies;
-- phase 5's collection of an erased copy's bytes. In 909's fixture the copy's bytes still showed as rooted after the
-  erasure, probably through their staging; that has not been checked, so 909 asserts nothing about it.
+**Not tested yet:** a run's copy (its run noted for phase 4); the phase 1 budget split between versions and copies.

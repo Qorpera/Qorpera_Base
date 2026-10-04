@@ -2,10 +2,12 @@
 -- §2.5, §13; P17 is 20260930042000, the coordinator ships both in one release). A conflict copy is a file a write or new
 -- folder kept on its receipt when its version check failed, at the path it would have stored (P17). It holds bytes of
 -- that path's history as a version does, so erasing a path erases its copies too:
--- * a copy lies at its commit's position (seq, unit); a commit that saved nothing has no seq, and its copies were decided
---   against the folder as of its as_of_seq, so they come after every row of that seq
---   (qorpera_folder_erasure_copy_before). Under a root, a copy before the root's cutoff is erased; a live root's current
---   life keeps its own;
+-- * a copy lies at its commit's position (seq, unit) when the commit saved something; a commit that saved nothing has no
+--   seq and is placed by its time, as phase 2 places it to scrub its units: before the root's cutoff time (the request's
+--   as-of time for a deleted root, the life-start commit's time for a live one). The commit row is written after its
+--   path locks, and the copy's commit and the request (or the life-start commit) always meet at a path lock, so the
+--   order of those times is the order in which they held the path (qorpera_folder_erasure_copy_before). Under a root,
+--   a copy before the root's cutoff is erased; a live root's current life keeps its own;
 -- * the request counts each root's copies beside its versions (a live root with neither has nothing to erase), and its
 --   copies warning also lists the erased copies' manifests and the copies elsewhere that hold an erased manifest;
 -- * the step's phase 1 erases them after the versions, in the same budget: their manifests and chunks into the hash
@@ -30,13 +32,15 @@ end $$;
 -- 1. A copy's position ---------------------------------------------------------------------------------------------------
 
 -- Whether a conflict copy lies strictly before a root's cutoff: at its commit's (seq, unit) when the commit saved
--- something; otherwise after every row of the commit's as_of_seq (the state its version check saw).
-create function public.qorpera_folder_erasure_copy_before(p_root jsonb, p_seq bigint, p_as_of_seq bigint, p_unit integer)
+-- something; otherwise by the commit's time against the cutoff's, as phase 2 decides whether to scrub the commit's units
+-- (qorpera_folder_erasure_units). Not by the commit's as_of_seq: that is a plain read taken before its locks, so a
+-- commit that lost a race to the life-start commit, or came after the request, can carry an earlier one (review r1).
+create function public.qorpera_folder_erasure_copy_before(p_root jsonb, p_seq bigint, p_created_at timestamptz, p_unit integer)
 returns boolean language sql immutable set search_path = '' as $$
 	select case when p_seq is not null then public.qorpera_folder_erasure_before(p_root, p_seq, p_unit)
-		else public.qorpera_folder_erasure_before(p_root, coalesce(p_as_of_seq, 0), 2147483646) end
+		else p_created_at < (p_root ->> 'cutoffAt')::timestamptz end
 $$;
-revoke all on function public.qorpera_folder_erasure_copy_before(jsonb, bigint, bigint, integer)
+revoke all on function public.qorpera_folder_erasure_copy_before(jsonb, bigint, timestamptz, integer)
 	from public, anon, authenticated, service_role;
 
 -- 2. The request ---------------------------------------------------------------------------------------------------------
@@ -59,7 +63,7 @@ select pg_temp.p18d_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'
 		where cc.environment_id = p_environment_id
 			and cc.key_text >= (v_root ->> 'key') collate "C" and cc.key_text < ((v_root ->> 'key') || '0') collate "C"
 			and public.qorpera_folder_erasure_covers(v_root ->> 'key', cc.key_text)
-			and public.qorpera_folder_erasure_copy_before(v_root, c.seq, c.as_of_seq, cc.unit_no);
+			and public.qorpera_folder_erasure_copy_before(v_root, c.seq, c.created_at, cc.unit_no);
 		if (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
 			raise exception 'Nothing to erase at %', v_spellings ->> (v_root ->> 'key') using errcode = '22023'; end if;
 		v_counts := v_counts || jsonb_build_array(jsonb_build_object('path', v_spellings ->> (v_root ->> 'key'),
@@ -115,14 +119,14 @@ $old$,
 					and cc.key_text >= (r ->> 'key') collate "C" and cc.key_text < ((r ->> 'key') || '0') collate "C"
 					and public.qorpera_folder_erasure_covers(r ->> 'key', cc.key_text)
 				join public.qorpera_folder_commits c on c.id = cc.commit_id
-				where cc.bytes > 0 and public.qorpera_folder_erasure_copy_before(r, c.seq, c.as_of_seq, cc.unit_no)) m
+				where cc.bytes > 0 and public.qorpera_folder_erasure_copy_before(r, c.seq, c.created_at, cc.unit_no)) m
 			join public.qorpera_company_files f on f.profile_id = v_profile and f.core = 'folder-v2'
 			-- The other holders: versions, and conflict copies (P18d), at paths not under a root here.
 			cross join lateral (
 				select ov.environment_id, ov.path, public.qorpera_folder_key(ov.path) as key, ov.created_at
 				from public.qorpera_folder_path_versions ov where ov.environment_id = f.environment_id and ov.manifest_sha256 = m.manifest_sha256
 				union all
-				select oc.environment_id, oc.path collate "default", oc.key_text collate "default", oc.created_at
+				select oc.environment_id, oc.path, oc.key_text, oc.created_at
 				from public.qorpera_folder_conflict_copies oc
 				where oc.environment_id = f.environment_id and oc.manifest_sha256 = m.manifest_sha256) o
 			where not (o.environment_id = p_environment_id and exists (select 1 from jsonb_array_elements(v_roots) r2
@@ -158,7 +162,7 @@ $old$,
 						and cc.key_text >= (r ->> 'key') collate "C" and cc.key_text < ((r ->> 'key') || '0') collate "C"
 						and public.qorpera_folder_erasure_covers(r ->> 'key', cc.key_text)
 					join public.qorpera_folder_commits c on c.id = cc.commit_id
-					where public.qorpera_folder_erasure_copy_before(r, c.seq, c.as_of_seq, cc.unit_no)
+					where public.qorpera_folder_erasure_copy_before(r, c.seq, c.created_at, cc.unit_no)
 					limit p_versions - v_rows) b;
 				v_copy_rows := jsonb_array_length(v_copy_batch);
 				insert into public.qorpera_folder_erasure_hashes(erasure_id, sha256)
