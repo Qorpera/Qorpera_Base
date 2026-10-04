@@ -7,8 +7,9 @@
 -- fixture with a coding todo, worker and session for Ada, removed at the end.
 
 -- Coding rows (committed): Ada's todo and a coding worker owned by the contributor, paid by the company's login, steered
--- by Ada's run; its session leased by executor exec-827, ready to begin. A second, queued session of another worker, and
--- a coding worker and queued session in the snapshot-v1 company, for the claim; the owner's coding machine on exec-827. Foreign keys and triggers are off only
+-- by Ada's run; its session leased by executor exec-827, ready to begin. For the claim: a second, queued session of
+-- another worker; an older queued session whose worker (with its own todo) is no longer active; and the oldest, a queued
+-- session in the snapshot-v1 company. Each owner's coding machine is on exec-827, so the fleet picks it for them. Foreign keys and triggers are off only
 -- while they go in.
 set session_replication_role = replica;
 insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title, requested_by_user_id,
@@ -29,6 +30,17 @@ values ('82700000-0000-4000-8000-0000000000c9', '64800000-0000-4000-8000-0000000
 	extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'w-827-9', 'coding', 'Code', 'read', 'each', '{}',
 	'64800000-0000-4000-8000-000000000003', '64800000-0000-4000-8000-0000000000e3', '64800000-0000-4000-8000-000000000003',
 	extensions.gen_random_uuid(), 1);
+insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title, requested_by_user_id,
+	created_by_run_id, updated_by_run_id)
+values ('82700000-0000-4000-8000-0000000000a3', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+	'64800000-0000-4000-8000-0000000000a1', 'code-827-3', 'Code 3', '64800000-0000-4000-8000-000000000002',
+	'64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-0000000000f1');
+insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title, access,
+	revival, dispatch, requested_by_user_id, steering_run_id, owner_user_id, owner_sponsor_binding_id, owner_sponsor_version, state, result)
+values ('82700000-0000-4000-8000-0000000000c3', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
+	'64800000-0000-4000-8000-0000000000a1', '82700000-0000-4000-8000-0000000000a3', 'w-827-3', 'coding', 'Code 3', 'read', 'each', '{}',
+	'64800000-0000-4000-8000-000000000002', '64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-000000000002',
+	'64800000-0000-4000-8000-0000000000b1', 1, 'cancelled', '{"outcome":"cancelled","outputs":[]}');
 insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, harness, repository, branch, phase, lease_owner,
 	lease_token, lease_until, started_at, updated_at)
 values ('82700000-0000-4000-8000-0000000000c1', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'codex',
@@ -38,13 +50,18 @@ insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id
 values
 	('82700000-0000-4000-8000-0000000000c2', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'codex',
 		'{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}', 'w-827-2', clock_timestamp()),
-	-- The snapshot-v1 company's session is older, so the claim meets it first.
+	-- Older than c2: a worker that is no longer active.
+	('82700000-0000-4000-8000-0000000000c3', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'codex',
+		'{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}', 'w-827-3', clock_timestamp() - interval '30 minutes'),
+	-- The oldest: the snapshot-v1 company's session.
 	('82700000-0000-4000-8000-0000000000c9', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021', 'codex',
 		'{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}', 'w-827-9', clock_timestamp() - interval '1 hour');
 -- The owner's coding machine is on executor exec-827, so the fleet picks it for the owner's sessions.
 insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
 values ('82700000-0000-4000-8000-0000000000d1', 'member', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020',
-	'64800000-0000-4000-8000-000000000002', 'exec-827', repeat('7', 64), '{}');
+		'64800000-0000-4000-8000-000000000002', 'exec-827', repeat('7', 64), '{}'),
+	('82700000-0000-4000-8000-0000000000d9', 'member', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021',
+		'64800000-0000-4000-8000-000000000003', 'exec-827', repeat('7', 64), '{}');
 insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, nas_machine_id_sha256)
 values ('64800000-0000-4000-8000-000000000020', 'exec-827', true, array['codex'], repeat('7', 64)),
 	('64800000-0000-4000-8000-000000000021', 'exec-827', true, array['codex'], repeat('7', 64));
@@ -184,11 +201,14 @@ begin
 	if v_state not like '0A000 %' then raise exception 'D: a snapshot-v1 worker must be refused, got %', v_state; end if;
 end $$;
 
--- E. The claim takes one company: it skips the older snapshot-v1 session without keeping its rows, and claims the
--- folder-v2 one, holding that company's fence while its transaction is open.
+-- E. The claim takes one company. The snapshot-v1 session, the oldest and on this executor, is never a candidate; the
+-- next oldest, whose worker is no longer active, is skipped with every lock its entry took; the folder-v2 one is claimed,
+-- and the claim holds that company's fence while its transaction is open.
 do $$
 declare v_claim jsonb;
 begin
+	if public.qorpera_coding_executor_pick('82700000-0000-4000-8000-0000000000c9') is distinct from 'exec-827' then
+		raise exception 'E: the fixture must make the snapshot-v1 session this executor''s'; end if;
 	perform dblink_exec('fence_two', 'begin');
 	select r::jsonb into v_claim from dblink('fence_two', $q$select public.qorpera_claim_coding_session('exec-827', 60)::text$q$) as t(r text);
 	if v_claim ->> 'workerId' is distinct from '82700000-0000-4000-8000-0000000000c2' then
@@ -196,9 +216,15 @@ begin
 		raise exception 'E: the claim must take the folder-v2 session, got %', v_claim; end if;
 	if not pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c9'$q$)
 		or not pg_temp.row_free($q$select 1 from public.qorpera_coding_sessions where worker_id = '82700000-0000-4000-8000-0000000000c9'$q$)
-		or pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$) then
+		or not pg_temp.row_free($q$select 1 from public.qorpera_runtime_agent_todos where id = '82700000-0000-4000-8000-0000000000a3'$q$)
+		or not pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c3'$q$)
+		or not pg_temp.row_free($q$select 1 from public.qorpera_coding_sessions where worker_id = '82700000-0000-4000-8000-0000000000c3'$q$) then
 		perform dblink_exec('fence_two', 'rollback');
-		raise exception 'E: the claim keeps the claimed company''s fence and nothing of the skipped one'; end if;
+		raise exception 'E: the claim keeps nothing of the candidates it skipped'; end if;
+	if pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c2'$q$) then
+		perform dblink_exec('fence_two', 'rollback');
+		raise exception 'E: the claim holds its company''s fence and its worker'; end if;
 	perform dblink_exec('fence_two', 'rollback');
 end $$;
 
@@ -326,6 +352,61 @@ begin
 		as t(r text);
 end $$;
 
+-- L. The owner's answer checks the owner again under the entry. A removal of the owner that commits while the answer waits
+-- at the owner's member row (rank 1) is refused; with the owner back, the answer runs on folder-v2: it holds the fence,
+-- the todo, the worker and the session while its transaction is open, and reopens the session for the next turn.
+create temporary table l_member on commit preserve rows as
+	select profile_id, user_id, email, display_name, role from public.qorpera_profile_members
+	where profile_id = '64800000-0000-4000-8000-000000000010' and user_id = '64800000-0000-4000-8000-000000000002';
+create function pg_temp.answer_open(p_request uuid) returns void language plpgsql as $$
+begin
+	perform dblink_exec('fence_two', 'begin');
+	perform * from dblink('fence_two', $q$select set_config('request.jwt.claims',
+		'{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000002"}', true)$q$) as t(r text);
+	perform dblink_exec('fence_two', 'set local role authenticated');
+	perform dblink_send_query('fence_two', format($q$select public.qorpera_answer_coding_session(%L, 'Try again.', %L)::text$q$,
+		'82700000-0000-4000-8000-0000000000c1', p_request));
+end $$;
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform dblink_exec('fence_one', 'set local session_replication_role = replica');
+	perform dblink_exec('fence_one', $q$delete from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+		and user_id = '64800000-0000-4000-8000-000000000002'$q$);
+	perform pg_temp.answer_open('82700000-0000-4000-8000-0000000000f8');
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_profile_members') then
+		perform pg_temp.release(); perform pg_temp.outcome('fence_two'); perform dblink_exec('fence_two', 'rollback');
+		raise exception 'L: the answer must wait at the owner''s member row'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_state := pg_temp.outcome('fence_two');
+	perform dblink_exec('fence_two', 'rollback');
+	set local session_replication_role = replica;
+	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+	select profile_id, user_id, email, display_name, role from l_member;
+	if v_state not like '42501 Coding session is unavailable%' then
+		raise exception 'L: an owner removed while the answer waited must be refused, got %', v_state; end if;
+end $$;
+do $$
+declare v_state text;
+begin
+	if (select state from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c1') = 'active' then
+		raise exception 'L: the fixture''s worker must have ended (F)'; end if;
+	perform pg_temp.answer_open('82700000-0000-4000-8000-0000000000f9');
+	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then perform dblink_exec('fence_two', 'rollback'); raise exception 'L: the owner''s answer, got %', v_state; end if;
+	if pg_temp.row_free($q$select 1 from public.qorpera_folder_fences where profile_id = '64800000-0000-4000-8000-000000000010'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_runtime_agent_todos where id = '82700000-0000-4000-8000-0000000000a0'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c1'$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_coding_sessions where worker_id = '82700000-0000-4000-8000-0000000000c1'$q$) then
+		perform dblink_exec('fence_two', 'rollback');
+		raise exception 'L: the answer must hold the fence, the todo, the worker and the session'; end if;
+	perform dblink_exec('fence_two', 'commit');
+	if (select state from public.qorpera_runtime_workers where id = '82700000-0000-4000-8000-0000000000c1') <> 'active'
+		or (select phase from public.qorpera_coding_sessions where worker_id = '82700000-0000-4000-8000-0000000000c1') <> 'input_ready' then
+		raise exception 'L: the answer reopens the session for the next turn'; end if;
+end $$;
+
 -- G. The entry is internal, and every patched body carries the marker.
 do $$
 begin
@@ -333,7 +414,9 @@ begin
 		where has_function_privilege(r, 'public.qorpera_lock_coding_worker(uuid)', 'execute')) then
 		raise exception 'G: the coding worker entry must be internal'; end if;
 	if exists (select 1 from unnest(array['public.qorpera_lock_coding_worker(uuid)', 'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
-			'public.qorpera_claim_coding_session(text,integer)', 'public.qorpera_delegate_coding_session(uuid,uuid)']) f
+			'public.qorpera_claim_coding_session(text,integer)', 'public.qorpera_delegate_coding_session(uuid,uuid)',
+			'public.qorpera_answer_coding_session(uuid,text,uuid)', 'public.qorpera_archive_coding_session(uuid,uuid)',
+			'public.qorpera_archive_quiet_coding_sessions(text)', 'public.qorpera_ask_quiet_coding_sessions(text)']) f
 		where position('20260930026000' in pg_get_functiondef(f::regprocedure)) = 0) then
 		raise exception 'G: a patched body lacks its marker'; end if;
 end $$;
@@ -352,6 +435,13 @@ begin
 	select array_agg(id) into v_jobs from public.qorpera_runner_jobs where profile_id = any (v_profiles);
 	select array_agg(id) into v_sessions from public.qorpera_shared_sessions where profile_id = any (v_profiles);
 	select array_agg(id) into v_rooms from public.qorpera_company_rooms where profile_id = any (v_profiles);
+	-- Rows keyed only by their coding worker.
+	delete from public.qorpera_coding_session_events where worker_id in
+		(select id from public.qorpera_runtime_workers where profile_id = any (v_profiles));
+	delete from public.qorpera_runtime_worker_events where worker_id in
+		(select id from public.qorpera_runtime_workers where profile_id = any (v_profiles));
+	delete from public.qorpera_coding_session_turns where worker_id in
+		(select id from public.qorpera_runtime_workers where profile_id = any (v_profiles));
 	delete from public.qorpera_company_path_grants where resource_id in
 		(select id from public.qorpera_company_path_resources where environment_id = any (v_envs));
 	for v_table in select c.table_name, c.column_name from information_schema.columns c

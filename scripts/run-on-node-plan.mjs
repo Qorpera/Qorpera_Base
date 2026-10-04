@@ -7,7 +7,8 @@
  * - every change that is not web-only (runtime-release-train's exclusion list): all runtime and
  *   cloud-client tests, all script tests (packaging, pins, vocabulary) and the runtime bundle check;
  * - path-specific steps on top (web, member-web, object-gateway, runner-orchestrator, functions, deploy,
- *   hosted-db, and company-fence-load for migrations: one company's locks under pooled load);
+ *   hosted-db, and folder-core-load for migrations: one folder-v2 company under pooled load, the folder core's
+ *   load test);
  * - shared configuration, `packages/contracts`, `packages/company` and any path no rule knows: every step.
  *
  * Release candidates still run the full `test` suite before a cut. */
@@ -204,7 +205,7 @@ export const STEPS = [
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
 			// The production review and wake bus scripts check SQL output with these parsers.
 			/^packages\/runtime\/src\/cloud-(native-company-context|native-tool-authority|wake-bus)\.ts$/,
-			/^packages\/runtime\/test\/fixtures\/(coding-turn-|wake-policies\.json$)/,
+			/^packages\/runtime\/test\/fixtures\/wake-policies\.json$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,

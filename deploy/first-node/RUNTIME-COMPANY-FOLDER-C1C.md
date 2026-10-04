@@ -1333,12 +1333,22 @@ refused with 0A000.
 (step 10) last, before its wake. There is no NOWAIT and no 55P03, so the executor's busy retry no longer fires.
 
 **The claim.** It takes one company per call:
-- a candidate it does not take (an inactive worker, a live lease) raises QSK01, so its subtransaction, and every lock it
-  took, rolls back;
-- a candidate of a company that is not `folder-v2` is skipped the same way (0A000);
+- its candidates are `folder-v2` sessions only;
+- a candidate it does not take (an inactive worker, a live lease, another executor's pick, a switched-off node) raises
+  QSK01, so its subtransaction, and every lock it took, rolls back (review r1: the fleet pick and the node switch used
+  `continue`, which kept the candidate's locks);
+- it waits at most 1 s for any one lock (`lock_timeout`), then skips the candidate, so a company behind a stop or a
+  deletion never makes every claim run into PostgREST's 8 s statement timeout;
 - failing an expired lease ends the call, and the next call takes the next candidate.
 
-**A delegation** locks the worker through the same entry.
+**The executor's quiet-session archive** (`archive_quiet_coding_sessions`) takes `folder-v2` candidates of one company per
+call too (by company, then in todo order). The quiet check-ins it then asks (`ask_quiet_coding_sessions`, a legacy wake
+inserter with no fence) skip `folder-v2` sessions until 3i-b asks them per company: in the archive's transaction they
+would take its worker and company row more strongly than the entry already holds them.
+
+**The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
+archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
+is refused (review r1).
 
 **Inert** until C3 lets a `folder-v2` coding session exist (F2's worker commit refuses coding dispatch) and C4
 materializes its wake.
@@ -1350,20 +1360,25 @@ materializes its wake.
   - B: behind a stop's second phase it waits at the fence holding no coding row;
   - C: a paused company refuses;
   - D: the entry and an agent's worker change take turns at the worker, and a snapshot-v1 worker is refused;
-  - E: the claim skips the snapshot-v1 candidate without keeping its rows;
+  - E: the claim never takes the snapshot-v1 candidate (this executor's, and the oldest), and skips an inactive worker's
+    with every lock its entry took;
   - F: failing an expired lease ends the call;
   - H: two entries on one worker, and an agent's worker tool against the entry, take turns at the todo (602's races
     1-3 and 6);
   - I: a coding machine's admission (worker, then session) and the entry: the entry waits at the worker, holding no
     session (602's race 4);
   - J: a non-owner's answer is refused at once while the worker is held (602's race 8);
-  - K: a stop's second phase waits for the entry, as for the completion and the answer.
+  - K: a stop's second phase waits for the entry, as for the completion and the answer;
+  - L: an owner removed while the answer waits at the owner's member row is refused; the owner's answer then runs,
+    holding the fence, the todo, the worker and the session, and reopens the session.
 - The snapshot-v1 coding tests are deleted:
   - 395, 399, 600, 601, 602 (fleet), 603, 604, 606, 627, 655, 676, 719, 737, 739, 775 and 782;
   - also the coding-claim section of 640.
 - 396 keeps its dispatch, and 602 keeps its committed fixture (608, 745, 754, 797 and 800 cut at its end marker).
 - The snapshot load scripts and the coding backfill script went with them. Run-on-node's `folder-core-load` step
-  replaces `company-fence-load`.
+  replaces `company-fence-load`. The load test now also samples statements running over 2 s with their wait events, and
+  locates each statement timeout in the server log (a stall the server's `log_lock_waits` does not report: I/O, LWLocks,
+  CPU).
 
 **Release guard (release-owned).** v170's activation (20260928459990:39-52) pins these markers, and the generator's
 template carries them:
@@ -1372,10 +1387,13 @@ template carries them:
 - `for update;` in `qorpera_lock_coding_worker` (gone);
 - `where id = v_worker.id for update;` in the delegation (gone: it calls the entry).
 
-The next cut must replace the two that are gone, for example with the body marker 20260930026000.
+The next cut must replace the two that are gone, for example with the body marker 20260930026000. Until then
+`test-runtime-office-delete-disposition` (which replays the newest activation) refuses on them: the coordinator drops
+them at the v172 cut.
 
 **Not in 3i-a (3i-b, migration 20260930026500):**
-- the `folder-v2` machine-event drain and the quiet coding check-ins, as per-company loops;
+- the `folder-v2` machine-event drain and the quiet coding check-ins, as per-company drains of the shared "folder
+  drains" orchestrator step (P29a);
 - lifting the machine-event refusals (the pin trigger, `folder_wake_authorized`, `folder_run_resolve`).
 
 The progress, heartbeat and describe calls lock only the session and change no company state.

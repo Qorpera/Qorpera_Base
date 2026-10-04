@@ -33,7 +33,7 @@ test("anything that is not web-only also runs runtime, cloud-client and every sc
 	assert.deepEqual(names(["packages/web/src/cloud/email-drafts.ts"]), set([...BASELINE, "web", "hosted-db"]));
 	assert.deepEqual(names(["packages/member-web/ui/viewer.ts"]), set([...BASELINE, "web", "member-web"]));
 	// A migration reaches runtime tests that read the migrations directory, and the vocabulary script test.
-	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db", "company-fence-load"]));
+	assert.deepEqual(names(["supabase/migrations/20260929010000_x.sql"]), set([...BASELINE, "hosted-db", "folder-core-load"]));
 	// Installer pins: runner-orchestrator sources rebuild packages whose sha256 the deploy scripts pin.
 	assert.deepEqual(names(["packages/runner-orchestrator/src/lxd-provider.ts"]), set([
 		...BASELINE,
@@ -73,7 +73,8 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.match(functions, /runner-control\/runner-control\.test\.ts/);
 	assert.ok(names(["scripts/test-runtime-node-capacity-cases.mjs"]).includes("hosted-db"));
 	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
-	assert.ok(names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
+	// No hosted-db script reads the coding turn sample since C1c-3i removed the snapshot-v1 coding backfill script.
+	assert.ok(!names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
 	// The production review and wake bus scripts: their SQL, themselves, and the parsers and fixtures they read.
 	for (const file of [
 		"supabase/acceptance/runtime_session_stop_authority.sql",
