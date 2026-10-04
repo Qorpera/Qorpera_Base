@@ -52,6 +52,12 @@ export const AGENTS: Record<string, string> = {
 	"Resume routine": "Genoptag rutinen",
 	"Only owners and admins can pause or resume routines.":
 		"Kun ejere og administratorer kan sætte rutiner på pause eller genoptage dem.",
+	"Reactivate the agent first": "Genaktivér agenten først",
+	"Paused by a member": "Sat på pause af et medlem",
+	"Paused by {name}": "Sat på pause af {name}",
+	"Paused: it could not start with the access it had": "På pause: den kunne ikke starte med den adgang, den havde",
+	"Paused: no model account pays for it": "På pause: ingen modelkonto betaler for den",
+	"Paused when its agent was archived": "Sat på pause, da dens agent blev arkiveret",
 	"{every} between {start} and {end}, {days} ({zone})": "{every} mellem {start} og {end}, {days} ({zone})",
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",

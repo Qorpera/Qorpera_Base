@@ -142,10 +142,12 @@ healthy exit (E2).
 ## 4. The agent plug (E2)
 
 - An LXD NIC with `nictype: bridged` and `parent: qagent0`. It has `security.mac_filtering`,
-  `security.ipv6_filtering` and `security.port_isolation`, `ipv6.address: none`, the machine's `ipv4.address` from
-  the node's pool in `10.210.0.0/16` (outside `10.210.0.0/24`, kept for the exit's own services), and a `hwaddr`
-  made from that address (`0e:51:` and the address's four bytes, a locally administered MAC). The address and MAC
-  are part of the machine's config for its whole life.
+  `security.ipv6_filtering` and `security.port_isolation`, `ipv6.address: none`, and a `hwaddr` made from the
+  machine's address in the node's pool `10.210.0.0/16` (outside `10.210.0.0/24`, kept for the exit's own services):
+  `0e:51:` and the address's four bytes, a locally administered MAC. The MAC is part of the machine's config for its
+  whole life; the address lives in the client map, the lease and the bridge rules, all tied to that MAC. The card
+  carries no `ipv4.address`: LXD 6.9 refuses one on a bridge it does not manage unless its own IPv4 filter is on
+  (E2b's proof on LXD, 4 October).
 - Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge LXD does
   not manage it drops every DHCP request on its way to the exit (seen on LXD 6.9 in a test machine, 3 October, and in
   LXD's rule template). The exit's own bridge rules (`qorpera-agent-exit-bridge.nft`, bridge family, on the node) take
