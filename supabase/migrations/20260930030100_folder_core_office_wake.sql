@@ -110,7 +110,8 @@ end $$;
 
 -- Removes 'office-activation' from the one source list that p_head opens and ')' || p_tail closes, keeping every other
 -- token and its spacing, with a marker line before the statement. A list left empty drops its whole statement, which
--- p_statement says p_head and p_tail are.
+-- p_statement says p_head and p_tail are; the marker then takes its place on its line. p_tail stops at the statement's
+-- own end, so a note after it on the same line (S3's 3i-b adds one there) stays.
 create function pg_temp.c1c3l2_drop_source(p_target regprocedure, p_indent text, p_head text, p_tail text,
 	p_statement boolean) returns void
 language plpgsql as $$
@@ -134,18 +135,18 @@ begin
 	if btrim(v_kept) = '' and not p_statement then
 		raise exception 'C1c-3l part 2: the list of % would be empty', p_target; end if;
 	execute replace(v_definition, p_head || v_list || ')' || p_tail,
-		v_marker || case when btrim(v_kept) = '' then '' else p_head || v_kept || ')' || p_tail end);
+		case when btrim(v_kept) = '' then rtrim(v_marker, E'\n') else v_marker || p_head || v_kept || ')' || p_tail end);
 end $$;
 
 do $$
 begin
 	-- The pin's folder-v2 refusal list.
 	perform pg_temp.c1c3l2_drop_source('public.qorpera_pin_wake_occurrence()', E'\t\t', E'\t\tif new.source_kind in (',
-		E' then\n\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n',
+		E' then\n\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;',
 		true);
 	-- The folder wake check: the source leaves the refused list, and its ancestry is checked as the agent sources' are.
 	perform pg_temp.c1c3l2_drop_source('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', E'\t\t',
-		E'\t\tor p_wake.source_kind in (', E' then return false; end if;\n', false);
+		E'\t\tor p_wake.source_kind in (', ' then return false; end if;', false);
 	perform pg_temp.c1c3l2_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)',
 		E'\t\telse return false; end if;\n',
 		E'\t\telsif p_wake.source_kind = ''office-activation'' then\n'
@@ -153,7 +154,7 @@ begin
 		|| E'\t\telse return false; end if;\n', 1);
 	-- The run resolve: a run woken by its computer coming up runs.
 	perform pg_temp.c1c3l2_drop_source('public.qorpera_folder_run_resolve(uuid,uuid,jsonb)', E'\t', E'\tif v_wake.source_kind in (',
-		E' then\n\t\traise exception ''Folder writes by this kind of run are not available yet'' using errcode = ''0A000''; end if;\n',
+		E' then\n\t\traise exception ''Folder writes by this kind of run are not available yet'' using errcode = ''0A000''; end if;',
 		true);
 end $$;
 
