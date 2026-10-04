@@ -8,6 +8,11 @@ import {
 } from "../../src/coding-machine.ts";
 import type { LxdInstanceRecord } from "../../src/lxd-client.ts";
 
+/** The MAC a test machine's agent card carries (as the agent plug gives it). */
+export const testAgentMac = "0e:51:0a:d2:01:01";
+/** A fake agent plug: every machine gets testAgentMac. */
+export const testAgentPlug = async (): Promise<string> => testAgentMac;
+
 export const codingMachineStorage: CodingMachineStorage = Object.freeze({
 	policy: {
 		schema: "qorpera.coding-nas-policy/v1" as const,
@@ -31,7 +36,7 @@ export function codingMachineFixture(scope: Partial<LxdCodingMachineBinding> = {
 		imageFingerprint: "b".repeat(64),
 		bootstrapSha256: "c".repeat(64),
 		storagePool: "coding",
-		network: "coding",
+		network: "qagent0",
 		cpus: 2,
 		memoryBytes: 4 * 1024 ** 3,
 		rootDiskBytes: 32 * 1024 ** 3,
@@ -46,6 +51,7 @@ export function codingMachineInstance(
 	const plan = lxdCodingMachinePlan(machine);
 	const devices = {
 		...plan.request.devices,
+		network: { ...plan.request.devices.network, hwaddr: testAgentMac },
 		...Object.assign(
 			{},
 			...sessions.map((workerId) =>

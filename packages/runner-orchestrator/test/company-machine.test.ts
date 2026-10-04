@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { agentPlugCard, withAgentPlug } from "../src/agent-plug.ts";
 import {
 	assertLxdCompanyMachineInstance,
 	type LxdCompanyMachineBinding,
@@ -32,7 +33,7 @@ function companyMachineBinding(overrides: Partial<LxdCompanyMachineBinding> = {}
 		imageFingerprint: "b".repeat(64),
 		bootstrapSha256: "c".repeat(64),
 		storagePool: "machines",
-		network: "machine-net",
+		network: "qagent0",
 		cpus: 8,
 		memoryBytes: 32 * 1024 ** 3,
 		rootDiskBytes: 100 * 1024 ** 3,
@@ -40,7 +41,9 @@ function companyMachineBinding(overrides: Partial<LxdCompanyMachineBinding> = {}
 		...overrides,
 	};
 }
-function instance(request: ReturnType<typeof lxdCompanyMachinePlan>["request"]): LxdInstanceRecord {
+/** The instance LXD made from the request the agent plug completed. */
+function instance(planned: ReturnType<typeof lxdCompanyMachinePlan>["request"]): LxdInstanceRecord {
+	const request = withAgentPlug(planned, "network", "0e:51:0a:d2:01:07");
 	return {
 		name: request.name,
 		type: "virtual-machine",
@@ -61,7 +64,7 @@ describe("company machine plan", () => {
 		expect(plan.text).toBe(
 			`{"schema":"qorpera.lxd-company-machine/v1","machineId":"${id(2)}","placementId":"${id(5)}","companyId":"${id(3)}","environmentId":"${id(4)}",` +
 				`"providerId":"machine-node","providerPolicySha256":"${"a".repeat(64)}","project":"machines","imageFingerprint":"${"b".repeat(64)}",` +
-				`"bootstrapSha256":"${"c".repeat(64)}","storagePool":"machines","network":"machine-net","cpus":8,"memoryBytes":34359738368,` +
+				`"bootstrapSha256":"${"c".repeat(64)}","storagePool":"machines","network":"qagent0","cpus":8,"memoryBytes":34359738368,` +
 				`"rootDiskBytes":107374182400,"repositoryWorkerId":null}`,
 		);
 		// Key order in the input never changes the text.
@@ -96,14 +99,8 @@ describe("company machine plan", () => {
 			},
 			devices: {
 				root: { type: "disk", path: "/", pool: "machines", size: "107374182400" },
-				network: {
-					type: "nic",
-					network: "machine-net",
-					name: "eth0",
-					"security.mac_filtering": "true",
-					"security.ipv4_filtering": "true",
-					"security.port_isolation": "true",
-				},
+				// On the agents' bridge; its MAC comes from the agent plug right before the create.
+				network: agentPlugCard("eth0"),
 			},
 		});
 	});
@@ -127,6 +124,7 @@ describe("company machine plan", () => {
 		{ memoryBytes: 3.5 * 1024 ** 3 },
 		{ rootDiskBytes: 5 * 1024 ** 3 },
 		{ network: "Bad Net" },
+		{ network: "machine-net" },
 		{ imageFingerprint: "x" },
 		{ repositoryWorkerId: "worker" },
 		{ placementId: "placement" },
@@ -167,6 +165,35 @@ describe("company machine plan", () => {
 		const otherImage = instance(request);
 		(otherImage.expandedConfig as Record<string, string>)["volatile.base_image"] = "e".repeat(64);
 		expect(() => journal.assertInstance(otherImage)).toThrow("COMPANY_MACHINE_DRIFTED");
+		// Its agent card: a plug MAC, exactly the card's keys, on the agents' bridge.
+		for (const card of [
+			{ ...agentPlugCard("eth0") },
+			{ ...agentPlugCard("eth0"), hwaddr: "00:16:3e:00:00:01" },
+			{ ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:00:07" },
+			{ ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:01:07", parent: "machine-net" },
+			{ ...agentPlugCard("eth0"), hwaddr: "0e:51:0a:d2:01:07", "ipv4.address": "10.210.1.7" },
+			{ type: "nic", network: "machine-net", name: "eth0" },
+		]) {
+			const other = instance(request);
+			other.devices = { ...other.devices, network: card };
+			other.expandedDevices = structuredClone(other.devices);
+			expect(() => journal.assertInstance(other)).toThrow("COMPANY_MACHINE_DRIFTED");
+		}
+	});
+
+	it("names its plug claim: the machine, its company and this placement's instance", () => {
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		expect(journal.agentPlug).toEqual({
+			claim: {
+				kind: "machine",
+				companyId: id(3),
+				machineId: id(2),
+				memberUserId: null,
+				project: "machines",
+				instance: "qorpera-machine-00000000000040008000000000000005",
+			},
+			device: "network",
+		});
 	});
 
 	it("reads a node policy only in its closed shape", () => {
@@ -177,9 +204,12 @@ describe("company machine plan", () => {
 			imageFingerprint: "b".repeat(64),
 			bootstrapSha256: "c".repeat(64),
 			storagePool: "machines",
-			network: "machine-net",
+			network: "qagent0",
 		};
 		expect(parseCompanyMachinePolicy(policy)).toEqual(policy);
+		expect(() => parseCompanyMachinePolicy({ ...policy, network: "machine-net" })).toThrow(
+			"INVALID_COMPANY_MACHINE_POLICY",
+		);
 		expect(() => parseCompanyMachinePolicy({ ...policy, cpus: 4 })).toThrow("INVALID_COMPANY_MACHINE_POLICY");
 		expect(() => parseCompanyMachinePolicy({ ...policy, project: "../x" })).toThrow("INVALID_COMPANY_MACHINE_POLICY");
 	});

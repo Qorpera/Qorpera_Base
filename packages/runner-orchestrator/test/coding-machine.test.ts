@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { agentPlugCard, withAgentPlug } from "../src/agent-plug.ts";
 import {
 	assertLxdCodingMachineInstance,
 	type CodingMachineAdmissionReceipt,
@@ -17,6 +18,7 @@ import {
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "../src/coding-vm.ts";
 import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 import { codingStorageFixture } from "./helpers/coding-storage.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -47,7 +49,7 @@ function binding(): LxdCodingMachineBinding {
 		imageFingerprint: "b".repeat(64),
 		bootstrapSha256: "c".repeat(64),
 		storagePool: "coding-disks",
-		network: "coding-net",
+		network: "qagent0",
 		cpus: 2,
 		memoryBytes: 4096 * 1024 ** 2,
 		rootDiskBytes: 64 * 1024 ** 3,
@@ -109,18 +111,21 @@ async function fixture() {
 	const value = binding();
 	const plan = lxdCodingMachinePlan(value);
 	const journal = lxdCodingMachineJournalPlan(value, storage);
+	// The machine as LXD makes it from the create the plug completed (its agent card's MAC).
+	const created = withAgentPlug(plan.request, "network", testAgentMac);
 	const fake = lxd(value.project, plan.request.name, () => ({
 		name: plan.request.name,
 		type: "virtual-machine",
 		status: "Stopped",
 		statusCode: 102,
 		profiles: [],
-		devices: structuredClone(plan.request.devices),
-		expandedDevices: structuredClone(plan.request.devices),
+		devices: structuredClone(created.devices),
+		expandedDevices: structuredClone(created.devices),
 		config: { ...plan.request.config, "volatile.base_image": value.imageFingerprint },
 		expandedConfig: { ...plan.request.config, "volatile.base_image": value.imageFingerprint },
 	}));
 	const client = fake.client;
+	const plug = vi.fn(testAgentPlug);
 	const controller = new AbortController();
 	const authorize = vi.fn(receiptFor(journal));
 	const options = {
@@ -130,10 +135,13 @@ async function fixture() {
 		client,
 		authorize,
 		signal: controller.signal,
+		plug,
 	};
 	return {
 		value,
 		plan,
+		created,
+		plug,
 		journal,
 		client,
 		authorize,
@@ -562,12 +570,61 @@ describe("a member's coding machine", () => {
 		{ imageFingerprint: "latest" },
 		{ cpus: 65 },
 		{ network: "../other" },
+		{ network: "coding-net" },
 		{ machineId: "bad" },
 		{ memberUserId: "bad" },
 		{ rootDiskBytes: Infinity },
 		{ storage: {} },
 	])("rejects inadmissible binding %j", (patch) => {
 		expect(() => lxdCodingMachinePlan({ ...binding(), ...patch })).toThrow("INVALID_CODING_MACHINE_BINDING");
+	});
+	it("plugs into the agents' bridge: the plug's MAC on its only card, the plug called right before the create", async () => {
+		const f = await fixture();
+		expect(f.plan.request.devices.network).toEqual(agentPlugCard("eth0"));
+		expect((await f.reconcile()).state).toBe("pending");
+		expect(f.plug).toHaveBeenCalledTimes(1);
+		expect(f.plug.mock.calls[0][0]).toEqual({
+			kind: "coding",
+			companyId: id(3),
+			machineId: id(2),
+			memberUserId: id(6),
+			project: "coding",
+			instance: f.plan.request.name,
+		});
+		// The fresh authority for the dispatch comes after the plug, so the plug costs none of it.
+		expect(f.plug.mock.invocationCallOrder[0]).toBeLessThan(f.authorize.mock.invocationCallOrder.at(-1) as number);
+		expect(f.client.submitInstanceOperation.mock.calls[0][1]).toEqual({ action: "create", request: f.created });
+		expect(f.created.devices.network).toEqual({ ...agentPlugCard("eth0"), hwaddr: testAgentMac });
+		for (const expected of ["pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		expect(f.plug).toHaveBeenCalledTimes(1);
+	});
+	it("dispatches nothing when the plug refuses", async () => {
+		const f = await fixture();
+		f.plug.mockRejectedValueOnce(new Error("AGENT_PLUG_REFUSED: no free address in the agents' range"));
+		await expect(f.reconcile()).rejects.toThrow("AGENT_PLUG_REFUSED");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect((await f.reconcile()).state).toBe("pending");
+		expect(f.client.submitInstanceOperation.mock.calls[0][1]).toEqual({ action: "create", request: f.created });
+	});
+	it("is only the machine it is with its agent card: a plug MAC, the card's exact keys, on the agents' bridge", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		const instance = f.instance()!;
+		const card = instance.devices.network;
+		for (const network of [
+			{ ...card, hwaddr: undefined as unknown as string },
+			{ ...card, hwaddr: "00:16:3e:00:00:01" },
+			{ ...card, hwaddr: "0e:51:0a:d2:00:05" },
+			{ ...card, parent: "machine-net" },
+			{ ...card, "security.port_isolation": "false" },
+			{ ...card, "ipv4.address": "10.210.1.1" },
+			{ type: "nic", network: "coding-net", name: "eth0" },
+		]) {
+			const devices = { ...instance.devices, network: JSON.parse(JSON.stringify(network)) };
+			expect(() =>
+				assertLxdCodingMachineInstance(f.value, storage, { ...instance, devices, expandedDevices: devices }),
+			).toThrow("CODING_MACHINE_DRIFTED");
+		}
 	});
 	it("accepts complete session folders of its company and environment, and nothing else", async () => {
 		const f = await fixture();
@@ -624,7 +681,7 @@ describe("a member's coding machine", () => {
 			expect((await f.reconcile("deleted")).state).toBe("deleted");
 			expect((await f.reconcile("stopped")).state).toBe("deleted");
 			expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1])).toEqual([
-				{ action: "create", request: f.plan.request },
+				{ action: "create", request: f.created },
 				{ action: "start", name: f.plan.request.name },
 				{ action: "stop", name: f.plan.request.name, force: true },
 				{ action: "delete", name: f.plan.request.name },

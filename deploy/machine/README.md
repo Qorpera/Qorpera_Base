@@ -27,14 +27,16 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 
 ### What a machine can reach
 
-`setup-machine-network.sh` creates the machine network (default `machine-net`, `10.88.0.1/22`). It is a NAT bridge with IPv4 only and an ACL that drops these destinations:
+A machine is an agent road machine: its only network card is a port of the agents' bridge `qagent0`, and its internet traffic leaves through the node's agent exit (`deploy/agent-exit/README.md`, contract section 19 "agent traffic leaves through the agent exit"). The executor plugs each machine in right before it creates it (`agent-plug.ts`: the node's plug tool gives the machine its address and the MAC its card carries), so the policy's `network` must be `qagent0`. The exit refuses our own networks and TCP port 25, its bridge rules tie each machine to its port, MAC and address, and LXD's MAC filter and port isolation keep machines apart; the exit's log names the machine's company. The agent exit must be installed and healthy on the node first (`deploy/agent-exit/ROLLOUT.md`).
+
+Until 3 October 2026 machines used their own NAT bridge, made by `setup-machine-network.sh` (default `machine-net`, `10.88.0.1/22`), with an ACL that dropped these destinations. The script stays for reference; no machine uses that bridge any more:
 
 - 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.168/16, 198.18/15, 224/4 and 240/4;
 - except two addresses, left out of those ranges by exact CIDRs (61 ranges, plus 2 rules for the gateway's ports): the bridge's gateway, where TCP and UDP are open only for DNS (53) and DHCP (67) (ICMP to it is not dropped), and 255.255.255.255, where a DHCP discover goes.
 
 LXD applies drop and reject rules before allow rules, and its baseline DHCP and DNS allowances do not open a hole in them (seen on node 2, `deploy/test-machine/README.md`). An ACL that drops 10/8 or 240/4 whole leaves machines without an address; the script refuses one it finds (replace it: `lxc network unset <network> security.acls && lxc network acl delete <network>-egress`, then run the script again).
 
-Together these cover the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. Other outbound traffic is allowed and all inbound is dropped. Each machine's NIC carries MAC and IPv4 filtering and port isolation, so machines on the bridge cannot reach each other. Offices refuse networks with ACLs, so this network is used by machines only.
+Together these covered the NAS and the node LAN, Tailscale, cloud metadata, the other bridges and the node itself. The agent exit covers the same destinations (its `internal4` set) and more.
 
 ### Proof on node 2 (2026-09-29)
 
@@ -63,22 +65,20 @@ The steps below need root on the node and a maintenance window. The coordinator 
 
 1. **Package the guest** from a checkout whose `npm run check` passes:
    `node scripts/package-machine-guest.mjs --out /task-owned/machine-guest`. The helper must stay under 64 KiB, because the executor re-reads it to check its pin.
-2. **Create the project and the network** on the node:
+2. **Create the project** on the node, with the agent exit installed and healthy (`deploy/agent-exit/ROLLOUT.md`):
    - `lxc project create machines -c features.images=false -c features.profiles=false`
-   - `deploy/machine/setup-machine-network.sh machine-net 10.88.0.1/22`
-   - Keep the printed network and ACL as evidence.
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
-   - The host must forward the bridge's traffic. Node 2 runs no Docker (checked 2026-09-29). On a host that does, Docker sets the FORWARD policy to drop, and machines resolve names but reach nothing. Allow the bridge there (`iptables -I DOCKER-USER -i machine-net -j ACCEPT` and `iptables -I DOCKER-USER -o machine-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`, repeated after a reboot). The ACL still applies, because LXD's rules live in their own table.
+   - The executor's unit joins the group `qorpera-agent-plug` and may write the exit's client map (`deploy/coding-worker/qorpera-coding-executor.service`).
 3. **Build the image** in the node's image build space: the project and network of the observer policy's `buildSpace` (on node 2, `qorpera-build` and `qorpera0`).
    `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> qorpera-build qorpera0 qorpera-vm machines > image-build.json`
    - The builder is a build machine there (no profiles, its own 10 GiB root, the smallest machine disk, the isolation NIC, `boot.autostart=false`, `user.qorpera.image_builder=true`), so the node stays `ready` while it builds. It takes 4 CPUs and 8 GiB of the space, and the script refuses while the space holds anything else, such as a runtime image build.
    - Anywhere else the builder is an unregistered instance and the node turns unavailable until it is deleted. The script refuses the machines project.
    - The image ends up in the store the `machines` project uses (the default project's, since `machines` has no images of its own). A build space that shares that store, as node 2's does (`features.images=false`, deploy/first-node/NODE-BUILDER-COEXISTENCE.md), publishes straight into it. One with its own store has the image exported and imported with the same fingerprint, and keeps no copy.
-   - The builder joins the build space's network, not `machine-net`, to fetch packages and Node.js. It holds no credential and is deleted when the build ends.
+   - The builder joins the build space's network, not the agents' bridge, to fetch packages and Node.js. It holds no credential and is deleted when the build ends.
    - The builder NIC's IPv6 filtering needs the `br_netfilter` module, which nodes load at bootstrap (`deploy/first-node/bootstrap-lxd-host.sh`).
    - Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.
 4. **Compute the policy.**
-   `node scripts/machine-provider-policy.mjs image-build.json <executor owner> <node id> <machine-id sha256> <coding providerId> <max cpus> <max memory GiB> <machine disk GiB> machines <pool> machine-net`
+   `node scripts/machine-provider-policy.mjs image-build.json <executor owner> <node id> <machine-id sha256> <coding providerId> <max cpus> <max memory GiB> <machine disk GiB> machines <pool> qagent0`
    - The provider id must be the coding executor's `vmPolicy.providerId`, because command routing reuses the coding peers.
    - The largest machine must fit the node's budget. `qorpera_enroll_runtime_node_provider` refuses more.
    - The machine disk is what the pool may promise machines in total (ZFS volumes are sparse, so leave the node's own VMs their share).

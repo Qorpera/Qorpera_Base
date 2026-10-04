@@ -8,6 +8,7 @@ import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import { type CompanyMachineEntry, LxdCompanyMachineHost } from "../src/company-machine-host.ts";
 import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const state = vi.hoisted(() => ({ controlPath: "" }));
 vi.mock("../src/coding-storage.ts", () => ({
@@ -36,7 +37,7 @@ const policy = {
 	imageFingerprint: "b".repeat(64),
 	bootstrapSha256: "c".repeat(64),
 	storagePool: "machines",
-	network: "machine-net",
+	network: "qagent0",
 };
 function binding(): LxdCompanyMachineBinding {
 	return {
@@ -130,14 +131,15 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		}),
 		inspectInstanceOperation: vi.fn(async (): Promise<"succeeded" | "pending" | "failed"> => {
 			if (pending?.action === "create")
+				// LXD makes the machine from the request the agent plug completed.
 				instance = {
 					name: plan.request.name,
 					type: "virtual-machine",
 					status: "Stopped",
 					statusCode: 102,
 					profiles: [],
-					devices: structuredClone(plan.request.devices),
-					expandedDevices: structuredClone(plan.request.devices),
+					devices: structuredClone(pending.request.devices),
+					expandedDevices: structuredClone(pending.request.devices),
 					config: { ...plan.request.config, "volatile.base_image": policy.imageFingerprint },
 					expandedConfig: { ...plan.request.config, "volatile.base_image": policy.imageFingerprint },
 				};
@@ -192,6 +194,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		}),
 		pushInstanceFile: vi.fn(async () => {}),
 	};
+	const agentPlug = vi.fn(testAgentPlug);
 	const host = new LxdCompanyMachineHost({
 		control,
 		owner: "mx-a",
@@ -207,6 +210,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 			serverAddress: "10.0.0.2",
 		},
 		helperSha256,
+		agentPlug,
 		...pins,
 	});
 	const signal = new AbortController().signal;
@@ -218,6 +222,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		busy,
 		client,
 		host,
+		agentPlug,
 		signal,
 		boot,
 		instance: () => instance,
@@ -234,6 +239,10 @@ describe("company machine host", () => {
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 		expect(f.instance()?.status).toBe("Running");
 		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
+		// Plugged into the node's agent exit right before the create: the card carries the plug's MAC.
+		expect(f.agentPlug).toHaveBeenCalledTimes(1);
+		expect(f.agentPlug.mock.calls[0][0]).toMatchObject({ kind: "machine", machineId: id(2), companyId: id(3) });
+		expect(f.instance()?.devices.network?.hwaddr).toBe(testAgentMac);
 		const execs = f.client.execInstance.mock.calls.map((call) => call[2].slice(3));
 		expect(execs).toEqual([
 			["prepare", id(2), expect.stringMatching(/^\d+$/)],

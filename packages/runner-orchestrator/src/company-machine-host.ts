@@ -10,6 +10,7 @@ import {
 	parseCloudCodingNasPolicy,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import type { AgentPlug } from "./agent-plug.ts";
 import { CodingControlBusy } from "./coding-executor.ts";
 import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machine.ts";
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
@@ -70,6 +71,8 @@ export interface CompanyMachineHostOptions {
 	previousHelperSha256s?: readonly string[];
 	/** How long a started guest may take before its agent answers (default 180 s). */
 	guestReadyTimeoutMs?: number;
+	/** The node's agent plug (default: its plug tool, deploy/agent-exit). */
+	agentPlug?: AgentPlug;
 }
 
 /** One placement of a machine as SQL lists it for this executor
@@ -275,6 +278,7 @@ export class LxdCompanyMachineHost {
 					client: this.#options.client,
 					authorize,
 					signal: checked,
+					plug: this.#options.agentPlug,
 				});
 			} catch (error) {
 				if (refused) return "not-now";
