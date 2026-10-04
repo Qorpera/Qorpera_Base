@@ -2589,7 +2589,9 @@ describe("who pays for a routine (20260930064000)", () => {
 		const lever = f.view.el.querySelector<HTMLButtonElement>('[role="switch"]')!;
 		lever.click();
 		// No resume: the card opens on the member's logins, and the switch stays off.
-		await vi.waitFor(() => expect(f.view.el.querySelector('.routine-login select[aria-label="Login"]')).not.toBeNull());
+		await vi.waitFor(() =>
+			expect(f.view.el.querySelector('.routine-login select[aria-label="Login"]')).not.toBeNull(),
+		);
 		expect(cards(f.view.el)[0]!.classList.contains("is-open")).toBe(true);
 		expect(document.activeElement).toBe(field(f.view.el, "Login"));
 		expect(controls(cards(f.view.el)[0]!)).toContain("switch:false");
