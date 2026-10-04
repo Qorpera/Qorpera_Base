@@ -62,6 +62,7 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-roll.mjs",
 	"scripts/test-object-gateway-connection-files.mjs",
 	"scripts/test-object-gateway-company-creation.mjs",
+	"scripts/test-folder-core-acceptance.mjs",
 ];
 
 /** Scripts that keep a PostgreSQL of their own (they restart the server or alter the cluster-wide postgres

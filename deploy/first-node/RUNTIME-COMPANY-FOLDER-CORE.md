@@ -1248,6 +1248,17 @@ For `folder-v2` companies:
 Items 6, 13 and 14 need the mount and the Company Computer, and are proven in
 the mount steps.
 
+`scripts/test-folder-core-acceptance.mjs` (P36) walks this list: one line per
+item, PASS, FAIL or NOT RUN with its reason.
+- In the hosted-db step it founds a company the real way (the creation worker,
+  the founder's own model login) and proves every item the database and the
+  node folder service's code can. Items that need a real coding session, live
+  runs, the load test or the launch items say NOT RUN.
+- With `--company <profileId>` it checks an existing company (P38's proof
+  company, a founder's first company) through `QORPERA_ACCEPTANCE_DATABASE_URL`:
+  read-only, or with `--write` under a scratch folder it deletes again. The
+  suite runs that mode too, on the company it founded.
+
 ### C6. Removal
 
 Once no `snapshot-v1` company remains, everything in §10 goes.
