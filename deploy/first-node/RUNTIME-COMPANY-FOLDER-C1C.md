@@ -280,7 +280,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -1623,6 +1623,70 @@ A company that is not `folder-v2` keeps the gc fence in each `else` branch, unte
 - F: the markers.
 
 824 H gains this migration's layer, undone first.
+
+### 6.16 C1c-3l part 1 as built: an agent starts the Company Computer (migration 20260930030000, test 890)
+
+The coordinator's P06c, first of two PRs. Folder-v2 only, like 3j and 3k: the statement that was there before stays in
+each `else`.
+
+| Path | Before (on folder-v2) | Now |
+|---|---|---|
+| `native_office_start` (an agent's `computer_start`) | refused with 0A000 | `qorpera_folder_office_start_enter(binding)`, then the seat lock and every computer of the company by id, as before; no gc fence (the tool run holds the folder fence and rank 0) |
+| `native_office_start_descriptor` | refused with 0A000 | serves folder-v2; its new computer takes the company's agents `KEY SHARE` before the seat lock (as `member_agent_office` does, §6.12); the gate accepts a ready folder-v2 Company File |
+| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since) |
+| `qorpera_folder_office_enter` (3j's prelude), run again inside the call | the start's agent `FOR SHARE` | `FOR SHARE NOWAIT` when nested |
+
+- **The prelude.** An agent's tool run takes its requester and agent only `KEY SHARE`. But the start-source check shares
+  the start's agent (or member) after the computer, and a start may join another start of the same computer, whose
+  agent or member it then shares. So before the seat lock and the computers, the tool run takes `FOR SHARE`:
+  - the members (rank 1) and agents (rank 2) named by any current start of the company's computers;
+  - the run's own agent;
+
+  and every active agent `KEY SHARE` (a new computer's default access takes them after the computers). An agent's
+  return holds its row, then wants the seat lock (the hire's walk, §6.12), then the computers: the start now waits at
+  the row and never holds what the return wants.
+- **A start that appears after the read.** The prelude reads the current starts plainly. If one commits before the start
+  locks the computers, it may name someone the prelude did not lock, and the start then joins it:
+  - a member: the start-source check shares the member after the computer. That is safe, because a member's writers
+    (role change, removal) never take a seat lock or a computer;
+  - an agent: the start-source check takes the agent `FOR SHARE NOWAIT` on folder-v2. An agent's return holds its row
+    and wants the seat lock, so a wait there could deadlock. Only if that row is being written at that very moment does
+    the start refuse (55P03). The runtime does not retry a refused `computer_start`: its receipt stays open and the run
+    reports the outcome unconfirmed (review r1). So the refusal is kept to that narrow case.
+
+  Every writer of a start holds the computer, so nothing changes after the start locks it.
+- **The receipt before the start record.** The start locks its operation receipt before the start of the computer
+  (a rank-9-level row before an office-level one, as it was). That is acyclic: only the run's own calls and its
+  completion take the receipt, and none of them takes a start record.
+- **3j's prelude, nested.** A member's start runs its before-idle body, and a provider's wrapper its unbound body, inside
+  the call; both run 3j's prelude again after the computer is held. Nested (the transaction-local
+  `qorpera.folder_office_entered` lists every computer the transaction entered), the prelude takes a start's agent
+  `FOR SHARE NOWAIT` too. The start-source check's NOWAIT covers only the agent's row, not its access row: no prelude
+  takes the access row, and no writer of it waits for a computer or the seat lock after taking it (reviews r2, r3).
+  The outer prelude took the same agent unless a start appeared in between; then a wait could deadlock with that
+  agent's return (890 E4 found it).
+- **Test 890** (648's committed fixture; Ada's run starts the company's computer):
+  - A: with the company row held, the descriptor and the authorize answer at once;
+  - B: with Ada's row held (her return), Ada's start waits there holding no seat lock and no computer; the holder bumps
+    the computer's revision and commits; the start lands;
+  - C: with Ada's start recorded, the owner's before-idle, the provider's offer, placement, the unbound check and
+    reserve, the withdrawal and the cancel each wait at Ada's row holding no computer, and never deadlock (the carried
+    C-style tests from #739's review);
+  - D: Ada's start joins the Co-Founder's start, waiting first at the Co-Founder's row;
+  - E: the Co-Founder's start commits while Ada's start waits at the seat lock; Ada's start joins it. E1: the same with
+    the Co-Founder's row being written; Ada's start refuses at once (55P03), records nothing and leaves its receipt open;
+  - E2: Ada's start joins the owner's start, waiting first at the owner's row. E2b: the owner's start commits after
+    Ada's read and the owner's row is held; Ada's start waits there (after the computer, which is safe) and joins;
+  - E3: with an active agent's row held `FOR UPDATE`, the start waits at the agents before the seat lock;
+  - E4: a member's start waits at the computer while Ada's start commits and Ada's row is being written; the member's
+    start refuses at once (55P03) instead of deadlocking;
+  - E1 and E4 set a lock timeout, so a wait there fails the test instead of hanging it;
+  - F: the descriptor's new computer waits at the agents before the seat lock;
+  - G: exactly 5 bodies name the migration.
+- **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
+  up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
+  folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
+  ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
 
 ## 7. Traps for C1c-2 and C1c-3
 
