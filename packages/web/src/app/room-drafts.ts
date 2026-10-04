@@ -265,7 +265,8 @@ export class DraftSync {
 			if (error instanceof CloudRpcError && (error.denied || error.missing)) result = { status: "gone" };
 			// The text itself was refused: trying it again cannot help. With quotes, it was the quotes the cloud would
 			// not keep (a mail thread it no longer shows, say).
-			else if (error instanceof CloudRpcError && error.code === "22023") refused = quotes.length ? "refused" : "too-long";
+			else if (error instanceof CloudRpcError && error.code === "22023")
+				refused = quotes.length ? "refused" : "too-long";
 			// Quotes this browser can't send as they are (more than a message carries) fail the same way every time.
 			else if (error instanceof DraftQuotesError) refused = error.tooMany ? "quote-limit" : "refused";
 			else this.#failures += 1;

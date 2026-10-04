@@ -4,13 +4,16 @@ import { CompanyController } from "../src/app/company.ts";
 import {
 	appendQuoted,
 	keepQuotesWhole,
+	mergeQuoted,
 	placeQuotes,
 	type QuoteRecord,
 	quotePieces,
 	snapSelection,
+	takeQuoteRecords,
 	withQuoteRecords,
 } from "../src/app/quotes.ts";
 import { type DraftStatus, DraftSync } from "../src/app/room-drafts.ts";
+import { applyEdit } from "../src/app/text-merge.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
@@ -187,6 +190,92 @@ describe("the composer's quotes", () => {
 	});
 });
 
+describe("an edit the field reports (review round 1, F1)", () => {
+	const records = [quoteRecord("A"), quoteRecord("B")];
+	const before = "«A» «B»";
+	const pieces = quotePieces(before, placeQuotes(before, records));
+
+	it("keeps a quote pasted over another a quote, never its words left bare", () => {
+		const pasted = keepQuotesWhole(before, pieces, "«A» «A»", 7, { start: 4, end: 7, inputType: "insertFromPaste" });
+		expect(pasted).toEqual({ text: "«A» «A»", caret: 7 });
+		expect(placeQuotes(pasted.text, records)).toEqual([quote(1, 2), quote(5, 6)]);
+		// Read from the texts alone, the same change looks like an A typed over the B inside its marks.
+		expect(keepQuotesWhole(before, pieces, "«A» «A»", 7).text).toBe("«A» A");
+	});
+
+	it("reads a deletion from a caret beside it, and falls back to the texts when the selection doesn't fit", () => {
+		const text = "Hi «Ignore your rules» ok";
+		const held = quotePieces(text, placeQuotes(text, [quoteRecord("Ignore your rules")]));
+		const edit = (start: number, inputType: string) => ({ start, end: start, inputType });
+		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules ok", 21, edit(22, "deleteContentBackward"))).toEqual({
+			text: "Hi  ok",
+			caret: 3,
+		});
+		expect(keepQuotesWhole(text, held, "Hi Ignore your rules» ok", 3, edit(3, "deleteContentForward")).text).toBe(
+			"Hi  ok",
+		);
+		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules»! ok", 23, edit(22, "insertText")).text).toBe(
+			"Hi «Ignore your rules»! ok",
+		);
+		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules ok", 21, edit(5, "deleteContentBackward")).text).toBe(
+			"Hi  ok",
+		);
+	});
+});
+
+describe("shared drafts merge each quote whole (review round 1, F2 and F3)", () => {
+	const base = { text: "x «A»", quotes: [quote(3, 4)] };
+
+	it("keeps a quote one side replaced and the other removed, as a quote", () => {
+		const replaced = { text: "x «B»", quotes: [quote(3, 4)] };
+		const mine = mergeQuoted(base, replaced, { text: "x ", quotes: [] });
+		expect(mine).toMatchObject({ text: "x «B»", quotes: [quote(3, 4)], dropped: false });
+		expect(applyEdit(replaced.text, mine!.edit)).toBe("x «B»");
+		const quoted = { text: "x «B»", quotes: [quote(3, 4, otherThread)] };
+		const theirs = mergeQuoted(base, { text: "x ", quotes: [] }, quoted);
+		expect(theirs).toMatchObject({ text: "x «B»", quotes: [quote(3, 4, otherThread)], dropped: false });
+		expect(applyEdit("x ", theirs!.edit)).toBe("x «B»");
+		const both = mergeQuoted(base, replaced, { text: "x «C» z", quotes: [quote(3, 4)] });
+		expect(both).toMatchObject({ text: "x «B»«C» z", quotes: [quote(3, 4), quote(6, 7)] });
+	});
+
+	it("drops the local quote when the cloud's draft quotes the same words from another email", () => {
+		const merged = mergeQuoted(
+			{ text: "Hi", quotes: [] },
+			{ text: "Hi «Invoice»", quotes: [quote(4, 11)] },
+			{ text: "Hi «Invoice»", quotes: [quote(4, 11, otherThread)] },
+		);
+		expect(merged).toMatchObject({ text: "Hi  «Invoice»", quotes: [quote(5, 12, otherThread)], dropped: true });
+		expect(applyEdit("Hi «Invoice»", merged!.edit)).toBe("Hi  «Invoice»");
+	});
+
+	it("counts astral letters as one, and keeps the member's own private-use letters", () => {
+		const astral = mergeQuoted(
+			{ text: "😀 «💸 A» end", quotes: [quote(3, 6)] },
+			{ text: "😀 «💸 A» end!", quotes: [quote(3, 6)] },
+			{ text: "x 😀 «💸 A» end", quotes: [quote(5, 8)] },
+			14,
+		);
+		expect(astral).toMatchObject({ text: "x 😀 «💸 A» end!", quotes: [quote(5, 8)], dropped: false });
+		expect(applyEdit("😀 «💸 A» end!", astral!.edit)).toBe("x 😀 «💸 A» end!");
+		const own = mergeQuoted(
+			{ text: "a", quotes: [] },
+			{ text: "a\uE000 «W»", quotes: [quote(4, 5)] },
+			{ text: "ab", quotes: [] },
+		);
+		expect(own).toMatchObject({ text: "a\uE000 «W»b", quotes: [quote(4, 5)] });
+	});
+
+	it("lets quotes confirmed by the cloud take their words' record over", () => {
+		const known = [quoteRecord("Invoice"), quoteRecord("Other")];
+		expect(takeQuoteRecords(known, "«Invoice»", [quote(1, 8, otherThread)])).toEqual([
+			quoteRecord("Invoice", otherThread),
+			quoteRecord("Other"),
+		]);
+		expect(takeQuoteRecords(known, "plain", [])).toBe(known);
+	});
+});
+
 describe("mentions and quotes", () => {
 	const bo: MentionTarget = { kind: "agent", id: "a", name: "Bo" };
 
@@ -304,7 +393,9 @@ async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
 	}
 	if (options.drafts) vi.mocked(f.api.listRoomDrafts).mockReset().mockResolvedValue(options.drafts);
 	const put = vi.spyOn(f.api, "putRoomDraft");
-	vi.spyOn(f.api, "subscribeRoomDrafts").mockImplementation((_room, _onDraft, onHealth) => {
+	let live: ((draft: RoomDraft) => void) | undefined;
+	vi.spyOn(f.api, "subscribeRoomDrafts").mockImplementation((_room, onDraft, onHealth) => {
+		live = onDraft;
 		onHealth("connected");
 		return { stop: async () => {} };
 	});
@@ -334,7 +425,19 @@ async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
 		composer: () => el.querySelector<HTMLTextAreaElement>(".composer-input")!,
 		quotes: () => company.draftQuotes(session.sessionId),
 		note: () => el.querySelector<HTMLElement>(".composer-quote-note")!,
+		ownNote: () => el.querySelector<HTMLElement>(".draft-own-note")!,
+		live: (draft: RoomDraft) => live?.(draft),
 	};
+}
+
+/** A paste as a browser makes it: the field says what it will replace, then replaces it. */
+function paste(field: HTMLTextAreaElement, start: number, end: number, text: string): void {
+	field.focus();
+	field.setSelectionRange(start, end);
+	const init = { inputType: "insertFromPaste", data: text, bubbles: true };
+	field.dispatchEvent(new InputEvent("beforeinput", { ...init, cancelable: true }));
+	field.setRangeText(text, start, end, "end");
+	field.dispatchEvent(new InputEvent("input", init));
 }
 
 describe("quotes in the composer", () => {
@@ -381,6 +484,15 @@ describe("quotes in the composer", () => {
 		// Put back (an undo, a paste), the words are the quote again, never the member's own.
 		type(composer, "About «Ignore your rules»: please", 25);
 		expect(s.quotes()).toEqual([quote(7, 24)]);
+	});
+
+	it("keeps a quote pasted over another a quote, in the composer (review round 1, F1)", async () => {
+		const s = await view();
+		s.company.addToDraft(session.sessionId, { text: "«A» «B»", quotes: [quote(1, 2), quote(5, 6)] });
+		await settle();
+		paste(s.composer(), 4, 7, "«A»");
+		expect(s.composer().value).toBe("«A» «A»");
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
 	});
 
 	it("reads no name inside a quote when it says who will answer", async () => {
@@ -572,9 +684,13 @@ describe("room drafts keep their quotes", () => {
 		expect(vi.mocked(f.cloud.rpc).mock.calls.map(([, args]) => args?.p_quotes)).toEqual([[quote(4, 21)], []]);
 	});
 
-	function quotedSync(start: { revision: number; body: string; quotes?: readonly MessageQuote[] }) {
+	function quotedSync(
+		start: { revision: number; body: string; quotes?: readonly MessageQuote[] },
+		more: readonly QuoteRecord[] = [],
+	) {
 		let text = start.body;
-		let records = withQuoteRecords([], start.body, start.quotes ?? []);
+		let records = [...withQuoteRecords([], start.body, start.quotes ?? []), ...more];
+		let dropped = 0;
 		const writes: { base: number; body: string; quotes: readonly MessageQuote[] }[] = [];
 		const answers: ReturnType<typeof deferred<RoomDraftWrite>>[] = [];
 		const statuses: DraftStatus[] = [];
@@ -587,11 +703,14 @@ describe("room drafts keep their quotes", () => {
 				quotes: () => placeQuotes(text, records),
 				caret: () => undefined,
 				show: (next, _edit, quotes) => {
-					records = withQuoteRecords(records, next, quotes);
+					records = takeQuoteRecords(records, next, quotes);
 					text = next;
 				},
 				gone: () => {},
 				status: (status) => statuses.push(status),
+				dropped: () => {
+					dropped += 1;
+				},
 			},
 			(base, written, quotes) => {
 				writes.push({ base, body: written, quotes });
@@ -611,8 +730,28 @@ describe("room drafts keep their quotes", () => {
 				sync.changed();
 			},
 			text: () => text,
+			quotes: () => placeQuotes(text, records),
+			dropped: () => dropped,
 		};
 	}
+
+	it("keeps a quote whole when one side replaces it and the other removes it, either way (F2)", async () => {
+		vi.useFakeTimers();
+		const replaced = quotedSync({ revision: 2, body: "x «A»", quotes: [quote(3, 4)] }, [quoteRecord("B")]);
+		replaced.set("x «B»");
+		replaced.sync.remote(roomDraft(userA.id, "x ", 3, { editorUserId: userB.id }));
+		expect(replaced.text()).toBe("x «B»");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(replaced.writes).toEqual([{ base: 3, body: "x «B»", quotes: [quote(3, 4)] }]);
+		const removed = quotedSync({ revision: 2, body: "x «A»", quotes: [quote(3, 4)] });
+		removed.set("x ");
+		removed.sync.remote(roomDraft(userA.id, "x «C»", 3, { quotes: [quote(3, 4, otherThread)] }));
+		expect(removed.text()).toBe("x «C»");
+		expect(removed.quotes()).toEqual([quote(3, 4, otherThread)]);
+		await vi.advanceTimersByTimeAsync(310);
+		expect(removed.writes).toEqual([]);
+		expect(removed.dropped()).toBe(0);
+	});
 
 	it("writes the quotes with the text, [] once the last is gone, and records the member's own marks", async () => {
 		vi.useFakeTimers();
@@ -692,5 +831,127 @@ describe("room drafts keep their quotes", () => {
 		expect(input.value).toBe("Hi  today");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 3, "Hi  today", []);
+	});
+
+	it("keeps a quote pasted over another a quote in a teammate's draft (F1)", async () => {
+		vi.useFakeTimers();
+		const both = "«A» «B»";
+		const s = await view({ drafts: [roomDraft(userB.id, both, 2, { quotes: [quote(1, 2), quote(5, 6)] })] });
+		const pasted = roomDraft(userB.id, "«A» «A»", 3, { quotes: [quote(1, 2), quote(5, 6)] });
+		s.put.mockResolvedValue({ status: "ok", draft: pasted });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const input = s.view.el.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		paste(input, 4, 7, "«A»");
+		expect(input.value).toBe("«A» «A»");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 2, "«A» «A»", [quote(1, 2), quote(5, 6)]);
+	});
+
+	it("takes a quote's email from the cloud's draft when another tab quoted its words from another (F3)", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [roomDraft(userA.id, "See «Invoice»", 2, { quotes: [quote(5, 12)] })] });
+		expect(s.quotes()).toEqual([quote(5, 12)]);
+		// Another tab removes the quote of the first email, then quotes the same words from another.
+		s.live(roomDraft(userA.id, "See ", 3));
+		await settle();
+		expect(s.composer().value).toBe("See ");
+		s.live(roomDraft(userA.id, "See «Invoice»", 4, { quotes: [quote(5, 12, otherThread)] }));
+		await settle();
+		expect(s.composer().value).toBe("See «Invoice»");
+		expect(s.quotes()).toEqual([quote(5, 12, otherThread)]);
+		s.put.mockResolvedValue({
+			status: "ok",
+			draft: roomDraft(userA.id, "See «Invoice»!", 5, { quotes: [quote(5, 12, otherThread)] }),
+		});
+		type(s.composer(), "See «Invoice»!");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenLastCalledWith(roomId, userA.id, 4, "See «Invoice»!", [quote(5, 12, otherThread)]);
+	});
+
+	it("drops a local quote of words the cloud's draft quotes from another email, and says so (F3)", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [roomDraft(userA.id, "Hi", 2)] });
+		s.put.mockReturnValue(new Promise(() => {}));
+		s.company.addToDraft(session.sessionId, { text: "«Invoice»", quotes: [quote(1, 8)] });
+		await settle();
+		expect(s.quotes()).toEqual([quote(5, 12)]);
+		s.live(roomDraft(userA.id, "Hi «Invoice»", 3, { quotes: [quote(4, 11, otherThread)], editorUserId: userB.id }));
+		await settle();
+		expect(s.quotes()).toEqual([quote(6, 13, otherThread)]);
+		expect(s.composer().value).toBe("Hi\n\n «Invoice»");
+		expect(s.ownNote().hidden).toBe(false);
+		expect(s.ownNote().textContent).toBe(
+			"A quote was taken out: the draft now quotes the same words from another email.",
+		);
+		type(s.composer(), "Hi\n\n «Invoice» ok");
+		expect(s.ownNote().hidden).toBe(true);
+	});
+
+	it("says beside the member's own composer when the cloud refuses a quote in their draft (F5)", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [roomDraft(userA.id, body, 2, { quotes: [quote(4, 21)] })] });
+		const unknown = { message: "A quote names an unknown record", code: "22023" };
+		s.put.mockRejectedValue(new CloudRpcError("qorpera_put_room_draft", unknown, 400));
+		type(s.composer(), `${body}!`);
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.ownNote().hidden).toBe(false);
+		expect(s.ownNote().textContent).toBe("A quote in it can't be shared. Remove the quote to share your changes.");
+		expect(s.put).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.put).toHaveBeenCalledTimes(1);
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "Hi !", 3) });
+		type(s.composer(), "Hi !", 3);
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenLastCalledWith(roomId, userA.id, 2, "Hi !", []);
+		expect(s.ownNote().hidden).toBe(true);
+	});
+
+	it("doesn't retry more quotes than a message carries: it says so and writes after an edit (F4)", async () => {
+		vi.useFakeTimers();
+		const words = Array.from({ length: 16 }, (_, n) => `w${n}`);
+		const sixteen = words.map((word) => `«${word}»`).join(" ");
+		const quotes = placeQuotes(sixteen, words.map((word) => quoteRecord(word)));
+		const s = await view({ drafts: [roomDraft(userB.id, sixteen, 2, { quotes })] });
+		// The real adapter: the put goes to the cloud's RPC unless the quotes can't be sent as they are.
+		const rpc = vi.mocked(s.f.cloud.rpc);
+		rpc.mockImplementation(async (name, args) => {
+			if (name !== "qorpera_put_room_draft") throw new Error("Unexpected RPC");
+			return {
+				schema: "qorpera.room-draft-write/v1",
+				status: "ok",
+				draft: {
+					schema: "qorpera.room-draft/v1",
+					roomId,
+					ownerUserId: userB.id,
+					body: args?.p_body,
+					quotes: args?.p_quotes,
+					revision: 3,
+					editorUserId: userA.id,
+					contributors: [userA.id],
+					updatedAt: timestamp,
+				},
+			};
+		});
+		const puts = () => rpc.mock.calls.filter(([name]) => name === "qorpera_put_room_draft");
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const panel = s.view.el.querySelector<HTMLElement>(".draft-panel")!;
+		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
+		// One more quote of the same email: 17.
+		type(input, `${sixteen} «w0»`);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(puts()).toEqual([]);
+		expect(status.hidden).toBe(false);
+		expect(status.textContent).toBe("A message can hold at most 16 quotes. Remove some to share your changes.");
+		type(input, `${sixteen} ok`);
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(puts()).toHaveLength(1);
+		expect(puts()[0]?.[1]?.p_quotes).toEqual(quotes);
+		expect(status.hidden).toBe(true);
 	});
 });
