@@ -157,9 +157,12 @@ select pg_temp.p29_replace('public.qorpera_runtime_wake_policy_internal(uuid)'::
 	$old$			or (v_wake.source_kind = 'company-file' and v_trigger ->> 'kind' <> 'listener')$old$,
 	$new$			or (v_wake.source_kind = 'company-file' and v_trigger ->> 'kind' <> case when v_wake.file_event_id is null
 				then 'file-change' else 'listener' end) -- 20260930020000$new$);
+-- Anchored on this slice's own token only, so another slice editing the same list (A1's office-activation) applies in
+-- either order.
 select pg_temp.p29_replace('public.qorpera_folder_run_resolve(uuid,uuid,jsonb)'::regprocedure,
-	$old$	if v_wake.source_kind in ('company-file','office-activation','machine-event') then$old$,
-	$new$	if v_wake.source_kind in ('office-activation','machine-event') then -- 20260930020000 (P29): file wakes run$new$);
+	$old$	if v_wake.source_kind in ('company-file',$old$,
+	$new$	-- 20260930020000 (P29): a file wake runs.
+	if v_wake.source_kind in ($new$);
 
 -- 6. The occurrence count: a file wake counts by its key (they share the trigger, and a step's share a time) ----------
 
@@ -308,16 +311,19 @@ end $$;
 -- 8. The wake's authority and its read -----------------------------------------------------------------------------------
 
 select pg_temp.p29_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
-	$old$		or p_wake.source_kind in ('company-file','office-activation','machine-event','event') then return false; end if;$old$,
-	$new$		or p_wake.source_kind in ('office-activation','machine-event','event') then return false; end if;
-	-- 20260930020000 (P29): a ChatGPT plan pays for no file wake and for nothing that follows a listener (20260928359950).
+	$old$		or p_wake.source_kind in ('company-file',$old$,
+	$new$		or p_wake.source_kind in ($new$);
+select pg_temp.p29_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
+	$old$	-- A member's login pays only for work that member started (20260928230000).$old$,
+	$new$	-- 20260930020000 (P29): a ChatGPT plan pays for no file wake and for nothing that follows a listener (20260928359950).
 	if public.qorpera_sponsor_version_is_chatgpt_plan(p_wake.sponsor_binding_id, p_wake.sponsor_version)
 		and (public.qorpera_listener_source(p_wake.source_kind) or public.qorpera_run_follows_listener(p_wake.parent_run_id)) then
 		return false; end if;
 	-- A file wake names a saved change set of its environment; before it runs, one of its changes is still readable.
 	if p_wake.source_kind = 'company-file' and (not exists (select 1 from public.qorpera_folder_commits c
 			where c.id = p_wake.source_id and c.environment_id = p_wake.environment_id and c.seq is not null)
-		or (p_wake.run_id is null and not public.qorpera_folder_file_wake_readable(p_wake))) then return false; end if;$new$);
+		or (p_wake.run_id is null and not public.qorpera_folder_file_wake_readable(p_wake))) then return false; end if;
+	-- A member's login pays only for work that member started (20260928230000).$new$);
 select pg_temp.p29_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$		v_ancestry := public.qorpera_wake_ancestry(p_wake.parent_run_id, null, p_wake.staff_agent_id, coalesce(p_wake.file_event_id, p_wake.id));$old$,
 	$new$		-- 20260930020000 (P29): a file wake's chain as the pin trigger made it, from its change set's agent and root.
