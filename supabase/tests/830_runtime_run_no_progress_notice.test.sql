@@ -2,7 +2,7 @@
 -- A run that makes no progress for 15 minutes (session-buildup audit gap 4, migration 20260930002600): the agent's
 -- activity row names the stall and its minutes, and a member is told once per run; nothing stops the run. Progress is
 -- the run's newest observation, context view or assignment, or its job's start; never the lease. A tool call still in
--- flight is waiting, not stalled. Clocks are moved back by hand (the replica role skips the rows' guards).
+-- flight is no exception (20260930051000). Clocks are moved back by hand (the replica role skips the rows' guards).
 
 -- Bob's own thread, reopened as in 586: his routine runs there. An admin joins the owner, contributor and viewer.
 select pg_temp.path_claims('service_role');
@@ -159,21 +159,22 @@ begin
 end
 $$;
 
--- E. A tool call in flight for 18 minutes is waiting on that tool, not stalled; once it finished (17 minutes ago), the
--- stall counts. A model request in flight is no tool call: it stalls.
+-- E. A tool call open for 18 minutes is a stall like any other, from its start (20260930051000: no built-in tool keeps a
+-- call open that long); once it finished (17 minutes ago), from its finish. A model request in flight stalls too.
 do $$
 begin
 	perform pg_temp.forget(true);
 	perform pg_temp.observe('computer_shell', 'start', 18);
-	if pg_temp.bob() ? 'no_progress_since' or pg_temp.sweep() ->> 'opened' <> '0' then
-		raise exception 'E: a tool call in flight is no stall: %', pg_temp.bob(); end if;
+	if (pg_temp.bob() ->> 'no_progress_since')::timestamptz is distinct from (select max(ingested_at)
+		from public.qorpera_runtime_observations where run_id = pg_temp.run()) then
+		raise exception 'E: a tool call open for 18 minutes is a stall from its start: %', pg_temp.bob(); end if;
 	perform pg_temp.observe('computer_shell', 'finish', 17);
 	if (pg_temp.bob() ->> 'no_progress_since')::timestamptz is distinct from (select max(ingested_at)
 		from public.qorpera_runtime_observations where run_id = pg_temp.run()) then
 		raise exception 'E: a finished tool call is the last progress: %', pg_temp.bob(); end if;
 	perform pg_temp.observe('model_request', 'start', 16);
 	if not pg_temp.bob() ? 'no_progress_since' then
-		raise exception 'E: a model request in flight is no tool call: %', pg_temp.bob(); end if;
+		raise exception 'E: a model request in flight stalls: %', pg_temp.bob(); end if;
 	-- "Writing" pulses come every 5 s on the runner's own timer until the reply ends: a reply hung for good keeps
 	-- pulsing, so pulses are no progress. The stall still runs from the model request's start.
 	perform pg_temp.observe('message_composition', 'start', 0);
@@ -182,12 +183,13 @@ begin
 	if (pg_temp.bob() ->> 'no_progress_since')::timestamptz is distinct from (select max(ingested_at)
 		from public.qorpera_runtime_observations where run_id = pg_temp.run() and operation <> 'message_composition') then
 		raise exception 'E: writing pulses are no progress: %', pg_temp.bob(); end if;
-	-- Both halves read the same rows: a tool call in flight behind later pulses is still waited on.
+	-- A tool call open behind later pulses stalls from its start.
 	perform pg_temp.forget(true);
 	perform pg_temp.observe('computer_shell', 'start', 18);
 	perform pg_temp.observe('message_composition', 'start', 0);
-	if pg_temp.bob() ? 'no_progress_since' then
-		raise exception 'E: a tool call in flight behind pulses is no stall: %', pg_temp.bob(); end if;
+	if (pg_temp.bob() ->> 'no_progress_since')::timestamptz is distinct from (select max(ingested_at)
+		from public.qorpera_runtime_observations where run_id = pg_temp.run() and operation <> 'message_composition') then
+		raise exception 'E: a tool call open behind pulses stalls from its start: %', pg_temp.bob(); end if;
 end
 $$;
 
@@ -265,7 +267,6 @@ begin
 		or has_function_privilege('service_role', 'public.qorpera_run_no_progress_since(uuid,timestamptz)', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_schedule_run_progress_notices()', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_run_last_progress_at(uuid,timestamptz)', 'execute')
-		or has_function_privilege('authenticated', 'public.qorpera_run_waiting_on_tool(uuid)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_run_stall_minutes()', 'execute') then
 		raise exception 'H: the gap 4 functions are postgres-only'; end if;
 	v_text := replace(replace(pg_get_functiondef('public.qorpera_list_staff_execution_activity(uuid)'::regprocedure),

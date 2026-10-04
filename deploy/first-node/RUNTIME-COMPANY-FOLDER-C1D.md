@@ -136,7 +136,34 @@ read it or step 7 refuses the copy.
 
 A move alone references nothing new and locks no object. The commit is found by name (it must have exactly one
 definition), and the patch is five replacements in its declarations and byte block, each of which must match exactly
-once.
+once. C1d-2 adds a sixth (§9.7), and P24d three more (below).
+
+**Cost (P24d, migration 20260930047000, test 904).** The byte checks cost the same whatever the company stores. Step 6
+keeps the objects it locked as an array, sorted `collate "C"` (P24d sorts it explicitly, after C1d-2's filter). Every
+check looks an object up in that array with `qorpera_folder_sorted_position`, a binary search. Only if that misses does
+it scan the array, so an unsorted array costs time and never changes an answer.
+- **A file's check** (`qorpera_folder_file_bytes_problem`) walks the proof's objects one by one, a manifest and up to
+  64 chunks. Each object is looked up in the array, then its catalog row is probed by primary key.
+- **A new folder's files** go through `qorpera_folder_contents_bytes_problem`, a loop over its contents.
+- **A copy's objects** go through `qorpera_folder_unit_objects_unlocked`, a loop over `qorpera_folder_unit_objects`.
+- **The calling rule:** call these from a PL/pgSQL assignment or `IF`/`ELSIF` condition, with the array in a variable;
+  the array then arrives by reference. A SQL statement, or `PERFORM`, copies the array into each call under custom
+  plans, and `= any` over it flattens it for every row under a generic plan.
+
+Before P24d, one statement over the proof's objects did both of a file's checks. The planner hashed the catalog lookup,
+expecting a set-returning function to return 100 rows, so every file read every object the company stores. The copy's
+statement flattened the array for every object under a generic plan, which the plan cache usually picks after five runs.
+A new folder of N new files, and a copy of it, over a catalog of 2 × 10,000 objects (a manifest and a chunk each,
+platform actor):
+
+| N | new folder before | new folder after (custom / generic plans) | copy before (custom / generic) | copy after (custom / generic) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 5.3 s | 0.61 / 0.49 s | 0.30 / 0.59 s | 0.33 / 0.46 s |
+| 2,500 | 14.9 s | 1.4 / 1.1 s | | |
+| 5,000 | 32.5 s | 2.7 / 2.3 s | 1.3 / 4.9 s | 1.4 / 1.4 s |
+| 10,000 | 87 s | 5.6 / 4.5 s | 2.6 / 17 s | 2.8 / 2.9 s |
+
+The catalog rows a new folder reads went from N × 20,000 to 20,000 + 2N.
 
 ## 5. Usage and the quota
 
