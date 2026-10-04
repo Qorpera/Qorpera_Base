@@ -357,6 +357,9 @@ export class SharedDrafts {
 			quoted.hidden = !quotes().length;
 		};
 		const lifetime = new AbortController();
+		// Its own undo history, as the member's composer has (composer-quotes.ts): each state with its records. Text
+		// that changes from outside (a teammate's words merged in, `show`) starts it again there.
+		const history = new FieldHistory({ text: "", caret: 0, records: [] });
 		const state: { composing: boolean } = { composing: false };
 		const opened = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
 			text: () => input.value,
@@ -368,6 +371,8 @@ export class SharedDrafts {
 				records = takeQuoteRecords(records, text, shown);
 				showKeepingCaret(input, text, edit);
 				before = input.value;
+				// A teammate's words merged in: the undo history starts again here.
+				history.restart({ text: before, caret: input.selectionEnd, records });
 				showQuoted();
 				this.#autosize(input);
 			},
@@ -388,9 +393,7 @@ export class SharedDrafts {
 		showStatus(sync.status);
 		showQuoted();
 		const edits = watchEdits(input, lifetime.signal);
-		// Its own undo history, as the member's composer has (composer-quotes.ts). A teammate's words merged in
-		// (`show`) change the text from outside, which starts the history again there.
-		const history = new FieldHistory({ text: input.value, caret: input.value.length });
+		history.restart({ text: input.value, caret: input.value.length, records });
 		const edited = () => {
 			showQuoted();
 			if (dropped) {
@@ -401,7 +404,7 @@ export class SharedDrafts {
 			this.#autosize(input);
 		};
 		const step = (which: HistoryStep) => {
-			const state = history.step(which, before);
+			const state = history.step(which, { text: before, caret: input.selectionEnd, records });
 			if (!state) {
 				if (input.value !== before) input.value = before;
 				return;
@@ -409,6 +412,7 @@ export class SharedDrafts {
 			input.value = state.text;
 			input.setSelectionRange(state.caret, state.caret);
 			before = state.text;
+			records = state.records;
 			edited();
 		};
 		watchHistory(input, lifetime.signal, step);
@@ -425,7 +429,7 @@ export class SharedDrafts {
 				input.value = kept.text;
 				if (kept.caret !== undefined) input.setSelectionRange(kept.caret, kept.caret);
 			}
-			history.edited(before, { text: input.value, caret: input.selectionEnd }, historyRun(edit, event));
+			history.edited(before, { text: input.value, caret: input.selectionEnd, records }, historyRun(edit, event));
 			before = input.value;
 			edited();
 		});

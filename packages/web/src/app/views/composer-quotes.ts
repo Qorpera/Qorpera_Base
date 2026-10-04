@@ -1,4 +1,4 @@
-import { type FieldEdit, type QuotePiece, snapSelection } from "../quotes.ts";
+import { type FieldEdit, type QuotePiece, type QuoteRecord, snapSelection } from "../quotes.ts";
 
 /* A quote of outside content is one piece of a draft (app/quotes.ts): the caret never rests inside one, so nothing
  * typed, pasted or composed (an input method) lands in its words, and a selection takes a quote whole or not at all.
@@ -59,10 +59,12 @@ export function watchEdits(input: HTMLTextAreaElement, signal: AbortSignal): Fie
 	};
 }
 
-/** A field's text and caret, as the composer held it. */
+/** A field's text and caret, as the composer held it, with the records of the quotes it holds: restored together, a
+ * quote comes back with its record whatever happened to the records since. */
 export interface FieldState {
 	readonly text: string;
 	readonly caret: number;
+	readonly records: readonly QuoteRecord[];
 }
 
 export type HistoryStep = "undo" | "redo";
@@ -83,9 +85,10 @@ const HISTORY_MAX = 100;
  * here is one the composer held after its quote rules settled an edit, so its quotes are whole, and the draft's
  * records last as long as the draft. Typing, and deleting, in one run is one step, as a text field groups them.
  *
- * A text that changes from outside the member's own edits (a teammate's words merged in, a message sent, a message
- * button) starts the history again there, as a browser's own does when a page sets a field's text: an undo never
- * reaches back past someone else's words. */
+ * A text that changes from outside the member's own edits (a teammate's words merged in, the cloud's draft, a message
+ * sent, a message button, the records changed) starts the history again there (`restart`), as a browser's own does
+ * when a page sets a field's text: an undo never reaches back past someone else's words. The composer says so as it
+ * happens; should a change ever slip past, a text that isn't the history's present starts it again too. */
 export class FieldHistory {
 	#undo: FieldState[] = [];
 	#redo: FieldState[] = [];
@@ -97,9 +100,17 @@ export class FieldHistory {
 		this.#present = present;
 	}
 
+	/** The text changed from outside the member's own edits: the history starts again at `present`. */
+	restart(present: FieldState): void {
+		this.#undo = [];
+		this.#redo = [];
+		this.#present = present;
+		this.#run = undefined;
+	}
+
 	/** The member's edit, once settled: `before` is the text it was made in, `next` what the field holds now. */
 	edited(before: string, next: FieldState, run?: HistoryRun): void {
-		if (before !== this.#present.text) this.#restart({ text: before, caret: run?.start ?? next.caret });
+		if (before !== this.#present.text) this.restart({ ...next, text: before, caret: run?.start ?? next.caret });
 		if (next.text === this.#present.text) {
 			this.#present = next;
 			return;
@@ -116,11 +127,11 @@ export class FieldHistory {
 		this.#run = run && !run.closes ? { kind: run.kind, end } : undefined;
 	}
 
-	/** Undo or redo from `current`, the text the composer holds: the state to show, or undefined when there is none
-	 * (or the text changed from outside since, which starts the history again). */
-	step(which: HistoryStep, current: string): FieldState | undefined {
-		if (current !== this.#present.text) {
-			this.#restart({ text: current, caret: current.length });
+	/** Undo or redo from `current`, what the composer holds: the state to show, its records included, or undefined
+	 * when there is none (or the text changed from outside since, which starts the history again). */
+	step(which: HistoryStep, current: FieldState): FieldState | undefined {
+		if (current.text !== this.#present.text) {
+			this.restart(current);
 			return undefined;
 		}
 		const from = which === "undo" ? this.#undo : this.#redo;
@@ -130,13 +141,6 @@ export class FieldHistory {
 		this.#present = state;
 		this.#run = undefined;
 		return state;
-	}
-
-	#restart(present: FieldState): void {
-		this.#undo = [];
-		this.#redo = [];
-		this.#present = present;
-		this.#run = undefined;
 	}
 }
 

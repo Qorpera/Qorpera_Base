@@ -57,6 +57,7 @@ import { ComposerModels } from "./composer-models.ts";
 import {
 	type FieldEdits,
 	FieldHistory,
+	type FieldState,
 	type HistoryStep,
 	historyRun,
 	historyStep,
@@ -216,6 +217,8 @@ export class ConversationView {
 	/** What each edit of the composer replaced, and its own undo history (composer-quotes.ts). */
 	readonly #edits: FieldEdits;
 	readonly #history: FieldHistory;
+	/** The draft change (ConversationState.draftEpoch) the history last started from. */
+	#historyEpoch = 0;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -358,6 +361,7 @@ export class ConversationView {
 				// A change that reached into a quote removes the whole quote; the field shows what is kept. The field's
 				// own account of what it replaced tells a quote pasted over another from words typed inside it.
 				const composer = this.#composer;
+				this.#followHistory();
 				const before = company.conversation(sessionId).get().draft ?? "";
 				const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
 				const edit = this.#edits.take(event);
@@ -366,11 +370,7 @@ export class ConversationView {
 					composer.value = kept.text;
 					if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
 				}
-				this.#history.edited(
-					before,
-					{ text: composer.value, caret: composer.selectionEnd },
-					historyRun(edit, event),
-				);
+				this.#history.edited(before, this.#fieldState(), historyRun(edit, event));
 				this.#edited();
 			},
 		});
@@ -419,7 +419,8 @@ export class ConversationView {
 		});
 		keepCaretOutOfQuotes(this.#composer, () => this.#quotePieces(), this.#lifetime.signal);
 		this.#edits = watchEdits(this.#composer, this.#lifetime.signal);
-		this.#history = new FieldHistory({ text: this.#composer.value, caret: 0 });
+		this.#history = new FieldHistory(this.#fieldState());
+		this.#historyEpoch = company.conversation(sessionId).get().draftEpoch ?? 0;
 		watchHistory(this.#composer, this.#lifetime.signal, (which) => this.#stepHistory(which));
 		this.#send = h(
 			"button",
@@ -1096,20 +1097,38 @@ export class ConversationView {
 		this.#renderQuoteNote();
 	}
 
-	/** Undo or redo from the composer's own history. A state it held needs no quote rules: its quotes are whole. */
+	/** The draft as the composer holds it now, with its records. */
+	#fieldState(): FieldState {
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const caret = this.#composer.selectionEnd;
+		return { text: conversation.draft ?? "", caret, records: conversation.quoteRecords ?? [] };
+	}
+
+	/** The draft changed from outside the member's own edits (the controller says so: draftReplaced): the undo
+	 * history starts again from it. */
+	#followHistory(): void {
+		const epoch = this.#company.conversation(this.#sessionId).get().draftEpoch ?? 0;
+		if (epoch === this.#historyEpoch) return;
+		this.#historyEpoch = epoch;
+		this.#history.restart(this.#fieldState());
+	}
+
+	/** Undo or redo from the composer's own history. A state it held needs no quote rules: its quotes are whole, and
+	 * its records come back with it. */
 	#stepHistory(which: HistoryStep): void {
+		this.#followHistory();
 		const store = this.#company.conversation(this.#sessionId);
-		const current = store.get().draft ?? "";
+		const current = this.#fieldState();
 		const state = this.#history.step(which, current);
 		const composer = this.#composer;
 		if (!state) {
 			// Nothing to undo or redo: the field keeps the text the composer holds (a browser may have changed it).
-			if (composer.value !== current) composer.value = current;
+			if (composer.value !== current.text) composer.value = current.text;
 			return;
 		}
 		composer.value = state.text;
 		composer.setSelectionRange(state.caret, state.caret);
-		store.set({ draft: state.text });
+		store.set({ draft: state.text, quoteRecords: state.records });
 		this.#edited();
 	}
 
@@ -1364,6 +1383,7 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		this.#followHistory();
 		// The same text can come to hold a quote it did not (a teammate's draft brought its record): the copy follows.
 		const pieces = JSON.stringify(this.#quotePieces());
 		if (pieces !== this.#piecesShown) this.#skills.sync();

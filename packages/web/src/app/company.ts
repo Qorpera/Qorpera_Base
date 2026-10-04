@@ -196,6 +196,10 @@ export interface ConversationState {
 	/** The records of the quotes the draft holds, and of those it held since it was last sent: wherever their words
 	 * stand in «» marks in the draft, that is the quote (app/quotes.ts; `draftQuotes`). */
 	quoteRecords?: readonly QuoteRecord[];
+	/** Counts each change to the draft or its records from outside the member's own edits in a composer: a teammate's
+	 * words merged in, the cloud's draft, a send, a message button. A composer's undo history starts again at each
+	 * (`draftReplaced`; app/views/composer-quotes.ts). */
+	draftEpoch?: number;
 	/** Local selected bytes, staged only after an explicit send. */
 	attachments?: File[];
 	executionSponsor?: SessionExecutionSponsor;
@@ -233,6 +237,12 @@ export interface ConversationState {
 	/** "Show earlier" is reading, or why it could not. */
 	earlierLoading?: boolean;
 	earlierError?: string;
+}
+
+/** A change to a conversation's draft, or its records, from outside the member's own edits: it says so, and the
+ * composer's undo history starts again there. */
+export function draftReplaced(state: Pick<ConversationState, "draftEpoch">): Pick<ConversationState, "draftEpoch"> {
+	return { draftEpoch: (state.draftEpoch ?? 0) + 1 };
 }
 
 /** Drop optimistic card answers once the projection carries them, or once their
@@ -482,6 +492,7 @@ export class CompanyController {
 				this.conversation(sessionId).set((state) => ({
 					draft: text,
 					quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], text, quotes),
+					...draftReplaced(state),
 				})),
 		});
 		this.#writeInput =
@@ -540,13 +551,14 @@ export class CompanyController {
 		this.#abort.abort();
 		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
-			store.set({
+			store.set((state) => ({
 				draft: "",
 				quoteRecords: undefined,
+				...draftReplaced(state),
 				attachments: [],
 				retrySend: undefined,
 				executionSponsor: undefined,
-			});
+			}));
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
@@ -680,18 +692,19 @@ export class CompanyController {
 					recoveries: {},
 				});
 				for (const store of this.conversations.values())
-					store.set({
+					store.set((state) => ({
 						events: [],
 						pending: [],
 						optimistic: [],
 						draft: "",
 						quoteRecords: undefined,
+						...draftReplaced(state),
 						attachments: [],
 						projection: { items: [], hiddenCount: 0, lastSequence: 0 },
 						hasEarlier: false,
 						earlierLoading: false,
 						earlierError: undefined,
-					});
+					}));
 				this.stop();
 			} else this.store.set({ error: describeError(error) });
 		}
@@ -2097,7 +2110,7 @@ export class CompanyController {
 			);
 		if (placeQuotes(next.text, next.records).length > QUOTES_MAX)
 			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
-		store.set({ draft: next.text, quoteRecords: next.records });
+		store.set((now) => ({ draft: next.text, quoteRecords: next.records, ...draftReplaced(now) }));
 		// A shared draft shares it at once, as if the member had typed it.
 		this.roomDrafts.input(sessionId);
 	}
@@ -2231,6 +2244,7 @@ export class CompanyController {
 					draft: rest,
 					// The records go with the sent text; words another member added meanwhile keep theirs.
 					quoteRecords: rest ? state.quoteRecords : undefined,
+					...draftReplaced(state),
 					attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
 					optimistic: reconcileOptimistic({
 						...state,
