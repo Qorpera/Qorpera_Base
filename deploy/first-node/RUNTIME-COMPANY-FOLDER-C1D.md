@@ -71,7 +71,10 @@ hash order, `order by sha256 collate "C"`, the order C1d-2's GC must use too.
 **Possession before reference.** An actor references only bytes it possesses: bytes it put under its own intent (the
 gateway checked their hash), or bytes it may already read. An intent row records which (`held` or `put`). So an actor
 cannot learn that the company stores a hash it may not read, and cannot seal or commit a file over such bytes. The
-platform reads everything and holds every stored object.
+platform reads everything and holds every stored object. The commit's bytes check decides possession before it calls a
+reference malformed (20260930043000, test 903): a reference whose media type or executable bit disagrees with its
+stored manifest is 22023 only for an actor who holds the bytes; anyone else gets `bytes_unverified`, as for a hash the
+company does not store.
 
 Possession is judged when the intent opens. Bytes the actor could read then are bytes it could have fetched then, so a
 later narrowing does not revoke an intent already open or sealed; a sealed intent lapses within the hour unless its
