@@ -995,7 +995,8 @@ Decisions:
   same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
   the definition before 3f (824 H).
-- **Decided with 3f** (§6.1): the machine-event drain and the worker drain on `folder-v2` go with 3i. Both deliver to a
+- **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
+  the shared folder drains' `workers`). Both deliver to a
   parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
   `folder-v2` run is not told when its machine is running or its command ended). Who creates a `folder-v2` office stays
   with 3j.
@@ -1203,7 +1204,7 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
   row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
 - **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
-  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event and worker drains.
+  created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
@@ -1552,10 +1553,10 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
   The member removal's prelude is `folder-v2` only. The account metadata's new order holds on both cores (every other
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
   snapshot-v1 text pins (since 3 Oct); 824 H reverses the node reservation's new layer first.
-- **Known window until P13's second part** (20260930036000, test 901): `qorpera_request_login_identity_recovery` and
-  `_account_refresh_identity_recovery` still take the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
-  reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). The two could deadlock on one sign-in when two
-  gateway processes act on it at once; one gateway handles one identity's work at a time. 901 pins the pair.
+- **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
+  `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
+  reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
+  processes acted on it at once. They now take no sign-in lock.
 - 838's `p13_allowed` list loses these sites when #779 merges: whichever of the two lands second deletes them.
 
 ### 6.15 C1c-3n as built: a run's machine and node updates (migration 20260930046000, test 849)
@@ -1688,6 +1689,104 @@ each `else`.
   up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
   folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
   ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
+
+### 6.17 P13 part 2 as built: identity recovery and retirement (migration 20260930049000, test 901)
+
+F3's activation check (838) listed eleven `folder-v2` gc-fence holders in identity recovery and retirement. Each took the
+gc fence (the company row `FOR UPDATE`), on `folder-v2` a stall of every effect of the company; the login's and refresh's
+recovery requests also took the sign-in before it (§6.14's window).
+- **Recovery** (`qorpera_activate_identity_recovery`, `qorpera_cancel_identity_recovery`,
+  `qorpera_consent_identity_recovery`, `qorpera_request_identity_recovery`, `qorpera_request_login_identity_recovery`,
+  `qorpera_request_account_refresh_identity_recovery`, and `qorpera_recovery_locked`, the first step of
+  `qorpera_prepare_identity_key_release`, `qorpera_commit_identity_key_release`, `qorpera_complete_identity_recovery` and
+  `qorpera_identity_recovery_completion_authority`):
+  1. the caller's or the recovery service's unlocked check, as before (#575);
+  2. `qorpera_folder_identity_recovery_locks`: the fence `KEY SHARE` and rank 0 (`qorpera_folder_machine_fence`), then
+     every member row of the company `FOR SHARE` in user id order (rank 1);
+  3. the identity `FOR UPDATE`, the recovery, the target and the backups, as before.
+
+  Every member row, because the call chain reads members `FOR SHARE` after the identity: the caller, the recovery's owner
+  of record and the consenting member (activation, which consent and the requests call, reads the last two). Which rows
+  those are, and their roles, is only known there; holding them all first means none that exists then is newly locked
+  after the identity. A member who joins meanwhile can be, which is harmless: a row just committed holds nothing. It
+  blocks member writes (role changes, removals, rule saves, display names) for the length of a rare recovery call, never
+  a reader or a `KEY SHARE` (C1B §8). A nested activation calls the helper again and re-takes rows it holds.
+- **A member's recovery decision** (`qorpera_decide_member_identity_recovery`, patched too though it never took the gc
+  fence itself) runs `qorpera_review_member_identity_recovery`, which reads the identity `FOR SHARE`, before the request,
+  consent or cancellation that takes it `FOR UPDATE`. On master the gc fence in `qorpera_recovery_member_role`
+  serialized the whole decision per company. On `folder-v2` the decision now takes the helper and the identity
+  `FOR UPDATE` before the review, after an unlocked check of what the review requires (a caller it would refuse takes no
+  lock and gets the review's own error). Two decisions on one identity, or a decision and the removal of the identity's
+  owner, then queue instead of both upgrading the review's `FOR SHARE` (901 I).
+- **No sign-in held `FOR SHARE`** (C1B §8 gives the argument):
+  - a login's or refresh's recovery request reads its sign-in or refresh request with no lock, and checks it again under
+    the identity's lock: pending, not expired, and re-pinned to no other recovery epoch since the first read (what the
+    old `FOR SHARE` held still). A sign-in pinned to an older epoch than the identity's, which the gateway recovers
+    from after another node's recovery, still goes through (901 F);
+  - a key backup's preparation (`qorpera_prepare_identity_key_backup`, which the backup's completion calls) takes the
+    fence and rank 0, then its sign-in `FOR KEY SHARE` before the identity, because the backup and its receipt reference
+    the sign-in. `KEY SHARE` conflicts only with `FOR UPDATE`, which completions, repins and machine reservations take
+    before the identity too, and not with a new sign-in's cancellation. It is checked again under the identity's lock
+    the same way (pending or completed).
+
+  This closes §6.14's window.
+- **Fence and rank 0 only:** a recovery target's registration (`qorpera_register_identity_recovery_target`), the recovery
+  member role (`qorpera_recovery_member_role`, then its own member row) and an identity's retirement confirmation
+  (`qorpera_confirm_runtime_identity_retirement`). The registration and the confirmation then take the identity's
+  machine lock (C1B §8), which serializes two of them on one identity as the gc fence did: the second finds the first's
+  target or receipt and replays it, instead of failing on its key with 23505 (901 L). It also orders a confirmation
+  after a machine reservation of the identity still in flight. The confirmation needs nothing more: the node deletes the
+  volume on an unlocked read of `qorpera_runtime_identity_retirements_due` before it confirms, the confirmation only
+  records that evidence, and the deletion's finisher and purge take the fence `FOR UPDATE`.
+- **No cycle:**
+  - Against effects that hold only the company (`KEY SHARE` at the fence and rank 0), no conflict. Against a stop or a
+    resume (the fence `FOR UPDATE`), they wait at the fence holding nothing (901 B).
+  - Against member writes (member management and the removal's prelude, rule saves, display names, joins): all take
+    their member rows at rank 1 before any identity, so they wait for recovery or it waits for them holding no identity
+    (901 H, I).
+  - Against a new sign-in (the identity `FOR SHARE`, then the earlier sign-in `FOR NO KEY UPDATE`) and a completion (the
+    sign-in, then the identity): recovery holds no sign-in, the backup only `KEY SHARE` (901 C, D). A completion that
+    already holds the identity `KEY SHARE` takes its epoch trigger's `FOR SHARE` without queueing behind recovery's
+    waiting `FOR UPDATE`, and finishes first (901 E).
+  - Against a sign-in's or a run's machine reservation (the fence, rank 0, the requester's member row, the identity's
+    machine lock, the sign-in `FOR UPDATE`, the identity `FOR SHARE`): the member locks are compatible, recovery takes
+    neither the machine lock nor the sign-in, and the backup takes the sign-in before the identity, as they do (901 J).
+- **Snapshot-v1** keeps the gc fence in each `else` branch, untested (`folder-v2` only since 3 Oct).
+
+**Tests.** 901 (dblink, waits checked through `pg_blocking_pids`, locks probed `NOWAIT`):
+- A: beside a folder effect (the fence and the company row `KEY SHARE`), every call finishes: target registration, backup
+  preparation and completion, the three requests, consent, cancellation, a key release, the member role and a
+  retirement confirmation.
+- B: behind a stop's second phase, each call waits at the fence holding no identity, member row, sign-in, refresh
+  request or company row, then goes on.
+- C: a new sign-in cancels the earlier one at once while a login's recovery request and a backup's preparation on it wait
+  at the identity; both then refuse on their re-check. A refresh's request refuses the same way once its refresh request
+  is cancelled meanwhile.
+- D: a completion holds the sign-in and the identity `KEY SHARE`; the request waits for it at the identity, holding an
+  uninvolved member's row, then refuses the completed sign-in.
+- E: a completion and a key release on an identity whose recovery is approved: the release waits at the identity, the
+  completion's trigger refuses the fenced generation (42501, no deadlock), the release goes on.
+- F: the recovery completes (commit and completion through `qorpera_recovery_locked`), and a request on the identity's
+  sign-in, still pinned to the older epoch, goes through, as does its replay.
+- G: the helper is postgres-only and holds the fence and the company row `KEY SHARE` and every member row `FOR SHARE`,
+  and no identity.
+- H: a role change and a recovery, in either order, queue (no 40P01).
+- I: two decisions on one identity (the member's consent, the owner's cancellation) queue, and the second finds its
+  review changed; a decision and the removal of the identity's owner queue, the decision holding no identity.
+- J: a backup's completion and a login machine reservation of one sign-in queue at the sign-in.
+- L: two registrations of one target, and two successful retirement confirmations of one identity (the company's
+  deletion requested, its machines ended over ten minutes ago), serialize on the identity's machine lock; the second
+  replays the first's target or receipt.
+- K: each patched branch is present, with no snapshot-v1 text pins.
+
+Fault runs (a temporary driver on the test machine), 26 faults, each caught where intended: a site or the helper that
+keeps the gc fence in A; the login's request holding its sign-in in B (or, without B, in C); a dropped re-check, or the
+backup holding its sign-in `FOR SHARE` (taken after the fence), in C; the helper without the member rows, or with the
+owners only, in D; the re-check comparing the identity's epoch in F; members `FOR UPDATE` in G; the decision without
+its locks in I; the backup without its `KEY SHARE` in J; the registration or the confirmation without the identity's
+machine lock in L.
+
+838's `p13_allowed` list loses the eleven sites.
 
 ### 6.19 P06d part 1 as built: a screenshot stored nowhere travels in its answer (runtime only)
 
