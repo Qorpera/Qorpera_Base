@@ -224,6 +224,8 @@ export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freez
 	// F2's worker drain first (core §11 C4): a worker started or a parent revived this pass is materialized this pass too.
 	Object.freeze({ name: "workers", companyLimit: 32 }),
 	Object.freeze({ name: "listen", companyLimit: 32 }),
+	// F2's human-task wakes (H2c) after the listener, which marks the task changes they wake for.
+	Object.freeze({ name: "human_tasks", companyLimit: 32 }),
 ]);
 
 /** A page of folder-v2 environments with work for one drain. */

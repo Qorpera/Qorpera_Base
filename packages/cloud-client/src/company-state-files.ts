@@ -2559,7 +2559,7 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 \`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
 
 ## Follow it
-- You are woken when the person marks it done or says they can't, and when it is overdue.
+- You are woken when someone else changes your task: the person marks it done or says they can't, a member accepts, returns or cancels it, hands it to another person, or hands it to you. You are also woken once when it is overdue. Your own changes never wake you. When the agent that asked is gone, the Co-Founder is woken instead.
 - Done: check the proof in \`human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
 - Declined: find another route or another person.
 - Overdue: remind, move the due date, hand it to someone else, or tell the Co-Founder.

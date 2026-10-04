@@ -77,8 +77,18 @@ begin
 	if position(E'\nbegin\n\tif public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;' in v_def) = 0
 		or md5(pg_temp.without_guard(v_def)) <> '38c1993cf99b1aba48809bdc9bee678a' then
 		raise exception 'The wake read''s snapshot-v1 body changed'; end if;
-	-- P29 (20260930020000) gives folder-v2 file wakes their own branches; reversed first.
-	v_text := replace(replace(replace(replace(pg_get_functiondef('public.qorpera_pin_wake_occurrence()'::regprocedure),
+	-- P31 (20260930065000) gives folder-v2 human-task wakes their own branch, before the parent run's read; removed first.
+	v_def := pg_get_functiondef('public.qorpera_pin_wake_occurrence()'::regprocedure);
+	if position(E'\telsif new.wake_kind = ''agent'' and new.source_kind = ''human-task'' then\n' in v_def) = 0
+		or position(E'\telsif new.wake_kind = ''agent'' and new.source_kind = ''human-task'' then\n' in v_def)
+			> position(E'\telsif new.wake_kind = ''agent'' then\n' in v_def) then
+		raise exception 'The pin trigger''s human-task branch comes before the agent branch'; end if;
+	v_def := replace(left(v_def, position(E'\telsif new.wake_kind = ''agent'' and new.source_kind = ''human-task'' then\n' in v_def) - 1)
+		|| substr(v_def, position(E'\t\tv_actor := v_p31_mark.actor_staff_agent_id;\n' in v_def)
+			+ length(E'\t\tv_actor := v_p31_mark.actor_staff_agent_id;\n')),
+		E'\n\tv_p31_mark public.qorpera_folder_human_task_wakes%rowtype; v_p31_task public.qorpera_folder_human_task_index%rowtype;', '');
+	-- P29 (20260930020000) gives folder-v2 file wakes their own branches; reversed next.
+	v_text := replace(replace(replace(replace(v_def,
 		E'\t\t\tor (new.source_kind = ''company-file'' and not public.qorpera_company_is_folder_v2(new.profile_id)\n'
 		|| E'\t\t\t\tand (v_trigger ->> ''kind'' <> ''listener'' or new.file_event_id is null))\n'
 		|| E'\t\t\t-- 20260930020000 (P29): a folder-v2 file wake names its change set, never a snapshot event.\n'

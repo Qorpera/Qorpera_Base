@@ -1458,3 +1458,137 @@ describe("event wakes", () => {
 		expect(() => parseCloudWakeEnvelope(doubled, identity)).toThrow();
 	});
 });
+
+describe("human task wakes (H2c)", () => {
+	/** Exactly what the pin trigger stores and qorpera_folder_read_wake adds (migration 20260930065000). */
+	function taskWake(reason = "done", payload: Record<string, unknown> = {}) {
+		const { authority, envelope } = fixture();
+		const taskId = randomUUID();
+		const commitId = reason === "overdue" ? null : randomUUID();
+		const continuation = policies.find((item) => item.scenario === "agent-continuation")!.policy;
+		return {
+			identity: authority.identity,
+			taskId,
+			wake: {
+				...envelope,
+				kind: "agent",
+				actorStaffId: null,
+				actorUserId: reason === "overdue" ? null : randomUUID(),
+				source: {
+					kind: "human-task",
+					id: taskId,
+					occurrenceKey:
+						reason === "overdue"
+							? `human-task-due:${taskId}:4102444800000000`
+							: `human-task:${taskId}:${commitId}`,
+				},
+				policy: continuation,
+				payload: {
+					schema: "qorpera.human-task-wake/v1",
+					taskId,
+					reason,
+					commitId,
+					dueAt: reason === "overdue" ? "2100-01-01T00:00:00.000000Z" : null,
+					task: {
+						path: "human-tasks/sign-the-lease.md",
+						title: "Sign the lease",
+						status: reason === "overdue" ? "open" : reason,
+						due: "2100-01-01T00:00:00.000000Z",
+					},
+					...payload,
+				},
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it.each(["done", "declined", "accepted", "returned", "cancelled", "person", "handoff", "assigned", "overdue"])(
+		"admits a task's %s wake with no parent run, answering optionally in the agent's own thread",
+		(reason) => {
+			const { wake, identity } = taskWake(reason);
+			const parsed = parseCloudWakeEnvelope(wake, identity);
+			expect(parsed.source.kind).toBe("human-task");
+			expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional" });
+			expect(parsed.parentRunId).toBeNull();
+		},
+	);
+	it("admits a task the run may not read (no task) and a wake without a thread (no mouth)", () => {
+		const hidden = taskWake("done", { task: null });
+		expect(parseCloudWakeEnvelope(hidden.wake, hidden.identity).payload.task).toBeNull();
+		const { wake, identity } = taskWake("overdue");
+		const silent = policies.find((item) => item.scenario === "agent")!.policy;
+		const parsed = parseCloudWakeEnvelope(
+			{ ...wake, policy: silent, audience: { ...wake.audience, sessionId: null } },
+			{ ...identity, sessionId: null },
+		);
+		expect(parsed.policy.maxPublicSends).toBe(0);
+	});
+	it("admits the agent that made the change, never the woken one", () => {
+		const { wake, identity } = taskWake("handoff");
+		expect(parseCloudWakeEnvelope({ ...wake, actorStaffId: randomUUID() }, identity).actorStaffId).not.toBeNull();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...wake, actorStaffId: wake.staffAgentId.toUpperCase() }, identity),
+		).toThrow("Invalid human task wake");
+	});
+	it.each<[string, (wake: CloudWakeEnvelope) => CloudWakeEnvelope]>([
+		["a parent run", (wake) => ({ ...wake, parentRunId: randomUUID() })],
+		["another task", (wake) => ({ ...wake, payload: { ...wake.payload, taskId: randomUUID() } })],
+		["an unknown reason", (wake) => ({ ...wake, payload: { ...wake.payload, reason: "ticked" } })],
+		["another schema", (wake) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.human-task-wake/v2" } })],
+		["an extra key", (wake) => ({ ...wake, payload: { ...wake.payload, note: "hi" } })],
+		[
+			"another change set's key",
+			(wake) => ({
+				...wake,
+				source: { ...wake.source, occurrenceKey: `human-task:${wake.source.id}:${randomUUID()}` },
+			}),
+		],
+		[
+			"a due on a change",
+			(wake) => ({ ...wake, payload: { ...wake.payload, dueAt: "2100-01-01T00:00:00.000000Z" } }),
+		],
+		[
+			"a task outside human-tasks/",
+			(wake) => ({
+				...wake,
+				payload: { ...wake.payload, task: { ...(wake.payload.task as object), path: "docs/x.md" } },
+			}),
+		],
+		[
+			"an unknown status",
+			(wake) => ({
+				...wake,
+				payload: { ...wake.payload, task: { ...(wake.payload.task as object), status: "late" } },
+			}),
+		],
+		[
+			"a task with an extra key",
+			(wake) => ({ ...wake, payload: { ...wake.payload, task: { ...(wake.payload.task as object), steps: [] } } }),
+		],
+		["a routine", (wake) => ({ ...wake, routine: { id: randomUUID(), version: 1, intent: "x" } })],
+		[
+			"the pair policy",
+			(wake) => ({ ...wake, policy: policies.find((item) => item.scenario === "agent-pair")!.policy }),
+		],
+	])("rejects a change wake with %s", (_label, mutate) => {
+		const { wake, identity } = taskWake("done");
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+	it.each<[string, (wake: CloudWakeEnvelope) => CloudWakeEnvelope]>([
+		["a change set", (wake) => ({ ...wake, payload: { ...wake.payload, commitId: randomUUID() } })],
+		["no due", (wake) => ({ ...wake, payload: { ...wake.payload, dueAt: null } })],
+		["a member who changed it", (wake) => ({ ...wake, actorUserId: randomUUID() })],
+		[
+			"a change's key",
+			(wake) => ({
+				...wake,
+				source: { ...wake.source, occurrenceKey: `human-task:${wake.source.id}:${randomUUID()}` },
+			}),
+		],
+		[
+			"another task's key",
+			(wake) => ({ ...wake, source: { ...wake.source, occurrenceKey: `human-task-due:${randomUUID()}:1` } }),
+		],
+	])("rejects an overdue wake with %s", (_label, mutate) => {
+		const { wake, identity } = taskWake("overdue");
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+});

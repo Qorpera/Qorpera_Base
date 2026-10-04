@@ -105,6 +105,9 @@ const WAKE_PROTOCOL = {
 	officeActivation: [
 		"\n# This wake: the Company Computer is ready\nThis is an internal continuation of your own earlier run, which was waiting for the Company Computer to start. No member or coworker sent it. Read the whole continuation, then use the computer tools now offered to finish only the work that was waiting. Do not acknowledge again or redo finished work. The computer being ready is not a new task or a new permission.",
 	],
+	humanTask: [
+		"\n# This wake: a human task\nA human task you follow changed, or its due date passed. wake.payload.reason says what happened: done or declined by its person; accepted, returned or cancelled by a member; person when it went to someone else; handoff or assigned when it is now yours; overdue when its due date passed. wake.payload.task, when present, is the task as it is now, with its path; read the file and its folder before acting, because it may have changed again. wake.actorUserId or wake.actorStaffId, when present, made the change. Follow the human-task skill: check the proof of a done task and accept it or return it with a reason and a new due date; find another route when it is declined; on overdue, remind, move the due date, hand it on or tell the Co-Founder. Update the todo that waits on the task. When delivery allows, tell the member in your own thread only what they need to know; otherwise finish silently.",
+	],
 } as const;
 
 const CONTINUATION_PROTOCOL =
@@ -144,6 +147,7 @@ function wakeProtocol(wake: CloudWakeEnvelope | null): readonly string[] {
 			? WAKE_PROTOCOL.codingQuiet
 			: WAKE_PROTOCOL.workerCompletion;
 	if (wake.source.kind === "machine-event") return WAKE_PROTOCOL.machineEvent;
+	if (wake.source.kind === "human-task") return WAKE_PROTOCOL.humanTask;
 	return wake.source.kind === "office-activation" ? WAKE_PROTOCOL.officeActivation : WAKE_PROTOCOL.coworker;
 }
 
