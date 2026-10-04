@@ -63,9 +63,13 @@ umask (dnsmasq's unprivileged user reads the leases). The creator then makes the
 else on `qagent0`:
 
 ```
-type: nic, nictype: bridged, parent: qagent0, name: <eth0 | eth1>, hwaddr: <hwaddr>, ipv4.address: <address>,
-ipv6.address: none, security.mac_filtering: true, security.ipv6_filtering: true, security.port_isolation: true
+type: nic, nictype: bridged, parent: qagent0, name: <eth0 | eth1>, hwaddr: <hwaddr>, ipv6.address: none,
+security.mac_filtering: true, security.ipv6_filtering: true, security.port_isolation: true
 ```
+
+No `ipv4.address`: LXD 6.9 refuses it on a bridge it does not manage unless its own IPv4 filter is on ("Cannot use
+manually specified ipv4.address when using unmanaged parent bridge", seen in E2b's proof). The machine's address lives
+in the client map, its lease and the bridge rules, all tied to the MAC on the card.
 
 Not `security.ipv4_filtering`: LXD's IPv4 filter has no DHCP exception in its forward chain, so on a bridge it does
 not manage it drops every DHCP request on its way to the exit. `qorpera-agent-exit-bridge.nft` ties each MAC to its
@@ -193,17 +197,70 @@ test machine, covers the first three.
 
 `run-on-node.mjs changed` runs it on the node 2 test machine.
 
+## E2b: the proof on real LXD
+
+`test/prove-lxd-vm.sh` runs as root on a test machine, never on a node:
+
+```
+node scripts/run-on-node.mjs --machine node01 --sudo --no-install --no-status -- bash deploy/agent-exit/test/prove-lxd-vm.sh </dev/null
+```
+
+It changes nothing of the test machine's own kernel or network. It claims an LXD project, makes a throwaway VM with no
+network card in it, pushes in LXD 6.9 rev 40424 (the nodes' revision), a container image and two packages (the VM is
+offline), and runs `test/prove-lxd.sh` inside. That VM has its own kernel and LXD: it loads br_netfilter, builds the
+exit and plugs real LXD containers in the creators' way. Afterwards the test machine's links (but Docker's), nft
+tables, a few sysctls and the network modules a proof could load are compared with before; a difference fails the
+run. (LXD loads `vhost_vsock` for any VM; it is not one of the watched modules.)
+
+Result, 4 October, run 20261004T010449-27534-09ca610c on node 1's test machine (LXD 6.9 rev 40424 as on the nodes;
+the VM's kernel 7.0.0-34, the nodes' 7.0.0-30), all passed:
+
+| Check | Result |
+| --- | --- |
+| Plug | two containers plugged in the creators' way get their addresses by DHCP from the exit; the card carries only the MAC (LXD refuses `ipv4.address` on an unmanaged parent without its IPv4 filter) |
+| Reach | the stand-in internet through the exit; our networks refused; the node holds no bridged leg (`notrack`) |
+| LXD's own layers | each machine's port isolated; with the exit's rules opened for it, LXD's MAC filter alone stops SYNs sent from another MAC (counted leaving the machine; the exit, which counts the same SYNs from the machine's own MAC, counts none of them) and LXD's IPv6 filter alone stops IPv6 (counted leaving, never forwarded) |
+| Spoofing | another address and another machine's address towards the internet (the exit forwards and counts nothing from them), another MAC, any IPv6, gratuitous ARP for another machine, a spoofed ARP sender MAC, a DHCPDECLINE from port 68 naming another machine's MAC (seen reaching the bridge, never dnsmasq), another machine's MAC or the exit's taken (`bridge fdb`): none gets through |
+| Flooding | a frame from the exit to a MAC the bridge has forgotten reaches no other machine |
+| Default deny | a new machine gets nothing until the reconciler has it in the rules; with the reconciler down and the pairs flushed nothing passes, and restarted it sets them right within a pass; an `up` reload keeps running machines' traffic by itself |
+| Lifecycle | a sleeping machine loses its connections in both tables and wakes with its address; a deleted one goes into quarantine; a stray card makes the exit unhealthy until it is gone |
+
+Floods from one machine, 20,000 each (each phase capped at 60 s), with `notrack` and without it:
+
+| Flood | Time | Exit's table | Node's table | Over the machine's bound |
+| --- | --- | --- | --- | --- |
+| TCP open and close to a site | 13 s | +19,793 | +19,782 (+39,711 without `notrack`) | 0 |
+| SYNs nobody answers | 13 s | +11,313 | +11,306 | 0 |
+| SYNs the exit refuses | 0.6 s | 0 | 0 | 0 |
+| UDP to 20,000 ports | 19 s | +16,392 | +16,388 (+36,386 without) | 3,616 refused |
+| another protocol (253) | 0.3 s | +251 | +250 | 0 |
+| spoofed sources | 0.1 s | 0 | −250 (earlier entries expiring meanwhile; none added) | 0 |
+| IPv6 | 0.3 s | +2 (the exit's own lookups meanwhile; no IPv6 reaches it) | 0 | 0 |
+
+What the numbers say:
+- Refused, spoofed and IPv6 floods leave nothing in either table; the per-machine bound holds (UDP stopped at 16,384).
+- `notrack` halves what a machine leaves in the node's table.
+- The shared total's cost could not be told apart from load: 5,000 new connections took 9.7 s and then 11.9 s, 10.1 s
+  and then 7.7 s, and 8.8 s and then 13.9 s in three runs, the second each time while another machine flooded and the
+  exit held over 14,000 entries. At this scale it is below the noise.
+- Closed connections are not bounded: one machine opening and closing about 1,300 connections a second leaves about
+  20,000 entries in each table, each held for the kernel's default 120 s (TIME_WAIT). Kept up towards many
+  destinations, one machine could hold over 150,000 of the node's 262,144. The same entries hold the exit's
+  masqueraded source ports towards each destination, which every company on the node shares. Proposed next step: a
+  shorter TIME_WAIT for agent connections only (a `ct timeout` policy on the node's masqueraded leg and the exit
+  namespace's own timeout), and the line guard's burst brake (E7). Phase 2 (E9) drops the node's leg altogether.
+
 ## Notes for later steps
 
 - E3 (log shipping): rotate `dns.log` by copying and truncating it, not by renaming it and sending SIGUSR2. dnsmasq's
   unprivileged user cannot create a file in the 0750 log directory, so a reopen would fail and logging would stop.
-- E2b: the per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine
-  to its address. A reload of the rules starts both counts again from zero. The total is one shared list in the
-  kernel: E2b measures its cost under load, and the tables under floods (TCP open and close, UDP, other protocols,
-  spoofed sources, IPv6) with `notrack` on, before any node is switched on. The node's table holds 262,144 entries
-  (read on both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. E2b
-  runs in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel modules there changes
-  the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on it).
+- The per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine to its
+  address. A reload of the rules starts both counts again from zero. The node's table holds 262,144 entries (read on
+  both nodes, 2 October); with `notrack` it holds only the masqueraded leg of each agent connection. Closed
+  connections are not bounded (E2b's floods above): a follow-up gives agent connections a shorter TIME_WAIT. Proofs
+  that change a kernel run in a throwaway VM inside a test machine, never bare on it: loading or unloading kernel
+  modules there changes the whole test machine (`modprobe -r br_netfilter` also unloads `bridge`, which destroys every
+  bridge on it).
 - E2c: a creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses
   an address it stored (`plug` is the only source of a machine's address). Plugging while the old instance still
   exists, then deleting and making it again, can let the reconciler unplug the address in between. Its unit joins the

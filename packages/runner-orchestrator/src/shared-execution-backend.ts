@@ -11,6 +11,7 @@ import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
 import {
 	canonical,
 	exactRunner,
+	nativeIdentityCredentialFile,
 	ProviderAdmissionRefused,
 	record,
 	runAttemptAcquisitionId,
@@ -222,7 +223,13 @@ export interface SharedExecutionJournal {
 	instanceSha256: string;
 	runner: CloudRunnerInstance;
 	physicalState: SharedExecutionPhysicalState;
-	credentials: { activationSha256: string; assignmentSha256: string; nativeBridgeSha256: string };
+	credentials: {
+		activationSha256: string;
+		assignmentSha256: string;
+		nativeBridgeSha256: string;
+		/** G2-3: this run's machine's identity credential, bound as an exec slot (a warm reuse is a new machine). */
+		nativeIdentitySha256: string;
+	};
 	/** The reservation call was sent; a release is owed even when the reply was lost. */
 	capacityRequested?: boolean;
 	/** The reservation was confirmed. */
@@ -247,6 +254,7 @@ interface SlotCredentials {
 	activationToken: string;
 	assignmentToken: string;
 	nativeBridgeToken: string;
+	nativeIdentityToken: string;
 }
 
 const execFileAsync = promisify(execFile);
@@ -700,6 +708,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					activationSha256: sha256(credentials.activationToken),
 					assignmentSha256: sha256(credentials.assignmentToken),
 					nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
+					nativeIdentitySha256: sha256(credentials.nativeIdentityToken),
 				},
 				createdAt: now,
 				updatedAt: now,
@@ -895,6 +904,19 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
 			await this.#writeJournal({ ...latest, capacityRegistered: true });
 		});
+		// G2-3: this run's machine's identity credential is bound to its allocation, as an exec slot, before the host
+		// can use it; only its hash leaves the service.
+		await this.#rpc(
+			"qorpera_bind_native_identity_credential",
+			{
+				p_allocation_id: current.acquisitionId,
+				p_provider_adapter: this.adapterId,
+				p_instance_sha256: current.instanceSha256,
+				p_holder_kind: "exec_slot",
+				p_credential_sha256: current.credentials.nativeIdentitySha256,
+			},
+			signal,
+		);
 	}
 
 	/** Release exactly once. A confirmed reservation must be confirmed released;
@@ -1132,6 +1154,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			activationToken: await read("qorpera-runner-activation"),
 			assignmentToken: await read("qorpera-runner-assignment"),
 			nativeBridgeToken: await read("qorpera-native-bridge"),
+			nativeIdentityToken: await read("qorpera-native-identity-token"),
 		};
 	}
 
@@ -1150,7 +1173,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (
 			sha256(credentials.activationToken) !== current.credentials.activationSha256 ||
 			sha256(credentials.assignmentToken) !== current.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== current.credentials.nativeBridgeSha256
+			sha256(credentials.nativeBridgeToken) !== current.credentials.nativeBridgeSha256 ||
+			sha256(credentials.nativeIdentityToken) !== current.credentials.nativeIdentitySha256
 		)
 			throw new Error("Shared execution slot credentials differ from the sandbox journal");
 		const office = runtime.offices?.find(
@@ -1232,6 +1256,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				runner_version: this.#config.runnerVersion,
 				native_bridge_url: `http://127.0.0.1:${current.hostPort}/`,
 				native_bridge_boundary: "virtual_machine",
+				// G2-3: sent with each execution, so a warm host (whose credentials were fixed at its start) uses this
+				// run's machine's identity credential.
+				native_identity_credential: credentials.nativeIdentityToken,
 				assignment_host: "127.0.0.1",
 				assignment_port: current.inboxPort,
 				max_assignments: 1,
@@ -1267,9 +1294,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const runnerConfigPath = join(runnerState, "config.json");
 		await rm(runnerConfigPath, { force: true });
 		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
-		if (!identity && !vaultState) return undefined;
 		const slotRun = this.#slotRun(current.slot);
 		const credentialDirectory = join(slotRun, "credentials");
+		// G2-3: this run's machine's identity credential, also on a reused host: a running host gets it with each
+		// execution, and a host unit that starts again loads this run's, not a released machine's.
+		const identityCredentialPath = join(credentialDirectory, "qorpera-native-identity");
+		await rm(identityCredentialPath, { force: true });
+		await writePrivateFile(
+			identityCredentialPath,
+			`${nativeIdentityCredentialFile(current.computeIdentityId, credentials.nativeIdentityToken, this.#config.supabasePublishableKey)}\n`,
+		);
+		if (!identity && !vaultState) return undefined;
 		const files: Array<[string, string]> = [
 			[join(slotRun, "native-provider.env"), nativeProviderEnvironment],
 			[join(credentialDirectory, "qorpera-supabase-service-key"), `${this.#config.supabaseServiceKey}\n`],
@@ -1306,6 +1341,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// next tenant of the same account can read.
 		await rm(join(this.#slotState(slot), "runner", ".local"), { recursive: true, force: true });
 		await rm(join(this.#slotState(slot), "runner", ".cache"), { recursive: true, force: true });
+		// The runner's configuration holds its run's identity credential (G2-3); it goes with the runner.
+		await rm(join(this.#slotState(slot), "runner", "config.json"), { force: true });
 		for (const name of ["qorpera-runner-activation", "qorpera-runner-assignment"])
 			await rm(join(this.#slotRun(slot), "credentials", name), { force: true });
 	}
