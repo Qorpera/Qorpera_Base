@@ -47,8 +47,7 @@ export function watchEdits(input: HTMLTextAreaElement, signal: AbortSignal): Fie
 			pending = undefined;
 			if (byCode) return edit;
 			if (!(event instanceof InputEvent)) return undefined;
-			if (/Composition/.test(event.inputType))
-				return composing && { ...composing, inputType: event.inputType };
+			if (/Composition/.test(event.inputType)) return composing && { ...composing, inputType: event.inputType };
 			if (!edit || event.inputType !== edit.inputType) return undefined;
 			if (edit.inputType === "insertFromDrop")
 				return { start: input.selectionStart, end: input.selectionStart, inputType: edit.inputType };
