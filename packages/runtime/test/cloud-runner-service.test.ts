@@ -110,6 +110,33 @@ describe("ephemeral cloud runner service", () => {
 		});
 	});
 
+	it("takes an exec slot's identity credential for its native bridge only (G2-3)", async () => {
+		const root = await serviceRoot();
+		const bridge = { native_bridge_url: "http://127.0.0.1:8082/", native_bridge_boundary: "virtual_machine" };
+		const credential = "i".repeat(43);
+		expect(
+			parseEphemeralCloudRunnerServiceConfig({
+				...configValue(root),
+				...bridge,
+				native_identity_credential: credential,
+			}),
+		).toMatchObject({ nativeIdentityCredential: credential });
+		expect(parseEphemeralCloudRunnerServiceConfig({ ...configValue(root), ...bridge })).not.toHaveProperty(
+			"nativeIdentityCredential",
+		);
+		expect(() =>
+			parseEphemeralCloudRunnerServiceConfig({ ...configValue(root), native_identity_credential: credential }),
+		).toThrow("native execution bridge");
+		for (const value of ["short", `${credential}=`, 7])
+			expect(() =>
+				parseEphemeralCloudRunnerServiceConfig({
+					...configValue(root),
+					...bridge,
+					native_identity_credential: value,
+				}),
+			).toThrow();
+	});
+
 	it("rejects unknown settings and credential-shaped container environment", async () => {
 		const root = await serviceRoot();
 		expect(() => parseEphemeralCloudRunnerServiceConfig({ ...configValue(root), typo: true })).toThrow(

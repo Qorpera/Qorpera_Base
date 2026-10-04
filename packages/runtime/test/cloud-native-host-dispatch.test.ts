@@ -3,10 +3,8 @@ import { readFileSync } from "node:fs";
 import {
 	isNativeHostPublishableKey,
 	NATIVE_HOST_CALLS,
-	NATIVE_HOST_DISPATCH_DEFAULT,
-	NATIVE_HOST_KEY_CALLS,
+	NATIVE_HOST_IDENTITY_CALLS,
 	NativeHostDispatch,
-	nativeHostDispatchMode,
 } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import { NativeProviderHost } from "@qorpera/runtime/cloud-native-provider-host";
@@ -25,14 +23,23 @@ const PUBLISHABLE_KEY = "sb_publishable_g2TestKey0123456789";
 const JOB_ID = "7e2a0000-0000-4000-8000-000000000001";
 const TOKEN_A = "A".repeat(43);
 const TOKEN_B = "B".repeat(43);
+const IDENTITY_ID = "7e2a0000-0000-4000-8000-0000000000c1";
+const IDENTITY_TOKEN = "I".repeat(43);
+const SLOT_TOKEN = "S".repeat(43);
+const NEXT_SLOT_TOKEN = "N".repeat(43);
 
-function dispatchFixture(mode: "off" | "on" = "on") {
+function dispatchFixture() {
 	const sent: { url: string; init: RequestInit | undefined }[] = [];
 	const fetcher = vi.fn<typeof fetch>(async (input, init) => {
 		sent.push({ url: String(input instanceof Request ? input.url : input), init });
 		return new Response('{"ok":true}', { status: 200, headers: { "content-type": "application/json" } });
 	});
-	const dispatch = new NativeHostDispatch({ supabaseUrl: ORIGIN, serviceKey: SERVICE_KEY, mode, fetch: fetcher });
+	const dispatch = new NativeHostDispatch({
+		supabaseUrl: ORIGIN,
+		serviceKey: SERVICE_KEY,
+		identity: { computeIdentityId: IDENTITY_ID, credential: IDENTITY_TOKEN, publishableKey: PUBLISHABLE_KEY },
+		fetch: fetcher,
+	});
 	return { dispatch, fetcher, sent };
 }
 
@@ -77,6 +84,22 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 	]);
 });
 
+it("lists exactly the calls the host makes between jobs, as the identity entry point allows them", () => {
+	const migration = readFileSync(
+		new URL("../../../supabase/migrations/20260930005000_runtime_native_identity_call.sql", import.meta.url),
+		"utf8",
+	);
+	const insert = migration.slice(
+		migration.indexOf("insert into public.qorpera_native_identity_calls(name, scope, holder_kinds) values"),
+	);
+	const names = [
+		...insert.slice(0, insert.indexOf(";\n")).matchAll(/\('(qorpera_[a-z0-9_]+)', '[a-z_]+', array\[/g),
+	].map((match) => match[1]);
+	expect(names).toHaveLength(8);
+	expect([...NATIVE_HOST_IDENTITY_CALLS].sort()).toEqual(names.sort());
+	for (const name of NATIVE_HOST_IDENTITY_CALLS) expect(NATIVE_HOST_CALLS.has(name)).toBe(false);
+});
+
 it("classifies every database call the host's clients can make: inside a job, between jobs, or never by the host", () => {
 	const source = (file: string) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 	const clients = [
@@ -87,7 +110,7 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"cloud-company-computer-registry-http.ts",
 	];
 	// In the clients' closed lists but never called by the native host: the office VM's own registry calls, and the
-	// wake checks only SQL completion makes. With the switch on, the dispatch refuses them.
+	// wake checks only SQL completion makes. The dispatch refuses them.
 	const neverByHost = new Set([
 		"qorpera_ack_runtime_office_drain",
 		"qorpera_ack_runtime_office_privacy",
@@ -124,11 +147,23 @@ it("classifies every database call the host's clients can make: inside a job, be
 	);
 	expect(
 		[...names].filter(
-			(name) => !NATIVE_HOST_CALLS.has(name) && !NATIVE_HOST_KEY_CALLS.has(name) && !neverByHost.has(name),
+			(name) => !NATIVE_HOST_CALLS.has(name) && !NATIVE_HOST_IDENTITY_CALLS.has(name) && !neverByHost.has(name),
 		),
 	).toEqual([]);
-	for (const name of [...NATIVE_HOST_KEY_CALLS, ...neverByHost]) expect(NATIVE_HOST_CALLS.has(name)).toBe(false);
-	for (const name of NATIVE_HOST_KEY_CALLS) expect(source("cloud-native-provider-service.ts")).toContain(`"${name}"`);
+	for (const name of neverByHost) {
+		expect(NATIVE_HOST_CALLS.has(name)).toBe(false);
+		expect(NATIVE_HOST_IDENTITY_CALLS.has(name)).toBe(false);
+	}
+	// Every between-job call is one the host's own code makes.
+	const host = [
+		"cloud-native-provider-service.ts",
+		"cloud-identity-recovery-guest.ts",
+		"cloud-native-provider-service-main.ts",
+	]
+		.map(source)
+		.join("\n");
+	// As a name in a client's list, or the last part of an RPC path.
+	for (const name of NATIVE_HOST_IDENTITY_CALLS) expect(host).toMatch(new RegExp(`["/]${name}"`));
 });
 
 it("gives the dispatch to every database client the host builds, and to its service", () => {
@@ -148,15 +183,9 @@ it("gives the dispatch to every database client the host builds, and to its serv
 	expect(main).toMatch(/new HttpCloudCompanyPathControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCodingControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCompanyComputerRegistry\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
-	expect(main).toMatch(/mode: nativeHostDispatchMode\(environment\.QORPERA_NATIVE_HOST_DISPATCH\)/);
+	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, serviceKey, identity \}\)/);
+	expect(main).not.toContain("QORPERA_NATIVE_HOST_DISPATCH");
 	expect(main).toMatch(/environment\.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,\s*dispatch,\s*\)/);
-});
-
-it("reads the switch strictly, off by default", () => {
-	expect(NATIVE_HOST_DISPATCH_DEFAULT).toBe("off");
-	expect(nativeHostDispatchMode(undefined)).toBe("off");
-	expect(nativeHostDispatchMode("on")).toBe("on");
-	expect(() => nativeHostDispatchMode("yes")).toThrow("QORPERA_NATIVE_HOST_DISPATCH");
 });
 
 it("accepts only publishable keys", () => {
@@ -196,37 +225,128 @@ it("sends a listed call through the entry point with the job's token and the pub
 	});
 });
 
-it("keeps only the between-job calls, Storage and other origins on the service key, and refuses any other database call", async () => {
+it("sends a between-job call through the identity entry point with the holder's credential, inside a job or not", async () => {
+	const { dispatch, sent } = dispatchFixture();
+	const signal = new AbortController().signal;
+	const args = '{"p_compute_identity_id":"x","p_limit":9007199254740993}';
+	await dispatch.fetch(
+		`${ORIGIN}/rest/v1/rpc/qorpera_list_native_provider_account_refreshes`,
+		rpc(args, { signal, redirect: "follow" }),
+	);
+	const release = dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
+	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_identity_recovery_runtime_state`, rpc("{}"));
+	release();
+	expect(sent.map((call) => call.url)).toEqual([
+		`${ORIGIN}/rest/v1/rpc/qorpera_native_identity_call`,
+		`${ORIGIN}/rest/v1/rpc/qorpera_native_identity_call`,
+	]);
+	const first = sent[0]!.init!;
+	expect(first.body).toBe(
+		`{"p_compute_identity_id":"${IDENTITY_ID}","p_credential":"${IDENTITY_TOKEN}","p_name":"qorpera_list_native_provider_account_refreshes","p_args":${args}}`,
+	);
+	const headers = new Headers(first.headers);
+	expect(headers.get("apikey")).toBe(PUBLISHABLE_KEY);
+	expect(headers.get("authorization")).toBeNull();
+	expect(first.signal).toBe(signal);
+	expect(first.redirect).toBe("error");
+	// The job's token never rides on a between-job call.
+	expect(JSON.parse(sent[1]!.init!.body as string)).toEqual({
+		p_compute_identity_id: IDENTITY_ID,
+		p_credential: IDENTITY_TOKEN,
+		p_name: "qorpera_identity_recovery_runtime_state",
+		p_args: {},
+	});
+	expect(JSON.stringify(sent)).not.toContain(SERVICE_KEY);
+	expect(JSON.stringify(sent)).not.toContain(TOKEN_A);
+});
+
+it("keeps Storage and other origins as sent, and refuses any other call on the project's origin", async () => {
 	const { dispatch, sent } = dispatchFixture();
 	dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
-	const between = rpc('{"p_compute_identity_id":"x"}');
-	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_list_native_provider_account_refreshes`, between);
-	await dispatch.fetch(`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/x.capsule`, { method: "GET" });
+	const storage = { method: "GET" };
+	await dispatch.fetch(`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/x.capsule`, storage);
 	await dispatch.fetch("https://elsewhere.example/rest/v1/rpc/qorpera_describe_native_tool_authority", rpc("{}"));
 	expect(sent.map((call) => call.url)).toEqual([
-		`${ORIGIN}/rest/v1/rpc/qorpera_list_native_provider_account_refreshes`,
 		`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/x.capsule`,
 		"https://elsewhere.example/rest/v1/rpc/qorpera_describe_native_tool_authority",
 	]);
-	expect(sent[0]!.init).toBe(between);
+	expect(sent[0]!.init).toBe(storage);
 	expect(JSON.stringify(sent)).not.toContain(TOKEN_A);
+	expect(JSON.stringify(sent)).not.toContain(IDENTITY_TOKEN);
 	for (const path of [
 		"/rest/v1/rpc/qorpera_runtime_wake_policy",
 		"/rest/v1/rpc/qorpera_runtime_office_supervisor_status",
+		"/rest/v1/rpc/qorpera_native_identity_call",
+		"/rest/v1/rpc/qorpera_native_host_call",
+		"/rest/v1/rpc/qorpera_bind_native_identity_credential",
 		"/rest/v1/qorpera_runner_jobs",
 		"/rest/v1/rpc/QORPERA_DESCRIBE_NATIVE_TOOL_AUTHORITY",
+		"/rest/v1/rpc/QORPERA_LIST_NATIVE_PROVIDER_ACCOUNT_REFRESHES",
+		// Only Storage passes on the project's origin: no other service gets the key.
+		"/graphql/v1",
+		"/auth/v1/user",
+		"/functions/v1/anything",
+		"/realtime/v1/api/broadcast",
+		"/%72est/v1/rpc/qorpera_describe_native_tool_authority",
+		"/storage/v2/object/x",
 	])
 		await expect(dispatch.fetch(`${ORIGIN}${path}`, rpc("{}"))).rejects.toThrow("Not a native host call");
-	expect(sent).toHaveLength(3);
+	const url = `${ORIGIN}/rest/v1/rpc/qorpera_identity_recovery_runtime_state`;
+	await expect(dispatch.fetch(url, { method: "GET" })).rejects.toThrow("malformed");
+	await expect(dispatch.fetch(`${url}?select=*`, rpc("{}"))).rejects.toThrow("malformed");
+	await expect(dispatch.fetch(new Request(url, rpc("{}")))).rejects.toThrow("malformed");
+	// The arguments are spliced in as sent, so they must be one JSON object: nothing can add a key of the entry point's.
+	for (const body of [
+		'{},"p_credential":"x"',
+		'{"a":1},"p_name":"qorpera_complete_native_provider_login"',
+		"[]",
+		"null",
+		"1",
+		"not json",
+	])
+		for (const name of ["qorpera_identity_recovery_runtime_state", "qorpera_describe_native_tool_authority"])
+			await expect(dispatch.fetch(`${ORIGIN}/rest/v1/rpc/${name}`, rpc(body))).rejects.toThrow("malformed");
+	expect(sent).toHaveLength(2);
 });
 
-it("with the switch off, sends every call as before and holds nothing", async () => {
-	const { dispatch, sent } = dispatchFixture("off");
-	const release = dispatch.begin(JOB_ID, undefined);
-	const init = rpc("{}");
-	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`, init);
+it("checks the holder's identity credential once, and an execution host's run replaces it with its machine's", async () => {
+	const identity = { computeIdentityId: IDENTITY_ID, credential: IDENTITY_TOKEN, publishableKey: PUBLISHABLE_KEY };
+	const build = (patch: Partial<typeof identity>) =>
+		new NativeHostDispatch({ supabaseUrl: ORIGIN, serviceKey: SERVICE_KEY, identity: { ...identity, ...patch } });
+	for (const patch of [
+		{ computeIdentityId: "not-a-uuid" },
+		{ credential: "short" },
+		{ credential: `${IDENTITY_TOKEN}=` },
+		{ publishableKey: SERVICE_KEY },
+		{ publishableKey: "sb_secret_g2TestKey0123456789" },
+	])
+		expect(() => build(patch)).toThrow("identity credential is invalid");
+	const { dispatch, sent } = dispatchFixture();
+	const call = () => dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_compute_identity_login_in_vault`, rpc("{}"));
+	expect(() =>
+		dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY, identityCredential: "short" }),
+	).toThrow("identity credential is invalid");
+	await call();
+	const release = dispatch.begin(JOB_ID, {
+		leaseToken: TOKEN_A,
+		publishableKey: PUBLISHABLE_KEY,
+		identityCredential: SLOT_TOKEN,
+	});
+	await call();
 	release();
-	expect(sent).toEqual([{ url: `${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`, init }]);
+	// The next run's machine brings its own; until then the released run's credential stays, and no longer works.
+	await call();
+	expect(() =>
+		dispatch.begin(JOB_ID, {
+			leaseToken: TOKEN_B,
+			publishableKey: PUBLISHABLE_KEY,
+			identityCredential: NEXT_SLOT_TOKEN,
+		}),
+	).not.toThrow();
+	await call();
+	expect(
+		sent.map((entry) => (JSON.parse(entry.init!.body as string) as { p_credential: string }).p_credential),
+	).toEqual([IDENTITY_TOKEN, SLOT_TOKEN, SLOT_TOKEN, NEXT_SLOT_TOKEN]);
 });
 
 it("never sends a listed call outside a job or without its token, and holds one job's token at a time", async () => {
@@ -249,9 +369,10 @@ it("never sends a listed call outside a job or without its token, and holds one 
 	expect(fetcher.mock.calls.at(-1)?.[1]?.body).toContain(TOKEN_B);
 	releaseB();
 	await expect(call()).rejects.toThrow("outside a job");
+	// A malformed call is refused as malformed, in a job or not.
 	await expect(
 		dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`, { method: "GET" }),
-	).rejects.toThrow("outside a job");
+	).rejects.toThrow("malformed");
 	dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
 	const url = `${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`;
 	await expect(dispatch.fetch(url, { method: "GET" })).rejects.toThrow("malformed");
@@ -309,7 +430,7 @@ it("the runner sends the job's lease token and the publishable key with a compan
 	}
 });
 
-async function hostServiceFixture(mode: "off" | "on", outcome: "succeed" | "fail" | "wait" = "succeed") {
+async function hostServiceFixture(outcome: "succeed" | "fail" | "wait" = "succeed") {
 	const { binding, authority } = authorityFixture();
 	const host = new NativeProviderHost({
 		masterKey: randomBytes(32).toString("base64url"),
@@ -339,7 +460,7 @@ async function hostServiceFixture(mode: "off" | "on", outcome: "succeed" | "fail
 			},
 		},
 	});
-	const { dispatch, sent } = dispatchFixture(mode);
+	const { dispatch, sent } = dispatchFixture();
 	const call = (name: string) => dispatch.fetch(`${ORIGIN}/rest/v1/rpc/${name}`, rpc("{}"));
 	// Each execution makes a listed call through the dispatch, as the runtime's clients do; a stopped one makes its
 	// cleanup call (presence forget) as it unwinds.
@@ -362,7 +483,11 @@ async function hostServiceFixture(mode: "off" | "on", outcome: "succeed" | "fail
 }
 
 /** A company execution's body as the runner's bridge builds it. */
-async function executionBody(authority: CloudRunnerNativeAuthority, job: { jobId: string; attemptCount: number }) {
+async function executionBody(
+	authority: CloudRunnerNativeAuthority,
+	job: { jobId: string; attemptCount: number },
+	identityCredential?: string,
+) {
 	let body: Record<string, unknown> = {};
 	const capture = new HttpNativeProviderComputerBridge(
 		"https://native.example/",
@@ -371,14 +496,14 @@ async function executionBody(authority: CloudRunnerNativeAuthority, job: { jobId
 			body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			return new Response("{}", { status: 422 });
 		},
-		{ publishableKey: PUBLISHABLE_KEY },
+		{ publishableKey: PUBLISHABLE_KEY, ...(identityCredential ? { identityCredential } : {}) },
 	);
 	await (await capture.startCompany(authority, { ...job, leaseToken: TOKEN_A })).result.catch(() => {});
 	return body;
 }
 
 it("a warm host holds each job's token for that execution only, and drops it when the execution succeeds", async () => {
-	const f = await hostServiceFixture("on");
+	const f = await hostServiceFixture();
 	try {
 		const bridge = new HttpNativeProviderComputerBridge(f.url, f.bridgeToken, fetch, {
 			publishableKey: PUBLISHABLE_KEY,
@@ -402,7 +527,7 @@ it("a warm host holds each job's token for that execution only, and drops it whe
 });
 
 it("a host stopping keeps the job's token until its execution has cleaned up, then drops it", async () => {
-	const f = await hostServiceFixture("on", "wait");
+	const f = await hostServiceFixture("wait");
 	const bridge = new HttpNativeProviderComputerBridge(f.url, f.bridgeToken, fetch, {
 		publishableKey: PUBLISHABLE_KEY,
 	});
@@ -423,8 +548,8 @@ it("a host stopping keeps the job's token until its execution has cleaned up, th
 	await vi.waitFor(() => expect(f.call("qorpera_describe_native_tool_authority")).rejects.toThrow("outside a job"));
 });
 
-it("with the switch on, refuses an execution without a valid credential with a fixed code and never logs a token", async () => {
-	const f = await hostServiceFixture("on", "wait");
+it("refuses an execution without a valid credential with a fixed code and never logs a token", async () => {
+	const f = await hostServiceFixture("wait");
 	const post = (body: unknown) =>
 		fetch(`${f.url}execute`, {
 			method: "POST",
@@ -437,6 +562,8 @@ it("with the switch on, refuses an execution without a valid credential with a f
 		for (const body of [
 			{ ...valid, native_host: { publishable_key: SERVICE_KEY } },
 			{ ...valid, native_host: { publishable_key: PUBLISHABLE_KEY, extra: true } },
+			{ ...valid, native_host: { publishable_key: PUBLISHABLE_KEY, identity_credential: "short" } },
+			{ ...valid, native_host: { publishable_key: PUBLISHABLE_KEY, identity_credential: 7 } },
 			{ ...valid, job: { ...job, lease_token: "short" } },
 			{ ...valid, job: { job_id: job.job_id, attempt_count: 1 }, native_host: undefined },
 		]) {
@@ -468,23 +595,36 @@ it("with the switch on, refuses an execution without a valid credential with a f
 	}
 });
 
-it("with the switch off, runs an execution with or without the credential", async () => {
-	const f = await hostServiceFixture("off");
+it("an execution host's run brings its machine's identity credential, and the host's between-job calls use it", async () => {
+	const f = await hostServiceFixture("wait");
 	try {
+		expect(
+			() =>
+				new HttpNativeProviderComputerBridge(f.url, f.bridgeToken, fetch, {
+					publishableKey: PUBLISHABLE_KEY,
+					identityCredential: "short",
+				}),
+		).toThrow("identity credential is invalid");
 		const bridge = new HttpNativeProviderComputerBridge(f.url, f.bridgeToken, fetch, {
 			publishableKey: PUBLISHABLE_KEY,
+			identityCredential: SLOT_TOKEN,
 		});
-		await (await bridge.startCompany(f.authority, { jobId: f.binding.jobId, attemptCount: 1 })).result.catch(
-			() => {},
-		);
-		await (
-			await bridge.startCompany(f.authority, { jobId: f.binding.jobId, attemptCount: 2, leaseToken: TOKEN_A })
-		).result.catch(() => {});
-		expect(f.sent.map((call) => call.url)).toEqual([
-			`${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`,
-			`${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`,
-		]);
-		expect(JSON.stringify(f.sent)).not.toContain(TOKEN_A);
+		const process = await bridge.startCompany(f.authority, {
+			jobId: f.binding.jobId,
+			attemptCount: 1,
+			leaseToken: TOKEN_A,
+		});
+		const ended = process.result.catch(() => {});
+		await vi.waitFor(() => expect(f.sent).toHaveLength(1));
+		await f.dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_list_native_provider_account_refreshes`, rpc("{}"));
+		expect(JSON.parse(f.sent[1]!.init!.body as string)).toMatchObject({
+			p_compute_identity_id: IDENTITY_ID,
+			p_credential: SLOT_TOKEN,
+		});
+		const body = await executionBody(f.authority, { jobId: f.binding.jobId, attemptCount: 2 }, SLOT_TOKEN);
+		expect(body.native_host).toEqual({ publishable_key: PUBLISHABLE_KEY, identity_credential: SLOT_TOKEN });
+		await f.service.close();
+		await ended;
 	} finally {
 		await f.service.close();
 	}

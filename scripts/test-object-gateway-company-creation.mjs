@@ -201,7 +201,22 @@ async function main() {
 		});
 		assert.equal(query(`select count(*) from public.qorpera_session_turn_requests where profile_id = '${profileId}'`), "0");
 		assert.equal(query(`select count(*) from public.qorpera_wake_occurrences where profile_id = '${profileId}'`), "0");
-		process.stdout.write("Company creation worker checks passed (seeded tree saved, Co-Founder, kickoff, ready)\n");
+		// 4. The Co-Founder's default grant, from the roster's trigger in the creation commit: read and write on the company's
+		// shared root, so its first run reads and writes the seed tree (vision.md and its first todo included).
+		const grants = JSON.parse(query(`select coalesce(jsonb_agg(jsonb_build_object('path', r.path, 'scope', r.scope,
+				'permissions', g.permissions, 'origin', g.origin) order by g.id), '[]')
+			from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
+			where r.environment_id = '${environmentId}' and g.principal_kind = 'staff_agent' and g.principal_id = '${made.cofounder_id}'
+				and g.revoked_at is null and (g.expires_at is null or g.expires_at > clock_timestamp())`));
+		assert.deepEqual(grants, [{ path: "", scope: "company_shared", permissions: ["read", "write"], origin: "default_agent_read" }]);
+		const run = JSON.stringify({ kind: "staff_agent", staffAgentId: made.cofounder_id, requesterUserId: owner,
+			audience: { kind: "company" }, sessionKind: "in_house", workerAccess: "write" });
+		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md",
+			"agents/co-founder/todos/start-with-the-founders.md", "skills/human-task/SKILL.md"])
+			for (const permission of ["read", "write"])
+				assert.equal(query(`select public.qorpera_folder_actor_allowed('${environmentId}', '${profileId}', '${run}'::jsonb,
+					'${path}', '${permission}')`), "t", `the Co-Founder may ${permission} ${path}`);
+		process.stdout.write("Company creation worker checks passed (seeded tree saved, Co-Founder, its grant, kickoff, ready)\n");
 	} finally {
 		if (scratch) await rm(scratch, { recursive: true, force: true });
 		database.close();
