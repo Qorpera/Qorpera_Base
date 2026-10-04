@@ -14,6 +14,8 @@ work=$(mktemp -d)
 chmod 0755 "$work"
 export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/state
 export QORPERA_AGENT_EXIT_LOG_DIR=$work/log QORPERA_AGENT_EXIT_UPSTREAMS=9.9.9.9
+# The logs' disk floor is off here, so the proof never depends on the test machine's free space; the cap is tested.
+export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0
 pids=()
 cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
 trap cleanup EXIT
@@ -322,7 +324,8 @@ if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed without DN
 grep -q "no DNS on 10.210.0.1:53" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "logger not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the agent plug's reconciler not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
-pass "verify fails while DNS, the logger and the plug's reconciler are not running"
+grep -q "the logs' tender has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+pass "verify fails while DNS, the logger, the plug's reconciler and the logs' tender are not running"
 
 background - "$work/node.out" python3 "$work/serve.py" "$work/node-peers" 192.168.1.42:22 10.209.255.1:22
 background - "$work/nodeudp.out" python3 "$work/udpseen.py" "$work/node-udp" 192.168.1.42 9999
@@ -343,8 +346,10 @@ bash "$tool" dns >"$work/dns.out" 2>&1 &
 pids+=($!)
 wait_for "ip netns exec qexit ss -lnu | grep -q '10.210.0.1:53 '"
 bash "$tool" log >"$work/log.out" 2>&1 &
+logger_pid=$!
 pids+=($!)
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.heartbeat"
+bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
 AGENT="qp/agent:Running:10.210.1.1:c0:m0::va0"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 QORPERA_AGENT_PLUG_LXD_FIXTURE=$work/lxd.json QORPERA_AGENT_PLUG_RELOAD_DNS="pkill -HUP -x dnsmasq" \
@@ -668,6 +673,69 @@ grep -q "the machine was never created" "$work/plug.out" || fail "plug: $(cat "$
 ip link del pv0
 ip netns del plugged
 pass "plugs whose machines never appear are given up after an hour, as dropped: never attributed"
+
+# --- The logs on the node ------------------------------------------------------------------------------------------
+logs_tool=$here/qorpera-agent-exit-logs.py
+LOG=$QORPERA_AGENT_EXIT_LOG_DIR
+today=$(date -u +%F)
+bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
+python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count.json" || fail "count: $(cat "$work/count.json")"
+python3 - "$work/count.json" >"$work/countcheck.out" 2>&1 <<'EOF' || fail "counts: $(cat "$work/countcheck.out") $(cat "$work/count.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["companies"]
+assert c["c0"]["connections"] > 0 and c["c0"]["machines"] == 1, c
+assert c["c0"]["refusedByRule"].get("our_networks", 0) > 0, c
+# The plugged machine's TCP to 8443, its ping and its UDP, under the company its plugged line names.
+assert c["c1"]["connections"] >= 3 and set(c["c1"]["byProto"]) >= {"tcp", "udp", "icmp"}, c
+EOF
+pass "the counts tie each machine's connections and refusals to its company"
+# Parts of one byte: today's open files are sealed, and dns.log is cut while dnsmasq writes on into it.
+python3 "$logs_tool" tend --log-dir "$LOG" --status "$QORPERA_AGENT_EXIT_RUN_DIR/logs.json" --part-bytes 1 --settle 0.5 \
+	>"$work/tend.out" || fail "tend: $(cat "$work/tend.out")"
+[[ -e $LOG/flows-$today.p001.jsonl.gz && -e $LOG/clients-$today.p001.jsonl.gz ]] || fail "not sealed: $(ls "$LOG")"
+[[ ! -s $LOG/dns.log ]] || fail "dns.log was not cut: $(wc -c <"$LOG/dns.log")"
+zcat "$LOG"/dns-*.log.gz | grep -q 'query\[A\] example.test from 10.210.1.1' || fail "the DNS part lacks the earlier queries"
+[[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 rotated.test) == 1.1.1.1 ]] || fail "DNS after the cut"
+wait_for "grep -q 'query\[A\] rotated.test from 10.210.1.1' $LOG/dns.log"
+[[ $(head -c 1 "$LOG/dns.log" | od -An -tx1 | tr -d ' ') != 00 ]] || fail "dnsmasq wrote past a hole after the cut"
+connects agent 1.1.1.1 443 || fail "the agent cannot connect after the cut"
+wait_for "grep -q '\"event\":\"new\"' $LOG/flows-$today.jsonl"
+python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count2.json" || fail "count: $(cat "$work/count2.json")"
+python3 -c 'import json, sys; a, b = (json.load(open(f))["companies"]["c0"]["connections"] for f in sys.argv[1:]); assert b > a, (a, b)' \
+	"$work/count.json" "$work/count2.json" || fail "the count after sealing lost lines"
+pass "the tender seals open files into parts and cuts dns.log; the writers go on in new files, and counts read all"
+# Past its cap the logger pauses: no connection lines, traffic goes on, the exit is unhealthy; it goes on once there is
+# room, with a gap line that says how many lines it did not write.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+size=$(python3 -c 'import os, sys; print(sum(e.stat().st_size for e in os.scandir(sys.argv[1]) if e.is_file(follow_symlinks=False)))' "$LOG")
+QORPERA_AGENT_EXIT_LOG_CAP_BYTES=$((size + 2000000)) bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test \$(grep -c 'logger started' $LOG/flows-$today.jsonl) -ge 1"
+wait_for "bash $tool verify >/dev/null 2>&1"
+head -c 4000000 /dev/zero >"$LOG/filler"
+for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && break; sleep 0.2; done
+[[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not pause past its cap: $(tail -3 "$work/log.out")"
+bash "$tool" verify 2>"$work/verify-pause.err" && fail "verify passed while the connection log paused"
+grep -q "connection log paused: " "$work/verify-pause.err" || fail "verify: $(cat "$work/verify-pause.err")"
+written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl")
+connects agent 1.1.1.1 443 || fail "a machine's traffic stopped while the log paused"
+sleep 1
+[[ $(grep -c '"event":"new"' "$LOG/flows-$today.jsonl") == "$written" ]] || fail "the paused logger wrote a connection line"
+rm "$LOG/filler"
+for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || break; sleep 0.2; done
+[[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not go on with room again"
+grep -q '"event":"gap".*"reason":"paused: ' "$LOG/flows-$today.jsonl" || fail "no gap line for the pause"
+grep -Eq '"reason":"resumed: [1-9][0-9]* lines not written while paused"' "$LOG/flows-$today.jsonl" ||
+	fail "no gap line saying what the pause missed: $(grep gap "$LOG/flows-$today.jsonl" | tail -3)"
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "past its cap the logger pauses (traffic goes on, the exit is unhealthy), then goes on and says what it missed"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+bash "$tool" log >>"$work/log.out" 2>&1 &
+pids+=($!)
+wait_for "bash $tool verify >/dev/null 2>&1"
 
 # --- An interrupted rebuild -------------------------------------------------------------------------------------
 # The exit's namespace is replaced while its name service and logger still run in the old one, as after an up that

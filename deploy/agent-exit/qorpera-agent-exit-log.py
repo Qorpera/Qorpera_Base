@@ -9,10 +9,20 @@ are alive and the conntrack reader watches the exit's current namespace, for `ve
 replaced under it, the logger exits and its unit starts it again in the new one. Never content: only addresses,
 ports, protocol, times and byte counts. E3 joins these lines with the client map and the DNS log.
 
-  qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE
+The node's disk comes first. Every 5 seconds the logger reads the log folder's size and the disk's free share; past
+either line (the logs over their cap, or the disk under its floor) it pauses: it writes no connection or refusal
+lines, only a gap line when it pauses and one when it goes on (with the number of lines it did not write), and it
+keeps <pause-file> while it pauses, so `verify` fails and the node takes no new agent road machines. It goes on once
+the logs are under 95% of the cap and the disk 2 points above its floor (qorpera-agent-exit-logs.py `tend` deletes
+the oldest parts to get there). A line it cannot write (a full disk, say) is counted, and the next line written is a
+gap line that says how many.
+
+  qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE --pause-file FILE [--cap-bytes N]
+                            [--floor-percent P]
   qorpera-agent-exit-log.py --parse-conntrack   (stdin: conntrack -E lines; stdout: JSON lines)
   qorpera-agent-exit-log.py --parse-set         (stdin: nft -j list set; stdout: [key, expires] per element)
   qorpera-agent-exit-log.py --diff-sets         (stdin: {previous, current}; stdout: [key, rule] per flow to log)
+  qorpera-agent-exit-log.py --should-pause      (stdin: {paused, freePercent, bytes, cap, floor}; stdout: true|false)
 """
 
 import argparse
@@ -37,6 +47,8 @@ INTERNAL = [
 ]
 # conntrack's own warning when the kernel drops events because the reader is behind.
 LOST = ("ENOBUFS", "losing events")
+CAP_BYTES = 2 * 1024 * 1024 * 1024
+FLOOR_PERCENT = 10.0
 
 
 def parse_conntrack(line):
@@ -125,19 +137,78 @@ def rule_for(key):
     return "open_limit"
 
 
+def should_pause(paused, free, size, cap, floor):
+    """Pause past either line; go on only with some room again, so the logger does not flap at the line."""
+    if paused:
+        return free < floor + 2 or size > cap * 0.95
+    return free < floor or size > cap
+
+
+def disk_state(log_dir):
+    """The disk's free share (for ordinary users, so root's reserve counts as used) and the log folder's size."""
+    st = os.statvfs(log_dir)
+    free = st.f_bavail * 100.0 / st.f_blocks if st.f_blocks else 0.0
+    with os.scandir(log_dir) as entries:
+        size = sum(e.stat(follow_symlinks=False).st_size for e in entries if e.is_file(follow_symlinks=False))
+    return free, size
+
+
 class Writer:
     def __init__(self, log_dir):
         self.log_dir = log_dir
         self.lock = threading.Lock()
+        self.paused = False
+        self.paused_at = None
+        self.held = 0
+        self.unwritten = 0
+        self.unwritten_since = None
+        self.unwritten_error = None
 
-    def write(self, record):
+    def append(self, record):
         day = time.strftime("%Y-%m-%d", time.gmtime(record["ts"]))
         line = json.dumps(record, separators=(",", ":"), sort_keys=True)
         path = os.path.join(self.log_dir, f"flows-{day}.jsonl")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    def write(self, record):
         with self.lock:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            if self.paused and record.get("event") != "gap":
+                self.held += 1
+                return
+            try:
+                # Lines that could not be written: the first line that can be says how many, and since when.
+                if self.unwritten:
+                    self.append({"ts": time.time(), "event": "gap", "since": self.unwritten_since,
+                                 "reason": f"{self.unwritten} lines could not be written ({self.unwritten_error})"})
+                    self.unwritten, self.unwritten_since, self.unwritten_error = 0, None, None
+                self.append(record)
+            except OSError as error:
+                if not self.unwritten:
+                    self.unwritten_since = record.get("ts", time.time())
+                self.unwritten += 1
+                self.unwritten_error = error.strerror or str(error)
+
+    def pause(self, paused, reason, pause_file):
+        """Pauses or goes on, with a gap line either way; the pause file is there exactly while it pauses."""
+        with self.lock:
+            if paused == self.paused:
+                return
+            self.paused = paused
+            since, held = self.paused_at, self.held
+            self.paused_at, self.held = (time.time(), 0) if paused else (None, 0)
+        if paused:
+            self.gap(f"paused: {reason}")
+            with open(pause_file + ".tmp", "w", encoding="utf-8") as f:
+                f.write(reason + "\n")
+            os.replace(pause_file + ".tmp", pause_file)
+        else:
+            self.gap(f"resumed: {held} lines not written while paused", since=since)
+            try:
+                os.unlink(pause_file)
+            except FileNotFoundError:
+                pass
 
     def gap(self, reason, since=None):
         record = {"ts": time.time(), "event": "gap", "reason": reason}
@@ -234,7 +305,16 @@ def main():
     parser.add_argument("--parse-conntrack", action="store_true")
     parser.add_argument("--parse-set", action="store_true")
     parser.add_argument("--diff-sets", action="store_true")
+    parser.add_argument("--should-pause", action="store_true")
+    parser.add_argument("--pause-file")
+    parser.add_argument("--cap-bytes", type=int, default=CAP_BYTES)
+    parser.add_argument("--floor-percent", type=float, default=FLOOR_PERCENT)
     args = parser.parse_args()
+    if args.should_pause:
+        state = json.load(sys.stdin)
+        print(json.dumps(should_pause(state["paused"], state["freePercent"], state["bytes"], state["cap"],
+                                      state["floor"])))
+        return
     if args.parse_conntrack:
         for line in sys.stdin:
             record = parse_conntrack(line)
@@ -253,10 +333,29 @@ def main():
         for key in new_refusals(previous, current):
             print(json.dumps([list(key), rule_for(key)]))
         return
-    if not (args.netns and args.log_dir and args.heartbeat):
-        parser.error("--netns, --log-dir and --heartbeat are required")
+    if not (args.netns and args.log_dir and args.heartbeat and args.pause_file):
+        parser.error("--netns, --log-dir, --heartbeat and --pause-file are required")
     os.makedirs(args.log_dir, mode=0o750, exist_ok=True)
     writer = Writer(args.log_dir)
+    # A pause file from an earlier run says nothing about now: the first check below decides afresh.
+    try:
+        os.unlink(args.pause_file)
+    except FileNotFoundError:
+        pass
+
+    def check_disk():
+        try:
+            free, size = disk_state(args.log_dir)
+        except OSError as error:
+            print(f"cannot read the log folder: {error}", file=sys.stderr, flush=True)
+            return
+        if should_pause(writer.paused, free, size, args.cap_bytes, args.floor_percent):
+            writer.pause(True, f"the node's disk has {free:.1f}% free (floor {args.floor_percent:g}%) and the exit's logs "
+                               f"hold {size} bytes (cap {args.cap_bytes})", args.pause_file)
+        else:
+            writer.pause(False, "", args.pause_file)
+
+    check_disk()
     try:
         last_beat = os.stat(args.heartbeat).st_mtime
     except OSError:
@@ -273,6 +372,7 @@ def main():
     elsewhere = 0
     while True:
         time.sleep(min(5.0, args.interval))
+        check_disk()
         if not all(thread.is_alive() for thread in threads):
             sys.exit("the connection logger stopped")
         # Twice in a row, so a reader caught between entering the namespace and starting does not count.

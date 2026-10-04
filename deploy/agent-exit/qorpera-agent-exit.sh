@@ -7,9 +7,11 @@
 #   qorpera-agent-exit.sh dns       run dnsmasq in the exit, in the foreground (the dns unit)
 #   qorpera-agent-exit.sh log       run the connection logger in the foreground (the log unit)
 #   qorpera-agent-exit.sh plug      run the agent plug's reconciler in the foreground (the plug unit)
+#   qorpera-agent-exit.sh logs      tend the logs on the node once: seal, compress, count, keep under the cap (timer)
 #   qorpera-agent-exit.sh verify    exit 0 only when every part is up, the logger is alive and the client map is true
 #   qorpera-agent-exit.sh health    write verify's answer to <run-dir>/health.json for the node observer
 #   qorpera-agent-exit.sh status    addresses, plugged-in machines and counters
+#   qorpera-agent-exit.sh counts [--from DAY] [--to DAY] [--json]   the line guard's counts per company (E7)
 #
 # Layout (README.md): namespace qexit; bridge qagent0 on the node with no address; veth qx-br (node, a port of
 # qagent0) / br0 (exit, 10.210.0.1/16); uplink veth qx-up (node, 10.209.255.1/30) / up0 (exit, 10.209.255.2/30).
@@ -26,10 +28,22 @@ host_rules=${QORPERA_AGENT_EXIT_HOST_RULES:-$here/qorpera-agent-exit-host.nft}
 bridge_rules=${QORPERA_AGENT_EXIT_BRIDGE_RULES:-$here/qorpera-agent-exit-bridge.nft}
 logger=${QORPERA_AGENT_EXIT_LOGGER:-$here/qorpera-agent-exit-log.py}
 plug_tool=${QORPERA_AGENT_EXIT_PLUG:-$here/qorpera-agent-plug.py}
+logs_tool=${QORPERA_AGENT_EXIT_LOGS:-$here/qorpera-agent-exit-logs.py}
 upstreams=${QORPERA_AGENT_EXIT_UPSTREAMS:-9.9.9.9 1.1.1.1}
 run_dir=${QORPERA_AGENT_EXIT_RUN_DIR:-/run/qorpera-agent-exit}
 state_dir=${QORPERA_AGENT_EXIT_STATE_DIR:-/var/lib/qorpera-agent-exit}
 log_dir=${QORPERA_AGENT_EXIT_LOG_DIR:-/var/log/qorpera-agent-exit}
+# The logs may hold at most this many bytes of the node's disk, and leave at least this share of it free. A node may
+# set its own in /etc/default/qorpera-agent-exit: KEY=number lines, nothing else is read from it.
+settings=${QORPERA_AGENT_EXIT_SETTINGS:-/etc/default/qorpera-agent-exit}
+setting() {
+	[[ -r $settings ]] || return 0
+	sed -n "s/^$1=\([0-9][0-9.]*\)\$/\1/p" "$settings" | tail -1
+}
+log_cap=${QORPERA_AGENT_EXIT_LOG_CAP_BYTES:-$(setting QORPERA_AGENT_EXIT_LOG_CAP_BYTES)}
+log_cap=${log_cap:-2147483648}
+log_floor=${QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT:-$(setting QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT)}
+log_floor=${log_floor:-10}
 
 NS=qexit
 BRIDGE=qagent0
@@ -46,7 +60,7 @@ LEASE=10m
 PLUG_GROUP=qorpera-agent-plug
 
 usage() {
-	sed -n '4,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+	sed -n '4,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit 64
 }
 
@@ -240,7 +254,15 @@ log() {
 	has_ns || die "the exit is not up"
 	install -d -m 0750 "$log_dir"
 	install -d -m 0755 "$run_dir"
-	exec python3 "$logger" --netns "$NS" --log-dir "$log_dir" --heartbeat "$run_dir/logger.heartbeat"
+	exec python3 "$logger" --netns "$NS" --log-dir "$log_dir" --heartbeat "$run_dir/logger.heartbeat" \
+		--pause-file "$run_dir/logger.pause" --cap-bytes "$log_cap" --floor-percent "$log_floor"
+}
+
+logs() {
+	install -d -m 0750 "$log_dir"
+	install -d -m 0755 "$run_dir"
+	exec python3 "$logs_tool" tend --log-dir "$log_dir" --status "$run_dir/logs.json" --cap-bytes "$log_cap" \
+		--floor-percent "$log_floor"
 }
 
 plug() {
@@ -283,6 +305,19 @@ verify() {
 		((age < 30)) || problems+=("logger silent for ${age}s")
 	else
 		problems+=("logger not running")
+	fi
+	# The logger pauses rather than fill the node's disk; the logs' tender keeps them under their cap.
+	[[ ! -e $run_dir/logger.pause ]] || problems+=("connection log paused: $(head -c 300 "$run_dir/logger.pause")")
+	local logs_status="$run_dir/logs.json"
+	if [[ -e $logs_status ]]; then
+		age=$(($(date +%s) - $(stat -c %Y "$logs_status")))
+		((age < 900)) || problems+=("the logs' tender has not run for ${age}s")
+		while IFS= read -r problem; do
+			[[ -z $problem ]] || problems+=("the logs' tender: $problem")
+		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
+			"$logs_status" 2>/dev/null || echo "cannot read $logs_status")
+	else
+		problems+=("the logs' tender has not run")
 	fi
 	# The agent plug's reconciler: alive, and the client map true to LXD (qorpera-agent-plug.py).
 	local plug_status="$run_dir/plug.json" problem
@@ -342,8 +377,8 @@ check)
 	table_batch "$EXIT_TABLE" "$exit_rules" | nft -c -f /dev/stdin
 	table_batch "$HOST_TABLE" "$host_rules" | nft -c -f /dev/stdin
 	table_batch "$BRIDGE_TABLE" "$bridge_rules" | nft -c -f /dev/stdin
-	python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$logger" "$plug_tool" ||
-		die "the logger or the plug tool does not parse"
+	python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$logger" "$plug_tool" \
+		"$logs_tool" || die "the logger, the plug tool or the logs' tender does not parse"
 	for tool in dnsmasq conntrack python3; do command -v "$tool" >/dev/null || die "missing $tool (packages: dnsmasq-base, conntrack, python3)"; done
 	echo "qorpera-agent-exit: rules parse; tools present; $(has_ns && echo up || echo down)"
 	;;
@@ -352,6 +387,8 @@ down) down ;;
 dns) dns ;;
 log) log ;;
 plug) plug ;;
+logs) logs ;;
+counts) exec python3 "$logs_tool" report --log-dir "$log_dir" "${@:2}" ;;
 verify) verify ;;
 health) health ;;
 status) status ;;
