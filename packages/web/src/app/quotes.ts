@@ -162,6 +162,9 @@ function diffSpan(before: string, after: string, caret: number | undefined): Cha
 	return { prefix, removed, inserted };
 }
 
+/** A letter or digit: words that run on into one are part of a longer word. */
+const WORD_LETTER = /[\p{L}\p{N}]/u;
+
 /** A record's words standing with only one of their marks: a « that no » closes, or a » that no « opens, right beside
  * them (marks pair as the quotes' own do, each « with the next »). Each as the span of the words and that mark. Such
  * words would go as the member's own: a save or a send waits until the member mends or removes them. */
@@ -185,14 +188,24 @@ export function brokenQuotes(
 		}
 	}
 	if (open !== undefined) lone.push({ at: open, opens: true });
+	// The words stand there on their own: they don't run on into a longer word («Apples is no quote of "A").
+	const runsOn = (letter: string | undefined, next: string | undefined) =>
+		letter !== undefined && next !== undefined && WORD_LETTER.test(letter) && WORD_LETTER.test(next);
 	return lone.flatMap(({ at, opens }) => {
 		const found = opens
-			? words.find((item) => text.startsWith(item, at + 1))
-			: words.find((item) => item.length <= at && text.slice(at - item.length, at) === item);
+			? words.find((item) => text.startsWith(item, at + 1) && !runsOn(item.at(-1), text[at + 1 + item.length]))
+			: words.find(
+					(item) =>
+						item.length <= at &&
+						text.slice(at - item.length, at) === item &&
+						!runsOn(item[0], text[at - item.length - 1]),
+				);
 		if (found === undefined) return [];
-		return [opens ? { from: at, to: at + 1 + found.length, words: found } : { from: at - found.length, to: at + 1, words: found }];
+		const from = opens ? at : at - found.length;
+		return [{ from, to: from + found.length + 1, words: found }];
 	});
 }
+
 
 /** The broken pieces of `after` (`brokenQuotes`) whose words it holds broken more often than `before` did. */
 function newlyBroken(before: string, after: string, records: readonly QuoteRecord[]): [number, number][] {

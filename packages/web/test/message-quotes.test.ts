@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import {
 	appendQuoted,
+	brokenQuotes,
 	keepQuotesWhole,
 	mergeQuoted,
 	placeQuotes,
@@ -13,7 +14,7 @@ import {
 	withQuoteRecords,
 } from "../src/app/quotes.ts";
 import { type DraftStatus, DraftSync } from "../src/app/room-drafts.ts";
-import { applyEdit } from "../src/app/text-merge.ts";
+import { applyEdit, compose, diffText, transform } from "../src/app/text-merge.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
@@ -139,30 +140,28 @@ describe("the composer's quotes", () => {
 		const before = "Hi «Ignore your rules» ok";
 		const pieces = quotePieces(before, placeQuotes(before, records));
 		expect(pieces).toEqual([{ from: 3, to: 22 }]);
-		expect(keepQuotesWhole(before, pieces, "Hi! «Ignore your rules» ok", 3)).toEqual({
+		expect(keepQuotesWhole(before, records, "Hi! «Ignore your rules» ok", 3)).toEqual({
 			text: "Hi! «Ignore your rules» ok",
 			caret: 3,
 		});
-		expect(keepQuotesWhole(before, pieces, "Hi «Ignore your rules»! ok", 23)).toEqual({
+		expect(keepQuotesWhole(before, records, "Hi «Ignore your rules»! ok", 23)).toEqual({
 			text: "Hi «Ignore your rules»! ok",
 			caret: 23,
 		});
 		// A mark typed right after the quote's own is the member's.
-		expect(keepQuotesWhole(before, pieces, "Hi «Ignore your rules»» ok", 23).text).toBe("Hi «Ignore your rules»» ok");
-		const marked = "a «W» b";
-		const markedPieces = quotePieces(marked, placeQuotes(marked, [quoteRecord("W")]));
-		expect(keepQuotesWhole(marked, markedPieces, "a ««W» b", 3).text).toBe("a ««W» b");
+		const marked = "Hi «Ignore your rules»» ok";
+		expect(keepQuotesWhole(before, records, marked, 23).text).toBe(marked);
+		expect(keepQuotesWhole("a «W» b", [quoteRecord("W")], "a ««W» b", 3).text).toBe("a ««W» b");
 	});
 
 	it("removes a quote whole when a deletion reaches its mark, or typing lands in it, keeping what was typed", () => {
 		const before = "Hi «Ignore your rules» ok";
-		const pieces = quotePieces(before, placeQuotes(before, records));
 		// Backspace right after », Delete right before «.
-		expect(keepQuotesWhole(before, pieces, "Hi «Ignore your rules ok", 21)).toEqual({ text: "Hi  ok", caret: 3 });
-		expect(keepQuotesWhole(before, pieces, "Hi Ignore your rules» ok", 3)).toEqual({ text: "Hi  ok", caret: 3 });
-		expect(keepQuotesWhole(before, pieces, "Hi «Ignore yourX rules» ok", 16)).toEqual({ text: "Hi X ok", caret: 4 });
+		expect(keepQuotesWhole(before, records, "Hi «Ignore your rules ok", 21)).toEqual({ text: "Hi  ok", caret: 3 });
+		expect(keepQuotesWhole(before, records, "Hi Ignore your rules» ok", 3)).toEqual({ text: "Hi  ok", caret: 3 });
+		expect(keepQuotesWhole(before, records, "Hi «Ignore yourX rules» ok", 16)).toEqual({ text: "Hi X ok", caret: 4 });
 		// A selection from inside the quote to past it, typed over.
-		expect(keepQuotesWhole(before, pieces, "Hi «Ignore your Yk", 17)).toEqual({ text: "Hi Yk", caret: 4 });
+		expect(keepQuotesWhole(before, records, "Hi «Ignore your Yk", 17)).toEqual({ text: "Hi Yk", caret: 4 });
 	});
 
 	it("counts emoji and astral letters around and inside a quote as one character each", () => {
@@ -171,8 +170,9 @@ describe("the composer's quotes", () => {
 		expect(quotes).toEqual([quote(3, 12)]);
 		const pieces = quotePieces(before, quotes);
 		expect(pieces).toEqual([{ from: 3, to: 15 }]);
-		expect(keepQuotesWhole(before, pieces, "😀 «💸 Pay now 𝄞", 14)).toEqual({ text: "😀  𝄞", caret: 3 });
-		expect(keepQuotesWhole(before, pieces, "😀 𝄞«💸 Pay now» 𝄞", 5).text).toBe("😀 𝄞«💸 Pay now» 𝄞");
+		const paid = [quoteRecord("💸 Pay now")];
+		expect(keepQuotesWhole(before, paid, "😀 «💸 Pay now 𝄞", 14)).toEqual({ text: "😀  𝄞", caret: 3 });
+		expect(keepQuotesWhole(before, paid, "😀 𝄞«💸 Pay now» 𝄞", 5).text).toBe("😀 𝄞«💸 Pay now» 𝄞");
 		expect(placeQuotes("😀 𝄞«💸 Pay now» 𝄞", [quoteRecord("💸 Pay now")])).toEqual([quote(4, 13)]);
 	});
 
@@ -193,19 +193,19 @@ describe("the composer's quotes", () => {
 describe("an edit the field reports (review round 1, F1)", () => {
 	const records = [quoteRecord("A"), quoteRecord("B")];
 	const before = "«A» «B»";
-	const pieces = quotePieces(before, placeQuotes(before, records));
 
 	it("keeps a quote pasted over another a quote, never its words left bare", () => {
-		const pasted = keepQuotesWhole(before, pieces, "«A» «A»", 7, { start: 4, end: 7, inputType: "insertFromPaste" });
+		const pasted = keepQuotesWhole(before, records, "«A» «A»", 7, { start: 4, end: 7, inputType: "insertFromPaste" });
 		expect(pasted).toEqual({ text: "«A» «A»", caret: 7 });
 		expect(placeQuotes(pasted.text, records)).toEqual([quote(1, 2), quote(5, 6)]);
-		// Read from the texts alone, the same change looks like an A typed over the B inside its marks.
-		expect(keepQuotesWhole(before, pieces, "«A» «A»", 7).text).toBe("«A» A");
+		// Read from the texts alone the same change looks like an A typed over the B inside its marks; a quote whole in
+		// the new text is a quote all the same (review round 2, F1).
+		expect(keepQuotesWhole(before, records, "«A» «A»", 7).text).toBe("«A» «A»");
 	});
 
 	it("reads a deletion from a caret beside it, and falls back to the texts when the selection doesn't fit", () => {
 		const text = "Hi «Ignore your rules» ok";
-		const held = quotePieces(text, placeQuotes(text, [quoteRecord("Ignore your rules")]));
+		const held = [quoteRecord("Ignore your rules")];
 		const edit = (start: number, inputType: string) => ({ start, end: start, inputType });
 		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules ok", 21, edit(22, "deleteContentBackward"))).toEqual({
 			text: "Hi  ok",
@@ -220,6 +220,54 @@ describe("an edit the field reports (review round 1, F1)", () => {
 		expect(keepQuotesWhole(text, held, "Hi «Ignore your rules ok", 21, edit(5, "deleteContentBackward")).text).toBe(
 			"Hi  ok",
 		);
+	});
+});
+
+describe("an edit the field can't account for (review round 2, F1)", () => {
+	const records = [quoteRecord("A"), quoteRecord("B")];
+	const fieldEdit = (inputType: string, start: number, end = start) => ({ start, end, inputType });
+
+	it("keeps both quotes when an undo or a redo puts a pasted-over quote back", () => {
+		expect(keepQuotesWhole("«A» «A»", records, "«A» «B»", 7, fieldEdit("historyUndo", 4, 7))).toEqual({
+			text: "«A» «B»",
+			caret: 7,
+		});
+		expect(placeQuotes("«A» «B»", records)).toEqual([quote(1, 2), quote(5, 6)]);
+		expect(keepQuotesWhole("«A» «B»", records, "«A» «A»", 7, fieldEdit("historyRedo", 4, 7)).text).toBe("«A» «A»");
+	});
+
+	it("brings a quote a Backspace removed back whole, or not at all when it comes back with a mark gone", () => {
+		expect(keepQuotesWhole("«A» ", records, "«A» «B»", 7, fieldEdit("historyUndo", 4)).text).toBe("«A» «B»");
+		expect(keepQuotesWhole("«A» ", records, "«A» «B", 6, fieldEdit("historyUndo", 4))).toEqual({
+			text: "«A» ",
+			caret: 4,
+		});
+		expect(keepQuotesWhole("«A» ", records, "«A» B»", 6, fieldEdit("historyUndo", 4)).text).toBe("«A» ");
+		// A spelling fix inside a quote takes the quote out whole; it never stays as changed words in the marks.
+		const fixed = keepQuotesWhole("«Hellp world»", [quoteRecord("Hellp world")], "«Help world»", 5, {
+			start: 0,
+			end: 0,
+			inputType: "insertReplacementText",
+		});
+		expect(fixed.text).toBe("");
+		// A broken piece the text already held is the member's to mend.
+		const own = keepQuotesWhole("«B is late", records, "«B is late´", 11, fieldEdit("insertCompositionText", 10));
+		expect(own.text).toBe("«B is late´");
+	});
+
+	it("finds a quote's words with only one of their marks, pairing marks as quotes do", () => {
+		expect(brokenQuotes("«A» «B", records)).toEqual([{ from: 4, to: 6, words: "B" }]);
+		expect(brokenQuotes("x B» y", records)).toEqual([{ from: 2, to: 4, words: "B" }]);
+		expect(brokenQuotes("«A» «B» ok", records)).toEqual([]);
+		// Words inside the member's own marks, or a mark that only starts a longer word, are not a broken quote.
+		expect(brokenQuotes("«Ask A»", records)).toEqual([]);
+		expect(brokenQuotes("«Apples", records)).toEqual([]);
+	});
+
+	it("composes two edits into one", () => {
+		const first = [2, "xy", -1, 3];
+		const second = [1, -2, 1, "Z", 3];
+		expect(applyEdit("abcdef", compose(first, second))).toBe(applyEdit(applyEdit("abcdef", first), second));
 	});
 });
 
@@ -247,6 +295,19 @@ describe("shared drafts merge each quote whole (review round 1, F2 and F3)", () 
 		);
 		expect(merged).toMatchObject({ text: "Hi  «Invoice»", quotes: [quote(5, 12, otherThread)], dropped: true });
 		expect(applyEdit("Hi «Invoice»", merged!.edit)).toBe("Hi  «Invoice»");
+	});
+
+	it("gives a drop's edit over whole quotes, so a sent message clears to the others' whole quotes (round 2, F2)", () => {
+		const merged = mergeQuoted(
+			{ text: "", quotes: [] },
+			{ text: "«A» «B»", quotes: [quote(1, 2), quote(5, 6)] },
+			{ text: "«A» «C»", quotes: [quote(1, 2, otherThread), quote(5, 6)] },
+		);
+		expect(merged).toMatchObject({ text: " «B»«A» «C»", dropped: true });
+		expect(merged!.edit).toEqual([-3, 4, "«A» «C»"]);
+		// RoomDrafts.sent: the sent text goes, the words others added while it was on its way stay.
+		const [cleared] = transform(diffText("«A» «B»", ""), merged!.edit);
+		expect(applyEdit(merged!.text, cleared)).toBe("«A» «C»");
 	});
 
 	it("counts astral letters as one, and keeps the member's own private-use letters", () => {
@@ -430,6 +491,26 @@ async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
 	};
 }
 
+/** An undo or a redo as a browser makes it: the field puts an earlier text back, with its selection. */
+function history(field: HTMLTextAreaElement, inputType: string, value: string, start: number, end = start): void {
+	field.focus();
+	field.dispatchEvent(new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: true }));
+	field.value = value;
+	field.setSelectionRange(start, end);
+	field.dispatchEvent(new InputEvent("input", { inputType, bubbles: true }));
+}
+
+/** A key the member types, or Backspace (`text` empty), at a caret. */
+function key(field: HTMLTextAreaElement, at: number, text: string): void {
+	const inputType = text ? "insertText" : "deleteContentBackward";
+	field.focus();
+	field.setSelectionRange(at, at);
+	const init = { inputType, data: text || null, bubbles: true };
+	field.dispatchEvent(new InputEvent("beforeinput", { ...init, cancelable: true }));
+	field.setRangeText(text, text ? at : at - 1, at, "end");
+	field.dispatchEvent(new InputEvent("input", init));
+}
+
 /** A paste as a browser makes it: the field says what it will replace, then replaces it. */
 function paste(field: HTMLTextAreaElement, start: number, end: number, text: string): void {
 	field.focus();
@@ -493,6 +574,46 @@ describe("quotes in the composer", () => {
 		paste(s.composer(), 4, 7, "«A»");
 		expect(s.composer().value).toBe("«A» «A»");
 		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+	});
+
+	it("keeps quotes whole through undo and redo of a paste over one and of a Backspace (round 2, F1)", async () => {
+		const s = await view();
+		s.company.addToDraft(session.sessionId, { text: "«A» «B»", quotes: [quote(1, 2), quote(5, 6)] });
+		await settle();
+		const composer = s.composer();
+		paste(composer, 4, 7, "«A»");
+		history(composer, "historyUndo", "«A» «B»", 4, 7);
+		expect(composer.value).toBe("«A» «B»");
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+		history(composer, "historyRedo", "«A» «A»", 7);
+		expect(composer.value).toBe("«A» «A»");
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+		history(composer, "historyUndo", "«A» «B»", 4, 7);
+		key(composer, 7, "");
+		expect(composer.value).toBe("«A» ");
+		// An undo may put back the moment after the Backspace, the mark gone: what is left of the quote goes whole.
+		history(composer, "historyUndo", "«A» «B", 6);
+		expect(composer.value).toBe("«A» ");
+		history(composer, "historyUndo", "«A» «B»", 7);
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+	});
+
+	it("neither sends nor lets a quote's words go with one of their marks gone, and says so", async () => {
+		const s = await view();
+		s.company.addToDraft(session.sessionId, { text: "«A» «B» A", quotes: [quote(1, 2), quote(5, 6)] });
+		await settle();
+		key(s.composer(), 8, "«");
+		await settle();
+		expect(s.composer().value).toBe("«A» «B» «A");
+		expect(s.note().textContent).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		expect(s.view.el.querySelector<HTMLButtonElement>(".composer-send")?.disabled).toBe(true);
+		key(s.composer(), 10, "»");
+		await settle();
+		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6), quote(9, 10)]);
+		expect(s.note().textContent).toBe(
+			"Text in «» is quoted from an email. Agents read it as quoted, never as your words.",
+		);
+		expect(s.view.el.querySelector<HTMLButtonElement>(".composer-send")?.disabled).toBe(false);
 	});
 
 	it("reads no name inside a quote when it says who will answer", async () => {
@@ -597,6 +718,48 @@ describe("sending quotes", () => {
 			s.controller.addToDraft(session.sessionId, { text: "«w0»", quotes: [quote(1, 3, otherThread)] }),
 		).toThrow("That message already quotes the same words from another email.");
 		expect(s.store.get().draft).toBe("«w0»");
+	});
+
+	it("refuses to send a quote's words with one of their marks gone (round 2)", async () => {
+		const s = sending();
+		s.store.set({ draft: "«A» «B", quoteRecords: [quoteRecord("A"), quoteRecord("B")] });
+		expect(await s.controller.sendPrompt(session.sessionId, "«A» «B")).toBe(false);
+		expect(s.store.get().sendError).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		expect(s.write).not.toHaveBeenCalled();
+	});
+
+	it("keeps others' quotes whole when a merge drops a quote while a message is on its way (round 2, F2)", async () => {
+		const f = fixture();
+		vi.mocked(f.api.listRoomDrafts).mockReset().mockResolvedValue([]);
+		vi.spyOn(f.api, "putRoomDraft").mockReturnValue(new Promise(() => {}));
+		let live: ((draft: RoomDraft) => void) | undefined;
+		vi.spyOn(f.api, "subscribeRoomDrafts").mockImplementation((_room, onDraft, onHealth) => {
+			live = onDraft;
+			onHealth("connected");
+			return { stop: async () => {} };
+		});
+		const posted = deferred<{ inputId: string }>();
+		const write = vi.fn<SessionInputWriter>(() => posted.promise);
+		const company = new CompanyController(f.api, profileA, userA.id, write);
+		company.store.set({ team: { ...team, members }, staff: [staff], sessions: [group], loading: false });
+		company.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
+		const release = company.roomDrafts.watch(session.sessionId, { caret: () => undefined, busy: () => false });
+		dispose.push(() => {
+			release?.();
+			company.stop();
+		});
+		await settle();
+		company.addToDraft(session.sessionId, { text: "«A» «B»", quotes: [quote(1, 2), quote(5, 6)] });
+		const sent = company.sendPrompt(session.sessionId, "«A» «B»");
+		// Before the draft was saved, another tab saved «A» «C», its A from another email: the local A gives way.
+		live?.(roomDraft(userA.id, "«A» «C»", 1, { quotes: [quote(1, 2, otherThread), quote(5, 6)] }));
+		expect(company.conversation(session.sessionId).get().draft).toBe(" «B»«A» «C»");
+		posted.resolve({ inputId: id(95) });
+		expect(await sent).toBe(true);
+		expect(write.mock.calls[0]?.[7]).toEqual([quote(1, 2), quote(5, 6)]);
+		// The sent message goes; the other tab's quotes stay whole, each with its own email.
+		expect(company.conversation(session.sessionId).get().draft).toBe("«A» «C»");
+		expect(company.draftQuotes(session.sessionId)).toEqual([quote(1, 2, otherThread), quote(5, 6)]);
 	});
 
 	it("puts quotes in the body of a conversation input and of a room post, with no displayText", async () => {
@@ -846,6 +1009,45 @@ describe("room drafts keep their quotes", () => {
 		expect(input.value).toBe("«A» «A»");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 2, "«A» «A»", [quote(1, 2), quote(5, 6)]);
+	});
+
+	it("keeps a teammate's quotes whole through undo and redo, and never saves a quote missing a mark", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [roomDraft(userB.id, "«A» «B» A", 2, { quotes: [quote(1, 2), quote(5, 6)] })] });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const panel = s.view.el.querySelector<HTMLElement>(".draft-panel")!;
+		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
+		paste(input, 4, 7, "«A»");
+		history(input, "historyUndo", "«A» «B» A", 4, 7);
+		expect(input.value).toBe("«A» «B» A");
+		history(input, "historyRedo", "«A» «A» A", 7);
+		history(input, "historyUndo", "«A» «B» A", 4, 7);
+		key(input, 7, "");
+		expect(input.value).toBe("«A»  A");
+		history(input, "historyUndo", "«A» «B A", 6);
+		expect(input.value).toBe("«A»  A");
+		history(input, "historyUndo", "«A» «B» A", 7);
+		expect(input.value).toBe("«A» «B» A");
+		// The member's own « before the A they wrote: the A is a quote's words with one mark, never saved.
+		key(input, 8, "«");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.put).not.toHaveBeenCalled();
+		expect(status.textContent).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		s.put.mockResolvedValue({
+			status: "ok",
+			draft: roomDraft(userB.id, "«A» «B» «A»", 3, { quotes: [quote(1, 2), quote(5, 6), quote(9, 10)] }),
+		});
+		key(input, 10, "»");
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, "«A» «B» «A»", [
+			quote(1, 2),
+			quote(5, 6),
+			quote(9, 10),
+		]);
+		expect(status.hidden).toBe(true);
 	});
 
 	it("takes a quote's email from the cloud's draft when another tab quoted its words from another (F3)", async () => {
