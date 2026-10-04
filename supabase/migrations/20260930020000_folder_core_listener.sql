@@ -393,11 +393,18 @@ begin
 	return;
 end $$;
 
+-- A recorded failure is called again 5 s after its last attempt, then 10 s, 20 s … at most 10 minutes, so a hook that
+-- stays down is not called on every tick.
+create function public.qorpera_folder_listener_retry_at(p_attempts integer, p_last_attempt_at timestamptz)
+returns timestamptz language sql immutable set search_path = '' as $$
+	select p_last_attempt_at + least(interval '10 minutes', interval '5 seconds' * power(2, least(greatest(p_attempts, 1), 8) - 1)::integer)
+$$;
+
 -- 11. The due list ---------------------------------------------------------------------------------------------------------
 
 -- The folder-v2 environments whose clock is ahead of their cursor (an absent cursor counts as behind), or with a hook
--- failure to call again, in environment order after p_after_environment, leaving out companies being deleted. A plain
--- read.
+-- failure whose wait is over, in environment order after p_after_environment, leaving out companies being deleted. A
+-- plain read.
 create function public.qorpera_folder_listen_due(p_after_environment uuid default null, p_limit integer default 100)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_environments uuid[];
@@ -411,18 +418,23 @@ begin
 		join public.qorpera_folder_clocks k on k.environment_id = f.environment_id
 		left join public.qorpera_folder_listener_cursors c on c.environment_id = f.environment_id
 		where f.core = 'folder-v2' and (k.last_seq > coalesce(c.processed_seq, 0)
-				or exists (select 1 from public.qorpera_folder_listener_hook_failures h where h.environment_id = f.environment_id))
+				or exists (select 1 from public.qorpera_folder_listener_hook_failures h where h.environment_id = f.environment_id
+					and public.qorpera_folder_listener_retry_at(h.attempts, h.last_attempt_at) <= clock_timestamp()))
 			and (p_after_environment is null or f.environment_id > p_after_environment)
 			and not public.qorpera_company_deleting(f.profile_id)
 		order by f.environment_id limit p_limit) x;
-	return jsonb_build_object('schema', 'qorpera.folder-listen-due/v1', 'environments', to_jsonb(v_environments),
-		'next', case when cardinality(v_environments) = p_limit then v_environments[cardinality(v_environments)] end);
+	-- The shared folder drains' page (§9): the orchestrator lists every drain's due companies in this shape.
+	return jsonb_build_object('items', coalesce((select jsonb_agg(jsonb_build_object('environment_id', e) order by e)
+			from unnest(v_environments) e), '[]'::jsonb),
+		'has_more', cardinality(v_environments) = p_limit,
+		'next_after_environment_id', case when cardinality(v_environments) = p_limit
+			then v_environments[cardinality(v_environments)] end);
 end $$;
 
 -- 12. The drain -----------------------------------------------------------------------------------------------------------
 
 -- One step of one company's listeners (§4), in its own transaction, never inside the materializer's. Answers
--- {state: done | idle | paused | busy | deleting | not_folder, processedSeq, wakes, skipped, hookFailures, more}.
+-- {state: done | idle | paused | busy | deleting | not_folder, processedSeq, wakes, skipped, inactive, hookFailures, more}.
 create function public.qorpera_folder_listen_company(p_environment_id uuid, p_limit integer default 32)
 returns jsonb language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
 declare
@@ -436,7 +448,7 @@ declare
 	v_actor jsonb; v_session uuid; v_sessions uuid[]; v_routine public.qorpera_cloud_routines%rowtype; v_activation bigint;
 	v_wake public.qorpera_wake_occurrences%rowtype; v_inserted jsonb := '{}'::jsonb; v_wakes integer := 0; v_blocks integer := 0;
 	v_skipped integer := 0; v_failures integer := 0; v_done bigint; v_stop boolean := false; v_state text; v_message text;
-	v_constraint text;
+	v_constraint text; v_inactive uuid[] := '{}';
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
@@ -450,9 +462,10 @@ begin
 	-- 1. Plain reads: the cursor and the clock, the listeners, the window's change sets, their matches, the hook's targets.
 	v_start := coalesce((select processed_seq from public.qorpera_folder_listener_cursors where environment_id = p_environment_id), 0);
 	select last_seq into v_last from public.qorpera_folder_clocks where environment_id = p_environment_id;
-	-- Nothing new and no hook failure to call again: idle.
+	-- Nothing new and no hook failure to call again yet: idle.
 	if coalesce(v_last, 0) <= v_start and not exists (select 1 from public.qorpera_folder_listener_hook_failures
-			where environment_id = p_environment_id) then
+			where environment_id = p_environment_id
+				and public.qorpera_folder_listener_retry_at(attempts, last_attempt_at) <= clock_timestamp()) then
 		return jsonb_build_object('schema', c_schema, 'state', 'idle', 'processedSeq', v_start); end if;
 	-- A listener: an active folder-v2 routine whose current version listens for file changes, with the seq of the change
 	-- set that last saved it (activation: it hears only later ones). A routine whose activation cannot be read is none.
@@ -476,6 +489,16 @@ begin
 	from public.qorpera_folder_journal j join public.qorpera_folder_commits c on c.id = j.commit_id
 	where j.environment_id = p_environment_id and j.seq > v_start and j.seq <= v_until and j.kind = 'change_set';
 	for v_listener in select x.value as l from jsonb_array_elements(v_listeners) x loop
+		-- A listener whose agent is no longer active (an archive its routine has not followed yet) reads nothing and wakes
+		-- nothing; with a change set after its activation, its agent is set aside for step 4.
+		if not exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile
+				and staff_agent_id = (v_listener.l ->> 'staff')::uuid and employment_status = 'active') then
+			if exists (select 1 from jsonb_array_elements(v_commits) x
+					where (x.value ->> 'seq')::bigint > (v_listener.l ->> 'activation')::bigint)
+				and not (v_listener.l ->> 'staff')::uuid = any(v_inactive) then
+				v_inactive := v_inactive || (v_listener.l ->> 'staff')::uuid; end if;
+			continue;
+		end if;
 		v_session := public.qorpera_folder_wake_public_session(v_profile, p_environment_id, (v_listener.l ->> 'staff')::uuid,
 			(v_listener.l ->> 'requester')::uuid);
 		v_actor := public.qorpera_folder_listener_actor(v_profile, (v_listener.l ->> 'staff')::uuid,
@@ -496,7 +519,9 @@ begin
 		select jsonb_build_object('commitId', f.commit_id, 'seq', f.seq,
 			'actor', jsonb_build_object('kind', c.actor_kind, 'id', c.actor_id), 'runId', c.run_id) as value
 		from public.qorpera_folder_listener_hook_failures f join public.qorpera_folder_commits c on c.id = f.commit_id
-		where f.environment_id = p_environment_id order by f.seq limit c_retries) c;
+		where f.environment_id = p_environment_id
+			and public.qorpera_folder_listener_retry_at(f.attempts, f.last_attempt_at) <= clock_timestamp()
+		order by f.seq limit c_retries) c;
 	v_hook := public.qorpera_folder_listener_targets(p_environment_id, v_retries || v_commits);
 	if jsonb_typeof(v_hook) is distinct from 'object' then v_hook := '{"targets":[],"sessions":[],"admit":false}'::jsonb; end if;
 	select coalesce(jsonb_agg(y.t), '[]'::jsonb) into v_targets from (
@@ -538,15 +563,25 @@ begin
 				if exists (select 1 from public.qorpera_wake_occurrences w where w.routine_id = v_routine.id
 						and w.occurrence_key = 'file:' || (v_match.m ->> 'seq') || ':' || (v_match.m ->> 'version')) then
 					continue; end if;
+				-- No longer this listener.
 				if v_routine.status is distinct from 'active' or v_routine.current_version is distinct from (v_match.m ->> 'version')::bigint
-					or v_routine.folder_path is null or v_activation is null or v_activation >= (v_match.m ->> 'seq')::bigint
-					or (v_routine.expires_at is not null and (v_match.m ->> 'createdAt')::timestamptz >= v_routine.expires_at)
+					or v_routine.folder_path is null or v_activation is null or v_activation >= (v_match.m ->> 'seq')::bigint then
+					v_skipped := v_skipped + 1;
+					continue;
+				end if;
+				-- Its agent is no longer active (archived since the read): no wake, and set aside as in step 1.
+				if not exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile
+						and staff_agent_id = (v_match.m ->> 'staff')::uuid and employment_status = 'active') then
+					if not (v_match.m ->> 'staff')::uuid = any(v_inactive) then
+						v_inactive := v_inactive || (v_match.m ->> 'staff')::uuid; end if;
+					v_skipped := v_skipped + 1;
+					continue;
+				end if;
+				if (v_routine.expires_at is not null and (v_match.m ->> 'createdAt')::timestamptz >= v_routine.expires_at)
 					or (v_routine.max_occurrences is not null and public.qorpera_routine_occurrence_count(v_routine.id)
 						+ coalesce((v_inserted ->> v_routine.id::text)::integer, 0) >= v_routine.max_occurrences)
 					or not exists (select 1 from public.qorpera_profile_members where profile_id = v_profile
 						and user_id = (v_match.m ->> 'requester')::uuid)
-					or not exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile
-						and staff_agent_id = (v_match.m ->> 'staff')::uuid and employment_status = 'active')
 					or (coalesce(v_match.m -> 'trigger' ->> 'replyPolicy', 'required') = 'required' and v_session is null)
 					or public.qorpera_wake_ancestry(coalesce((v_match.m ->> 'runId')::uuid, (v_match.m ->> 'turnRunId')::uuid),
 						case when v_match.m -> 'actor' ->> 'kind' = 'staff_agent' then (v_match.m -> 'actor' ->> 'id')::uuid end,
@@ -558,6 +593,8 @@ begin
 				v_inserted := v_inserted || jsonb_build_object(v_routine.id::text,
 					coalesce((v_inserted ->> v_routine.id::text)::integer, 0) + 1);
 			end loop;
+			-- The agents set aside (v_inactive, in step 1 and above): their routines would have heard a change set. P15
+			-- (20260930022000) marks each one's follow-up here, as routine firing does.
 		end if;
 
 		-- 5. The conversations the wakes answer in and the hook's, KEY SHARE in id order, before admission.
@@ -652,7 +689,8 @@ begin
 			return jsonb_build_object('schema', c_schema, 'state', 'busy');
 	end;
 	return jsonb_build_object('schema', c_schema, 'state', case when v_paused then 'paused' else 'done' end,
-		'processedSeq', v_done, 'wakes', v_wakes, 'skipped', v_skipped, 'hookFailures', v_failures, 'more', v_done < v_last);
+		'processedSeq', v_done, 'wakes', v_wakes, 'skipped', v_skipped, 'inactive', cardinality(v_inactive),
+		'hookFailures', v_failures, 'more', v_done < v_last);
 end $$;
 
 -- 13. Grants ---------------------------------------------------------------------------------------------------------------
@@ -661,7 +699,8 @@ revoke all on function public.qorpera_folder_listener_actor(uuid, uuid, uuid, uu
 	public.qorpera_folder_listener_matches(uuid, uuid, jsonb, uuid, text, text),
 	public.qorpera_folder_file_wake_readable(public.qorpera_wake_occurrences),
 	public.qorpera_folder_file_wake_changes(public.qorpera_wake_occurrences, jsonb),
-	public.qorpera_folder_listener_targets(uuid, jsonb), public.qorpera_folder_listener_commit(uuid, jsonb)
+	public.qorpera_folder_listener_targets(uuid, jsonb), public.qorpera_folder_listener_commit(uuid, jsonb),
+	public.qorpera_folder_listener_retry_at(integer, timestamptz)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_listen_due(uuid, integer), public.qorpera_folder_listen_company(uuid, integer)
 	from public, anon, authenticated;

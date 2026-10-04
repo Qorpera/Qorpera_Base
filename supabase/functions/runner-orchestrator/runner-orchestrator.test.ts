@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+	FOLDER_DRAINS,
 	parseRunnerOrchestratorBearer,
 	parseRunnerOrchestratorRequest,
 	runnerOrchestratorRpcStatus,
@@ -232,6 +233,45 @@ describe("runner orchestrator boundary", () => {
 		}
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_materialize_company", orchestratorId, profileId: "x", limit: 1 }),
+		);
+	});
+
+	it("parses the folder drains' due companies and one company's step, for a drain it knows", () => {
+		const environmentId = profileId;
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain: "listen", limit: 100 }), {
+			action: "folder_drain_due",
+			orchestratorId,
+			drain: "listen",
+			limit: 100,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "folder_drain_due",
+				orchestratorId,
+				drain: "listen",
+				afterEnvironmentId: environmentId,
+				limit: 1,
+			}),
+			{ action: "folder_drain_due", orchestratorId, drain: "listen", afterEnvironmentId: environmentId, limit: 1 },
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId, limit: 32 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId, limit: 32 },
+		);
+		// A drain this edge function does not know is refused (400): the orchestrator pauses that drain alone.
+		for (const drain of ["workers", "", 7, undefined, "__proto__", "toString"]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain, limit: 1 }));
+		}
+		for (const limit of [0, 501, "10"]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain: "listen", limit }));
+		}
+		for (const limit of [0, FOLDER_DRAINS.listen.maximum + 1, undefined]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId, limit }),
+			);
+		}
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId: "x", limit: 1 }),
 		);
 	});
 

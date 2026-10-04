@@ -3,9 +3,9 @@
 -- wakes on the folder journal. A routine file with `when: file-change` is a listener from the change set that saved it;
 -- the drain wakes it once per change set that touches its watch (exact or subtree, moves from and into it, a copy at its
 -- target), never for its own agent's change, never naming a path its run may not read, at most 21 versions with `more`;
--- a paused company writes no wake and moves on; a known refusal (an expired routine, one at its limit) is passed over
--- without stopping the others; the H2c hook sees every change set in order, and a failed call is recorded and called
--- again until it succeeds. On 708's company (Nora and Otto); rolled back at the end. Races are 888's.
+-- a paused company writes no wake and moves on; a known refusal (an expired routine, one at its limit, an archived agent)
+-- is passed over without stopping the others; the H2c hook sees every change set in order, and a failed call is recorded
+-- and called again, after a wait that doubles, until it succeeds. On 708's company (Nora and Otto); rolled back at the end. Races are 888's.
 
 create function pg_temp.put(p_path text, p_text text) returns jsonb language sql as $$
 	select jsonb_build_object('op','write','path',p_path,'file',pg_temp.stage(p_text))
@@ -180,7 +180,19 @@ begin
 	r := pg_temp.listen();
 	perform pg_temp.is(r ->> 'skipped', '1', 'Otto''s routine at its limit is passed over');
 	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '8', 'Nora''s still wakes');
-	update public.qorpera_cloud_routines set max_occurrences = null, expires_at = clock_timestamp() - interval '1 minute'
+	-- Otto archived, his routine not followed yet (still active): passed over.
+	update public.qorpera_cloud_routines set max_occurrences = null where id = '88700000-0000-4000-8000-0000000000e2';
+	update public.qorpera_profile_staff set employment_status = 'archived'
+	where profile_id = '70700000-0000-4000-8000-000000000010' and staff_agent_id = '70700000-0000-4000-8000-0000000000a2';
+	perform pg_temp.is((pg_temp.rt('88700000-0000-4000-8000-0000000000e2')).status, 'active', 'the routine not followed yet');
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0014b', jsonb_build_array(pg_temp.put('docs/a.md', 'alpha archived'))));
+	r := pg_temp.listen();
+	perform pg_temp.is(r ->> 'inactive', '1', 'an archived agent''s routine is set aside');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e2')::text, '2', 'and wakes nothing');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '9', 'Nora''s still wakes');
+	update public.qorpera_profile_staff set employment_status = 'active'
+	where profile_id = '70700000-0000-4000-8000-000000000010' and staff_agent_id = '70700000-0000-4000-8000-0000000000a2';
+	update public.qorpera_cloud_routines set expires_at = clock_timestamp() - interval '1 minute'
 	where id = '88700000-0000-4000-8000-0000000000e2';
 	-- Staged before the pause (an upload stops with the company; a member's save does not).
 	v_unit := pg_temp.put('docs/a.md', 'alpha paused');
@@ -190,7 +202,7 @@ begin
 	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'listen-0015', jsonb_build_array(v_unit)));
 	r := pg_temp.listen();
 	perform pg_temp.is(r ->> 'state', 'paused', 'a paused company');
-	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '8', 'writes no wake');
+	perform pg_temp.is(pg_temp.fw_count('88700000-0000-4000-8000-0000000000e1')::text, '9', 'writes no wake');
 	delete from public.qorpera_company_execution_pauses where profile_id = '70700000-0000-4000-8000-000000000010';
 	perform pg_temp.is(pg_temp.listen() ->> 'state', 'idle', 'and does not replay it after the resume');
 end $$;
@@ -223,13 +235,24 @@ begin
 			and sqlstate = 'P0887' and attempts = 1) then raise exception 'The failure is recorded, without its text'; end if;
 	perform pg_temp.is((select processed_seq from public.qorpera_folder_listener_cursors
 		where environment_id = '70700000-0000-4000-8000-000000000020')::text, r2 ->> 'seq', 'the cursor moves on');
-	-- Still failing: called again, counted again. Then it succeeds and the record goes.
+	-- Not called again before its wait (5 s), nor is the company due for it.
+	perform pg_temp.is(pg_temp.listen() ->> 'state', 'idle', 'a failure waits');
+	if (select public.qorpera_folder_listen_due() -> 'items' @> '[{"environment_id":"70700000-0000-4000-8000-000000000020"}]') then
+		raise exception 'A failure still waiting makes no company due'; end if;
+	-- After it: still failing, called again with no new change set, counted again; the next wait is 10 s.
+	update public.qorpera_folder_listener_hook_failures set last_attempt_at = last_attempt_at - interval '5 seconds'
+	where commit_id = (r1 ->> 'commitId')::uuid;
+	if not (select public.qorpera_folder_listen_due() -> 'items' @> '[{"environment_id":"70700000-0000-4000-8000-000000000020"}]') then
+		raise exception 'A company with a failure to call again is due'; end if;
 	perform pg_temp.listen();
 	perform pg_temp.is((select attempts from public.qorpera_folder_listener_hook_failures
 		where commit_id = (r1 ->> 'commitId')::uuid)::text, '2', 'called again with no new change set');
-	if not (select (public.qorpera_folder_listen_due() -> 'environments') ? '70700000-0000-4000-8000-000000000020') then
-		raise exception 'A company with a failure to call again is due'; end if;
+	perform pg_temp.is((select array_agg(extract(epoch from public.qorpera_folder_listener_retry_at(n, 'epoch'))::integer order by n)
+		from generate_series(1, 9) n)::text, '{5,10,20,40,80,160,320,600,600}', 'the waits double up to 10 minutes');
+	-- Then it succeeds and the record goes.
 	perform set_config('qorpera_test.hook_fails', '', true);
+	update public.qorpera_folder_listener_hook_failures set last_attempt_at = last_attempt_at - interval '10 seconds'
+	where commit_id = (r1 ->> 'commitId')::uuid;
 	perform pg_temp.listen();
 	if exists (select 1 from public.qorpera_folder_listener_hook_failures where commit_id = (r1 ->> 'commitId')::uuid)
 		or not exists (select 1 from pg_temp.hook_calls where seq = (r1 ->> 'seq')::bigint and not paused) then
@@ -247,7 +270,8 @@ begin
 			or has_function_privilege('authenticated', v_fn, 'execute') then raise exception 'Grants of %', v_fn; end if;
 	end loop;
 	foreach v_fn in array array['public.qorpera_folder_listener_matches(uuid,uuid,jsonb,uuid,text,text)',
-			'public.qorpera_folder_listener_commit(uuid,jsonb)', 'public.qorpera_folder_listener_targets(uuid,jsonb)']::regprocedure[] loop
+			'public.qorpera_folder_listener_commit(uuid,jsonb)', 'public.qorpera_folder_listener_targets(uuid,jsonb)',
+		'public.qorpera_folder_listener_retry_at(integer,timestamptz)']::regprocedure[] loop
 		if has_function_privilege('service_role', v_fn, 'execute') then raise exception 'No API role runs %', v_fn; end if;
 	end loop;
 	select prosrc into v_body from pg_proc where oid = 'public.qorpera_folder_listen_company(uuid,integer)'::regprocedure;
