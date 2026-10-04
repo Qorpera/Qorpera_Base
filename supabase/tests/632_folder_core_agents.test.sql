@@ -338,8 +338,10 @@ begin
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', v, 'routine-concluded-other', c_mkdir), '42501');
 
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run('agent', c_member), 'agent-wake', c_mkdir), '42501');
+	-- P29 (20260930020000): the resolve runs a file wake; this one's routine has no file-change trigger, so the wake
+	-- policy closes its authority.
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)',
-		pg_temp.run('routine', c_member, 'company', pg_temp.routine(c_member), 1, 'company-file'), 'file-routine-wake', c_mkdir), '0A000');
+		pg_temp.run('routine', c_member, 'company', pg_temp.routine(c_member), 1, 'company-file'), 'file-routine-wake', c_mkdir), '42501');
 
 	if exists (select 1 from public.qorpera_folder_entries where environment_id = '63200000-0000-4000-8000-000000000020' and key_text = 'refused') then
 		raise exception 'A refused run applied a unit'; end if;

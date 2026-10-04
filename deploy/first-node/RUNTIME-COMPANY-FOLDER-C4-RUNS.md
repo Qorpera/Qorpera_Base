@@ -146,9 +146,10 @@ run failed posts in its thread, which wakes it (§3's room wakes). Kept here for
 
 ## 7. Not in P28
 
-- F2's worker drain (F2-5b-3) and the listener (P29). Each runs in its own transaction, one company at a time, as its
-  own orchestrator step before the materializer's list (coordinator, 4 October). A drain admits wakes, and admission
-  must come after the materializer's ranks, so neither runs inside `qorpera_folder_materialize_company`.
+- F2's worker drain (F2-5b-3) and the listener (P29). Each runs in its own transaction, one company at a time, as a
+  drain of the shared folder-drains step before the materializer's list (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9;
+  coordinator, 4 October). A drain admits wakes, and admission must come after the materializer's ranks, so neither
+  runs inside `qorpera_folder_materialize_company`. The listener is the step's first drain.
 - Human-task wakes (P31).
 - Machine events (C1c-3i), the observability views (P32), and the edge functions (P26).
 
