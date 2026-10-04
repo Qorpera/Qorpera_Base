@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { idleRuleBusy, parseCloudMachineCommandReceipt } from "@qorpera/contracts";
@@ -226,6 +226,11 @@ describe("machine command guest", () => {
 		const commandId = await m.request("echo hello from $HOME; echo oops >&2; exit 3");
 		await startMachineCommand(commandId, m.ports);
 		expect(await executeMachineCommand(commandId, m.ports)).toBe(3);
+		// The relay said what it used of the processor itself as it ended, for its boot.
+		const { bootId } = JSON.parse(await readFile(join(m.root, "run", "machine.json"), "utf8"));
+		expect(await readFile(join(m.root, "run", "relays-ended.log"), "utf8")).toMatch(
+			new RegExp(`^${bootId} ${commandId} [0-9]+\n$`),
+		);
 		const log = await readFile(join(m.root, "var", "commands", commandId, "output.log"), "utf8");
 		expect(log).toContain(`hello from ${m.ports.home}`);
 		expect(log).toContain("oops");
@@ -339,16 +344,41 @@ describe("machine command guest", () => {
 		m.work(160);
 		const third = await sample();
 		expect(idleRuleBusy(second, third)).toBe(true);
-		// The command ends and its relay with it: what the relay used before is still left out.
+		// The relay works 0.3 s more of its own after that look, then ends with its command and says what it used in all
+		// (1 s): none of it is the machine's.
+		const ended = join(m.root, "run", "relays-ended.log");
+		const boot = JSON.parse(await readFile(join(m.root, "run", "machine.json"), "utf8")).bootId;
 		m.tick(30000);
+		m.work(30);
 		for (const file of ["cgroup", "cmdline", "io", "stat"]) m.files.delete(`/proc/500/${file}`);
+		await appendFile(ended, `${boot} ${commandId} 1000000\n`);
 		const fourth = await sample();
 		expect(fourth.cpuSeconds).toBe(third.cpuSeconds);
 		expect(idleRuleBusy(third, fourth)).toBe(false);
-		// Another boot counts its own relays afresh.
+		// A command that started and ended between two looks: its relay's 0.2 s is left out too; an earlier boot's
+		// word, or one that is no relay's, counts for nothing.
+		m.tick(30000);
+		m.work(20);
+		await appendFile(ended, `${boot} ${randomUUID()} 200000\n${randomUUID()} ${randomUUID()} 900000\nnot a relay\n`);
+		const fifth = await sample();
+		expect(fifth.cpuSeconds).toBe(fourth.cpuSeconds);
+		// A relay killed outright says nothing: what it used after its last look counts, at most one look's worth.
+		relay(0);
+		const sixth = await sample();
+		m.tick(30000);
+		m.work(40);
+		m.files.set("/proc/500/stat", "500 (node) S 1 500 500 0 -1 0 0 0 0 0 40 0 0 0 20 0 1 0 777 0");
+		const seventh = await sample();
+		expect(seventh.cpuSeconds - sixth.cpuSeconds).toBeCloseTo(0, 6);
+		m.tick(30000);
+		m.work(10);
+		for (const file of ["cgroup", "cmdline", "io", "stat"]) m.files.delete(`/proc/500/${file}`);
+		const eighth = await sample();
+		expect(eighth.cpuSeconds - seventh.cpuSeconds).toBeCloseTo(0.1, 6);
+		// Another boot counts its own relays afresh: 5.9 s busy, less the own units' 0.5 s.
 		m.reboot();
 		await prepareMachineGuest(m.machineId, 2, m.ports);
-		expect((await observeMachine([], m.ports)).cpuUsec).toBe(4_400_000);
+		expect((await observeMachine([], m.ports)).cpuUsec).toBe(5_400_000);
 	});
 
 	it("keeps the ended commands' output tails within one reply", async () => {

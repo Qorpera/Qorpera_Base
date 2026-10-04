@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { appendFileSync, constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,10 @@ function roots(ports: MachineGuestPorts) {
 		replies: join(runtime, "replies"),
 		identity: join(runtime, "machine.json"),
 		lease: join(runtime, "lease.json"),
+		/** The relays' processor time a look has counted so far in this boot (see relayUsec). */
+		relays: join(runtime, "relays.json"),
+		/** Appended by each command's relay as it ends: its boot, its command and its own processor time (microseconds). */
+		relaysEnded: join(runtime, "relays-ended.log"),
 	};
 }
 async function system(executable: string, args: readonly string[]): Promise<string> {
@@ -535,29 +539,65 @@ async function cgroupUsec(ports: MachineGuestPorts, group: string): Promise<numb
 	if (!Number.isSafeInteger(usage)) throw new Error("MACHINE_GUEST_CGROUP_UNKNOWN");
 	return usage;
 }
-/** What the commands' relays used of the processor so far in this boot (microseconds): a counter kept in /run that
- * each look moves on by every running relay's own time since the look before (all of it for one first seen; a relay's
- * own time is utime + stime, never its children's). A relay that ends takes nothing back with it, so the machine's
- * work never jumps when a command ends; what it used after the last look counts as the machine's. */
+/** What the commands' relays used of the processor so far in this boot (microseconds), never their children: a
+ * counter kept in /run. Each look moves it on by every running relay's own time since the look before (utime + stime;
+ * all of it for one first seen), and by what each relay that ended since used after its last look (its own word, as
+ * it ended). So the machine's work never jumps when a command ends, and a relay's work is never the machine's. Keyed
+ * by the relay's command, one relay each. */
 async function relayUsec(ports: MachineGuestPorts, bootId: string, relays: Map<string, number>): Promise<number> {
-	const path = join(roots(ports).runtime, "relays.json");
-	const kept = (await missing(() => readJson(path, 1048576)).catch(() => undefined)) as
-		| { bootId?: unknown; usec?: unknown; relays?: unknown }
+	const paths = roots(ports);
+	const kept = (await missing(() => readJson(paths.relays, 1048576)).catch(() => undefined)) as
+		| { bootId?: unknown; usec?: unknown; offset?: unknown; relays?: unknown }
 		| undefined;
 	const same =
 		kept?.bootId === bootId &&
 		Number.isSafeInteger(kept.usec) &&
+		Number.isSafeInteger(kept.offset) &&
 		!!kept.relays &&
 		typeof kept.relays === "object" &&
 		!Array.isArray(kept.relays)
-			? { usec: Number(kept.usec), relays: kept.relays as Record<string, unknown> }
+			? kept
 			: undefined;
-	let usec = same?.usec ?? 0;
-	for (const [relay, now] of relays) {
-		const before = Number(same?.relays[relay] ?? 0);
-		usec += Math.max(0, now - (Number.isSafeInteger(before) ? before : 0));
+	let usec = Number(same?.usec ?? 0);
+	const seen = new Map(
+		Object.entries((same?.relays ?? {}) as Record<string, unknown>).flatMap(([command, at]) =>
+			UUID.test(command) && Number.isSafeInteger(at) ? [[command, Number(at)] as const] : [],
+		),
+	);
+	for (const [command, now] of relays) {
+		usec += Math.max(0, now - (seen.get(command) ?? 0));
+		seen.set(command, now);
 	}
-	await writeJson(path, { schema: "qorpera.machine-relays/v1", bootId, usec, relays: Object.fromEntries(relays) });
+	// The relays that ended since the last look, each once: what they used after it. A relay first seen here ended
+	// between two looks: all of its time.
+	let offset = Number(same?.offset ?? 0);
+	const read = await missing(async () => {
+		const handle = await open(paths.relaysEnded, constants.O_RDONLY | constants.O_NOFOLLOW);
+		try {
+			const buffer = Buffer.alloc(1048576);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+			return buffer.subarray(0, bytesRead).toString("utf8");
+		} finally {
+			await handle.close();
+		}
+	}).catch(() => "");
+	const lines = (read ?? "").slice(0, (read ?? "").lastIndexOf("\n") + 1);
+	offset += Buffer.byteLength(lines);
+	for (const line of lines.split("\n")) {
+		const [boot, command, final] = line.split(" ");
+		if (boot !== bootId || !UUID.test(command ?? "") || !/^[0-9]{1,15}$/.test(final ?? "")) continue;
+		usec += Math.max(0, Number(final) - (seen.get(command) ?? 0));
+		seen.delete(command);
+	}
+	// A relay gone without a word (killed outright) is forgotten: what it used after its last look is the machine's.
+	for (const command of [...seen.keys()]) if (!relays.has(command)) seen.delete(command);
+	await writeJson(paths.relays, {
+		schema: "qorpera.machine-relays/v1",
+		bootId,
+		usec,
+		offset,
+		relays: Object.fromEntries(seen),
+	});
 	return usec;
 }
 /** The whole machine's work so far, apart from its own control: the processor time it used (microseconds, all
@@ -594,14 +634,14 @@ async function machineWork(ports: MachineGuestPorts, bootId: string): Promise<{ 
 		if (own.some((ownGroup) => group === ownGroup || group.startsWith(`${ownGroup}/`))) continue;
 		// Linux ends every argument, the last one too, with a NUL.
 		const argv = (await systemFile(ports, `/proc/${pid}/cmdline`).catch(() => "")).replace(/\0$/, "").split("\0");
-		if (argv.at(-3) === (ports.helper ?? PATHS.helper) && argv.at(-2) === "execute" && UUID.test(argv.at(-1) ?? "")) {
-			// Its own time: utime and stime (fields 14 and 15 of /proc/<pid>/stat, after the command name); keyed by its
-			// start (field 22), so a reused pid is another relay.
+		const command = argv.at(-1) ?? "";
+		if (argv.at(-3) === (ports.helper ?? PATHS.helper) && argv.at(-2) === "execute" && UUID.test(command)) {
+			// Its own time: utime and stime, fields 14 and 15 of /proc/<pid>/stat (after the command name).
 			const fields =
 				(await systemFile(ports, `/proc/${pid}/stat`).catch(() => "")).split(") ").at(-1)?.split(" ") ?? [];
-			const [utime, stime, started] = [fields[11], fields[12], fields[19]].map(Number);
-			if ([utime, stime, started].every((value) => Number.isSafeInteger(value) && value >= 0))
-				relays.set(`${pid}:${started}`, ((utime + stime) * 1000000) / CLOCK_TICKS_PER_SECOND);
+			const [utime, stime] = [fields[11], fields[12]].map(Number);
+			if ([utime, stime].every((value) => Number.isSafeInteger(value) && value >= 0))
+				relays.set(command, ((utime + stime) * 1000000) / CLOCK_TICKS_PER_SECOND);
 			continue;
 		}
 		ioBytes += idleRuleProcessIoBytes(await systemFile(ports, `/proc/${pid}/io`).catch(() => ""));
@@ -735,9 +775,27 @@ async function refuse(ports: MachineGuestPorts, commandId: string, code: string)
  * runs the command as root in a login shell and keeps its output. */
 export async function executeMachineCommand(commandId: string, ports: MachineGuestPorts = {}): Promise<number> {
 	let request: CloudMachineCommandRequest;
+	// As it ends, the relay says what it used of the processor itself (getrusage of itself: never its command's), for
+	// its boot, so the machine's busy measure leaves it out (relayUsec). Stopped by systemd, it says so before the
+	// signal ends it as before; only one killed outright cannot, and then at most one look's worth of its time counts.
+	let bootId: string | undefined;
+	let said = false;
+	const say = () => {
+		if (said || bootId === undefined || !UUID.test(String(commandId))) return;
+		said = true;
+		const usage = process.cpuUsage();
+		try {
+			appendFileSync(roots(ports).relaysEnded, `${bootId} ${commandId} ${usage.user + usage.system}\n`, {
+				mode: 0o600,
+			});
+		} catch {
+			/* Its time then counts as the machine's. */
+		}
+	};
 	try {
 		requireRoot(ports);
 		const guest = await identity(ports);
+		bootId = guest.bootId;
 		const intent = await readIntent(ports, commandId);
 		if (!intent || intent.bootId !== guest.bootId || intent.request.machineId !== guest.machineId)
 			throw new Error("MACHINE_GUEST_INTENT_INVALID");
@@ -747,12 +805,18 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 		const code = codingErrorCode(error);
 		process.stderr.write(`MACHINE_GUEST_COMMAND_REFUSED ${code}\n`);
 		if (UUID.test(String(commandId))) await refuse(ports, commandId, code);
+		say();
 		return MACHINE_GUEST_REFUSED_EXIT_CODE;
 	}
 	const handle = await open(
 		commandPaths(ports, commandId).log,
 		constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
 	);
+	const stopped = () => {
+		say();
+		process.kill(process.pid, "SIGTERM");
+	};
+	process.once("SIGTERM", stopped);
 	try {
 		const child = spawn("/bin/bash", ["-l", "-c", request.command], {
 			cwd: ports.home ?? "/root",
@@ -773,6 +837,8 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 		return exitCode;
 	} finally {
 		await handle.close();
+		process.removeListener("SIGTERM", stopped);
+		say();
 	}
 }
 
