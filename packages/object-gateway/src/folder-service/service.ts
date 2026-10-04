@@ -284,32 +284,48 @@ export class FolderService {
 	}
 
 	/** Applies the feed from the view's position to its end. An authority change, or a position the core no longer
-	 * serves, lists the whole view again. */
+	 * serves, lists the whole view again. The tree and the position move page by page, so whatever has been applied is
+	 * told to the machines even when a later page, or the listing again, fails: their caches never miss a change the
+	 * tree already holds. */
 	async #advance(view: View): Promise<void> {
 		const tree = view.tree;
 		if (!tree || view.closed) return;
 		const changed: string[] = [];
-		for (;;) {
-			const page = await this.#core.feed(view.environmentId, view.actor, view.seq, view.cursor);
-			if (page.resync || !page.next) return this.#reload(view, "the feed asked for it", changed);
-			for (const event of page.events) {
-				if (event.kind === "authority") return this.#reload(view, "access changed", changed);
-				for (const change of event.changes) {
-					const before = tree.get(change.path);
-					changed.push(...tree.apply(change));
-					if (before?.kind === "file" && before.version !== tree.get(change.path)?.version) {
-						const older = view.superseded.get(change.path) ?? [];
-						older.push(before);
-						if (older.length > SUPERSEDED_PER_PATH) older.shift();
-						view.superseded.set(change.path, older);
-					}
+		let told = false;
+		try {
+			for (;;) {
+				const page = await this.#core.feed(view.environmentId, view.actor, view.seq, view.cursor);
+				if (page.resync || !page.next) {
+					await this.#reload(view, "the feed asked for it", changed);
+					told = true;
+					return;
 				}
+				for (const event of page.events) {
+					if (event.kind === "authority") {
+						await this.#reload(view, "access changed", changed);
+						told = true;
+						return;
+					}
+					// Every file version the change replaces or removes stays readable for files opened before, the
+					// descendants of a folder it moves away or deletes included.
+					for (const change of event.changes) changed.push(...tree.apply(change, (old) => this.#keep(view, old)));
+				}
+				view.seq = page.next.afterSeq;
+				view.cursor = page.next.cursor;
+				if (!page.more) break;
 			}
-			view.seq = page.next.afterSeq;
-			view.cursor = page.next.cursor;
-			if (!page.more) break;
+		} finally {
+			if (!told) this.#push(view, changed);
 		}
-		this.#push(view, changed);
+	}
+
+	/** Keeps a replaced file version readable for the files opened on it (at most SUPERSEDED_PER_PATH per path). */
+	#keep(view: View, old: TreeEntry): void {
+		const older = view.superseded.get(old.path) ?? [];
+		if (older.some((e) => e.version === old.version)) return;
+		older.push(old);
+		if (older.length > SUPERSEDED_PER_PATH) older.shift();
+		view.superseded.set(old.path, older);
 	}
 
 	/** Lists the view again and tells its machines what differs. Until it is done the old tree serves: a path an

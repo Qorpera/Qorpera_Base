@@ -39,7 +39,12 @@ try {
 	);
 	if (built.status !== 0) throw new Error(`cargo build failed (${built.status})`);
 	const bytes = readFileSync(join(work, "qorpera-folder"));
-	spawnSync("install", ["-m", "0755", join(work, "qorpera-folder"), out], { stdio: "inherit" });
+	const installed = spawnSync("install", ["-m", "0755", join(work, "qorpera-folder"), out], { stdio: "inherit" });
+	if (installed.error || installed.status !== 0)
+		throw new Error(`install to ${out} failed (${installed.error?.message ?? installed.status})`);
+	// The program at the destination is the one just built.
+	if (createHash("sha256").update(readFileSync(out)).digest("hex") !== createHash("sha256").update(bytes).digest("hex"))
+		throw new Error(`${out} does not hold the program just built`);
 	console.log(
 		JSON.stringify({ out, image: RUST_IMAGE, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") }),
 	);

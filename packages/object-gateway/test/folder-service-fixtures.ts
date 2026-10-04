@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
 	type CoreEntry,
 	CoreRefusal,
+	type FeedChange,
 	type FeedEvent,
 	type FolderActor,
 	type FolderCore,
@@ -84,6 +85,10 @@ export class FakeCore implements FolderCore {
 	deny = false;
 	listCalls = 0;
 	profileCalls = 0;
+	/** Events per feed page (0: all in one page), and the feed call (counted from `feedCalls`) that fails. */
+	feedPage = 0;
+	feedCalls = 0;
+	failFeedAt: number | undefined;
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -100,6 +105,19 @@ export class FakeCore implements FolderCore {
 		const old = this.entries.get(path)!;
 		this.entries.delete(path);
 		this.journal.push({ seq: this.seq, kind: "change_set", changes: [{ ...old, op: "delete" }] });
+	}
+
+	/** One change set of several changes, in the order given (the core's feed orders them by version). */
+	commit(changes: FeedChange[]): void {
+		this.seq++;
+		for (const change of changes) {
+			if (change.op === "delete" || change.op === "move_out") this.entries.delete(change.path);
+			else {
+				const { op: _op, ...entry } = change;
+				this.entries.set(change.path, entry);
+			}
+		}
+		this.journal.push({ seq: this.seq, kind: "change_set", changes });
 	}
 
 	authority(hidden: (path: string) => boolean): void {
@@ -127,6 +145,8 @@ export class FakeCore implements FolderCore {
 	async feed(environmentId: string, actor: FolderActor, afterSeq: number) {
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		if (this.deny) throw new CoreRefusal("denied");
+		this.feedCalls++;
+		if (this.failFeedAt === this.feedCalls) throw new Error("The core did not answer this page");
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>
@@ -135,12 +155,14 @@ export class FakeCore implements FolderCore {
 					: e,
 			)
 			.filter((e) => e.kind === "authority" || e.changes.length > 0);
+		const page = this.feedPage > 0 ? events.slice(0, this.feedPage) : events;
+		const more = page.length < events.length;
 		return {
 			asOfSeq: this.seq,
 			resync: afterSeq > this.seq,
-			events,
-			next: { afterSeq: this.seq, cursor: null },
-			more: false,
+			events: page,
+			next: { afterSeq: more ? page[page.length - 1]!.seq : this.seq, cursor: null },
+			more,
 		};
 	}
 

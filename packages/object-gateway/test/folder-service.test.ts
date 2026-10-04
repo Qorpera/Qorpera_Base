@@ -587,6 +587,56 @@ describe("folder service", () => {
 		expect((await feed.json()).body).toEqual({ seq: core.seq, resync: true, paths: [] });
 	});
 
+	it("tells machines the changes of the pages it applied when a later feed page fails", async () => {
+		const root = await tempdir();
+		const core = await company(root);
+		core.feedPage = 1;
+		const { service, path } = await serve(core, root);
+		const feed = await Client.open(path);
+		await feed.hello("feed");
+		core.write(await storeFile(root, "docs/plan.md", "the plan, version two", 2));
+		core.write(await storeFile(root, "readme.md", "hi again", 2));
+		// The first page (docs/plan.md) applies, the second fails: what the tree took in is still told.
+		core.feedCalls = 0;
+		core.failFeedAt = 2;
+		await service.poll();
+		await service.settled();
+		core.failFeedAt = undefined;
+		await service.poll();
+		await service.settled();
+		expect((await feed.json()).body).toEqual({ seq: 1, resync: false, paths: ["docs/plan.md"] });
+		expect((await feed.json()).body).toEqual({ seq: 2, resync: false, paths: ["readme.md"] });
+	});
+
+	it("keeps the files of a folder moved or deleted parent first readable for files opened before", async () => {
+		const root = await tempdir();
+		const core = await company(root);
+		const { service, path } = await serve(core, root);
+		const io = await Client.open(path);
+		await io.hello("io");
+		expect(await io.read("docs/plan.md", 1, 4, 4)).toEqual(Buffer.from("plan"));
+		// The feed orders a change set's changes by version: here the folder's own move comes before its file's.
+		const plan = core.entries.get("docs/plan.md")!;
+		core.commit([
+			{ ...folder("docs"), op: "move_out" },
+			{ ...plan, op: "move_out" },
+			{ ...folder("archive", 3), op: "move_in" },
+			{ ...plan, path: "archive/plan.md", version: v(3), op: "move_in" },
+		]);
+		await service.poll();
+		await service.settled();
+		expect(await io.list("")).toEqual(["archive", "private", "readme.md", "tools"]);
+		expect(await io.read("docs/plan.md", 1, 4, 4)).toEqual(Buffer.from("plan"));
+		// A folder deleted before its files: the files opened before still read.
+		expect(await io.read("private/salary.md", 1, 0, 6)).toEqual(Buffer.from("secret"));
+		const salary = core.entries.get("private/salary.md")!;
+		core.commit([{ ...core.entries.get("private")!, op: "delete" }, { ...salary, op: "delete" }]);
+		await service.poll();
+		await service.settled();
+		expect(await io.list("")).toEqual(["archive", "readme.md", "tools"]);
+		expect(await io.read("private/salary.md", 1, 0, 6)).toEqual(Buffer.from("secret"));
+	});
+
 	it("keeps replaced versions readable for files opened before, until access changes", async () => {
 		const root = await tempdir();
 		const core = await company(root);
