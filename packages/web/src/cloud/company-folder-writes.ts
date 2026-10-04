@@ -28,11 +28,18 @@ export type WebMemberFolder = Pick<CloudMemberFolderClient, "read" | "list" | "r
 export class WebCompanyFolderRejectedError extends Error {
 	readonly outcome: CloudMemberFolderUnitResult["outcome"];
 	readonly reason: string | null;
-	constructor(message: string, result: Pick<CloudMemberFolderUnitResult, "outcome" | "reason">) {
+	/** The file's or the hook's problems, in English (§5), for a view to show under its own words. */
+	readonly problems: readonly string[];
+	constructor(
+		message: string,
+		result: Pick<CloudMemberFolderUnitResult, "outcome" | "reason">,
+		problems: readonly string[] = [],
+	) {
 		super(message);
 		this.name = "WebCompanyFolderRejectedError";
 		this.outcome = result.outcome;
 		this.reason = result.reason;
+		this.problems = problems;
 	}
 }
 
@@ -97,20 +104,19 @@ export function withProblems(failure: string, problems: readonly string[]): stri
 
 /** The error for a unit that was not saved. Members' changes are never reviewed, so `waiting_for_review` is not
  * expected; it is not a refusal either, so it is a plain error. */
-function unsaved(result: CloudMemberFolderUnitResult, failure: string): Error {
+export function unsaved(result: CloudMemberFolderUnitResult, failure: string): Error {
 	if (result.outcome === "waiting_for_review") return new Error(failure);
-	return new WebCompanyFolderRejectedError(
-		withProblems(
-			failure,
-			result.problems.map((problem) => problem.message),
-		),
-		result,
-	);
+	const problems = result.problems.map((problem) => problem.message);
+	return new WebCompanyFolderRejectedError(withProblems(failure, problems), result, problems);
 }
 
 /** A refusal before anything is sent: the file's own problems. */
-function invalid(failure: string, problems: readonly string[]): WebCompanyFolderRejectedError {
-	return new WebCompanyFolderRejectedError(withProblems(failure, problems), { outcome: "refused", reason: "invalid" });
+export function invalid(failure: string, problems: readonly string[]): WebCompanyFolderRejectedError {
+	return new WebCompanyFolderRejectedError(
+		withProblems(failure, problems),
+		{ outcome: "refused", reason: "invalid" },
+		problems,
+	);
 }
 
 /** The settled outcome of a one-unit change set. A refused or conflicting unit is an answer, never an exception. */
