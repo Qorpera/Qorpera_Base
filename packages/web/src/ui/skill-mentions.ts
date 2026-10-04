@@ -37,6 +37,8 @@ export interface SkillMentionOptions {
 	/** The text's quotes of outside content, marks included, in UTF-16 units: the copy sets them apart as quoted,
 	 * and a "/name" inside one is no skill (app/quotes.ts). */
 	readonly quotes?: () => readonly { readonly from: number; readonly to: number }[];
+	/** A picked name is about to replace `start`..`end` of the field (the field's edit, which code makes). */
+	readonly replacing?: (start: number, end: number) => void;
 }
 
 /** Blocks that end a word: text in two of them never runs together. */
@@ -115,6 +117,7 @@ export class SkillMentions {
 	readonly #opened: () => void;
 	readonly #listed: () => void;
 	readonly #quotes: () => readonly { readonly from: number; readonly to: number }[];
+	readonly #replacing: (start: number, end: number) => void;
 	#skills: readonly SkillSuggestion[] | undefined;
 	#loadedAt = 0;
 	#failedAt = Number.NEGATIVE_INFINITY;
@@ -139,6 +142,7 @@ export class SkillMentions {
 		this.#opened = options.opened ?? (() => {});
 		this.#listed = options.listed ?? (() => {});
 		this.#quotes = options.quotes ?? (() => []);
+		this.#replacing = options.replacing ?? (() => {});
 		this.#highlight = h("div", { class: "composer-highlight", "aria-hidden": "true" });
 		this.field = h("div", { class: "composer-field" }, this.#highlight, input);
 		const id = `skill-menu-${++menus}`;
@@ -457,6 +461,7 @@ export class SkillMentions {
 		while (end < value.length && NAME_CHARACTER.test(value.slice(end))) end++;
 		const after = value.slice(end);
 		this.#input.focus();
+		this.#replacing(trigger.start, end);
 		this.#input.setRangeText(`/${skill.name}${/^\s/.test(after) ? "" : " "}`, trigger.start, end, "end");
 		// Answered: the menu stays closed while the caret stays on this name.
 		this.#dismissed = trigger.start;

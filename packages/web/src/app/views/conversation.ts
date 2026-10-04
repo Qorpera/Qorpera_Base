@@ -50,11 +50,20 @@ import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
-import { type FieldEdit, type QuotePiece, quotePieces } from "../quotes.ts";
+import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
-import { keepCaretOutOfQuotes, watchEdits } from "./composer-quotes.ts";
+import {
+	type FieldEdits,
+	FieldHistory,
+	type HistoryStep,
+	historyRun,
+	historyStep,
+	keepCaretOutOfQuotes,
+	watchEdits,
+	watchHistory,
+} from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
@@ -204,8 +213,9 @@ export class ConversationView {
 	readonly #quoteNote = h("p", { class: "composer-quote-note", role: "status", hidden: true });
 	/** The quotes the field's copy last set apart, so a change in them alone redraws it. */
 	#piecesShown = "[]";
-	/** What each edit of the composer replaced (composer-quotes.ts). */
-	readonly #takeEdit: (event: Event) => FieldEdit | undefined;
+	/** What each edit of the composer replaced, and its own undo history (composer-quotes.ts). */
+	readonly #edits: FieldEdits;
+	readonly #history: FieldHistory;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -338,19 +348,30 @@ export class ConversationView {
 				}
 			},
 			oninput: (event: Event) => {
+				// The browser applied its own undo or redo, which it would not let the page cancel: the composer's own
+				// history answers instead (composer-quotes.ts, watchHistory).
+				const which = historyStep(event);
+				if (which) {
+					this.#stepHistory(which);
+					return;
+				}
 				// A change that reached into a quote removes the whole quote; the field shows what is kept. The field's
 				// own account of what it replaced tells a quote pasted over another from words typed inside it.
 				const composer = this.#composer;
+				const before = company.conversation(sessionId).get().draft ?? "";
 				const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
-				const kept = company.editDraft(sessionId, composer.value, caret, this.#takeEdit(event));
+				const edit = this.#edits.take(event);
+				const kept = company.editDraft(sessionId, composer.value, caret, edit);
 				if (kept.text !== composer.value) {
 					composer.value = kept.text;
 					if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
 				}
-				this.#autosize();
-				this.#sharedDrafts.input();
-				this.#updateMention();
-				this.#renderQuoteNote();
+				this.#history.edited(
+					before,
+					{ text: composer.value, caret: composer.selectionEnd },
+					historyRun(edit, event),
+				);
+				this.#edited();
 			},
 		});
 		// Moving the caret with the keys or a click opens or closes the names as well.
@@ -394,9 +415,12 @@ export class ConversationView {
 				this.update();
 			},
 			quotes: () => this.#quotePieces(),
+			replacing: (start, end) => this.#edits.declare(start, end),
 		});
 		keepCaretOutOfQuotes(this.#composer, () => this.#quotePieces(), this.#lifetime.signal);
-		this.#takeEdit = watchEdits(this.#composer, this.#lifetime.signal);
+		this.#edits = watchEdits(this.#composer, this.#lifetime.signal);
+		this.#history = new FieldHistory({ text: this.#composer.value, caret: 0 });
+		watchHistory(this.#composer, this.#lifetime.signal, (which) => this.#stepHistory(which));
 		this.#send = h(
 			"button",
 			{
@@ -1055,12 +1079,38 @@ export class ConversationView {
 			return;
 		}
 		const name = `@${option.name} `;
+		this.#edits.declare(query.start, end);
 		this.#composer.value = value.slice(0, query.start) + name + value.slice(end);
 		const caret = query.start + name.length;
 		this.#composer.focus();
 		this.#composer.setSelectionRange(caret, caret);
 		this.#closeMention();
 		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+
+	/** After an edit of the composer, or an undo or redo: its height, the shared draft, the names and the quote note. */
+	#edited(): void {
+		this.#autosize();
+		this.#sharedDrafts.input();
+		this.#updateMention();
+		this.#renderQuoteNote();
+	}
+
+	/** Undo or redo from the composer's own history. A state it held needs no quote rules: its quotes are whole. */
+	#stepHistory(which: HistoryStep): void {
+		const store = this.#company.conversation(this.#sessionId);
+		const current = store.get().draft ?? "";
+		const state = this.#history.step(which, current);
+		const composer = this.#composer;
+		if (!state) {
+			// Nothing to undo or redo: the field keeps the text the composer holds (a browser may have changed it).
+			if (composer.value !== current) composer.value = current;
+			return;
+		}
+		composer.value = state.text;
+		composer.setSelectionRange(state.caret, state.caret);
+		store.set({ draft: state.text });
+		this.#edited();
 	}
 
 	/** The quotes of outside content in the text the composer shows: the draft's, while the field shows the draft. */
@@ -2539,6 +2589,7 @@ export class ConversationView {
 			askAgent: this.#actions.sendMessage
 				? (text: string) => {
 						this.#closeCodingSession();
+						this.#edits.declare(0, this.#composer.value.length);
 						this.#composer.value = text;
 						this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
 						this.#composer.focus();

@@ -14,7 +14,15 @@ import {
 } from "../quotes.ts";
 import { DRAFT_TYPING_MS, type DraftStatus, type DraftSync, type RoomDraftRoom } from "../room-drafts.ts";
 import { moveIndex, type TextEdit } from "../text-merge.ts";
-import { keepCaretOutOfQuotes, watchEdits } from "./composer-quotes.ts";
+import {
+	FieldHistory,
+	type HistoryStep,
+	historyRun,
+	historyStep,
+	keepCaretOutOfQuotes,
+	watchEdits,
+	watchHistory,
+} from "./composer-quotes.ts";
 
 /* Other members' unsent messages, right above the composer. Each shows as a
  * notch with the member's picture, typing while they type; pointing at it opens
@@ -379,15 +387,11 @@ export class SharedDrafts {
 		before = opened.text;
 		showStatus(sync.status);
 		showQuoted();
-		const takeEdit = watchEdits(input, lifetime.signal);
-		input.addEventListener("input", (event) => {
-			const caret = input.selectionStart === input.selectionEnd ? input.selectionEnd : undefined;
-			const kept = keepQuotesWhole(before, records, input.value, caret, takeEdit(event));
-			if (kept.text !== input.value) {
-				input.value = kept.text;
-				if (kept.caret !== undefined) input.setSelectionRange(kept.caret, kept.caret);
-			}
-			before = input.value;
+		const edits = watchEdits(input, lifetime.signal);
+		// Its own undo history, as the member's composer has (composer-quotes.ts). A teammate's words merged in
+		// (`show`) change the text from outside, which starts the history again there.
+		const history = new FieldHistory({ text: input.value, caret: input.value.length });
+		const edited = () => {
 			showQuoted();
 			if (dropped) {
 				dropped = false;
@@ -395,6 +399,35 @@ export class SharedDrafts {
 			}
 			sync.changed();
 			this.#autosize(input);
+		};
+		const step = (which: HistoryStep) => {
+			const state = history.step(which, before);
+			if (!state) {
+				if (input.value !== before) input.value = before;
+				return;
+			}
+			input.value = state.text;
+			input.setSelectionRange(state.caret, state.caret);
+			before = state.text;
+			edited();
+		};
+		watchHistory(input, lifetime.signal, step);
+		input.addEventListener("input", (event) => {
+			const which = historyStep(event);
+			if (which) {
+				step(which);
+				return;
+			}
+			const caret = input.selectionStart === input.selectionEnd ? input.selectionEnd : undefined;
+			const edit = edits.take(event);
+			const kept = keepQuotesWhole(before, records, input.value, caret, edit);
+			if (kept.text !== input.value) {
+				input.value = kept.text;
+				if (kept.caret !== undefined) input.setSelectionRange(kept.caret, kept.caret);
+			}
+			history.edited(before, { text: input.value, caret: input.selectionEnd }, historyRun(edit, event));
+			before = input.value;
+			edited();
 		});
 		keepCaretOutOfQuotes(input, () => quotePieces(input.value, quotes()), lifetime.signal);
 		input.addEventListener("compositionstart", () => {

@@ -454,6 +454,20 @@ draft is what every member's browser shows, and one record per words can't
 hold both. Asking the member to choose was the other option; it would leave a
 draft that can't be saved until they do.
 
+**The composer keeps its own undo history** (round 4 of the review), in the
+member's composer and in a teammate's draft opened above it. The browser's own
+undo can put back a text the composer never held: the moment after a Backspace
+reached a quote's mark, where the marks left over pair with the member's own
+(`«A» «Btail»`), so the quote's words would go without their record, and the
+cloud would take them. Undo and redo (the keys, the menu) answer from states
+the composer held after its quote rules settled each edit, so every quote in
+them is whole; typing and deleting group into runs as a text field's do. A text
+that changes from outside the member's own edits (a teammate's words, a send,
+a message button) starts the history again there, as a browser's does when a
+page sets the text. An edit the field can't account for (a spelling fix, no
+`beforeinput`) is kept only when it leaves every quote whole and no quote's
+words outside a quote; otherwise the text goes back as it was.
+
 **Rules out.** A rich-text composer with quote chips (a larger change to the
 field, its caret handling and shared drafts' text merging), and a row's value
 filled in as plain words when it can't travel as a quote: a row without its

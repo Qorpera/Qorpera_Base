@@ -110,6 +110,9 @@ export interface FieldEdit {
 	readonly start: number;
 	readonly end: number;
 	readonly inputType: string;
+	/** The text the edit was made in, when that is not the text the field held last: a letter being composed
+	 * replaces what was selected when composing began, in the text as it was then. */
+	readonly before?: string;
 }
 
 /** One replaced span: `removed` units of the old text from `prefix`, in place of which `inserted` stands. */
@@ -120,10 +123,10 @@ interface Change {
 }
 
 /** The span a field's edit replaced, from its selection: the selection itself, or for a deletion from a caret the
- * characters beside it. Undefined when the edit replaces a span the selection doesn't tell (composing a letter, undo,
- * a drop, a spelling fix), or when the selection doesn't account for the change. */
+ * characters beside it. Undefined when the edit replaces a span the selection doesn't tell (a spelling fix, a
+ * transposition, the browser's own undo), or when the selection doesn't account for the change. */
 function replacedSpan(before: string, after: string, edit: FieldEdit): Change | undefined {
-	if (/Composition|Drop|Replacement|Transpose|^history/.test(edit.inputType)) return undefined;
+	if (/Replacement|Transpose|^history/.test(edit.inputType)) return undefined;
 	const grown = after.length - before.length;
 	const { start, end } = edit;
 	const spans: [number, number][] =
@@ -199,18 +202,34 @@ export function brokenQuotes(
 	});
 }
 
-/** The broken pieces of `after` (`brokenQuotes`) whose words it holds broken more often than `before` did. */
-function newlyBroken(before: string, after: string, records: readonly QuoteRecord[]): [number, number][] {
-	const count = (text: string) => {
-		const counts = new Map<string, number>();
-		for (const { words } of brokenQuotes(text, records)) counts.set(words, (counts.get(words) ?? 0) + 1);
-		return counts;
-	};
-	const was = count(before);
-	const now = count(after);
-	return brokenQuotes(after, records)
-		.filter(({ words }) => (now.get(words) ?? 0) > (was.get(words) ?? 0))
-		.map(({ from, to }): [number, number] => [from, to]);
+/** Whether a change read from the texts alone leaves every quote as it should be: each piece it touched is still
+ * whole (its remnants lie inside a quote of `after`), and every occurrence of a record's words in `after` is inside a
+ * quote, or stood unchanged outside one before (the member's own words, untouched). */
+function clean(before: string, after: string, records: readonly QuoteRecord[], change: Change): boolean {
+	const piecesBefore = quotePieces(before, placeQuotes(before, records));
+	const piecesAfter = quotePieces(after, placeQuotes(after, records));
+	// Within a quote's piece, its marks included (a record's words hold no mark, so they can only be its words).
+	const quoted = (pieces: readonly QuotePiece[], from: number, to: number) =>
+		pieces.some((piece) => piece.from <= from && to <= piece.to);
+	const { prefix, removed, inserted } = change;
+	const shift = inserted.length - removed;
+	for (const { from, to } of piecesBefore) {
+		const touched = removed > 0 ? prefix < to && prefix + removed > from : prefix > from && prefix < to;
+		if (!touched) continue;
+		if (from < prefix && !quoted(piecesAfter, from, Math.min(to, prefix))) return false;
+		if (to > prefix + removed && !quoted(piecesAfter, Math.max(from, prefix + removed) + shift, to + shift)) return false;
+	}
+	const suffix = before.length - prefix - removed;
+	for (const words of new Set(records.map((record) => record.words))) {
+		if (!words) continue;
+		for (let at = after.indexOf(words); at >= 0; at = after.indexOf(words, at + 1)) {
+			const end = at + words.length;
+			if (quoted(piecesAfter, at, end)) continue;
+			const old = end <= prefix ? at : at >= after.length - suffix ? at - shift : undefined;
+			if (old === undefined || quoted(piecesBefore, old, old + words.length)) return false;
+		}
+	}
+	return true;
 }
 
 /** The member changed a text from `before` to `after`; `caret` is where their caret stands in `after`, and `records`
@@ -219,11 +238,10 @@ function newlyBroken(before: string, after: string, records: readonly QuoteRecor
  * goes in it. The field keeps the caret out of a quote (`snapSelection`), so this is mostly a deletion that reached a
  * quote's mark, removing the quote whole.
  *
- * `edit` is the field's own account of the change. Without it (an undo or redo, a drop, a letter composed, a change
- * made by code) the change is read from the texts, which can't tell a pasted «A» over «B» from an A typed over the B
- * inside the marks, nor «A» «A» undone to «A» «B» from a B typed over the A. So then a quote whole in `after` is a
- * quote and nothing of it is cut, and a quote it brings back with one mark gone (the moment after a Backspace reached
- * the mark) goes whole: no path leaves a quote's words as the member's own. */
+ * `edit` is the field's own account of the change. Without it (a spelling fix, a change with no `beforeinput`) the
+ * change can only be read from the texts, which can't tell a pasted «A» over «B» from an A typed over the B inside
+ * the marks. Such a change is kept only when it is clean (`clean`); otherwise the text goes back to `before`. Undo and
+ * redo never come here: the composers keep their own history (app/views/composer-quotes.ts). */
 export function keepQuotesWhole(
 	before: string,
 	records: readonly QuoteRecord[],
@@ -232,24 +250,23 @@ export function keepQuotesWhole(
 	edit?: FieldEdit,
 ): { text: string; caret: number | undefined } {
 	if (before === after || !records.length) return { text: after, caret };
-	const pieces = quotePieces(before, placeQuotes(before, records));
-	const known = edit && replacedSpan(before, after, edit);
-	const { prefix, removed, inserted } = known ?? diffSpan(before, after, caret);
+	// A letter being composed is read against the text composing began in.
+	const base = edit?.before ?? before;
+	const known = edit && replacedSpan(base, after, edit);
+	if (!known) {
+		const change = diffSpan(before, after, caret);
+		return clean(before, after, records, change) ? { text: after, caret } : { text: before, caret: change.prefix };
+	}
+	const { prefix, removed, inserted } = known;
 	const shift = inserted.length - removed;
-	const whole = known ? [] : quotePieces(after, placeQuotes(after, records));
 	const cut: [number, number][] = [];
-	const cutUnlessWhole = (from: number, to: number) => {
-		if (!whole.some((piece) => piece.from <= from && to <= piece.to)) cut.push([from, to]);
-	};
-	for (const { from, to } of pieces) {
+	for (const { from, to } of quotePieces(base, placeQuotes(base, records))) {
 		const touched = removed > 0 ? prefix < to && prefix + removed > from : prefix > from && prefix < to;
 		if (!touched) continue;
 		// What is left of the piece in `after`: before the change, and after it (moved by what changed).
-		if (from < prefix) cutUnlessWhole(from, Math.min(to, prefix));
-		if (to > prefix + removed) cutUnlessWhole(Math.max(from, prefix + removed) + shift, to + shift);
+		if (from < prefix) cut.push([from, Math.min(to, prefix)]);
+		if (to > prefix + removed) cut.push([Math.max(from, prefix + removed) + shift, to + shift]);
 	}
-	// Broken pieces the text already held stay the member's to mend; only those this change made go.
-	if (!known) cut.push(...newlyBroken(before, after, records));
 	if (!cut.length) return { text: after, caret };
 	cut.sort((a, b) => a[0] - b[0]);
 	let text = "";
