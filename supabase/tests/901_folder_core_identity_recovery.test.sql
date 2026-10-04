@@ -2,16 +2,19 @@
 -- a folder-v2 company identity recovery and retirement follow the folder core's order with no gc fence: the folder
 -- fence and the company row KEY SHARE, then (recovery) every member row FOR SHARE, then the identity. A folder effect
 -- never makes them wait; a stop's second phase does, before any member, identity, sign-in or company row is locked. A
--- login's recovery request holds no sign-in while it waits for the identity: a new sign-in cancels the earlier one at
--- once and a completion finishes first, and the request then refuses on its re-check. A completion's epoch trigger
--- never queues behind recovery's identity lock. Every patched body carries its branch. The fixture is committed so the
--- connections can see it, and removed at the end. Waits are detected with pg_blocking_pids. A snapshot-v1 company keeps
--- the gc fence in each else branch, untested (folder-v2 only since 3 Oct).
+-- login's recovery request holds no sign-in while it waits for the identity, and a key backup only KEY SHARE: a new
+-- sign-in cancels the earlier one at once and a completion finishes first, and they refuse on their re-check. A
+-- completion's epoch trigger takes its FOR SHARE without queueing behind recovery's waiting FOR UPDATE. A request on a
+-- sign-in pinned to an older epoch still goes through. A role change, two decisions on one identity, a decision and the
+-- removal of the identity's owner, and a backup and a login machine reservation of one sign-in each queue, never 40P01.
+-- Every patched body carries its branch. The fixture is committed so the connections can see it, and removed at the
+-- end. Waits are detected with pg_blocking_pids. A snapshot-v1 company keeps the gc fence in each else branch, untested
+-- (folder-v2 only since 3 Oct).
 
 -- The owner, and one member per identity (a member has one identity in a company).
 insert into auth.users(id,email) values ('09010000-0000-4000-8000-000000000001','p13b-owner@example.test');
 insert into auth.users(id,email)
-select ('09010000-0000-4000-8000-00000000000' || (n + 1))::uuid, 'p13b-member-' || n || '@example.test' from generate_series(1, 6) as n;
+select ('09010000-0000-4000-8000-00000000000' || (n + 1))::uuid, 'p13b-member-' || n || '@example.test' from generate_series(1, 7) as n;
 insert into public.qorpera_profiles(id,name,created_by_user_id) values
 	('09010000-0000-4000-8000-000000000010','Identity recovery','09010000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
@@ -19,28 +22,31 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 select '09010000-0000-4000-8000-000000000010', ('09010000-0000-4000-8000-00000000000' || (n + 1))::uuid, 'p13b-member-' || n || '@example.test',
 	'Member ' || n, 'contributor'
-from generate_series(1, 6) as n;
+from generate_series(1, 7) as n;
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
 values ('09010000-0000-4000-8000-000000000020','09010000-0000-4000-8000-000000000010','Environment',1,'09010000-0000-4000-8000-000000000001');
 select set_config('request.jwt.claims', '{"role":"service_role"}', false) \g /dev/null
 select public.qorpera_folder_enable('09010000-0000-4000-8000-000000000020') \g /dev/null
 -- Member n's identity n, one per scenario (a recovery fences its identity for good unless it completes): 1 a login's
 -- recovery and its release, 2 a refresh's recovery, 3 an owner's request and the member's consent, 4 a new sign-in's
--- race, 5 a completion's race with a request, 6 a completion's race with a release.
+-- race, 5 a completion's race with a request and a backup's with a reservation, 6 a completion's race with a release,
+-- then a request on an older sign-in, 7 the member's decisions.
 insert into public.qorpera_member_compute_identities(id, profile_id, ownership_kind, owner_user_id, client_identity_id, display_name)
 select ('09010000-0000-4000-8000-00000000003' || n)::uuid, '09010000-0000-4000-8000-000000000010', 'member',
 	('09010000-0000-4000-8000-00000000000' || (n + 1))::uuid, extensions.gen_random_uuid(), 'Identity ' || n
-from generate_series(1, 6) as n;
+from generate_series(1, 7) as n;
 -- The company's recovery service (public-key shapes only, as 298).
 insert into public.qorpera_identity_recovery_authorities(id,profile_id,signing_public_key,wrapping_public_key,service_origin,capability_sha256)
 values ('09010000-0000-4000-8000-000000000030','09010000-0000-4000-8000-000000000010',repeat('A',59),repeat('A',550),
 	'https://recovery.example.test',repeat('c',64));
--- Members 5's and 6's model logins, which their sign-ins complete (the sign-ins' client connections).
+-- Members 5's and 6's model logins, which their sign-ins complete (the sign-ins' client connections), and member 7's.
 insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, owner_user_id, provider, created_by_user_id) values
 	('09010000-0000-4000-8000-000000000055','09010000-0000-4000-8000-000000000010','09010000-0000-4000-8000-000000000255',
 		'09010000-0000-4000-8000-000000000006','openai','09010000-0000-4000-8000-000000000006'),
 	('09010000-0000-4000-8000-000000000056','09010000-0000-4000-8000-000000000010','09010000-0000-4000-8000-000000000256',
-		'09010000-0000-4000-8000-000000000007','openai','09010000-0000-4000-8000-000000000007');
+		'09010000-0000-4000-8000-000000000007','openai','09010000-0000-4000-8000-000000000007'),
+	('09010000-0000-4000-8000-000000000057','09010000-0000-4000-8000-000000000010','09010000-0000-4000-8000-000000000257',
+		'09010000-0000-4000-8000-000000000008','openai','09010000-0000-4000-8000-000000000008');
 
 create function pg_temp.sha(p_value text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_value, 'utf8'), 'sha256'), 'hex')
@@ -65,10 +71,12 @@ create function pg_temp.refresh_request(p_id text, p_n integer) returns void lan
 $$;
 
 -- The calls, as the recovery service, the login gateway and the members make them; each returns one text value.
-create function pg_temp.register(p_n integer) returns text language sql as $$
+-- Target n is identity n's, except target 8, a second one for identity 6.
+create function pg_temp.register(p_n integer, p_target integer default null) returns text language sql as $$
 	select format('select public.qorpera_register_identity_recovery_target(%L,%L,%L,%L,%L,%L,%L,%L,%L) ->> ''targetId''',
-		'09010000-0000-4000-8000-000000000030', repeat('c', 64), pg_temp.target(p_n), pg_temp.identity(p_n),
-		'09010000-0000-4000-8000-000000000049', repeat('1', 64), repeat('2', 64), repeat('A', 549) || p_n, pg_temp.sha('p13b-target-' || p_n))
+		'09010000-0000-4000-8000-000000000030', repeat('c', 64), pg_temp.target(coalesce(p_target, p_n)), pg_temp.identity(p_n),
+		'09010000-0000-4000-8000-000000000049', repeat('1', 64), repeat('2', 64), repeat('A', 549) || coalesce(p_target, p_n),
+		pg_temp.sha('p13b-target-' || coalesce(p_target, p_n)))
 $$;
 create function pg_temp.backup(p_n integer, p_login text, p_complete boolean) returns text language sql as $$
 	select case when p_complete then
@@ -78,8 +86,9 @@ create function pg_temp.backup(p_n integer, p_login text, p_complete boolean) re
 	else format('select public.qorpera_prepare_identity_key_backup(%L,%L,%L,%L,%L) ->> ''status''',
 		'09010000-0000-4000-8000-000000000030', repeat('c', 64), p_login, pg_temp.cap(p_login), pg_temp.sha('p13b-key-' || p_n)) end
 $$;
-create function pg_temp.request_login(p_login text, p_n integer, p_request text) returns text language sql as $$
-	select format('select public.qorpera_request_login_identity_recovery(%L,%L,%L,''nas'') ->> ''status''', p_login, pg_temp.target(p_n), p_request)
+create function pg_temp.request_login(p_login text, p_n integer, p_request text, p_target integer default null) returns text language sql as $$
+	select format('select public.qorpera_request_login_identity_recovery(%L,%L,%L,''nas'') ->> ''status''', p_login,
+		pg_temp.target(coalesce(p_target, p_n)), p_request)
 $$;
 create function pg_temp.request_refresh(p_refresh text, p_n integer, p_request text) returns text language sql as $$
 	select format('select public.qorpera_request_account_refresh_identity_recovery(%L,%L,%L,''nas'') ->> ''status''', p_refresh,
@@ -93,10 +102,30 @@ create function pg_temp.recovery_call(p_function text, p_request text) returns t
 	select format('select public.qorpera_%s_identity_recovery((select id from public.qorpera_identity_recoveries where client_request_id = %L)) ->> ''status''',
 		p_function, p_request)
 $$;
--- The key release: its first step is qorpera_recovery_locked.
+-- The key release, its commit and the recovery's completion: each begins with qorpera_recovery_locked.
 create function pg_temp.release(p_n integer, p_request text) returns text language sql as $$
 	select format('select public.qorpera_prepare_identity_key_release(%L,%L,(select id from public.qorpera_identity_recoveries where client_request_id = %L),%L) ->> ''status''',
 		'09010000-0000-4000-8000-000000000030', repeat('c', 64), p_request, pg_temp.sha('p13b-target-' || p_n))
+$$;
+create function pg_temp.finish_recovery(p_n integer, p_request text) returns void language plpgsql as $$
+declare v_recovery uuid := (select id from public.qorpera_identity_recoveries where client_request_id = p_request::uuid);
+begin
+	perform public.qorpera_commit_identity_key_release('09010000-0000-4000-8000-000000000030', repeat('c', 64), v_recovery,
+		pg_temp.sha('p13b-target-' || p_n), repeat('4', 64), 1024);
+	perform public.qorpera_complete_identity_recovery('09010000-0000-4000-8000-000000000030', repeat('c', 64), v_recovery,
+		pg_temp.sha('p13b-target-' || p_n), repeat('4', 64), repeat('5', 64));
+end $$;
+create function pg_temp.review(p_n integer) returns text language sql as $$
+	select format('select public.qorpera_review_member_identity_recovery(%L,%L,%L) ->> ''reviewSha256''',
+		'09010000-0000-4000-8000-000000000010', pg_temp.identity(p_n), pg_temp.target(p_n))
+$$;
+create function pg_temp.decide(p_n integer, p_review text, p_decision text) returns text language sql as $$
+	select format('select public.qorpera_decide_member_identity_recovery(%L,%L,%L,%L,%L) ->> ''status''',
+		'09010000-0000-4000-8000-000000000010', pg_temp.identity(p_n), pg_temp.target(p_n), p_review, p_decision)
+$$;
+create function pg_temp.reserve(p_allocation text, p_login text) returns text language sql as $$
+	select format('select coalesce(r ->> ''reason'', r ->> ''state'') from public.qorpera_reserve_runtime_login_machine(%L,%L,%L,%L,%L) as r',
+		p_allocation, 'lxd-p13b', pg_temp.sha(p_allocation), p_login, pg_temp.cap(p_login))
 $$;
 create function pg_temp.complete(p_login text, p_capsule text) returns text language sql as $$
 	select format($q$select public.qorpera_complete_native_provider_login(%L, %L, %L, %L, repeat('b', 64),
@@ -152,7 +181,9 @@ end $$;
 -- 1: a completed sign-in (its capsule and model login, which a release needs) and a pending one for the request;
 -- 2: a pending sign-in and refresh request; 3: a pending sign-in; 4: a pending sign-in and refresh request, a backup and
 -- a target; 5: a pending sign-in on model login 55, a backup and a target; 6: a completed sign-in, a backup, a target,
--- a pending sign-in on model login 56 and an approved recovery (an owner's request, the member's consent).
+-- a pending sign-in on model login 56 and an approved recovery (an owner's request, the member's consent); 7: a
+-- pending sign-in, a backup, a target and an owner's request awaiting the member. Refresh requests (five minutes) are
+-- made just before A.
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000106', 1);
 do $$
 begin
@@ -162,18 +193,17 @@ begin
 end $$;
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000101', 1);
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000102', 2);
-select pg_temp.refresh_request('09010000-0000-4000-8000-000000000112', 2);
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000103', 3);
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000104', 4);
-select pg_temp.refresh_request('09010000-0000-4000-8000-000000000114', 4);
+select pg_temp.sign_in('09010000-0000-4000-8000-000000000107', 7);
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000105', 5, '09010000-0000-4000-8000-000000000255');
 select pg_temp.sign_in('09010000-0000-4000-8000-000000000126', 6);
 do $$
 declare v_n integer; v_login text;
 begin
-	foreach v_n in array array[4, 5, 6] loop
+	foreach v_n in array array[4, 5, 6, 7] loop
 		v_login := case v_n when 4 then '09010000-0000-4000-8000-000000000104' when 5 then '09010000-0000-4000-8000-000000000105'
-			else '09010000-0000-4000-8000-000000000126' end;
+			when 6 then '09010000-0000-4000-8000-000000000126' else '09010000-0000-4000-8000-000000000107' end;
 		perform pg_temp.run(pg_temp.backup(v_n, v_login, false));
 		perform pg_temp.run(pg_temp.backup(v_n, v_login, true));
 		perform pg_temp.run(pg_temp.register(v_n));
@@ -189,6 +219,9 @@ begin
 	perform set_config('request.jwt.claims', pg_temp.claims(pg_temp.member(6)::text), false);
 	if pg_temp.run(pg_temp.recovery_call('consent', '09010000-0000-4000-8000-000000000166')) <> 'approved' then
 		raise exception 'fixture: identity 6''s recovery must be approved'; end if;
+	perform set_config('request.jwt.claims', pg_temp.claims('09010000-0000-4000-8000-000000000001'), false);
+	if pg_temp.run(pg_temp.request_owner(7, '09010000-0000-4000-8000-000000000167')) <> 'awaiting_member' then
+		raise exception 'fixture: identity 7''s recovery must await the member'; end if;
 	perform set_config('request.jwt.claims', pg_temp.claims(null), false);
 	perform pg_temp.run(pg_temp.not_before('09010000-0000-4000-8000-000000000166'));
 end $$;
@@ -263,6 +296,10 @@ $$;
 create function pg_temp.members_lock() returns text language sql as $$
 	select 'public.qorpera_profile_members where profile_id = ''09010000-0000-4000-8000-000000000010'' order by user_id for no key update'
 $$;
+create function pg_temp.member_lock(p_n integer, p_mode text default 'no key update') returns text language sql as $$
+	select format('public.qorpera_profile_members where profile_id = ''09010000-0000-4000-8000-000000000010'' and user_id = %L for %s',
+		pg_temp.member(p_n), p_mode)
+$$;
 create function pg_temp.sign_in_lock(p_id text) returns text language sql as $$
 	select format('public.qorpera_native_provider_login_sessions where id = %L for update', p_id)
 $$;
@@ -301,6 +338,8 @@ insert into p13b_steps(section, label, user_id, statement, expected, free) value
 		array[pg_temp.identity_lock(5), pg_temp.members_lock(), pg_temp.company_lock()]),
 	('B', 'release 6', null, pg_temp.release(6, '09010000-0000-4000-8000-000000000166'), 'approved',
 		array[pg_temp.identity_lock(6), pg_temp.members_lock(), pg_temp.company_lock()]),
+	('B', 'member consent 7', pg_temp.member(7)::text, pg_temp.recovery_call('consent', '09010000-0000-4000-8000-000000000167'), 'approved',
+		array[pg_temp.identity_lock(7), pg_temp.members_lock(), pg_temp.company_lock()]),
 	('B', 'owner cancel 6', '09010000-0000-4000-8000-000000000001', pg_temp.recovery_call('cancel', '09010000-0000-4000-8000-000000000166'), 'cancelled',
 		array[pg_temp.identity_lock(6), pg_temp.members_lock(), pg_temp.company_lock()]),
 	('B', 'backup 4', null, pg_temp.backup(4, '09010000-0000-4000-8000-000000000104', false), 'ready',
@@ -309,6 +348,9 @@ insert into p13b_steps(section, label, user_id, statement, expected, free) value
 	('B', 'member role', pg_temp.member(1)::text, 'select public.qorpera_recovery_member_role(''09010000-0000-4000-8000-000000000010'')', 'contributor',
 		array[pg_temp.members_lock(), pg_temp.company_lock()]),
 	('B', 'retirement', null, pg_temp.retire(), 'error 42501 Identity retirement unavailable', array[pg_temp.identity_lock(1), pg_temp.company_lock()]);
+
+select pg_temp.refresh_request('09010000-0000-4000-8000-000000000112', 2);
+select pg_temp.refresh_request('09010000-0000-4000-8000-000000000114', 4);
 
 -- A. Beside a folder effect (the fence and the company row KEY SHARE), every recovery and retirement call finishes and
 -- none waits: no gc fence.
@@ -401,7 +443,7 @@ end $$;
 
 -- D. A sign-in's completion and a login's recovery request on that sign-in. The completion holds the sign-in FOR
 -- UPDATE and the identity KEY SHARE (its capsule) and waits for the model login (held here); the request waits for it
--- at the identity, holding the member rows (it is past rank 1) and no sign-in. The completion finishes, and the request
+-- at the identity, holding every member row (it is past rank 1) and no sign-in. The completion finishes, and the request
 -- refuses on its re-check: the sign-in is no longer pending.
 do $$
 declare v_value text;
@@ -412,8 +454,8 @@ begin
 	if not pg_temp.waits_for('p13b_a', 'p13b_c') then raise exception 'D: the completion must wait for the model login'; end if;
 	perform pg_temp.send('p13b_b', null, pg_temp.request_login('09010000-0000-4000-8000-000000000105', 5, '09010000-0000-4000-8000-000000000165'));
 	if not pg_temp.waits_for('p13b_b', 'p13b_a') then raise exception 'D: the request must wait for the completion'; end if;
-	if pg_temp.lockable('p13b_c', pg_temp.members_lock()) then
-		raise exception 'D: the request must wait at the identity, holding the member rows'; end if;
+	if pg_temp.lockable('p13b_c', pg_temp.member_lock(3)) then
+		raise exception 'D: the request must wait at the identity, holding every member row (member 3''s)'; end if;
 	perform dblink_exec('p13b_c', 'commit');
 	v_value := pg_temp.result('p13b_a');
 	if v_value is distinct from 'active' then raise exception 'D: the completion must finish: %', v_value; end if;
@@ -424,7 +466,7 @@ end $$;
 
 -- E. A sign-in's completion and a key release (qorpera_recovery_locked) on an identity whose recovery is approved. The
 -- completion holds the identity KEY SHARE (its capsule) and waits for the model login (held here); the release waits for
--- it at the identity, holding the member rows. The completion's epoch trigger then takes the identity FOR SHARE without
+-- it at the identity, holding every member row. The completion's epoch trigger then takes the identity FOR SHARE without
 -- queueing behind the release's FOR UPDATE and refuses the fenced generation (42501, no deadlock); the release goes on.
 do $$
 declare v_value text;
@@ -435,8 +477,8 @@ begin
 	if not pg_temp.waits_for('p13b_a', 'p13b_c') then raise exception 'E: the completion must wait for the model login'; end if;
 	perform pg_temp.send('p13b_b', null, pg_temp.release(6, '09010000-0000-4000-8000-000000000166'));
 	if not pg_temp.waits_for('p13b_b', 'p13b_a') then raise exception 'E: the release must wait for the completion'; end if;
-	if pg_temp.lockable('p13b_c', pg_temp.members_lock()) then
-		raise exception 'E: the release must wait at the identity, holding the member rows'; end if;
+	if pg_temp.lockable('p13b_c', pg_temp.member_lock(3)) then
+		raise exception 'E: the release must wait at the identity, holding every member row (member 3''s)'; end if;
 	perform dblink_exec('p13b_c', 'commit');
 	v_value := pg_temp.result('p13b_a');
 	if v_value not like 'error 42501 native login generation is fenced for recovery%' then
@@ -445,31 +487,176 @@ begin
 	if v_value is distinct from 'approved' then raise exception 'E: the release must go on: %', v_value; end if;
 end $$;
 
--- F. The helper is postgres-only and takes the fence and the company row KEY SHARE and every member row FOR SHARE,
+-- F. A login's recovery request on a sign-in pinned to an older recovery epoch goes through, as before: identity 6's
+-- recovery completes (its release was issued in E), which leaves its pending sign-in at epoch 0 and the identity at 1;
+-- the gateway asks to recover again from that sign-in (on a new target), and a replay of the request returns it.
+do $$
+begin
+	perform pg_temp.finish_recovery(6, '09010000-0000-4000-8000-000000000166');
+	if (select recovery_epoch <> 1 or recovery_pending_id is not null from public.qorpera_member_compute_identities where id = pg_temp.identity(6))
+		or (select status <> 'pending' or compute_recovery_epoch <> 0 from public.qorpera_native_provider_login_sessions
+			where id = '09010000-0000-4000-8000-000000000116') then
+		raise exception 'F: identity 6 must be restored at epoch 1, its sign-in pending at epoch 0'; end if;
+	perform pg_temp.run(pg_temp.register(6, 8));
+	if pg_temp.run(pg_temp.request_login('09010000-0000-4000-8000-000000000116', 6, '09010000-0000-4000-8000-000000000186', 8)) <> 'approved'
+		or pg_temp.run(pg_temp.request_login('09010000-0000-4000-8000-000000000116', 6, '09010000-0000-4000-8000-000000000186', 8)) <> 'approved' then
+		raise exception 'F: a request on an older sign-in, and its replay, must go through'; end if;
+end $$;
+
+-- G. The helper is postgres-only and takes the fence and the company row KEY SHARE and every member row FOR SHARE,
 -- and nothing more (not the identity).
 do $$
 declare v_role text;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		if has_function_privilege(v_role, 'public.qorpera_folder_identity_recovery_locks(uuid)', 'execute') then
-			raise exception 'F: the helper must be postgres-only (%)', v_role; end if;
+			raise exception 'G: the helper must be postgres-only (%)', v_role; end if;
 	end loop;
 	perform dblink_exec('p13b_a', 'begin');
 	perform dblink_exec('p13b_a', $q$do $d$ begin perform public.qorpera_folder_identity_recovery_locks('09010000-0000-4000-8000-000000000010'); end $d$ $q$);
 	perform dblink_exec('p13b_c', 'begin');
-	if pg_temp.lockable('p13b_c', pg_temp.members_lock())
+	if pg_temp.lockable('p13b_c', pg_temp.member_lock(6)) or pg_temp.lockable('p13b_c', pg_temp.member_lock(1))
 		or pg_temp.lockable('p13b_c', 'public.qorpera_folder_fences where profile_id = ''09010000-0000-4000-8000-000000000010'' for update')
 		or pg_temp.lockable('p13b_c', pg_temp.company_lock()) then
-		raise exception 'F: the helper must hold the member rows, the fence and the company row'; end if;
+		raise exception 'G: the helper must hold every member row, the fence and the company row'; end if;
 	if not pg_temp.lockable('p13b_c', pg_temp.identity_lock(1))
+		or not pg_temp.lockable('p13b_c', 'public.qorpera_folder_fences where profile_id = ''09010000-0000-4000-8000-000000000010'' for share')
 		or not pg_temp.lockable('p13b_c', 'public.qorpera_profiles where id = ''09010000-0000-4000-8000-000000000010'' for no key update')
-		or not pg_temp.lockable('p13b_c', 'public.qorpera_profile_members where profile_id = ''09010000-0000-4000-8000-000000000010'' for key share') then
-		raise exception 'F: the helper must hold the company row and the members no stronger than KEY SHARE and FOR SHARE, and no identity'; end if;
+		or not pg_temp.lockable('p13b_c', 'public.qorpera_profile_members where profile_id = ''09010000-0000-4000-8000-000000000010'' for share') then
+		raise exception 'G: the helper must hold the fence and the company row KEY SHARE, the members FOR SHARE, and no identity'; end if;
 	perform dblink_exec('p13b_c', 'rollback');
 	perform dblink_exec('p13b_a', 'rollback');
 end $$;
 
--- G. Each patched body carries its folder-v2 branch exactly once: a later create or replace that drops one fails here
+-- H. A role change and a recovery, in either order (member 1 made admin by the owner; an owner's request for identity 5;
+-- both rolled back). A recovery that waits at the identity holds every member row, so the role change waits for it at
+-- the member row, and both finish. A role change that holds the member row makes the recovery wait at the members,
+-- holding no identity, and both finish. No 40P01 either way.
+create function pg_temp.role_change() returns text language sql as $$
+	select format('select public.qorpera_update_profile_member_role(%L,%L,''admin'') ->> ''role''',
+		'09010000-0000-4000-8000-000000000010', pg_temp.member(1))
+$$;
+do $$
+declare v_value text;
+begin
+	-- The recovery first, waiting at the identity (held here FOR SHARE).
+	perform dblink_exec('p13b_c', 'begin');
+	perform dblink_exec('p13b_c', format('do $d$ begin perform 1 from public.qorpera_member_compute_identities where id = %L for share; end $d$', pg_temp.identity(5)));
+	perform dblink_exec('p13b_b', 'begin');
+	perform pg_temp.send('p13b_b', '09010000-0000-4000-8000-000000000001', pg_temp.request_owner(5, '09010000-0000-4000-8000-000000000177'));
+	if not pg_temp.waits_for('p13b_b', 'p13b_c') then raise exception 'H: the recovery must wait at the identity'; end if;
+	perform dblink_exec('p13b_a', 'begin');
+	perform pg_temp.send('p13b_a', '09010000-0000-4000-8000-000000000001', pg_temp.role_change());
+	if not pg_temp.waits_for('p13b_a', 'p13b_b') then raise exception 'H: the role change must wait for the recovery at the member row'; end if;
+	perform dblink_exec('p13b_c', 'rollback');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from 'awaiting_member' then raise exception 'H: the recovery must finish first: %', v_value; end if;
+	perform dblink_exec('p13b_b', 'rollback');
+	v_value := pg_temp.result('p13b_a');
+	if v_value is distinct from 'admin' then raise exception 'H: the role change must finish after it: %', v_value; end if;
+	perform dblink_exec('p13b_a', 'rollback');
+	-- The role change first, holding the member row (and the fence FOR NO KEY UPDATE) until it ends.
+	perform dblink_exec('p13b_a', 'begin');
+	perform pg_temp.send('p13b_a', '09010000-0000-4000-8000-000000000001', pg_temp.role_change());
+	v_value := pg_temp.result('p13b_a');
+	if v_value is distinct from 'admin' then raise exception 'H: the role change must go through: %', v_value; end if;
+	perform dblink_exec('p13b_b', 'begin');
+	perform pg_temp.send('p13b_b', '09010000-0000-4000-8000-000000000001', pg_temp.request_owner(5, '09010000-0000-4000-8000-000000000177'));
+	if not pg_temp.waits_for('p13b_b', 'p13b_a') then raise exception 'H: the recovery must wait for the role change'; end if;
+	perform dblink_exec('p13b_c', 'begin');
+	if not pg_temp.lockable('p13b_c', pg_temp.identity_lock(5)) then
+		raise exception 'H: the recovery must wait at the members, holding no identity'; end if;
+	perform dblink_exec('p13b_c', 'rollback');
+	perform dblink_exec('p13b_a', 'rollback');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from 'awaiting_member' then raise exception 'H: the recovery must go on once the role change ends: %', v_value; end if;
+	perform dblink_exec('p13b_b', 'rollback');
+end $$;
+
+-- I. A member's recovery decisions (qorpera_decide_member_identity_recovery: a review, then the request, consent or
+-- cancellation). Two decisions on one identity: the member's consent and the owner's cancellation both wait for the
+-- identity (held here FOR SHARE) before their reviews; the consent goes first and the cancellation then finds its
+-- review changed (PT412), no 40P01. A decision and the removal of the identity's owner: the removal holds the member's
+-- row and waits at the member's model login (held here); the decision waits at the member rows holding no identity,
+-- and both finish. Each review the decisions name is read in its own statement, so this session holds none of its
+-- locks during the races.
+select set_config('request.jwt.claims', pg_temp.claims(pg_temp.member(7)::text), false) \g /dev/null
+select set_config('qorpera_test.review_member', pg_temp.run(pg_temp.review(7)), false) \g /dev/null
+select set_config('request.jwt.claims', pg_temp.claims('09010000-0000-4000-8000-000000000001'), false) \g /dev/null
+select set_config('qorpera_test.review_owner', pg_temp.run(pg_temp.review(7)), false) \g /dev/null
+select set_config('request.jwt.claims', pg_temp.claims(null), false) \g /dev/null
+do $$
+declare v_value text;
+begin
+	perform dblink_exec('p13b_c', 'begin');
+	perform dblink_exec('p13b_c', format('do $d$ begin perform 1 from public.qorpera_member_compute_identities where id = %L for share; end $d$', pg_temp.identity(7)));
+	perform pg_temp.send('p13b_b', pg_temp.member(7)::text, pg_temp.decide(7, current_setting('qorpera_test.review_member'), 'consent'));
+	if not pg_temp.waits_for('p13b_b', 'p13b_c') then raise exception 'I: the consent must wait for the identity'; end if;
+	perform pg_temp.send('p13b_d', '09010000-0000-4000-8000-000000000001', pg_temp.decide(7, current_setting('qorpera_test.review_owner'), 'cancel'));
+	if not pg_temp.waits_for('p13b_d', 'p13b_c', 'p13b_b') then raise exception 'I: the cancellation must wait for the identity'; end if;
+	perform dblink_exec('p13b_c', 'rollback');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from 'approved' then raise exception 'I: the consent must go through: %', v_value; end if;
+	v_value := pg_temp.result('p13b_d');
+	if v_value not like 'error PT412 Recovery review changed%' then raise exception 'I: the cancellation must find its review changed: %', v_value; end if;
+end $$;
+-- The owner's cancellation (on a fresh review) and member 7's removal.
+select set_config('request.jwt.claims', pg_temp.claims('09010000-0000-4000-8000-000000000001'), false) \g /dev/null
+select set_config('qorpera_test.review_owner', pg_temp.run(pg_temp.review(7)), false) \g /dev/null
+select set_config('request.jwt.claims', pg_temp.claims(null), false) \g /dev/null
+do $$
+declare v_value text;
+begin
+	perform dblink_exec('p13b_c', 'begin');
+	perform dblink_exec('p13b_c', $q$do $d$ begin perform 1 from public.qorpera_provider_connections where id = '09010000-0000-4000-8000-000000000057' for update; end $d$ $q$);
+	perform dblink_exec('p13b_a', 'begin');
+	perform dblink_send_query('p13b_a', format($q$select 'entered'::text from public.qorpera_folder_member_change_enter(%L, %L, 'remove')$q$,
+		'09010000-0000-4000-8000-000000000010', pg_temp.member(7)));
+	if not pg_temp.waits_for('p13b_a', 'p13b_c') then raise exception 'I: the removal must wait at the member''s model login'; end if;
+	perform pg_temp.send('p13b_b', '09010000-0000-4000-8000-000000000001', pg_temp.decide(7, current_setting('qorpera_test.review_owner'), 'cancel'));
+	if not pg_temp.waits_for('p13b_b', 'p13b_a') then raise exception 'I: the decision must wait for the removal at the member row'; end if;
+	perform dblink_exec('p13b_d', 'begin');
+	if not pg_temp.lockable('p13b_d', pg_temp.identity_lock(7)) then
+		raise exception 'I: the decision must wait at the member rows, holding no identity'; end if;
+	perform dblink_exec('p13b_d', 'rollback');
+	perform dblink_exec('p13b_c', 'commit');
+	v_value := pg_temp.result('p13b_a');
+	if v_value is distinct from 'entered' then raise exception 'I: the removal must go on: %', v_value; end if;
+	perform dblink_exec('p13b_a', 'rollback');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from 'cancelled' then raise exception 'I: the decision must go on once the removal ends: %', v_value; end if;
+end $$;
+
+-- J. A key backup's completion and a login machine reservation of one sign-in (identity 5's new one). The backup takes
+-- the sign-in KEY SHARE before the identity, then waits for its backup row (held here); the reservation waits for it at
+-- the sign-in, holding no identity. Both finish. (Read with no lock, the backup would take the sign-in only through its
+-- receipt's foreign key, after the identity the reservation waits for: 40P01.)
+select pg_temp.sign_in('09010000-0000-4000-8000-000000000125', 5);
+select pg_temp.observe();
+do $$
+declare v_value text;
+begin
+	perform dblink_exec('p13b_c', 'begin');
+	perform dblink_exec('p13b_c', format('do $d$ begin perform 1 from public.qorpera_identity_key_backups where compute_identity_id = %L and revision = 1 for update; end $d$',
+		pg_temp.identity(5)));
+	perform pg_temp.send('p13b_b', null, pg_temp.backup(5, '09010000-0000-4000-8000-000000000125', true));
+	if not pg_temp.waits_for('p13b_b', 'p13b_c') then raise exception 'J: the backup must wait for its backup row'; end if;
+	perform pg_temp.send('p13b_a', null, pg_temp.reserve('09010000-0000-4000-8000-000000000075', '09010000-0000-4000-8000-000000000125'));
+	if not pg_temp.waits_for('p13b_a', 'p13b_b') then raise exception 'J: the reservation must wait for the backup'; end if;
+	perform dblink_exec('p13b_d', 'begin');
+	if not pg_temp.lockable('p13b_d', 'public.qorpera_native_provider_login_sessions where id = ''09010000-0000-4000-8000-000000000125'' for key share') then
+		raise exception 'J: the reservation must wait for the sign-in, not hold it'; end if;
+	perform dblink_exec('p13b_d', 'rollback');
+	perform dblink_exec('p13b_c', 'rollback');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from 'ready' then raise exception 'J: the backup must finish: %', v_value; end if;
+	v_value := pg_temp.result('p13b_a');
+	if v_value is distinct from 'reserved' then raise exception 'J: the reservation must finish: %', v_value; end if;
+	perform pg_temp.run(format('select public.qorpera_release_runtime_login_machine(%L,%L,%L,%L)::text', '09010000-0000-4000-8000-000000000075',
+		'lxd-p13b', pg_temp.sha('09010000-0000-4000-8000-000000000075'), '09010000-0000-4000-8000-000000000125'));
+end $$;
+
+-- K. Each patched body carries its folder-v2 branch exactly once: a later create or replace that drops one fails here
 -- (folder-v2 only since 3 Oct, so no snapshot-v1 text pins).
 create temporary table p13b_patches(n serial, fn text, patched text) on commit preserve rows;
 insert into p13b_patches(fn, patched) values
@@ -509,8 +696,9 @@ $p13new$),
 		$p13new$	v_user uuid; v_owner boolean; v_self boolean; v_owner_user uuid; v_folder boolean;
 $p13new$),
 	('qorpera_request_login_identity_recovery(uuid,uuid,uuid,text)',
-		$p13new$	-- 20260930049000: on folder-v2 the sign-in is read with no lock and checked again under the identity's lock;
-	-- holding it while waiting for the identity deadlocks with a new sign-in (C1B §8).
+		$p13new$	-- 20260930049000: on folder-v2 the sign-in is read with no lock and checked again under the identity's lock
+	-- (pending, and re-pinned to no other recovery epoch meanwhile); holding it while waiting for the identity
+	-- deadlocks with a new sign-in (C1B §8).
 	select * into v_session from public.qorpera_native_provider_login_sessions where id=p_login_id;
 	v_folder:=found and public.qorpera_company_is_folder_v2(v_session.profile_id);
 	if not v_folder then
@@ -527,19 +715,20 @@ $p13new$),
 $p13new$),
 	('qorpera_request_login_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	select * into strict v_identity from public.qorpera_member_compute_identities where id=v_session.compute_identity_id for update;
-	if v_folder then
-		select * into v_session from public.qorpera_native_provider_login_sessions where id=p_login_id;
-		if not found or v_session.status<>'pending' or v_session.expires_at<=clock_timestamp()
-			or v_session.compute_recovery_epoch is distinct from v_identity.recovery_epoch then
-			raise exception 'login recovery requires a pending login' using errcode='42501'; end if;
-	end if;
+	if v_folder and not exists(select 1 from public.qorpera_native_provider_login_sessions where id=p_login_id and status='pending'
+		and expires_at>clock_timestamp()) then
+		raise exception 'login recovery requires a pending login' using errcode='42501'; end if;
+	if v_folder and not exists(select 1 from public.qorpera_native_provider_login_sessions where id=p_login_id
+		and compute_recovery_epoch=v_session.compute_recovery_epoch) then
+		raise exception 'login recovery generation changed' using errcode='42501'; end if;
 $p13new$),
 	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	v_user uuid; v_owner boolean; v_self boolean; v_owner_user uuid; v_folder boolean;
 $p13new$),
 	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
-		$p13new$	-- 20260930049000: on folder-v2 the refresh request is read with no lock and checked again under the identity's lock;
-	-- holding it while waiting for the identity deadlocks with a new sign-in (C1B §8).
+		$p13new$	-- 20260930049000: on folder-v2 the refresh request is read with no lock and checked again under the identity's lock
+	-- (pending, and re-pinned to no other recovery epoch meanwhile); holding it while waiting for the identity
+	-- deadlocks with a new sign-in (C1B §8).
 	select * into v_session from public.qorpera_native_account_refresh_requests where id=p_request_id;
 	v_folder:=found and public.qorpera_company_is_folder_v2(v_session.profile_id);
 	if not v_folder then
@@ -556,25 +745,26 @@ $p13new$),
 $p13new$),
 	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	select * into strict v_identity from public.qorpera_member_compute_identities where id=v_session.compute_identity_id for update;
-	if v_folder then
-		select * into v_session from public.qorpera_native_account_refresh_requests where id=p_request_id;
-		if not found or v_session.status<>'pending' or v_session.expires_at<=clock_timestamp()
-			or v_session.compute_recovery_epoch is distinct from v_identity.recovery_epoch then
-			raise exception 'login recovery requires a pending login' using errcode='42501'; end if;
-	end if;
+	if v_folder and not exists(select 1 from public.qorpera_native_account_refresh_requests where id=p_request_id and status='pending'
+		and expires_at>clock_timestamp()) then
+		raise exception 'login recovery requires a pending login' using errcode='42501'; end if;
+	if v_folder and not exists(select 1 from public.qorpera_native_account_refresh_requests where id=p_request_id
+		and compute_recovery_epoch=v_session.compute_recovery_epoch) then
+		raise exception 'login recovery generation changed' using errcode='42501'; end if;
 $p13new$),
 	('qorpera_prepare_identity_key_backup(uuid,text,uuid,text,text)',
 		$p13new$	v_revision bigint; v_folder boolean;
 $p13new$),
 	('qorpera_prepare_identity_key_backup(uuid,text,uuid,text,text)',
-		$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0, then the sign-in read with no lock and checked again under
-	-- the identity's lock (C1B §8); no gc fence.
+		$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0, then the sign-in KEY SHARE (the backup and its receipt
+	-- reference it), which a new sign-in's cancellation does not wait for, checked again under the identity's
+	-- lock (C1B §8); no gc fence.
 	v_folder:=public.qorpera_company_is_folder_v2(v_authority.profile_id);
 	if v_folder then
 		perform public.qorpera_folder_machine_fence(v_authority.profile_id);
 		select * into v_login from public.qorpera_native_provider_login_sessions
 		where id = p_login_id and profile_id = v_authority.profile_id and capability_sha256 = p_login_capability_sha256
-			and status in ('pending','completed') and expires_at > clock_timestamp();
+			and status in ('pending','completed') and expires_at > clock_timestamp() for key share;
 	else
 	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
 	select * into v_login from public.qorpera_native_provider_login_sessions
@@ -621,15 +811,32 @@ $p13new$),
 		else
 		perform public.qorpera_lock_profile_gc_fence(v_profile);
 		end if;
+$p13new$),
+	('qorpera_decide_member_identity_recovery(uuid,uuid,uuid,text,text,uuid,text)',
+		$p13new$begin
+  -- 20260930049000: on folder-v2 a decision takes the recovery's locks before the review reads: the fence, rank 0
+  -- and every member row, then the identity FOR UPDATE. The review's FOR SHARE reads, and the request, consent
+  -- or cancellation after them, then take nothing new, so two decisions on one identity, or a decision and the
+  -- removal of the identity's owner, queue instead of deadlocking (C1B §8). A caller the review would refuse
+  -- (checked here with no lock) takes none of them.
+  if public.qorpera_company_is_folder_v2(p_company_id) and auth.role() = 'authenticated' and exists(
+    select 1 from public.qorpera_member_compute_identities as identity
+    join public.qorpera_profile_members as member on member.profile_id = identity.profile_id and member.user_id = auth.uid()
+    where identity.id = p_compute_identity_id and identity.profile_id = p_company_id
+      and (member.role = 'owner' or identity.owner_user_id = auth.uid())) then
+    perform public.qorpera_folder_identity_recovery_locks(p_company_id);
+    perform 1 from public.qorpera_member_compute_identities where id = p_compute_identity_id for update;
+  end if;
+  v_review:=public.qorpera_review_member_identity_recovery(p_company_id,p_compute_identity_id,p_target_id);
 $p13new$);
 do $$
 declare v_bad text[];
 begin
-	if (select count(*) from p13b_patches) <> 19 then raise exception 'G: the patch table is incomplete'; end if;
+	if (select count(*) from p13b_patches) <> 20 then raise exception 'K: the patch table is incomplete'; end if;
 	select array_agg(fn order by n) into v_bad from p13b_patches
 	where (length(pg_get_functiondef(('public.' || fn)::regprocedure))
 		- length(replace(pg_get_functiondef(('public.' || fn)::regprocedure), patched, ''))) / length(patched) <> 1;
-	if v_bad is not null then raise exception 'G: a patched branch is missing in: %', v_bad; end if;
+	if v_bad is not null then raise exception 'K: a patched branch is missing in: %', v_bad; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['p13b_a','p13b_b','p13b_c','p13b_d','p13b_e']) name;
@@ -638,7 +845,7 @@ select dblink_disconnect(name) from unnest(array['p13b_a','p13b_b','p13b_c','p13
 set session_replication_role = replica;
 do $$
 declare v_table record; v_profile uuid := '09010000-0000-4000-8000-000000000010';
-	v_identities uuid[] := array(select pg_temp.identity(n) from generate_series(1, 6) as n);
+	v_identities uuid[] := array(select pg_temp.identity(n) from generate_series(1, 7) as n);
 	v_connections uuid[] := array(select id from public.qorpera_provider_connections where profile_id = '09010000-0000-4000-8000-000000000010');
 begin
 	for v_table in select c.table_name, c.column_name from information_schema.columns c
@@ -658,7 +865,7 @@ begin
 	delete from public.qorpera_profiles where id = v_profile;
 end $$;
 set session_replication_role = origin;
-delete from auth.users where id = '09010000-0000-4000-8000-000000000001' or id in (select pg_temp.member(n) from generate_series(1, 6) as n);
+delete from auth.users where id = '09010000-0000-4000-8000-000000000001' or id in (select pg_temp.member(n) from generate_series(1, 7) as n);
 do $$
 begin
 	if exists (select 1 from public.qorpera_profiles where id = '09010000-0000-4000-8000-000000000010')
@@ -666,7 +873,7 @@ begin
 		or exists (select 1 from public.qorpera_member_compute_identities where profile_id = '09010000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_identity_recoveries where profile_id = '09010000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_identity_backup_login_receipts where compute_identity_id in (
-			select ('09010000-0000-4000-8000-00000000003' || n)::uuid from generate_series(1, 6) as n))
+			select ('09010000-0000-4000-8000-00000000003' || n)::uuid from generate_series(1, 7) as n))
 		or exists (select 1 from public.qorpera_company_files where environment_id = '09010000-0000-4000-8000-000000000020') then
 		raise exception 'The identity recovery fixture must be removed'; end if;
 end $$;

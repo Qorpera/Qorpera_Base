@@ -420,16 +420,20 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     identity in a mode that conflicts with `FOR SHARE` (`FOR NO KEY UPDATE`,
     `FOR UPDATE`) must not hold an earlier pending sign-in of the same user.
 
-    **Identity recovery takes no sign-in lock** (P13's second part, migration
-    `20260930049000`). A login's or a refresh's recovery request, and a key
-    backup's preparation, read the sign-in (or refresh request) with no lock.
-    Then they take the fence, rank 0 and (recovery) every member row `FOR
-    SHARE`, then the identity `FOR UPDATE`. Then they read the sign-in again
-    and refuse unless it is still pending (or, for the backup, completed), not
-    expired, and of the identity's recovery epoch. With a sign-in lock, neither
-    order works:
+    **Identity recovery holds no sign-in `FOR SHARE`** (P13's second part,
+    migration `20260930049000`). A login's or a refresh's recovery request
+    reads the sign-in (or refresh request) with no lock. A key backup's
+    preparation takes it `FOR KEY SHARE`, because the backup and its receipt
+    reference it and their foreign keys would otherwise take it after the
+    identity. Then they take the fence, rank 0 and (recovery) every member row
+    `FOR SHARE`, then the identity `FOR UPDATE`. Then they read the sign-in
+    again and refuse unless it is still pending (or, for the backup,
+    completed), not expired, and re-pinned to no other recovery epoch since the
+    first read: what the old `FOR SHARE` held still. With the sign-in held
+    `FOR SHARE` or stronger, neither order works:
     - the sign-in before the identity deadlocks with a new sign-in, which
-      holds the identity `FOR SHARE` and then cancels the earlier sign-in;
+      holds the identity `FOR SHARE` and then cancels the earlier sign-in (a
+      `FOR NO KEY UPDATE`, which `KEY SHARE` does not block);
     - the identity before the sign-in deadlocks with a completion, which
       holds the sign-in and then takes the identity (`KEY SHARE` through its
       capsule, `FOR SHARE` through its epoch trigger).
@@ -439,9 +443,23 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     capsule's foreign key and the epoch trigger wait for it. A cancellation or
     a completion that commits first shows in the re-check. A completion that
     already holds the identity `KEY SHARE` takes its trigger's `FOR SHARE`
-    without queueing behind recovery's waiting `FOR UPDATE` (Postgres raises a
-    lock its own transaction holds without joining the row's queue), so it
-    finishes first.
+    without queueing behind recovery's waiting `FOR UPDATE`, so it finishes
+    first. Postgres grants any share lock on a row that has no update and no
+    exclusive lock without joining the row's queue, so a stream of share
+    lockers could keep a recovery waiting there (holding the member rows); the
+    identity's share lockers are short.
+
+    **Every member row, `FOR SHARE`.** Recovery takes all of the company's
+    member rows at rank 1 (`qorpera_folder_identity_recovery_locks`), because
+    the chain reads members `FOR SHARE` after the identity, and which members
+    and roles those are is only known there. It blocks only member writes
+    (role changes, removals, rule saves, display names) for the length of a
+    rare recovery call, never a reader or a `KEY SHARE`. A member's recovery
+    decision (`qorpera_decide_member_identity_recovery`) runs a review, which
+    reads the identity `FOR SHARE`, before the request, consent or
+    cancellation that takes it `FOR UPDATE`; it takes the member rows and the
+    identity `FOR UPDATE` before the review, so two decisions on one identity
+    queue rather than both upgrading.
 - **Keys.** A uuid table's key is the uuid as text (resources, grants,
   rooms, routines). Keys with no single uuid are encoded:
   - members: `profile_id:user_id`;
