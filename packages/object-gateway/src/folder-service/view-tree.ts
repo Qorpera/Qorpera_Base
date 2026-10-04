@@ -204,8 +204,9 @@ export class ViewTree {
 		return names;
 	}
 
-	/** Adds or replaces one entry (and any folders above it that are not known yet). */
-	put(e: CoreEntry): string[] {
+	/** Adds or replaces one entry (and any folders above it that are not known yet). `replaced` hears of every file entry
+	 * it removes or replaces with another version. */
+	put(e: CoreEntry, replaced?: (old: TreeEntry) => void): string[] {
 		const changed: string[] = [];
 		const ancestors: string[] = [];
 		for (let p = parentOf(e.path); p !== ""; p = parentOf(p)) ancestors.push(p);
@@ -213,7 +214,7 @@ export class ViewTree {
 			const existing = this.#entries.get(p);
 			if (existing?.kind === "file") {
 				// A file where a folder must be: the newer path wins, as it will in the core.
-				changed.push(...this.remove(p));
+				changed.push(...this.remove(p, replaced));
 			}
 			if (!this.#entries.has(p)) {
 				this.#link({ ...ROOT, path: p });
@@ -221,17 +222,21 @@ export class ViewTree {
 			}
 		}
 		const previous = this.#entries.get(e.path);
-		if (previous?.kind === "folder" && e.kind === "file") changed.push(...this.#removeBelow(e.path));
+		if (previous?.kind === "folder" && e.kind === "file") changed.push(...this.#removeBelow(e.path, replaced));
 		const next = entryOf(e, previous, this.#withReceipt(parentOf(e.path)));
+		if (previous?.kind === "file" && (next.kind !== "file" || next.version !== previous.version)) replaced?.(previous);
 		if (!previous || !same(previous, next) || previous.implicit) changed.push(e.path);
 		this.#link(next);
 		return changed;
 	}
 
-	/** Removes a path and everything under it; an implicit folder left empty goes too. */
-	remove(path: string): string[] {
+	/** Removes a path and everything under it; an implicit folder left empty goes too. `replaced` hears of every file
+	 * entry removed, the path's descendants included. */
+	remove(path: string, replaced?: (old: TreeEntry) => void): string[] {
 		if (path === "" || !this.#entries.has(path)) return [];
-		const changed = this.#removeBelow(path);
+		const changed = this.#removeBelow(path, replaced);
+		const removed = this.#entries.get(path);
+		if (removed?.kind === "file") replaced?.(removed);
 		this.#unlink(path);
 		changed.push(path);
 		for (let p = parentOf(path); p !== ""; p = parentOf(p)) {
@@ -243,15 +248,17 @@ export class ViewTree {
 		return changed;
 	}
 
-	apply(change: FeedChange): string[] {
+	/** Applies one feed change. `replaced` hears of every file entry the change removes or replaces, the descendants of a
+	 * folder it removes included, so a reader of an old version can keep it. */
+	apply(change: FeedChange, replaced?: (old: TreeEntry) => void): string[] {
 		switch (change.op) {
 			case "delete":
 			case "move_out":
-				return this.remove(change.path);
+				return this.remove(change.path, replaced);
 			case "mkdir":
-				return this.put({ ...change, kind: "folder" });
+				return this.put({ ...change, kind: "folder" }, replaced);
 			default:
-				return this.put(change);
+				return this.put(change, replaced);
 		}
 	}
 
@@ -298,13 +305,15 @@ export class ViewTree {
 		if (names?.delete(nameOf(path))) this.#sorted.delete(parent);
 	}
 
-	#removeBelow(path: string): string[] {
+	#removeBelow(path: string, replaced?: (old: TreeEntry) => void): string[] {
 		const changed: string[] = [];
 		const names = this.#children.get(path);
 		if (!names) return changed;
 		for (const name of [...names]) {
 			const child = `${path}/${name}`;
-			changed.push(...this.#removeBelow(child));
+			changed.push(...this.#removeBelow(child, replaced));
+			const removed = this.#entries.get(child);
+			if (removed?.kind === "file") replaced?.(removed);
 			this.#unlink(child);
 			changed.push(child);
 		}

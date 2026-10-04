@@ -341,6 +341,7 @@ describe("editing group details", () => {
 		vi.mocked(f.fake.folder.stateFolders).mockResolvedValueOnce({
 			agents: [],
 			groups: [{ roomId: f.observed.roomId, file: "agents/groups/other/group.md" }],
+			routines: [],
 		});
 		f.fake.put(
 			"agents/groups/other/group.md",
