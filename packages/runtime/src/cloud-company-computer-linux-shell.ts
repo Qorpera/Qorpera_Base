@@ -6,6 +6,7 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { idleRuleBusy } from "@qorpera/contracts";
 import type {
 	CompanyComputerGuestBoundary,
 	CompanyComputerGuestShell,
@@ -897,34 +898,50 @@ export interface CompanyComputerShellUsage {
 	 * compilers count too. It only grows while the shell's namespace lives.
 	 */
 	cpuTicks: number;
+	/**
+	 * Bytes the shell's processes passed to read and write calls on files,
+	 * pipes and the terminal (/proc/<pid>/io rchar + wchar; a socket's send and
+	 * recv do not count, but a download writes what it receives): every process
+	 * of the namespace except the shell host, which relays every command's
+	 * output. A background program left running under the namespace's init
+	 * counts too. Counts of a reaped process move to its parent: when that is
+	 * the host (a command that ended), the sum goes down, and that sample is
+	 * simply not busy.
+	 */
+	ioBytes: number;
 }
 
 /** Linux's USER_HZ, the unit of processor time in /proc/<pid>/stat on every architecture we run. */
 export const COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND = 100;
-/**
- * A shell is busy while it uses more than about 5% of one processor core, as a
- * coding session is (founder, 3 October 2026: one idle rule for every
- * machine). Per computer, whatever the machine's size: busy is what a program
- * does, and a waiting server or database stays far below it.
- */
-export const COMPANY_COMPUTER_SHELL_BUSY_SHARE = 0.05;
 
-/** Whether a shell was busy between two samples of the same namespace. */
+/**
+ * Whether a shell was busy between two samples of the same namespace, by the
+ * one idle rule (@qorpera/contracts idle-rule): at least 5% of one processor
+ * core, or at least 512 KiB moved in a 30-second sample.
+ */
 export function companyComputerShellBusy(
-	before: { cpuTicks: number; at: number },
-	after: { cpuTicks: number; at: number },
+	before: { cpuTicks: number; ioBytes: number; at: number },
+	after: { cpuTicks: number; ioBytes: number; at: number },
 ): boolean {
-	const seconds = (after.at - before.at) / 1000;
-	if (!(seconds > 0)) return false;
-	const used = (after.cpuTicks - before.cpuTicks) / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND;
-	return used >= COMPANY_COMPUTER_SHELL_BUSY_SHARE * seconds;
+	return idleRuleBusy(
+		{ cpuSeconds: before.cpuTicks / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND, ioBytes: before.ioBytes, at: before.at },
+		{ cpuSeconds: after.cpuTicks / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND, ioBytes: after.ioBytes, at: after.at },
+	);
+}
+
+/** The bytes a process passed to read and write calls (/proc/<pid>/io rchar + wchar); 0 when it cannot be read. */
+export function companyComputerProcessIoBytes(io: string): number {
+	const read = Number(/^rchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	const written = Number(/^wchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	return Number.isSafeInteger(read) && Number.isSafeInteger(written) ? read + written : 0;
 }
 
 /**
  * Each shell's usage, read from outside its namespace in one pass over /proc:
- * every process under its Bubblewrap monitor (anonymous resident memory and
- * threads), and the /tmp they see. The measure matches the pressure below:
- * memory the kernel cannot reclaim without swap. A process that exits
+ * every process under its Bubblewrap monitor (anonymous resident memory,
+ * threads and processor time, and the bytes all but the shell host read and
+ * wrote), and the /tmp they see. The memory measure matches the pressure
+ * below: memory the kernel cannot reclaim without swap. A process that exits
  * meanwhile counts as nothing.
  */
 export async function readCompanyComputerShellUsage(
@@ -946,17 +963,27 @@ export async function readCompanyComputerShellUsage(
 	}
 	const usages = new Map<number, CompanyComputerShellUsage>();
 	for (const rootPid of rootPids) {
-		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0 };
-		const pending = [rootPid];
+		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0, ioBytes: 0 };
+		// Each process, and whether it is below the shell host (whose own bytes are its commands' relayed output).
+		const pending: { pid: number; belowHost: boolean }[] = [{ pid: rootPid, belowHost: false }];
 		let inside: number | undefined;
 		while (pending.length) {
-			const pid = pending.pop()!;
-			pending.push(...(children.get(pid) ?? []));
+			const { pid, belowHost } = pending.pop()!;
+			const host =
+				!belowHost &&
+				(await readCompanyComputerLinuxMetadata(`/proc/${pid}/cmdline`, 4096).catch(() => "")).includes(
+					"\0--shell-host",
+				);
+			pending.push(...(children.get(pid) ?? []).map((child) => ({ pid: child, belowHost: belowHost || host })));
 			if (pid !== rootPid) inside ??= pid;
 			const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
 			usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
 			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
 			usage.cpuTicks += ticks.get(pid) ?? 0;
+			if (!host)
+				usage.ioBytes += companyComputerProcessIoBytes(
+					await readCompanyComputerLinuxMetadata(`/proc/${pid}/io`, 4096).catch(() => ""),
+				);
 		}
 		if (inside !== undefined) {
 			const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);

@@ -189,7 +189,7 @@ probe_sent() {
 cat >"$work/spoof.py" <<'EOF'
 import socket, struct, sys
 # argv: kind ... from inside a machine (eth0). garp IP [SHA]: an ARP reply claiming IP; frame MAC: a frame with that
-# source MAC; decline OWN_IP CHADDR ADDRESS: a DHCPDECLINE naming CHADDR; syn: see below.
+# source MAC; decline OWN_IP CHADDR ADDRESS EXIT_MAC: a DHCPDECLINE naming CHADDR; syn: see below.
 own = bytes.fromhex(open("/sys/class/net/eth0/address").read().strip().replace(":", ""))
 raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
 raw.bind(("eth0", 0))
@@ -200,7 +200,8 @@ if kind == "garp":
     for op in (1, 2):
         raw.send(b"\xff" * 6 + own + b"\x08\x06" + struct.pack("!HHBBH", 1, 0x0800, 6, 4, op) + sha + ip + b"\xff" * 6 + ip)
 elif kind == "syn":
-    # Three TCP SYNs as whole frames: source MAC argv[2], to MAC argv[3], from argv[4] to argv[5] port argv[6]. A raw
+    # Three TCP SYNs as whole frames: source MAC argv[2], to MAC argv[3], from argv[4] to argv[5] port argv[6], from
+    # source ports argv[7] onwards (each check its own, so no check meets another's connections). A raw
     # frame leaves the card whatever its routes and neighbours are.
     src, dst = socket.inet_aton(sys.argv[4]), socket.inet_aton(sys.argv[5])
     def csum(b):
@@ -210,7 +211,7 @@ elif kind == "syn":
             t = (t & 0xffff) + (t >> 16)
         return ~t & 0xffff
     for n in range(3):
-        tcp = struct.pack("!HHIIBBHHH", 40000 + n, int(sys.argv[6]), 7, 0, 5 << 4, 0x02, 64240, 0, 0)
+        tcp = struct.pack("!HHIIBBHHH", int(sys.argv[7]) + n, int(sys.argv[6]), 7, 0, 5 << 4, 0x02, 64240, 0, 0)
         tcp = tcp[:16] + struct.pack("!H", csum(src + dst + struct.pack("!BBH", 0, 6, len(tcp)) + tcp)) + tcp[18:]
         ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 100 + n, 0, 64, 6, 0, src, dst)
         ip = ip[:10] + struct.pack("!H", csum(ip)) + ip[12:]
@@ -233,11 +234,13 @@ elif kind == "decline":
     raw.send(bytes.fromhex(sys.argv[5].replace(":", "")) + own + b"\x08\x00" + ip + udp)
 EOF
 lx file push "$work/spoof.py" m1/root/spoof.py >/dev/null
-# Three SYNs from m1's card with the source MAC $1 and m1's own address, to the site: did the exit forward them?
+# Three SYNs from m1's card with the source MAC $1 and m1's own address, to the site, from source ports $2 onwards:
+# did the exit forward them?
 syn_from() {
-	in_m m1 python3 /root/spoof.py syn "$1" "$exit_mac" "$a1" 198.51.100.1 80
+	in_m m1 python3 /root/spoof.py syn "$1" "$exit_mac" "$a1" 198.51.100.1 80 "$2"
 	sleep 0.5
 }
+new_packets() { new_count "$1" | awk '{print $NF}'; }
 # LXD's own layers on each machine's port, each tested with ours opened for it (the reconciler stopped meanwhile, so
 # it cannot close them again): port isolation, its MAC filter and its IPv6 filter must hold by themselves.
 for port in "$(lx config get m1 volatile.eth0.host_name)" "$(lx config get m2 volatile.eth0.host_name)"; do
@@ -248,13 +251,13 @@ wait "$plug_pid" 2>/dev/null || true
 nft add element bridge qorpera_agent_exit_bridge ports "{ \"$host_if\" . 0e:51:0a:d2:99:98 }"
 nft add element bridge qorpera_agent_exit_bridge clients "{ 0e:51:0a:d2:99:98 . $a1 }"
 # The method first: SYNs from m1's own MAC are forwarded and counted by the exit.
-before=$(new_count "$a1")
-syn_from "$mac1"
-[[ $(new_count "$a1") != "$before" ]] || fail "the positive control: the exit did not count m1's own SYNs"
+before=$(new_packets "$a1")
+syn_from "$mac1" 41000
+(($(new_packets "$a1") == before + 3)) || fail "the positive control: the exit counted $(($(new_packets "$a1") - before)) of m1's 3 SYNs"
 # Our rules know the other MAC and address, so only LXD's MAC filter can stop it: the exit must forward nothing.
 before=$(new_count "$a1")
 probe_start ether saddr 0e:51:0a:d2:99:98 tcp dport 80
-syn_from 0e:51:0a:d2:99:98
+syn_from 0e:51:0a:d2:99:98 42000
 probe_sent || fail "the SYNs with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "LXD's MAC filter let another MAC through to the exit"
 # Our rules let m1's IPv6 through, so only LXD's IPv6 filter can stop it before forward priority 100.
@@ -290,7 +293,7 @@ in_m m1 ip addr del "$a2/32" dev eth0
 # Another MAC than its own.
 before=$(new_count "$a1")
 probe_start ether saddr 0e:51:0a:d2:99:99 tcp dport 80
-syn_from 0e:51:0a:d2:99:99
+syn_from 0e:51:0a:d2:99:99 43000
 probe_sent || fail "the SYNs with another MAC never left m1"
 [[ $(new_count "$a1") == "$before" ]] || fail "the exit saw a machine's address from another MAC"
 # IPv6: none of it reaches the bridge.
@@ -321,11 +324,14 @@ decline=$(nft list chain bridge qae2b_dhcp seen)
 nft delete table bridge qae2b_dhcp
 for stolen in "$mac2" "$exit_mac"; do in_m m1 python3 /root/spoof.py frame "$stolen"; done
 sleep 1
-ip -n qexit neigh show "$a2" | grep -q "$mac2" || fail "gratuitous ARP moved another machine's address: $(ip -n qexit neigh)"
-ip -n qexit neigh show "$a1" | grep -q "$mac2" && fail "an ARP sender MAC moved a machine's address"
+neigh2=$(ip -n qexit neigh show "$a2")
+[[ $neigh2 == *"$mac2"* ]] || fail "gratuitous ARP moved another machine's address: $(ip -n qexit neigh)"
+neigh1=$(ip -n qexit neigh show "$a1")
+[[ $neigh1 == *"$mac2"* ]] && fail "an ARP sender MAC moved a machine's address"
 grep -q DHCPDECLINE "$work/log/dns.log" && fail "a machine declined another's lease"
-bridge fdb show br qagent0 | grep -q "$mac2 dev $port2" || fail "another machine's MAC moved: $(bridge fdb show br qagent0)"
-bridge fdb show br qagent0 | grep -q "$exit_mac dev $host_if" && fail "the exit's MAC moved to a machine"
+fdb=$(bridge fdb show br qagent0)
+[[ $fdb == *"$mac2 dev $port2"* ]] || fail "another machine's MAC moved: $fdb"
+[[ $fdb == *"$exit_mac dev $host_if"* ]] && fail "the exit's MAC moved to a machine"
 pass "no gratuitous ARP for another's address, no ARP sender MAC, no DHCP naming another's MAC, no MAC theft"
 # A frame from the exit to a MAC the bridge has forgotten reaches only that machine's port.
 nft add table bridge qae2b_flood
@@ -370,8 +376,10 @@ wait_for "ip netns exec qexit conntrack -L -s $a1 2>/dev/null | grep -q 'dport=8
 wait_for "conntrack -L -s 10.209.255.2 2>/dev/null | grep -q 'dport=8443'"
 lx stop --force m1
 wait_for "test -e $work/run/plug-stopped/$a1" 100
-ip netns exec qexit conntrack -L -s "$a1" 2>/dev/null | grep -q 'dport=8443' && fail "the exit kept a sleeping machine's connection"
-conntrack -L -s 10.209.255.2 2>/dev/null | grep -q 'dport=8443' && fail "the node kept its twin"
+exit_left=$(ip netns exec qexit conntrack -L -s "$a1" 2>/dev/null || true)
+[[ $exit_left == *dport=8443* ]] && fail "the exit kept a sleeping machine's connection"
+node_left=$(conntrack -L -s 10.209.255.2 2>/dev/null || true)
+[[ $node_left == *dport=8443* ]] && fail "the node kept its twin"
 lx start m1
 wait_for "[[ \$(lease_of m1) == $a1 ]]" 600
 pass "a machine that sleeps loses its connections in both tables and wakes with its address"
@@ -472,6 +480,22 @@ flood() {
 		"$seconds" "$((exit_after - exit_before))" "$((node_after - node_before))" "$((limit_after - limit_before))"
 }
 for kind in churn silent refused udp other spoofed ipv6; do flood "$kind" "$kind"; done
+# Closed agent connections leave both tables within 30 seconds (the kernel's default is 120): TIME_WAIT entries right
+# after a churn, and 35 seconds later.
+time_waits() { "$@" conntrack -L -p tcp --state TIME_WAIT 2>/dev/null | grep -c . || true; }
+ip netns exec qexit conntrack -F >/dev/null 2>&1 || true
+conntrack -F >/dev/null 2>&1 || true
+in_m m1 python3 /root/flood.py churn 5000 >/dev/null
+exit_tw=$(time_waits ip netns exec qexit)
+node_tw=$(time_waits)
+sleep 35
+exit_tw_later=$(time_waits ip netns exec qexit)
+node_tw_later=$(time_waits)
+results+=("{\"time_wait\":\"after 5000 connections\",\"exit\":$exit_tw,\"node\":$node_tw,\"exit_35s_later\":$exit_tw_later,\"node_35s_later\":$node_tw_later}")
+echo "TIME_WAIT after 5000 connections: exit $exit_tw, node $node_tw; 35 s later: exit $exit_tw_later, node $node_tw_later"
+((exit_tw > 1000 && node_tw > 1000)) || fail "the churn left no TIME_WAIT entries to measure"
+((exit_tw_later < 50 && node_tw_later < 50)) || fail "closed agent connections stayed past 30 seconds"
+pass "closed agent connections leave both tables within 30 seconds"
 # The same without notrack, for comparison: the node's own table then holds the bridged leg too.
 handle=$(nft -a list chain inet qorpera_agent_exit_host raw_prerouting | awk '/notrack/ {print $NF}')
 nft delete rule inet qorpera_agent_exit_host raw_prerouting handle "$handle"

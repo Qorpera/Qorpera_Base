@@ -201,8 +201,9 @@ async function main() {
 		});
 		assert.equal(query(`select count(*) from public.qorpera_session_turn_requests where profile_id = '${profileId}'`), "0");
 		assert.equal(query(`select count(*) from public.qorpera_wake_occurrences where profile_id = '${profileId}'`), "0");
-		// 4. The Co-Founder's default grant, from the roster's trigger in the creation commit: read and write on the company's
-		// shared root, so its first run reads and writes the seed tree (vision.md and its first todo included).
+		// 4. The Co-Founder's default grant, from the follow-up queue the creation worker kicks after the commit (P15): read
+		// and write on the company's shared root, so its first run reads and writes the seed tree (vision.md and its first
+		// todo included).
 		const grants = JSON.parse(query(`select coalesce(jsonb_agg(jsonb_build_object('path', r.path, 'scope', r.scope,
 				'permissions', g.permissions, 'origin', g.origin) order by g.id), '[]')
 			from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id

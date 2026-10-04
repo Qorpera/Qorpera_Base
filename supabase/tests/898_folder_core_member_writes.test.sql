@@ -139,7 +139,8 @@ begin
 		'c0:agents/co-founder/agent.md,a1:agents/nora/agent.md,a2:agents/otto/agent.md,a3:agents/vera/agent.md',
 		'every agent''s file');
 	perform pg_temp.same(pg_temp.files(v, 'groups', 'roomId'), 'b1:agents/groups/launch/group.md', 'the group chat''s file');
-	perform pg_temp.same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'agents,groups,schema',
+	-- Routines' files since P34r (20260930038000; SQL test 899).
+	perform pg_temp.same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'agents,groups,routines,schema',
 		'the answer''s keys');
 end $$;
 

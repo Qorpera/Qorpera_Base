@@ -116,6 +116,7 @@ may not select it an "unauthorized" event per change, which would show anyone th
 | P33 | the web file page and history on folder-v2 (#386's approved file browser, read only); the member's file mode says `folder`; the hint's subscription in cloud-client | `20260930013200`, SQL test 836 |
 | P34a-1 | member writes (§5): the writer check, the state folders read, the object gateway's member commit route and the member company gateway's route, cloud-client's writer | `20260930021000`, SQL test 898 |
 | P34a-2 | the web's agent, group chat and skill editors on the folder (§5) | none |
+| P34r | the web's routine editor on the folder (§6): the state folders read lists routines' files | `20260930038000`, SQL test 899 |
 
 Each is inert until a folder-v2 company exists.
 
@@ -176,7 +177,14 @@ member's other routes (its Edge Function allows the route with a 1 MiB body), wi
   6. each state file's entry, built from the same text by `parseCompanyStateFile`, as the runtime's `structured()`
      does: `{path, kind, text, parse, parserVersion}`, or `{path, kind, problems}` when the parse fails (the hook
      refuses it with those codes). `path` is the whole stored path, also for a new folder's contents;
-  7. one `qorpera_folder_commit` as the member, with the namespaced key and neither a review nor a receipt.
+  7. one `qorpera_folder_commit` as the member, with the namespaced key and neither a review nor a receipt;
+  8. when the commit saved anything, its follow-up at once (F2's P15): the service-role
+     `qorpera_folder_follow_up_commit(environment, commit)` settles one subject a call (a hire's default grant,
+     connectors and first run; an archive's clean-up), and is called again while it answers `more`, at most 8 times
+     and 3 s, before the answer goes back, and never after 20 s into the request (the bridge allows 25 s). It runs on
+     its own database client, so a failing follow-up never opens the circuit members' commits use, and the member's
+     one-at-a-time slot is free while it runs. A best effort: any error ends it (before P15 the function does not
+     exist), and the core's own step converges whatever is left within about 2 s.
 - **The answer** is the core's commit answer (`qorpera.folder-commit/v1`) as it is: for each unit, `saved`, or the
   outcome with its reason and problems. A lock conflict is 409: send the same request again, with the same key (a
   first try that did commit replays its outcome). A company being deleted or paused is 423.
@@ -190,8 +198,9 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
 **The web (P34a-2).**
 - **Agents:**
   - *Create* is one `new_folder` `agents/<handle>` holding `agent.md` (`writeAgentFile`), `memory/`, `skills/`,
-    `routines/`, `todos/` and the first assignment as `todos/first-assignment.md`, as the runtime's hire makes it. The
-    handle comes from the name (`freeCompanyStateName` over the listed `agents/`).
+    `routines/` and `todos/`, as the runtime's hire makes it, without a first todo (see *Fields*). The handle comes
+    from the name (`freeCompanyStateName` over the listed `agents/`); one taken since the listing is `exists`, and the
+    next handle is tried with a new key.
   - *Edit* rewrites `agent.md`: its settings with `setCompanyStateSettings` and its body (the instructions), with
     `expectedVersion` from the read. The handle stays.
   - *Delete* removes the folder, with the folder entry's `version` and `asOfSeq` from one read of the folder. An
@@ -200,15 +209,19 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
   - *Fields:* `name`, `role`, `figure`, `colour` (the web's `qorpera-<colour>` token without its prefix, and back),
     and the instructions as the body. `model` and `effort` stay as read. Grants, model policy, lifecycle, template and
     department have no place in `agent.md` (grants come from the roster's defaults and path authority, placement from
-    `sections.md`), so the editor drops them. The first assignment replaces the startup instructions: the create form
-    asks for it and it becomes `todos/first-assignment.md` (`writeTodoFile`, requested by the member).
-  - *Handles:* a member's listing hides folders they may not read, so a free handle can still be taken; `exists`
-    picks the next handle with a new key.
+    `sections.md`), so the editor drops them. The web's create form has no first assignment, so a web-made agent has
+    no first todo and starts from its instructions when it is first messaged.
+  - *Handles:* a free handle in the member's listing can be taken by another writer before the commit; `exists`
+    picks the next handle with a new key. (A folder the member may not read is usually not writable either: the core
+    answers `denied` there.)
 
-  A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message.
+  A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message. A deleted
+  agent is fenced at once (no run, routine or message wakes it); until P15 its routines still read `active` in the
+  index, though none can fire (F2, 4 October).
 - **Group chats:** *create* is a `new_folder` `agents/groups/<handle>` holding `group.md` (`writeGroupFile`): the
   members' list becomes `agents` (at least two) and `people`. *Edit* rewrites `group.md` with `expectedVersion` from
-  the read; the room's version number and key go, and a lost answer is the operation key's replay. *Delete* removes
+  the read; the room's version number and key go, and a lost answer is found by reading the file again (each try
+  has its own key). *Delete* removes
   the folder (with `asOfSeq`), which closes the chat.
 - **Who may:** the web keeps today's owner-or-admin gates for agents and group chats, and the core's `denied` answers
   for anything a path's authority refuses.
@@ -216,3 +229,88 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
 - **What goes:** `WebCompanyFiles.files()` and `mode()` (these three editors are their only callers; P34b's editors
   are written on the folder), the web's use of the governed editor client, and the agent JSON document.
 
+## 6. The web's routine editor on the folder (P34r)
+
+Every company is folder-v2, so a routine is a file, `agents/<handle>/routines/<key>.md`
+(RUNTIME-COMPANY-STATE-FILES.md, "routines"), and `qorpera_upsert_cloud_routine` refuses a member's save there ("edit
+those files"). So the agent routines page's switch, Edit and New routine do nothing on a folder-v2 company. The
+coordinator moved the routine editor ahead of P31 (4 October): routines are not under `human-tasks/`, and a founder
+tries them at milestone acceptance. The rest of P34b (rules, sections) waits for P31. Design review r1 (4 October) is
+folded in below.
+
+**Finding a routine's file** (migration `20260930038000`, SQL test 899). The routine list
+(`qorpera_list_cloud_routines`) reads the index and does not say where a routine's file is; adding the path there would
+show it to every reader of the company, past the path's authority. `qorpera_member_company_state_folders` also
+answers `routines: [{routineId, staffAgentId, file}]`: the routine index rows with `profile_id`, this
+`folder_environment_id`, `folder_retired_at` null and status not `retired`, whose file the member may read (`qorpera_folder_actor_allowed`, as
+for agents), `staffAgentId` the row's owner, in path order. The web ships before the SQL (Pages deploys on merge; SQL
+at a release), so cloud-client's parser takes `routines` as optional: missing means no routine file is known and every
+routine reads as read-only.
+
+**Who pays.** The file does not say who pays (STATE-FILES, "Ownership"), and a member's commit carries no sponsor. The
+core takes the routine's own login when it still pays for this member, else the member's newest login that pays for
+unattended work (`qorpera_company_state_routine_payer`). A new routine, a resume and any change of what a run pins need
+one; a pause does not. So on folder-v2 the editor does not offer a choice of account: it says the routine runs on the
+member's own account that works while they're away. Before every save that needs a login, the web runs today's
+idempotent consent and bind (`qorpera_consent_provider_connection_autonomous`,
+`qorpera_create_member_execution_sponsor`) on the member's first account that can pay and is switched on for
+unattended use, so that account has a binding in this company. When none is switched on, the editor offers their
+accounts that can pay (never a Claude login; a ChatGPT plan only once its member turned on work while away, and never
+for a file-change routine) and switches the chosen one on first; the switch's Resume does as today's toggle does (the
+first account that can pay); when nothing can pay, today's messages say where to connect or turn one on. Then it
+commits the file as the member (§5's route). An exact choice among several paying accounts would need the commit to
+take a preferred login: not in this slice.
+
+**The trigger, both ways.** One exported helper in cloud-client, beside `writeRoutineFile`, maps the editor's shapes
+to the file's keys and back, the inverse of the index's `qorpera_company_state_routine_trigger`, with a test pinned to
+it:
+- every N minutes (5 to 10,080) is `when: every`, `minutes`, and `starts`: now plus the interval for a new routine
+  and for an edit that changes the interval; otherwise the file's `starts` exactly as read (present or absent), or
+  removed when a held start is let go;
+- days at a time is `when: weekly`, `days` (`mon`…`sun`), `time` (`HH:MM`), the top-level `timezone`, and `starts` as
+  read (a past one too, which today's editor keeps): a held future start moves with the time, and one that is let go
+  is removed;
+- the keys of the other `when` are removed. `timezone` stays when an edit moves to `every`: quiet hours without their
+  own zone take it. The zone field shows the file's `timezone` (also for an `every` file that keeps one), and an edit
+  that changes it writes `quiet_timezone` with the old zone when quiet hours had none of their own, so they stay as
+  read.
+
+**The writes**, each through §5's member commit route, as the member:
+- **New routine:** the routines folder is read first; when it is missing, a `mkdir` comes first in the same change
+  set (each unit's outcome is read; a `mkdir` `exists` reads again and retries without it). Then one `write` of
+  `agents/<handle>/routines/<key>.md` (`writeRoutineFile`) with a new id, `reply` (today's default, `required`) and
+  `effort` (`low`, as today) written out. The key comes from the title (`freeCompanyStateName` over the listed
+  routines' file stems, at most 64 characters); the write's `exists` takes the next key with a new operation key,
+  unless the file at that path already carries this draft's id (a lost answer: it is saved).
+- **Edit:** the form is filled from the file's parse, the same read that gives the version it names. It rewrites the
+  file with `setCompanyStateSettings` (the title, the trigger's keys, `timezone`, `reply` from
+  the editor's select) and `withStateBody` (the instructions). `effort`, `ends`, `runs`, quiet hours, notes and every
+  other byte stay as read. When the new parse equals the one it read, nothing is written ("Nothing changed"): an
+  unchanged save would resume a routine the platform paused, which only the switch does. A `version_changed` retries
+  only while the re-read file's editor fields equal those the form opened with; otherwise it stops with "This routine
+  changed while you were editing it" and the form reloads. A transport failure resends the same request with the same
+  operation key (a replay); only an answer that saved nothing frees the key. A replay that saved is "saved"; a draft
+  changed since is then written on top of what that request wrote, at the version its answer gives, so a change by
+  someone else meanwhile meets `version_changed` and the check above.
+- **Pause:** `status: paused`, no login needed; nothing is written when the file already says `paused`.
+- **Resume:** the login first (above); then `status: active`. When the file already says `active` (a pause the
+  platform recorded in the index only: a member's Stop, a failing login, a wait for one, and P15's `agent_archived`
+  once P15 lets a paid save end it), the file is saved unchanged, which ends that pause and pays like a resume, as the
+  runtime's `manage_routine` does. While the agent is archived the switch stays locked (#777). Turning on a ChatGPT
+  plan does not resume a folder-v2 routine; the member resumes it with the switch.
+- Pause and resume retry a `version_changed` only while the re-read file says `active` or `paused`; a file now
+  `concluded`, or a row now `expired`, stops and the list is read again.
+
+**What the editor offers.** Every 5 to 10,080 minutes and days at a time. A file-change routine is refused on
+folder-v2 until the folder's file events reach routines, so the editor stops offering it and its strings go. Read-only
+cases: a routine with no known file (unreadable, or from before the files) has no switch and no Edit; an ended routine
+(concluded, expired) has neither, as today; a dynamic routine (`once`) keeps its switch (the hook lets a member pause
+it and resume it, paid) and has no Edit; a member never makes one. A routine the editor cannot show keeps no Edit, as
+today.
+
+**Answers.** A refusal carries the hook's problems (English, as in §5), shown under the editor; nothing was written.
+New strings ("Nothing changed", the changed-while-editing line, the account line) get Danish. The routines list is
+read again after every save, as today.
+
+**Follow-up (not this slice).** `qorpera_list_cloud_routines` shows every routine's title and instructions to any
+reader of the company, past the files' authority on folder-v2.

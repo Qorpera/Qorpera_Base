@@ -4594,8 +4594,14 @@ amendment governs. In-place edits are marked "(changed in place)".
        notice.
      - A coding turn is a run.
    - **A program** counts while it is busy: while it uses more than about 5%
-     of one processor core.
+     of one processor core, or moves data, at least 512 KiB read or written
+     in a 30-second sample, about 17 KB a second (decided 4 October 2026, the
+     coordinator: a slow download is working; a waiting server, a prompt or
+     a loaded page moves about nothing).
      - That is measured for each command, coding session or computer's shell.
+       Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
+       coding sessions take the data signal with the idle rule's coding
+       part.
      - On an agent's machine, programs outside its commands, such as
        containers, count by the processor share of the whole machine beyond
        its commands' own use (about 2% of the machine). That share belongs to
@@ -4742,10 +4748,11 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    infrastructure guard for the node's connection table, far above normal use, and not a limit on the work.
    - The node's own connection table holds 262,144 entries (read on both nodes, 2 October). In phase 1 each agent
      connection takes one entry in the exit's own table and one, the masqueraded leg, in the node's; the node does
-     not track the bridged leg (step E2). The total bounds open connections only: a closed connection stays in both
-     tables for a while (120 seconds by default), and a refused attempt in the exit's (10 seconds for TCP, 30 for
-     UDP, 600 for other protocols). Step E2's proof on LXD measures the tables under such floods, and the total's
-     cost, before any node is switched on.
+     not track the bridged leg (step E2). The total bounds open connections only: a closed agent TCP connection
+     stays in both tables for 30 seconds (the kernel's default, 120, is shortened for agent connections only; a
+     reload of the exit's rules leaves connections open at that moment at the default). A refused attempt leaves no
+     entry in either table (measured in step E2's proof on LXD, which measured the tables under such floods, and the
+     total's cost, before any node is switched on).
    - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
      bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
    - One company with six busy machines on a node could reach the node's total; until its connections close, every

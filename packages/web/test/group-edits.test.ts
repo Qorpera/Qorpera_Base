@@ -47,8 +47,8 @@ function setup(updateGroup: NonNullable<WorkspaceActions["updateGroup"]>) {
 
 describe("group inline edit writer", () => {
 	it("serializes field edits across reopening and advances the observed revision", async () => {
-		const first = deferred<void>();
-		const second = deferred<void>();
+		const first = deferred<boolean>();
+		const second = deferred<boolean>();
 		const update = vi
 			.fn<NonNullable<WorkspaceActions["updateGroup"]>>()
 			.mockReturnValueOnce(first.promise)
@@ -58,7 +58,7 @@ describe("group inline edit writer", () => {
 		expect(f.reopen()).toBe(f.edits);
 		f.reopen().change({ subtitle: "New subtitle", purpose: "New description" });
 		expect(update).toHaveBeenCalledTimes(1);
-		first.resolve();
+		first.resolve(true);
 		await settle();
 		expect(update).toHaveBeenCalledTimes(2);
 		expect(update.mock.calls[1]![1]).toMatchObject({ version: room.version + 1, name: "New title" });
@@ -67,18 +67,18 @@ describe("group inline edit writer", () => {
 			subtitle: "New subtitle",
 			purpose: "New description",
 		});
-		second.resolve();
+		second.resolve(true);
 		await settle();
 		expect(f.reopen().current()).toMatchObject({ name: "New title", purpose: "New description" });
 		expect(f.edits.store.get()).toEqual({ status: "Saved", failed: false });
 	});
 
 	it("retries the exact uncertain snapshot before submitting newer changes", async () => {
-		const first = deferred<void>();
+		const first = deferred<boolean>();
 		const update = vi
 			.fn<NonNullable<WorkspaceActions["updateGroup"]>>()
 			.mockReturnValueOnce(first.promise)
-			.mockResolvedValue();
+			.mockResolvedValue(true);
 		const f = setup(update);
 		f.edits.change({ name: "First title" });
 		f.edits.change({ name: "Latest title" });
@@ -98,8 +98,8 @@ describe("group inline edit writer", () => {
 	});
 
 	it("accepts newer canonical fields while retaining a pending same-field edit", async () => {
-		const first = deferred<void>();
-		const second = deferred<void>();
+		const first = deferred<boolean>();
+		const second = deferred<boolean>();
 		const update = vi
 			.fn<NonNullable<WorkspaceActions["updateGroup"]>>()
 			.mockReturnValueOnce(first.promise)
@@ -109,11 +109,11 @@ describe("group inline edit writer", () => {
 		f.edits.change({ name: "Pending title" });
 		f.observe({ version: room.version + 2, name: "Remote title", purpose: "Remote description" });
 		await settle();
-		first.resolve();
+		first.resolve(true);
 		await settle();
 		expect(update.mock.calls[1]![1].version).toBe(room.version + 2);
 		expect(update.mock.calls[1]![2]).toMatchObject({ name: "Pending title", purpose: "Remote description" });
-		second.resolve();
+		second.resolve(true);
 		await settle();
 		f.observe({ version: room.version + 4, name: "Later title" });
 		await settle();
@@ -123,7 +123,7 @@ describe("group inline edit writer", () => {
 	it.each(["role", "archive", "navigation", "access"] as const)(
 		"aborts and discards queued edits after %s changes",
 		async (kind) => {
-			const pending = deferred<void>();
+			const pending = deferred<boolean>();
 			const update = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>().mockReturnValue(pending.promise);
 			const f = setup(update);
 			f.edits.change({ name: "In flight" });
@@ -138,7 +138,7 @@ describe("group inline edit writer", () => {
 			await settle();
 			expect(update.mock.calls[0]![3].aborted).toBe(true);
 			expect(f.edits.canWrite()).toBe(false);
-			pending.resolve();
+			pending.resolve(true);
 			await settle();
 			await f.edits.save();
 			expect(update).toHaveBeenCalledTimes(1);
@@ -146,8 +146,23 @@ describe("group inline edit writer", () => {
 		},
 	);
 
+	it("keeps the observed revision when the updater wrote nothing", async () => {
+		const update = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>().mockResolvedValue(false);
+		const f = setup(update);
+		f.edits.change({ name: "Already in the file" });
+		await settle();
+		expect(f.edits.store.get()).toEqual({ status: "Saved", failed: false });
+		// The room's details at its own revision are still current: discarding reads them, and the next write names it.
+		await f.edits.discardChanges();
+		expect(f.edits.store.get()).toEqual({ status: "", failed: false });
+		f.edits.change({ name: "Next title" });
+		await settle();
+		expect(update).toHaveBeenCalledTimes(2);
+		expect(update.mock.calls[1]![1].version).toBe(room.version);
+	});
+
 	it("retries a failed refresh without writing the accepted changes twice", async () => {
-		const update = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>().mockResolvedValue();
+		const update = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>().mockResolvedValue(true);
 		const f = setup(update);
 		vi.mocked(f.company.groupDetails).mockRejectedValueOnce(new Error("offline"));
 		f.edits.change({ name: "Saved title" });
@@ -162,7 +177,7 @@ describe("group inline edit writer", () => {
 		const update = vi
 			.fn<NonNullable<WorkspaceActions["updateGroup"]>>()
 			.mockRejectedValueOnce(new Error("Choose at least two agents"))
-			.mockResolvedValue();
+			.mockResolvedValue(true);
 		const f = setup(update);
 		f.edits.change({ members: [] });
 		await settle();

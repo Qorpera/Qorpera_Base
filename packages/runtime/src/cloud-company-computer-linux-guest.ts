@@ -204,7 +204,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	/** Shell reports the registry refused or did not answer, in a row. */
 	#shellReportFailures = 0;
 	/** Each screen's last processor sample of its shell's namespace, for its busy measure. */
-	readonly #shellSamples = new Map<string, { pid: number; cpuTicks: number; at: number }>();
+	readonly #shellSamples = new Map<string, { pid: number; cpuTicks: number; ioBytes: number; at: number }>();
 	/** Shells closed with their screens, whose last commands the platform has not heard of yet. */
 	#closedShells: { screenId: string; shell: CompanyComputerLinuxShell }[] = [];
 	readonly #shellActivity: ReturnType<typeof setInterval>;
@@ -254,8 +254,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 
 	/**
 	 * Every 30 seconds the office tells the platform about each screen's shell:
-	 * whether it was busy (more than about 5% of one core since the last
-	 * sample), the commands still open, and those that ended since, each with
+	 * whether it was busy since the last sample (the one idle rule: about 5% of
+	 * one core, or about 17 KB a second read or written by its commands), the
+	 * commands still open, and those that ended since, each with
 	 * the run that started it. A busy shell is demand: SQL keeps the computer on,
 	 * and the screen with its agent, while a report is fresh (90 seconds). A
 	 * shell that only waits is not; when the computer sleeps, its commands end
@@ -288,8 +289,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				!!now &&
 				before !== undefined &&
 				before.pid === pid &&
-				companyComputerShellBusy(before, { cpuTicks: now.cpuTicks, at });
-			if (pid !== undefined && now) this.#shellSamples.set(screenId, { pid, cpuTicks: now.cpuTicks, at });
+				companyComputerShellBusy(before, { cpuTicks: now.cpuTicks, ioBytes: now.ioBytes, at });
+			if (pid !== undefined && now)
+				this.#shellSamples.set(screenId, { pid, cpuTicks: now.cpuTicks, ioBytes: now.ioBytes, at });
 			else this.#shellSamples.delete(screenId);
 			const report: CompanyComputerShellReport | undefined = shell?.report();
 			return {

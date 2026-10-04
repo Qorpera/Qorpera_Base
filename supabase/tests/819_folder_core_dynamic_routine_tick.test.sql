@@ -3,9 +3,9 @@
 -- next run. The folder list names the folder-v2 dynamic routines missing their run; the per-routine restore inserts
 -- that run once (admitted, at its chosen instant), answers pending, changed, gone, not_folder and paused without one,
 -- pauses a routine whose latest run a member stopped, and suspends (and tells its member) a routine whose run the kernel
--- refuses for want of authority, but raises admission's own refusal. The list leaves out expired and limit-reached
--- routines. The legacy path refuses folder-v2. Snapshot-v1 keeps its text. Both functions are the service role's
--- alone.
+-- refuses for want of authority, but raises admission's own refusal. The list leaves out limit-reached routines; an
+-- expired one is listed and ended (20260930027000, test 889). The legacy path refuses folder-v2. Snapshot-v1 keeps its
+-- text. Both functions are the service role's alone.
 
 create function pg_temp.due(p_after uuid default null, p_limit integer default 100) returns jsonb language sql as $$
 	select public.qorpera_folder_dynamic_routines_due(p_after, p_limit)
@@ -117,14 +117,14 @@ begin
 		raise exception 'A stopped run pauses its routine'; end if;
 end $$;
 
--- 5. A run the kernel refuses for want of authority (the agent archived): no run, no admission; the routine is suspended
--- and its member told once.
+-- 5. A run the kernel refuses for want of authority (the version's member no longer in the company): no run, no
+-- admission; the routine is suspended and its member told once.
 do $$
 declare v_routine uuid := pg_temp.routine('agent'); v_admitted bigint; v_result jsonb;
 begin
 	perform pg_temp.path_claims('service_role');
-	perform pg_temp.fx($f$update public.qorpera_profile_staff set employment_status = 'archived'
-		where profile_id = '63400000-0000-4000-8000-000000000010' and staff_agent_id = '63400000-0000-4000-8000-0000000000a1'$f$);
+	perform pg_temp.fx($f$delete from public.qorpera_profile_members
+		where profile_id = '63400000-0000-4000-8000-000000000010' and user_id = '63400000-0000-4000-8000-000000000002'$f$);
 	select admitted into v_admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010';
 	v_result := pg_temp.restore(v_routine);
 	if v_result ->> 'status' <> 'suspended'
@@ -138,6 +138,31 @@ begin
 			(select count(*) from public.qorpera_member_notifications where dedupe_key = 'routine:' || v_routine::text),
 			(select admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010')
 				- v_admitted; end if;
+	perform pg_temp.fx($f$insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
+		('63400000-0000-4000-8000-000000000010','63400000-0000-4000-8000-000000000002','authority-member@example.test','Member',
+			'contributor')$f$);
+end $$;
+
+-- 5b. P15 (20260930022000): an archived agent's routine waits ('paused'): no run, no admission, no suspension; a mark for
+-- the agent makes the follow-up queue pause the routine (agent_archived).
+do $$
+declare v_routine uuid := pg_temp.routine('agent'); v_admitted bigint; v_result jsonb;
+begin
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.fx($f$update public.qorpera_profile_staff set employment_status = 'archived'
+		where profile_id = '63400000-0000-4000-8000-000000000010' and staff_agent_id = '63400000-0000-4000-8000-0000000000a1'$f$);
+	select admitted into v_admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010';
+	v_result := pg_temp.restore(v_routine);
+	if v_result ->> 'status' <> 'paused'
+		or exists (select 1 from public.qorpera_wake_occurrences where routine_id = v_routine)
+		or (select admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010')
+			<> v_admitted
+		or (select status from public.qorpera_cloud_routines where id = v_routine) <> 'active'
+		or exists (select 1 from public.qorpera_member_notifications where dedupe_key = 'routine:' || v_routine::text)
+		or not exists (select 1 from public.qorpera_folder_follow_up_marks where environment_id = '63400000-0000-4000-8000-000000000020'
+			and subject_kind = 'agent' and subject_id = '63400000-0000-4000-8000-0000000000a1' and commit_id is null) then
+		raise exception 'An archived agent''s routine waits and marks its agent: %', v_result; end if;
+	perform pg_temp.fx($f$delete from public.qorpera_folder_follow_up_marks where environment_id = '63400000-0000-4000-8000-000000000020'$f$);
 	perform pg_temp.fx($f$update public.qorpera_profile_staff set employment_status = 'active'
 		where profile_id = '63400000-0000-4000-8000-000000000010' and staff_agent_id = '63400000-0000-4000-8000-0000000000a1'$f$);
 end $$;
@@ -178,8 +203,8 @@ begin
 	if not (v_first = any (v_seen) and v_second = any (v_seen)) then raise exception 'Paging must visit every routine: %', v_seen; end if;
 end $$;
 
--- 8. The list leaves out routines the restore would only answer `ended` for: one past its expiry, and one at its
--- occurrence limit (an earlier occurrence, cancelled, by hand).
+-- 8. The list leaves out a routine at its occurrence limit (an earlier occurrence, cancelled, by hand), which the
+-- restore answers `ended` for. One past its expiry is listed so the restore can end it (20260930027000; test 889).
 do $$
 declare v_expired uuid := pg_temp.routine('agent'); v_limited uuid := pg_temp.routine('agent', 1);
 begin
@@ -190,10 +215,13 @@ begin
 		routine_version, trigger_id, occurrence_key, scheduled_for, not_before, payload, status, finished_at)
 		values (extensions.gen_random_uuid(), '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', %L, 1,
 			't1', 'once:1:1', clock_timestamp(), clock_timestamp(), '{}', 'cancelled', clock_timestamp())$f$, v_limited));
-	if pg_temp.listed(v_expired) or pg_temp.listed(v_limited) then
-		raise exception 'An expired or limited routine is not listed'; end if;
+	if not pg_temp.listed(v_expired) or pg_temp.listed(v_limited) then
+		raise exception 'An expired routine is listed and a limited one is not'; end if;
 	if pg_temp.restore(v_expired) ->> 'status' <> 'ended' or pg_temp.restore(v_limited) ->> 'status' <> 'ended' then
 		raise exception 'An expired or limited routine is ended'; end if;
+	-- Read after the restores, in its own statement (a scalar subquery beside them would be read first).
+	if (select status from public.qorpera_cloud_routines where id = v_expired) <> 'expired' then
+		raise exception 'The expired routine''s status says so'; end if;
 end $$;
 
 -- 9. Admission's own refusal (the company has no admission row) is raised, not taken for the kernel refusing the run:
