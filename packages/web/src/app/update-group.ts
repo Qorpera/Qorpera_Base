@@ -1,12 +1,22 @@
-import type { CloudMemberCompanyFileClient } from "@qorpera/cloud-client/cloud-member-company-editor";
+import { type CompanyStateSetting, setCompanyStateSettings } from "@qorpera/cloud-client/company-state-files";
 import { describeError } from "../cloud/client.ts";
+import {
+	deleteStateFolder,
+	parentPath,
+	parseStateFile,
+	rewriteStateFile,
+	type WebMemberFolder,
+	withStateBody,
+} from "../cloud/company-folder-writes.ts";
 import type { GroupChatDraft } from "../cloud/group-details.ts";
-import { record, UUID_PATTERN } from "../cloud/parse.ts";
+import { UUID_PATTERN } from "../cloud/parse.ts";
 import { t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
-const ROOM_FIELDS = ["schema", "roomId", "key", "name", "purpose", "status", "projectId", "members", "version"];
+/* A group chat is a company folder, `agents/groups/<handle>`, described by its `group.md` (folder core C4, P34a-2;
+ * deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md §5). Editing one rewrites that file; deleting its folder
+ * closes the chat for everyone. The commit's hook keeps the room, its members and its conversation. */
 
 /** This invocation failed before sending a write; an earlier invocation may still be uncertain. */
 export class GroupUpdateNotWrittenError extends Error {}
@@ -14,9 +24,7 @@ export class GroupUpdateNotWrittenError extends Error {}
 /** The group's participants would not pass: fewer than two active agents, someone who left, or a duplicate. */
 export class GroupParticipantsError extends Error {}
 
-type GroupEditor = Pick<CloudMemberCompanyFileClient, "read" | "edit" | "review">;
-
-/** Every room change is an owner's or admin's (a protected Company File path). */
+/** Every room change is an owner's or admin's. */
 function assertGroupEditor(company: CompanyController): void {
 	const state = company.store.get();
 	if (
@@ -29,32 +37,49 @@ function assertGroupEditor(company: CompanyController): void {
 		throw new Error(t("Only an owner or admin can change group chats."));
 }
 
-/** A room document change is protected: its author approves the review, then it must have applied. */
-async function applyGroupCommand(
-	editor: GroupEditor,
-	command: Awaited<ReturnType<GroupEditor["edit"]>>,
-	signal: AbortSignal,
-	check: () => void,
-	failure: string,
-): Promise<void> {
-	let result = command;
-	if (result.state === "review_required") {
-		const reviewed = await editor.review(result, "approve", signal);
-		check();
-		if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
-		result = reviewed;
-	}
-	if (result.state !== "applied" || !result.result) throw new Error(failure);
-}
-
 function memberKey(members: GroupChatDraft["members"]): string {
 	return JSON.stringify(members.map(({ kind, id }) => `${kind}:${id}`).sort());
 }
 
-/** Edits the canonical room document with both its File and room revision checks. */
+/** A group chat's `group.md` path from the member's state folders, or null when it has none. */
+async function groupFile(folder: WebMemberFolder, roomId: string, signal: AbortSignal): Promise<string | null> {
+	const id = roomId.toLowerCase();
+	return (await folder.stateFolders(signal)).groups.find((group) => group.roomId === id)?.file ?? null;
+}
+
+/** The new `group.md` for a draft: only what the member changed since `observed` (the details they opened) is written,
+ * so a change made meanwhile to another field survives. Null when the file already says it all. */
+export function rewriteGroupFile(
+	text: string,
+	path: string,
+	roomId: string,
+	observed: GroupChatDraft,
+	draft: GroupChatDraft,
+): string | null {
+	const parsed = parseStateFile(path, text);
+	if (!parsed.ok || parsed.file.kind !== "group" || parsed.file.id !== roomId.toLowerCase())
+		throw new Error(t("This group chat is no longer available."));
+	const file = parsed.file;
+	const changes: Record<string, CompanyStateSetting> = {};
+	if (draft.name !== observed.name && draft.name !== file.name) changes.name = draft.name;
+	if (draft.subtitle !== undefined && draft.subtitle !== (observed.subtitle ?? "") && draft.subtitle !== file.subtitle)
+		changes.subtitle = draft.subtitle;
+	if (memberKey(draft.members) !== memberKey(observed.members)) {
+		const agents = draft.members.filter((member) => member.kind === "staff_agent").map((member) => member.id);
+		const people = draft.members.filter((member) => member.kind === "member").map((member) => member.id);
+		if (JSON.stringify(agents) !== JSON.stringify(file.agents)) changes.agents = agents;
+		if (JSON.stringify(people) !== JSON.stringify(file.people)) changes.people = people;
+	}
+	let next = Object.keys(changes).length ? setCompanyStateSettings(text, changes) : text;
+	if (draft.purpose !== observed.purpose.trim() && draft.purpose !== file.purpose.trim())
+		next = withStateBody(next, draft.purpose);
+	return next === text ? null : next;
+}
+
+/** Edits a group chat's `group.md`, naming the version it read. */
 export function createGroupUpdater(options: {
 	company: CompanyController;
-	editor: (signal: AbortSignal) => Promise<GroupEditor>;
+	folder: (signal: AbortSignal) => WebMemberFolder;
 	current: () => void;
 }): NonNullable<WorkspaceActions["updateGroup"]> {
 	const company = options.company;
@@ -65,7 +90,7 @@ export function createGroupUpdater(options: {
 		let writeStarted = false;
 		try {
 			const signal = AbortSignal.any([company.signal, viewSignal]);
-			const changes = {
+			const changes: GroupChatDraft = {
 				name: draft.name.trim(),
 				...(draft.subtitle !== undefined ? { subtitle: draft.subtitle.trim() } : {}),
 				purpose: draft.purpose.trim(),
@@ -87,10 +112,7 @@ export function createGroupUpdater(options: {
 					observed.environmentId !== session.environmentId ||
 					!UUID_PATTERN.test(observed.roomId) ||
 					session.executionScope?.roomId !== observed.roomId ||
-					observed.status !== "active" ||
-					!Number.isSafeInteger(observed.version) ||
-					observed.version < 1 ||
-					observed.version >= Number.MAX_SAFE_INTEGER
+					observed.status !== "active"
 				)
 					throw new Error(t("This group chat is no longer available."));
 				if (
@@ -117,76 +139,22 @@ export function createGroupUpdater(options: {
 			if (changes.subtitle !== undefined && [...changes.subtitle].length > 256)
 				throw new Error(t("Enter a group subtitle of no more than 256 characters."));
 			if (!changes.purpose) throw new Error(t("Enter a description for this group chat."));
-			const editor = await options.editor(signal);
-			check();
-			const path = `organization/rooms/${observed.roomId}.json`;
-			const current = await editor.read(path, signal);
-			check();
-			if (
-				current.kind !== "file" ||
-				!current.version ||
-				!UUID_PATTERN.test(current.version) ||
-				current.path !== path
-			)
-				throw new Error(t("This group chat is no longer available."));
-			const document = record(JSON.parse(current.text), "group chat document");
-			if (
-				Object.keys(document).some((field) => field !== "subtitle" && !ROOM_FIELDS.includes(field)) ||
-				ROOM_FIELDS.some((field) => !Object.hasOwn(document, field)) ||
-				document.schema !== "qorpera.company-room/v1" ||
-				document.roomId !== observed.roomId ||
-				typeof document.key !== "string" ||
-				!/^[a-z0-9][a-z0-9._-]{0,95}$/.test(document.key) ||
-				typeof document.name !== "string" ||
-				(Object.hasOwn(document, "subtitle") &&
-					(typeof document.subtitle !== "string" || [...document.subtitle].length > 256)) ||
-				typeof document.purpose !== "string" ||
-				document.status !== "active" ||
-				(document.projectId !== null &&
-					(typeof document.projectId !== "string" || !UUID_PATTERN.test(document.projectId))) ||
-				!Number.isSafeInteger(document.version) ||
-				!Array.isArray(document.members)
-			)
-				throw new Error(t("This group chat document has changed. Reopen its details before saving."));
-			const members = document.members.map((value): GroupChatDraft["members"][number] => {
-				const member = record(value, "group participant");
-				if (
-					Object.keys(member).length !== 2 ||
-					(member.kind !== "member" && member.kind !== "staff_agent") ||
-					typeof member.id !== "string" ||
-					!UUID_PATTERN.test(member.id)
-				)
-					throw new Error(t("Invalid group participant."));
-				return { kind: member.kind, id: member.id };
-			});
-			if (document.version !== observed.version) {
-				// A lost apply response can be retried without advancing the document twice.
-				if (
-					document.version === observed.version + 1 &&
-					document.name === changes.name &&
-					(changes.subtitle === undefined || document.subtitle === changes.subtitle) &&
-					document.purpose === changes.purpose &&
-					memberKey(members) === memberKey(changes.members)
-				)
-					return;
-				throw new Error(t("This group chat changed while you were editing. Reopen its details before saving."));
-			}
-			const text = JSON.stringify({ ...document, ...changes, version: observed.version + 1 });
-			if (new TextEncoder().encode(text).length > 32768)
-				throw new Error(t("The group details are too long. Shorten the description."));
-			writeStarted = true;
-			const command = await editor.edit(
+			const folder = options.folder(signal);
+			await rewriteStateFile(
+				folder,
 				{
-					operation: "write",
-					operationKey: `group-update:${observed.roomId}:${crypto.randomUUID()}`,
-					path,
-					expectedVersion: current.version,
-					text,
+					locate: () => groupFile(folder, observed.roomId, signal),
+					rewrite: (text, path) => rewriteGroupFile(text, path, observed.roomId, observed, changes),
+					key: () => `web:group-update:${observed.roomId.toLowerCase()}:${crypto.randomUUID()}`,
+					gone: t("This group chat is no longer available."),
+					failure: t("The group chat changes could not be saved."),
+					sent: (sending) => {
+						writeStarted = sending;
+					},
 				},
 				signal,
+				check,
 			);
-			check();
-			await applyGroupCommand(editor, command, signal, check, t("The group chat changes could not be saved."));
 		} catch (error) {
 			if (!writeStarted) throw new GroupUpdateNotWrittenError(describeError(error), { cause: error });
 			throw error;
@@ -196,12 +164,11 @@ export function createGroupUpdater(options: {
 	};
 }
 
-/** Deletes a group chat for everyone: its room document leaves the Company File, the
- * cloud removes the room and closes its conversation (20260918010000). Owners and
- * admins only, as for every room change. */
+/** Deletes a group chat for everyone: its folder leaves the company folder, and the commit's hook archives the room
+ * and closes its conversation. Owners and admins only, as for every room change. */
 export function createGroupDeleter(options: {
 	company: CompanyController;
-	editor: (signal: AbortSignal) => Promise<GroupEditor>;
+	folder: (signal: AbortSignal) => WebMemberFolder;
 	current: () => void;
 }): NonNullable<WorkspaceActions["deleteGroup"]> {
 	const company = options.company;
@@ -222,31 +189,21 @@ export function createGroupDeleter(options: {
 				throw new Error(t("This group chat is no longer available."));
 		};
 		check();
-		const editor = await options.editor(signal);
-		check();
-		const path = `organization/rooms/${roomId.toLowerCase()}.json`;
-		const current = await editor.read(path, signal);
-		check();
-		// Deleted already (by another member, or by a lost answer to this request).
-		if (current.kind === "absent") return;
-		if (current.kind !== "file" || !current.version || current.path !== path)
-			throw new Error(t("This group chat is no longer available."));
-		const document = record(JSON.parse(current.text), "group chat document");
-		if (
-			document.schema !== "qorpera.company-room/v1" ||
-			String(document.roomId).toLowerCase() !== roomId.toLowerCase()
-		)
-			throw new Error(t("This group chat is no longer available."));
-		const command = await editor.edit(
+		const folder = options.folder(signal);
+		// Deleted already (by another member, or by a lost answer to this request): nothing to do.
+		await deleteStateFolder(
+			folder,
 			{
-				operation: "delete",
-				operationKey: `group-delete:${roomId.toLowerCase()}:${crypto.randomUUID()}`,
-				path,
-				expectedVersion: current.version,
+				locate: async () => {
+					const file = await groupFile(folder, roomId, signal);
+					return file === null ? null : parentPath(file);
+				},
+				key: () => `web:group-delete:${roomId.toLowerCase()}:${crypto.randomUUID()}`,
+				failure: t("The group chat could not be deleted."),
 			},
 			signal,
+			check,
 		);
-		check();
-		await applyGroupCommand(editor, command, signal, check, t("The group chat could not be deleted."));
 	};
 }
+
