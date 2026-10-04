@@ -1,5 +1,5 @@
 -- @fixture 163_member_session_account_selection.test.sql until "set local role authenticated;"
--- Both already-open conversations keep A, also once it is exhausted (20260930048000: the payer never changes without
+-- Both already-open conversations keep A, also once it is exhausted (20260930059000: the payer never changes without
 -- the member) and after it recovers; only a new conversation starts on B, the account with room left.
 set local role authenticated;
 do $$

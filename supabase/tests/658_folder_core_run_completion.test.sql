@@ -3,7 +3,7 @@
 -- completion and receipt recovery. v6's folder lane completes a run with the disposition its commits give (unchanged,
 -- published, review_pending), after its receipts are matched to the commits that carry them; it closes the run's run
 -- box views and never reads a source substrate. Recovery confirms a receipt with the commit that carries it. (The
--- sponsor handoff this part also covered is gone since 20260930048000.) Runs are 647's hand-built runs. Races are in
+-- sponsor handoff this part also covered is gone since 20260930059000.) Runs are 647's hand-built runs. Races are in
 -- 659.
 
 -- Repairs to a hand-built run so completion's writes pass their foreign-key checks (rows this transaction built with

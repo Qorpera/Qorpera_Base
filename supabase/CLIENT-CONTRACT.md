@@ -200,7 +200,7 @@ they answer 42501 "native host call is refused".
     (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
-  p_connection_id)` (20260930048000, the payer never changes without the
+  p_connection_id)` (20260930059000, the payer never changes without the
   member): select keeps a conversation's login for every kind of login, also at
   its usage limit, while it needs a new sign-in, while its computer recovers and
   while an owner or admin has it disabled (it returns that login; sending waits).

@@ -74,7 +74,7 @@ do $$ begin
         is distinct from current_setting('qorpera_test.selection_connection_2')::uuid then raise exception 'Durable binding move not followed'; end if;
 end $$;
 reset role;
--- At their usage limits a conversation keeps its login (20260930048000), and a new one has nothing to start on.
+-- At their usage limits a conversation keeps its login (20260930059000), and a new one has nothing to start on.
 update public.qorpera_native_provider_account_metadata set provider_account_usage=jsonb_set(provider_account_usage,'{windows,0,usedPercent}','100');
 set local role authenticated;
 do $$ begin

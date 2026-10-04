@@ -306,7 +306,7 @@ select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), pg_t
 	'a conversation on the plan keeps it at its limit');
 reset role;
 -- Also once its login needs a new sign-in: it cannot pay until the member signs in again, and the conversation
--- never moves to another account on its own (20260930048000).
+-- never moves to another account on its own (20260930059000).
 update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
 set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(

@@ -179,7 +179,7 @@ begin
  values(proposal,origin.profile_id,origin.environment_id,proposal,origin.company_snapshot_id,proposed,
   'run',origin.id,extensions.gen_random_uuid(),origin.session_id,0,'policy','queue-review','Review fixture',
   array[reviewer],(p_company->>'owner')::uuid);
- -- A native review follows a change made on the owner's own login (20260930048000: a review stays on the login of
+ -- A native review follows a change made on the owner's own login (20260930059000: a review stays on the login of
  -- the run whose change it reviews). This fixture's change ran on the company account, so the review's payer is set
  -- to the owner's login here.
  if p_native then

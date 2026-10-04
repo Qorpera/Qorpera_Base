@@ -88,7 +88,7 @@ try {
 	report.cases = JSON.parse(sql(fixture + acceptance).split("\n").at(-1)).cases;
 	for (const item of report.cases) console.log(`${item.passed ? "PASS" : "FAIL"} ${item.name}${item.error ? `: ${item.error}` : ""}`);
 	assert(report.cases.every((item) => item.passed), "Database regression failed");
-	// The sponsor handoff's continuation parity left with the handoff (20260930048000).
+	// The sponsor handoff's continuation parity left with the handoff (20260930059000).
 	const parallelSetup = JSON.parse(sql(fixture + original.slice(0, end) + regression
 		+ readFileSync(join(root, "supabase/acceptance/runtime_second_review_concurrency.sql"), "utf8")).split("\n").at(-1));
 	const connection = parallelSetup.connection;

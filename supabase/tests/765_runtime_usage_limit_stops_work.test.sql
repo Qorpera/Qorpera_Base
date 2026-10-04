@@ -1,7 +1,7 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "create function pg_temp.path_plan"
 -- A usage limit stops the work (20260928349910, founder decision 2026-10-01). The fixture's run is leased on
 -- the member's login A; the same member also has login B with room left, which the old sponsor handoff would
--- have moved the run to (the handoff is gone since 20260930048000; test 905 keeps the work that follows on A too).
+-- have moved the run to (the handoff is gone since 20260930059000; test 905 keeps the work that follows on A too).
 -- Now the runner's failure report fails the run: it stays on A, keeps its binding version, gets no handoff event,
 -- and is not queued again.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');

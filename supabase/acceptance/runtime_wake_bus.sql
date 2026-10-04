@@ -399,7 +399,7 @@ end $$;
 -- Second-connection and capacity fixtures use real login, member admission, runner
 -- assignment and lease entrypoints in this disposable database. No provider
 -- process or production credential participates. (The sponsor handoff they were
--- written for is gone since 20260930048000; later reviews still use them.)
+-- written for is gone since 20260930059000; later reviews still use them.)
 create function pg_temp.handoff_connection()
 returns jsonb language plpgsql as $$
 declare v_base public.qorpera_execution_runs%rowtype; v_login jsonb; v_connection jsonb; v_capsule uuid := extensions.gen_random_uuid();

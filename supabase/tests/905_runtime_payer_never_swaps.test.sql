@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- The payer never changes without the member (20260930048000, founder decision 2026-10-04). The fixture's owner (…001)
+-- The payer never changes without the member (20260930059000, founder decision 2026-10-04). The fixture's owner (…001)
 -- pays with login A, on which the fixture's run is leased. Their conversation starts on A; they connect login B with
 -- room left; then A reaches its usage limit. A conversation, and work that follows a run, stay on A; only new work
 -- starts on B; a company account never stands in for a login at its limit; and work that follows a run on a login that
@@ -17,10 +17,10 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE')
 		or has_function_privilege('service_role', 'public.qorpera_member_live_accounts(uuid,uuid)', 'EXECUTE') then
 		raise exception 'API clients can read a member''s logins'; end if;
-	if position('20260930048000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
-		or position('20260930048000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
-		or position('20260930048000' in pg_get_functiondef('public.qorpera_eligible_member_accounts(uuid,uuid)'::regprocedure)) = 0 then
-		raise exception 'A payer function lacks the 20260930048000 body'; end if;
+	if position('20260930059000' in pg_get_functiondef('public.qorpera_starter_sponsor(uuid,uuid,uuid,uuid)'::regprocedure)) = 0
+		or position('20260930059000' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
+		or position('20260930059000' in pg_get_functiondef('public.qorpera_eligible_member_accounts(uuid,uuid)'::regprocedure)) = 0 then
+		raise exception 'A payer function lacks the 20260930059000 body'; end if;
 end $$;
 
 -- 2. The owner's conversation starts on A, their only login.

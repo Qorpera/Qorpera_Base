@@ -105,7 +105,7 @@ try {
 	// Member recovery must also select job before run. Its normal callers may
 	// already own job, but the RPC is independently callable, including against
 	// an active run it will refuse. (The control-plane sponsor handoff is gone
-	// since 20260930048000.)
+	// since 20260930059000.)
 	for (const [kind, actor, operation, expectedState] of [
 		["recovery", `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;`,
 			`select public.qorpera_resolve_failed_execution_run(${literal(binding.runId)},'discard');`, "55000"],

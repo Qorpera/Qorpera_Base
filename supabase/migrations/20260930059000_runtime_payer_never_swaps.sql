@@ -30,7 +30,7 @@
 -- (qorpera_coding_owner_sponsor) still choose among the member's logins and company accounts themselves.
 --
 -- Locks: none new. The conversation choice keeps its one row lock on the conversation; the payer functions only read.
--- Every new body carries the marker 20260930048000. Folder-v2 only: no compatibility path is kept.
+-- Every new body carries the marker 20260930059000. Folder-v2 only: no compatibility path is kept.
 
 do $$
 begin
@@ -38,7 +38,7 @@ begin
 		or position('v_saved_at_limit' in pg_get_functiondef('public.qorpera_select_member_session_account(uuid,uuid)'::regprocedure)) = 0
 		or position('qorpera_native_account_remaining(connection.id,version.version) <> 0'
 			in pg_get_functiondef('public.qorpera_eligible_member_accounts(uuid,uuid)'::regprocedure)) = 0 then
-		raise exception 'A payer function changed after 20260928359950; rebase 20260930048000 on it';
+		raise exception 'A payer function changed after 20260928359950; rebase 20260930059000 on it';
 	end if;
 end $$;
 
@@ -47,7 +47,7 @@ end $$;
 create function public.qorpera_member_live_accounts(p_profile_id uuid, p_user_id uuid)
 returns table(connection_id uuid, binding_id uuid, sponsor_version bigint, compute_identity_id uuid, remaining numeric)
 language sql stable security definer set search_path = '' as $$
-    -- 20260930048000: the conversation's login is kept from these at any usage.
+    -- 20260930059000: the conversation's login is kept from these at any usage.
     select connection.id,sponsor.binding_id,sponsor.version,identity.id,
         public.qorpera_native_account_remaining(connection.id,version.version)
     from public.qorpera_member_compute_identities identity
@@ -82,7 +82,7 @@ revoke all on function public.qorpera_member_live_accounts(uuid,uuid) from publi
 create or replace function public.qorpera_eligible_member_accounts(p_profile_id uuid, p_user_id uuid)
 returns table(connection_id uuid, binding_id uuid, sponsor_version bigint, compute_identity_id uuid, remaining numeric)
 language sql stable security definer set search_path = '' as $$
-    -- 20260930048000: the live accounts with room left.
+    -- 20260930059000: the live accounts with room left.
     select account.connection_id,account.binding_id,account.sponsor_version,account.compute_identity_id,account.remaining
     from public.qorpera_member_live_accounts(p_profile_id,p_user_id) account
     where account.remaining <> 0
@@ -102,7 +102,7 @@ begin
     select * into v_saved from public.qorpera_member_session_accounts
         where profile_id = p_profile_id and session_id = p_session_id and user_id = v_user;
     if found then
-        -- The payer never changes without the member (20260930048000): the conversation keeps its login, also at its
+        -- The payer never changes without the member (20260930059000): the conversation keeps its login, also at its
         -- usage limit, which stops the sending there until it resets. Its binding may pay with the member's new
         -- connection for the same account since they signed in again (qorpera_move_member_login_pins).
         v_current := coalesce(public.qorpera_sponsor_binding_connection(v_saved.sponsor_binding_id), v_saved.connection_id);
@@ -152,7 +152,7 @@ begin
     -- The same row lock as the automatic choice: one conversation's choices are serialized.
     perform 1 from public.qorpera_shared_sessions where id = p_session_id and profile_id = p_profile_id for update;
     if not found then raise exception 'Conversation accounts unavailable' using errcode = '42501'; end if;
-    -- 20260930048000: only the member's own login that could pay.
+    -- 20260930059000: only the member's own login that could pay.
     select * into v_choice from public.qorpera_member_live_accounts(p_profile_id,v_user) candidate
         where candidate.connection_id = p_connection_id
         order by candidate.binding_id limit 1;
@@ -236,7 +236,7 @@ as $$
 			and public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)
 	)
 	select candidate.binding_id, candidate.version from (
-		-- The payer never changes without the member (20260930048000): work that follows a run stays on that run's login
+		-- The payer never changes without the member (20260930059000): work that follows a run stays on that run's login
 		-- or company account, also at its usage limit, which then stops it there. When that login or account cannot pay
 		-- any more, nothing does.
 		select own.binding_id, own.version, 1 as rank, own.binding_id = p_prefer_binding_id as preferred, own.created_at

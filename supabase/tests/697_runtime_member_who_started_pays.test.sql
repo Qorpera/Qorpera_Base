@@ -1,7 +1,7 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- The member who started the work pays (20260928230000): a member's login pays only for work that
 -- member started, follow-up work inherits the starter's own login, a company account pays for a
--- starter with no login of their own (20260930048000: never because the starter's login is at its
+-- starter with no login of their own (20260930059000: never because the starter's login is at its
 -- limit, test 905), a coding session runs for the member who asked, and one check where runs are
 -- created refuses anything else. The fixture's owner (…001) has a login; the contributor
 -- (…002) connects one here; the viewer (…003) never has one.
@@ -208,7 +208,7 @@ select public.qorpera_set_provider_execution_policy('openai','api_key','codex-cl
 reset role;
 
 -- Now the company pays when the starter has no login of their own, and never before a member's own login; work
--- that follows a company-paid run stays on the company account (20260930048000).
+-- that follows a company-paid run stays on the company account (20260930059000).
 do $$
 declare
 	v_profile uuid := '30000000-0000-4000-8000-000000000010';

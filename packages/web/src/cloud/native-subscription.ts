@@ -62,7 +62,7 @@ export interface WebNativeSubscription {
 	 * even inside the window of a completed attempt: the member pressed Refresh. */
 	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
 	selectSessionAccount?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>;
-	/** The member picks a conversation's login by hand (20260930048000): the only way a
+	/** The member picks a conversation's login by hand (20260930059000): the only way a
 	 * conversation moves to another login, offered once its own login was disconnected. */
 	chooseSessionAccount?(sessionId: string, connectionId: string, signal?: AbortSignal): Promise<string>;
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;

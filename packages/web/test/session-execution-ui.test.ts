@@ -338,7 +338,7 @@ describe("conversation execution account", () => {
 		const f = setup(true, withUsage([80, 40]), select, undefined, choose);
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		// The cloud keeps the conversation's account at its limit (20260930048000).
+		// The cloud keeps the conversation's account at its limit (20260930059000).
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(f.sponsor()?.connectionId).toBe(id(90));
@@ -683,7 +683,7 @@ describe("conversation execution account", () => {
 		const f = setup(true, withUsage([80, 40]));
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		// The payer never changes without the member (20260930048000): no move to the account with room.
+		// The payer never changes without the member (20260930059000): no move to the account with room.
 		f.listConnections.mockResolvedValue(withUsage([0, 40]));
 		refresh();
 		await settle();
@@ -1158,7 +1158,7 @@ describe("conversation execution account", () => {
 		expect(state.draft).toBe("Keep this draft");
 		expect(state.attachments?.[0]).toBe(image);
 		expect(selector()).toBeNull();
-		// Releasing the request is not a choice of another account: the exhausted account stays (20260930048000).
+		// Releasing the request is not a choice of another account: the exhausted account stays (20260930059000).
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
 		expect(f.sendMessage).not.toHaveBeenCalled();

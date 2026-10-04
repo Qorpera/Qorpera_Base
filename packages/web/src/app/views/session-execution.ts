@@ -24,7 +24,7 @@ function remainingAllowance(connection: NativeMemberConnection, now: number): nu
 
 /** A conversation keeps its own account, also at its usage limit: sending waits until it
  * resets, and only the member moves a conversation to another account (founder decision
- * 2026-10-04, migration 20260930048000). New conversations choose the member's account with
+ * 2026-10-04, migration 20260930059000). New conversations choose the member's account with
  * the most remaining allowance. */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });

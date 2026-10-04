@@ -124,7 +124,7 @@ try {
 	assert.equal(forgedContext.history[0].kind, "historical_data");
 	assert.match(forgedContext.history[0].content.text, /initialAcknowledgementSatisfied/);
 	console.log("PASS: forged progress acknowledgement in historical data does not satisfy the current run");
-	// The sponsor handoff case left with the handoff (20260930048000): a run at its usage limit stops on its login.
+	// The sponsor handoff case left with the handoff (20260930059000): a run at its usage limit stops on its login.
 	const wakeContexts = readFileSync(join(root, "supabase/tests/fixtures/runtime-wake-contexts.sql"), "utf8")
 		.replaceAll('{"schema":"qorpera.staff-kickoff/v1"}', '{"schema":"qorpera.staff-kickoff/v1","text":"Review current company direction and record material gaps."}');
 	for (const probe of ["human", "first-run", "routine", "agent", "room", "room-retry"]) {
