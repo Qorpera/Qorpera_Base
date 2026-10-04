@@ -1474,6 +1474,64 @@ them at the v172 cut.
 
 The progress, heartbeat and describe calls lock only the session and change no company state.
 
+### 6.14 C1c-3n as built: a run's machine and node updates (migration 20260930034000, test 849)
+
+Found by P13's activation check (test 838). Folder-v2 only.
+
+**Before.** These took the gc fence (the company row `FOR UPDATE`), which every folder effect holds `KEY SHARE`:
+- a run's machine reservation (`reserve_runtime_machine` with a run). Since P28 materializes `folder-v2` runs, every run's
+  machine start made the company's effects wait, and waited for them;
+- the node reservation of a run's machine (`reserve_runtime_node_machine`, kind `native`) and every machine release
+  (`release_runtime_machine`);
+- the three node-update steps (`authorize_node_update_drain`, `node_update_locked`, the updater's poll, and
+  `release_node_update_admission`), each for every company on the node in one transaction.
+
+**On folder-v2 now:**
+- **A run's reservation** keeps its job `FOR UPDATE` first (838's lease rule). Then it takes the folder fence and the
+  company row `KEY SHARE` (`qorpera_folder_machine_fence`; the pause is read after the locks, as before), the run's
+  requester's member row `KEY SHARE` (rank 1), and the identity's machine lock. That is the transaction advisory lock
+  `hashtextextended('qorpera.identity-machine:' || <compute identity id>::text, 0)`, which a sign-in's machine of the
+  identity takes too (S1, 20260930035000). So a run's machine and a sign-in's machine of one identity serialize, as the
+  gc fence made them before. Then the run, the runner and the allocation, as before. It is patched as an `elsif` after
+  3j's office branch.
+- **The node reservation of a run's machine** (an `elsif` for kind `native`, after the folder branch S1 extends with
+  `login`) and **a release** take the folder fence and rank 0, then their rows.
+- **The node-update steps** take each company's folder fence `KEY SHARE`, in company-id order, and nothing stronger: no
+  company row. Then the node rows (the node's advisory lock, the node `FOR UPDATE`, its enrollment and target), as
+  before.
+  - A stop's second phase or a resume (the fence `FOR UPDATE`) waits for them, so the node's pause proof (every company
+    on the node paused) holds while it is recorded and checked.
+  - Effects, admission and machine reservations (`KEY SHARE`) never wait for them, and they never wait for those.
+
+**No cycle.** The node-update steps take only fences `KEY SHARE`, in company-id order, before any node row:
+- Against each other (two nodes naming one company): both take fences in the same order, and `KEY SHARE` does not
+  conflict with `KEY SHARE`.
+- Against effects and admission: no conflict at the fences. Machine admission and a run's reservation take a company's
+  fence, then node rows. The node step takes all fences before its node rows, and a company's fence `KEY SHARE` never
+  waits for theirs.
+- Against a stop or a resume (the fence `FOR UPDATE`): those take no node row, so they wait for the step and the step
+  never waits for them while holding anything they need.
+- Against a deletion's finisher: the finisher takes the fence `FOR UPDATE` first (C1C §6.10). If the step holds the
+  fence, the finisher waits at the fence while it holds nothing (849 E). If the finisher holds it first, the step waits
+  at that company's fence while it holds only other companies' fences `KEY SHARE`, which the finisher never takes. The
+  finisher's stop releases the company's machines and node demands, but the step takes node rows only after every fence.
+- The run's reservation holds its job, then the fence and rank 0 `KEY SHARE`, its requester `KEY SHARE`, then the
+  identity lock. A sign-in's reservation takes the fence, rank 0 and the requester first too, then the same identity
+  lock, then its sign-in (rank 5). The sign-in path never touches jobs or runs, and the run path never touches sign-ins.
+
+A company that is not `folder-v2` keeps the gc fence in each `else` branch, untested.
+
+**Tests.** 849:
+- A: beside a folder effect, none of the six calls waits.
+- B: behind a stop's second phase, each waits at the fence, the run's reservation holding only its job, none holding the
+  company row, the allocation or the node.
+- C: the run's reservation waits on the identity's machine lock after the fence, rank 0 and its requester.
+- D: a resume waits for a node-update step that holds the fences.
+- E: a deletion's finisher waits at the fence for a node-update step, then finishes.
+- F: the markers.
+
+824 H gains this migration's layer, undone first.
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
