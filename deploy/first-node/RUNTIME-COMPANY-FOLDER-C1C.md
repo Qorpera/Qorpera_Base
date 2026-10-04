@@ -726,6 +726,26 @@ Needed before any view goes live (C1B §4).
   - only the four named functions touch `qorpera_execution_run_budgets`, and every `folder-v2` dispatcher that takes
     the run mutex takes it before the job (C1C §5.2);
   - no deferred constraints or triggers on the folder core's tables.
+
+  **Built in slice P13 (SQL test 838; no migration).** The founder's decision of 3 October 2026 drops the snapshot-v1
+  digests. The test reads the installed functions, so every hosted-db run checks them, a release branch's included:
+  - no function of the folder core takes the gc fence, or the company row `FOR UPDATE` or `NOWAIT`. Any other
+    function that does must test the core first, or be on the test's list with a reason: the fence itself, a legacy
+    path that folder-v2 never reaches, or an open folder-v2 site with its owner. A listed function that is gone or
+    now tests the core first must come off the list;
+  - every function that changes a job's status or lease owner takes the job `FOR UPDATE` first (or in the same
+    statement);
+  - only the run mutex's functions name `qorpera_execution_run_budgets`, and the folder-v2 ones take it before the job;
+  - the folder fence `FOR UPDATE` only in the pause, resume and deletion drains, and `FOR NO KEY UPDATE` only in member
+    management, creation, founding and deletion's entry;
+  - no deferrable constraints or triggers on `qorpera_folder_%` tables.
+
+  It reads function text with comments removed, and counts a function as testing the core when a core literal or a
+  call into the folder core comes before its first such lock. That is a careful reading, not a proof: the list's
+  reasons are the evidence. The full rank order and lock upgrades inside folder-v2 bodies are not read from text; the
+  race tests (633, 644, 648, 812 and the slices' own) and the C1e load test check those by running them. The open sites on 4 October 2026: the model login and account refresh machines, identity
+  recovery and retirement, the run machine's release, node update drains (inventory §16), office access and activation
+  wakes (C1c-3k part 2, 3l), and coding's quiet check-ins (C1c-3i).
 - **Deletion drains the folder fence** for `folder-v2` (C1C §5.5): the folder pause's second phase, with no gc fence.
 
 ### 6.1 Inventory, split and decisions (2026-09-29)
