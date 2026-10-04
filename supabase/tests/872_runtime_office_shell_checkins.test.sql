@@ -383,7 +383,8 @@ begin
 	insert into public.qorpera_execution_runs
 	select (jsonb_populate_record(v_run, jsonb_build_object('id', '87200000-0000-4000-8000-0000000009c1', 'job_id', extensions.gen_random_uuid(),
 		'source_id', v_wake.id))).*;
-	update public.qorpera_wake_occurrences set run_id = '87200000-0000-4000-8000-0000000009c1' where id = v_wake.id;
+	update public.qorpera_wake_occurrences set run_id = '87200000-0000-4000-8000-0000000009c1', status = 'materialized'
+	where id = v_wake.id;
 	set local session_replication_role = origin;
 	v_continuation := public.qorpera_run_continuation((select r from public.qorpera_execution_runs r
 		where r.id = '87200000-0000-4000-8000-0000000009c1'));
@@ -433,11 +434,15 @@ select pg_temp.job('cancelled') \g /dev/null
 do $$
 declare v_answer jsonb;
 begin
+	-- A gone parent: its job is gone.
 	set local session_replication_role = replica;
+	insert into public.qorpera_execution_runs
+	select (jsonb_populate_record(pg_temp.run(), jsonb_build_object('id', '87200000-0000-4000-8000-0000000009c2',
+		'job_id', extensions.gen_random_uuid(), 'source_id', extensions.gen_random_uuid()))).*;
 	insert into public.qorpera_machine_checkins(profile_id, environment_id, staff_agent_id, parent_run_id, machine_kind, subject_id, since,
 		mark_hours, body)
 	values ('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', (pg_temp.run()).staff_agent_id,
-		extensions.gen_random_uuid(), 'machine', extensions.gen_random_uuid(), clock_timestamp() - interval '1 hour', 1, '{}');
+		'87200000-0000-4000-8000-0000000009c2', 'machine', extensions.gen_random_uuid(), clock_timestamp() - interval '1 hour', 1, '{}');
 	set local session_replication_role = origin;
 	v_answer := pg_temp.step();
 	-- The 55-hour question is asked now and waits a step; then it is suppressed with its cancelled parent.

@@ -337,12 +337,24 @@ describe("machine check-in envelopes", () => {
 		(wake: CloudWakeEnvelope) => ({ ...wake, actorUserId: randomUUID() }),
 		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: null }),
 		(wake: CloudWakeEnvelope) => ({ ...wake, source: { ...wake.source, id: randomUUID() } }),
-		(wake: CloudWakeEnvelope) => ({ ...wake, source: { ...wake.source, occurrenceKey: `machine-event:${randomUUID()}` } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			source: { ...wake.source, occurrenceKey: `machine-event:${randomUUID()}` },
+		}),
 		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.machine-event/v1" } }),
 		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, checkins: [] } }),
-		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, checkins: [{ ...first(wake), machineKind: "shell" }] } }),
-		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, checkins: [{ ...first(wake), busyHours: 0 }] } }),
-		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, checkins: [{ ...first(wake), extra: true }] } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), machineKind: "shell" }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), busyHours: 0 }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), extra: true }] },
+		}),
 		(wake: CloudWakeEnvelope) => ({
 			...wake,
 			payload: { ...wake.payload, checkins: [{ ...first(wake), running: [{ command: "make", startedAt: null }] }] },

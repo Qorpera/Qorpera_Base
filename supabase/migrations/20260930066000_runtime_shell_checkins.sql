@@ -297,7 +297,7 @@ select pg_temp.checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedur
 -- The folder-v2 wake check: in a parent's room conversation as a machine event, and by its own chain.
 select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$(p_wake.source_kind in ('worker-completion', 'machine-event')$old$,
-	$new$(p_wake.source_kind in ('worker-completion', 'machine-event', 'machine-checkin')$new$);
+	$new$((p_wake.source_kind in ('worker-completion', 'machine-event') or p_wake.source_kind = 'machine-checkin')$new$);
 select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$v_ancestry := public.qorpera_machine_wake_ancestry(p_wake); -- 20260930058000$old$,
 	$new$v_ancestry := public.qorpera_machine_wake_ancestry(p_wake); -- 20260930058000

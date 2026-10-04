@@ -296,12 +296,18 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 	const instructions = cloudCompanyRuntimeInstructions(
 		{
 			kind: "agent",
-			source: { kind: "machine-checkin", id: f.context.identity.runId, occurrenceKey: `machine-checkin:${randomUUID()}` },
+			source: {
+				kind: "machine-checkin",
+				id: f.context.identity.runId,
+				occurrenceKey: `machine-checkin:${randomUUID()}`,
+			},
 		} as never,
 		false,
 	);
 	expect(instructions).toContain("# This wake: a busy program");
-	expect(instructions).toContain("find it with computer_shell action list and stop it, on a machine use machine_cancel");
+	expect(instructions).toContain(
+		"find it with computer_shell action list and stop it, on a machine use machine_cancel",
+	);
 	expect(instructions).toContain("you are asked again later only while it stays busy");
 	expect(instructions).not.toContain("# This wake: your machine");
 	expect(instructions).toContain("qorpera.machine-checkin-continuation/v1");
