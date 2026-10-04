@@ -7,6 +7,7 @@ import {
 } from "@qorpera/cloud-client/company-state-files";
 import { isStaffCharacterId } from "@qorpera/cloud-client/staff-characters";
 import { agentFileColour } from "./agent-colours.ts";
+import type { WebCompanyFiles } from "./company-files.ts";
 import {
 	createStateFolder,
 	deleteStateFolder,
@@ -17,7 +18,6 @@ import {
 	withProblems,
 	withStateBody,
 } from "./company-folder-writes.ts";
-import type { WebCompanyFiles } from "./company-files.ts";
 import type { HostedStaffAgent } from "./types.ts";
 
 /** What a member can change about an agent from the browser. */

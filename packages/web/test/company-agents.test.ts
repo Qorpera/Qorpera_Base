@@ -1,46 +1,31 @@
-import {
-	CloudCompanyAgentOperationRejectedError,
-	parseCloudCompanyAgentDocument,
-} from "@qorpera/cloud-client/cloud-company-agent";
+import { type AgentFile, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { describe, expect, it, vi } from "vitest";
-import { createWebCompanyAgents, prepareWebCompanyAgentCreation } from "../src/cloud/company-agents.ts";
+import { agentFileColour } from "../src/cloud/agent-colours.ts";
+import {
+	createWebCompanyAgents,
+	prepareWebCompanyAgentCreation,
+	type WebCompanyAgentDraft,
+} from "../src/cloud/company-agents.ts";
 import type { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { id, staff, timestamp } from "./fixtures.ts";
+import { WebCompanyFolderRejectedError } from "../src/cloud/company-folder-writes.ts";
+import { UUID_PATTERN } from "../src/cloud/parse.ts";
+import type { HostedStaffAgent } from "../src/cloud/types.ts";
+import { staff } from "./fixtures.ts";
+import { type FolderFake, folderFake } from "./folder-fake.ts";
 
-function fake() {
-	let file: { version: string; text: string } | undefined;
-	const edits: Array<{ operation: string; path: string; expectedVersion: string | null; text?: string }> = [];
-	const editor = {
-		read: vi.fn(async (path: string) =>
-			file
-				? { path, version: file.version, kind: "file" as const, executable: false, text: file.text }
-				: { path, version: null, kind: "absent" as const, executable: false, text: "" },
-		),
-		edit: vi.fn(async (input: (typeof edits)[number]) => {
-			edits.push(input);
-			return { commandId: "c", state: "review_required", plan: {}, planSha256: "" } as never;
-		}),
-		review: vi.fn(async () => {
-			file = { version: "10000000-0000-4000-8000-0000000000aa", text: edits.at(-1)!.text! };
-			return { commandId: "c", state: "applied", result: {}, plan: {}, planSha256: "" } as never;
-		}),
-	};
+/* The agent editor on the company folder (P34a-2): an agent is agents/<handle>/agent.md, written through the member
+ * commit route. The fake folder keeps the core's rules (folder-fake.ts). */
+
+function setup() {
+	const fake = folderFake();
+	const stop = new AbortController();
 	const current = vi.fn();
-	const files = {
-		signal: new AbortController().signal,
-		current,
-		files: vi.fn(async () => editor),
-	} as unknown as WebCompanyFiles;
-	return {
-		files,
-		editor,
-		edits,
-		current,
-	};
+	const folder = vi.fn(() => fake.folder as never);
+	const files = { signal: stop.signal, current, folder } as Pick<WebCompanyFiles, "signal" | "current" | "folder">;
+	return { fake, stop, current, folder, files, signal: new AbortController().signal };
 }
-const draft = {
-	id: id(93),
-	createdAt: timestamp,
+
+const draft: WebCompanyAgentDraft = {
 	displayName: "Ledger",
 	role: "Keeps the books",
 	charter: "",
@@ -48,143 +33,482 @@ const draft = {
 	color: "#123456",
 };
 
-describe("web company agents", () => {
-	it("rejects oversized escaped JSON before retaining a creation attempt", () => {
-		expect(() => prepareWebCompanyAgentCreation({ ...draft, charter: "\u0000".repeat(10_000) })).toThrow(
-			"text file limit",
-		);
+function agentFile(fake: FolderFake, path: string): AgentFile {
+	const parsed = parseCompanyStateFile(path, fake.text(path) ?? "");
+	if (!parsed?.ok || parsed.file.kind !== "agent") throw new Error(`${path} is not an agent file`);
+	return parsed.file;
+}
+
+/** A created agent as the roster then shows it. */
+async function created(f: ReturnType<typeof setup>, overrides: Partial<WebCompanyAgentDraft> = {}) {
+	const creation = prepareWebCompanyAgentCreation({ ...draft, ...overrides });
+	await createWebCompanyAgents(f.files).create(creation, f.signal);
+	const path = "agents/ledger/agent.md";
+	const file = agentFile(f.fake, path);
+	const agent: HostedStaffAgent = {
+		...staff,
+		id: creation.id,
+		displayName: file.name,
+		role: file.role,
+		charter: file.instructions,
+		appearance: { color: creation.color, shape: "circle" },
+		version: 3,
+	};
+	f.fake.commits.length = 0;
+	return { creation, agent, path };
+}
+
+describe("preparing an agent", () => {
+	it("gives the draft its identity and checks the agent.md it will write", () => {
+		const creation = prepareWebCompanyAgentCreation(draft);
+		expect(creation).toMatchObject(draft);
+		expect(creation.id).toMatch(UUID_PATTERN);
+		expect(Number.isFinite(Date.parse(creation.createdAt))).toBe(true);
+		expect(prepareWebCompanyAgentCreation(draft).id).not.toBe(creation.id);
 	});
-	it("creates an agent as a reviewed Company File document with a first turn", async () => {
-		const f = fake();
-		const id = await createWebCompanyAgents(f.files).create(draft, new AbortController().signal);
-		expect(f.edits).toHaveLength(1);
-		expect(f.edits[0]).toMatchObject({
-			operation: "write",
-			path: `organization/agents/${id}.json`,
-			expectedVersion: null,
-		});
-		const document = parseCloudCompanyAgentDocument(JSON.parse(f.edits[0]!.text!));
-		expect(document).toMatchObject({
-			agentId: id,
-			revision: 1,
-			displayName: "Ledger",
+	it.each([
+		["a control character in the responsibilities", { charter: "Keep\u0001the books" }, "control character"],
+		["a name past 160 characters", { displayName: "x".repeat(161) }, "name must be 1–160 characters"],
+		["responsibilities past 32 KiB", { charter: "é".repeat(17_000) }, "longer than 32768 bytes"],
+	])("refuses %s before anything is retained", (_what, change, problem) => {
+		expect(() => prepareWebCompanyAgentCreation({ ...draft, ...change })).toThrow(
+			"The agent cannot be saved as the company's files:",
+		);
+		expect(() => prepareWebCompanyAgentCreation({ ...draft, ...change })).toThrow(problem);
+	});
+});
+
+describe("creating an agent", () => {
+	it("creates agents/<handle> with its agent.md and the four folders a hired agent has", async () => {
+		const f = setup();
+		const creation = prepareWebCompanyAgentCreation(draft);
+		await expect(createWebCompanyAgents(f.files).create(creation, f.signal)).resolves.toBe(creation.id);
+		expect(f.fake.commits).toHaveLength(1);
+		const [commit] = f.fake.commits;
+		expect(commit?.operationKey).toBe(`web:staff-create:${creation.id}:ledger`);
+		expect(commit?.units).toEqual([
+			{
+				op: "new_folder",
+				path: "agents/ledger",
+				contents: [
+					{ path: "agent.md", kind: "file", text: expect.any(String) },
+					{ path: "memory", kind: "folder" },
+					{ path: "skills", kind: "folder" },
+					{ path: "routines", kind: "folder" },
+					{ path: "todos", kind: "folder" },
+				],
+			},
+		]);
+		expect(f.fake.children("agents/ledger")).toEqual([
+			"agents/ledger/agent.md",
+			"agents/ledger/memory",
+			"agents/ledger/routines",
+			"agents/ledger/skills",
+			"agents/ledger/todos",
+		]);
+		const file = agentFile(f.fake, "agents/ledger/agent.md");
+		expect(file).toMatchObject({
+			id: creation.id,
+			name: "Ledger",
 			role: "Keeps the books",
-			appearance: { color: "#123456", shape: "round", creature: "owl" },
-			employmentStatus: "active",
-			lifecycleState: "setup",
+			agentKind: "agent",
+			status: "active",
+			// "owl" is no figure, and #123456 no palette colour: neither is written.
+			colour: null,
+			figure: null,
+			model: null,
+			effort: null,
 		});
-		// The description is the agent's responsibilities: a placeholder, never the name (a rename would leave it stale).
-		expect(document.hireOverlay.charter).toContain("No responsibilities have been written");
-		expect(document.hireOverlay.charter).not.toContain("Ledger");
-		expect(document.startupInstructions).not.toContain("Ledger");
-		expect(f.editor.review).toHaveBeenCalledTimes(1);
+		// The instructions are the agent's responsibilities: a placeholder, never the name (a rename would leave it stale).
+		expect(file.instructions).toContain("No responsibilities have been written");
+		expect(file.instructions).not.toContain("Ledger");
+		expect(await f.fake.folder.stateFolders(f.signal)).toEqual({
+			agents: [{ staffAgentId: creation.id, file: "agents/ledger/agent.md" }],
+			groups: [],
+		});
 	});
-	it("saves edits as the next revision and keeps startup instructions, grants and the creation text", async () => {
-		const f = fake();
-		const agents = createWebCompanyAgents(f.files);
-		const id = await agents.create({ ...draft, charter: "Own the ledger." }, new AbortController().signal);
-		const created = parseCloudCompanyAgentDocument(JSON.parse(f.edits[0]!.text!));
-		// The roster reports the same instant in the database's spelling.
-		const roster = {
-			...staff,
-			id,
-			createdAt: created.createdAt.replace("Z", "+00:00"),
-			appearance: { color: "x", shape: "round" },
-		};
-		const revision = await agents.update(
-			roster,
-			{ ...draft, displayName: "Ledger II", charter: "" },
-			new AbortController().signal,
+
+	it("writes the responsibilities as the instructions, and the figure and colour the file knows", async () => {
+		const f = setup();
+		const creation = prepareWebCompanyAgentCreation({
+			...draft,
+			charter: "  Own the ledger.  ",
+			figure: "rocket",
+			color: "qorpera-coral",
+		});
+		await createWebCompanyAgents(f.files).create(creation, f.signal);
+		expect(agentFile(f.fake, "agents/ledger/agent.md")).toMatchObject({
+			instructions: "Own the ledger.",
+			figure: "rocket",
+			colour: "coral",
+		});
+	});
+
+	it.each([
+		["qorpera-teal", "teal"],
+		["#2047BD", "blue"],
+		[" #ff2994 ", "pink"],
+		["#123456", null],
+		["coral", null],
+	])("writes the colour %s as %s", (color, colour) => {
+		expect(agentFileColour(color)).toBe(colour);
+	});
+
+	it("takes the next handle when the name is listed, and never a reserved one", async () => {
+		const f = setup();
+		f.fake.mkdir("agents/ledger");
+		const first = prepareWebCompanyAgentCreation(draft);
+		await createWebCompanyAgents(f.files).create(first, f.signal);
+		expect(f.fake.commits.map((commit) => commit.operationKey)).toEqual([`web:staff-create:${first.id}:ledger-2`]);
+		const groups = prepareWebCompanyAgentCreation({ ...draft, displayName: "Groups" });
+		await createWebCompanyAgents(f.files).create(groups, f.signal);
+		expect(f.fake.commits.at(-1)?.units[0]).toMatchObject({ op: "new_folder", path: "agents/groups-2" });
+		expect(agentFile(f.fake, "agents/groups-2/agent.md").id).toBe(groups.id);
+	});
+
+	it("takes the next handle, as a new change set, when a folder the member cannot see has the name", async () => {
+		const f = setup();
+		f.fake.mkdir("agents/ledger");
+		f.fake.deny("agents/ledger");
+		const creation = prepareWebCompanyAgentCreation(draft);
+		await createWebCompanyAgents(f.files).create(creation, f.signal);
+		expect(f.fake.commits.map((commit) => [commit.operationKey, (commit.units[0] as { path: string }).path])).toEqual(
+			[
+				[`web:staff-create:${creation.id}:ledger`, "agents/ledger"],
+				[`web:staff-create:${creation.id}:ledger-2`, "agents/ledger-2"],
+			],
 		);
-		expect(revision).toBe(2);
-		const next = parseCloudCompanyAgentDocument(JSON.parse(f.edits[1]!.text!));
-		expect(next).toMatchObject({
-			revision: 2,
-			displayName: "Ledger II",
-			createdAt: created.createdAt,
-			startupInstructions: created.startupInstructions,
-		});
-		expect(next.hireOverlay.charter).toBe(staff.charter);
-		expect(f.edits[1]!.expectedVersion).toBe("10000000-0000-4000-8000-0000000000aa");
+		expect(agentFile(f.fake, "agents/ledger-2/agent.md").id).toBe(creation.id);
 	});
-	it("refuses when company access changed and writes nothing", async () => {
-		const f = fake();
+
+	it("stops after three taken handles and says the agent was not created", async () => {
+		const f = setup();
+		for (const handle of ["ledger", "ledger-2", "ledger-3"]) {
+			f.fake.mkdir(`agents/${handle}`);
+			f.fake.deny(`agents/${handle}`);
+		}
+		const error = await createWebCompanyAgents(f.files)
+			.create(prepareWebCompanyAgentCreation(draft), f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect(error).toMatchObject({
+			outcome: "conflict",
+			reason: "exists",
+			message: "The agent could not be created.",
+		});
+		expect(f.fake.commits).toHaveLength(3);
+	});
+
+	it("finds the agent a lost answer created instead of creating a second one", async () => {
+		const f = setup();
+		const creation = prepareWebCompanyAgentCreation(draft);
+		f.fake.loseAnswer();
+		await expect(createWebCompanyAgents(f.files).create(creation, f.signal)).rejects.toThrow("Failed to fetch");
+		// The application makes a new adapter for each call; the identity is the draft's.
+		await expect(createWebCompanyAgents(f.files).create(creation, f.signal)).resolves.toBe(creation.id);
+		expect(f.fake.commits).toHaveLength(1);
+		expect(f.fake.children("agents")).toEqual(["agents/groups", "agents/ledger"]);
+	});
+
+	it("sends the same change set again when the first never reached the core", async () => {
+		const f = setup();
+		const creation = prepareWebCompanyAgentCreation(draft);
+		f.fake.failCommit();
+		await expect(createWebCompanyAgents(f.files).create(creation, f.signal)).rejects.toThrow("Failed to fetch");
+		await createWebCompanyAgents(f.files).create(creation, f.signal);
+		expect(f.fake.commits).toHaveLength(2);
+		expect(f.fake.commits[1]).toEqual(f.fake.commits[0]);
+		expect(agentFile(f.fake, "agents/ledger/agent.md").id).toBe(creation.id);
+	});
+
+	it.each([
+		["refused", "hook"],
+		["denied", "access"],
+	] as const)("reports a %s change set as a rejection with its problems", async (outcome, reason) => {
+		const f = setup();
+		f.fake.answer(outcome, reason, ["agents may only be hired by an owner or admin "]);
+		const error = await createWebCompanyAgents(f.files)
+			.create(prepareWebCompanyAgentCreation(draft), f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect(error).toMatchObject({
+			outcome,
+			reason,
+			message: "The agent could not be created: agents may only be hired by an owner or admin.",
+		});
+		expect(f.fake.has("agents/ledger")).toBe(false);
+	});
+
+	it("treats an answer waiting for review as uncertain, never as a rejection", async () => {
+		const f = setup();
+		f.fake.answer("waiting_for_review", "review");
+		const error = await createWebCompanyAgents(f.files)
+			.create(prepareWebCompanyAgentCreation(draft), f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(Error);
+		expect(error).not.toBeInstanceOf(WebCompanyFolderRejectedError);
+	});
+
+	it("writes nothing when company access changed or the company closed", async () => {
+		const f = setup();
 		f.current.mockImplementation(() => {
 			throw new Error("Company access changed.");
 		});
-		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).rejects.toThrow(
-			"Company access changed.",
-		);
-		expect(f.edits).toHaveLength(0);
+		await expect(
+			createWebCompanyAgents(f.files).create(prepareWebCompanyAgentCreation(draft), f.signal),
+		).rejects.toThrow("Company access changed.");
+		f.current.mockReset();
+		f.stop.abort();
+		await expect(
+			createWebCompanyAgents(f.files).create(prepareWebCompanyAgentCreation(draft), f.signal),
+		).rejects.toThrow();
+		expect(f.fake.commits).toHaveLength(0);
 	});
-	it("reconciles a creation whose approval applied but whose reply was lost", async () => {
-		const f = fake();
-		const approve = f.editor.review.getMockImplementation()!;
-		f.editor.review.mockImplementationOnce(async () => {
-			await approve();
-			throw new TypeError("Failed to fetch");
+
+	it("checks access again after the listing, before the change set", async () => {
+		const f = setup();
+		const list = f.fake.folder.list.getMockImplementation()!;
+		f.fake.folder.list.mockImplementationOnce(async (...args) => {
+			const page = await list(...args);
+			f.current.mockImplementation(() => {
+				throw new Error("Company access changed.");
+			});
+			return page;
 		});
-		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).rejects.toThrow(
-			"Failed to fetch",
+		await expect(
+			createWebCompanyAgents(f.files).create(prepareWebCompanyAgentCreation(draft), f.signal),
+		).rejects.toThrow("Company access changed.");
+		expect(f.fake.commits).toHaveLength(0);
+	});
+});
+
+describe("changing an agent", () => {
+	it("writes only the fields the member changed, naming the version it read", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		const before = f.fake.text(path)!;
+		const version = f.fake.version(path);
+		// The agent changed its own role meanwhile; the member changes the name only.
+		f.fake.put(path, before.replace("role: Keeps the books", "role: Bookkeeper"));
+		const read = f.fake.version(path);
+		expect(read).not.toBe(version);
+		await expect(
+			createWebCompanyAgents(f.files).update(agent, { ...draft, displayName: "Ledger II" }, f.signal),
+		).resolves.toBe(agent.version + 1);
+		expect(f.fake.commits).toHaveLength(1);
+		expect(f.fake.commits[0]?.operationKey).toMatch(new RegExp(`^web:staff-update:${agent.id}:[0-9a-f-]{36}$`));
+		expect(f.fake.commits[0]?.units).toEqual([
+			{ op: "write", path, text: expect.any(String), expectedVersion: read },
+		]);
+		const after = f.fake.text(path)!;
+		expect(after).toBe(before.replace("name: Ledger", "name: Ledger II").replace("Keeps the books", "Bookkeeper"));
+		expect(agentFile(f.fake, path)).toMatchObject({ name: "Ledger II", role: "Bookkeeper" });
+	});
+
+	it("rewrites the instructions and keeps the settings block as it was", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		const before = f.fake.text(path)!;
+		await createWebCompanyAgents(f.files).update(agent, { ...draft, charter: "  Own the ledger.  " }, f.signal);
+		const after = f.fake.text(path)!;
+		const settings = before.slice(0, before.indexOf("\n---\n") + 5);
+		expect(after).toBe(`${settings}Own the ledger.\n`);
+		expect(agentFile(f.fake, path).instructions).toBe("Own the ledger.");
+	});
+
+	it("writes a chosen figure and palette colour, and removes a figure the file cannot hold", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		await createWebCompanyAgents(f.files).update(
+			agent,
+			{ ...draft, figure: "rocket", color: "qorpera-teal" },
+			f.signal,
 		);
-		// The application recreates its adapter between calls. Identity belongs to the draft.
-		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).resolves.toBe(draft.id);
-		expect(f.editor.edit).toHaveBeenCalledTimes(1);
-		expect(f.editor.review).toHaveBeenCalledTimes(1);
-	});
-	it("retries an unconfirmed submission with identical bytes, path, and operation key", async () => {
-		const f = fake();
-		f.editor.edit.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).rejects.toThrow();
-		await createWebCompanyAgents(f.files).create(draft, new AbortController().signal);
-		expect(f.editor.edit.mock.calls[0]![0]).toEqual(f.editor.edit.mock.calls[1]![0]);
-		expect(f.editor.edit.mock.calls[1]![0]).toMatchObject({
-			operationKey: `staff-create:${draft.id}`,
-			expectedVersion: null,
-		});
-	});
-	it.each(["edit", "review"] as const)(
-		"reports a confirmed rejection from %s distinctly from uncertainty",
-		async (stage) => {
-			const f = fake();
-			f.editor[stage].mockResolvedValueOnce({ commandId: "c", state: "rejected", result: null } as never);
-			await expect(
-				createWebCompanyAgents(f.files).create(draft, new AbortController().signal),
-			).rejects.toBeInstanceOf(CloudCompanyAgentOperationRejectedError);
-			expect(f.editor.edit).toHaveBeenCalledTimes(1);
-			expect(f.editor.review).toHaveBeenCalledTimes(stage === "review" ? 1 : 0);
-		},
-	);
-	it("recognizes a later revision without overwriting it when creation is retried", async () => {
-		const f = fake();
-		const agents = createWebCompanyAgents(f.files);
-		await agents.create(draft, new AbortController().signal);
-		await agents.update(
-			{ ...staff, id: draft.id, createdAt: draft.createdAt },
-			{ ...draft, displayName: "Changed" },
-			new AbortController().signal,
+		expect(agentFile(f.fake, path)).toMatchObject({ figure: "rocket", colour: "teal" });
+		const saved = () => ({ ...draft, figure: "rocket", color: "qorpera-teal" });
+		await createWebCompanyAgents(f.files, { saved }).update(
+			agent,
+			{ ...draft, figure: "owl", color: "#2047bd" },
+			f.signal,
 		);
-		await expect(agents.create(draft, new AbortController().signal)).resolves.toBe(draft.id);
-		expect(f.editor.edit).toHaveBeenCalledTimes(2);
-		expect(f.editor.review).toHaveBeenCalledTimes(2);
+		expect(agentFile(f.fake, path)).toMatchObject({ figure: null, colour: "blue" });
 	});
-	it.each(["agentId", "createdAt"])("rejects a conflicting immutable %s without writing", async (field) => {
-		const f = fake();
-		const agents = createWebCompanyAgents(f.files);
-		await agents.create(draft, new AbortController().signal);
-		const document = parseCloudCompanyAgentDocument(JSON.parse(f.edits[0]!.text!));
-		f.editor.read.mockResolvedValueOnce({
-			path: `organization/agents/${draft.id}.json`,
-			kind: "file",
-			version: id(99),
-			executable: false,
-			text: JSON.stringify({
-				...document,
-				revision: 2,
-				[field]: field === "agentId" ? id(99) : "2026-01-01T00:00:00Z",
-			}),
+
+	it("writes nothing when nothing changed, and answers the agent's own version", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		// An emptied description keeps the instructions: an agent always has some.
+		for (const change of [{}, { charter: "" }, { displayName: "  Ledger  " }])
+			await expect(createWebCompanyAgents(f.files).update(agent, { ...draft, ...change }, f.signal)).resolves.toBe(
+				agent.version,
+			);
+		expect(f.fake.commits).toHaveLength(0);
+	});
+
+	it("leaves a field the member did not touch as the file has it", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		f.fake.put(path, f.fake.text(path)!.replace("name: Ledger", "name: Ledger by the agent"));
+		// The editor still shows the old name, untouched; the member changes the role.
+		await createWebCompanyAgents(f.files).update(agent, { ...draft, role: "Books" }, f.signal);
+		expect(agentFile(f.fake, path)).toMatchObject({ name: "Ledger by the agent", role: "Books" });
+	});
+
+	it("reads again and rewrites when the file changed between the read and the write", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		const readFile = f.fake.folder.readFile.getMockImplementation()!;
+		let changed: string | undefined;
+		f.fake.folder.readFile.mockImplementationOnce(async (...args) => {
+			const bytes = await readFile(...args);
+			// The agent's run writes its file meanwhile.
+			changed = f.fake.put(path, f.fake.text(path)!.replace("role: Keeps the books", "role: Bookkeeper"));
+			return bytes;
 		});
-		await expect(agents.create(draft, new AbortController().signal)).rejects.toThrow("creation document changed");
-		expect(f.editor.edit).toHaveBeenCalledTimes(1);
+		const first = f.fake.version(path);
+		await expect(
+			createWebCompanyAgents(f.files).update(agent, { ...draft, displayName: "Ledger II" }, f.signal),
+		).resolves.toBe(agent.version + 1);
+		expect(changed).toBeDefined();
+		expect(f.fake.commits.map((commit) => commit.units[0])).toMatchObject([
+			{ op: "write", expectedVersion: first },
+			{ op: "write", expectedVersion: changed },
+		]);
+		expect(f.fake.commits[1]?.operationKey).not.toBe(f.fake.commits[0]?.operationKey);
+		expect(agentFile(f.fake, path)).toMatchObject({ name: "Ledger II", role: "Bookkeeper" });
+	});
+
+	it("gives up after three more tries when the file keeps changing", async () => {
+		const f = setup();
+		const { agent, path } = await created(f);
+		const readFile = f.fake.folder.readFile.getMockImplementation()!;
+		let runs = 0;
+		f.fake.folder.readFile.mockImplementation(async (...args) => {
+			const bytes = await readFile(...args);
+			f.fake.put(path, f.fake.text(path)!.replace(/role: .*/, `role: Run ${++runs}`));
+			return bytes;
+		});
+		const error = await createWebCompanyAgents(f.files)
+			.update(agent, { ...draft, displayName: "Ledger II" }, f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect(error).toMatchObject({ outcome: "conflict", reason: "version_changed" });
+		expect(f.fake.commits).toHaveLength(4);
+		expect(agentFile(f.fake, path).name).toBe("Ledger");
+	});
+
+	it("says the agent is gone when its folder is, and writes nothing", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		f.fake.remove("agents/ledger");
+		await expect(
+			createWebCompanyAgents(f.files).update(agent, { ...draft, displayName: "Ledger II" }, f.signal),
+		).rejects.toThrow("This agent is no longer available.");
+		expect(f.fake.commits).toHaveLength(0);
+	});
+
+	it("refuses a change the file cannot hold before sending it", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		const error = await createWebCompanyAgents(f.files)
+			.update(agent, { ...draft, displayName: "x".repeat(161) }, f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect((error as Error).message).toContain("name must be 1–160 characters");
+		expect(f.fake.commits).toHaveLength(0);
+	});
+
+	it("reports the hook's refusal with its problems", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		f.fake.answer("refused", "hook", ["the Co-Founder's role cannot change"]);
+		const error = await createWebCompanyAgents(f.files)
+			.update(agent, { ...draft, role: "Anything" }, f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect((error as Error).message).toBe(
+			"The agent's changes could not be saved: the Co-Founder's role cannot change.",
+		);
+	});
+});
+
+describe("deleting an agent", () => {
+	it("deletes the agent's folder at the version and seq it read", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		const version = f.fake.version("agents/ledger");
+		const seq = f.fake.seq;
+		await createWebCompanyAgents(f.files).delete(agent, f.signal);
+		expect(f.fake.commits).toHaveLength(1);
+		expect(f.fake.commits[0]?.operationKey).toMatch(new RegExp(`^web:staff-delete:${agent.id}:[0-9a-f-]{36}$`));
+		expect(f.fake.commits[0]?.units).toEqual([
+			{ op: "delete", path: "agents/ledger", expectedVersion: version, asOfSeq: seq },
+		]);
+		expect(f.fake.has("agents/ledger")).toBe(false);
+	});
+
+	it("reads again and retries when the agent's run wrote under its folder in between", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		const read = f.fake.folder.read.getMockImplementation()!;
+		f.fake.folder.read.mockImplementationOnce(async (...args) => {
+			const answer = await read(...args);
+			f.fake.put("agents/ledger/memory/notes.md", "A note.");
+			return answer;
+		});
+		const seq = f.fake.seq;
+		await createWebCompanyAgents(f.files).delete(agent, f.signal);
+		expect(f.fake.commits.map((commit) => commit.units[0])).toEqual([
+			{ op: "delete", path: "agents/ledger", expectedVersion: expect.any(String), asOfSeq: seq },
+			// The note came at seq + 1; the second read saw it.
+			{ op: "delete", path: "agents/ledger", expectedVersion: expect.any(String), asOfSeq: seq + 1 },
+		]);
+		expect(f.fake.has("agents/ledger")).toBe(false);
+	});
+
+	it("is done when the agent is already gone", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		f.fake.remove("agents/ledger");
+		await createWebCompanyAgents(f.files).delete(agent, f.signal);
+		expect(f.fake.commits).toHaveLength(0);
+		// Gone between the read and the delete: the core answers missing, which is done as well.
+		const g = setup();
+		const other = await created(g);
+		const read = g.fake.folder.read.getMockImplementation()!;
+		g.fake.folder.read.mockImplementationOnce(async (...args) => {
+			const answer = await read(...args);
+			g.fake.remove("agents/ledger");
+			return answer;
+		});
+		await createWebCompanyAgents(g.files).delete(other.agent, g.signal);
+		expect(g.fake.commits).toHaveLength(1);
+	});
+
+	it("never deletes the Co-Founder", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		f.folder.mockClear();
+		await expect(
+			createWebCompanyAgents(f.files).delete({ ...agent, templateId: "co-founder" }, f.signal),
+		).rejects.toThrow("The Co-Founder cannot be deleted.");
+		expect(f.folder).not.toHaveBeenCalled();
+		expect(f.fake.has("agents/ledger")).toBe(true);
+	});
+
+	it("reports a refusal with its problems, and keeps the folder", async () => {
+		const f = setup();
+		const { agent } = await created(f);
+		f.fake.answer("refused", "hook", ["the agent still has open human tasks"]);
+		const error = await createWebCompanyAgents(f.files)
+			.delete(agent, f.signal)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(WebCompanyFolderRejectedError);
+		expect(error).toMatchObject({
+			outcome: "refused",
+			reason: "hook",
+			message: "The agent could not be deleted: the agent still has open human tasks.",
+		});
+		expect(f.fake.has("agents/ledger")).toBe(true);
 	});
 });

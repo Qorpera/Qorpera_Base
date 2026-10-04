@@ -1,7 +1,4 @@
-import {
-	CloudMemberFolderAccessDenied,
-	type CloudMemberFolderClient,
-} from "@qorpera/cloud-client/cloud-member-folder";
+import { CloudMemberFolderAccessDenied, type CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import { isCloudSkillName, parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 import { COMPANY_STATE_FILE_MAX_BYTES } from "@qorpera/cloud-client/company-state-files";
 import { parentPath } from "./company-folder-writes.ts";

@@ -1,5 +1,9 @@
 import { writeGroupFile } from "@qorpera/cloud-client/company-state-files";
-import { createStateFolder, type WebMemberFolder } from "../cloud/company-folder-writes.ts";
+import {
+	createStateFolder,
+	WebCompanyFolderRejectedError,
+	type WebMemberFolder,
+} from "../cloud/company-folder-writes.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import { type SessionExecutionSponsor, selectSessionExecutionSponsor } from "../cloud/session-input.ts";
@@ -115,7 +119,12 @@ export function createConversationStarter(options: {
 						},
 						signal,
 						check,
-					);
+					).catch((error: unknown) => {
+						// Nothing was written. The core keeps a refused change set's answer under its key, so the next try
+						// is a new group chat: the same one again would only replay this answer.
+						if (error instanceof WebCompanyFolderRejectedError && room === created) room = undefined;
+						throw error;
+					});
 				await company.refreshSessions();
 				check();
 				const session = company.store.get().sessions.find((item) => item.executionScope?.roomId === created.id);

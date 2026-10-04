@@ -155,13 +155,6 @@ export const AGENTS: Record<string, string> = {
 	"Enter a group name of no more than 256 characters.": "Skriv et gruppenavn på højst 256 tegn.",
 	"Enter a group subtitle of no more than 256 characters.": "Skriv en undertitel på højst 256 tegn.",
 	"Enter a description for this group chat.": "Skriv en beskrivelse af gruppechatten.",
-	"This group chat document has changed. Reopen its details before saving.":
-		"Gruppechattens dokument er ændret. Åbn detaljerne igen, før du gemmer.",
-	"Invalid group participant.": "Ugyldig deltager i gruppen.",
-	"This group chat changed while you were editing. Reopen its details before saving.":
-		"Gruppechatten blev ændret, mens du redigerede. Åbn detaljerne igen, før du gemmer.",
-	"The group details are too long. Shorten the description.":
-		"Gruppedetaljerne er for lange. Gør beskrivelsen kortere.",
 	"The group chat changes could not be saved.": "Ændringerne i gruppechatten kunne ikke gemmes.",
 
 	// Coding sessions (ui/coding-session.ts, ui/coding-session-thread.ts)

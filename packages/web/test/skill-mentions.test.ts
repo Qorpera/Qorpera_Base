@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 
-import {
-	CloudMemberCompanyAccessDenied,
-	type CloudMemberCompanyFileClient,
-} from "@qorpera/cloud-client/cloud-member-company-editor";
+import { CloudMemberFolderAccessDenied, CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
+import { writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
@@ -13,6 +11,7 @@ import type { TranscriptItem } from "../src/cloud/transcript.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { markSkillNames } from "../src/ui/skill-mentions.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
+import { folderFake } from "./folder-fake.ts";
 
 const SKILLS: SkillSuggestion[] = [
 	{ name: "triage", description: "Sort new tickets by urgency.", scope: "agent" },
@@ -524,121 +523,135 @@ describe("calling a skill from the composer", () => {
 });
 
 describe("reading the skill list", () => {
-	function files(tree: Record<string, string | null>, failing: string[] = [], denied: string[] = []) {
-		const entries = Object.keys(tree);
-		const folders = new Set(
-			entries.flatMap((path) =>
-				path
-					.split("/")
-					.slice(0, -1)
-					.map((_, index, parts) => parts.slice(0, index + 1).join("/")),
-			),
+	const LEDGER = "agents/ledger";
+	/** A company folder where the fixture agent is agents/ledger, with skills of its own and the company's. */
+	function company(tree: Record<string, string> = {}) {
+		const fake = folderFake();
+		fake.put(
+			`${LEDGER}/agent.md`,
+			writeAgentFile({
+				id: staff.id,
+				name: "Ledger",
+				role: "Keeps the books",
+				agentKind: "agent",
+				status: "active",
+				colour: null,
+				figure: null,
+				model: null,
+				effort: null,
+				instructions: "Keep the books.",
+			}),
 		);
-		const list = vi.fn(async (path: string) => {
-			if (failing.includes(path)) throw new Error("Company File is unavailable.");
-			if (denied.includes(path)) throw new CloudMemberCompanyAccessDenied();
-			const children = new Map<string, "file" | "directory">();
-			for (const folder of folders)
-				if (folder.startsWith(`${path}/`) && !folder.slice(path.length + 1).includes("/"))
-					children.set(folder, "directory");
-			for (const file of entries)
-				if (file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes("/")) children.set(file, "file");
-			return {
-				snapshotId: id(70),
-				hasMore: false,
-				nextAfter: null,
-				items: [...children.entries()]
-					.sort(([a], [b]) => (a < b ? -1 : 1))
-					.map(([child, kind]) => ({ path: child, version: id(71), kind, bytes: kind === "file" ? 1 : null })),
-			};
+		fake.mkdir(`${LEDGER}/skills`);
+		for (const [path, text] of Object.entries(tree)) fake.put(path, text);
+		// A file that is not text is unreadable here.
+		const readFile = fake.folder.readFile.getMockImplementation()!;
+		fake.folder.readFile.mockImplementation(async (...args) => {
+			const bytes = await readFile(...args);
+			if (new TextDecoder().decode(bytes) === "not text") throw new CloudMemberFolderError("not text");
+			return bytes;
 		});
-		const read = vi.fn(async (path: string) => {
-			const text = tree[path];
-			if (text === null) throw new Error("This viewer supports UTF-8 text files only");
-			return text === undefined
-				? { path, version: null, kind: "absent" as const, executable: false, text: "" }
-				: { path, version: id(72), kind: "file" as const, executable: false, text };
-		});
-		return { list, read } as unknown as CloudMemberCompanyFileClient & { list: typeof list; read: typeof read };
+		return fake;
 	}
+	const signal = () => new AbortController().signal;
 
 	it("lists the agent's own skills, then the company's, with the descriptions agents read", async () => {
-		const client = files({
-			[`agents/${staff.id}/skills/triage/SKILL.md`]:
+		const fake = company({
+			[`${LEDGER}/skills/triage/SKILL.md`]:
 				"---\nname: triage\ndescription: >-\n  Sort new\n  tickets.\n---\n\nSteps.\n",
 			"skills/customer-refund/SKILL.md":
 				'---\nname: customer-refund\ndescription: "Refund a customer."\n---\n\nSteps.\n',
 			"skills/weekly-note.md": "---\ndescription: A flat skill file.\n---\nSteps.\n",
-			"skills/broken/SKILL.md": null,
+			// A folder and a flat file of one name: the folder is the skill.
+			"skills/both/SKILL.md": "---\ndescription: From the folder.\n---\n",
+			"skills/both.md": "---\ndescription: From the flat file.\n---\n",
+			"skills/broken/SKILL.md": "not text",
+			// A folder without its SKILL.md, and names that are not skill names, are not skills.
 			"skills/empty/notes.txt": "not a skill",
 			"skills/README.md": "Not a skill name.",
+			"skills/Upper/SKILL.md": "---\ndescription: Not a skill name.\n---\n",
 		});
-		expect(await loadSkillSuggestions(client, profileA.profileId, staff.id, new AbortController().signal)).toEqual([
+		expect(await loadSkillSuggestions(fake.folder, staff.id, signal())).toEqual([
 			{ name: "triage", description: "Sort new tickets.", scope: "agent" },
+			{ name: "both", description: "From the folder.", scope: "company" },
 			{ name: "broken", description: null, scope: "company" },
 			{ name: "customer-refund", description: "Refund a customer.", scope: "company" },
 			{ name: "weekly-note", description: "A flat skill file.", scope: "company" },
 		]);
+		expect(fake.folder.list).toHaveBeenCalledWith(`${LEDGER}/skills`, null, 100, expect.any(AbortSignal));
+		expect(fake.folder.list).toHaveBeenCalledWith("skills", null, 100, expect.any(AbortSignal));
 		// A group chat, or a thread without an agent, offers only the company's.
-		const company = await loadSkillSuggestions(client, profileA.profileId, null, new AbortController().signal);
-		expect(company.every((skill) => skill.scope === "company")).toBe(true);
+		fake.folder.list.mockClear();
+		const companyOnly = await loadSkillSuggestions(fake.folder, null, signal());
+		expect(companyOnly.map((skill) => skill.name)).toEqual(["both", "broken", "customer-refund", "weekly-note"]);
+		expect(companyOnly.every((skill) => skill.scope === "company")).toBe(true);
+		expect(fake.folder.list).toHaveBeenCalledExactlyOnceWith("skills", null, 100, expect.any(AbortSignal));
+	});
+
+	it("offers only the company's skills for an agent without a folder this member reads", async () => {
+		const fake = company({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
+		expect(await loadSkillSuggestions(fake.folder, id(99), signal())).toEqual([
+			{ name: "customer-refund", description: "Refund.", scope: "company" },
+		]);
+		expect(fake.folder.list).toHaveBeenCalledExactlyOnceWith("skills", null, 100, expect.any(AbortSignal));
 	});
 
 	it("offers the company's skills when the agent's folder is closed, and fails on any other failed listing", async () => {
-		const client = files(
-			{ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" },
-			[],
-			[`agents/${staff.id}/skills`],
-		);
-		expect(await loadSkillSuggestions(client, profileA.profileId, staff.id, new AbortController().signal)).toEqual([
+		const closed = company({
+			"skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n",
+			[`${LEDGER}/skills/triage/SKILL.md`]: "---\ndescription: Sort.\n---\n",
+		});
+		closed.deny(`${LEDGER}/skills`);
+		expect(await loadSkillSuggestions(closed.folder, staff.id, signal())).toEqual([
 			{ name: "customer-refund", description: "Refund.", scope: "company" },
 		]);
+		expect(closed.folder.list).toHaveBeenCalledWith(`${LEDGER}/skills`, null, 100, expect.any(AbortSignal));
 		// Never "no skills" for a failed listing: the composer keeps its last list and reads again.
-		await expect(
-			loadSkillSuggestions(files({}, ["skills"]), profileA.profileId, staff.id, new AbortController().signal),
-		).rejects.toThrow("Company File is unavailable.");
+		const down = company();
+		down.fail("skills");
+		await expect(loadSkillSuggestions(down.folder, staff.id, signal())).rejects.toBeInstanceOf(
+			CloudMemberFolderError,
+		);
+		// Neither is the company's library closed to this member "no skills".
+		const denied = company();
+		denied.deny("skills");
+		await expect(loadSkillSuggestions(denied.folder, null, signal())).rejects.toBeInstanceOf(
+			CloudMemberFolderAccessDenied,
+		);
 		// An outage of the agent's folder is not a closed folder: the agent's skills are not dropped quietly.
-		await expect(
-			loadSkillSuggestions(
-				files({}, [`agents/${staff.id}/skills`]),
-				profileA.profileId,
-				staff.id,
-				new AbortController().signal,
-			),
-		).rejects.toThrow("Company File is unavailable.");
+		const agentDown = company();
+		agentDown.fail(`${LEDGER}/skills`);
+		await expect(loadSkillSuggestions(agentDown.folder, staff.id, signal())).rejects.toThrow("unavailable");
 	});
 
-	it("lists every page on one snapshot, and starts again when the company changes in between", async () => {
-		const pages = [
-			{ items: ["skills/a-one"], hasMore: true, nextAfter: "skills/a-one", snapshotId: id(80) },
-			new Error("Company File page changed"),
-			{ items: ["skills/a-one"], hasMore: true, nextAfter: "skills/a-one", snapshotId: id(81) },
-			{ items: ["skills/b-two"], hasMore: false, nextAfter: null, snapshotId: id(81) },
-		];
-		const list = vi.fn(async (path: string, _signal: AbortSignal, after: string | null, snapshot: string | null) => {
-			const page = pages.shift()!;
-			if (page instanceof Error) throw page;
-			expect(path).toBe("skills");
-			if (after !== null) expect(snapshot).toBe(page.snapshotId);
-			return {
-				...page,
-				items: page.items.map((item) => ({ path: item, version: id(71), kind: "directory", bytes: null })),
-			};
+	it("lists every page of a library, and reads the descriptions of the first sixty", async () => {
+		const tree: Record<string, string> = {};
+		for (let index = 0; index <= 100; index++)
+			tree[`skills/s-${String(index).padStart(3, "0")}/SKILL.md`] = `---\ndescription: Skill ${index}.\n---\n`;
+		const fake = company(tree);
+		const skills = await loadSkillSuggestions(fake.folder, null, signal());
+		expect(skills).toHaveLength(101);
+		expect(fake.folder.list.mock.calls.map(([parent, after]) => [parent, after])).toEqual([
+			["skills", null],
+			["skills", "skills/s-099"],
+		]);
+		expect(skills[0]).toEqual({ name: "s-000", description: "Skill 0.", scope: "company" });
+		expect(skills[59]?.description).toBe("Skill 59.");
+		// The rest are offered by name; their files are not read.
+		expect(skills[60]).toEqual({ name: "s-060", description: null, scope: "company" });
+		expect(skills[100]).toEqual({ name: "s-100", description: null, scope: "company" });
+		expect(fake.folder.read).toHaveBeenCalledTimes(60);
+	});
+
+	it("stops when the reader's company closes, and never offers a partial list", async () => {
+		const fake = company({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
+		const stop = new AbortController();
+		const read = fake.folder.read.getMockImplementation()!;
+		fake.folder.read.mockImplementation(async (...args) => {
+			stop.abort();
+			return read(...args);
 		});
-		const read = vi.fn(async (path: string) => ({
-			path,
-			version: id(72),
-			kind: "file" as const,
-			executable: false,
-			text: "---\ndescription: D.\n---\n",
-		}));
-		const client = { list, read } as unknown as CloudMemberCompanyFileClient;
-		expect(
-			(await loadSkillSuggestions(client, profileA.profileId, null, new AbortController().signal)).map(
-				(skill) => skill.name,
-			),
-		).toEqual(["a-one", "b-two"]);
-		expect(list).toHaveBeenCalledTimes(4);
+		await expect(loadSkillSuggestions(fake.folder, null, stop.signal)).rejects.toThrow();
 	});
 
 	it("shares one read among a company's threads for a minute, and forgets a failed one", async () => {

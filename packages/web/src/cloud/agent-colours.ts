@@ -20,7 +20,5 @@ export const AGENT_COLOUR_HEX: Readonly<Record<AgentColour, string>> = Object.fr
  * name; anything else (a figure's own shade) is null, which `agent.md` writes as no colour. */
 export function agentFileColour(color: string): AgentColour | null {
 	const value = color.trim().toLowerCase();
-	return (
-		AGENT_COLOURS.find((colour) => value === `qorpera-${colour}` || value === AGENT_COLOUR_HEX[colour]) ?? null
-	);
+	return AGENT_COLOURS.find((colour) => value === `qorpera-${colour}` || value === AGENT_COLOUR_HEX[colour]) ?? null;
 }
