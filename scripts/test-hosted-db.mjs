@@ -55,7 +55,6 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-node-capacity.mjs",
 	"scripts/test-runtime-office-delete-disposition.mjs",
 	"scripts/test-runtime-office-current-provider-activation.mjs",
-	"scripts/test-coding-turn-backfill.mjs",
 	"scripts/test-runtime-room-history.mjs",
 	"scripts/test-runtime-production-review.mjs",
 	"scripts/test-runtime-wake-bus.mjs",
@@ -78,7 +77,6 @@ const OWN_SERVER_SCRIPTS = new Set([
 function scriptStartPoints(names) {
 	return [
 		"20260913000400_runtime_room_history.sql", // test-runtime-room-history
-		"20260925113000_runtime_coding_turn_continuity.sql", // test-coding-turn-backfill
 		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
 		newestBundleActivation(names), // test-runtime-office-delete-disposition holds it back
 	].filter((name) => names.includes(name));

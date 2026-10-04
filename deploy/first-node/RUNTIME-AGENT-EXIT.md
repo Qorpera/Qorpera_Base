@@ -77,12 +77,14 @@ agent road machine only ever uses the exit of the node it runs on.
   most 16,384 open connections through the exit at once, and the exit at most 98,304 in all; the per-machine bound
   is checked first. In phase 1 each agent connection takes one entry in the exit's connection table and one, the
   masqueraded leg, in the node's (262,144, read on both nodes on 2 October); the node does not track the bridged
-  leg (see the host's rules below). The total bounds open connections only: closed connections (120 seconds by
-  default) and refused attempts (10 seconds for TCP, 30 for UDP, 600 for other protocols) stay in the tables for a
-  while. When one company reaches the total, every other company's new connections on that node are refused until
-  connections close. A Company Computer machine's computers share one 16,384. A reload of the rules starts both
-  counts from zero, and connections already open are never counted (their packets pass before the bounds are
-  checked). E2's proof on LXD measures the tables under such floods and the cost of the shared total.
+  leg (see the host's rules below). The total bounds open connections only: closed agent TCP connections stay in the
+  tables for 30 seconds (shortened from the kernel's 120 by a timeout policy for agent connections in both tables),
+  and refused attempts leave no entry (measured in E2's proof). When one company reaches the total, every other
+  company's new connections on that node are refused until connections close. A Company Computer machine's
+  computers share one 16,384. A reload of the rules starts both counts from zero, and connections already open are
+  never counted (their packets pass before the bounds are checked); it also recreates the timeout policy, so
+  connections open at that moment close into the kernel's 120 seconds. E2's proof on LXD measured the tables under
+  such floods and the cost of the shared total.
 - Plain DNS sent to any other resolver is redirected to the exit's own.
 - Masquerade out of `up0`.
 
