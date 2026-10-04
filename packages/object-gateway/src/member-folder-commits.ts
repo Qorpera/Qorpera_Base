@@ -46,9 +46,10 @@ export interface MemberFolderCommitOptions {
 	readonly observation?: MemberRequestObservationSpan;
 }
 
+/** A new folder's entry; a file keeps its whole stored path too (the folder's path joined with its own). */
 type Content =
 	| { readonly path: string; readonly kind: "folder" }
-	| { readonly path: string; readonly kind: "file"; readonly text: string };
+	| { readonly path: string; readonly whole: string; readonly kind: "file"; readonly text: string };
 
 /** One unit as the member sends it, checked. */
 type Unit =
@@ -119,15 +120,18 @@ function unit(value: unknown): Unit {
 		case "new_folder": {
 			const input = object(value, ["op", "path", "contents"]);
 			if (!Array.isArray(input.contents) || input.contents.length > MAX_CONTENTS) return invalid();
+			const folder = path(input.path);
 			return {
 				op,
-				path: path(input.path),
+				path: folder,
 				contents: input.contents.map((item): Content => {
 					const kind = (item as { kind?: unknown } | null)?.kind;
 					if (kind === "folder") return { path: path(object(item, ["path", "kind"]).path), kind };
 					if (kind !== "file") return invalid();
 					const file = object(item, ["path", "kind", "text"]);
-					return { path: path(file.path), kind, text: text(file.text) };
+					const inner = path(file.path);
+					// The joined path is checked here too, so a refusal never follows staged bytes.
+					return { path: inner, whole: path(`${folder}/${inner}`), kind, text: text(file.text) };
 				}),
 			};
 		}
@@ -200,13 +204,9 @@ const mediaType = (filePath: string) => (filePath.toLowerCase().endsWith(".md") 
 
 async function body(request: IncomingMessage, observation?: MemberRequestObservationSpan): Promise<unknown> {
 	const length = request.headers["content-length"];
-	if (
-		!length ||
-		!/^[1-9][0-9]{0,6}$/.test(length) ||
-		Number(length) > MAX_BODY_BYTES ||
-		request.headers["content-type"] !== "application/json"
-	)
+	if (!length || !/^[1-9][0-9]{0,6}$/.test(length) || request.headers["content-type"] !== "application/json")
 		throw new ObjectDependencyError(400);
+	if (Number(length) > MAX_BODY_BYTES) throw new ObjectDependencyError(413);
 	return boundedObjectOperation(async () => {
 		const chunks: Buffer[] = [];
 		let count = 0;
@@ -226,8 +226,10 @@ async function body(request: IncomingMessage, observation?: MemberRequestObserva
 	});
 }
 
+type MemberActor = Extract<FolderWriterActor, { kind: "member" }>;
+
 /** The writer check's answer: the member's own actor and the company. */
-function writer(value: unknown): { actor: FolderWriterActor; profileId: string } {
+function writer(value: unknown): { actor: MemberActor; profileId: string } {
 	const input = value as { schema?: unknown; actor?: unknown; profileId?: unknown } | null;
 	const actor = input?.actor as { kind?: unknown; userId?: unknown } | null | undefined;
 	if (
@@ -317,10 +319,8 @@ export async function serveMemberFolderCommit(
 							contents.push({ path: content.path, kind: "folder" });
 							continue;
 						}
-						// The hook checks the joined path; a bad one is this unit's refusal, not a defect.
-						const whole = path(`${item.path}/${content.path}`);
-						contents.push({ path: content.path, kind: "file", file: await stage(whole, content.text) });
-						const entry = memberFolderStructured(whole, content.text);
+						contents.push({ path: content.path, kind: "file", file: await stage(content.whole, content.text) });
+						const entry = memberFolderStructured(content.whole, content.text);
 						if (entry) entries.push(entry);
 					}
 					sent.push({

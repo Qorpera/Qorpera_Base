@@ -142,7 +142,8 @@ rules already run in SQL.
   member removed meanwhile is refused), each path's authority and each upload intent's owner (intents are scoped by
   user, so no member can put into, confirm or seal another's).
 - `qorpera_member_company_state_folders(environment)` (`authenticated`) answers the live agents' and group chats'
-  folders the member may read: `{agents: [{staffAgentId, path}], groups: [{roomId, path}]}`. It reads the staff and
+  files the member may read: `{agents: [{staffAgentId, file}], groups: [{roomId, file}]}` (`agent.md` and
+  `group.md`; a folder is its file's parent). It reads the staff and
   room rows' `folder_path` and leaves out retired rows. The web knows agents and rooms by id from its other reads, so
   this finds an id's folder without reading every `agent.md`.
 

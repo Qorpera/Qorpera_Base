@@ -156,7 +156,7 @@ describe("a member's change set to a folder-v2 company", () => {
 			request([{ op: "write", path: "agents/nora/agent.md", text, expectedVersion: version }]),
 		);
 		expect(response.status).toBe(200);
-		expect((await response.json()).units).toEqual([{ unit: 1, outcome: "saved" }]);
+		expect(((await response.json()) as { units: unknown }).units).toEqual([{ unit: 1, outcome: "saved" }]);
 		// The writer check ran with the member's own token, and the database answered the actor.
 		expect(g.calls[0]).toEqual({
 			side: "member",
@@ -330,9 +330,24 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect((await g.send(request([{ op: "mkdir", path: "drafts" }], "web:third-01"))).status).toBe(200);
 	});
 
-	it("answers 503 when the commit's answer is not the core's", async () => {
+	it("answers 503 when the commit's answer is not the core's, and frees the member for the next change set", async () => {
 		const g = await gateway({ commit: () => ({ schema: "something-else" }) });
 		expect((await g.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(503);
+		// Not 429: the failed change set gave its slot back.
+		expect((await g.send(request([{ op: "mkdir", path: "drafts" }], "web:again-01"))).status).toBe(503);
+	});
+
+	it("checks a new folder's joined paths before staging any file", async () => {
+		const g = await gateway();
+		const long = "a".repeat(2100);
+		const response = await g.send(
+			request([
+				{ op: "write", path: "first.md", text: "staged first, were the join checked late" },
+				{ op: "new_folder", path: long, contents: [{ path: long, kind: "file", text: "x" }] },
+			]),
+		);
+		expect(response.status).toBe(400);
+		expect(g.staged()).toEqual([]);
 	});
 
 	it("lets a member's browser send it across origins", () => {
