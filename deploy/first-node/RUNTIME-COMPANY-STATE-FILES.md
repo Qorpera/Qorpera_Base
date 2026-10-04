@@ -2266,7 +2266,10 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   markers in every patched function, anchored on today's text (H2b's included). New functions for the
   `folder-v2` payloads; the shared payload functions and the legacy drain stay untouched.
 - **F2-5b-3, the drain** (migration 20260930003100, SQL tests 842 and 843): §6.
-- **F2-5b-4, the runtime** (TS): §7.
+- **F2-5b-4, the runtime** (TS): §7. Built 4 October (`CloudFolderWorkers`, moved up after Q1's live test: a new
+  agent's first act was `manage_worker`, which refused). Status on `folder-v2` lists one todo's workers (the index
+  function takes a todoKey and has no pages) and reads one worker's whole result from its file; `archive` and coding
+  sessions refuse until coding workers come to `folder-v2`.
 
 Tests: every action's rules and refusals; a worker-file unit with no request (a member, the model's file
 tool); a request that names another run, environment or operation key; a report commit holding any other
