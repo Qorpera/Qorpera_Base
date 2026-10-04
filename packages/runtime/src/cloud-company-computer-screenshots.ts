@@ -89,14 +89,68 @@ export function parseCompanyComputerScreenshotAsset(value: unknown): CompanyComp
 	return { ...asset } as unknown as CompanyComputerScreenshotAsset;
 }
 
+// Screenshots waiting in memory for the model, at most this many and each for at most this long (folder-v2, P06d):
+// each is handed on right after its operation, so one is the usual count.
+const INLINE_SCREENSHOTS = 4;
+const INLINE_SCREENSHOT_MS = 60_000;
+
+/** Screenshots that travel in their perform answer instead of being stored (folder-v2, P06d): the office service keeps
+ * one until its native gateway answers, and the native host until the boundary hands it to the model. Each is taken
+ * once; past the bound the oldest goes, each goes on its own timer once its time is up, and all go when the run ends. */
+export class CompanyComputerInlineScreenshots {
+	readonly #held = new Map<string, { bytes: Uint8Array; timer: ReturnType<typeof setTimeout> }>();
+
+	hold(assetId: string, bytes: Uint8Array): void {
+		this.#drop(assetId);
+		const timer = setTimeout(() => this.#drop(assetId), INLINE_SCREENSHOT_MS);
+		timer.unref?.();
+		this.#held.set(assetId, { bytes: Uint8Array.from(bytes), timer });
+		while (this.#held.size > INLINE_SCREENSHOTS) this.#drop(this.#held.keys().next().value as string);
+	}
+
+	take(assetId: string): Uint8Array | undefined {
+		const held = this.#held.get(assetId);
+		this.#drop(assetId);
+		return held?.bytes;
+	}
+
+	clear(): void {
+		for (const assetId of [...this.#held.keys()]) this.#drop(assetId);
+	}
+
+	get size(): number {
+		return this.#held.size;
+	}
+
+	#drop(assetId: string): void {
+		const held = this.#held.get(assetId);
+		if (!held) return;
+		clearTimeout(held.timer);
+		this.#held.delete(assetId);
+	}
+}
+
+/** How the capture authority says to keep the pixels: as a stored object (the published artifact), or not at all
+ * (folder-v2: they go to the model once, in the perform answer, and the operation's receipt is the record). */
+function captureStorage(value: unknown): "object" | "none" {
+	const answer = record(value, value && typeof value === "object" && "storage" in value ? "state,storage" : "state");
+	if (answer.state !== "authorized" || (answer.storage !== undefined && answer.storage !== "none"))
+		throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+	return answer.storage === "none" ? "none" : "object";
+}
+
 /** One admitted native run. Upload stages bytes; only the SQL transaction
  * publishes an artifact with the original effect receipt and retention hold.
+ * On a folder-v2 company nothing is stored: the pixels go to the native host in
+ * the perform answer and wait in memory for the model, and the effect receipt is
+ * the capture's record.
  * Private sign-in surfaces never call this adapter. */
 export class CloudCompanyComputerScreenshots implements CompanyComputerScreenshotPublisher {
 	readonly #run: CloudNativeToolRun;
 	readonly #scope: CompanyComputerScope;
 	readonly #registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
 	readonly #objects: (signal: AbortSignal) => Pick<CloudObjectTransport, "put" | "get">;
+	readonly #inline = new CompanyComputerInlineScreenshots();
 
 	constructor(options: {
 		run: CloudNativeToolRun;
@@ -116,6 +170,8 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		this.#scope = Object.freeze({ ...options.scope });
 		this.#registry = options.registry;
 		this.#objects = options.objects;
+		// A waiting screenshot never outlives its run (a closed native session closes its run).
+		this.#run.signal.addEventListener("abort", () => this.#inline.clear(), { once: true });
 	}
 
 	async publish(
@@ -158,19 +214,19 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		return cloudToolRequest(
 			async (signal) => {
 				await this.#run.assertActive(signal);
-				const authorized = record(
+				const storage = captureStorage(
 					await this.#registry.call("qorpera_native_office_capture", { ...args, p_action: "authorize" }, signal),
-					"state",
 				);
-				if (authorized.state !== "authorized") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
 				signal.throwIfAborted();
-				const stored = await this.#objects(signal).put(
-					`${this.#scope.companyId}/${image.sha256}`,
-					bytes,
-					image.mediaType,
-				);
-				if (stored !== "stored" && stored !== "exists") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
-				signal.throwIfAborted();
+				if (storage === "object") {
+					const stored = await this.#objects(signal).put(
+						`${this.#scope.companyId}/${image.sha256}`,
+						bytes,
+						image.mediaType,
+					);
+					if (stored !== "stored" && stored !== "exists") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+					signal.throwIfAborted();
+				}
 				const asset = parseCompanyComputerScreenshotAsset(
 					await this.#registry.call("qorpera_native_office_capture", { ...args, p_action: "publish" }, signal),
 				);
@@ -184,6 +240,11 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 				)
 					throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
 				signal.throwIfAborted();
+				if (storage === "none") {
+					// The receipt names the capture; the pixels wait here for the native gateway's answer.
+					if (asset.assetId !== receiptId) throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+					this.#inline.hold(asset.assetId, bytes);
+				}
 				return asset;
 			},
 			AbortSignal.any([context.signal, this.#run.signal]),
@@ -191,7 +252,31 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		);
 	}
 
+	/** The office service's side: the pixels of a capture published without storage, once, for its perform answer. */
+	takeInline(assetId: string): Uint8Array | undefined {
+		return this.#inline.take(assetId);
+	}
+
+	/** The native host's side: the pixels that came in a capture's perform answer, kept for {@link read} once they
+	 * are exactly the published capture's. */
+	holdInline(value: CompanyComputerScreenshotAsset, bytes: Uint8Array): void {
+		this.#run.signal.throwIfAborted();
+		const asset = parseCompanyComputerScreenshotAsset(value);
+		if (
+			!isDeepStrictEqual(png(bytes, asset.surface), {
+				sha256: asset.sha256,
+				bytes: asset.bytes,
+				mediaType: asset.mediaType,
+				width: asset.width,
+				height: asset.height,
+			})
+		)
+			throw new Error("OFFICE_CAPTURE_CHANGED");
+		this.#inline.hold(asset.assetId, bytes);
+	}
+
 	/** Fetch only a completed capture of this run, rechecking after object I/O.
+	 * A capture whose pixels came in its perform answer is read from memory, once.
 	 * This returns host bytes, not a model-visible URL or a member download grant. */
 	async read(value: CompanyComputerScreenshotAsset, signal: AbortSignal): Promise<Uint8Array> {
 		const asset = parseCompanyComputerScreenshotAsset(value);
@@ -210,7 +295,10 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 				};
 				await this.#run.assertActive(checked);
 				await authorize();
-				const bytes = Uint8Array.from(await this.#objects(checked).get(`${this.#scope.companyId}/${asset.sha256}`));
+				const bytes = Uint8Array.from(
+					this.#inline.take(asset.assetId) ??
+						(await this.#objects(checked).get(`${this.#scope.companyId}/${asset.sha256}`)),
+				);
 				if (
 					!isDeepStrictEqual(png(bytes, asset.surface), {
 						sha256: asset.sha256,
