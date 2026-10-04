@@ -15,6 +15,7 @@ import {
 } from "../src/app/quotes.ts";
 import { type DraftStatus, DraftSync } from "../src/app/room-drafts.ts";
 import { applyEdit, compose, diffText, transform } from "../src/app/text-merge.ts";
+import { FieldHistory } from "../src/app/views/composer-quotes.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
@@ -298,6 +299,18 @@ describe("an edit the field can't account for: kept only when clean (review roun
 		);
 	});
 
+	it("keeps each state's records in the composer's history, and starts it again on request (round 5)", () => {
+		const withA = [quoteRecord("A")];
+		const history = new FieldHistory({ text: "«A»", caret: 3, records: withA });
+		const backspace = { kind: "deleteContentBackward", start: 3, closes: false };
+		history.edited("«A»", { text: "", caret: 0, records: withA }, backspace);
+		const restored = history.step("undo", { text: "", caret: 0, records: [] });
+		expect(restored).toEqual({ text: "«A»", caret: 3, records: withA });
+		history.restart({ text: "hello", caret: 5, records: [] });
+		expect(history.step("undo", { text: "hello", caret: 5, records: [] })).toBeUndefined();
+		expect(history.step("redo", { text: "hello", caret: 5, records: [] })).toBeUndefined();
+	});
+
 	it("composes two edits into one", () => {
 		const first = [2, "xy", -1, 3];
 		const second = [1, -2, 1, "Z", 3];
@@ -481,7 +494,7 @@ function type(field: HTMLTextAreaElement, value: string, caret = value.length): 
 }
 
 /** A conversation view; a group chat reads mentions, and shares drafts when `drafts` is given. */
-async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
+async function view(options: { group?: boolean; drafts?: RoomDraft[]; write?: SessionInputWriter } = {}) {
 	const f = fixture();
 	if (options.group) {
 		vi.mocked(f.api.listMemberMentions).mockReset().mockResolvedValue([]);
@@ -494,7 +507,7 @@ async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
 		onHealth("connected");
 		return { stop: async () => {} };
 	});
-	const company = new CompanyController(f.api, profileA, userA.id);
+	const company = new CompanyController(f.api, profileA, userA.id, options.write);
 	company.store.set({
 		team: { ...team, members: options.group || options.drafts ? members : [] },
 		staff: [staff, astrid, boAgent],
@@ -503,7 +516,12 @@ async function view(options: { group?: boolean; drafts?: RoomDraft[] } = {}) {
 		loading: false,
 	});
 	if (options.group) await company.refreshMentions();
-	const shown = new ConversationView(company, session.sessionId, { sendMessage: async () => true });
+	// With `write`, messages go the real way (CompanyController.sendPrompt) to it.
+	if (options.write) company.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
+	const sendMessage = options.write
+		? (sessionId: string, text: string, signal: AbortSignal) => company.sendPrompt(sessionId, text, signal)
+		: async () => true;
+	const shown = new ConversationView(company, session.sessionId, { sendMessage });
 	document.body.append(shown.el);
 	shown.update();
 	await settle();
@@ -727,6 +745,50 @@ describe("quotes in the composer", () => {
 		browserHistory(composer, "historyUndo", "«headB» x", 7);
 		expect(composer.value).toBe(text);
 		expect(s.quotes()).toEqual([quote(6, 7)]);
+	});
+
+	it("never undoes past a send to a quote whose record the send took away (round 5)", async () => {
+		const write = vi.fn<SessionInputWriter>().mockResolvedValue({ inputId: id(96) });
+		const s = await view({ drafts: [roomDraft(userA.id, "«A»", 2, { quotes: [quote(1, 2)] })], write });
+		expect(s.quotes()).toEqual([quote(1, 2)]);
+		// The quote deleted until the draft is empty, and saved.
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "", 3) });
+		key(s.composer(), 3, "");
+		expect(s.composer().value).toBe("");
+		await vi.waitFor(() => expect(s.put).toHaveBeenLastCalledWith(roomId, userA.id, 2, "", []));
+		// Another tab fills the shared draft, and this tab sends it without an edit.
+		s.live(roomDraft(userA.id, "hello", 4));
+		await settle();
+		expect(s.composer().value).toBe("hello");
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "", 5) });
+		expect(await s.company.sendPrompt(session.sessionId, "hello")).toBe(true);
+		await settle();
+		expect(write).toHaveBeenCalledTimes(1);
+		expect(write.mock.calls[0]?.[2]).toBe("hello");
+		expect(write.mock.calls[0]?.[7]).toBeUndefined();
+		expect(s.company.conversation(session.sessionId).get().quoteRecords).toBeUndefined();
+		// The send started the history again: an undo brings nothing back.
+		undo(s.composer());
+		expect(s.composer().value).toBe("");
+		expect(s.company.conversation(session.sessionId).get().draft).toBe("");
+		expect(await s.company.sendPrompt(session.sessionId, "")).toBe(false);
+		await vi.waitFor(() => expect(s.put).toHaveBeenLastCalledWith(roomId, userA.id, 4, "", []));
+		expect(write).toHaveBeenCalledTimes(1);
+		// No save ever carried the quote's words without its quote.
+		for (const [, , , body, quotes] of s.put.mock.calls) if (body.includes("«A»")) expect(quotes).not.toEqual([]);
+	});
+
+	it("brings a quote's record back with the text it restores, whatever the records did (round 5)", async () => {
+		const s = await view();
+		s.company.addToDraft(session.sessionId, { text: "«A»", quotes: [quote(1, 2)] });
+		await settle();
+		key(s.composer(), 3, "");
+		expect(s.composer().value).toBe("");
+		// Even were the records to go without the history hearing of it, an undo restores them with its text.
+		s.company.conversation(session.sessionId).set({ quoteRecords: undefined });
+		undo(s.composer());
+		expect(s.composer().value).toBe("«A»");
+		expect(s.quotes()).toEqual([quote(1, 2)]);
 	});
 
 	it("puts the text back when a spelling fix or a drop it can't place would cut a quote or bare it", async () => {
@@ -1288,6 +1350,27 @@ describe("room drafts keep their quotes", () => {
 		await settle();
 		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, mended, quotes);
 		expect(status.hidden).toBe(true);
+	});
+
+	it("never undoes a teammate's draft back past their merged words to a quote it took out (round 5)", async () => {
+		const s = await view({ drafts: [roomDraft(userB.id, "x «A»", 2, { quotes: [quote(3, 4)] })] });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const input = s.view.el.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userB.id, "x ", 3, { editorUserId: userA.id }) });
+		key(input, 5, "");
+		expect(input.value).toBe("x ");
+		await vi.waitFor(() => expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 2, "x ", []));
+		s.live(roomDraft(userB.id, "x hello", 4));
+		await settle();
+		expect(input.value).toBe("x hello");
+		undo(input);
+		expect(input.value).toBe("x hello");
+		const saved = roomDraft(userB.id, "x hello ok", 5, { editorUserId: userA.id });
+		s.put.mockResolvedValue({ status: "ok", draft: saved });
+		key(input, 7, " ok");
+		await vi.waitFor(() => expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 4, "x hello ok", []));
+		for (const [, , , body, quotes] of s.put.mock.calls) if (body.includes("«A»")) expect(quotes).not.toEqual([]);
 	});
 
 	it("starts a teammate's draft's history again when their words merge in, and puts back an unclean fix", async () => {
