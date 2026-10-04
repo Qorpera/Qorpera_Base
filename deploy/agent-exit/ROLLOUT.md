@@ -53,7 +53,7 @@ systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit.servi
 
 The same as step 1, on node 2, with the same checks and the same undo.
 
-## Step 3: migration 20260930037000 (inert)
+## Step 3: migration 20260930052000 (inert)
 
 Apply the first E2d migration (the exit's health table, `qorpera_observe_runtime_node_agent_exit` and
 `qorpera_runtime_node_agent_exit_ready`). It changes nothing in placement.
@@ -87,7 +87,7 @@ Check, per node, within 30 seconds of the observer's start:
 
 Undo: roll the node back to its previous observer (the same node release path). Nothing reads the health yet.
 
-## Step 5: migration 20260930037100 (placement)
+## Step 5: migration 20260930052100 (placement)
 
 Only when step 4's last check is `true` for both nodes. Apply the second E2d migration: from now on a node whose exit
 is not healthy takes no new Company Computer or agent's machine (refusal `NODE_AGENT_EXIT_UNHEALTHY`), and no new
@@ -108,7 +108,7 @@ Undo (restores the four functions' text from before the patch, exactly; `scripts
 proves it):
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f deploy/agent-exit/undo-20260930037100.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f deploy/agent-exit/undo-20260930052100.sql
 ```
 
 The demand's refusal list keeps `NODE_AGENT_EXIT_UNHEALTHY`; nothing writes it once the patch is gone.

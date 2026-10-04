@@ -1,5 +1,5 @@
--- Agent exit E2d, part 1 of 2: the exit's health reaches the database (20260930037000). Inert: nothing reads it until
--- part 2 (20260930037100) puts it in placement. Contract: section 19, 2026-10-03 amendment "agent traffic leaves through
+-- Agent exit E2d, part 1 of 2: the exit's health reaches the database (20260930052000). Inert: nothing reads it until
+-- part 2 (20260930052100) puts it in placement. Contract: section 19, 2026-10-03 amendment "agent traffic leaves through
 -- the agent exit", item 10. Design: deploy/first-node/RUNTIME-AGENT-EXIT.md §3 ("Health"), §12. Rollout:
 -- deploy/agent-exit/ROLLOUT.md: every node's exit, then this migration, then the node observer that posts to it; part 2
 -- only once every node reports a healthy exit (there is no switch).
