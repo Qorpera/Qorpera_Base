@@ -44,10 +44,12 @@ const agent = (color: string, templateId: string, creature?: string): HostedStaf
 });
 
 describe("agent colour", () => {
-	it("draws the seeded Co-Founder in its own shade and any chosen colour as chosen", () => {
-		// The cloud's seed: the template's blue and a creature the roster no longer has.
-		expect(colorOf(agentFigure(agent("qorpera-blue", "co-founder", "brain")))).toBe(NATIVE.crown);
+	it("draws the Co-Founder like any agent: in its own shade without a colour, and any chosen colour as chosen", () => {
+		// The founding seed: a file with no colour (the index's `native`) and a creature the roster no longer has.
+		expect(colorOf(agentFigure(agent("native", "co-founder", "brain")))).toBe(NATIVE.crown);
 		expect(colorOf(agentFigure(agent(TEAL, "co-founder")))).toBe(TEAL);
+		// Blue chosen in a file is blue, the Co-Founder's too.
+		expect(colorOf(agentFigure(agent("qorpera-blue", "co-founder")))).toBe("#2047bd");
 		expect(colorOf(agentFigure(agent("qorpera-blue", "software-developer")))).toBe("#2047bd");
 	});
 

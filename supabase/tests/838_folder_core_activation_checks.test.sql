@@ -75,18 +75,7 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_renew_artifact_gc_lease', 'legacy', 'Artifact GC plans need an artifact; folder-v2 has none.'),
 	-- Folder-v2 sites still to move (C1c-3 inventory §16, the review of #779, and the office slices). Owners named by the
 	-- coordinator, 4 October 2026.
-	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).'),
-	('qorpera_activate_identity_recovery', 'open', 'Identity recovery (S1).'),
-	('qorpera_cancel_identity_recovery', 'open', 'Identity recovery (S1).'),
-	('qorpera_consent_identity_recovery', 'open', 'Identity recovery (S1).'),
-	('qorpera_request_identity_recovery', 'open', 'Identity recovery (S1).'),
-	('qorpera_request_login_identity_recovery', 'open', 'Identity recovery (S1).'),
-	('qorpera_request_account_refresh_identity_recovery', 'open', 'Identity recovery (S1).'),
-	('qorpera_register_identity_recovery_target', 'open', 'Identity recovery (S1).'),
-	('qorpera_prepare_identity_key_backup', 'open', 'Identity recovery (S1).'),
-	('qorpera_recovery_locked', 'open', 'Identity recovery (S1).'),
-	('qorpera_recovery_member_role', 'open', 'Identity recovery (S1).'),
-	('qorpera_confirm_runtime_identity_retirement', 'open', 'Identity retirement (S1).');
+	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).');
 -- A run's own machines and the node machine's kinds all test the core since C1c-3n (20260930046000) and P13's sign-in
 -- machines (20260930035000): no partial entry is left.
 
