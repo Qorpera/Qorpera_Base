@@ -8,7 +8,7 @@ import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { CompanyFoundingApi, parseCompanyFounding } from "../src/cloud/company-founding.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { deferred, fixture, id, settle, userA, userB, visibleText } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, settle, userA, userB, visibleText } from "./fixtures.ts";
 
 const table = id(900);
 const me = userA.id;
@@ -785,6 +785,60 @@ describe("founding table in the app", () => {
 		expect(visibleText(root)).toContain("Inviter medstifter");
 		expect(visibleText(root)).not.toContain("Invite Co-founder");
 		expect(root.querySelector<HTMLTextAreaElement>(".founding-role-mine")?.value).toBe("Roasting, still typing");
+	});
+});
+
+describe("founding table opens the made company", () => {
+	let dispose: (() => void) | undefined;
+	afterEach(() => {
+		dispose?.();
+		dispose = undefined;
+		document.body.replaceChildren();
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+		history.replaceState(null, "", "/#/");
+	});
+
+	it("waits for a company list read after the company was made, so a read from before cannot hide it", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+		history.replaceState(null, "", `/#/found/${table}`);
+		const f = fixture();
+		const made = { ...profileA, profileId: table, profileName: "Nordlys Kaffe" };
+		// The first list read is out before the company is made and answers late, without it.
+		const before = deferred<(typeof profileA)[]>();
+		vi.mocked(f.api.listProfiles).mockReturnValueOnce(before.promise).mockResolvedValue([profileA, made]);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_read_company_founding")
+				return wire({
+					phase: "started",
+					vision: "",
+					waitingFor: [],
+					me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+					start: {
+						startedAt: "2026-09-28T18:00:00Z",
+						startedByUserId: me,
+						revision: 4,
+						companyReady: true,
+						companySetup: "ready",
+						firstRun: "queued",
+					},
+				});
+			throw new CloudRpcError(name, { message: "missing", code: "PGRST202" }, 404);
+		});
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		// Ready, but the list read from before is still out: the table stays.
+		expect(location.hash).toBe(`#/found/${table}`);
+		before.resolve([profileA]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		await settle();
+		expect(location.hash.startsWith(`#/c/${table}`)).toBe(true);
+		expect(visibleText(root)).not.toContain("This company is not available to your account.");
 	});
 });
 

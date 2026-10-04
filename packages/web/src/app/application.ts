@@ -589,10 +589,18 @@ export function mountApplication(
 						currentUserId: () => auth.userId,
 						onSeatChanged: () => void hub.refresh(),
 						// Still on this table's page: open the company, which opens its Co-Founder's thread. The table's
-						// page leaves the history, so Back does not return to a table that is done.
+						// page leaves the history, so Back does not return to a table that is done. A company list read
+						// before the company was made may still be out, and opening a company it leaves out would fail:
+						// open only after a read that started after this one, and only once it lists the company (else
+						// the table's own Open button stays).
 						onCompanyReady: () => {
-							if (location.hash === routeHash({ name: "found", profileId }))
-								navigate({ name: "company", profileId, section: "home" }, true);
+							const page = routeHash({ name: "found", profileId });
+							const currentHub = hub;
+							void currentHub.refreshAfter().then(() => {
+								if (disposed || hub !== currentHub || location.hash !== page) return;
+								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId))
+									navigate({ name: "company", profileId, section: "home" }, true);
+							});
 						},
 					});
 					founding = { controller, view: new FoundingView(controller) };
