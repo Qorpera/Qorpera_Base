@@ -178,7 +178,7 @@ try {
 	);
 	await writeFile(
 		"/srv/workbench/tls-proof.sh",
-		`/usr/bin/node /srv/workbench/tls-proof-server.mjs &\nserver=$!\n/usr/bin/curl --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused https://127.0.0.1:8443/ > /srv/workbench/tls-proof.partial 2>&1\necho "exit=$?" >> /srv/workbench/tls-proof.partial\nmv /srv/workbench/tls-proof.partial /srv/workbench/tls-proof\nkill "$server"\n`,
+		`/usr/bin/node /srv/workbench/tls-proof-server.mjs &\nserver=$!\n/usr/bin/curl --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused https://127.0.0.1:8443/ > /srv/workbench/tls-proof.partial 2> /srv/workbench/tls-proof-errors\necho "exit=$?" >> /srv/workbench/tls-proof.partial\nmv /srv/workbench/tls-proof.partial /srv/workbench/tls-proof\nkill "$server"\n`,
 	);
 	await writeFile(
 		`${autostart}/tls-proof.desktop`,
@@ -209,7 +209,12 @@ try {
 		tls = await readFile("/srv/workbench/tls-proof", "utf8").catch(() => "");
 		if (!tls) await delay(100);
 	}
-	assert.equal(tls, "verified\nexit=0\n", "the desktop verifies HTTPS against the image's CA store");
+	// Its first tries meet a server still starting (connection refused); the last answers.
+	assert.equal(
+		tls,
+		"verified\nexit=0\n",
+		`the desktop verifies HTTPS against the image's CA store: ${await readFile("/srv/workbench/tls-proof-errors", "utf8").catch(() => "")}`,
+	);
 	// Internet for the Terminal is the desktop's own network from the root
 	// plumber, not a proxy: what the desktop starts carries no proxy settings and
 	// resolves through public name servers. This proof has no plumber, so the
