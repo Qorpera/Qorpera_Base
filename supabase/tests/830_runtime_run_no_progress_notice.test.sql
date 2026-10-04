@@ -55,11 +55,17 @@ begin
 	set local session_replication_role = origin;
 end
 $$;
--- One observation of the run, ingested p_minutes ago.
+-- One observation of the run, ingested p_minutes ago. A finish ends its operation's newest start that has none, as the
+-- runtime records one attempt's two halves (20260930051000).
 create function pg_temp.observe(p_operation text, p_phase text, p_minutes integer) returns void language sql as $$
 	insert into public.qorpera_runtime_observations(run_id, attempt_id, phase, assignment_id, operation, observed_at,
 		ingested_at, observation)
-	values (pg_temp.run(), extensions.gen_random_uuid(), p_phase,
+	values (pg_temp.run(), coalesce(case when p_phase = 'finish' then (select started.attempt_id
+			from public.qorpera_runtime_observations as started
+			where started.run_id = pg_temp.run() and started.operation = p_operation and started.phase = 'start'
+				and not exists (select 1 from public.qorpera_runtime_observations as finished
+					where finished.run_id = started.run_id and finished.attempt_id = started.attempt_id and finished.phase = 'finish')
+			order by started.id desc limit 1) end, extensions.gen_random_uuid()), p_phase,
 		(select client_lease_id from public.qorpera_runner_jobs
 			where id = (select job_id from public.qorpera_execution_runs where id = pg_temp.run())),
 		p_operation, clock_timestamp() - make_interval(mins => p_minutes),
