@@ -37,8 +37,7 @@ begin
 	execute format('alter table public.qorpera_cloud_routines drop constraint %I', v_name);
 end $$;
 alter table public.qorpera_cloud_routines add constraint qorpera_cloud_routines_pause_reason_check check (pause_reason is null
-	or pause_reason in ('agent','member','needs_model_account','authorization_failed','agent_archived')) not valid;
-alter table public.qorpera_cloud_routines validate constraint qorpera_cloud_routines_pause_reason_check;
+	or pause_reason in ('agent','member','needs_model_account','authorization_failed','agent_archived'));
 
 -- 2. The queue.
 -- A mark: insert-only, written with no lock at all. No foreign key: a cascade from the folder clock would put the deletion
@@ -364,6 +363,7 @@ declare
 	v_kickoff boolean := false; v_turn boolean := false; v_author uuid; v_owner uuid; v_problem text; v_root record;
 	v_grant uuid; v_secret public.qorpera_cloud_secrets%rowtype; v_issuer uuid; v_sessions uuid[]; v_closed uuid[];
 	v_session uuid; v_todo uuid; v_body jsonb; v_input_id uuid; v_sponsor jsonb; v_skipped boolean := false;
+	v_routines uuid[] := '{}'; v_grants uuid[]; v_author_member boolean := false;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id and core = 'folder-v2';
 	if v_profile is null then return jsonb_build_object('result', 'done'); end if;
@@ -384,7 +384,7 @@ begin
 			if v_kickoff and (v_author is null or not exists (select 1 from public.qorpera_profile_members m
 				where m.profile_id = v_profile and m.user_id = v_author and m.role::text <> 'viewer')) then
 				-- The member who made the agent active has left: the owner authors it, and nobody's login is queued.
-				v_author := v_owner; v_problem := 'hirer_left'; end if;
+				v_problem := case when v_author is null then 'no_hirer' else 'hirer_left' end; v_author := v_owner; end if;
 		else
 			select * into v_input from public.qorpera_session_inputs where id = v_first.input_id;
 			v_turn := v_input.kind = 'kickoff' and v_input.completed_at is null and v_input.failed_at is null
@@ -392,6 +392,9 @@ begin
 				and not exists (select 1 from public.qorpera_session_turn_requests r where r.input_id = v_input.id);
 			v_author := v_input.author_user_id;
 		end if;
+		-- Whether the first run's author is a member now (plain read; checked again under the lock).
+		v_author_member := v_author is not null and exists (select 1 from public.qorpera_profile_members m
+			where m.profile_id = v_profile and m.user_id = v_author and m.role::text <> 'viewer');
 		if (v_kickoff or v_turn) and v_author is not null then
 			v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members',
 				'key', v_profile::text || ':' || v_author::text, 'mode', 'keyshare'));
@@ -401,23 +404,31 @@ begin
 				'key', v_room.id::text, 'mode', 'keyshare'));
 		end if;
 	else
+		-- FOR UPDATE: the rows it updates exclude the key shares that would make them multixacts inside the savepoint. Only
+		-- these routines are changed; one that turns active after this read is firing's to mark.
+		select coalesce(array_agg(r.id order by r.id), '{}') into v_routines from public.qorpera_cloud_routines r
+		where r.profile_id = v_profile and r.owner_staff_agent_id = p_staff_agent_id
+			and (r.status = 'active' or (r.status = 'expired' and r.expired_while_active));
 		v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 3, 'tbl', 'qorpera_staff_execution_authorities',
 			'key', v_profile::text || ':' || p_staff_agent_id::text, 'mode', 'update'))
-			-- FOR UPDATE: the rows it updates exclude the key shares that would make them multixacts inside the savepoint.
-			|| coalesce((select jsonb_agg(jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines', 'key', r.id::text,
-				'mode', 'update')) from public.qorpera_cloud_routines r
-				where r.profile_id = v_profile and r.owner_staff_agent_id = p_staff_agent_id
-					and (r.status = 'active' or (r.status = 'expired' and r.expired_while_active))), '[]'::jsonb);
+			|| coalesce((select jsonb_agg(jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines', 'key', r::text,
+				'mode', 'update')) from unnest(v_routines) r), '[]'::jsonb);
 	end if;
 	v_targets := v_targets || jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff',
 		'key', v_profile::text || ':' || p_staff_agent_id::text, 'mode', 'nokeyupdate', 'required', true));
 	-- The login a turn request will name, chosen by a plain read (the member who started the work pays).
-	if v_live and ((v_kickoff and v_problem is null) or v_turn) and v_author is not null then
+	if v_live and ((v_kickoff and v_problem is null) or v_turn) and v_author_member then
 		v_sponsor := public.qorpera_member_first_run_sponsor(v_profile, v_author);
 		if v_sponsor is not null and not public.qorpera_sponsor_serves_requester(v_profile, (v_sponsor ->> 'sponsorBindingId')::uuid,
 			(v_sponsor ->> 'sponsorVersion')::bigint, v_author) then v_sponsor := null; end if;
 	end if;
-	perform public.qorpera_folder_company_enter(p_environment_id, v_profile, v_targets, true);
+	-- The pause, the fence KEY SHARE and ranks 0-2; after rank 2 the background side yields (200 ms a lock), so a commit
+	-- never waits long behind a converge; then ranks 3-5.
+	perform public.qorpera_folder_company_enter(p_environment_id, v_profile,
+		(select coalesce(jsonb_agg(t), '[]'::jsonb) from jsonb_array_elements(v_targets) t where (t ->> 'rank')::integer <= 2), true);
+	perform set_config('lock_timeout', '200ms', true);
+	perform public.qorpera_folder_lock_commit_rank(p_environment_id, v_targets, 3::smallint);
+	perform public.qorpera_folder_structured_lock(p_environment_id, v_targets, 4::smallint, 5::smallint);
 	-- The end of rank 5, as C1B §8 places logins and identities: the sponsor version and the compute identity the turn
 	-- request will key-share, NOWAIT (a recovering identity holds its row FOR UPDATE: 55P03 ends this attempt).
 	if v_sponsor is not null then
@@ -426,14 +437,17 @@ begin
 		perform 1 from public.qorpera_member_compute_identities where id = (v_sponsor ->> 'computeIdentityId')::uuid
 			for key share nowait;
 	end if;
-	-- After rank 2 the background side yields: a commit never waits long behind a converge.
-	perform set_config('lock_timeout', '200ms', true);
 	select * into v_locked from public.qorpera_profile_staff where profile_id = v_profile and staff_agent_id = p_staff_agent_id;
 	if v_locked.employment_status is distinct from v_staff.employment_status
 		or v_locked.folder_retired_at is distinct from v_staff.folder_retired_at
 		or v_locked.folder_erased_at is not null or v_locked.deleted_at is not null
 		or (v_live and exists (select 1 from public.qorpera_agent_first_runs f where f.profile_id = v_profile
-			and f.staff_agent_id = p_staff_agent_id) is distinct from (v_first.input_id is not null)) then
+			and f.staff_agent_id = p_staff_agent_id) is distinct from (v_first.input_id is not null))
+		-- The first run's author, a member when read: still one under its rank-1 lock (one who left since is the next
+		-- attempt's to see, as a hirer gone).
+		or (v_live and v_author_member and (v_kickoff or v_turn)
+			and not exists (select 1 from public.qorpera_profile_members m where m.profile_id = v_profile and m.user_id = v_author
+				and m.role::text <> 'viewer')) then
 		return jsonb_build_object('result', 'retry'); end if;
 
 	if v_live then
@@ -506,15 +520,15 @@ begin
 	else
 		-- Rank 5: its active routines paused for the archive (never resumed by the queue), and the expired ones' flags.
 		update public.qorpera_cloud_routines set status = 'paused', pause_reason = 'agent_archived', updated_at = statement_timestamp()
-		where profile_id = v_profile and owner_staff_agent_id = p_staff_agent_id and status = 'active';
+		where id = any (v_routines) and owner_staff_agent_id = p_staff_agent_id and status = 'active';
 		update public.qorpera_cloud_routines set expired_while_active = false
-		where profile_id = v_profile and owner_staff_agent_id = p_staff_agent_id and status = 'expired' and expired_while_active;
-		-- Rank 8: its vault grants revoked, in id order.
-		perform 1 from public.qorpera_cloud_secret_operation_grants g where g.profile_id = v_profile
-			and g.staff_agent_id = p_staff_agent_id and g.status = 'active' order by g.id for update;
+		where id = any (v_routines) and owner_staff_agent_id = p_staff_agent_id and status = 'expired' and expired_while_active;
+		-- Rank 8: its vault grants revoked, in id order, those it locked.
+		select coalesce(array_agg(g.id), '{}') into v_grants from (select g.id from public.qorpera_cloud_secret_operation_grants g
+			where g.profile_id = v_profile and g.staff_agent_id = p_staff_agent_id and g.status = 'active' order by g.id for update) g;
 		update public.qorpera_cloud_secret_operation_grants set status = 'revoked', revoked_at = statement_timestamp(),
 			revoked_by_user_id = v_locked.updated_by_user_id
-		where profile_id = v_profile and staff_agent_id = p_staff_agent_id and status = 'active';
+		where id = any (v_grants) and status = 'active';
 		-- Rank 3 (held since the entry): its execution authorities.
 		delete from public.qorpera_staff_execution_authorities where profile_id = v_profile and staff_agent_id = p_staff_agent_id;
 		-- Rank 11: its pair sessions and other open sessions closed, by id, SKIP LOCKED (one held leaves the subject dirty),
@@ -546,10 +560,12 @@ begin
 	join public.qorpera_folder_company_index i on i.environment_id = f.environment_id
 	where f.environment_id = p_environment_id and f.core = 'folder-v2';
 	-- (The company row's own rule, so the update below cannot fail.)
-	if v_profile is null or v_name is null or char_length(btrim(v_name)) not between 1 and 120
+	if v_profile is null or v_name is null
 		or exists (select 1 from public.qorpera_company_deletions d where d.profile_id = v_profile)
 		or (select p.name from public.qorpera_profiles p where p.id = v_profile) is not distinct from v_name then
 		return jsonb_build_object('result', 'done'); end if;
+	if char_length(btrim(v_name)) not between 1 and 120 then
+		return jsonb_build_object('result', 'done', 'problem', 'name_invalid'); end if;
 	perform 1 from public.qorpera_profiles where id = v_profile for no key update skip locked;
 	if not found then return jsonb_build_object('result', 'dirty', 'problem', 'busy'); end if;
 	update public.qorpera_profiles set name = v_name where id = v_profile and name is distinct from v_name;
@@ -564,8 +580,9 @@ create function public.qorpera_folder_follow_up_take(p_environment_id uuid, p_ki
 returns public.qorpera_folder_follow_ups language plpgsql security definer set search_path = '' as $$
 declare v_work public.qorpera_folder_follow_ups%rowtype; v_by uuid; v_taken bigint; v_committed bigint;
 begin
-	insert into public.qorpera_folder_follow_ups(environment_id, subject_kind, subject_id, profile_id)
-	select p_environment_id, p_kind, p_subject, f.profile_id from public.qorpera_company_files f
+	-- (A new row is clean: only a mark makes it dirty.)
+	insert into public.qorpera_folder_follow_ups(environment_id, subject_kind, subject_id, profile_id, dirty)
+	select p_environment_id, p_kind, p_subject, f.profile_id, false from public.qorpera_company_files f
 	where f.environment_id = p_environment_id
 	on conflict do nothing;
 	select * into v_work from public.qorpera_folder_follow_ups
@@ -617,7 +634,9 @@ begin
 				raise exception 'A follow-up''s journal changes are malformed' using errcode = 'XX000'; end if;
 		exception when others then
 			get stacked diagnostics v_state = returned_sqlstate, v_message = message_text;
-			v_out := jsonb_build_object('result', case when v_state = '55000' then 'paused' else 'failed' end,
+			-- A pause (read again here) is no attempt; any other 55000 is a failure like the rest.
+			v_out := jsonb_build_object('result', case when v_state = '55000'
+					and public.qorpera_company_execution_paused(p_work.profile_id) then 'paused' else 'failed' end,
 				'problem', left(v_state || ' ' || v_message, 300));
 		end;
 		-- The block's 200 ms survives a released subtransaction: the step's own timeout again.
@@ -655,14 +674,13 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_folder_follow_up_open(uuid) from public, anon, authenticated, service_role;
 
--- 9. The step, every 2 seconds: one transaction, one work row (P22a's model). It sweeps the work rows and marks of
--- environments that no longer exist, then takes the oldest marked subject of an open company whose row it can hold, or
--- else the oldest due dirty row of an open company, and converges it.
-create function public.qorpera_folder_follow_up_step()
-returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_subject record; v_work public.qorpera_folder_follow_ups%rowtype; v_swept bigint; v_orphans bigint;
+-- 9. The step, every 2 seconds: one transaction, one work row (P22a's model). About once a minute it sweeps the work rows
+-- and marks of environments that no longer exist. It takes the oldest marked subject of an open company whose row it can
+-- hold, or else the oldest due dirty row of an open company, and converges it.
+create function public.qorpera_folder_follow_up_sweep()
+returns bigint language plpgsql security definer set search_path = '' as $$
+declare v_swept bigint; v_orphans bigint;
 begin
-	perform set_config('lock_timeout', '2s', true);
 	delete from public.qorpera_folder_follow_ups where (environment_id, subject_kind, subject_id) in (
 		select w.environment_id, w.subject_kind, w.subject_id from public.qorpera_folder_follow_ups w
 		where not exists (select 1 from public.qorpera_folder_clocks c where c.environment_id = w.environment_id)
@@ -672,6 +690,17 @@ begin
 		where not exists (select 1 from public.qorpera_folder_clocks c where c.environment_id = m.environment_id)
 		limit 256 for update skip locked);
 	get diagnostics v_orphans = row_count;
+	return v_swept + v_orphans;
+end $$;
+revoke all on function public.qorpera_folder_follow_up_sweep() from public, anon, authenticated, service_role;
+
+create function public.qorpera_folder_follow_up_step()
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_subject record; v_work public.qorpera_folder_follow_ups%rowtype; v_swept bigint := 0;
+begin
+	perform set_config('lock_timeout', '2s', true);
+	-- The sweep scans every row, so it runs about once a minute (one step in each minute's first 2 seconds).
+	if extract(epoch from clock_timestamp())::bigint % 60 < 2 then v_swept := public.qorpera_folder_follow_up_sweep(); end if;
 	for v_subject in select m.environment_id, m.subject_kind, m.subject_id from public.qorpera_folder_follow_up_marks m
 		where public.qorpera_folder_follow_up_open(m.environment_id)
 		group by m.environment_id, m.subject_kind, m.subject_id order by min(m.id) limit 8
@@ -688,8 +717,11 @@ begin
 			and public.qorpera_folder_follow_up_open(w.environment_id)
 		order by w.not_before nulls first, w.updated_at
 		limit 1 for update skip locked;
+		-- Its marks too, so the member a pending mark names authors its first run.
+		if v_work.subject_id is not null then
+			v_work := public.qorpera_folder_follow_up_take(v_work.environment_id, v_work.subject_kind, v_work.subject_id); end if;
 	end if;
-	return jsonb_build_object('schema', 'qorpera.folder-follow-up-step/v1', 'swept', v_swept + v_orphans,
+	return jsonb_build_object('schema', 'qorpera.folder-follow-up-step/v1', 'swept', v_swept,
 		'converged', case when v_work.subject_id is not null and v_work.dirty
 			then public.qorpera_folder_follow_up_converge(v_work) end);
 end $$;
@@ -723,6 +755,8 @@ begin
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_environment_id is null or p_subject_id is null or p_subject_kind is null or p_subject_kind not in ('agent', 'company') then
 		raise exception 'Folder follow-up is invalid' using errcode = '22023'; end if;
+	if current_setting('transaction_isolation') <> 'read committed' then
+		raise exception 'Folder follow-ups run at read committed' using errcode = '25000'; end if;
 	if not public.qorpera_folder_follow_up_open(p_environment_id) then
 		return jsonb_build_object('schema', 'qorpera.folder-follow-up/v1', 'result', 'closed'); end if;
 	perform set_config('lock_timeout', '2s', true);
@@ -740,6 +774,8 @@ begin
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_environment_id is null or p_commit_id is null then
 		raise exception 'Folder follow-up is invalid' using errcode = '22023'; end if;
+	if current_setting('transaction_isolation') <> 'read committed' then
+		raise exception 'Folder follow-ups run at read committed' using errcode = '25000'; end if;
 	if not public.qorpera_folder_follow_up_open(p_environment_id) then
 		return jsonb_build_object('schema', 'qorpera.folder-follow-up/v1', 'result', 'closed', 'more', false); end if;
 	-- One subject per call: a second agent's converge would take its ranks after the first one's clocks, and the company's
@@ -775,6 +811,29 @@ begin
 end $$;
 revoke all on function public.qorpera_folder_follow_up_status(uuid) from public, anon, authenticated;
 grant execute on function public.qorpera_folder_follow_up_status(uuid) to service_role;
+
+-- Every agent of a company and the company itself marked, with no commit: the rebuild's, and this migration's for the
+-- companies made before it (their agents never went through the queue, and a Co-Founder must converge before its company
+-- shows as ready). Insert-only, no lock. With no member named, an agent with no first run yet gets one its owner authors
+-- and nobody's login pays for ('no_hirer').
+create function public.qorpera_folder_follow_up_mark_all(p_environment_id uuid)
+returns bigint language plpgsql security definer set search_path = '' as $$
+declare v_agents bigint; v_company bigint;
+begin
+	insert into public.qorpera_folder_follow_up_marks(environment_id, subject_kind, subject_id, active)
+	select p_environment_id, 'agent', s.staff_agent_id, s.employment_status = 'active' and s.folder_retired_at is null
+	from public.qorpera_company_files f join public.qorpera_profile_staff s on s.profile_id = f.profile_id
+	where f.environment_id = p_environment_id and f.core = 'folder-v2' and s.folder_environment_id = p_environment_id
+		and s.deleted_at is null and s.folder_erased_at is null;
+	get diagnostics v_agents = row_count;
+	insert into public.qorpera_folder_follow_up_marks(environment_id, subject_kind, subject_id)
+	select p_environment_id, 'company', f.profile_id from public.qorpera_company_files f
+	where f.environment_id = p_environment_id and f.core = 'folder-v2';
+	get diagnostics v_company = row_count;
+	return v_agents + v_company;
+end $$;
+revoke all on function public.qorpera_folder_follow_up_mark_all(uuid) from public, anon, authenticated, service_role;
+select public.qorpera_folder_follow_up_mark_all(f.environment_id) from public.qorpera_company_files f where f.core = 'folder-v2';
 
 -- 11. The step every 2 seconds (pg_cron 1.5 or later), and a daily cleanup of its run log (about 43,200 rows a day; the
 -- log is cluster-wide). Where pg_cron is absent or the role may not use it, nothing is scheduled and the migration still

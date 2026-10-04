@@ -460,14 +460,17 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 - The platform starts no routine: nothing would pay for it.
 - The id never changes and belongs to one file; the name is one no routine row of the agent from
   before the files has.
-- The platform writes `status: paused` for:
-  - an agent's archiving (the follow-up queue, so a restore does not revive the routine);
+- The platform pauses a routine in the index only (`status` paused with a `pause_reason`; the file
+  is not written) for:
+  - an agent's archiving or retiring (`agent_archived`, by the follow-up queue, P15; a reactivation
+    or a restore does not revive the routine, a paid unchanged save resumes it once the agent is
+    active);
   - the authorization-failure suspension;
   - a member's Stop of a dynamic routine's run;
   - a routine left without a model account.
 
-  Each platform commit records its reason. The index keeps it as `pause_reason`. Until C2's
-  queue exists, the runtime writes these pauses to the index only.
+  A routine saved, set active or moved under an archived or retired agent is recorded paused
+  (`agent_archived`) the same way.
 
 **Review:** an agent creating, changing, moving or deleting a routine is delegation. The one
 exception is the routine run's own end-of-run decision while it is owed, when the actor's wake is
@@ -1800,19 +1803,25 @@ and revoke its secret grants. What remains:
   The kind check is open to more kinds (F2-5b-3 may add `todo` for a cancelled todo's workers).
 - `qorpera_folder_follow_ups`: one row per subject, kept: `dirty`, `attempts`, `not_before`, `last_problem`,
   `last_attempt_at`, `converged_at`, `failing_since`, and `hired_by_user_id` (see the first run). No foreign key, so
-  nothing that holds the fence ever waits on it. The purge stays untouched: the step deletes the work rows and marks of
-  environments that no longer exist (a plain read, then `DELETE … SKIP LOCKED`).
+  nothing that holds the fence ever waits on it. A new row starts clean: only a mark makes it dirty, so a kick on a
+  subject with no marks converges nothing. The purge stays untouched: about once a minute the step sweeps the work rows
+  and marks of environments that no longer exist (a plain read, then `DELETE … SKIP LOCKED`).
+- **Companies made before P15:** the migration marks every agent of every folder-v2 company, and the company
+  (`qorpera_folder_follow_up_mark_all`, the rebuild's too), with no commit and no member: their agents never went
+  through the queue, and a Co-Founder must converge before its company shows as ready. An active agent with no first
+  run yet gets a kickoff its owner authors, and nobody's login pays for its turn (`last_problem` `no_hirer`).
 - **The drain** is a pg_cron step every 2 seconds, one subject a step (`qorpera_folder_follow_up_step()`, as erasure's
   step: `lock_timeout` 2 seconds, read committed). One step is one transaction, and holds one work row (P22a's model):
   1. plain reads: skip companies being deleted (`qorpera_company_deletions`) and paused companies (a pause is not an
      attempt, so a hire converges as soon as the company resumes; a 55000 from the pause read again under the fence is
-     not counted either);
+     not counted either; any other 55000 is a failure like the rest);
   2. the subject: the oldest marked subject of such a company whose work row it can take (the row inserted if missing,
      then `FOR UPDATE SKIP LOCKED`; a row another transaction holds is passed over with its marks), its marks consumed
      (`SKIP LOCKED`) and the row made dirty, and due when a mark came with a commit (a mark with no commit, firing's,
      keeps a back-off: a taken subject not yet due is left dirty for its time, and the step tries the next marked
      subject); else the oldest due dirty work row, `FOR UPDATE SKIP LOCKED`. A first
-     mark's new row can make two takers wait for each other's insert briefly, in subject order, as P22a's claim does;
+     mark's new row can make two takers wait for each other's insert briefly, in subject order, as P22a's claim does.
+     A dirty row taken this way has its pending marks taken too;
   3. the agent converge inside one exception block. Inside, nothing writes a row that references the folder clock, so
      nothing there takes or updates the clock row, whose savepoints meet PostgreSQL's multixact error; the rows it
      updates are taken `FOR UPDATE` (routines, vault grants, execution authorities, sessions), which excludes the key
@@ -1845,7 +1854,8 @@ and revoke its secret grants. What remains:
   does a first mark whose new row another taker is inserting (the kick's 200 ms wait on that insert ends as `busy`). The runtime's commits (an agent's `hire_agent`, an archive) wait for the 2-second
   step: a kick from inside a job would need a run-scoped entry in the native host's dispatch (G2-2), which this slice
   does not add. The step is the safety net.
-- A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`.
+- A status view for operators and the drift check: dirty subjects, the oldest, `attempts`, `last_problem`. The kicks run
+  at read committed (25000 otherwise).
 - **Throughput:** the step converges one subject every 2 seconds across all companies (about 30 a minute); kicks cover
   creation and members' saves at once. P24's load test measures the backlog; if it grows, more steps run side by side
   (one subject each, one company per transaction, as core §3 requires; `SKIP LOCKED` keeps them apart).
@@ -1854,9 +1864,10 @@ and revoke its secret grants. What remains:
 
 *Converging an agent* (`qorpera_folder_converge_agent(environment, staff)`, F2's). It reads the staff row plainly to
 choose its targets, enters the company (`qorpera_folder_company_enter`: the pause, the fence `KEY SHARE`, rank 0, and
-ranks 1–5), takes ranks 6–11 itself, and reads the staff row again under its lock. If the status, the folder or the
-first-run state changed since the plain read, it ends as a retry that is not counted as an attempt. After rank 2 it
-waits at most 200 milliseconds a lock (`set_config('lock_timeout', '200ms', true)` inside the block; the step itself
+ranks 1–2), takes ranks 3–11 itself, and reads the staff row again under its lock. If the status, the folder or the
+first-run state changed since the plain read, or the first run's author was a member then and is not now, it ends as a
+retry that is not counted as an attempt. An archive changes only the routines and vault grants it locked (one that
+turns active after the plain read is firing's to mark). After rank 2 it waits at most 200 milliseconds a lock (`set_config('lock_timeout', '200ms', true)` inside the block; the step itself
 runs with 2 seconds), so a member's or run's commit never waits long behind it. Its locks, in order:
 1. rank 1: the hire's member row (`KEY SHARE`), when a first run is due;
 2. rank 2: the staff row (`FOR NO KEY UPDATE`; the converge writes no staff row);

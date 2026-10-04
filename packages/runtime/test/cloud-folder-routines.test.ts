@@ -339,7 +339,7 @@ it("treats an archive's pause as the platform's: the read-back says why, and res
 	states = w.routineStates;
 	const saved = parse((await w.routines().change(UPSERT, w.call())).content);
 	expect(saved).toMatchObject({ outcome: "saved", routine: { status: "paused", pauseReason: "agent_archived" } });
-	expect(saved.next).toContain("paused when you were archived");
+	expect(saved.next).toContain("paused when its agent was archived");
 	// Once the agent is active again, resume is a paid save of the same bytes.
 	const f = await fixture(seeded());
 	const text = f.text(`${ROUTINES}/inbox.md`);

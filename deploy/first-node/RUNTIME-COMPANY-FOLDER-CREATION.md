@@ -11,8 +11,10 @@ In short:
 - **Start** records one creation request with the founders' vision and roles.
 - **A creation worker** in the object gateway builds the seeded tree (`companyStateSeedTree`), stores its files as the
   platform, and then makes **one transaction**: the creation commit, the Co-Founder (staff row, thread, cofounders
-  row), and the Co-Founder's silent first run (a kickoff and its turn request).
-- **Ready** is that transaction having landed. Until then the company is hidden.
+  row), and the Co-Founder's silent first run (a kickoff). Since P15 the follow-up queue then gives the Co-Founder
+  its default grant and queues the kickoff's turn request; the worker kicks the queue after the transaction.
+- **Ready** is that transaction having landed and the queue having converged the Co-Founder. Until then the company
+  is hidden.
 - **If setup fails for good,** the founders' table says so, and an operator can retry it. The company stays hidden
   until it is ready.
 - **Before C5,** only an operator makes a `folder-v2` company, through the same path (§6).
@@ -144,8 +146,8 @@ One transaction, numbered with the core's steps (core §3):
   - Apply: the staff row, its thread room, session and room members (the staff-insert triggers, as for a hire), the
     operation clock, then the first run (below). Todos are indexed after the agent within the unit, so the first
     todo comes after the operation clock too. These are all new rows.
-  - The foreign-key `KEY SHARE` locks apply takes after the paths: the kickoff author in `auth.users`; the sponsor
-    binding, sponsor version and compute identity of the turn request; the Company File row (through
+  - The foreign-key `KEY SHARE` locks apply takes after the paths: the kickoff author in `auth.users`; (before P15, the
+    sponsor binding, sponsor version and compute identity of the turn request); the Company File row (through
     `qorpera_agent_first_runs`); and the runtime bundle row (the provenance trigger). None closes a cycle: none of
     these rows is locked more strongly by anything that also holds a lock this transaction waits for. The known
     exception, an account deletion cascading with no prelude, can meet it as one `40P01` (C1C §6 accepts that).
@@ -165,8 +167,9 @@ One transaction, numbered with the core's steps (core §3):
     - The other columns take their defaults, as finalize's kickoff does.
   - **`qorpera_agent_first_runs`:** the Co-Founder, the thread, the kickoff, `source_path_version` = the `agent.md`
     version, and `startup_assignment` = the kickoff's body.
-  - **The turn request,** through `qorpera_queue_agent_first_run`. Its sponsor is `qorpera_member_first_run_sponsor`
-    of `kickoff_user_id`, read again now, together with the same `qorpera_sponsor_serves_requester` check Start made.
+  - **The turn request** (since P15, the follow-up queue's, after the Co-Founder's default grant: STATE-FILES "Plan
+    (P15)"), through `qorpera_queue_agent_first_run`. Its sponsor is `qorpera_member_first_run_sponsor` of the
+    kickoff's author, read again then, together with the same `qorpera_sponsor_serves_requester` check Start made.
     With no usable login the kickoff stays pending, and its author starts it later, as today.
   - `qorpera_company_first_runs` is not written (it needs a formation).
 - **Step 9:** the check (verify).
@@ -320,8 +323,8 @@ ready, the proof company appears in the owner's hub.
   - rank 1, the member rows `KEY SHARE`;
   - rank 2, the new staff row;
   - paths and objects;
-  - apply: the thread, its session and room members, the operation clock, the kickoff, the first-run row, the turn
-    request, the first todo;
+  - apply: the thread, its session and room members, the operation clock, the kickoff, the first-run row, the first
+    todo (the turn request is the follow-up queue's since P15);
   - verify;
   - the folder clock.
 

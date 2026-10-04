@@ -211,7 +211,7 @@ function waiting(routine: CloudCompanyFolderRoutine): string | null {
 		return "It is paused because its model account stopped working: tell the member, and resume it once the account works again.";
 	if (routine.pauseReason === "member") return "A member stopped it: resume it only if they want it back.";
 	if (routine.pauseReason === "agent_archived")
-		return "It was paused when you were archived: once you are active again, resume it if it should still run.";
+		return "It was paused when its agent was archived: once the agent is active again, resume it if it should still run.";
 	return null;
 }
 

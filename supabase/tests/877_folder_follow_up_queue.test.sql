@@ -319,6 +319,21 @@ begin
 		raise exception 'The first activating member authors: % / %', v, to_jsonb(pg_temp.kickoff(a10)); end if;
 end $$;
 
+-- A rename before the step: one converge, the hire's first run as usual.
+do $$
+declare a11 constant uuid := '87700000-0000-4000-8000-0000000000b1'; v jsonb;
+begin
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'hire-agent-b1', jsonb_build_array(pg_temp.hire_as('kai', a11, 'active'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'rename-b1-0001', jsonb_build_array(pg_temp.write('agents/kai/agent.md', 'agent',
+		pg_temp.agent_text(a11, 'Kai Berg', 'agent', 'active'), pg_temp.agent_parse(a11, 'Kai Berg', 'agent', 'active'),
+		pg_temp.version('agents/kai/agent.md')))), 1, 'saved');
+	if pg_temp.marked(a11) <> 1 then raise exception 'A rename marks nothing'; end if;
+	v := pg_temp.step();
+	if v ->> 'result' is distinct from 'done' or pg_temp.step() is not null or (pg_temp.kickoff(a11)).id is null
+		or pg_temp.turn(a11) is null or (pg_temp.staff(a11)).display_name is distinct from 'Kai Berg' then
+		raise exception 'A rename before the converge: %', v; end if;
+end $$;
+
 -- 6. An archive: the agent's routines paused, its execution access, sessions and secret grants gone -----------------------
 
 -- Ada's routines (an active one, one its file pauses, an expired one that was active), her execution authority, her
@@ -361,6 +376,7 @@ begin
 		or (pg_temp.rt('87700000-0000-4000-8000-0000000000f1')).status is distinct from 'active'
 		or not exists (select 1 from public.qorpera_staff_execution_authorities where staff_agent_id = a1)
 		or not exists (select 1 from public.qorpera_session_execution_bindings where session_id = v_thread)
+		or not (pg_temp.rt('87700000-0000-4000-8000-0000000000f3')).expired_while_active
 		or (select status from public.qorpera_shared_sessions where id = v_thread) is distinct from 'closed'
 		or (select status from public.qorpera_shared_sessions where id = v_pair) is distinct from 'open' or pg_temp.connectors(a1) = 0 then
 		raise exception 'The archive''s commit only archives, closes the thread and marks'; end if;
@@ -468,6 +484,34 @@ begin
 		raise exception 'The retry converges: % / %', v, to_jsonb(w); end if;
 end $$;
 
+-- Another 55000 than a pause (as a session input's own trigger may raise) is a failure with its problem, not a pause.
+create function public.p15_test_refuse_kickoff() returns trigger language plpgsql as $$
+begin
+	raise exception 'The transcript import is still uploading' using errcode = '55000';
+end $$;
+create trigger p15_test_refuse_kickoff before insert on public.qorpera_session_inputs for each row
+	when (new.client_input_id = md5('qorpera.folder-agent-first-run:87700000-0000-4000-8000-0000000000b2')::uuid)
+	execute function public.p15_test_refuse_kickoff();
+do $$
+declare a12 constant uuid := '87700000-0000-4000-8000-0000000000b2'; v jsonb; w public.qorpera_folder_follow_ups;
+begin
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'hire-agent-b2', jsonb_build_array(pg_temp.hire_as('lu', a12, 'active'))), 1, 'saved');
+	v := pg_temp.step(); w := pg_temp.work(a12);
+	if v ->> 'result' is distinct from 'failed' or w.attempts <> 1 or w.failing_since is null
+		or w.last_problem not like '55000 The transcript import%' or exists (select 1 from pg_temp.root_grants(a12)) then
+		raise exception 'A 55000 that is no pause: % / %', v, to_jsonb(w); end if;
+end $$;
+drop trigger p15_test_refuse_kickoff on public.qorpera_session_inputs;
+drop function public.p15_test_refuse_kickoff();
+update public.qorpera_folder_follow_ups set not_before = null
+where environment_id = '70700000-0000-4000-8000-000000000020' and subject_id = '87700000-0000-4000-8000-0000000000b2';
+do $$
+declare v jsonb := pg_temp.step();
+begin
+	if v ->> 'result' is distinct from 'done' or (pg_temp.work('87700000-0000-4000-8000-0000000000b2')).failing_since is not null then
+		raise exception 'The retry converges: %', v; end if;
+end $$;
+
 -- 8. Reactivation: the routines stay paused until a paid save resumes them; a handover to an active agent too -------------
 
 do $$
@@ -573,6 +617,7 @@ end $$;
 
 do $$
 declare a9 constant uuid := '87700000-0000-4000-8000-0000000000a9'; v jsonb; v_gone constant uuid := '87700000-0000-4000-8000-0000000000ff';
+	v_swept bigint;
 begin
 	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'hire-agent-a9', jsonb_build_array(pg_temp.hire_as('io', a9, 'active'))), 1, 'saved');
 	-- Paused: the step passes it by, the kick answers closed, no attempt is counted.
@@ -592,10 +637,15 @@ begin
 	insert into public.qorpera_folder_follow_up_marks(environment_id, subject_kind, subject_id) values (v_gone, 'agent', a9);
 	insert into public.qorpera_folder_follow_ups(environment_id, subject_kind, subject_id, profile_id)
 	values (v_gone, 'agent', a9, '70700000-0000-4000-8000-000000000010');
-	v := public.qorpera_folder_follow_up_step();
-	if (v ->> 'swept')::integer < 2 or exists (select 1 from public.qorpera_folder_follow_up_marks where environment_id = v_gone)
+	v_swept := public.qorpera_folder_follow_up_sweep();
+	if v_swept < 2 or exists (select 1 from public.qorpera_folder_follow_up_marks where environment_id = v_gone)
 		or exists (select 1 from public.qorpera_folder_follow_ups where environment_id = v_gone) then
-		raise exception 'The sweep: %', v; end if;
+		raise exception 'The sweep left an environment''s rows'; end if;
+	-- A kick for a subject with no marks makes a clean row and converges nothing.
+	v := public.qorpera_folder_follow_up_now('70700000-0000-4000-8000-000000000020', 'agent', '87700000-0000-4000-8000-0000000000fe');
+	if v ->> 'result' is distinct from 'clean' or (pg_temp.work('87700000-0000-4000-8000-0000000000fe')).dirty then
+		raise exception 'A kick with no marks converged: %', v; end if;
+	delete from public.qorpera_folder_follow_ups where subject_id = '87700000-0000-4000-8000-0000000000fe';
 end $$;
 
 -- The status view for operators.

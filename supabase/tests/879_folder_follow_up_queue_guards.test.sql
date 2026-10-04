@@ -72,6 +72,7 @@ begin
 			'public.qorpera_folder_follow_up_take(uuid,text,uuid)', 'public.qorpera_folder_follow_up_converge(public.qorpera_folder_follow_ups)',
 			'public.qorpera_folder_follow_up_open(uuid)', 'public.qorpera_folder_follow_up_step()',
 			'public.qorpera_folder_follow_up_kick(uuid,text,uuid)', 'public.qorpera_folder_follow_up_mark_firing(uuid,uuid)',
+			'public.qorpera_folder_follow_up_sweep()', 'public.qorpera_folder_follow_up_mark_all(uuid)',
 			'public.qorpera_schedule_folder_follow_ups()'] loop
 			if has_function_privilege(v_role, v_fn, 'execute') then raise exception '% may run %', v_role, v_fn; end if;
 		end loop;
@@ -148,12 +149,14 @@ begin
 	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', v_room::text, 'mode', 'update'),
 			jsonb_build_object('rank', 11, 'tbl', 'qorpera_shared_sessions', 'key', v_session::text, 'mode', 'update')) then
 		raise exception 'A retire names its thread session: %', t; end if;
-	-- And the commit holds both: the archive closes nothing itself (the queue does), and commits.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'archive-nora', jsonb_build_array(
-		pg_temp.write('agents/nora/agent.md', 'agent', pg_temp.agent_text(a1, 'Nora', 'agent', 'archived'),
+	-- The commit holds both: its thread trigger closes the thread itself, before any converge.
+	perform pg_temp.expect(pg_temp.commit_in('70400000-0000-4000-8000-000000000020', pg_temp.owner(), 'archive-nora',
+		jsonb_build_array(pg_temp.write('agents/nora/agent.md', 'agent', pg_temp.agent_text(a1, 'Nora', 'agent', 'archived'),
 			pg_temp.agent_parse(a1, 'Nora', 'agent', 'archived'), pg_temp.version('agents/nora/agent.md')))), 1, 'saved');
-	if (select status from public.qorpera_shared_sessions where id = v_session) is distinct from 'closed' then
-		raise exception 'The queue closed the archived agent''s thread'; end if;
+	if (select status from public.qorpera_shared_sessions where id = v_session) is distinct from 'closed'
+		or not exists (select 1 from public.qorpera_folder_follow_up_marks where subject_id = a1) then
+		raise exception 'The archive''s commit closes the thread and marks the agent'; end if;
+	perform pg_temp.follow_ups('70400000-0000-4000-8000-000000000020');
 end $$;
 
 -- The staff triggers leave a folder-v2 agent to the queue: a hire gets no default grant or connector before it, and an
@@ -201,6 +204,33 @@ begin
 		'path','agents/nora','expectedVersion',pg_temp.version('agents/nora'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	if not pg_temp.targets_name_thread(jsonb_build_array(pg_temp.hire('nora-back', a1, 'Nora')), a1) then
 		raise exception 'A restore does not name the thread session'; end if;
+end $$;
+
+-- Marking a whole company (the rebuild's, and the migration's for companies made before it): every agent and the company.
+-- An agent with no first run and no member named gets one its owner authors and nobody's login pays for.
+do $$
+declare a3 constant uuid := '87900000-0000-4000-8000-0000000000a3'; v_marks bigint;
+begin
+	perform pg_temp.expect(pg_temp.commit_in('70400000-0000-4000-8000-000000000020', pg_temp.owner(), 'guards-hire-uma',
+		jsonb_build_array(pg_temp.hire('uma', a3, 'Uma'))), 1, 'saved');
+	-- As before this migration: no marks, no work row, no first run.
+	delete from public.qorpera_folder_follow_up_marks where environment_id = '70400000-0000-4000-8000-000000000020';
+	v_marks := public.qorpera_folder_follow_up_mark_all('70400000-0000-4000-8000-000000000020');
+	if v_marks <> (select count(*) + 1 from public.qorpera_profile_staff where profile_id = '70400000-0000-4000-8000-000000000010'
+			and folder_environment_id = '70400000-0000-4000-8000-000000000020' and deleted_at is null and folder_erased_at is null)
+		or not exists (select 1 from public.qorpera_folder_follow_up_marks where subject_kind = 'company'
+			and subject_id = '70400000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_follow_up_marks where environment_id = '70400000-0000-4000-8000-000000000020'
+			and (commit_id is not null or by_user_id is not null)) then
+		raise exception 'Marking the company: %', v_marks; end if;
+	perform pg_temp.follow_ups('70400000-0000-4000-8000-000000000020');
+	if (select last_problem from public.qorpera_folder_follow_ups where subject_id = a3) is distinct from 'no_hirer'
+		or (select i.author_user_id from public.qorpera_session_inputs i join public.qorpera_agent_first_runs f on f.input_id = i.id
+			where f.staff_agent_id = a3) is distinct from '70400000-0000-4000-8000-000000000001'
+		or exists (select 1 from public.qorpera_session_turn_requests r join public.qorpera_agent_first_runs f on f.input_id = r.input_id
+			where f.staff_agent_id = a3)
+		or exists (select 1 from public.qorpera_folder_follow_ups where environment_id = '70400000-0000-4000-8000-000000000020' and dirty) then
+		raise exception 'A marked company converges; its unhired agent gets an owner''s kickoff and no turn'; end if;
 end $$;
 
 -- 5. Only the name copy locks the company row beyond KEY SHARE (core §3 step 3), and it skips a held row ---------------------

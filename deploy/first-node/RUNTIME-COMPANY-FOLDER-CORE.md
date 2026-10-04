@@ -702,11 +702,12 @@ Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
 - the empty seeded folders.
 
 The same transaction writes the Co-Founder's staff row and exactly one silent
-first-run kickoff with its turn request (launch item 3); the first-run wake
-comes when C4 (P28) materializes that turn. The company stays hidden until the
-creation is completed, and, once P15's queue exists, until the queue has
-converged its other side effects, as today's bootstrap job keeps a company
-hidden (`qorpera_finalize_company_bootstrap`). How creation runs (the
+first-run kickoff (launch item 3). The follow-up queue (below, P15) gives the
+Co-Founder its default grant and then queues the kickoff's turn request; the
+first-run wake comes when C4 (P28) materializes that turn. The company stays
+hidden until the creation is completed and the queue has converged the
+Co-Founder, as today's bootstrap job keeps a company hidden
+(`qorpera_finalize_company_bootstrap`). How creation runs (the
 creation row, the worker, the operator's path):
 `RUNTIME-COMPANY-FOLDER-CREATION.md`.
 
@@ -717,13 +718,23 @@ Other side effects converge after the commit:
 - pausing an archived agent's routines;
 - revoking its secret grants.
 
-Today they run inside the publish (20260828019600:528-615). In this design:
-- The commit writes a queue row per (company, subject).
-- A worker takes the fence (§3 step 3), then locks the subject in the global
-  order of §3 step 4, and converges it to the subject's current index row.
-  It never replays events. A hire at sequence 10 processed after an archive
-  at sequence 11 leaves the agent archived.
-- The worker is idempotent and runs at least once.
+Today they run inside the publish (20260828019600:528-615). In this design
+(P15, STATE-FILES "Plan (P15)"):
+- The commit writes an insert-only mark per changed subject (an agent hired,
+  archived, reactivated, retired or restored; a company whose name changed),
+  with no lock and no foreign key.
+- A pg_cron step every 2 seconds takes one subject per transaction: its marks
+  become its work row's (one row per subject, with attempts and a back-off).
+  It takes the fence (§3 step 3), then locks the subject in the global order of
+  §3 step 4, and converges it to the subject's current index row. It never
+  replays events. A hire at sequence 10 processed after an archive at sequence
+  11 leaves the agent archived.
+- The converge runs in one exception block; a default grant's widening
+  authority journal row, and with it the folder clock, is written after the
+  block at the step's top level, so no savepoint ever updates the clock.
+- The step is idempotent and runs at least once. Service-role writers kick a
+  subject at once after their commit (the creation worker, the member commit
+  route), one subject per call.
 
 Some consumers must see a status change at once. They read the index row
 directly and never wait for the worker: wake admission, routine firing, the

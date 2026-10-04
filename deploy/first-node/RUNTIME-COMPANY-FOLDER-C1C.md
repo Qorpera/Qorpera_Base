@@ -119,8 +119,9 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   - the roster's default-grant trigger (`ensure_default_agent_read_grants`): `folder-v2` agents need its grant on the
     company-shared root to read and write there (test 632 fails without it). F2's concern is how it is written:
     outside the authority journal and after the commit's rank-6 and rank-7 locks. The grant is a widening, so the
-    authority check does not need a journal row for it. Writing it through the folder's grant path, in the commit
-    that creates the agent, belongs to C2 (creation) and C1c-3 (lock order);
+    authority check does not need a journal row for it. Since P15 the follow-up queue writes it after the commit
+    that creates the agent, at rank 6 and 7, with one widening journal row, and the trigger skips `folder-v2`
+    (STATE-FILES "Plan (P15)");
   - `verify_company_path_file` and `_tree`: service-role functions that register uploaded bytes; the folder core has
     no other way to get them until C1d's byte check replaces them. Members have no upload path for `folder-v2` at all
     until C1d's upload intents;

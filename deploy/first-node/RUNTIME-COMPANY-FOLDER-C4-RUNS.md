@@ -134,6 +134,9 @@ run failed posts in its thread, which wakes it (§3's room wakes). Kept here for
   either reuse that wake or replace the first-run request only before it has a run.
 - A member-private conversation's run insert takes the member row `FOR SHARE`
   (`qorpera_require_current_private_audience`), above rank 1's `KEY SHARE`.
+- Since P15 a first run's turn request is the follow-up queue's, queued after the agent's default grant. A restart
+  refuses while the agent's subject is not converged (a pending mark, a dirty work row, or no default grant), and runs
+  in its own transaction after any kick, so it never meets the converge holding the kickoff input.
 
 ## 6. Runtime (separate PR, P28b)
 
