@@ -1273,11 +1273,15 @@ item, PASS, FAIL or NOT RUN with its reason.
 - In the hosted-db step it founds a company the real way (the creation worker,
   the founder's own model login) and proves every item the database and the
   node folder service's code can. Items that need a real coding session, live
-  runs, the load test or the launch items say NOT RUN.
+  runs, the load test or the launch items say NOT RUN. So does item 11: its
+  races are SQL test 767's; the script runs the collector's steps one after
+  another and fails if they lose a live object.
 - With `--company <profileId>` it checks an existing company (P38's proof
   company, a founder's first company) through `QORPERA_ACCEPTANCE_DATABASE_URL`:
-  read-only, or with `--write` under a scratch folder it deletes again. The
-  suite runs that mode too, on the company it founded.
+  read-only, or with `--write` under a scratch folder of its own, which it
+  deletes again as of its own last change there (a change someone else made
+  there since leaves it in place). The suite runs that mode too, on the company
+  it founded.
 
 ### C6. Removal
 

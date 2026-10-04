@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -95,7 +96,7 @@ async function bundle(scratch) {
 				'export {CompanyFolderCreator} from "./packages/object-gateway/src/company-folder-creation.ts";',
 				'export {FileSystemObjectStore} from "./packages/object-gateway/src/object-store.ts";',
 				'export {PlatformFolderWriter} from "./packages/object-gateway/src/platform-folder-writer.ts";',
-				'export {memberFolderStructured} from "./packages/object-gateway/src/member-folder-commits.ts";',
+				'export {followUpMemberCommit, memberFolderStructured} from "./packages/object-gateway/src/member-folder-commits.ts";',
 				'export {NasObjects} from "./packages/object-gateway/src/folder-service/objects.ts";',
 				'export {ViewTree} from "./packages/object-gateway/src/folder-service/view-tree.ts";',
 				'export {searchView} from "./packages/object-gateway/src/folder-service/search.ts";',
@@ -209,6 +210,8 @@ const LINES = [
 
 class Report {
 	results = new Map();
+	/** What the company mode's cleanup left in place, and why. */
+	cleanup = [];
 
 	async check(n, fn) {
 		try {
@@ -230,6 +233,7 @@ class Report {
 			if (result.state === "FAIL") failed++;
 			process.stdout.write(`C5-${String(index + 1).padStart(2, "0")} ${result.state.padEnd(7)} ${text}${result.detail ? ` — ${result.detail}` : ""}\n`);
 		});
+		for (const line of this.cleanup) process.stdout.write(`Cleanup: ${line}\n`);
 		return failed;
 	}
 }
@@ -318,9 +322,16 @@ async function hosted(report) {
 			const entry = code.memberFolderStructured(path, value);
 			return entry ? [entry] : undefined;
 		};
-		const commit = async (env, label, units) => db.rpc("qorpera_folder_commit", {
-			p_environment_id: env, p_actor: member, p_operation_key: key(label), p_units: units,
-		});
+		// As the object gateway's member commit route: the commit, then its follow-ups at once (P15: a hire's grant and
+		// first run, an archive's routine pause), one subject a call while the core answers `more`.
+		const commit = async (env, label, units) => {
+			const answer = db.rpc("qorpera_folder_commit", {
+				p_environment_id: env, p_actor: member, p_operation_key: key(label), p_units: units,
+			});
+			if (Number.isSafeInteger(answer?.seq) && typeof answer.commitId === "string")
+				await code.followUpMemberCommit(publisher, env, answer.commitId, signal);
+			return answer;
+		};
 		const saved = (answer, what) => {
 			const bad = (answer?.units ?? []).filter((u) => u.outcome !== "saved");
 			if (!answer?.units?.length || bad.length) throw new Error(`${what} did not save: ${JSON.stringify(answer?.units ?? answer)}`);
@@ -474,6 +485,13 @@ async function hosted(report) {
 			assert.equal(staff?.folder_path, "agents/nora/agent.md", "the agent's index row");
 			assert.equal(staff.folder_path_version, entry(env, "agents/nora/agent.md").version);
 			assert.equal(staff.employment_status, "active");
+			// The hire's follow-up: Nora's default grant and her kickoff.
+			const followUps = db.rpc("qorpera_folder_follow_up_status", { p_environment_id: env });
+			assert.deepEqual(followUps.dirty, [], `the hire's follow-up converged: ${JSON.stringify(followUps)}`);
+			assert.equal(db.query(`select count(*) from public.qorpera_agent_first_runs f
+				join public.qorpera_session_inputs i on i.id = f.input_id
+				where f.profile_id = ${literal(profileId)} and f.staff_agent_id = ${literal(nora)} and i.kind = 'kickoff'`), "1",
+				"the hire's kickoff");
 
 			const routineMd = `---\nid: ${routine}\ntitle: Watch docs\nstatus: active\nwhen: file-change\nwatch: docs\nmatch: subtree\ntimezone: Europe/Copenhagen\neffort: medium\nreply: optional\n---\nRead what changed.\n`;
 			const routineSave = saved(await commit(env, "routine", [await writeUnit(env, "agents/nora/routines/watch-docs.md", routineMd)]), "the routine");
@@ -520,7 +538,10 @@ async function hosted(report) {
 			const status = db.query(`select employment_status from public.qorpera_profile_staff where profile_id = ${literal(profileId)}
 				and staff_agent_id = ${literal(nora)}`);
 			assert.equal(status, "archived");
-			report.results.set(5, { state: "PASS", detail: "hire, archive, routine, group chat and sections each updated their index; a member's units skip review (5.6)" });
+			const paused = db.json(`select to_jsonb(r) from public.qorpera_cloud_routines r where r.id = ${literal(routine)}`);
+			assert.deepEqual([paused?.status, paused?.pause_reason], ["paused", "agent_archived"], "the archive's follow-up paused the routine");
+			report.results.set(5, { state: "PASS", detail: "hire (with its follow-up: grant and kickoff), archive (its routine paused), " +
+				"routine, group chat and sections each updated their index; a member's units skip review (5.6)" });
 		});
 
 		await report.check(12, async () => {
@@ -591,7 +612,10 @@ async function hosted(report) {
 				where environment_id = ${literal(env)} and kind = 'file'`);
 			const platform = new code.PlatformFolderWriter({ authority: publisher, store, replication });
 			for (const file of files) await platform.read(env, file, 8 * 1024 * 1024, signal);
-			return `${live.length} live objects; the claim took ${claimed.length} unrooted ones and none live; ${files.length} live files read back`;
+			// The races themselves (a reference against the claim, the sweep, the finish) are SQL test 767's (dblink R1–R10):
+			// this script runs the worker's steps one after another, so it proves the outcome, not the races.
+			report.notRun(11, `the races are proven by SQL test 767 (dblink R1–R10); run here one after another: ${live.length} live ` +
+				`objects, the claim took ${claimed.length} unrooted ones and none live, ${files.length} live files read back`);
 		});
 
 		report.notRun(13, "the launch items are proven on the proof company (P38); run this script with --company there");
@@ -626,20 +650,33 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 	await report.check(1, () => {
 		for (const path of ["vision/vision.md", "agents/sections.md", "agents/co-founder/agent.md", "skills/human-task/skill.md"])
 			assert.equal(entry(path)?.kind, "file", `${path} is in the folder`);
-		const kickoffs = db.query(`select count(*) from public.qorpera_agent_first_runs where profile_id = ${literal(profileId)}`);
-		assert.equal(kickoffs, "1", "exactly one kickoff");
+		// The founding's kickoff is the first run of the creation's Co-Founder; agents hired since have first runs of their own.
+		const kickoffs = db.json(`select coalesce(jsonb_agg(f.session_id), '[]') from public.qorpera_agent_first_runs f
+			join public.qorpera_folder_company_creations c on c.profile_id = f.profile_id and c.cofounder_id = f.staff_agent_id
+			join public.qorpera_session_inputs i on i.id = f.input_id
+			where f.profile_id = ${literal(profileId)} and i.kind = 'kickoff'`);
+		assert.equal(kickoffs.length, 1, "exactly one kickoff, the Co-Founder's");
 		const turns = db.query(`select count(*) from public.qorpera_session_turn_requests where profile_id = ${literal(profileId)}
-			and initial_execution_selection ->> 'reason' = 'agent_first_run'`);
+			and session_id = ${literal(kickoffs[0])} and initial_execution_selection ->> 'reason' = 'agent_first_run'`);
+		const others = db.query(`select count(*) - 1 from public.qorpera_agent_first_runs where profile_id = ${literal(profileId)}`);
 		const state = db.query(`select public.qorpera_folder_company_first_run_state(${literal(profileId)})`);
-		return `seeded paths present, 1 kickoff, ${turns} first-run turn request(s), first run ${state || "unknown"}`;
+		return `seeded paths present, the Co-Founder's kickoff with ${turns} first-run turn request(s), ${others} hired agents' ` +
+			`first runs beside it, first run ${state || "unknown"}`;
 	});
 
-	const scratchRoot = `acceptance/${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}`;
+	const scratchRoot = `acceptance/${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${randomBytes(4).toString("hex")}`;
 	let createdParent = false;
+	/** The sequence number of this run's last change under the scratch folder: deletes are made as of it, so a change
+	 * someone else made under it meanwhile refuses them (unseen_change) instead of going with them. */
+	let scratchSeq = 0;
 	let keys = 0;
 	const key = (label) => `acceptance-${scratchRoot.slice(11)}-${label}-${++keys}`;
-	const commit = (units) => db.rpc("qorpera_folder_commit", { p_environment_id: env, p_actor: platform,
-		p_operation_key: key("c"), p_units: units });
+	const commit = (units) => {
+		const answer = db.rpc("qorpera_folder_commit", { p_environment_id: env, p_actor: platform, p_operation_key: key("c"),
+			p_units: units });
+		if (answer?.seq) scratchSeq = Math.max(scratchSeq, Number(answer.seq));
+		return answer;
+	};
 	const saved = (answer, what) => {
 		const bad = (answer?.units ?? []).filter((u) => u.outcome !== "saved");
 		if (!answer?.units?.length || bad.length) throw new Error(`${what} did not save: ${JSON.stringify(answer?.units ?? answer)}`);
@@ -670,6 +707,7 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 			})));
 			saved(a, "writer a");
 			saved(b, "writer b");
+			scratchSeq = Math.max(scratchSeq, Number(a.seq), Number(b.seq));
 			details.push(`two concurrent writers under ${scratchRoot} saved`);
 		} else details.push("writes not run (read-only; pass --write)");
 		return details.join("; ");
@@ -681,14 +719,14 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 		if (!write) return report.notRun(4, "read-only; pass --write");
 		saved(commit([{ op: "mkdir", path: `${scratchRoot}/m` }, { op: "mkdir", path: `${scratchRoot}/m/x` }]), "scratch m");
 		saved(commit([{ op: "move", from: `${scratchRoot}/m`, to: `${scratchRoot}/n`, expectedVersion: entry(`${scratchRoot}/m`).version,
-			asOfSeq: lastSeq() }]), "the move");
+			asOfSeq: scratchSeq }]), "the move");
 		assert.equal(entry(`${scratchRoot}/n/x`)?.kind, "folder");
-		const seen = lastSeq();
+		const seen = scratchSeq;
 		saved(commit([{ op: "mkdir", path: `${scratchRoot}/n/y` }]), "n/y");
 		const unseen = commit([{ op: "delete", path: `${scratchRoot}/n`, expectedVersion: entry(`${scratchRoot}/n`).version, asOfSeq: seen }]);
 		assert.equal(unseen.units[0].reason, "unseen_change", JSON.stringify(unseen.units));
 		saved(commit([{ op: "delete", path: `${scratchRoot}/n`, expectedVersion: entry(`${scratchRoot}/n`).version,
-			asOfSeq: lastSeq() }]), "the subtree delete");
+			asOfSeq: scratchSeq }]), "the subtree delete");
 		return "move, a refused stale subtree delete, then the subtree deleted";
 	});
 
@@ -732,16 +770,27 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 			and e.kind = 'file' and not exists (select 1 from public.qorpera_profile_objects o
 				where o.profile_id = ${literal(profileId)} and o.sha256 = e.manifest_sha256)`);
 		assert.equal(missing, "0", "every live file's manifest is catalogued");
-		return "read-only: every live file's manifest is catalogued, and none is held for deletion";
+		report.notRun(11, "the races are proven by SQL test 767; read-only here: every live file's manifest is catalogued, and none is held for deletion");
 	});
 
-	// The scratch folder goes again (and acceptance/ when this run made it); its history stays, as any change's does.
-	if (write && entry(scratchRoot))
-		saved(commit([{ op: "delete", path: scratchRoot, expectedVersion: entry(scratchRoot).version, asOfSeq: lastSeq() }]),
-			"the scratch folder's delete");
-	if (write && createdParent && entry("acceptance"))
-		saved(commit([{ op: "delete", path: "acceptance", expectedVersion: entry("acceptance").version, asOfSeq: lastSeq() }]),
-			"acceptance/'s delete");
+	// The scratch folder goes again, as of this run's last change under it: anything someone else wrote there since refuses
+	// the delete (unseen_change) instead of going with it. Then acceptance/, only when this run made it and it holds nothing
+	// else, as of the same sequence number, so a change someone makes there meanwhile refuses it too. Their history stays.
+	// A refused delete (a change it did not see, or a version moved on) leaves the folder for whoever changed it.
+	const tidy = (path) => {
+		const answer = commit([{ op: "delete", path, expectedVersion: entry(path).version, asOfSeq: scratchSeq }]);
+		const unit = answer?.units?.[0];
+		if (!unit) throw new Error(`${path}'s delete: ${JSON.stringify(answer)}`);
+		if (unit.outcome === "saved") return true;
+		report.cleanup.push(`${path} left in place: its delete was ${unit.outcome} (${unit.reason ?? "no reason"})`);
+		return false;
+	};
+	if (write && entry(scratchRoot) && tidy(scratchRoot) && createdParent && entry("acceptance")) {
+		const others = db.query(`select count(*) from public.qorpera_folder_entries where environment_id = ${literal(env)}
+			and kind <> 'claim' and key_text like 'acceptance/%'`);
+		if (others === "0") tidy("acceptance");
+		else report.cleanup.push(`acceptance/ left in place: it holds ${others} other entries`);
+	}
 
 	report.notRun(12, "erasure is not run on an existing company; run it on the hosted database (no argument)");
 	report.notRun(13, "the launch items are walked by hand on the proof company (P38)");
