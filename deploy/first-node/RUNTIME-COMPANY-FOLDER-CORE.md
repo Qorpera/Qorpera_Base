@@ -407,7 +407,7 @@ is never upgraded. The steps:
    rows (§5), the queue rows (§5) and the commit row. A unit whose version
    check failed is not applied: nobody's work is overwritten, and its bytes
    stay on the receipt as a conflict copy.
-   - Built in slice P17 (`20260930033000`, SQL test 823): a write or new
+   - Built in slice P17 (`20260930042000`, SQL test 823): a write or new
      folder that conflicted keeps each of its files as a row of
      `qorpera_folder_conflict_copies` (commit, unit, file number, the path it
      would have been stored at, the file reference). A conflict is decided

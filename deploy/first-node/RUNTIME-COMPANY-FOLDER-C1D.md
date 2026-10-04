@@ -367,7 +367,7 @@ company may have several: test 761 enables a second). An object is rooted when i
 - an object of an upload intent still in the table whose `expires_at` is after `now() - grace`. So an expired intent
   the sweep hasn't reached yet still protects its objects for the whole grace window (G4 holds even when the sweep
   falls behind);
-- the manifest of a conflict copy on a receipt in any of those environments (P17, `20260930033000`:
+- the manifest of a conflict copy on a receipt in any of those environments (P17, `20260930042000`:
   `qorpera_folder_conflict_copies`, indexed by `(environment_id, manifest_sha256)`). A copy ends only when erasure
   removes it, and that end follows §9.4's rule; or
 - a chunk of a rooted manifest, through `qorpera_folder_file_chunks`, read from the chunk side.

@@ -317,7 +317,7 @@ begin
 		raise exception 'Keeping a conflict copy takes a lock'; end if;
 	foreach v_fn in array array['public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
 		'public.qorpera_folder_object_rooted(uuid,text,uuid)', 'public.qorpera_folder_object_readable(uuid,uuid,jsonb,text)']::regprocedure[] loop
-		if strpos((select prosrc from pg_proc where oid = v_fn), '20260930033000') = 0 then
+		if strpos((select prosrc from pg_proc where oid = v_fn), '20260930042000') = 0 then
 			raise exception 'The P17 marker is missing from %', v_fn; end if;
 	end loop;
 	if has_function_privilege('service_role', 'public.qorpera_folder_keep_conflict_copies(uuid,uuid,jsonb,jsonb,uuid,integer,text,jsonb,text[])', 'execute')

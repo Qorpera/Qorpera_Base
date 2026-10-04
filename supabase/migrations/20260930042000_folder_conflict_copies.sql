@@ -13,7 +13,7 @@
 --   path's conflict copies (the folder GC + erasure session adds that to qorpera_folder_erase).
 -- No new lock: step 6 already takes every object a write or new folder names FOR KEY SHARE, whatever the outcome; the
 -- rows' foreign keys take KEY SHARE on the commit row this transaction inserted and on the clock row the commit row's
--- own foreign key holds. Every patched body carries the marker 20260930033000 for the deploy guard.
+-- own foreign key holds. Every patched body carries the marker 20260930042000 for the deploy guard.
 
 set local lock_timeout = '3s';
 
@@ -120,7 +120,7 @@ select pg_temp.p17_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,u
 $old$,
 	$new$			v_saved := v_saved + 1;
 		end if;
-		-- 20260930033000 (P17): a write or new folder that conflicted keeps its files on the receipt as conflict copies
+		-- 20260930042000 (P17): a write or new folder that conflicted keeps its files on the receipt as conflict copies
 		-- (core §3 step 8), when its bytes would have passed (qorpera_folder_keep_conflict_copies).
 		if not v_ok and v_op in ('write','new_folder') and v_reason in ('version_changed','exists','unseen_change','missing') then
 			perform public.qorpera_folder_keep_conflict_copies(p_environment_id, v_file.profile_id, p_actor, v_auth_actor,
@@ -136,23 +136,24 @@ select pg_temp.p17_replace('public.qorpera_folder_object_rooted(uuid,text,uuid)'
 $old$,
 	$new$				or exists (select 1 from public.qorpera_folder_path_versions v
 					where v.environment_id = f.environment_id and v.manifest_sha256 = m.manifest)
-				-- 20260930033000 (P17): a conflict copy on a receipt.
+				-- 20260930042000 (P17): a conflict copy on a receipt.
 				or exists (select 1 from public.qorpera_folder_conflict_copies k
 					where k.environment_id = f.environment_id and k.manifest_sha256 = m.manifest))
 $new$);
 
 -- Reading one: an actor who may read the copy's path now reads it, as it reads an old version of that path. So the
--- writer, or a member, can fetch it and commit it again (its possession check is this one).
+-- writer, or a member, can fetch it and commit it again (its possession check is this one). P24c (20260930039500) checks
+-- a few live paths first and then every path that names the object at once; a copy joins that second list.
 select pg_temp.p17_replace('public.qorpera_folder_object_readable(uuid,uuid,jsonb,text)'::regprocedure,
-	$old$			select v.path from public.qorpera_folder_path_versions v
-			where v.environment_id = p_environment_id and v.manifest_sha256 = m.manifest) p
+	$old$					select v.path from public.qorpera_folder_path_versions v
+					where v.environment_id = p_environment_id and v.manifest_sha256 = m.manifest) named)) decided), false);
 $old$,
-	$new$			select v.path from public.qorpera_folder_path_versions v
-			where v.environment_id = p_environment_id and v.manifest_sha256 = m.manifest
-			-- 20260930033000 (P17): a conflict copy, read as an old version of its path.
-			union all
-			select k.path from public.qorpera_folder_conflict_copies k
-			where k.environment_id = p_environment_id and k.manifest_sha256 = m.manifest) p
+	$new$					select v.path from public.qorpera_folder_path_versions v
+					where v.environment_id = p_environment_id and v.manifest_sha256 = m.manifest
+					-- 20260930042000 (P17): a conflict copy, read as an old version of its path.
+					union all
+					select k.path from public.qorpera_folder_conflict_copies k
+					where k.environment_id = p_environment_id and k.manifest_sha256 = m.manifest) named)) decided), false);
 $new$);
 
 -- The deploy guard: every patched body carries the marker.
@@ -162,7 +163,7 @@ begin
 	foreach v_function in array array['public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)',
 		'public.qorpera_folder_object_rooted(uuid,text,uuid)', 'public.qorpera_folder_object_readable(uuid,uuid,jsonb,text)']::regprocedure[]
 	loop
-		if strpos((select prosrc from pg_proc where oid = v_function), '20260930033000') = 0 then
+		if strpos((select prosrc from pg_proc where oid = v_function), '20260930042000') = 0 then
 			raise exception 'P17 did not reach %', v_function; end if;
 	end loop;
 end $guard$;
