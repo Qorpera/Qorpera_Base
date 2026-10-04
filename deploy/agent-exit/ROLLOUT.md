@@ -85,7 +85,7 @@ running one and one more systemd drop-in that points `ExecStart` at it; the runn
 `deploy/first-node/NODE-OBSERVER-INSTALLATION.md` makes a first installation only and is not used here. Below, `NN` is
 `01` or `02` and `v173` the release.
 
-Build once, from a checkout of the release head with its dependencies installed (`npm ci`), and point the build at the
+Build once, from a checkout of the release head with its dependencies installed (`npm ci --ignore-scripts`), and point the build at the
 nodes' own configuration and key (the same two paths the running v145 files read on both nodes):
 
 ```bash
