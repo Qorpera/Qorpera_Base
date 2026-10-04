@@ -1,5 +1,4 @@
 import {
-	CloudMemberFolderAccessDenied,
 	type CloudMemberFolderCommit,
 	type CloudMemberFolderEntry,
 	CloudMemberFolderError,
@@ -16,10 +15,13 @@ import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
 
 /*
  * A member's company folder in memory, for the web's folder writers (P34a-2): paths with their kind, text, version and
- * seq, and the member client's read, list, readFile, stateFolders and commit over them. The commit keeps the core's
- * rules these writers depend on: a write or delete naming another version is `version_changed`, a create on a taken
- * path is `exists`, a folder delete read before a change under it is `unseen_change`, a missing path is `missing`,
- * every state file gets its parse, and the same operation key with the same units replays its answer.
+ * seq, and the member client's read, list, readFile, stateFolders and commit over them. A path the member may not
+ * read (`deny`) looks absent to reads and listings, as in the core. The commit keeps the core's rules these writers
+ * depend on, in the core's order (views.sql): authority first, so a unit on a path closed to the member is `denied`
+ * whatever is there; a write or delete naming another version, or a write naming a version of a missing path, is
+ * `version_changed`; a create on a taken path is `exists`; a delete of a missing path is `missing`; a missing parent is
+ * refused `parent_missing`; a folder delete read before a change under it is `unseen_change`; every state file gets
+ * its parse; and the same operation key with the same units replays its answer.
  */
 
 interface Node {
@@ -60,7 +62,7 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 	const answers: Answer[] = [];
 	const replays = new Map<string, { units: string; answer: CloudMemberFolderCommit }>();
 	const denied = new Set<string>();
-	const failing = new Set<string>();
+	const failing = new Map<string, unknown>();
 	const commits: FolderCommitCall[] = [];
 	let seq = 0;
 	let versions = 0;
@@ -70,13 +72,10 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 	const key = companyPathKey;
 	const under = (path: string, root: string) => key(path).startsWith(`${key(root)}/`);
 	const hidden = (path: string) => [...denied].some((root) => key(path) === key(root) || under(path, root));
+	/** A unit's authority covers its path and everything under it (a subtree's boundaries included). */
+	const closed = (path: string) => hidden(path) || [...denied].some((root) => under(root, path));
 	const blocked = (path: string) => {
-		for (const root of failing)
-			if (key(path) === key(root) || under(path, root))
-				throw new CloudMemberFolderError("Company folder is unavailable (503)", 503);
-		for (const root of denied)
-			if (key(path) === key(root) || under(path, root))
-				throw new CloudMemberFolderAccessDenied("Company folder access is refused (403)", 403);
+		for (const [root, error] of failing) if (key(path) === key(root) || under(path, root)) throw error;
 	};
 
 	function reference(text: string): CloudMemberFolderFile {
@@ -156,15 +155,19 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 		version: null,
 	});
 
+	const parentMissing = (path: string) => parentOf(path) !== "" && !nodes.has(key(parentOf(path)));
+
 	function apply(unit: CloudMemberFolderUnit, at: number): Result {
+		// Authority before anything else: a path closed to the member is `denied`, never `exists` or `missing`.
+		if (unit.op === "move" ? closed(unit.from) || closed(unit.to) : closed(unit.path))
+			return { outcome: "denied", reason: "denied", problems: [], version: null };
 		switch (unit.op) {
 			case "write": {
 				const node = nodes.get(key(unit.path));
-				if (unit.expectedVersion !== undefined && !node) return conflict("missing");
-				if (node && node.kind !== "file") return conflict("not_a_file");
-				if (unit.expectedVersion !== undefined && node?.version !== unit.expectedVersion)
-					return conflict("version_changed");
-				if (!nodes.has(key(parentOf(unit.path))) && parentOf(unit.path)) return conflict("missing");
+				if (unit.expectedVersion !== undefined) {
+					if (node?.kind !== "file" || node.version !== unit.expectedVersion) return conflict("version_changed");
+				} else if (node) return conflict("exists");
+				if (parentMissing(unit.path)) return refused("parent_missing");
 				const problems = problemsOf(unit.path, unit.text);
 				if (problems.length) return refused("invalid", problems);
 				return {
@@ -176,7 +179,7 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 			}
 			case "mkdir": {
 				if (nodes.has(key(unit.path))) return conflict("exists");
-				if (parentOf(unit.path) && !nodes.has(key(parentOf(unit.path)))) return conflict("missing");
+				if (parentMissing(unit.path)) return refused("parent_missing");
 				return {
 					outcome: "saved",
 					reason: null,
@@ -186,7 +189,7 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 			}
 			case "new_folder": {
 				if (nodes.has(key(unit.path))) return conflict("exists");
-				if (parentOf(unit.path) && !nodes.has(key(parentOf(unit.path)))) return conflict("missing");
+				if (parentMissing(unit.path)) return refused("parent_missing");
 				const problems = unit.contents.flatMap((item) =>
 					item.kind === "file" ? problemsOf(`${unit.path}/${item.path}`, item.text) : [],
 				);
@@ -234,7 +237,7 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 		read: vi.fn(async (path: string, signal: AbortSignal) => {
 			signal.throwIfAborted();
 			blocked(path);
-			const node = nodes.get(key(path));
+			const node = hidden(path) ? undefined : nodes.get(key(path));
 			return { asOfSeq: seq, entry: node ? entry(node) : null };
 		}),
 		list: vi.fn(
@@ -246,7 +249,7 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 			): Promise<CloudMemberFolderListPage> => {
 				signal.throwIfAborted();
 				if (parent !== null) blocked(parent);
-				// A member's listing leaves out what they may not read.
+				// A member's listing leaves out what they may not read: a folder closed to them lists empty.
 				const children = [...nodes.values()]
 					.filter((node) => key(parentOf(node.path)) === key(parent ?? "") && !hidden(node.path))
 					.filter((node) => after === null || key(node.path) > key(after))
@@ -393,13 +396,17 @@ export function folderFake(options: { seed?: readonly string[] } = {}) {
 		failCommit(error: unknown = new TypeError("Failed to fetch")): void {
 			answers.push({ kind: "throw", error });
 		},
-		/** Reads and listings under `root` are refused (401/403) for this member. */
+		/** This member may not read or write at or under `root`: reads and listings leave it out, and a unit there is
+		 * `denied`. */
 		deny(root: string): void {
 			denied.add(root);
 		},
-		/** Reads and listings under `root` fail (an outage). */
-		fail(root: string): void {
-			failing.add(root);
+		/** Reads and listings under `root` fail with `error`: an outage by default, or a refusal (401/403). */
+		fail(
+			root: string,
+			error: unknown = new CloudMemberFolderError("Company folder is unavailable (503)", 503),
+		): void {
+			failing.set(root, error);
 		},
 	};
 	for (const path of options.seed ?? SEEDED) fake.mkdir(path);

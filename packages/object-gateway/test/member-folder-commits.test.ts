@@ -4,7 +4,7 @@ import { writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import { createMemberCors } from "../src/member-cors.ts";
-import { serveMemberFolderCommit } from "../src/member-folder-commits.ts";
+import { followUpMemberCommit, serveMemberFolderCommit } from "../src/member-folder-commits.ts";
 
 const environmentId = "34000000-0000-4000-8000-000000000020";
 const profileId = "34000000-0000-4000-8000-000000000010";
@@ -35,7 +35,13 @@ const agentText = (name = "Nora") =>
 
 /** The database and the store as the route sees them: every call recorded. */
 async function gateway(
-	options: { member?: () => unknown; commit?: () => unknown; followUp?: (call: number) => unknown } = {},
+	options: {
+		member?: () => unknown;
+		commit?: () => unknown;
+		followUp?: (call: number) => unknown;
+		/** No follow-up client: the route makes no follow-up. */
+		noFollowUps?: boolean;
+	} = {},
 ) {
 	let followUps = 0;
 	const calls: { side: "member" | "publisher"; method: string; args: Record<string, unknown>; token?: string }[] = [];
@@ -123,12 +129,15 @@ async function gateway(
 		},
 	};
 	const server = createServer((request, response) => {
-		serveMemberFolderCommit(request, response, { authority: authority as never, store, replication }).catch(
-			(error: unknown) => {
-				response.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
-				response.end();
-			},
-		);
+		serveMemberFolderCommit(request, response, {
+			authority: authority as never,
+			...(options.noFollowUps ? {} : { followUps: authority as never }),
+			store,
+			replication,
+		}).catch((error: unknown) => {
+			response.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
+			response.end();
+		});
 	});
 	servers.push(server);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -428,6 +437,48 @@ describe("a member's change set to a folder-v2 company", () => {
 		});
 		expect((await refused.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
 		expect(refused.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toEqual([]);
+	});
+
+	it("makes no follow-up without its own client, and frees the member's slot before following up", async () => {
+		const none = await gateway({
+			noFollowUps: true,
+			followUp: () => ({ schema: "qorpera.folder-follow-up/v1", more: false }),
+		});
+		expect((await none.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(none.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toEqual([]);
+		// While the first change set's follow-up runs, the member's next change set is taken, not refused with 429.
+		let release!: () => void;
+		const waiting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const slow = await gateway({
+			followUp: async (n) => {
+				if (n === 1) await waiting;
+				return { schema: "qorpera.folder-follow-up/v1", more: false };
+			},
+		});
+		const first = slow.send(request([{ op: "mkdir", path: "drafts" }]));
+		await expect
+			.poll(() => slow.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit").length)
+			.toBe(1);
+		expect((await slow.send(request([{ op: "mkdir", path: "drafts" }], "web:second-01"))).status).toBe(200);
+		release();
+		expect((await first).status).toBe(200);
+	});
+
+	it("bounds a follow-up by its time as well as its calls", async () => {
+		const calls: string[] = [];
+		const slow = {
+			publisher: async (method: string) => {
+				calls.push(method);
+				await new Promise((resolve) => setTimeout(resolve, 40));
+				return { schema: "qorpera.folder-follow-up/v1", more: true };
+			},
+		};
+		const made = await followUpMemberCommit(slow as never, environmentId, version, new AbortController().signal, 100);
+		expect(made).toBeGreaterThanOrEqual(2);
+		expect(made).toBeLessThan(8);
+		expect(calls.length).toBe(made);
 	});
 
 	it("lets a member's browser send it across origins", () => {

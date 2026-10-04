@@ -181,8 +181,10 @@ member's other routes (its Edge Function allows the route with a 1 MiB body), wi
   8. when the commit saved anything, its follow-up at once (F2's P15): the service-role
      `qorpera_folder_follow_up_commit(environment, commit)` settles one subject a call (a hire's default grant,
      connectors and first run; an archive's clean-up), and is called again while it answers `more`, at most 8 times
-     and 3 s, before the answer goes back. A best effort: any error ends it (before P15 the function does not exist),
-     and the core's own step converges whatever is left within about 2 s.
+     and 3 s, before the answer goes back, and never after 20 s into the request (the bridge allows 25 s). It runs on
+     its own database client, so a failing follow-up never opens the circuit members' commits use, and the member's
+     one-at-a-time slot is free while it runs. A best effort: any error ends it (before P15 the function does not
+     exist), and the core's own step converges whatever is left within about 2 s.
 - **The answer** is the core's commit answer (`qorpera.folder-commit/v1`) as it is: for each unit, `saved`, or the
   outcome with its reason and problems. A lock conflict is 409: send the same request again, with the same key (a
   first try that did commit replays its outcome). A company being deleted or paused is 423.
@@ -196,8 +198,9 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
 **The web (P34a-2).**
 - **Agents:**
   - *Create* is one `new_folder` `agents/<handle>` holding `agent.md` (`writeAgentFile`), `memory/`, `skills/`,
-    `routines/`, `todos/` and the first assignment as `todos/first-assignment.md`, as the runtime's hire makes it. The
-    handle comes from the name (`freeCompanyStateName` over the listed `agents/`).
+    `routines/` and `todos/`, as the runtime's hire makes it, without a first todo (see *Fields*). The handle comes
+    from the name (`freeCompanyStateName` over the listed `agents/`); one taken since the listing is `exists`, and the
+    next handle is tried with a new key.
   - *Edit* rewrites `agent.md`: its settings with `setCompanyStateSettings` and its body (the instructions), with
     `expectedVersion` from the read. The handle stays.
   - *Delete* removes the folder, with the folder entry's `version` and `asOfSeq` from one read of the folder. An
@@ -208,15 +211,17 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
     department have no place in `agent.md` (grants come from the roster's defaults and path authority, placement from
     `sections.md`), so the editor drops them. The web's create form has no first assignment, so a web-made agent has
     no first todo and starts from its instructions when it is first messaged.
-  - *Handles:* a member's listing hides folders they may not read, so a free handle can still be taken; `exists`
-    picks the next handle with a new key.
+  - *Handles:* a free handle in the member's listing can be taken by another writer before the commit; `exists`
+    picks the next handle with a new key. (A folder the member may not read is usually not writable either: the core
+    answers `denied` there.)
 
   A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message. A deleted
   agent is fenced at once (no run, routine or message wakes it); until P15 its routines still read `active` in the
   index, though none can fire (F2, 4 October).
 - **Group chats:** *create* is a `new_folder` `agents/groups/<handle>` holding `group.md` (`writeGroupFile`): the
   members' list becomes `agents` (at least two) and `people`. *Edit* rewrites `group.md` with `expectedVersion` from
-  the read; the room's version number and key go, and a lost answer is the operation key's replay. *Delete* removes
+  the read; the room's version number and key go, and a lost answer is found by reading the file again (each try
+  has its own key). *Delete* removes
   the folder (with `asOfSeq`), which closes the chat.
 - **Who may:** the web keeps today's owner-or-admin gates for agents and group chats, and the core's `denied` answers
   for anything a path's authority refuses.

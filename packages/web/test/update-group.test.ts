@@ -188,7 +188,7 @@ describe("editing group details", () => {
 		const f = setup();
 		const version = f.fake.version(PATH);
 		const before = f.fake.text(PATH)!;
-		await f.update(session.sessionId, f.observed, f.draft, f.signal);
+		await expect(f.update(session.sessionId, f.observed, f.draft, f.signal)).resolves.toBe(true);
 		expect(f.folder).toHaveBeenCalledOnce();
 		expect(f.fake.commits).toHaveLength(1);
 		expect(f.fake.commits[0]?.operationKey).toMatch(
@@ -246,6 +246,33 @@ describe("editing group details", () => {
 		expect(groupFile(f.fake)).toMatchObject({ agents: [f.third.id, staff.id], people: [userA.id, userB.id] });
 	});
 
+	it("writes only the participants list the member changed, so a change made meanwhile to the other survives", async () => {
+		const f = setup();
+		// Another admin added an agent meanwhile; this member adds a person only.
+		f.fake.put(
+			PATH,
+			writeGroupFile({
+				id: f.observed.roomId,
+				name: f.observed.name,
+				subtitle: null,
+				agents: [staff.id, f.other.id, f.third.id],
+				people: [userA.id],
+				purpose: f.observed.purpose,
+			}),
+		);
+		const { name, purpose, members } = f.observed;
+		await f.update(
+			session.sessionId,
+			f.observed,
+			{ name, purpose, members: [...members, { kind: "member", id: userB.id }] },
+			f.signal,
+		);
+		expect(groupFile(f.fake)).toMatchObject({
+			agents: [staff.id, f.other.id, f.third.id],
+			people: [userA.id, userB.id],
+		});
+	});
+
 	it.each(["  Launch coordination  ", ""])("writes and clears the subtitle (%j)", async (subtitle) => {
 		const f = setup();
 		f.fake.put(PATH, f.fake.text(PATH)!.replace("name: Original group", "name: Original group\nsubtitle: Old"));
@@ -256,12 +283,12 @@ describe("editing group details", () => {
 	it("writes nothing when the file already says it all", async () => {
 		const f = setup();
 		const { name, purpose, members } = f.observed;
-		await expect(
-			f.update(session.sessionId, f.observed, { name, purpose, members }, f.signal),
-		).resolves.toBeUndefined();
+		await expect(f.update(session.sessionId, f.observed, { name, purpose, members }, f.signal)).resolves.toBe(false);
 		// Someone else made the same change meanwhile.
 		f.fake.put(PATH, f.fake.text(PATH)!.replace("name: Original group", "name: Planning"));
-		await f.update(session.sessionId, f.observed, { name: "Planning", purpose, members }, f.signal);
+		await expect(
+			f.update(session.sessionId, f.observed, { name: "Planning", purpose, members }, f.signal),
+		).resolves.toBe(false);
 		expect(f.fake.commits).toHaveLength(0);
 	});
 

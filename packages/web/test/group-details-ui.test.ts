@@ -56,7 +56,7 @@ function setup() {
 	const f = fixture();
 	const rpc = vi.mocked(f.cloud.rpc).mockResolvedValue([room]);
 	vi.mocked(f.api.listSessions).mockResolvedValue([group]);
-	const updateGroup = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>(async () => {});
+	const updateGroup = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>(async () => true);
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({
 		team: {
@@ -193,6 +193,7 @@ describe("group details from the conversation header", () => {
 			canonical = { ...canonical, ...draft, version: observed.version + 1 };
 			f.rpc.mockResolvedValue([canonical]);
 			vi.mocked(f.api.listSessions).mockResolvedValue([{ ...group, title: canonical.name }]);
+			return true;
 		});
 		for (const [key, value] of [
 			["name", "Launch team"],
@@ -263,6 +264,7 @@ describe("group details from the conversation header", () => {
 		expect(button("Try again")).toBeDefined();
 		f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
 			f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+			return true;
 		});
 		button("Try again").click();
 		await settle();
@@ -310,6 +312,7 @@ describe("group details from the conversation header", () => {
 			expect(document.activeElement).toBe(target);
 			f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
 				f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+				return true;
 			});
 			target.click();
 			await settle();
@@ -329,12 +332,12 @@ describe("group details from the conversation header", () => {
 		const f = setup();
 		f.open();
 		await settle();
-		const pending = deferred<void>();
+		const pending = deferred<boolean>();
 		f.updateGroup.mockReturnValueOnce(pending.promise);
 		typeField("name", "New name").blur();
 		const subtitle = typeField("subtitle", "Still typing");
 		f.rpc.mockResolvedValue([{ ...room, name: "New name", version: 2 }]);
-		pending.resolve();
+		pending.resolve(true);
 		await settle();
 		expect(field("subtitle")).toBe(subtitle);
 		expect(subtitle.value).toBe("Still typing");
@@ -351,6 +354,7 @@ describe("group details from the conversation header", () => {
 		await settle();
 		f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
 			f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+			return true;
 		});
 		typeField("name", "Saved on close");
 		button("Close group details").click();
@@ -395,7 +399,7 @@ describe("group details from the conversation header", () => {
 		const panel = f.open();
 		await settle();
 		const name = typeField("name", "Revoked draft");
-		const pending = deferred<void>();
+		const pending = deferred<boolean>();
 		if (saving) {
 			f.updateGroup.mockReturnValueOnce(pending.promise);
 			name.blur();
@@ -414,7 +418,7 @@ describe("group details from the conversation header", () => {
 		expect(panel.textContent).toContain("Only an owner or admin");
 		if (saving) {
 			expect(f.updateGroup.mock.calls[0]?.[3].aborted).toBe(true);
-			pending.resolve();
+			pending.resolve(true);
 			await settle();
 		}
 		f.company.store.set({ team: { ...f.company.store.get().team!, role: "owner", capabilities: team.capabilities } });

@@ -601,20 +601,30 @@ describe("reading the skill list", () => {
 			"skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n",
 			[`${LEDGER}/skills/triage/SKILL.md`]: "---\ndescription: Sort.\n---\n",
 		});
+		// The core lists a folder closed to the member empty.
 		closed.deny(`${LEDGER}/skills`);
 		expect(await loadSkillSuggestions(closed.folder, staff.id, signal())).toEqual([
 			{ name: "customer-refund", description: "Refund.", scope: "company" },
 		]);
 		expect(closed.folder.list).toHaveBeenCalledWith(`${LEDGER}/skills`, null, 100, expect.any(AbortSignal));
+		// A refused listing of the agent's folder offers the company's skills too.
+		const refused = company({ "skills/customer-refund/SKILL.md": "---\ndescription: Refund.\n---\n" });
+		refused.fail(
+			`${LEDGER}/skills`,
+			new CloudMemberFolderAccessDenied("Company folder access is refused (403)", 403),
+		);
+		expect(await loadSkillSuggestions(refused.folder, staff.id, signal())).toEqual([
+			{ name: "customer-refund", description: "Refund.", scope: "company" },
+		]);
 		// Never "no skills" for a failed listing: the composer keeps its last list and reads again.
 		const down = company();
 		down.fail("skills");
 		await expect(loadSkillSuggestions(down.folder, staff.id, signal())).rejects.toBeInstanceOf(
 			CloudMemberFolderError,
 		);
-		// Neither is the company's library closed to this member "no skills".
+		// Neither is a refused listing of the company's library "no skills".
 		const denied = company();
-		denied.deny("skills");
+		denied.fail("skills", new CloudMemberFolderAccessDenied("Company folder access is refused (403)", 403));
 		await expect(loadSkillSuggestions(denied.folder, null, signal())).rejects.toBeInstanceOf(
 			CloudMemberFolderAccessDenied,
 		);

@@ -106,6 +106,13 @@ const handler = createObjectGatewayHandler({
 		secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
 		requestTimeoutMs: 15_000,
 	}),
+	// Their follow-up (F2's P15) on another client: a failing follow-up never opens the commits' circuit.
+	memberFolderFollowUps: new SupabaseMemberCompanyAuthority({
+		projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+		publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+		secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+		requestTimeoutMs: 3_000,
+	}),
 	memberObservations: new MemberCompanyObservations(),
 	memberClientOrigins: JSON.parse(process.env.QORPERA_MEMBER_CLIENT_ORIGINS ?? "[]"),
 	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),

@@ -39,7 +39,7 @@ export class WebCompanyFolderRejectedError extends Error {
 /** A folder listing page; a company's agents or group chats fit in a few. */
 const LIST_PAGE = 1000;
 const MAX_LISTED = 10_000;
-/** Tries of a new folder whose name turned out to be taken (a folder the member may not read). */
+/** Tries of a new folder whose name turned out to be taken (by another writer since the listing). */
 const CREATE_TRIES = 3;
 /** Retries of a write or a delete when something changed under it between the read and the commit. */
 const RETRIES = 3;
@@ -152,9 +152,10 @@ export interface WebStateFolderCreation {
 	readonly failure: string;
 }
 
-/** Creates a state folder under a handle free in the member's listing. A member's listing leaves out folders they may
- * not read, so a free handle can still be taken: `exists` then takes the next handle, with a new key, at most three
- * tries in all. Answers the folder's path. */
+/** Creates a state folder under a handle free in the member's listing. Another writer can take a free handle after the
+ * listing: `exists` then takes the next handle, with a new key, at most three tries in all. (A folder the member may not
+ * read is usually closed to their writes too, so the core answers `denied` there, before `exists`.) Answers the
+ * folder's path. */
 export async function createStateFolder(
 	folder: WebMemberFolder,
 	creation: WebStateFolderCreation,
