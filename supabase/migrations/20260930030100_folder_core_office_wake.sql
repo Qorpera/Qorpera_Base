@@ -88,7 +88,9 @@ begin
 			and logical_operation_key like 'computer_start:%' and not requires_company_revision)
 		and not exists (select 1 from public.qorpera_run_operation_receipts where run_id = v_parent.id
 			and (status <> 'completed' or completed_at is null or jsonb_typeof(result) is distinct from 'object'
-				or (requires_company_revision and output_snapshot_id is null and proposal_id is null and company_path_proposal_id is null)));
+				-- A folder-v2 write's receipt names its folder commit (#803 Astra r1 F1).
+				or (requires_company_revision and output_snapshot_id is null and proposal_id is null and company_path_proposal_id is null
+					and folder_commit_id is null)));
 end $$;
 revoke all on function public.qorpera_folder_office_waiter_authorized(public.qorpera_runtime_office_start_waiters)
 	from public, anon, authenticated, service_role;

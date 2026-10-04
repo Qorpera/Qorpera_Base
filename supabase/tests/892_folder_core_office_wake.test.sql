@@ -499,6 +499,28 @@ begin
 		raise exception 'N: a held admission answers busy: %', v_answer; end if;
 end $$;
 
+-- O. A turn that also saved a company file (a completed receipt that needs a company revision and names its folder
+--    commit, as a folder-v2 write's does) still wakes its agent, and the wake is authorized.
+select pg_temp.reset_waiter();
+set session_replication_role = replica;
+insert into public.qorpera_run_operation_receipts
+select (jsonb_populate_record(null::public.qorpera_run_operation_receipts, to_jsonb(r) || jsonb_build_object(
+	'id', '89200000-0000-4000-8000-0000000000e9', 'logical_operation_key', 'company_write:o-save',
+	'requires_company_revision', true, 'folder_commit_id', extensions.gen_random_uuid()))).*
+from public.qorpera_run_operation_receipts as r where r.id = '89200000-0000-4000-8000-0000000000e1';
+set session_replication_role = origin;
+do $$
+declare v_answer jsonb := public.qorpera_folder_office_wakes_company('64800000-0000-4000-8000-000000000020', 16);
+begin
+	if v_answer ->> 'delivered' is distinct from '1' or (pg_temp.waiter()).state <> 'delivered'
+		or not public.qorpera_folder_wake_authorized((select wake from public.qorpera_wake_occurrences as wake
+			where wake.id = (pg_temp.waiter()).occurrence_id)) then
+		raise exception 'O: a turn that saved a company file still wakes its agent: %', v_answer; end if;
+end $$;
+set session_replication_role = replica;
+delete from public.qorpera_run_operation_receipts where id = '89200000-0000-4000-8000-0000000000e9';
+set session_replication_role = origin;
+
 -- E. A start whose turn failed is cancelled, not woken.
 set session_replication_role = replica;
 update public.qorpera_runtime_office_start_waiters set state = 'waiting', occurrence_id = null

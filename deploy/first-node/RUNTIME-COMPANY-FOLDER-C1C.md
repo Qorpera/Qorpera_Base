@@ -1726,7 +1726,8 @@ each `else`.
     gets `{name: "office_wakes", companyLimit: 16}`.
   - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
 - **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
-  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. The old check took
+  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. A folder-v2 write's
+  completed receipt counts as having its revision when it names its folder commit. The old check took
   the company row and every row `NOWAIT`. That would turn a screen heartbeat (the computer `FOR UPDATE`) into a refused
   tool call of the woken run.
 - **The wake source.** `'office-activation'` leaves the folder-v2 refusal lists of `qorpera_pin_wake_occurrence`,
@@ -1752,6 +1753,7 @@ each `else`.
   - L: a waiter whose agent lost its access to the computer is cancelled;
   - M: with the computer held `FOR UPDATE` (a screen heartbeat), the drain delivers at once;
   - N: the admission held past the budget also answers `busy`, and the waiter waits;
+  - O: a turn that also saved a company file (its write's receipt names its folder commit) still wakes its agent;
   - E: a start whose turn failed is cancelled, not woken;
   - F: only the service role lists and drains, and a page over 500 or a company limit over 40 is refused;
   - G: exactly the patched and new functions name the migration.
