@@ -1,5 +1,5 @@
 -- Company folder core, C1c-3l part 1 (the coordinator's audit P06c): an agent starts the Company Computer of a folder-v2
--- company (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.14; plan outputs/company-accounts/p06-office-folder-v2-plan.md).
+-- company (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.16; plan outputs/company-accounts/p06-office-folder-v2-plan.md).
 -- Builds on C1c-3j and C1c-3k (their body markers 20260930012000, 20260930019000 and 20260930019100).
 --
 -- Folder-v2 only (the founder's decision of 3 October): each patch is a folder-v2 branch, and the statement that was

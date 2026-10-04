@@ -673,8 +673,12 @@ export class FoundingView {
 			role: before?.seats.find((earlier) => earlier.userId === seat.userId)?.role ?? "",
 		}));
 		const ready = table.start?.companyReady === true;
+		const failed = !ready && table.start?.companySetup === "failed";
+		const firstRun = ready ? (table.start?.firstRun ?? null) : null;
 		const key = [
 			ready,
+			failed,
+			firstRun,
 			table.companyName,
 			...seats.map((seat) => `${seat.userId}:${seat.displayName}:${seat.role}`),
 		].join("\n");
@@ -695,7 +699,9 @@ export class FoundingView {
 						{ class: "founding-name" },
 						ready
 							? t("{name} has started", { name: table.companyName })
-							: t("{name} is starting", { name: table.companyName }),
+							: failed
+								? t("{name} could not be set up", { name: table.companyName })
+								: t("{name} is starting", { name: table.companyName }),
 					),
 					h(
 						"p",
@@ -723,6 +729,19 @@ export class FoundingView {
 						),
 					),
 				),
+				// The Co-Founder could not start on its own: say why, and how its founders start it.
+				firstRun === "waiting_for_login" || firstRun === "failed"
+					? notice(
+							"warn",
+							firstRun === "waiting_for_login"
+								? t(
+										"The Co-Founder has not started: no ChatGPT account could pay for its first run. Connect yours in Settings → My connections, then write to the Co-Founder in its thread.",
+									)
+								: t(
+										"The Co-Founder's first run did not start. Write to the Co-Founder in its thread to begin.",
+									),
+						)
+					: null,
 				h(
 					"div",
 					{ class: "founding-bar" },
@@ -732,7 +751,17 @@ export class FoundingView {
 								() => navigate({ name: "company", profileId: table.profileId, section: "home" }),
 								{ primary: true },
 							)
-						: spinner(t("Preparing {name}", { name: table.companyName })),
+						: failed
+							? notice(
+									"danger",
+									t(
+										"Setting up {name} failed. It waits for us to set it up again; nothing you did caused it.",
+										{
+											name: table.companyName,
+										},
+									),
+								)
+							: spinner(t("Preparing {name}", { name: table.companyName })),
 				),
 			);
 		});

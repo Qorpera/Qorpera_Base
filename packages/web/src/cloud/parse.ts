@@ -1,5 +1,4 @@
 import type {
-	CreatedCompanyResult,
 	HostedAccountEntitlement,
 	HostedAccountMatch,
 	HostedCompanyFile,
@@ -135,16 +134,6 @@ export function parseAccountEntitlement(value: unknown): HostedAccountEntitlemen
 		source: nonEmptyString(input.source, "account entitlement source", 64),
 		...(typeof input.updated_at === "string" ? { updatedAt: timestamp(input.updated_at, "entitlement time") } : {}),
 	};
-}
-
-export function parseCreatedCompany(value: unknown): CreatedCompanyResult {
-	const input = record(value, "created company");
-	const profile = parseProfile(input);
-	const state = input.bootstrap_state;
-	if (state === "queued" || state === "leased" || state === "completed" || state === "blocked") {
-		return { profile, bootstrapState: state };
-	}
-	return { profile };
 }
 
 function parseInvitationDelivery(value: unknown): HostedProfileInvitation["delivery"] {

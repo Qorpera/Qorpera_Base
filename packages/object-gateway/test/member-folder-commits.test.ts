@@ -4,7 +4,7 @@ import { writeAgentFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import { createMemberCors } from "../src/member-cors.ts";
-import { serveMemberFolderCommit } from "../src/member-folder-commits.ts";
+import { followUpMemberCommit, serveMemberFolderCommit } from "../src/member-folder-commits.ts";
 
 const environmentId = "34000000-0000-4000-8000-000000000020";
 const profileId = "34000000-0000-4000-8000-000000000010";
@@ -34,7 +34,16 @@ const agentText = (name = "Nora") =>
 	});
 
 /** The database and the store as the route sees them: every call recorded. */
-async function gateway(options: { member?: () => unknown; commit?: () => unknown } = {}) {
+async function gateway(
+	options: {
+		member?: () => unknown;
+		commit?: () => unknown;
+		followUp?: (call: number) => unknown;
+		/** No follow-up client: the route makes no follow-up. */
+		noFollowUps?: boolean;
+	} = {},
+) {
+	let followUps = 0;
 	const calls: { side: "member" | "publisher"; method: string; args: Record<string, unknown>; token?: string }[] = [];
 	const stored = new Map<string, Uint8Array>();
 	const manifests = new Map<string, string>();
@@ -91,6 +100,10 @@ async function gateway(options: { member?: () => unknown; commit?: () => unknown
 								replay: false,
 								units: (args.p_units as unknown[]).map((_, n) => ({ unit: n + 1, outcome: "saved" })),
 							};
+				case "qorpera_folder_follow_up_commit":
+					// Before P15 the function does not exist: PostgREST answers 404.
+					if (!options.followUp) throw new ObjectDependencyError(404);
+					return options.followUp(++followUps);
 			}
 			throw new Error(`unexpected ${method}`);
 		},
@@ -116,12 +129,15 @@ async function gateway(options: { member?: () => unknown; commit?: () => unknown
 		},
 	};
 	const server = createServer((request, response) => {
-		serveMemberFolderCommit(request, response, { authority: authority as never, store, replication }).catch(
-			(error: unknown) => {
-				response.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
-				response.end();
-			},
-		);
+		serveMemberFolderCommit(request, response, {
+			authority: authority as never,
+			...(options.noFollowUps ? {} : { followUps: authority as never }),
+			store,
+			replication,
+		}).catch((error: unknown) => {
+			response.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
+			response.end();
+		});
 	});
 	servers.push(server);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -165,7 +181,9 @@ describe("a member's change set to a folder-v2 company", () => {
 			token: memberToken,
 		});
 		// Every staging call and the commit went as that member, never as the platform.
-		for (const call of g.calls.filter((c) => c.side === "publisher"))
+		for (const call of g.calls.filter(
+			(c) => c.side === "publisher" && c.method !== "qorpera_folder_follow_up_commit",
+		))
 			expect(call.args.p_actor).toEqual({ kind: "member", userId });
 		const [commit] = g.commits();
 		// The member's key, in a namespace of its own: the platform's writers never use it.
@@ -357,6 +375,111 @@ describe("a member's change set to a folder-v2 company", () => {
 		);
 		expect(folderEntry.status).toBe(400);
 		expect(g.staged()).toEqual([]);
+	});
+
+	it("follows a saved commit up at once, one subject a call while the core says there is more", async () => {
+		const answers = [true, true, false].map((more) => ({
+			schema: "qorpera.folder-follow-up/v1",
+			subjectKind: "agent",
+			subjectId: agentId,
+			result: "converged",
+			more,
+		}));
+		const g = await gateway({ followUp: (n) => answers[n - 1] });
+		expect((await g.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		const followUps = g.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit");
+		expect(followUps).toHaveLength(3);
+		for (const call of followUps)
+			expect(call.args).toEqual({
+				p_environment_id: environmentId,
+				p_commit_id: "34000000-0000-4000-8000-0000000000c1",
+			});
+		// After the commit, never before.
+		expect(g.calls.findIndex((call) => call.method === "qorpera_folder_commit")).toBeLessThan(
+			g.calls.findIndex((call) => call.method === "qorpera_folder_follow_up_commit"),
+		);
+	});
+
+	it("keeps the follow-up a best effort: bounded, and never the member's failure", async () => {
+		const always = await gateway({
+			followUp: () => ({
+				schema: "qorpera.folder-follow-up/v1",
+				subjectKind: "agent",
+				subjectId: agentId,
+				result: "converged",
+				more: true,
+			}),
+		});
+		expect((await always.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(always.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toHaveLength(8);
+		// Before P15 the function is not there: the commit's answer still goes back.
+		const missing = await gateway();
+		expect((await missing.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(missing.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toHaveLength(1);
+		const failing = await gateway({
+			followUp: () => {
+				throw new ObjectDependencyError(409, true);
+			},
+		});
+		expect((await failing.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		// A commit that saved nothing has nothing to follow up.
+		const refused = await gateway({
+			commit: () => ({
+				schema: "qorpera.folder-commit/v1",
+				commitId: "34000000-0000-4000-8000-0000000000c1",
+				seq: null,
+				replay: false,
+				units: [{ unit: 1, op: "mkdir", path: "drafts", outcome: "refused", reason: "x" }],
+			}),
+			followUp: () => {
+				throw new Error("not expected");
+			},
+		});
+		expect((await refused.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(refused.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toEqual([]);
+	});
+
+	it("makes no follow-up without its own client, and frees the member's slot before following up", async () => {
+		const none = await gateway({
+			noFollowUps: true,
+			followUp: () => ({ schema: "qorpera.folder-follow-up/v1", more: false }),
+		});
+		expect((await none.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(none.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toEqual([]);
+		// While the first change set's follow-up runs, the member's next change set is taken, not refused with 429.
+		let release!: () => void;
+		const waiting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const slow = await gateway({
+			followUp: async (n) => {
+				if (n === 1) await waiting;
+				return { schema: "qorpera.folder-follow-up/v1", more: false };
+			},
+		});
+		const first = slow.send(request([{ op: "mkdir", path: "drafts" }]));
+		await expect
+			.poll(() => slow.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit").length)
+			.toBe(1);
+		expect((await slow.send(request([{ op: "mkdir", path: "drafts" }], "web:second-01"))).status).toBe(200);
+		release();
+		expect((await first).status).toBe(200);
+	});
+
+	it("bounds a follow-up by its time as well as its calls", async () => {
+		const calls: string[] = [];
+		const slow = {
+			publisher: async (method: string) => {
+				calls.push(method);
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				return { schema: "qorpera.folder-follow-up/v1", more: true };
+			},
+		};
+		// Eight such calls take 800 ms: a 150 ms budget stops well before, however busy the machine is.
+		const made = await followUpMemberCommit(slow as never, environmentId, version, new AbortController().signal, 150);
+		expect(made).toBeGreaterThanOrEqual(1);
+		expect(made).toBeLessThan(8);
+		expect(calls.length).toBe(made);
 	});
 
 	it("lets a member's browser send it across origins", () => {
