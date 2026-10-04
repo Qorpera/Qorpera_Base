@@ -12,5 +12,5 @@ The helper below implements the Gregorian leap-year rule for a year `y`:
 const isLeapYear = (y) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
 ```
 
-Pass a full four-digit year, such as `2024`. The helper returns `true` if
-that year is a leap year and `false` if it is not.
+Pass the full year, such as `2024` rather than `24`. The helper returns
+`true` if that year is a leap year and `false` if it is not.
