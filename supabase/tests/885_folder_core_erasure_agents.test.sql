@@ -155,7 +155,7 @@ begin
 	select count(*) into v_ops from public.qorpera_company_operations o join public.qorpera_company_rooms m on m.session_id = o.entity_id
 	where m.bound_staff_agent_id = '70700000-0000-4000-8000-0000000000a1' and o.operation_type = 'session_state';
 	r := pg_temp.erase(array['agents/nora', 'agents/groups/launch', 'rules/no-maria.md'], 'erase-agents-3');
-	if r -> 'erased' <> '{"agents":1,"groupChats":1,"todos":1,"workers":1,"routines":1,"rules":1}'::jsonb then
+	if r -> 'erased' <> '{"agents":1,"groupChats":1,"todos":1,"workers":1,"routines":1,"rules":1,"tables":0}'::jsonb then
 		raise exception 'The reply counts what was erased: %', r; end if;
 	select * into v_staff from public.qorpera_profile_staff where staff_agent_id = '70700000-0000-4000-8000-0000000000a1';
 	if (v_staff.display_name, v_staff.role, v_staff.charter) is distinct from ('Erased agent', 'Erased', 'Erased.')

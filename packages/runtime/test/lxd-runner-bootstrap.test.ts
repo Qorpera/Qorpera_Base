@@ -14,7 +14,7 @@ import {
 	runLxdNativeLoginBootstrap,
 	runLxdRunnerBootstrap,
 } from "@qorpera/runtime/lxd-runner-bootstrap";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
 const computeIdentityId = "90000000-0000-4000-8000-000000000001";
@@ -41,8 +41,23 @@ const fixtureState: IdentityRecoveryRuntimeState = {
 };
 
 afterEach(async () => {
+	vi.unstubAllGlobals();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
+
+const identityToken = "i".repeat(43);
+const publishableKey = "sb_publishable_bootstrapTestKey01";
+
+/** The holder's identity credential as the node host delivers it (G2-3). */
+function identityCredentialText(patch: Record<string, unknown> = {}): string {
+	return `${JSON.stringify({
+		schema: "qorpera.native-identity-credential/v1",
+		compute_identity_id: computeIdentityId,
+		credential: identityToken,
+		publishable_key: publishableKey,
+		...patch,
+	})}\n`;
+}
 
 /** The image's unit directory as its build leaves it: the five apt
  * self-update units masked. */
@@ -153,6 +168,7 @@ async function fixture(): Promise<{
 	] as const) {
 		await writeFile(join(paths.credentialSource, name), `${value}\n`, { mode: 0o600 });
 	}
+	await writeFile(join(paths.credentialSource, "qorpera-native-identity"), identityCredentialText(), { mode: 0o600 });
 	const escapedMount = paths.identityVolume.replaceAll(" ", "\\040");
 	await writeFile(paths.mountInfo, `42 1 0:99 / ${escapedMount} rw - virtiofs identity rw\n`);
 	return { root, paths, sharedGid };
@@ -198,6 +214,7 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${computeIdentityId}`,
 			"QORPERA_NATIVE_PROVIDER_HOST=0.0.0.0",
 			"QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE=10.41.0.1",
+			"QORPERA_NATIVE_LOGIN_GUEST=sign_in",
 			"QORPERA_NATIVE_PROVIDER_PORT=8083",
 			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",
 			"QORPERA_CODEX_PATH=/usr/local/bin/codex",
@@ -211,6 +228,12 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 	await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
 		mode: 0o600,
 	});
+	await writeFile(join(paths.credentialSource, "qorpera-native-identity"), identityCredentialText(), { mode: 0o600 });
+	await writeFile(
+		join(paths.credentialSource, "qorpera-native-identity-state"),
+		JSON.stringify({ ...fixtureState, keySha256: null, canInitialize: true }),
+		{ mode: 0o600 },
+	);
 	const escapedMount = paths.identityVolume.replaceAll(" ", "\\040");
 	await writeFile(paths.mountInfo, `42 1 0:99 / ${escapedMount} rw - virtiofs identity rw\n`);
 	return { root, paths };
@@ -553,6 +576,82 @@ describe("LXD native login guest bootstrap", () => {
 		).rejects.toThrow("unexpected entries");
 	});
 
+	it("reads its identity's recovery state from the state its gateway delivered, never from the database", async () => {
+		const { paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const fetcher = vi.fn<typeof fetch>();
+		vi.stubGlobal("fetch", fetcher);
+		const started: string[] = [];
+		await runLxdNativeLoginBootstrap({
+			paths,
+			expectedRootUid: uid,
+			expectedRootGid: gid,
+			nativeServiceIdentity: { uid, gid },
+			startService: async (service) => {
+				started.push(service);
+			},
+		});
+		expect(started).toEqual(["qorpera-native-login-provider-host.service"]);
+		expect(fetcher).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a state for another identity", "state", "Native identity authority differs"],
+		["a state that is not one", "state-shape", "Invalid recovery record fields"],
+		["no state", "no-state", "unexpected entries"],
+		["an identity credential for another identity", "identity", "native identity credential is invalid"],
+		["an identity credential shared with the bridge", "shared", "must be independent"],
+		["no login purpose", "purpose", "unexpected settings"],
+		["an unknown login purpose", "unknown-purpose", "does not match the runner boundary"],
+	])("refuses %s before key initialization or provider sign-in", async (_name, kind, message) => {
+		const { paths } = await loginFixture();
+		const state = join(paths.credentialSource, "qorpera-native-identity-state");
+		const identity = join(paths.credentialSource, "qorpera-native-identity");
+		if (kind === "state")
+			await writeFile(
+				state,
+				JSON.stringify({ ...fixtureState, computeIdentityId: "90000000-0000-4000-8000-000000000099" }),
+				{ mode: 0o600 },
+			);
+		if (kind === "state-shape")
+			await writeFile(state, JSON.stringify({ ...fixtureState, extra: 1 }), { mode: 0o600 });
+		if (kind === "no-state") await unlink(state);
+		if (kind === "identity")
+			await writeFile(
+				identity,
+				identityCredentialText({ compute_identity_id: "90000000-0000-4000-8000-000000000099" }),
+				{
+					mode: 0o600,
+				},
+			);
+		if (kind === "shared")
+			await writeFile(identity, identityCredentialText({ credential: "c".repeat(43) }), { mode: 0o600 });
+		if (kind === "purpose" || kind === "unknown-purpose")
+			await writeFile(
+				paths.nativeProviderEnvironment,
+				(await readFile(paths.nativeProviderEnvironment, "utf-8")).replace(
+					"QORPERA_NATIVE_LOGIN_GUEST=sign_in\n",
+					kind === "purpose" ? "" : "QORPERA_NATIVE_LOGIN_GUEST=account\n",
+				),
+				{ mode: 0o600 },
+			);
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				expectedRootUid: process.getuid?.() ?? 0,
+				expectedRootGid: process.getgid?.() ?? 0,
+				nativeServiceIdentity: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow(message);
+		expect(started).toEqual([]);
+		await expect(readFile(paths.identityMasterKey)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
 	it("rejects a recovery-authority CA that differs from the pinned bootstrap", async () => {
 		const { paths } = await loginFixture();
 		await writeFile(join(paths.credentialSource, "qorpera-identity-recovery-ca"), "not the pinned CA\n", {
@@ -693,6 +792,69 @@ describe("governed native company guest bootstrap", () => {
 		const paths = await companyFixture();
 		await writeFile(join(paths.runnerHomeDirectory, "unreconciled.json"), "uncertain outcome");
 		await expect(startCompanyFixture(paths, [])).rejects.toThrow("operator reconciliation");
+	});
+
+	it("reads its identity's recovery state through its identity credential, never with the service key", async () => {
+		const paths = await vaultCompanyFixture();
+		const fetcher = vi.fn<typeof fetch>(
+			async () =>
+				new Response(JSON.stringify(fixtureState), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetcher);
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await runLxdRunnerBootstrap({
+			paths,
+			expectedRootUid: uid,
+			expectedRootGid: gid,
+			serviceIdentity: { uid, gid },
+			nativeServiceIdentity: { uid, gid },
+			startService: async (service) => {
+				started.push(service);
+			},
+		});
+		expect(started).toHaveLength(2);
+		expect(fetcher).toHaveBeenCalledOnce();
+		const [url, init] = fetcher.mock.calls[0]!;
+		expect(String(url)).toBe("https://project.test/rest/v1/rpc/qorpera_native_identity_call");
+		expect(JSON.parse(String(init?.body))).toEqual({
+			p_compute_identity_id: computeIdentityId,
+			p_credential: identityToken,
+			p_name: "qorpera_identity_recovery_runtime_state",
+			p_args: { p_compute_identity_id: computeIdentityId },
+		});
+		expect(new Headers(init?.headers).get("apikey")).toBe(publishableKey);
+		expect(JSON.stringify(init)).not.toContain("service-key-test");
+	});
+
+	it.each([
+		["no identity credential", undefined, "unexpected entries"],
+		[
+			"one for another identity",
+			identityCredentialText({ compute_identity_id: computeIdentityId.replace(/1$/, "9") }),
+			"is invalid",
+		],
+		["one with an extra field", identityCredentialText({ extra: true }), "is invalid"],
+		["one with the service key", identityCredentialText({ publishable_key: "service-key-test" }), "is invalid"],
+		["one shared with the bridge", identityCredentialText({ credential: "c".repeat(43) }), "must be independent"],
+		[
+			"one shared with the object gateway",
+			identityCredentialText({ credential: "q".repeat(43) }),
+			"must be independent",
+		],
+		["one that is not JSON", `${identityToken}\n`, "is invalid"],
+	])("refuses %s before any service starts", async (_name, text, message) => {
+		const paths = await companyFixture();
+		const identity = join(paths.credentialSource, "qorpera-native-identity");
+		if (text === undefined) await unlink(identity);
+		else await writeFile(identity, text, { mode: 0o600 });
+		const started: string[] = [];
+		await expect(startCompanyFixture(paths, started)).rejects.toThrow(message);
+		expect(started).toEqual([]);
 	});
 
 	it("rejects mismatched binary pins and shared native credentials", async () => {
