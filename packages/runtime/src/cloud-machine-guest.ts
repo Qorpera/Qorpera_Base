@@ -103,7 +103,8 @@ function roots(ports: MachineGuestPorts) {
 		replies: join(runtime, "replies"),
 		identity: join(runtime, "machine.json"),
 		lease: join(runtime, "lease.json"),
-		/** The boot's last stop that saw its programs stopped (stop-commands). */
+		/** The boot's last stop (stop-commands), kept before it is issued, and whether it is known to have ended the work
+		 * outside the commands. */
 		stop: join(state, "stop.json"),
 	};
 }
@@ -530,8 +531,29 @@ const COMMAND_PROCESSES_READ = 4096;
  * oldest 64 open ones), so the reply stays within the executor's 64 KiB. With more running, the looks page through them
  * all: each look starts after the last command the one before measured (its cursor). */
 export const MACHINE_GUEST_RUNNING_MEASURED = 256;
-/** The ended commands' output tails share this many bytes in one reply; each keeps at most 2000. */
+/** The ended commands' output tails share this many bytes of one reply, as JSON writes them (an escaped control
+ * character takes six); each takes at most 2000. With a full page of running commands and 64 ended ones, the reply
+ * stays under the executor's 64 KiB. */
 const ENDED_TAIL_BUDGET = 16384;
+/** The units whose stop ends the work outside the commands. */
+const OUTSIDE_UNITS = ["docker.service", "containerd.service"];
+
+/** The bytes a text takes in a JSON reply, its quotes aside. */
+function jsonBytes(text: string): number {
+	return Buffer.byteLength(JSON.stringify(text)) - 2;
+}
+/** The longest end of a text that takes at most `budget` bytes in a JSON reply. */
+function tailWithin(text: string, budget: number): string {
+	if (jsonBytes(text) <= budget) return text;
+	let low = 0,
+		high = text.length;
+	while (low < high) {
+		const middle = (low + high) >> 1;
+		if (jsonBytes(text.slice(middle)) <= budget) high = middle;
+		else low = middle + 1;
+	}
+	return text.slice(low);
+}
 
 async function systemFile(ports: MachineGuestPorts, path: string): Promise<string> {
 	return (ports.readSystemFile ?? ((file: string) => readFile(file, "utf8")))(path);
@@ -629,7 +651,7 @@ export async function observeMachine(
 	for (const commandId of commandIds) {
 		let current: CloudMachineCommandReceipt;
 		try {
-			// A read takes at least 4 bytes; with less of the budget left, the tail is left out below.
+			// A read takes at least 4 bytes; below, the tail is cut to what is left of the budget as JSON writes it.
 			current = await receipt(ports, guest, uuid(commandId), {
 				tail: true,
 				limit: Math.max(4, Math.min(2000, tailBytes)),
@@ -643,8 +665,8 @@ export async function observeMachine(
 			throw error;
 		}
 		if (TERMINAL.has(current.state)) {
-			const outputTail = tailBytes >= 4 ? current.output : "";
-			tailBytes -= Buffer.byteLength(outputTail);
+			const outputTail = tailWithin(current.output, Math.max(0, Math.min(2000, tailBytes)));
+			tailBytes -= jsonBytes(outputTail);
 			const stopped = (await readCompletion(ports, commandId))?.stopped === true;
 			ended.push({
 				commandId,
@@ -670,9 +692,8 @@ export async function observeMachine(
 		ownUsec += await unitCgroup(ports, unit)
 			.then((directory) => cgroupUsec(ports, directory))
 			.catch(() => 0);
-	const stop = (await missing(() => readJson(roots(ports).stop, 4096)).catch(() => undefined)) as
-		| Record<string, unknown>
-		| undefined;
+	const stop = await readStop(ports, guest.bootId);
+	const stopId = stop && (await settleStop(ports, stop)) ? stop.stopId : null;
 	return {
 		schema: "qorpera.machine-observation/v2",
 		machineId: guest.machineId,
@@ -686,23 +707,88 @@ export async function observeMachine(
 		running,
 		next,
 		ended,
-		// The last stop of this boot that saw the commands, Docker and containerd stopped: what ran outside the commands
-		// ended with it, however the stop went on (a power-off that failed, then a wake).
-		stopId:
-			stop?.schema === "qorpera.machine-stop/v1" &&
-			stop.bootId === guest.bootId &&
-			typeof stop.stopId === "string" &&
-			UUID.test(stop.stopId)
-				? stop.stopId
-				: null,
+		// The last stop of this boot, once Docker and containerd stopped since it was issued: what ran outside the
+		// commands ended with it, however the stop went on (a power-off that failed, then a wake).
+		stopId,
 	};
+}
+
+interface StopRecord {
+	schema: "qorpera.machine-stop/v1";
+	bootId: string;
+	stopId: string;
+	/** When each outside unit last became inactive before the stop (systemd's monotonic clock), where systemd said. */
+	before: Record<string, number>;
+	/** Each outside unit was seen inactive, or to have become inactive, since. */
+	done: boolean;
+}
+/** The boot's kept stop, if any. */
+async function readStop(ports: MachineGuestPorts, bootId: string): Promise<StopRecord | undefined> {
+	const value = (await missing(() => readJson(roots(ports).stop, 4096)).catch(() => undefined)) as
+		| Record<string, unknown>
+		| undefined;
+	const before = value?.before as Record<string, unknown> | undefined;
+	if (
+		value?.schema !== "qorpera.machine-stop/v1" ||
+		value.bootId !== bootId ||
+		typeof value.stopId !== "string" ||
+		!UUID.test(value.stopId) ||
+		typeof value.done !== "boolean" ||
+		!before ||
+		typeof before !== "object" ||
+		Object.entries(before).some(([unit, at]) => !OUTSIDE_UNITS.includes(unit) || !Number.isSafeInteger(at))
+	)
+		return undefined;
+	return value as unknown as StopRecord;
+}
+/** Each outside unit's state, and when it last became inactive, as systemd shows them. */
+async function outsideUnits(ports: MachineGuestPorts): Promise<Map<string, { state: string; inactiveAt: number }>> {
+	const shown = await (ports.system ?? system)("/usr/bin/systemctl", [
+		"show",
+		...OUTSIDE_UNITS,
+		"--property=Id,ActiveState,InactiveEnterTimestampMonotonic",
+	]);
+	const units = new Map<string, { state: string; inactiveAt: number }>();
+	for (const block of shown.split(/\n\s*\n/)) {
+		const fields = Object.fromEntries(
+			block
+				.trim()
+				.split("\n")
+				.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+		);
+		const inactiveAt = Number(fields.InactiveEnterTimestampMonotonic ?? 0);
+		if (OUTSIDE_UNITS.includes(fields.Id) && Number.isSafeInteger(inactiveAt))
+			units.set(fields.Id, { state: String(fields.ActiveState), inactiveAt });
+	}
+	return units;
+}
+/** Whether the kept stop has ended the work outside the commands: each outside unit is inactive now, or became
+ * inactive after the stop was issued (it may have been started again since). Known once, it is kept so. */
+async function settleStop(ports: MachineGuestPorts, stop: StopRecord): Promise<boolean> {
+	if (stop.done) return true;
+	const units = await outsideUnits(ports).catch(() => undefined);
+	if (
+		!units ||
+		!OUTSIDE_UNITS.every((unit) => {
+			const now = units.get(unit);
+			const before = stop.before[unit];
+			return (
+				now !== undefined &&
+				(["inactive", "failed"].includes(now.state) || (before !== undefined && now.inactiveAt > before))
+			);
+		})
+	)
+		return false;
+	await writeJson(roots(ports).stop, { ...stop, done: true });
+	return true;
 }
 
 /** The machine's stop, from the executor once SQL granted it: each command still running in this boot is marked as
  * stopped by it (so its end, whenever and however the executor next sees it, is the stop's), then the commands, Docker
- * and containerd are stopped and the disk synced. A mark on a command that still runs afterwards is taken back. Once
- * none of them shows active, the stop is kept with an id of its own (stopId), which every later look of this boot
- * reports, so SQL hears once that the work outside the commands ended, however the stop goes on. */
+ * and containerd are stopped and the disk synced. A mark on a command that still runs afterwards is taken back. The
+ * stop itself is kept with an id of its own before it is issued; once Docker and containerd have stopped since (now,
+ * or seen by a later look of this boot, when they took longer than systemctl waited), every look of the boot reports
+ * it (stopId), so SQL hears once that the work outside the commands ended, however the stop goes on. */
 export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
 	requireRoot(ports);
 	const guest = await identity(ports);
@@ -716,17 +802,17 @@ export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
 		await retain(commandPaths(ports, name).stopped, { commandId: name });
 		marked.push(name);
 	}
-	const units = [PATHS.slice, "docker.service", "containerd.service"];
-	await (ports.system ?? system)("/usr/bin/systemctl", ["stop", ...units]).catch(() => undefined);
-	// Once systemd shows none of them active, the stop is kept for this boot (what ran outside the commands ended).
-	const states = await (ports.system ?? system)("/usr/bin/systemctl", ["show", ...units, "--property=ActiveState"])
-		.then((shown) => shown.split("\n").filter((line) => line.startsWith("ActiveState=")))
-		.catch(() => []);
-	const stopId =
-		states.length === units.length && states.every((line) => ["inactive", "failed"].includes(line.slice(12)))
-			? randomUUID()
-			: null;
-	if (stopId) await writeJson(roots(ports).stop, { schema: "qorpera.machine-stop/v1", bootId: guest.bootId, stopId });
+	const before = await outsideUnits(ports).catch(() => new Map<string, { state: string; inactiveAt: number }>());
+	const stop: StopRecord = {
+		schema: "qorpera.machine-stop/v1",
+		bootId: guest.bootId,
+		stopId: randomUUID(),
+		before: Object.fromEntries([...before].map(([unit, now]) => [unit, now.inactiveAt])),
+		done: false,
+	};
+	await writeJson(roots(ports).stop, stop);
+	await (ports.system ?? system)("/usr/bin/systemctl", ["stop", PATHS.slice, ...OUTSIDE_UNITS]).catch(() => undefined);
+	const done = await settleStop(ports, stop);
 	const stopped: string[] = [];
 	for (const commandId of marked) {
 		const intent = (await readIntent(ports, commandId))!;
@@ -741,7 +827,8 @@ export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
 		schema: "qorpera.machine-commands-stopped/v1",
 		machineId: guest.machineId,
 		bootId: guest.bootId,
-		stopId,
+		// Null while Docker or containerd is still stopping: a later look reports it once they stopped.
+		stopId: done ? stop.stopId : null,
 		stopped,
 	};
 }

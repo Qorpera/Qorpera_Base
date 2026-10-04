@@ -37,6 +37,8 @@ async function machine() {
 	 * (the others it ends cleanly, and systemd forgets them). */
 	const survivors = new Set<string>();
 	const failing = new Set<string>();
+	/** What else a stop of the commands' slice (with Docker and containerd) changes. */
+	const onStop: (() => void)[] = [];
 	const units = new Map<string, string>([
 		["qorpera.slice", "ControlGroup=/qorpera.slice\nMainPID=0\n"],
 		["lxd-agent.service", "ControlGroup=/system.slice/lxd-agent.service\nMainPID=90\n"],
@@ -59,7 +61,8 @@ async function machine() {
 				.filter((arg) => !arg.startsWith("--"))
 				.map(
 					(unit) =>
-						units.get(unit) ?? "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\n",
+						units.get(unit) ??
+						`Id=${unit}\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\n`,
 				)
 				.join("\n");
 		else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && args.includes("qorpera-machine.slice")) {
@@ -72,6 +75,7 @@ async function machine() {
 						);
 					else units.delete(unit);
 				}
+			for (const change of onStop) change();
 		} else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && units.has(args[1]))
 			units.set(
 				args[1],
@@ -127,6 +131,7 @@ async function machine() {
 		files,
 		survive: (commandId: string) => survivors.add(`qorpera-machine-command-${commandId}.service`),
 		failOnStop: (commandId: string) => failing.add(`qorpera-machine-command-${commandId}.service`),
+		onStop: (change: () => void) => onStop.push(change),
 		machineId,
 		request,
 		reboot: () => {
@@ -368,22 +373,67 @@ describe("machine command guest", () => {
 		expect((await observeMachine([], m.ports)).stopId).toBeNull();
 	});
 
-	it("keeps no stop while what it stops still shows active", async () => {
+	it("keeps a stop Docker is still ending, and reports it once Docker has stopped since", async () => {
 		const m = await machine();
 		await prepareMachineGuest(m.machineId, 1, m.ports);
 		await refreshMachineLease(900000, m.ports);
-		// Docker does not stop.
-		m.units.set("docker.service", "LoadState=loaded\nActiveState=deactivating\nSubState=stop-sigterm\n");
+		const docker = (state: string, inactiveAt: number) =>
+			m.units.set(
+				"docker.service",
+				`Id=docker.service\nLoadState=loaded\nActiveState=${state}\nInactiveEnterTimestampMonotonic=${inactiveAt}\n`,
+			);
+		// Docker runs (last inactive before it started) and is still stopping when systemctl stops waiting. No command runs.
+		docker("active", 100);
+		m.onStop(() => docker("deactivating", 100));
 		expect(await stopMachineCommands(m.ports)).toMatchObject({ stopId: null, stopped: [] });
+		// The stop was kept before it was issued, not yet as done; a look does not report it while Docker still stops.
+		const kept = JSON.parse(await readFile(join(m.root, "var", "stop.json"), "utf8"));
+		expect(kept).toEqual({
+			schema: "qorpera.machine-stop/v1",
+			bootId: expect.any(String),
+			stopId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+			before: { "docker.service": 100, "containerd.service": 0 },
+			done: false,
+		});
 		expect((await observeMachine([], m.ports)).stopId).toBeNull();
-		// Nor when systemd cannot be asked.
-		m.units.delete("docker.service");
-		m.system
-			.mockImplementationOnce(async () => "")
-			.mockImplementationOnce(async () => {
-				throw new Error("MACHINE_GUEST_SERVICE_UNCONFIRMED");
-			});
+		// Docker stopped, and was even started again before the next look (the power-off failed, a member woke the
+		// machine): that look reports the stop, and every later one of the boot.
+		docker("active", 900);
+		expect((await observeMachine([], m.ports)).stopId).toBe(kept.stopId);
+		docker("inactive", 900);
+		expect((await observeMachine([], m.ports)).stopId).toBe(kept.stopId);
+		expect(JSON.parse(await readFile(join(m.root, "var", "stop.json"), "utf8"))).toMatchObject({ done: true });
+		// Another boot never reports it.
+		m.reboot();
+		await prepareMachineGuest(m.machineId, 2, m.ports);
+		expect((await observeMachine([], m.ports)).stopId).toBeNull();
+	});
+
+	it("never reports a stop Docker did not take, nor one systemd could not be asked about", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		m.units.set(
+			"docker.service",
+			"Id=docker.service\nLoadState=loaded\nActiveState=active\nInactiveEnterTimestampMonotonic=100\n",
+		);
 		expect(await stopMachineCommands(m.ports)).toMatchObject({ stopId: null });
+		expect((await observeMachine([], m.ports)).stopId).toBeNull();
+		// systemd does not answer before the stop: only units inactive now count.
+		m.system.mockImplementationOnce(async () => {
+			throw new Error("MACHINE_GUEST_SERVICE_UNCONFIRMED");
+		});
+		expect(await stopMachineCommands(m.ports)).toMatchObject({ stopId: null });
+		m.units.set(
+			"docker.service",
+			"Id=docker.service\nLoadState=loaded\nActiveState=active\nInactiveEnterTimestampMonotonic=900\n",
+		);
+		expect((await observeMachine([], m.ports)).stopId).toBeNull();
+		m.units.set(
+			"docker.service",
+			"Id=docker.service\nLoadState=loaded\nActiveState=inactive\nInactiveEnterTimestampMonotonic=950\n",
+		);
+		expect((await observeMachine([], m.ports)).stopId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
 	});
 
 	it("measures every running command, also the ones beyond the executor's list, a page of 256 a look", async () => {
@@ -429,6 +479,52 @@ describe("machine command guest", () => {
 		expect(tails.slice(0, 8)).toEqual(Array(8).fill(2000));
 		expect(tails.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThanOrEqual(16384);
 		expect(tails.at(-1)).toBe(0);
+	});
+
+	it("keeps the whole reply within the executor's 64 KiB: escaped tails, 64 ended commands, a full running page", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		const ended: string[] = [];
+		for (let n = 0; n < 64; n++) {
+			const id = await m.request(`printf x; exit ${n + 100}`);
+			await startMachineCommand(id, m.ports);
+			m.exit(id, n + 100);
+			ended.push(id);
+		}
+		// 300 running commands, each with the largest counts the executor takes.
+		const slice = "/sys/fs/cgroup/qorpera.slice/qorpera-machine.slice";
+		m.files.set("/proc/7/io", "rchar: 4503599627370495\nwchar: 4503599627370495\n");
+		for (let n = 0; n < 300; n++) {
+			const group = `${slice}/qorpera-machine-command-${randomUUID()}.service`;
+			m.files.set(`${group}/cpu.stat`, `usage_usec ${Number.MAX_SAFE_INTEGER}\n`);
+			m.files.set(`${group}/cgroup.procs`, "7\n");
+		}
+		// Every log ends in escape characters, which JSON writes as six bytes each.
+		const ports: MachineGuestPorts = {
+			...m.ports,
+			readLog: async (options) => ({
+				output: "\u001b".repeat(Math.min(2000, options.read.limit ?? 2000)),
+				truncated: true,
+				log: { offset: 0, nextOffset: 2000, totalBytes: 2000, limitBytes: 67108864, limitReached: false },
+			}),
+		};
+		const nonce = randomUUID();
+		expect(await runMachineGuestCli([nonce, "observe", ended.join(","), "-"], ports)).toBe(0);
+		const text = await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8");
+		const reply = JSON.parse(text);
+		expect(reply.running).toHaveLength(256);
+		expect(reply.running[0].ioBytes).toBe(9007199254740990);
+		expect(reply.ended).toHaveLength(64);
+		// 333 escapes (1998 bytes) a tail until the tails' 16 KiB is spent.
+		expect(reply.ended[0].outputTail).toBe("\u001b".repeat(333));
+		expect(
+			reply.ended.reduce(
+				(sum: number, item: { outputTail: string }) => sum + Buffer.byteLength(JSON.stringify(item.outputTail)) - 2,
+				0,
+			),
+		).toBeLessThanOrEqual(16384);
+		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(65536);
 	});
 
 	it("answers every command-line call in its own reply file, a refusal only by its code", async () => {
