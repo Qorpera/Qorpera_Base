@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { SupabaseNativeProviderControlPlane } from "@qorpera/runtime/cloud-native-provider-service";
 import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ const runs: CloudNativeToolRun[] = [];
 afterEach(() => {
 	for (const run of runs.splice(0)) run.close();
 	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 it("calls the service-only authority RPC with a closed host binding", async () => {
@@ -161,12 +163,20 @@ it("bounds an uncooperative success-body read and cancels the stream", async () 
 		"SYNTHETIC_SERVICE_KEY",
 		request,
 	);
+	// A late answer is asked again within the authority window (control calls, 4 Oct 2026): five attempts of 5 s, each
+	// cancelled. Both clocks move together.
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
 	const rejected = expect(CloudNativeToolRun.open(binding, control, new AbortController().signal)).rejects.toThrow(
 		"Cloud tool authority unavailable",
 	);
-	await vi.advanceTimersByTimeAsync(5000);
+	for (let step = 0; step < 130; step += 1) {
+		now += 250;
+		await vi.advanceTimersByTimeAsync(250);
+	}
 	await rejected;
-	expect(cancel).toHaveBeenCalledTimes(1);
+	expect(cancel).toHaveBeenCalledTimes(5);
+	expect(request).toHaveBeenCalledTimes(5);
 	expect(vi.getTimerCount()).toBe(0);
 });
 
