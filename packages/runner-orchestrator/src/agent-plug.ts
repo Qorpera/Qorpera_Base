@@ -190,10 +190,12 @@ function plugWith(
 		child.on("error", () => finish(new Error("AGENT_PLUG_UNAVAILABLE")));
 		child.on("close", (status) => {
 			if (status !== 0) {
-				// The tool's own refusal is one line, which names machines and addresses: only its code goes on. A
-				// crash (a traceback: no lock, no group, a full disk) is a failure, not a refusal.
+				// The tool's own refusal is one line with exit status 1, which names machines and addresses: only its
+				// code goes on. A crash (a traceback: no lock, no group, a full disk), a kill or a tool that could not
+				// start is a failure, not a refusal.
 				const text = Buffer.concat(err).toString("utf8");
-				if (text.includes("Traceback (most recent call last):")) return finish(new Error("AGENT_PLUG_FAILED"));
+				if (status !== 1 || text.includes("Traceback (most recent call last):"))
+					return finish(new Error("AGENT_PLUG_FAILED"));
 				const why = text.trim().split("\n").at(-1) ?? "";
 				const refusal = PLUG_REFUSALS.find(([words]) => words.test(why))?.[1];
 				return finish(new Error(refusal ? `AGENT_PLUG_REFUSED:${refusal}` : "AGENT_PLUG_REFUSED"));

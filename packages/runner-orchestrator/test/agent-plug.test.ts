@@ -235,7 +235,9 @@ describe("running the plug tool", () => {
 		controller.abort();
 		await expect(pending).rejects.toThrow("AGENT_PLUG_ABORTED");
 		const missing = createAgentPlug(join(hanging.root, "missing.py"));
-		await expect(missing(claim, never())).rejects.toThrow("AGENT_PLUG_REFUSED");
+		await expect(missing(claim, never())).rejects.toThrow(/^AGENT_PLUG_FAILED$/);
+		const killed = await tool("os.kill(os.getpid(), 9)");
+		await expect(createAgentPlug(killed.path)(claim, never())).rejects.toThrow(/^AGENT_PLUG_FAILED$/);
 		const noPython = createAgentPlug(hanging.path, join(hanging.root, "no-python"));
 		await expect(noPython(claim, never())).rejects.toThrow("AGENT_PLUG_UNAVAILABLE");
 	});
