@@ -1192,10 +1192,11 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   reconciler reports those after its pass. A run the kernel refuses for want of authority (42501 from the wake's pin
   trigger) undoes the admission and the insert, suspends the routine and tells its member once, as the legacy tick
   does (`suspended`).
-- The list leaves out routines already past their expiry or at their occurrence limit (819 §8), which the lifecycle
-  sweep closes. A routine whose next retry would fall after its expiry is still listed, and answered `ended` every
-  30 s, until the sweep closes it. A raised 42501 (a missing fence or admission row) reaches the orchestrator as HTTP
-  401, which the reconciler reports like any failure; only a broken `folder-v2` company shows it.
+- The list leaves out routines at their occurrence limit (819 §8). Since 20260930027000 it lists those past their
+  expiry, which the restore ends (below). A routine whose next retry would fall after its expiry is still listed, and
+  answered `ended` every 30 s, until its expiry passes and the restore ends it. A raised 42501 (a missing fence or
+  admission row) reaches the orchestrator as HTTP 401, which the reconciler reports like any failure; only a broken
+  `folder-v2` company shows it.
 - **`qorpera_ensure_dynamic_routine_run`** refuses a `folder-v2` routine (0A000) as its first line. It takes no fence
   and no ranks, and none of its callers reaches `folder-v2`: the tick skips it, and the agent tools refuse it.
 - **The runner-orchestrator edge function** has two new actions, `folder_dynamic_routines` and
@@ -1211,6 +1212,21 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   stays `queued`, and the list skips the routine (its run is pending). Like the legacy tick, the restore inserts the
   wake even when the company has no computer hours left; P28's materializer holds it ("Waiting for computer hours"),
   as routine firing's deferral does before admission.
+- **Expiry (migration 20260930027000, test 889).** The legacy expiry sweep (`qorpera_expire_cloud_routines`) ran only
+  inside the Company File drain, which P28 took out of the reconcile RPC. So the tick also ends `folder-v2` routines:
+  - The list also names any `folder-v2` routine, of any origin and trigger, that is active or paused and past its
+    `expires_at`, paused company included. A company being deleted is left to its purge (C1c-3g: effects
+    refuse).
+  - The restore ends such a routine first: the company row `KEY SHARE`, the routine `FOR NO KEY UPDATE SKIP LOCKED`,
+    then `status = 'expired'`. It answers `ended`, or `changed` if the routine was extended, its end removed,
+    retired or concluded meanwhile. The status triggers record whether it was active, and cancel a paused routine's
+    queued runs. A routine held by a save answers `busy`, and the next pass ends it.
+  - The legacy sweep has no caller now, so a `snapshot-v1` routine no longer expires; none remains.
+  - Known: a later save of the routine's file revives it while the file still says `status: active` (F2's rule, test
+    708 §4), and the next pass expires it again, until C2's queue writes the platform's status into the file.
+  - An expired routine leaves the schedule heads, so the scheduler stops offering its slots, which the lifecycle
+    trigger would refuse.
+  - The routine file keeps its status until core C2's queue writes platform statuses into files (STATE "Status").
 
 ### 6.10 C1c-3g as built: deletion drains the folder fence (migration 20260930015000, test 828)
 
@@ -1261,12 +1277,13 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
 ### 6.11 C1c-3k part 1 as built: screens, restarts and power-off (migration 20260930019000, test 894)
 
 The coordinator's P06b, first of two PRs (plan `outputs/company-accounts/p06-office-folder-v2-plan.md`; the PR lists the
-33 callers of the provider's assertion and their locks after 3j). Folder-v2 only, by the founder's decision of 3 October: each patch is a
-folder-v2 branch, and the statement that was there before stays untouched in its `else` until snapshot-v1 is removed.
+33 callers of the provider's assertion and their locks after 3j). Folder-v2 only, by the founder's decision of 3
+October: each patch is a folder-v2 branch, and the statement that was there before stays untouched in its `else` until
+snapshot-v1 is removed.
 
 | Path | Before (on folder-v2) | Now |
 |---|---|---|
-| The three successor activations (restart, reset, host reboot) | status call (the office) first, then the activation's prelude: the start's requester and agent after the office | `qorpera_folder_office_enter_successor(request)`: 3j's prelude for the activation's start before the status call |
+| The three successor activations (restart, reset, host reboot) | the status call (the office) first, then the activation's prelude: the start's people after the office | `qorpera_folder_office_enter_successor(request)`: 3j's prelude for the activation's start, first |
 | Restart surfaces, shared surface, screen v1, disposal | `path_gateway_version = 1` gates: every restart path, every screen heartbeat, the agent's screen tool and disposal refused | also a ready folder-v2 Company File; the restart gate opens only with the successors ordered |
 | Screen event cleanup, observation retention, disposal, `member_agent_office` 'new', the office power-off (`suspend_runtime_node_machine`) | gc fence | machine fence (the folder fence and rank 0 `KEY SHARE`); the rest as before |
 | A member's start status | 3j's prelude, then the office, member and intent `FOR SHARE` | plain reads: a poll never waits for a folder stop |
@@ -1288,9 +1305,12 @@ folder-v2 branch, and the statement that was there before stays untouched in its
   operator's disposal (a signed delete document). Both are one-line changes of the same shape as the tested ones.
 - **Open after part 1 (review r1), for part 2:**
   - A new computer for an agent (and 3j's first registration) no longer waits for another agent's hire or return. If
-    both run together, the new computer can miss the hired agent's default access row, and placement then skips that
-    computer for the agent. Part 2 has 'new' and registration share the company's staff rows (rank 2) before the seat
-    lock. Taking the seat lock in the hire's office walk instead would make a cycle, since 'new' takes staff after it.
+    both run together, the new computer can miss the hired agent's default access row. Placement then skips that
+    computer for the agent, or, after a first registration, answers "denied". Part 2 (§6.12) makes the hire's office
+    walk take the seat lock before the computers. A new hire's row is inserted, so no row lock reaches it; the seat lock
+    is what meets it. 'new' and registration share the company's agents KEY SHARE before their seat lock. There is no
+    cycle: after the seat lock they take agents only KEY SHARE (the foreign key), which a hire's NO KEY UPDATE never
+    blocks.
   - The shared-surface gate makes `office_screen_browser_grant` reachable; it shares the viewer's member row after the
     office (`assert_runtime_office_viewer`). That is not a live cycle before C1c-3l's pin.
 - **Not in part 1 (part 2, 20260930019100):**
@@ -1301,9 +1321,61 @@ folder-v2 branch, and the statement that was there before stays untouched in its
   - the viewers and the screen's browser grant;
   - the agent's screen tool through a folder-v2 run (which also tests the screen v1 gate);
   - the view-anchor tests.
+
   Part 2's bodies name its own slot, so 894 G's count of 14 stays.
 
   C1c-3l: an agent's own start and the wake drain.
+
+### 6.12 C1c-3k part 2 as built: access, screens and viewers in rank order (migration 20260930019100, test 895)
+
+P06b's second PR, folder-v2 only like part 1 (the statement that was there before stays in each `else`).
+
+| Path | Before (on folder-v2) | Now |
+|---|---|---|
+| `set_runtime_office_access` (and `configure_runtime_office_access` through it) | gc fence, then the computer and the access row; the access triggers then change the agent's rows (and maybe revisions) on every sibling computer, in scan order | machine fence, the acting member (rank 1), the agent (rank 2), the seat lock, then every live computer of the company `FOR UPDATE` by id, then the access row |
+| `runtime_office_access_status` | gc fence | plain reads (the setter checks again under its locks) |
+| The staff trigger's office walk (a hire or an agent's return) | the computers by id (3j) | the company's seat locks first, then the computers by id |
+| `member_agent_office` 'new', `register_runtime_office` (folder mode) | member, seat lock, the new computer | member, the company's agents `KEY SHARE` by id, seat lock, the new computer |
+| `open_runtime_office_screen` | seat lock, the computer, a plain role read | someone who may not write the company refused first; then the machine fence, the member's row, the seat lock and the computer |
+| `record_runtime_screen_event`, a private heartbeat | the startup lock (the computer), then the privacy owner's member row | `qorpera_folder_office_enter_startup`: 3j's prelude with the privacy owner as its member, before the startup lock |
+| Viewers (create, redeem, the input check) and `office_screen_browser_grant` | the computer, then the viewer's member row | `qorpera_folder_office_members_first`: the members' rows `FOR SHARE` by user id, then the computer. No fence on these hot paths; rank 1 alone never goes backwards |
+
+- **Why every computer for one access change:** swapping the gc fence for the machine fence alone deadlocks two
+  capability changes of one agent on two computers. Each holds its own computer and access row, and its trigger
+  cascade updates the other's. It would also let an agent revoked on every computer keep access on a computer added
+  meanwhile (the new computer copies a sibling's state read before the revocation committed). With every computer
+  locked by id after the seat lock, the cascade finds them all held, and a new computer waits at the seat lock.
+- **Why the seat lock in the hire's walk:** see §6.11 (review r2 of #759). A computer added while an agent is hired or
+  returns now gets the agent's default access either way.
+- **Test 895** (648's committed fixture; each case holds the earlier lock in another session and checks the call waits
+  there holding no computer):
+  - Z: a first registration waits at the agents (one held `FOR UPDATE`) before the seat lock;
+  - A: with the low computer held, a capability change on the high one waits there, holding neither the high computer
+    nor any access row, then lands, and the triggers carry the new capabilities to the low computer;
+  - B, C: an access change waits at the agent, then at the seat lock, before any computer;
+  - D: with the folder fence and the company row both held `FOR UPDATE`, access status answers (plain reads); with the
+    company row held, an access change doesn't wait;
+  - E: an agent's return waits at the seat lock before the computers;
+  - F: a new computer for an agent waits at the agents before the seat lock;
+  - G: opening a screen waits at the member's row before the seat lock and the computer; G2: someone outside the
+    company is refused before the folder fence (it answers at once with the fence held `FOR UPDATE`);
+  - H: a private heartbeat waits at the privacy owner before the computer;
+  - I: creating a viewer, redeeming it, its input check and the screen's browser grant each wait at the member before
+    the computer;
+  - J: a computer is added under the seat lock in another session while Ada returns, then while a platform commit
+    hires a new agent: each waits at the seat lock and, once the computer commits, has access on it (review r1 of #767:
+    without the walk's seat lock both miss it);
+  - K: exactly 13 bodies name the migration (11 patched functions, 2 helpers).
+- **A small window left:** the screen's browser grant reads the screen's active viewers before it locks the computer,
+  so a viewer redeemed in between has its member row shared after the computer. No member writer takes the computer,
+  so this is not a cycle.
+- **Not here:**
+  - the agent's screen tool through a folder-v2 run (the screen v1 gate);
+  - the view-anchor tests (moved to C1c-3l with the agent's screen tool);
+  - the member's own browser calls (the privacy entry, browser grants and profiles), which take the member after the
+    computer but no company lock.
+
+  These go to C1c-3l, which runs agents on the computer, or to the activation checks (3m).
 
 ## 7. Traps for C1c-2 and C1c-3
 
