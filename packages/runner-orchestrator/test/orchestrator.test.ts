@@ -3,6 +3,9 @@ import {
 	type CloudFolderDynamicRoutine,
 	type CloudFolderDynamicRoutinePage,
 	type CloudFolderDynamicRoutineRun,
+	type CloudFolderMaterialization,
+	type CloudFolderMaterializationPage,
+	CloudFolderRunMaterializer,
 	type CloudRoutineScheduleHead,
 	CloudRoutineScheduleReconciler,
 	type CloudRunnerOrchestrationClaim,
@@ -700,6 +703,133 @@ describe("cloud runner orchestrator", () => {
 		expect(list).toHaveBeenCalledTimes(2);
 		expect(() => new CloudRoutineScheduleReconciler({ folderDynamicIntervalMs: -1 })).toThrow(
 			"Folder dynamic routine interval is outside the supported range",
+		);
+	});
+
+	it("lists the folder-v2 companies with due work and materializes one through the private control plane", async () => {
+		const profileId = "18181818-1818-4818-8818-181818181818";
+		const madeRunId = "19191919-1919-4919-8919-191919191919";
+		const requests: unknown[] = [];
+		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push(body);
+			return Response.json({
+				value:
+					body.action === "folder_materialize_due"
+						? { items: [{ profile_id: profileId }], has_more: true, next_after_profile_id: profileId }
+						: body.limit === 16
+							? { state: "done", run_ids: [madeRunId], failed: 0, cancelled: 0, blocked: 0, skipped: 0 }
+							: { state: "paused" },
+			});
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			fakeFetch as typeof fetch,
+		);
+
+		await expect(control.listFolderMaterializationDue(undefined, 100)).resolves.toEqual({
+			items: [profileId],
+			hasMore: true,
+			nextAfterProfileId: profileId,
+		});
+		await expect(control.materializeFolderCompany(profileId, 16)).resolves.toEqual({
+			state: "done",
+			runIds: [madeRunId],
+		});
+		await expect(control.materializeFolderCompany(profileId, 4)).resolves.toEqual({ state: "paused", runIds: [] });
+		expect(requests).toEqual([
+			{ action: "folder_materialize_due", orchestratorId, limit: 100 },
+			{ action: "folder_materialize_company", orchestratorId, profileId, limit: 16 },
+			{ action: "folder_materialize_company", orchestratorId, profileId, limit: 4 },
+		]);
+		await expect(control.listFolderMaterializationDue("not-a-uuid", 100)).rejects.toThrow(
+			"Folder materialization cursor",
+		);
+		await expect(control.materializeFolderCompany(profileId, 17)).rejects.toThrow(
+			"Folder materialization limit is outside the supported range",
+		);
+		expect(fakeFetch).toHaveBeenCalledTimes(3);
+		// A state the orchestrator does not know is refused, as is a done answer without its runs.
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { state: "fired" } }));
+		await expect(control.materializeFolderCompany(profileId, 16)).rejects.toThrow(
+			"invalid folder materialization state",
+		);
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { state: "done" } }));
+		await expect(control.materializeFolderCompany(profileId, 16)).rejects.toThrow("without its runs");
+		// A page longer than asked for is refused.
+		fakeFetch.mockImplementationOnce(async () =>
+			Response.json({ value: { items: [{ profile_id: profileId }, { profile_id: madeRunId }], has_more: false } }),
+		);
+		await expect(control.listFolderMaterializationDue(undefined, 1)).rejects.toThrow(
+			"more folder companies than asked",
+		);
+	});
+
+	it("materializes every due folder-v2 company in its own request, and waits out an edge function that predates it", async () => {
+		const first = "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a";
+		const second = "1b1b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b";
+		const third = "1c1c1c1c-1c1c-4c1c-8c1c-1c1c1c1c1c1c";
+		const control = controlPlane();
+		const list = vi.fn(
+			async (after: string | undefined, _limit: number): Promise<CloudFolderMaterializationPage> =>
+				after
+					? { items: [third], hasMore: false }
+					: { items: [first, second], hasMore: true, nextAfterProfileId: second },
+		);
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		const materialize = vi.fn(async (profileId: string, _limit: number): Promise<CloudFolderMaterialization> => {
+			if (profileId === second) throw failure;
+			return { state: "idle", runIds: [] };
+		});
+		control.listFolderMaterializationDue = list;
+		control.materializeFolderCompany = materialize;
+		let now = new Date("2026-10-04T09:00:00.000Z");
+		const materializer = new CloudFolderRunMaterializer({ now: () => now });
+
+		// One company's failure never stops the others; it is reported after the pass.
+		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		expect(materialize.mock.calls).toEqual([
+			[first, 16],
+			[second, 16],
+			[third, 16],
+		]);
+		expect(list.mock.calls.map(([after, limit]) => [after, limit])).toEqual([
+			[undefined, 100],
+			[second, 100],
+		]);
+
+		// An edge function that predates the actions answers 400: reported once, then not asked for ten minutes.
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		list.mockRejectedValue(unknown);
+		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		now = new Date("2026-10-04T09:05:00.000Z");
+		await expect(materializer.reconcile(control)).resolves.toBeUndefined();
+		expect(list).toHaveBeenCalledTimes(3);
+		now = new Date("2026-10-04T09:11:00.000Z");
+		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		expect(list).toHaveBeenCalledTimes(4);
+
+		// A cursor that does not move forward ends the pass instead of looping.
+		list.mockReset();
+		list.mockImplementation(async (after: string | undefined) =>
+			after
+				? { items: [first], hasMore: true, nextAfterProfileId: first }
+				: { items: [second], hasMore: true, nextAfterProfileId: second },
+		);
+		await expect(new CloudFolderRunMaterializer({ now: () => now }).reconcile(control)).rejects.toThrow(
+			"did not move forward",
+		);
+
+		// A control plane without the actions makes no request; the bounds are checked.
+		await expect(new CloudFolderRunMaterializer().reconcile(controlPlane())).resolves.toBeUndefined();
+		expect(() => new CloudFolderRunMaterializer({ companyLimit: 17 })).toThrow(
+			"Folder materialization company limit is outside the supported range",
+		);
+		expect(() => new CloudFolderRunMaterializer({ pageSize: 0 })).toThrow(
+			"Folder materialization page size is outside the supported range",
 		);
 	});
 
@@ -1681,6 +1811,29 @@ describe("cloud runner orchestrator", () => {
 		expect(occurrenceReconciler.reconcile).toHaveBeenCalledWith(control);
 		expect(occurrenceReconciler.reconcile.mock.invocationCallOrder[0]).toBeLessThan(
 			vi.mocked(control.reconcileExpired).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+		);
+	});
+
+	it("materializes the due folder-v2 companies on every pass, before it claims compute work", async () => {
+		const profileId = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d";
+		const control = controlPlane();
+		vi.mocked(control.claimNext).mockResolvedValue(undefined);
+		const materialize = vi.fn(async (): Promise<CloudFolderMaterialization> => ({ state: "done", runIds: [runId] }));
+		control.listFolderMaterializationDue = vi.fn(
+			async (): Promise<CloudFolderMaterializationPage> => ({ items: [profileId], hasMore: false }),
+		);
+		control.materializeFolderCompany = materialize;
+		const local = localAdapter();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+		});
+
+		await expect(orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+		expect(materialize).toHaveBeenCalledWith(profileId, 16);
+		expect(materialize.mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(control.claimNext).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
 		);
 	});
 
