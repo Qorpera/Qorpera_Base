@@ -76,7 +76,7 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_cancel_artifact_gc_plan', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
 	('qorpera_claim_artifact_gc_plans', 'open', 'Artifact GC plans; takes the fence per plan, and only the next step, the object claim, retains a folder-v2 plan''s objects (F3, 20260930041000).'),
 	('qorpera_renew_artifact_gc_lease', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
-	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).'),
+	-- The office waiter check tests the core first since C1c-3l part 2 (20260930030100): off the list.
 	('qorpera_activate_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_cancel_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_consent_identity_recovery', 'open', 'Identity recovery (S1).'),
