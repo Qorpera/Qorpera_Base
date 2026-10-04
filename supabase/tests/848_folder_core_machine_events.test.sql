@@ -304,6 +304,63 @@ begin
 	if v_answer ->> 'state' <> 'done' or (v_answer ->> 'delivered')::integer <> 0 then
 		raise exception 'C: held events are skipped: %', v_answer; end if;
 end $$;
+-- Two steps of one company that hold different events of one parent (16 waiting: each locks 8) and meet at admission
+-- continue it once: the second checks the parent again under admission and leaves its events waiting. (The event the
+-- held-events case left is set aside first.)
+select pg_temp.forget() \g /dev/null
+update public.qorpera_company_machine_events set delivery = 'suppressed'
+where profile_id = '64800000-0000-4000-8000-000000000010' and delivery = 'waiting' \g /dev/null
+select set_config('qorpera_test.race', array_to_string(pg_temp.events(16), ','), false) \g /dev/null
+create function pg_temp.blocked(p_conn text) returns boolean language plpgsql as $$
+declare v_pid integer := current_setting('qorpera_test.pid_' || p_conn)::integer; v_until timestamptz := clock_timestamp() + interval '60 seconds';
+begin
+	loop
+		if cardinality(pg_blocking_pids(v_pid)) > 0 then return true; end if;
+		exit when clock_timestamp() > v_until;
+		perform pg_sleep(0.02);
+	end loop;
+	return false;
+end $$;
+do $$
+declare v_ids uuid[] := string_to_array(current_setting('qorpera_test.race'), ',')::uuid[]; v_two text; v_three text;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', $q$select 1 from public.qorpera_folder_admissions
+		where profile_id = '64800000-0000-4000-8000-000000000010' for update$q$) as t(x integer);
+	perform dblink_send_query('fence_two', pg_temp.sql_step());
+	if not pg_temp.blocked('fence_two') then
+		perform pg_temp.release(); perform pg_temp.outcome('fence_two');
+		raise exception 'C: the first step must wait at admission'; end if;
+	perform dblink_send_query('fence_three', pg_temp.sql_step());
+	if not pg_temp.blocked('fence_three') then
+		perform pg_temp.release(); perform pg_temp.outcome('fence_two'); perform pg_temp.outcome('fence_three');
+		raise exception 'C: the second step must wait at admission'; end if;
+	-- Each holds its own 8 events while it waits.
+	if (select count(*) from public.qorpera_company_machine_events where id = any(v_ids) and delivery = 'waiting') <> 16
+		or pg_temp.row_free($q$select 1 from public.qorpera_company_machine_events where delivery = 'waiting'
+			and environment_id = '64800000-0000-4000-8000-000000000020' order by created_at, id limit 1$q$)
+		or pg_temp.row_free($q$select 1 from public.qorpera_company_machine_events where delivery = 'waiting'
+			and environment_id = '64800000-0000-4000-8000-000000000020' order by created_at desc, id desc limit 1$q$) then
+		perform pg_temp.release(); perform pg_temp.outcome('fence_two'); perform pg_temp.outcome('fence_three');
+		raise exception 'C: the two steps hold the two batches'; end if;
+	perform pg_temp.release();
+	v_two := pg_temp.outcome('fence_two'); v_three := pg_temp.outcome('fence_three');
+	if v_two <> 'ok' or v_three <> 'ok' then raise exception 'C: the steps ended with % and %', v_two, v_three; end if;
+	if (select count(*) from pg_temp.wakes()) <> 1
+		or (select count(*) from public.qorpera_company_machine_events where id = any(v_ids) and delivery = 'delivered') <> 8
+		or (select count(*) from public.qorpera_company_machine_events where id = any(v_ids) and delivery = 'waiting') <> 8 then
+		raise exception 'C: one continuation for two steps: % wakes, %', (select count(*) from pg_temp.wakes()), pg_temp.delivery(v_ids); end if;
+	-- Once it ran, the other 8 follow. (The step in a statement of its own: a subquery in the same statement would read
+	-- the events as they were before it.)
+	perform pg_temp.forget();
+	v_two := pg_temp.step()::text;
+	if (v_two::jsonb ->> 'delivered')::integer is distinct from 1
+		or (select count(*) from public.qorpera_company_machine_events where id = any(v_ids) and delivery = 'delivered') <> 16 then
+		raise exception 'C: the rest after the continuation ran: % %', v_two, pg_temp.delivery(v_ids); end if;
+	perform pg_temp.forget();
+	-- The next case's event (committed with this block).
+	perform pg_temp.events(1);
+end $$;
 -- A stop that holds the fence past the step's lock timeout (2 s): the step answers busy and changes nothing.
 do $$
 declare v_answer jsonb;

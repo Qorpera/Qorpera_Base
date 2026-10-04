@@ -281,7 +281,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). A screenshot never reaches `_capture` on folder-v2: its operation is refused at authorize since 3l part 3 (§6.22) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -1792,7 +1792,7 @@ machine lock in L.
 
 The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
 office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
-The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.17) and
+The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.22) and
 gives the capture its folder-v2 authority. Until then nothing reaches this path.
 
 - **The office service** (`CloudCompanyComputerScreenshots.publish`):
@@ -1916,6 +1916,53 @@ they add to the pin trigger's agent branch, the wake checks and the materializer
 - E: markers.
 
 656 §1 no longer pins the pin trigger's snapshot-v1 text (no snapshot-v1 pins since 3 October).
+
+### 6.22 C1c-3l part 3 as built: no screenshot on folder-v2 yet (migration 20260930030200, test 891)
+
+The coordinator's P06c, third PR. Before, an agent's `computer_screenshot` on a folder-v2 company was authorized and its
+receipt began; only then did `qorpera_native_office_capture` refuse with 0A000. The receipt stayed open, and an open
+receipt fences the run's later operations.
+
+- **The refusal.** `qorpera_native_office_operation` now refuses a screenshot on folder-v2:
+  - at authorize, which the runtime calls before it begins the receipt, it answers `{state: "refused", message}`
+    ("Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.");
+  - at begin and check it raises 0A000.
+  - finish is unchanged: it finds no resource for a refused screenshot and raises 42501.
+
+  No receipt opens, and the run goes on. Every other kind of operation is unchanged.
+- **What the model sees.** The runtime gives the message to the model as the tool's answer: `REFUSED: Screenshots are
+  not available…`. Three narrow runtime changes do it:
+  - the Company Computer's effect control turns exactly that answer to an authorize, with a message of 1 to 512
+    printable ASCII characters, into a `CloudToolAuthorizeRefusal`. Any other answer is still unconfirmed;
+  - the operation executor relays that refusal only from the authorize before the receipt. Raised at any later step,
+    or any other error there, it is still an unknown outcome;
+  - the tool boundary relays it as any tool's refusal (`CloudToolRefusal`): denied, with its plain reason.
+
+  A retry with the same operation key gets the same refusal, and a new key is refused again. The registry still
+  keeps only the SQLSTATE of an error, never its message. A runtime from before this release reports an unconfirmed
+  outcome instead, and still opens no receipt.
+- **Why not the screenshot itself.** Review r1 of the first version, which sent the screenshot "to the model only",
+  found two gaps:
+  - the pixels stay in the Company Computer's office service, but the native host reads them, and only a 48 KiB JSON
+    answer passes between the two;
+  - the folder-v2 context view (`qorpera_folder_record_context_view`, 652) refuses a model request that carries a
+    screenshot.
+
+  Real screenshots on folder-v2 are their own design: a short-lived pixel transfer from the office service to the
+  native host, and screenshot support in the folder-v2 context view. That needs a guest and runtime release.
+- **Test 891** (648's committed fixture; the company's computer started and active, as in 893):
+  - A: Ada's desktop and browser screenshots are refused at authorize with the message, and the run has no screenshot
+    receipt;
+  - B: her screen operation still authorizes, and the run's next operation begins, is admitted, finishes and completes;
+  - C: a screenshot whose receipt began anyway is refused at begin and at check, and takes no office resource;
+  - D: exactly the patched function names the migration.
+- **Runtime tests:**
+  - `cloud-company-computer-effect-control.test.ts`: only that exact answer to an authorize becomes the refusal. A
+    message that isn't plain, is empty or too long, an extra key, or the same answer at begin stays unconfirmed;
+  - `cloud-native-tool-operations.test.ts`: the refusal comes back from the authorize before the receipt, and the same
+    key answers it again with no receipt. A plain `CloudToolRefusal` there, or the refusal after the receipt began,
+    stays an unknown outcome and keeps its fence;
+  - `cloud-native-tool-boundary.test.ts`: the model gets `REFUSED: <message>`.
 
 ## 7. Traps for C1c-2 and C1c-3
 
