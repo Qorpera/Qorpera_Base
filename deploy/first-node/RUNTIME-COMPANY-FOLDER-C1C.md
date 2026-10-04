@@ -851,7 +851,9 @@ Decisions:
      member that does not exist ends the prelude here (the caller refuses with P0002).
   6. Rank 4: every agent thread room `FOR UPDATE` in id order. The thread trigger rewrites them and their room members.
      A post or an answer holding a room `FOR SHARE` makes the change wait there, before it writes (665 C).
-  7. **Removal only**, rank 5: the member's compute identities, then its connections, `FOR NO KEY UPDATE` in id order.
+  7. **Removal only**, rank 5 in C1B §8's order: the member's connections (model logins), then its compute identities,
+     `FOR NO KEY UPDATE` in id order. Until P13 (20260930035000, §6.12) the identities came first, which deadlocked with
+     a sign-in's completion: it holds the model login and then takes the identity through the sign-in's epoch trigger.
   8. Rank 8: the member's pending capture tickets, the grants it issued (and, for a removal, the grants on its own
      secrets), then its own secrets, `FOR NO KEY UPDATE` in id order.
   9. Rank 11: the conversations the change writes, `FOR UPDATE` in id order: the agent threads and, for a removal, the
@@ -870,8 +872,7 @@ Decisions:
   - a removed member's run-owned rows (assignment, reservation, native lease, inputs, wakes): behind its job, which
     the prelude holds first.
   The steps the tests do not pin are defensive: rank 11, the other founders' `KEY SHARE`, the founding row, the vault
-  rows, the compute identities and connections (their triggers would take the same rows in the same order), and the
-  guard's company-row `KEY SHARE`.
+  rows, and the guard's company-row `KEY SHARE`. The connections and compute identities are pinned since P13 (900 D).
 - **Removing a member, leaving and a role change** take the prelude in place of the company row `FOR UPDATE`. A role
   change takes the member row `FOR UPDATE` too, which the function then takes again: with `FOR NO KEY UPDATE` first,
   the change would take the rooms and then wait to strengthen the row behind a run's or post's `KEY SHARE`, while
@@ -1304,6 +1305,37 @@ folder-v2 branch, and the statement that was there before stays untouched in its
   Part 2's bodies name its own slot, so 894 G's count of 14 stays.
 
   C1c-3l: an agent's own start and the wake drain.
+
+### 6.12 P13 sign-in machines as built (migration 20260930035000, test 900)
+
+F3's activation check (838, #779) listed the sites below as `folder-v2` gc-fence holders. A sign-in's or an account
+refresh's login machine was reserved and released with the sign-in `FOR UPDATE` first and the gc fence after: the
+reverse of core §3's order, and on `folder-v2` a stall of every effect of the company.
+- **The reservation** (`qorpera_reserve_runtime_login_machine`, `_account_refresh_machine`):
+  1. it reads the sign-in with no lock and checks its capability, so a caller without it takes nothing (900 B);
+  2. `qorpera_folder_sign_in_machine_locks`: the fence `KEY SHARE` and rank 0 (`qorpera_folder_machine_fence`, no
+     pause read), the requester's member row `FOR SHARE` (rank 1) and the identity's machine lock (C1B §8);
+  3. the sign-in `FOR UPDATE` (rank 5, before the model logins), checked against what step 1 read;
+  4. then as before: the identity `FOR SHARE`, the provider policy, the pause, the machine request, the allocation and
+     the placement.
+- **The release:** the fence and rank 0, then the sign-in, the machine request and the allocation. No pause read, so a
+  paused company's machines are released (900 H).
+- **The node reservation** of a login machine (`qorpera_reserve_runtime_node_machine`, kind `login`, the gateway's own
+  call after the company reservation) takes the fence and rank 0 like the other `folder-v2` kinds. Kind `native` (a
+  run's machine) moves with C1c-3n, which then takes the identity's machine lock in place of the gc fence: today the gc
+  fence of a run's reservation is what keeps a run and a sign-in of one identity apart.
+- **Two machines of one identity** wait on the identity's machine lock; the second sees the first's machine and is
+  refused `COMPUTE_IDENTITY_OCCUPIED` (900 C). There is no unique index on live machines per identity, and locking the
+  identity row more strongly would deadlock with a new sign-in, whose epoch trigger holds the identity `FOR SHARE`
+  while it cancels the user's earlier sign-in.
+- **Rank 5's order** (C1B §8: model logins, versions, identities) in the two paths that took an identity first: the
+  member removal's prelude (§6.6 step 7) and `qorpera_record_native_provider_account_metadata`. With removal in the new
+  order, the metadata's old order would have deadlocked with it. 900 D and E reproduce both deadlocks on the old text.
+  Both completions (`qorpera_complete_native_provider_login`, `_model_login_sign_in_kind`) already follow the order:
+  their identity lock comes from the sign-in's epoch trigger, after the model login (900 F).
+- **Snapshot-v1** keeps each patched statement in the `else` branch; every patched body reversed is byte for byte the
+  definition before (900 I; 824 H reverses the node reservation's new layer first).
+- 838's `p13_allowed` list loses these sites when #779 merges: whichever of the two lands second deletes them.
 
 ## 7. Traps for C1c-2 and C1c-3
 
