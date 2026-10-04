@@ -26,6 +26,7 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 | The packages | `dpkg -s dnsmasq-base conntrack python3 2>&1 \| grep -E '^(Package\|Status)'` | either installed, or step 1 installs them (none starts a service of its own) |
 | The group does not exist yet, or is a system group | `getent group qorpera-agent-plug` | nothing, or a gid below 1000 |
 | The node's connection table | `cat /proc/sys/net/netfilter/nf_conntrack_max` | 262144 (as read on 2 October) |
+| Room on the root disk for the exit's logs (in `/var/log/qorpera-agent-exit`, at most 2 GiB; the exit turns unhealthy with less than 10% of the disk free) | `df --output=size,avail,pcent /` | under 85% used (node 2 read 83% on 4 October; at 85% the logs keep only today, at 90% the exit is unhealthy) |
 | No agents' or coding machines from before (the new executor refuses to stop or delete one that is not on `qagent0`) | `lxc list --project machines --format csv -c n; lxc list --project coding --format csv -c n` (the projects the machine and coding VM policies name; these are their defaults) | nothing (or `Project not found`): production's companies were wiped on 3 October |
 
 ## Step 1: the exit on node 1
@@ -35,11 +36,16 @@ apt-get install -y --no-install-recommends dnsmasq-base conntrack python3
 getent group qorpera-agent-plug || groupadd --system qorpera-agent-plug
 bash deploy/agent-exit/install-agent-exit.sh
 systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
-	qorpera-agent-plug.service qorpera-agent-exit-health.timer
+	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer
 ```
+
+The logs' timer is part of the exit, not optional: it keeps the exit's logs within their cap on the node's root disk
+(`README.md`, "The logs on the node"), and `verify` fails without it.
 
 Check, within 30 seconds:
 - `X verify` prints `qorpera-agent-exit: healthy`;
+- `cat /run/qorpera-agent-exit/logs.json` shows `"problems":[]`, a `capBytes` of 2147483648 and the disk's
+  `freePercent`;
 - `cat /run/qorpera-agent-exit/health.json` shows `"healthy": true` and a `checkedAt` under 20 seconds old (the check runs every 10 seconds);
 - `X status` lists `br0 10.210.0.1/16` and `up0 10.209.255.2/30`, no ports on `qagent0` and an empty client map;
 - `/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh verify` still exits 0 (the guard and the exit
@@ -48,7 +54,7 @@ Check, within 30 seconds:
 Undo (nothing is plugged in yet):
 
 ```bash
-systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
+systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
 ```
 
 ## Step 2: the exit on node 2
@@ -133,6 +139,21 @@ Undo (back to the untouched `observer-nodeNN-v145.cjs`; nothing reads the health
 ```bash
 rm /etc/systemd/system/qorpera-native25-phql-observer.service.d/zzzzzzzzz-observer-v173-a1.conf && systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service
 ```
+
+## Step 4b (optional): the line guard's counts
+
+Nothing to install: from step 1 on, the logs' timer counts each closed day per company (two hours after it ends, UTC)
+into `/var/log/qorpera-agent-exit/counts-YYYY-MM-DD.json`. The two weeks of counting before the brake (§8 of
+`deploy/first-node/RUNTIME-AGENT-EXIT.md`) start here. To read them on a node:
+
+```bash
+/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh counts --from <first day>
+```
+
+It prints, per company, the days with traffic, new connections (all and the busiest day), the most machines on a day,
+the most new connections in 10 seconds (the company's and one machine's), refused, unanswered, and the most failed
+destinations in one minute. Check: after the first closed day, `ls /var/log/qorpera-agent-exit/counts-*.json` lists it.
+Undo: none needed (reading changes nothing).
 
 ## Step 5: the node release of the release head, node 1 then node 2
 
