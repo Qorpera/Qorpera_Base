@@ -109,6 +109,11 @@ E1 extends P22 rather than adding a second writer. A1, who owns P22, agreed on 4
     - P14a's creation guard is kept.
 - **Marks:** triggers on `qorpera_event_hooks` mark a folder-v2 hook due on insert and on a change of `status`, `name`,
   `max_body_bytes` or `per_minute`. The kind follows `proof` (`mail` is a mailbox).
+  - A mailbox's file shows its address, which carries the mail domain. A change of `qorpera_mail_settings.domain` marks
+    every live folder-v2 mailbox (review r1 F2).
+  - A mailbox's creation reads the domain `FOR SHARE`, after its other locks (§3.4). So a creation and a domain change
+    never overlap unseen: the creation waits for an open domain change and its file shows the new address, or the domain
+    change waits for an open creation and then marks it (review r2 F2).
 - **The index:** `qorpera_folder_hook_index` (environment, id), its own table in the human-task index's style:
   - apply writes it, repoints it on a move and retires it on a delete;
   - verify checks it;
@@ -136,9 +141,10 @@ stronger than KEY SHARE). Each gets a folder-v2 branch in core §3's order; the 
    then the deletion and role recheck;
 3. **Pause and remove:** the hook row `FOR NO KEY UPDATE` at rank 5, through the same call. `qorpera_event_hooks` is last
    in `qorpera_folder_structured_lock`'s table order, where E2's routine saves take it `FOR SHARE`;
-4. **Create only:** the advisory transaction lock `qorpera.event-hooks:<profile>`, taken last. It serializes the caps (50
-   live hooks, 20 mailboxes) and the live names, which the company row lock used to. Only these functions take it, and
-   they wait on nothing after it;
+4. **Create only:** the advisory transaction lock `qorpera.event-hooks:<profile>`. It serializes the caps (50 live hooks,
+   20 mailboxes) and the live names, which the company row lock used to. Only these functions take it. After it, a hook's
+   creation waits on nothing. A mailbox's creation then reads the mail domain `FOR SHARE`, last, against a domain change.
+   A domain change takes no lock that a creation holds;
 5. the insert or update, and the mailbox row, as today. The file's mark comes from the trigger.
 
 The rest is unchanged:
@@ -165,8 +171,14 @@ The rest is unchanged:
     - a vault website account at `hook-x.example.com` is named `connection-hook-x-example-com`.
   - **Pausing and removing:** a pause and a removal each mark the hook. The claim shows it paused, then absent; the
     platform's delete retires the row; a vault finish never closes a hook's claim.
+  - **A new mail domain** marks the mailbox, and its claim shows the new address.
   - **Privileges:** the new functions are the platform's alone.
   - **Mutation-checked:** a member's setting change, and an address in the claim, each fail it.
+- **SQL test 919 (dblink), on 648's committed fixture:**
+  - R1: a removal waits for an open write of the hook's file at the hook row, and the next claim deletes the file;
+  - R2: a write sent after the removal is refused;
+  - R3: a mailbox's creation waits for an open domain change at the mail settings, and its claim shows the new domain.
+  - Mutation-checked: without the rank-5 hook target, R1 fails; without the domain `FOR SHARE`, R3 fails.
 - **Existing tests:**
   - 730 and 732 now expect a folder company's hook and mailbox to be created;
   - 852 names the finish's new signature;

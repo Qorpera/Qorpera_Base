@@ -2,7 +2,8 @@
 -- Company folder core C4, E1 (migration 20260930060000) under concurrency: a hook's removal and a write of its file
 -- serialize on the hook row at rank 5 (#815 review r1 F1). A writer's commit of the file holds the hook FOR SHARE; the
 -- removal (FOR NO KEY UPDATE) waits for it, and once both commit, the next claim of the hook finds the file and says it
--- goes. A write sent after the removal committed is refused. On 648's committed company; the fixture goes at the end.
+-- goes. A write sent after the removal committed is refused. A mailbox's creation and a new mail domain serialize on the
+-- mail settings (review r2 F2). On 648's committed company; the fixture goes at the end.
 
 -- The company's connections/ folder, which 648's seed does not make.
 select pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'e1-race-mkdir-1', '[{"op":"mkdir","path":"connections"}]'), 1,
@@ -87,6 +88,37 @@ begin
 	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'refused' then raise exception 'R2: a late write is refused: %', r; end if;
 end $$;
 
+-- R3. A new mail domain and a mailbox's creation (review r2 F2). fence_one changes the domain in an open transaction (its
+-- marks find no mailbox yet); fence_two's creation waits for it at the mail settings, after its own locks, and the
+-- mailbox's claim then shows the new address. The domain is put back at the end.
+select set_config('qorpera_test.domain', coalesce((select domain from public.qorpera_mail_settings), ''), false) \g /dev/null
+update public.qorpera_mail_settings set domain = 'inbox.example.test';
+select dblink_exec('fence_one', 'begin');
+select dblink_exec('fence_one', $q$update public.qorpera_mail_settings set domain = 'mail.example.test'$q$);
+select dblink_send_query('fence_two', format('select public.qorpera_create_company_mailbox(%L, %L, %L, %L)::text',
+	'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'support', 'Customer support.'));
+do $$
+begin
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'R3: the creation does not wait for the new domain'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_mail_settings'::regclass then
+		raise exception 'R3: the creation waits at %, not at the mail settings', pg_temp.queued_on('fence_two'); end if;
+end $$;
+select dblink_exec('fence_one', 'commit');
+do $$
+declare v_outcome text; c jsonb;
+begin
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'R3: the creation did not end'; end if;
+	v_outcome := pg_temp.outcome('fence_two');
+	if v_outcome <> 'ok' then raise exception 'R3: the creation: %', v_outcome; end if;
+	c := pg_temp.claim();
+	if c ->> 'subjectKind' is distinct from 'mailbox' or c ->> 'present' <> 'true'
+		or c -> 'settings' ->> 'address' is distinct from 'support@mail.example.test' then
+		raise exception 'R3: the new mailbox''s claim shows the new domain: %', c; end if;
+	perform public.qorpera_finish_connection_file('91900000-0000-4000-8000-00000000000a', (c ->> 'secretId')::uuid,
+		(c ->> 'generation')::bigint, null, 'mailbox');
+end $$;
+update public.qorpera_mail_settings set domain = nullif(current_setting('qorpera_test.domain'), '');
+
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
 -- Remove the fixture (as 853 does).
@@ -128,6 +160,7 @@ begin
 	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
 			'64800000-0000-4000-8000-000000000021'))
 		or exists (select 1 from public.qorpera_event_hooks where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_company_mailboxes where profile_id = '64800000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_connection_file_marks where profile_id = '64800000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_connection_file_work where profile_id = '64800000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_hook_index where profile_id = '64800000-0000-4000-8000-000000000010') then

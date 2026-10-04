@@ -678,7 +678,7 @@ begin
 	end if;
 	if public.qorpera_environment_is_folder_v2(p_environment_id) then
 		-- 20260930060000 (E1): as a folder-v2 hook's creation (qorpera_create_event_hook): the fence, the company row and the
-		-- member, then the company's advisory lock, last. Its file follows the commit.
+		-- member, then the company's advisory lock. Its file follows the commit.
 		perform public.qorpera_folder_company_enter(p_environment_id, p_profile_id, jsonb_build_array(
 			jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members', 'key', p_profile_id::text || ':' || auth.uid()::text,
 				'mode', 'keyshare', 'required', true)), false);
@@ -687,6 +687,13 @@ begin
 			raise exception 'Only owners and admins can create mailboxes' using errcode = '42501';
 		end if;
 		perform pg_advisory_xact_lock(hashtextextended('qorpera.event-hooks:' || p_profile_id::text, 0));
+		-- Then the mail domain FOR SHARE, last (review r2 F2): a new domain's marks see only committed mailboxes, so a
+		-- creation waits for an open domain change and its file shows the new address, and a domain change waits for an
+		-- open creation and then marks it. A domain change takes no company lock that this waits behind.
+		select settings.domain into v_domain from public.qorpera_mail_settings as settings for share;
+		if v_domain is null then
+			raise exception 'Company mail is not set up yet' using errcode = '0A000';
+		end if;
 	else
 		-- As hook creation: the company row without its key (serializes creations, waits for the gc fence), the
 		-- deletion recheck, then the Company File row shared.
