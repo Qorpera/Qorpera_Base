@@ -79,26 +79,59 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -c 'drop function public.qorpera_runt
 
 ## Step 4: the node observer that posts the exit's health, node 1 then node 2
 
-Roll the release head's node observer onto node 1 the way runtime observers are rolled at a cut: the release head's
-observer build and one more systemd drop-in on `qorpera-native25-phql-observer.service` that runs it (as
-`zzzzzzzz-observer-v145-a1.conf` did on 28 September), then
-`systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service`. Then node 2. (The installer of
-`deploy/first-node/NODE-OBSERVER-INSTALLATION.md` makes a first installation only; it never replaces an installed
-observer.) Its new loop reads `/run/qorpera-agent-exit/health.json` every 5 seconds and posts it on a connection of its
+The runtime observer is `qorpera-native25-phql-observer.service`. A cut rolls it with a new observer file next to the
+running one and one more systemd drop-in that points `ExecStart` at it; the running file stays untouched for the undo
+(as for `observer-nodeNN-v145.cjs` and `zzzzzzzz-observer-v145-a1.conf` on 28 September). The installer of
+`deploy/first-node/NODE-OBSERVER-INSTALLATION.md` makes a first installation only and is not used here. Below, `NN` is
+`01` or `02` and `v173` the release.
+
+Build once, from a checkout of the release head with its dependencies installed (`npm ci`), and point the build at the
+nodes' own configuration and key (the same two paths the running v145 files read on both nodes):
+
+```bash
+node scripts/package-runtime-node-observer.mjs --out /tmp/observer-v173
+sed -e 's#/etc/qorpera/node-observer.json#/etc/qorpera-native25-phql-a1/node-observer-v26.json#g' \
+	-e 's#/etc/qorpera/node-observer.key#/etc/qorpera-native25-phql-a1/node-observer.key#g' \
+	/tmp/observer-v173/qorpera-node-observer.cjs > /tmp/observer-v173/observer-v173.cjs
+grep -c '/etc/qorpera/node-observer' /tmp/observer-v173/observer-v173.cjs
+grep -o '/etc/qorpera-native25-phql-a1/[A-Za-z0-9._-]*' /tmp/observer-v173/observer-v173.cjs | sort -u
+```
+
+The first `grep` prints `0`; the second prints exactly `node-observer-v26.json` and `node-observer.key` under
+`/etc/qorpera-native25-phql-a1/`, as `grep` does on `observer-nodeNN-v145.cjs`.
+
+Then on node 1 (root), with the file copied to the node:
+
+```bash
+install -o root -g root -m 0444 observer-v173.cjs /opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs
+cat > /etc/systemd/system/qorpera-native25-phql-observer.service.d/zzzzzzzzz-observer-v173-a1.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C LC_ALL=C /usr/bin/node --jitless /opt/qorpera-native25-phql-a1/observer-nodeNN-v173.cjs
+EOF
+systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service
+```
+
+The drop-in's name has nine `z`s, so it sorts after every drop-in there (the last is `zzzzzzzz-observer-v145-a1.conf`;
+if a later cut added one, use one more `z` than it has, here and in the undo) and its `ExecStart` wins. Then node 2,
+the same way.
+
+The new observer's loop reads `/run/qorpera-agent-exit/health.json` every 5 seconds and posts it on a connection of its
 own; the inventory and node health loops are unchanged. The unit has no file sandbox, and the exit writes the file
 root-owned 0644 in a 0755 directory, so the observer's account reads it.
 
-Check, per node, within 30 seconds of the observer's start:
+Check, per node, within 30 seconds of the restart:
+- `systemctl show -p ExecStart qorpera-native25-phql-observer.service` names `observer-nodeNN-v173.cjs`;
 - `journalctl -u qorpera-native25-phql-observer --since -2min -o cat | grep node_agent_exit | tail -1` shows
   `{"event":"node_agent_exit","state":"healthy"}` (and `node_inventory` still `ready`);
 - `select healthy, problem_count, now() - observed_at as age, now() - checked_at as check_age from public.qorpera_runtime_node_agent_exit where node_id = '<node id>';`
   shows `true`, `0` and both ages under 20 seconds (the observer posts every 5 seconds, the exit checks every 10);
 - `select public.qorpera_runtime_node_agent_exit_ready('<node id>');` is `true`.
 
-Undo (nothing reads the health yet):
+Undo (back to the untouched `observer-nodeNN-v145.cjs`; nothing reads the health yet):
 
 ```bash
-rm /etc/systemd/system/qorpera-native25-phql-observer.service.d/<the new drop-in>.conf && systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service
+rm /etc/systemd/system/qorpera-native25-phql-observer.service.d/zzzzzzzzz-observer-v173-a1.conf && systemctl daemon-reload && systemctl restart qorpera-native25-phql-observer.service
 ```
 
 ## Step 5: the node release of the release head, node 1 then node 2
