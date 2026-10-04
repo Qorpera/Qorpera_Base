@@ -1629,12 +1629,23 @@ The coordinator's P06c, third PR. Before, an agent's `computer_screenshot` on a 
 receipt began; only then did `qorpera_native_office_capture` refuse with 0A000. The receipt stayed open, and an open
 receipt fences the run's later operations.
 
-- **The refusal.** `qorpera_native_office_operation` now refuses a screenshot on folder-v2 (0A000, "Screenshots are not
-  available on this computer yet"). It does so at authorize, which the runtime calls before it begins the receipt, and
-  again at begin and check. No receipt opens, and the run goes on. Every other kind of operation is unchanged.
-- **What the model sees.** The runtime keeps only the SQLSTATE of a refusal and turns a failed authorize into an
-  unconfirmed outcome, so the model gets `TOOL_OUTCOME_UNCONFIRMED`, not the message. A retry with the same operation
-  key gets the same answer, and a new key is refused again. A plain answer for the model needs a runtime change.
+- **The refusal.** `qorpera_native_office_operation` now refuses a screenshot on folder-v2:
+  - at authorize, which the runtime calls before it begins the receipt, it answers `{state: "refused", message}`
+    ("Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.");
+  - at begin and check it raises 0A000.
+
+  No receipt opens, and the run goes on. Every other kind of operation is unchanged.
+- **What the model sees.** The runtime gives the message to the model as the tool's answer: `REFUSED: Screenshots are
+  not available…`. Three narrow runtime changes do it:
+  - the Company Computer's effect control turns exactly that answer to an authorize, with a message of 1 to 512
+    printable ASCII characters, into a `CloudToolAuthorizeRefusal`. Any other answer is still unconfirmed;
+  - the operation executor relays that refusal only from the authorize before the receipt. Raised at any later step,
+    or any other error there, it is still an unknown outcome;
+  - the tool boundary relays it as any tool's refusal (`CloudToolRefusal`): denied, with its plain reason.
+
+  A retry with the same operation key gets the same refusal, and a new key is refused again. The registry still
+  keeps only the SQLSTATE of an error, never its message. A runtime from before this release reports an unconfirmed
+  outcome instead, and still opens no receipt.
 - **Why not the screenshot itself.** Review r1 of the first version, which sent the screenshot "to the model only",
   found two gaps:
   - the pixels stay in the Company Computer's office service, but the native host reads them, and only a 48 KiB JSON
@@ -1645,10 +1656,18 @@ receipt fences the run's later operations.
   Real screenshots on folder-v2 are their own design: a short-lived pixel transfer from the office service to the
   native host, and screenshot support in the folder-v2 context view. That needs a guest and runtime release.
 - **Test 891** (648's committed fixture; the company's computer started and active, as in 893):
-  - A: Ada's desktop screenshot is refused at authorize, and the run has no screenshot receipt;
+  - A: Ada's desktop and browser screenshots are refused at authorize with the message, and the run has no screenshot
+    receipt;
   - B: her screen operation still authorizes, and the run's next operation begins, is admitted, finishes and completes;
   - C: a screenshot whose receipt began anyway is refused at begin and at check, and takes no office resource;
   - D: exactly the patched function names the migration.
+- **Runtime tests:**
+  - `cloud-company-computer-effect-control.test.ts`: only that exact answer to an authorize becomes the refusal. A
+    message that isn't plain, is empty or too long, an extra key, or the same answer at begin stays unconfirmed;
+  - `cloud-native-tool-operations.test.ts`: the refusal comes back from the authorize before the receipt, and the same
+    key answers it again with no receipt. A plain `CloudToolRefusal` there, or the refusal after the receipt began,
+    stays an unknown outcome and keeps its fence;
+  - `cloud-native-tool-boundary.test.ts`: the model gets `REFUSED: <message>`.
 
 ## 7. Traps for C1c-2 and C1c-3
 

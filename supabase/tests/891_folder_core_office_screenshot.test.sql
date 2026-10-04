@@ -123,12 +123,18 @@ create function pg_temp.sha(p_envelope text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_envelope, 'UTF8'), 'sha256'), 'hex')
 $$;
 
--- A. Ada's screenshot is refused at authorize, with a plain message, before any receipt: the run has no receipt for it.
+-- A. Ada's screenshot (of either surface) is refused at authorize, before any receipt, in words for the model: the run
+--    has no receipt for it.
 do $$
-declare v_answer text := pg_temp.operation(pg_temp.envelope('shot-1', '{"kind":"screenshot","surface":"desktop"}'), 'authorize', null);
+declare v_answer text;
 begin
-	if v_answer is distinct from '0A000 Screenshots are not available on this computer yet' then
+	v_answer := pg_temp.operation(pg_temp.envelope('shot-1', '{"kind":"screenshot","surface":"desktop"}'), 'authorize', null);
+	if v_answer::jsonb is distinct from jsonb_build_object('state', 'refused', 'message',
+			'Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.') then
 		raise exception 'A: a folder-v2 screenshot is refused at authorize: %', v_answer; end if;
+	v_answer := pg_temp.operation(pg_temp.envelope('shot-1', '{"kind":"screenshot","surface":"browser"}'), 'authorize', null);
+	if v_answer::jsonb ->> 'state' is distinct from 'refused' then
+		raise exception 'A: a folder-v2 browser screenshot is refused at authorize: %', v_answer; end if;
 	if exists (select 1 from public.qorpera_run_operation_receipts where run_id = '64800000-0000-4000-8000-0000000000f1'
 			and logical_operation_key like 'computer_screenshot:%') then
 		raise exception 'A: no receipt begins for the refused screenshot'; end if;
