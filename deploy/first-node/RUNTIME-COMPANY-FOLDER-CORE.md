@@ -978,7 +978,7 @@ that scanned the company's catalog first checked every object it stores, fixed
 by P24c (C1D §7). A third, from P17's review rather than the load: a file
 reference's byte check hashed the company's catalog for every file and copied
 the commit's locked array for every file or object, so a new folder of 10,000
-new files took 87 s; P24d (C1D §4) makes it 4.6-5.9 s, and a copy of it 2.9 s
+new files took 87 s; P24d (C1D §4) makes it 4.5-5.6 s, and a copy of it 2.9 s
 rather than 17 s. The script reports statements running over 2 s with their wait
 events, statements over 1 s with their plans (auto_explain), and PL/pgSQL
 functions by self time over the load. Since C1c-3i every migration change runs it short (run-on-node's

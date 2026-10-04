@@ -246,16 +246,20 @@ end $$;
 -- D. The sorted lookup: on the company's catalog sorted collate "C", each element's position by binary search alone, and
 -- no position for a value it does not hold, a null, or an empty or null array.
 do $$
-declare v_sorted text[]; v_bad integer;
+declare v_sorted text[]; v_bad integer := 0;
 begin
 	select array_agg(sha256 order by sha256 collate "C") into v_sorted from public.qorpera_profile_objects
 	where profile_id = '63400000-0000-4000-8000-000000000010';
-	select count(*) into v_bad from generate_subscripts(v_sorted, 1) i
-	where public.qorpera_folder_sorted_position(v_sorted, v_sorted[i]) is distinct from i;
+	-- From PL/pgSQL, as C1D §4's calling rule says: the array then reaches each call by reference.
+	for i in 1 .. cardinality(v_sorted) loop
+		if public.qorpera_folder_sorted_position(v_sorted, v_sorted[i]) is distinct from i then v_bad := v_bad + 1; end if;
+	end loop;
 	if v_bad <> 0 or cardinality(v_sorted) < 5000 then
 		raise exception 'D: % of % elements not found at their place', v_bad, cardinality(v_sorted); end if;
-	select count(*) into v_bad from generate_series(1, 500) n
-	where public.qorpera_folder_sorted_position(v_sorted, encode(extensions.digest('absent ' || n, 'sha256'), 'hex')) is not null;
+	for n in 1 .. 500 loop
+		if public.qorpera_folder_sorted_position(v_sorted, encode(extensions.digest('absent ' || n, 'sha256'), 'hex')) is not null then
+			v_bad := v_bad + 1; end if;
+	end loop;
 	if v_bad <> 0 or public.qorpera_folder_sorted_position(v_sorted, null) is not null
 		or public.qorpera_folder_sorted_position('{}', v_sorted[1]) is not null
 		or public.qorpera_folder_sorted_position(null, v_sorted[1]) is not null then

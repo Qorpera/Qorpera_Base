@@ -158,10 +158,10 @@ platform actor):
 
 | N | new folder before | new folder after (custom / generic plans) | copy before (custom / generic) | copy after (custom / generic) |
 | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 5.3 s | 0.68 / 0.51 s | 0.30 / 0.59 s | 0.33 / 0.46 s |
-| 2,500 | 14.9 s | 1.5 / 1.15 s | | |
-| 5,000 | 32.5 s | 3.1 / 2.3 s | 1.3 / 4.9 s | 1.4 / 1.4 s |
-| 10,000 | 87 s | 5.9 / 4.6 s | 2.6 / 17 s | 2.8 / 2.9 s |
+| 1,000 | 5.3 s | 0.61 / 0.49 s | 0.30 / 0.59 s | 0.33 / 0.46 s |
+| 2,500 | 14.9 s | 1.4 / 1.1 s | | |
+| 5,000 | 32.5 s | 2.7 / 2.3 s | 1.3 / 4.9 s | 1.4 / 1.4 s |
+| 10,000 | 87 s | 5.6 / 4.5 s | 2.6 / 17 s | 2.8 / 2.9 s |
 
 The catalog rows a new folder reads went from N × 20,000 to 20,000 + 2N.
 
