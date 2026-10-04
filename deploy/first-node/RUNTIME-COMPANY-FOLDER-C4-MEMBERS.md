@@ -200,12 +200,14 @@ a state file with `parseCompanyStateFile` before sending it, so a member sees a 
   - *Fields:* `name`, `role`, `figure`, `colour` (the web's `qorpera-<colour>` token without its prefix, and back),
     and the instructions as the body. `model` and `effort` stay as read. Grants, model policy, lifecycle, template and
     department have no place in `agent.md` (grants come from the roster's defaults and path authority, placement from
-    `sections.md`), so the editor drops them. The first assignment replaces the startup instructions: the create form
-    asks for it and it becomes `todos/first-assignment.md` (`writeTodoFile`, requested by the member).
+    `sections.md`), so the editor drops them. The web's create form has no first assignment, so a web-made agent has
+    no first todo and starts from its instructions when it is first messaged.
   - *Handles:* a member's listing hides folders they may not read, so a free handle can still be taken; `exists`
     picks the next handle with a new key.
 
-  A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message.
+  A new agent's kickoff run arrives with P15 (F2). Until then the agent waits for its first message. A deleted
+  agent is fenced at once (no run, routine or message wakes it); until P15 its routines still read `active` in the
+  index, though none can fire (F2, 4 October).
 - **Group chats:** *create* is a `new_folder` `agents/groups/<handle>` holding `group.md` (`writeGroupFile`): the
   members' list becomes `agents` (at least two) and `people`. *Edit* rewrites `group.md` with `expectedVersion` from
   the read; the room's version number and key go, and a lost answer is the operation key's replay. *Delete* removes
