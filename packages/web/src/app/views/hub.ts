@@ -99,6 +99,13 @@ export class HubController {
 		return this.#refresh;
 	}
 
+	/** A read that starts after any read already out, so it sees what changed meanwhile (a company just made). */
+	async refreshAfter(): Promise<void> {
+		if (this.#disposed) return;
+		await this.#refresh;
+		await this.refresh();
+	}
+
 	async companyRemoved(profileId: string): Promise<void> {
 		if (this.#disposed) return;
 		this.#membershipRevision++;
