@@ -83,7 +83,6 @@ export const AGENTS: Record<string, string> = {
 	"When it runs": "Hvornår den kører",
 	"On chosen days at a set time": "På valgte dage på et fast tidspunkt",
 	"Every so often": "Med jævne mellemrum",
-	"When something in the Company File changes": "Når noget i Virksomhedsfilen ændres",
 	"Interval unit": "Intervallets enhed",
 	minutes: "minutter",
 	hours: "timer",
@@ -91,10 +90,6 @@ export const AGENTS: Record<string, string> = {
 	Interval: "Interval",
 	Days: "Dage",
 	Time: "Tidspunkt",
-	"Company File path": "Sti i Virksomhedsfilen",
-	"What counts as a change": "Hvad der tæller som en ændring",
-	"This folder and everything in it": "Denne mappe og alt i den",
-	"Exactly this file": "Præcis denne fil",
 	Reply: "Svar",
 	"Always post a reply in the conversation": "Skriv altid et svar i samtalen",
 	"Reply only when there is something to say": "Svar kun, når der er noget at sige",
@@ -107,18 +102,20 @@ export const AGENTS: Record<string, string> = {
 	"Choose an interval between 5 minutes and 7 days.": "Vælg et interval mellem 5 minutter og 7 dage.",
 	"Choose at least one day, a time and a time zone such as Europe/Copenhagen.":
 		"Vælg mindst én dag, et tidspunkt og en tidszone som Europe/Copenhagen.",
-	"Enter a Company File path such as finance/invoices.": "Skriv en sti i Virksomhedsfilen som finance/invoices.",
 	"Give the routine a name and say what to do.": "Giv rutinen et navn, og skriv, hvad den skal gøre.",
 	"Connect a model account in Settings first.": "Forbind først en modelkonto i Indstillinger.",
 	"A ChatGPT plan can't pay for routines that start on a file change or a webhook.":
 		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook.",
-	"A ChatGPT plan can't pay for routines that start on a file change or a webhook. Choose another account.":
-		"Et ChatGPT-abonnement kan ikke betale for rutiner, der starter på en filændring eller en webhook. Vælg en anden konto.",
 	"Turn on “Work while you're away” for this ChatGPT plan in Settings first.":
 		"Slå først “Arbejd, mens du er væk” til for ChatGPT-abonnementet i Indstillinger.",
-	"{name} uses your ChatGPT plan for this routine while you are away. Pause the routine to stop it.":
-		"{name} bruger dit ChatGPT-abonnement til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
+	"This routine runs on your own account that works while you're away.":
+		"Rutinen kører på din egen konto, der arbejder, mens du er væk.",
 	"The routine could not be saved. Your draft is still here.": "Rutinen kunne ikke gemmes. Din kladde er her stadig.",
+	"The routine could not be saved.": "Rutinen kunne ikke gemmes.",
+	"Nothing changed.": "Intet er ændret.",
+	"This routine changed while you were editing it.": "Rutinen blev ændret, mens du redigerede den.",
+	"This routine could not be opened.": "Rutinen kunne ikke åbnes.",
+	"This routine is no longer available.": "Rutinen findes ikke længere.",
 	"Edit routine": "Rediger rutine",
 	"Back to routines": "Tilbage til rutiner",
 	"What should {name} do?": "Hvad skal {name} gøre?",
