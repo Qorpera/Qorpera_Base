@@ -11,9 +11,13 @@
 --   actor read one as it reads an old version of the path.
 -- * The commit's units JSON is unchanged: the clients parse it closed, and erasure scrubs its paths. Erasure deletes a
 --   path's conflict copies (the folder GC + erasure session adds that to qorpera_folder_erase).
--- No new lock: step 6 already takes every object a write or new folder names FOR KEY SHARE, whatever the outcome; the
--- rows' foreign keys take KEY SHARE on the commit row this transaction inserted and on the clock row the commit row's
--- own foreign key holds. Every patched body carries the marker 20260930042000 for the deploy guard.
+-- * A commit that saved nothing but kept copies publishes bytes, so it no longer returns early: it passes the anchor
+--   step and step 11's authority check under the clock (FOR NO KEY UPDATE), as a saving commit does, and then stops
+--   without a seq. A narrowing journaled after it started deciding refuses it, and its copies go with it.
+-- No new kind of lock: step 6 already takes every object a write or new folder names FOR KEY SHARE, whatever the
+-- outcome; the rows' foreign keys take KEY SHARE on the commit row this transaction inserted and on the clock row the
+-- commit row's own foreign key holds; the clock is taken last, as every saving commit takes it. Every patched body
+-- carries the marker 20260930042000 for the deploy guard.
 
 set local lock_timeout = '3s';
 
@@ -56,7 +60,7 @@ revoke all on public.qorpera_folder_conflict_copies from public, anon, authentic
 create function public.qorpera_folder_keep_conflict_copies(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_auth jsonb, p_commit_id uuid, p_unit_no integer, p_path text, p_unit jsonb, p_locked text[])
 returns integer language plpgsql security definer set search_path = '' as $$
-declare v_files jsonb; v_invalid boolean; v_kept integer;
+declare v_files jsonb; v_invalid boolean; v_kept integer; v_one jsonb;
 begin
 	if p_unit ->> 'op' = 'write' then
 		v_files := jsonb_build_array(jsonb_build_object('no', 1, 'path', p_path, 'file', p_unit -> 'file'));
@@ -84,10 +88,12 @@ begin
 			or not public.qorpera_company_path_valid(f ->> 'path')
 			or octet_length(public.qorpera_folder_key(f ->> 'path')) > 2600) then
 		return 0; end if;
-	if exists (select 1 from jsonb_array_elements(v_files) f
-		where public.qorpera_folder_file_bytes_problem(p_environment_id, p_profile_id, p_actor, p_auth, f -> 'file', p_locked)
-			is not null) then
-		return 0; end if;
+	-- One file at a time, as plain PL/pgSQL expressions: the locked set passes by reference, never copied per file.
+	for v_one in select value from jsonb_array_elements(v_files) loop
+		if public.qorpera_folder_file_bytes_problem(p_environment_id, p_profile_id, p_actor, p_auth, v_one -> 'file', p_locked)
+			is not null then
+			return 0; end if;
+	end loop;
 	insert into public.qorpera_folder_conflict_copies(environment_id, commit_id, unit_no, file_no, path, manifest_sha256,
 		file_sha256, bytes, media_type, executable)
 	select p_environment_id, p_commit_id, p_unit_no, (f ->> 'no')::integer, f ->> 'path', f -> 'file' ->> 'manifestSha256',
@@ -112,6 +118,14 @@ begin
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
+-- The count of kept copies (declared before the patches that use it).
+select pg_temp.p17_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$	v_longest_path integer; v_longest_key integer;
+$old$,
+	$new$	v_longest_path integer; v_longest_key integer;
+	v_kept integer := 0; -- 20260930042000 (P17)
+$new$);
+
 -- The commit, step 8: after a unit is decided, before its outcome is recorded. Every conflict a write or new folder
 -- can have is a failed version check (a changed or missing expected version, or a path already taken).
 select pg_temp.p17_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
@@ -123,9 +137,31 @@ $old$,
 		-- 20260930042000 (P17): a write or new folder that conflicted keeps its files on the receipt as conflict copies
 		-- (core §3 step 8), when its bytes would have passed (qorpera_folder_keep_conflict_copies).
 		if not v_ok and v_op in ('write','new_folder') and v_reason in ('version_changed','exists','unseen_change','missing') then
-			perform public.qorpera_folder_keep_conflict_copies(p_environment_id, v_file.profile_id, p_actor, v_auth_actor,
-				v_commit_id, v_no, v_eff_path, v_unit, v_objects);
+			v_kept := v_kept + public.qorpera_folder_keep_conflict_copies(p_environment_id, v_file.profile_id, p_actor,
+				v_auth_actor, v_commit_id, v_no, v_eff_path, v_unit, v_objects);
 		end if;
+$new$);
+
+-- A commit that saved nothing but kept copies publishes bytes too, so it does not return early: it passes the anchor
+-- step and step 11's authority check under the clock, as a saving commit does (a narrowing journaled after it started
+-- deciding refuses it, and the copies go with it). Then it stops before the clock moves: it changed no path.
+select pg_temp.p17_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$	if v_saved = 0 then
+		update public.qorpera_folder_commits set units = v_outcomes where id = v_commit_id;
+$old$,
+	$new$	if v_saved = 0 and v_kept = 0 then -- 20260930042000 (P17): kept copies go on to the checks below
+		update public.qorpera_folder_commits set units = v_outcomes where id = v_commit_id;
+$new$);
+select pg_temp.p17_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$	update public.qorpera_folder_clocks set last_seq = v_seq where environment_id = p_environment_id;
+$old$,
+	$new$	-- 20260930042000 (P17): a commit that kept copies and saved nothing has passed the authority check; it takes no seq.
+	if v_saved = 0 then
+		update public.qorpera_folder_commits set units = v_outcomes where id = v_commit_id;
+		return jsonb_build_object('schema','qorpera.folder-commit/v1','commitId',v_commit_id,'seq',null,'replay',false,
+			'units',v_outcomes);
+	end if;
+	update public.qorpera_folder_clocks set last_seq = v_seq where environment_id = p_environment_id;
 $new$);
 
 -- The roots (core §8): a conflict copy's manifest in any folder-v2 environment of the company, and its chunks through
