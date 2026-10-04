@@ -69,6 +69,14 @@ async function machine() {
 			if (contents === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
 			return contents;
 		},
+		// A cgroup directory lists what the kernel files under it name.
+		listSystemDirectory: async (path: string) => [
+			...new Set(
+				[...files.keys()].flatMap((file) =>
+					file.startsWith(`${path}/`) ? [file.slice(path.length + 1).split("/")[0]] : [],
+				),
+			),
+		],
 		home,
 		requireRoot: false,
 	};
@@ -236,13 +244,24 @@ describe("machine command guest", () => {
 		await startMachineCommand(running, m.ports);
 		await startMachineCommand(unread, m.ports);
 		m.exit(done, 0);
-		// The running command's unit: its processor time, and its processes (500 is the unit's relay, this helper).
-		const group = `/sys/fs/cgroup/qorpera.slice/qorpera-machine.slice/qorpera-machine-command-${running}.service`;
+		// The running command's unit in the commands' slice: its processor time, and its processes; 500 is the unit's
+		// relay (this helper's execute step), which copies the output.
+		const slice = "/sys/fs/cgroup/qorpera.slice/qorpera-machine.slice";
+		const group = `${slice}/qorpera-machine-command-${running}.service`;
 		m.files.set(`${group}/cpu.stat`, "usage_usec 2500000\nuser_usec 2000000\nsystem_usec 500000\n");
 		m.files.set(`${group}/cgroup.procs`, "500\n501\n502\n");
+		m.files.set(
+			"/proc/500/cmdline",
+			`/usr/bin/node\0/opt/qorpera-machine/cloud-machine-guest.mjs\0execute\0${running}`,
+		);
 		m.files.set("/proc/500/io", "rchar: 9000000\nwchar: 9000000\n");
+		m.files.set("/proc/501/cmdline", "/bin/bash\0-l\0-c\0sleep 1000");
 		m.files.set("/proc/501/io", "rchar: 4096\nwchar: 1024\nsyscr: 7\n");
 		m.files.set("/proc/502/io", "rchar: 100\nwchar: 0\n");
+		// The other running command's unit has no readable processor time: left out, not busy. Something in the slice
+		// that is no command unit is never measured.
+		m.files.set(`${slice}/qorpera-machine-command-${unread}.service/cgroup.procs`, "");
+		m.files.set(`${slice}/something-else.service/cpu.stat`, "usage_usec 99\n");
 		const never = randomUUID();
 		const observed = await observeMachine([done, running, unread, never], m.ports);
 		expect(observed).toEqual({
@@ -252,30 +271,56 @@ describe("machine command guest", () => {
 			at: 1_000_000,
 			// /proc/stat in USER_HZ (100 a second): 150 of 1000 ticks busy; the own units' cgroups, in microseconds.
 			cpu: { busyUsec: 1_500_000, totalUsec: 10_000_000, ownUsec: 10_000_000 },
-			// The relay's own reads and writes (its copy of the output) are not the command's; a command whose
-			// cgroup cannot be read is left out, not busy.
 			running: [{ commandId: running, cpuUsec: 2_500_000, ioBytes: 5220 }],
 			ended: [
 				{ commandId: done, state: "succeeded", exitCode: 0, outputTail: "" },
 				{ commandId: never, state: "lost", exitCode: null, outputTail: "" },
 			],
 		});
-		// Its unit's cgroup and main process come from systemd.
-		expect(m.system).toHaveBeenCalledWith("/usr/bin/systemctl", [
-			"show",
-			`qorpera-machine-command-${running}.service`,
-			"--property=ControlGroup,MainPID",
-		]);
-		// A unit whose cgroup systemd names outside the hierarchy is never read.
-		m.units.set(
-			`qorpera-machine-command-${running}.service`,
-			"LoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=/qorpera.slice/../../etc\nMainPID=500\n",
-		);
-		m.units.set("lxd-agent.service", "ControlGroup=\nMainPID=0\n");
-		expect(await observeMachine([running], m.ports)).toMatchObject({
-			running: [],
-			cpu: { busyUsec: 1_500_000, totalUsec: 10_000_000, ownUsec: 7_000_000 },
+		// Own units whose cgroup systemd names outside the hierarchy, or not at all, are never read.
+		m.units.set("qorpera.slice", "ControlGroup=/qorpera.slice/../../etc\n");
+		m.units.set("lxd-agent.service", "ControlGroup=\n");
+		expect(await observeMachine([], m.ports)).toMatchObject({ cpu: { ownUsec: 0 } });
+	});
+
+	it("measures every running command, also the ones beyond the executor's list of 64", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		const slice = "/sys/fs/cgroup/qorpera.slice/qorpera-machine.slice";
+		const ids = Array.from({ length: 300 }, () => randomUUID()).sort();
+		for (const [n, id] of ids.entries())
+			m.files.set(`${slice}/qorpera-machine-command-${id}.service/cpu.stat`, `usage_usec ${n}\n`);
+		// The executor lists none of them: SQL's list holds only the oldest 64 open commands.
+		const observed = await observeMachine([], m.ports);
+		expect(observed.running).toHaveLength(256);
+		expect(observed.running.map((item) => item.commandId)).toEqual(ids.slice(0, 256));
+		expect(observed.running[70]).toEqual({ commandId: ids[70], cpuUsec: 70, ioBytes: 0 });
+	});
+
+	it("keeps the ended commands' output tails within one reply", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		const ended: string[] = [];
+		for (let n = 0; n < 12; n++) {
+			const id = await m.request(`echo ${n}`);
+			await startMachineCommand(id, m.ports);
+			m.exit(id, 0);
+			ended.push(id);
+		}
+		// Each log holds 5000 bytes; a tail read gives its last `limit` of them.
+		const observed = await observeMachine(ended, {
+			...m.ports,
+			readLog: async (options) => ({
+				output: "x".repeat(Math.min(5000, options.read.limit ?? 5000)),
+				truncated: true,
+				log: { offset: 0, nextOffset: 5000, totalBytes: 5000, limitBytes: 67108864, limitReached: false },
+			}),
 		});
+		const tails = observed.ended.map((item) => Buffer.byteLength(item.outputTail));
+		expect(tails.slice(0, 8)).toEqual(Array(8).fill(2000));
+		expect(tails.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThanOrEqual(16384);
+		expect(tails.at(-1)).toBe(0);
 	});
 
 	it("answers every command-line call in its own reply file, a refusal only by its code", async () => {

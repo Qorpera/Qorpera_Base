@@ -94,6 +94,8 @@ export interface CompanyMachineEntry {
 	sleepDue: boolean;
 	stopDue: boolean;
 	removeDue: boolean;
+	/** A stop has begun: SQL granted its custody, and the machine is still wanted stopped (or asleep at zero hours). */
+	stopping: boolean;
 }
 export interface CompanyMachineOutcome {
 	/** null for admission, which is not one placement's step. */
@@ -114,12 +116,19 @@ export type CompanyMachineCommand =
 	| { action: "read"; read: CloudCodingCommandRead }
 	| { action: "cancel"; commandId: string };
 
-/** One sample of a running machine (the boot's own clock, in milliseconds): the whole machine, and each open command. */
+/** One sample of a running machine (the boot's own clock, in milliseconds): the whole machine, and each running command. */
 interface GuestSample {
 	bootId: string;
 	at: number;
 	machine: IdleRuleMachineSample;
 	commands: Map<string, { cpuSeconds: number; ioBytes: number }>;
+}
+/** What one look saw: the listed commands that ended, the running ones that were busy, and busy outside work. */
+interface GuestLook {
+	bootId: string;
+	ended: { commandId: string; state: unknown; exitCode?: unknown; outputTail: string }[];
+	busyCommands: string[];
+	outsideBusy: boolean;
 }
 
 function record(value: unknown, error: string): Record<string, unknown> {
@@ -140,7 +149,7 @@ function entry(value: unknown): CompanyMachineEntry {
 		!SHA.test(e.instanceSha256) ||
 		!["running", "stopped", "deleted"].includes(e.desiredState as string) ||
 		!["task", "always-on"].includes(e.lifetime as string) ||
-		![e.retired, e.reserved, e.removing, e.released, e.sleepDue, e.stopDue, e.removeDue].every(
+		![e.retired, e.reserved, e.removing, e.released, e.sleepDue, e.stopDue, e.removeDue, e.stopping].every(
 			(flag) => typeof flag === "boolean",
 		) ||
 		(e.bootId !== null && (typeof e.bootId !== "string" || !UUID.test(e.bootId))) ||
@@ -388,16 +397,16 @@ export class LxdCompanyMachineHost {
 			this.#guests.delete(e.placementId);
 			return { placementId: e.placementId, step: "start", state: "done" };
 		}
-		await this.#observe(e, bootId, signal);
+		await this.#record(e, await this.#look(e, bootId, signal), signal);
 		return { placementId: e.placementId, step: "commands", state: "done" };
 	}
 	/**
-	 * A running machine of this boot: how its commands ended, which of them were busy, and whether work outside them
-	 * was busy, by the one idle rule (`@qorpera/contracts` idle-rule) between this sample and the last one of the same
-	 * boot. The first sample of a boot is never busy. Busy work keeps the machine awake; a program that only waits
-	 * does not.
+	 * A running machine of this boot: how its commands ended, which running commands were busy, and whether work
+	 * outside them was busy, by the one idle rule (`@qorpera/contracts` idle-rule) between this sample and the last one
+	 * of the same boot. The guest measures every running command (up to 256), not only the oldest 64 SQL lists. The
+	 * first sample of a boot is never busy.
 	 */
-	async #observe(e: CompanyMachineEntry, bootId: string, signal: AbortSignal): Promise<void> {
+	async #look(e: CompanyMachineEntry, bootId: string, signal: AbortSignal): Promise<GuestLook> {
 		const observed = await this.#helper(e, ["observe", e.commands.length ? e.commands.join(",") : "-"], signal);
 		const cpu = record(observed.cpu, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		if (
@@ -407,7 +416,7 @@ export class LxdCompanyMachineHost {
 				(value) => Number.isSafeInteger(value) && Number(value) >= 0,
 			) ||
 			!Array.isArray(observed.running) ||
-			observed.running.length > 64 ||
+			observed.running.length > 256 ||
 			!Array.isArray(observed.ended) ||
 			observed.ended.length > 64
 		)
@@ -426,17 +435,18 @@ export class LxdCompanyMachineHost {
 			const item = record(value, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
 			if (
 				typeof item.commandId !== "string" ||
+				!UUID.test(item.commandId) ||
 				![item.cpuUsec, item.ioBytes].every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
 			)
 				throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
-			if (e.commands.includes(item.commandId))
-				sample.commands.set(item.commandId, {
-					cpuSeconds: Number(item.cpuUsec) / 1e6,
-					ioBytes: Number(item.ioBytes),
-				});
+			sample.commands.set(item.commandId, {
+				cpuSeconds: Number(item.cpuUsec) / 1e6,
+				ioBytes: Number(item.ioBytes),
+			});
 		}
 		const previous = this.#guests.get(e.placementId);
 		const same = previous?.bootId === bootId ? previous : undefined;
+		// SQL counts only this machine's open commands among them.
 		const busyCommands = same
 			? [...sample.commands].flatMap(([commandId, now]) => {
 					const before = same.commands.get(commandId);
@@ -449,24 +459,35 @@ export class LxdCompanyMachineHost {
 			.map((item) => record(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
 			.filter((item) => typeof item.commandId === "string" && e.commands.includes(item.commandId))
 			.map((item) => ({
-				commandId: item.commandId,
+				commandId: item.commandId as string,
 				state: item.state,
 				...(item.state === "succeeded" || item.state === "failed" ? { exitCode: item.exitCode } : {}),
 				outputTail: typeof item.outputTail === "string" ? item.outputTail.slice(-4000) : "",
 			}));
-		if (ended.length || busyCommands.length || outsideBusy)
+		return { bootId, ended, busyCommands, outsideBusy };
+	}
+	/** What a look saw, recorded in SQL: ended commands, and busy work, which keeps the machine awake. */
+	async #record(e: CompanyMachineEntry, look: GuestLook, signal: AbortSignal): Promise<void> {
+		if (look.ended.length || look.busyCommands.length || look.outsideBusy)
 			await this.#custody(e, "qorpera_record_company_machine_commands", signal, {
-				p_boot_id: bootId,
-				p_ended: ended,
-				p_busy_commands: busyCommands,
-				p_outside_busy: outsideBusy,
+				p_boot_id: look.bootId,
+				p_ended: look.ended,
+				p_busy_commands: look.busyCommands,
+				p_outside_busy: look.outsideBusy,
 			});
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
-		// A last look first, when this boot was seen before: what ended on its own is recorded as it ended, not as
-		// stopped, and a program busy again keeps the machine. Best effort: a guest that does not answer still stops.
-		if (e.bootId !== null && this.#guests.get(e.placementId)?.bootId === e.bootId)
-			await this.#observe(e, e.bootId, AbortSignal.any([signal, AbortSignal.timeout(30000)])).catch(() => undefined);
+		// A last look first, when this boot was seen before and no stop has begun: what ended on its own is recorded as
+		// it ended, not as stopped, and a program busy again keeps the machine. Once a stop has begun (its custody is
+		// granted: a retry after the programs were stopped), what the guest shows is the stop's work, so there is no
+		// look. A guest that does not answer still stops; a record SQL does not take leaves the machine running until a
+		// later pass records it.
+		if (!e.stopping && e.bootId !== null && this.#guests.get(e.placementId)?.bootId === e.bootId) {
+			const look = await this.#look(e, e.bootId, AbortSignal.any([signal, AbortSignal.timeout(30000)])).catch(
+				() => undefined,
+			);
+			if (look) await this.#record(e, look, signal);
+		}
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
 		try {
 			await this.#authorize(e, "stop", signal);

@@ -162,7 +162,7 @@ select pg_temp.check(pg_temp.record('[]', jsonb_build_array(pg_temp.command(1)),
 	and (pg_temp.command_row(1)).busy_at is null, 'another boot''s record changes nothing');
 select pg_temp.refused(format('select pg_temp.record(%L, %L, %L)', '[]', shapes.busy, shapes.outside), '22023', 'Machine commands invalid')
 from (values ('{}'::jsonb, false), ('[1]'::jsonb, false), ('["not-a-uuid"]'::jsonb, false),
-	((select jsonb_agg(extensions.gen_random_uuid()) from generate_series(1, 65)), false), ('[]'::jsonb, null)) shapes(busy, outside);
+	((select jsonb_agg(extensions.gen_random_uuid()) from generate_series(1, 257)), false), ('[]'::jsonb, null)) shapes(busy, outside);
 
 -- 3. A waiting dev server no longer keeps the task machine awake: an hour with no use and nothing busy, and it is due.
 select pg_temp.idle();
@@ -213,6 +213,13 @@ select pg_temp.idle();
 select pg_temp.check(pg_temp.custody('qorpera_authorize_executor_machine', ', ''stop''') ->> 'intent' = 'stop'
 	and (pg_temp.machine()).desired_state = 'stopped' and (pg_temp.machine()).desired_by = 'kernel',
 	'the stop custody agrees: the kernel wants the idle task machine stopped');
+-- The stop has begun. Should the guest still be reached (its programs stopped, the power-off not yet done), what it
+-- shows is the stop's work: nothing is recorded, and the suspension ends those commands with the stop's reason.
+select pg_temp.check((pg_temp.entry() ->> 'stopping')::boolean
+	and pg_temp.record(jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1), 'state', 'failed', 'exitCode', 143,
+		'outputTail', 'Terminated')), jsonb_build_array(pg_temp.command(1)), true) = '{"state":"stopping"}'
+	and (pg_temp.command_row(1)).ended_at is null and (pg_temp.command_row(1)).busy_at is null,
+	'a record while the stop has begun records nothing');
 select pg_temp.check(pg_temp.custody('qorpera_suspend_company_machine') ->> 'state' = 'suspended', 'the machine sleeps');
 select pg_temp.check((select c.state = 'lost' and c.end_reason = 'slept' from pg_temp.command_row(1) c)
 	and (pg_temp.command_row(3)).end_reason = 'slept' and (pg_temp.command_row(2)).end_reason is null,
@@ -256,6 +263,24 @@ begin
 	perform pg_temp.check(jsonb_array_length(v_work -> 'machineStopped') = 32 and v_work #>> '{machineStopped,0,command}' = 'job 1'
 		and v_work #>> '{machineStopped,31,command}' = 'job 32', 'at most 32 a run, oldest first');
 end $$;
+-- A machine a worker started keeps the conversation that dispatched it then: a later follow-up steered from elsewhere
+-- does not move where its outside work is told.
+insert into public.qorpera_company_machines(id, profile_id, environment_id, name, purpose, started_by_staff_agent_id, started_by_run_id,
+	started_by_receipt_id, requested_by_user_id, cpus, memory_bytes, disk_bytes, image, lifetime, desired_state)
+values ('87300000-0000-4000-8000-0000000000a3', '64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', 'm-873w',
+	'The worker''s', '64800000-0000-4000-8000-0000000000a1', '87300000-0000-4000-8000-0000000009a2', extensions.gen_random_uuid(),
+	'64800000-0000-4000-8000-000000000002', 1, 1073741824, 10737418240, 'standard', 'task', 'running');
+set local session_replication_role = replica;
+update public.qorpera_runtime_workers set steering_run_id = '87300000-0000-4000-8000-0000000009a2'
+where id = '87300000-0000-4000-8000-0000000009a1';
+set local session_replication_role = origin;
+update public.qorpera_company_machines set desired_state = 'stopped', desired_by = 'kernel', outside_busy_at = clock_timestamp()
+where id = '87300000-0000-4000-8000-0000000000a3';
+select public.qorpera_end_company_machine_commands(machine, 'lost') from public.qorpera_company_machines machine
+where machine.id = '87300000-0000-4000-8000-0000000000a3' \g /dev/null
+select pg_temp.check((select stop.conversation_run_id = (pg_temp.run()).id and stop.session_id = (pg_temp.run()).session_id
+	from public.qorpera_company_machine_outside_stops stop where stop.machine_id = '87300000-0000-4000-8000-0000000000a3'),
+	'a worker''s machine tells its outside work in the conversation that dispatched the worker when it started the machine');
 rollback;
 
 -- 5. Other ends say why: a member's stop, a restart under the commands, the computer hours running out.

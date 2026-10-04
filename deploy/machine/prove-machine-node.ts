@@ -78,6 +78,7 @@ async function main(path: string): Promise<void> {
 		sleepDue: false,
 		stopDue: false,
 		removeDue: false,
+		stopping: false,
 	};
 	const log: unknown[] = [];
 	const note = (event: string, detail: Record<string, unknown> = {}) => {

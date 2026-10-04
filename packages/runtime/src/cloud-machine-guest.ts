@@ -59,8 +59,12 @@ export interface MachineGuestPorts {
 	readCpu?: () => Promise<string>;
 	/** Where cgroup paths start (/sys/fs/cgroup). */
 	cgroupRoot?: string;
-	/** A kernel file: a cgroup's cpu.stat or cgroup.procs, or /proc/<pid>/io. */
+	/** A kernel file: a cgroup's cpu.stat or cgroup.procs, or /proc/<pid>/io or cmdline. */
 	readSystemFile?: (path: string) => Promise<string>;
+	/** The names in a kernel directory (the commands' slice cgroup). */
+	listSystemDirectory?: (path: string) => Promise<string[]>;
+	/** Reads a command's retained log (readCodingCommandLog). */
+	readLog?: typeof readCodingCommandLog;
 	/** Where commands start (/root). */
 	home?: string;
 	requireRoot?: boolean;
@@ -383,7 +387,7 @@ async function receipt(
 	if (intent.request.machineId !== guest.machineId) throw new Error("MACHINE_GUEST_COMMAND_SCOPE_CHANGED");
 	const { state, exitCode } = await observe(ports, commandId, intent, guest.bootId);
 	const paths = commandPaths(ports, commandId);
-	const page = await readCodingCommandLog({
+	const page = await (ports.readLog ?? readCodingCommandLog)({
 		path: paths.log,
 		owner: 0,
 		protectedOwner: 0,
@@ -499,14 +503,19 @@ const CLOCK_TICKS_PER_SECOND = 100;
 const OWN_UNITS = ["qorpera.slice", "lxd-agent.service"];
 /** At most this many processes of one command are read for the bytes they moved. */
 const COMMAND_PROCESSES_READ = 4096;
+/** At most this many running commands are measured each look, whichever the executor listed (its list holds the
+ * oldest 64 open ones); the reply stays within the executor's 64 KiB. */
+export const MACHINE_GUEST_RUNNING_MEASURED = 256;
+/** The ended commands' output tails share this many bytes in one reply; each keeps at most 2000. */
+const ENDED_TAIL_BUDGET = 16384;
 
 async function systemFile(ports: MachineGuestPorts, path: string): Promise<string> {
 	return (ports.readSystemFile ?? ((file: string) => readFile(file, "utf8")))(path);
 }
-/** A unit's cgroup and main process, as systemd shows them. */
-async function unitCgroup(ports: MachineGuestPorts, unit: string): Promise<{ directory: string; mainPid: string }> {
+/** A unit's cgroup, as systemd shows it. */
+async function unitCgroup(ports: MachineGuestPorts, unit: string): Promise<string> {
 	const fields = Object.fromEntries(
-		(await (ports.system ?? system)("/usr/bin/systemctl", ["show", unit, "--property=ControlGroup,MainPID"]))
+		(await (ports.system ?? system)("/usr/bin/systemctl", ["show", unit, "--property=ControlGroup"]))
 			.trim()
 			.split("\n")
 			.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
@@ -514,7 +523,7 @@ async function unitCgroup(ports: MachineGuestPorts, unit: string): Promise<{ dir
 	const group = String(fields.ControlGroup ?? "");
 	if (!/^\/[A-Za-z0-9_.@:\\/-]{1,512}$/.test(group) || group.split("/").includes(".."))
 		throw new Error("MACHINE_GUEST_CGROUP_UNKNOWN");
-	return { directory: join(ports.cgroupRoot ?? "/sys/fs/cgroup", group), mainPid: String(fields.MainPID ?? "") };
+	return join(ports.cgroupRoot ?? "/sys/fs/cgroup", group);
 }
 /** The processor time (microseconds) a cgroup used so far, its removed descendants' included. */
 async function cgroupUsec(ports: MachineGuestPorts, directory: string): Promise<number> {
@@ -522,39 +531,73 @@ async function cgroupUsec(ports: MachineGuestPorts, directory: string): Promise<
 	if (!Number.isSafeInteger(usage)) throw new Error("MACHINE_GUEST_CGROUP_UNKNOWN");
 	return usage;
 }
-/** A running command's use so far: its unit's processor time, and the bytes its processes passed to read and write
- * calls (the one idle rule's data signal), all but the unit's own relay, which copies the command's output. */
+/** A running command's use so far, read from its unit's cgroup: the unit's processor time, and the bytes its processes
+ * passed to read and write calls (the one idle rule's data signal), all but the unit's relay (this helper's execute
+ * step, which copies the command's output to its log). */
 async function commandUsage(
 	ports: MachineGuestPorts,
 	commandId: string,
+	directory: string,
 ): Promise<{ commandId: string; cpuUsec: number; ioBytes: number }> {
-	const { directory, mainPid } = await unitCgroup(ports, commandPaths(ports, commandId).unit);
 	const cpuUsec = await cgroupUsec(ports, directory);
 	let ioBytes = 0;
-	const pids = (await systemFile(ports, join(directory, "cgroup.procs")))
+	const pids = (await systemFile(ports, join(directory, "cgroup.procs")).catch(() => ""))
 		.split("\n")
-		.filter((pid) => /^[1-9][0-9]*$/.test(pid) && pid !== mainPid)
+		.filter((pid) => /^[1-9][0-9]*$/.test(pid))
 		.slice(0, COMMAND_PROCESSES_READ);
-	for (const pid of pids)
+	for (const pid of pids) {
+		const argv = (await systemFile(ports, `/proc/${pid}/cmdline`).catch(() => "")).split("\0");
+		if (argv.at(-3) === (ports.helper ?? PATHS.helper) && argv.at(-2) === "execute" && argv.at(-1) === commandId)
+			continue;
 		ioBytes += idleRuleProcessIoBytes(await systemFile(ports, `/proc/${pid}/io`).catch(() => ""));
+	}
 	return { commandId, cpuUsec, ioBytes };
+}
+/** Every running command's use, from the commands' slice: each command unit's cgroup there, at most
+ * MACHINE_GUEST_RUNNING_MEASURED of them. A command whose use cannot be read is left out (not busy). */
+async function runningUsage(
+	ports: MachineGuestPorts,
+): Promise<{ commandId: string; cpuUsec: number; ioBytes: number }[]> {
+	const slice = join(ports.cgroupRoot ?? "/sys/fs/cgroup", "qorpera.slice", PATHS.slice);
+	const unit = new RegExp(
+		`^${PATHS.unitPrefix}([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\\.service$`,
+	);
+	const commandIds = (
+		await (ports.listSystemDirectory ?? ((path: string) => readdir(path)))(slice).catch(() => [] as string[])
+	)
+		.flatMap((name) => unit.exec(name)?.[1] ?? [])
+		.sort()
+		.slice(0, MACHINE_GUEST_RUNNING_MEASURED);
+	const running: { commandId: string; cpuUsec: number; ioBytes: number }[] = [];
+	for (const commandId of commandIds)
+		running.push(
+			...(await commandUsage(ports, commandId, join(slice, `${PATHS.unitPrefix}${commandId}.service`))
+				.then((usage) => [usage])
+				.catch(() => [])),
+		);
+	return running;
 }
 
 /** One look inside for the executor's pass: how each listed command stands
- * (only the ended ones are reported, with the end of their output), what each
- * running one used so far, and the processor time of the whole machine and of
- * its own units, from which the executor sees busy commands and busy work
- * outside them (the one idle rule). The clock is the boot's (uptime). */
+ * (only the ended ones are reported, with the end of their output), what every
+ * running command used so far, listed or not, and the processor time of the
+ * whole machine and of its own units, from which the executor sees busy
+ * commands and busy work outside them (the one idle rule). The clock is the
+ * boot's (uptime). */
 export async function observeMachine(commandIds: readonly string[], ports: MachineGuestPorts = {}) {
 	requireRoot(ports);
 	if (commandIds.length > 64) throw new Error("MACHINE_GUEST_OBSERVATION_INVALID");
 	const guest = await identity(ports);
 	const ended: { commandId: string; state: string; exitCode: number | null; outputTail: string }[] = [];
-	const running: { commandId: string; cpuUsec: number; ioBytes: number }[] = [];
+	let tailBytes = ENDED_TAIL_BUDGET;
 	for (const commandId of commandIds) {
 		let current: CloudMachineCommandReceipt;
 		try {
-			current = await receipt(ports, guest, uuid(commandId), { tail: true, limit: 2000 });
+			// A read takes at least 4 bytes; with less of the budget left, the tail is left out below.
+			current = await receipt(ports, guest, uuid(commandId), {
+				tail: true,
+				limit: Math.max(4, Math.min(2000, tailBytes)),
+			});
 		} catch (error) {
 			// The executor lists what SQL knows; a command whose start never reached here is lost.
 			if (error instanceof Error && error.message === "MACHINE_COMMAND_UNKNOWN") {
@@ -563,16 +606,13 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 			}
 			throw error;
 		}
-		if (TERMINAL.has(current.state))
-			ended.push({ commandId, state: current.state, exitCode: current.exitCode, outputTail: current.output });
-		// A command whose use cannot be read counts as not busy.
-		else if (current.state === "running")
-			running.push(
-				...(await commandUsage(ports, commandId)
-					.then((usage) => [usage])
-					.catch(() => [])),
-			);
+		if (TERMINAL.has(current.state)) {
+			const outputTail = tailBytes >= 4 ? current.output : "";
+			tailBytes -= Buffer.byteLength(outputTail);
+			ended.push({ commandId, state: current.state, exitCode: current.exitCode, outputTail });
+		}
 	}
+	const running = await runningUsage(ports);
 	const at = await (ports.nowMs ?? uptimeMs)();
 	const cpu = (await (ports.readCpu ?? (() => readFile("/proc/stat", "utf8")))())
 		.split("\n")[0]
@@ -585,7 +625,7 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 	let ownUsec = 0;
 	for (const unit of OWN_UNITS)
 		ownUsec += await unitCgroup(ports, unit)
-			.then(({ directory }) => cgroupUsec(ports, directory))
+			.then((directory) => cgroupUsec(ports, directory))
 			.catch(() => 0);
 	return {
 		schema: "qorpera.machine-observation/v2",

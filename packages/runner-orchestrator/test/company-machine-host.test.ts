@@ -80,6 +80,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		sleepDue: false,
 		stopDue: false,
 		removeDue: false,
+		stopping: false,
 	};
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const refusals = new Map<string, string>();
@@ -340,6 +341,83 @@ describe("company machine host", () => {
 		expect(recordedAt).toBeGreaterThan(-1);
 		expect(recordedAt).toBeLessThan(methods.lastIndexOf("qorpera_authorize_executor_machine"));
 		expect(f.calls[recordedAt].args).toMatchObject({ p_ended: [expect.objectContaining({ commandId: id(7) })] });
+	});
+
+	it("counts a busy command beyond the 64 SQL lists: the guest measures every running command", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		// SQL lists the oldest 64 open commands; a 65th runs a build.
+		const listed = Array.from({ length: 64 }, () => randomUUID());
+		const build = randomUUID();
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: listed });
+		const sample = (seconds: number, buildCpu: number) => ({
+			at: seconds * 1000,
+			ended: [],
+			running: [
+				...listed.map((commandId) => ({ commandId, cpuUsec: 0, ioBytes: 0 })),
+				{ commandId: build, cpuUsec: buildCpu * 1e6, ioBytes: 0 },
+			],
+			cpu: { busyUsec: buildCpu * 1e6, totalUsec: seconds * 2e6, ownUsec: buildCpu * 1e6 },
+		});
+		f.observe(sample(10, 1));
+		await f.host.pass(f.signal);
+		f.observe(sample(20, 5));
+		await f.host.pass(f.signal);
+		expect(
+			f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1)?.args,
+		).toMatchObject({
+			p_busy_commands: [build],
+			p_outside_busy: false,
+		});
+	});
+
+	it("leaves the machine running when the last look's record does not reach SQL", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		f.observe({
+			at: 0,
+			ended: [],
+			running: [{ commandId: id(7), cpuUsec: 0, ioBytes: 0 }],
+			cpu: { busyUsec: 0, totalUsec: 0, ownUsec: 0 },
+		});
+		await f.host.pass(f.signal);
+		// The command was busy since: the look sees it, but its record finds the company's locks busy.
+		f.observe({
+			at: 10_000,
+			ended: [],
+			running: [{ commandId: id(7), cpuUsec: 5_000_000, ioBytes: 0 }],
+			cpu: { busyUsec: 5_000_000, totalUsec: 20_000_000, ownUsec: 5_000_000 },
+		});
+		f.busy.add("qorpera_record_company_machine_commands");
+		f.entry.sleepDue = true;
+		const before = f.calls.length;
+		expect((await f.host.pass(f.signal))[0]).toMatchObject({ state: "not-now" });
+		const methods = f.calls.slice(before).map((call) => call.method);
+		expect(methods).toContain("qorpera_record_company_machine_commands");
+		// No stop custody, no stop: the machine keeps running, programs and all, until a pass records what it saw.
+		expect(methods).not.toContain("qorpera_authorize_executor_machine");
+		expect(f.instance()?.status).toBe("Running");
+	});
+
+	it("takes no last look at a stop that has begun, so what the stop ended is not recorded as ended on its own", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		await f.host.pass(f.signal);
+		// An earlier pass stopped the programs and then failed to power the VM off: the guest shows the command failed.
+		f.observe({
+			at: 10_000,
+			ended: [{ commandId: id(7), state: "failed", exitCode: 143, outputTail: "Terminated" }],
+			running: [],
+			cpu: { busyUsec: 0, totalUsec: 20e6, ownUsec: 0 },
+		});
+		Object.assign(f.entry, { sleepDue: true, stopping: true });
+		const execs = f.client.execInstance.mock.calls.length;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.client.execInstance.mock.calls.slice(execs).map((call) => call[2][3])).not.toContain("observe");
+		expect(f.methods()).not.toContain("qorpera_record_company_machine_commands");
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
 	});
 
 	it("still sleeps when the guest does not answer its last look", async () => {
