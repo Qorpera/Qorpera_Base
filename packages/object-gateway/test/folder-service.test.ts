@@ -706,7 +706,10 @@ describe("folder service", () => {
 		// A folder deleted before its files: the files opened before still read.
 		expect(await io.read("private/salary.md", 1, 0, 6)).toEqual(Buffer.from("secret"));
 		const salary = core.entries.get("private/salary.md")!;
-		core.commit([{ ...core.entries.get("private")!, op: "delete" }, { ...salary, op: "delete" }]);
+		core.commit([
+			{ ...core.entries.get("private")!, op: "delete" },
+			{ ...salary, op: "delete" },
+		]);
 		await service.poll();
 		await service.settled();
 		expect(await io.list("")).toEqual(["archive", "readme.md", "tools"]);
