@@ -41,6 +41,9 @@ export interface AgentRoutineAccess {
 	accounts: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 	/** Owners and admins create, change, pause and resume routines. */
 	canManage: () => boolean;
+	/** Members who may write (contributors and up) choose one of their own logins for a routine whose login can't
+	 * pay; the cloud refuses one without write access to the routine's file. Owners and admins when absent. */
+	canWrite?: () => boolean;
 	/** A member's name, for a routine that started again when they turned on work while away, or whose login pays. */
 	memberName?: (userId: string) => string | undefined;
 	/** The signed-in member: a routine paid by their own login reads "Paid by you". */
@@ -59,6 +62,7 @@ export function routineAccessFor(
 		routines,
 		accounts: (signal) => accounts.listConnections(signal),
 		canManage: () => company.store.get().team?.capabilities.authorize === true,
+		canWrite: () => company.store.get().team?.capabilities.write === true,
 		memberName: (userId) => company.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 		memberId: company.userId,
 	};
@@ -446,10 +450,10 @@ export class AgentRoutines {
 			routine.status === "paused" && !this.#runsNow(routine)
 				? pauseWords(routine.pauseReason, this.#agent().displayName)
 				: null;
-		// Who pays, and since when (20260930064000). A routine whose login cannot pay waits for one: an owner or admin
-		// chooses one of their own logins here.
+		// Who pays, and since when (20260930064000). A routine whose login cannot pay waits for one: a member who may
+		// write chooses one of their own logins here.
 		const paid = this.#payers.get(id);
-		const choice = paid && !paid.canPay && manage && known && !ended ? this.#loginChoice(routine) : null;
+		const choice = paid && !paid.canPay && this.#mayChoose() && known && !ended ? this.#loginChoice(routine) : null;
 		const fact = (label: string, ...value: (Node | string | null)[]) =>
 			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
 		const lever = h("button", {
@@ -716,11 +720,16 @@ export class AgentRoutines {
 			);
 			if (routine) this.#setLever(lever, routine, manage);
 		}
-		for (const control of this.el.querySelectorAll<HTMLButtonElement>(
-			".routine-card-edit, .routine-list-footer .btn",
+		for (const control of this.el.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(
+			".routine-card-edit, .routine-list-footer .btn, .routine-login .btn, .routine-login select",
 		))
 			control.disabled = this.#busy;
 		if (!this.#message) this.el.querySelector(":scope > .surface-status")?.remove();
+	}
+	/** A member who may write chooses one of their own logins for a routine whose login can't pay. */
+	#mayChoose(): boolean {
+		const access = this.#access;
+		return access ? (access.canWrite ?? access.canManage)() : false;
 	}
 	#cardFor(id: string | undefined): HTMLElement | undefined {
 		return id
@@ -799,8 +808,10 @@ export class AgentRoutines {
 		}
 	}
 	async #toggle(routine: CloudRoutine): Promise<void> {
+		// Not while the editor opens over the list either: a change then would draw the list over it.
 		if (
 			this.#busy ||
+			this.#editing ||
 			!this.#access?.canManage() ||
 			!this.#files.has(routine.routineId) ||
 			(this.#archived() && !this.#runsNow(routine))
@@ -885,8 +896,19 @@ export class AgentRoutines {
 	 * ChatGPT plan only once its member turned on work while away, and never for a file-change or webhook routine. The
 	 * web lists no company accounts, so a routine is moved to one elsewhere. */
 	async #openChoice(routine: CloudRoutine): Promise<void> {
-		if (this.#busy || this.#editing || !this.#access?.canManage()) return;
-		if (!(await this.#loadAccounts()) || this.#signal.aborted || this.#editing) return;
+		if (this.#busy || this.#editing || !this.#mayChoose()) return;
+		// The read holds the page as a switch's change does: no editor opens over the list meanwhile, which a failed
+		// read's redraw (the list says why) would close with its draft.
+		this.#busy = true;
+		this.#setControls();
+		const loaded = await this.#loadAccounts();
+		this.#busy = false;
+		if (this.#signal.aborted || this.#editing) return;
+		if (!loaded) {
+			// The list says why; its controls are free again.
+			this.#setControls();
+			return;
+		}
 		const listening = routine.triggers.some((item) => item.kind === "listener");
 		const logins = this.#accounts.filter((item) => canPayForRoutine(item, listening));
 		this.#choosing = {
@@ -916,7 +938,7 @@ export class AgentRoutines {
 	async #useLogin(routine: WebRoutine): Promise<void> {
 		const access = this.#access;
 		const choosing = this.#choosing;
-		if (this.#busy || !access?.canManage() || !choosing || choosing.routineId !== routine.routineId) return;
+		if (this.#busy || !access || !this.#mayChoose() || !choosing || choosing.routineId !== routine.routineId) return;
 		const account = choosing.logins.find((item) => item.connectionId === choosing.chosen);
 		if (!account) return;
 		this.#busy = true;

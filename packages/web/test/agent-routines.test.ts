@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import type { CloudMemberFolderCommit, CloudMemberFolderUnit } from "@qorpera/cloud-client/cloud-member-folder";
-import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import type {
+	NativeExecutionConnections,
+	NativeMemberConnection,
+} from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { cloudRoutineTriggerOfFile, routineFileTrigger } from "@qorpera/cloud-client/cloud-routine-file";
 import {
 	type CloudRoutine,
@@ -38,7 +41,7 @@ import {
 	type WebRoutines,
 } from "../src/cloud/routines.ts";
 import { fmtDate, fmtTime } from "../src/ui/dom.ts";
-import { profileA, settle, staff } from "./fixtures.ts";
+import { deferred, profileA, settle, staff } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 const account = {
@@ -261,12 +264,19 @@ function mocked(items: CloudRoutine[]) {
 		),
 	} satisfies WebRoutines;
 }
-function mount(items: CloudRoutine[], manage = true, connections: NativeMemberConnection[] = [account]) {
+/** The page over routine calls that answer at once. `write`: a member who may write (contributors and up), as one
+ * who manages when not said. */
+function mount(
+	items: CloudRoutine[],
+	manage = true,
+	connections: NativeMemberConnection[] = [account],
+	write = manage,
+) {
 	const routines = mocked(items);
 	const stop = new AbortController();
 	const view = new AgentRoutines(
 		() => staff,
-		{ routines, accounts: async () => ({ connections }), canManage: () => manage },
+		{ routines, accounts: async () => ({ connections }), canManage: () => manage, canWrite: () => write },
 		stop.signal,
 	);
 	document.body.append(view.el);
@@ -469,13 +479,13 @@ describe("agent routines section", () => {
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
 	});
-	it("names a member from the company's team", () => {
+	it("names a member from the company's team, and lets a member who may write choose a login", () => {
 		const anna = "10000000-0000-4000-8000-000000000031";
 		const company = {
 			store: {
 				get: () => ({
 					team: {
-						capabilities: { authorize: false },
+						capabilities: { authorize: false, write: true },
 						members: [{ userId: anna, displayName: "Anna", email: "anna@example.test", role: "member" }],
 					},
 				}),
@@ -488,6 +498,8 @@ describe("agent routines section", () => {
 		const access = routineAccessFor(company, actions)!;
 		expect(access.memberName?.(anna)).toBe("Anna");
 		expect(access.memberName?.("10000000-0000-4000-8000-000000000032")).toBeUndefined();
+		// A contributor writes but does not manage: they choose their own login for a routine that waits.
+		expect([access.canManage(), access.canWrite?.()]).toEqual([false, true]);
 	});
 	it("says when a routine started again because its member turned on work while away", async () => {
 		const resumed = {
@@ -2682,17 +2694,101 @@ describe("who pays for a routine (20260930064000)", () => {
 		expect(picker.value).toBe("10000000-0000-4000-8000-000000000011");
 		both.stop.abort();
 		document.body.replaceChildren();
-		// A member who cannot manage routines, and a routine whose login pays, get no choice.
-		for (const [manage, update] of [
+		// A member who may not write (a viewer), and a routine whose login pays, get no choice.
+		for (const [write, update] of [
 			[false, waits],
 			[true, {}],
 		] as const) {
-			const f = mount([waiting()], manage);
+			const f = mount([waiting()], write);
 			f.routines.payer.mockResolvedValue(paid(update));
 			await vi.waitFor(() => expect(whoPays(cards(f.view.el)[0]!)).not.toBeNull());
 			expect(whoPays(cards(f.view.el)[0]!)?.textContent).toBe(`Paid by a member since ${fmtDate(SINCE)}`);
 			expect(f.view.el.textContent).not.toContain("Choose a login");
 			f.stop.abort();
+			document.body.replaceChildren();
+		}
+	});
+
+	it("lets a contributor choose one of their own logins, and says so plainly when the routine is not theirs to change", async () => {
+		// A contributor: no switch or Edit, but a login of their own for a routine that waits.
+		const f = mount([waiting()], false, [account], true);
+		f.routines.payer.mockResolvedValue(paid(waits));
+		await choose(f.view);
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["switch:false"]);
+		expect(cards(f.view.el)[0]!.querySelector('[role="switch"]')!.classList.contains("is-locked")).toBe(true);
+		expect([...field<HTMLSelectElement>(f.view.el, "Login").options].map((option) => option.value)).toEqual([
+			account.connectionId,
+		]);
+		f.routines.setLogin.mockResolvedValueOnce(paid({ changedByUserId: MEMBER, changeReason: "pick" }));
+		f.routines.payer.mockResolvedValue(paid({ changedByUserId: MEMBER, changeReason: "pick" }));
+		click(f.view.el, "Use this login");
+		await vi.waitFor(() => expect(f.routines.setLogin).toHaveBeenCalledWith(ROUTINE_ID, account));
+		await vi.waitFor(() => expect(f.view.el.querySelector(".routine-login")).toBeNull());
+		f.stop.abort();
+		document.body.replaceChildren();
+		// Without write access to the routine's file, the cloud refuses: the list says so in plain words.
+		const g = mount([waiting()], false, [account], true);
+		g.routines.payer.mockResolvedValue(paid(waits));
+		g.routines.setLogin.mockRejectedValue(new WebRoutineLoginRefusedError("unavailable"));
+		await choose(g.view);
+		click(g.view.el, "Use this login");
+		await vi.waitFor(() =>
+			expect(g.view.el.querySelector(":scope > .surface-status")?.textContent).toBe(
+				"You can't change who pays for this routine.",
+			),
+		);
+		expect(g.view.el.querySelector(".routine-login select")).toBeNull();
+		g.stop.abort();
+	});
+
+	it("holds Edit, New routine and the switch while Choose a login reads the logins, so a failed read closes no draft", async () => {
+		for (const start of ["choose", "switch"] as const) {
+			const pending = deferred<NativeExecutionConnections>();
+			const accounts = vi
+				.fn<(signal: AbortSignal) => Promise<NativeExecutionConnections>>()
+				.mockReturnValueOnce(pending.promise)
+				.mockResolvedValue({ connections: [account] });
+			const routines = mocked([waiting()]);
+			routines.payer.mockResolvedValue(paid(waits));
+			const stop = new AbortController();
+			const view = new AgentRoutines(() => staff, { routines, accounts, canManage: () => true }, stop.signal);
+			document.body.append(view.el);
+			await vi.waitFor(() => expect(view.el.textContent).toContain("Choose a login"));
+			if (start === "choose") {
+				view.el.querySelector<HTMLButtonElement>(".routine-card-summary")!.click();
+				click(view.el, "Choose a login");
+			} else view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+			expect(accounts).toHaveBeenCalledTimes(1);
+			// While the logins are read, nothing can open an editor over the list, change a switch or choose again.
+			const button = (label: string) =>
+				[...view.el.querySelectorAll("button")].find((item) => item.textContent === label)!;
+			const held = () => ["Edit", "New routine", "Choose a login"].map((label) => button(label).disabled);
+			expect(held()).toEqual([true, true, true]);
+			expect(view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBe("true");
+			button("Edit").click();
+			button("New routine").click();
+			view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+			await settle();
+			expect(view.el.querySelector(".routine-editor")).toBeNull();
+			expect(routines.open).not.toHaveBeenCalled();
+			expect(routines.setEnabled).not.toHaveBeenCalled();
+			expect(accounts).toHaveBeenCalledTimes(1);
+			// The read fails: the list says why, and its controls are free again.
+			pending.reject(new Error("offline"));
+			await vi.waitFor(() =>
+				expect(view.el.querySelector(":scope > .surface-status")?.textContent).toBe(
+					"Your model accounts could not be read. Try again.",
+				),
+			);
+			expect(held()).toEqual([false, false, false]);
+			expect(view.el.querySelector('[role="switch"]')!.getAttribute("aria-disabled")).toBeNull();
+			// A draft entered now stays: the list is not read again over the open editor.
+			await openEditor(view, "New routine");
+			field(view.el, "Routine name").value = "Weekly close";
+			view.refresh();
+			await settle();
+			expect(field(view.el, "Routine name").value).toBe("Weekly close");
+			stop.abort();
 			document.body.replaceChildren();
 		}
 	});
