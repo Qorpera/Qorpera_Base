@@ -405,7 +405,9 @@ describe("connection file writer, review round 1", () => {
 
 	it("counts an account's length in characters, as the database does", () => {
 		const account = "\u{1F600}".repeat(254);
-		expect(parseConnectionFileClaim(claim({ settings: { ...gmail, account } }))?.settings?.account).toBe(account);
+		expect(
+			(parseConnectionFileClaim(claim({ settings: { ...gmail, account } }))?.settings as ConnectionSettings).account,
+		).toBe(account);
 		expect(() => parseConnectionFileClaim(claim({ settings: { ...gmail, account: `${account}x` } }))).toThrow(
 			PlatformFolderProblem,
 		);
@@ -521,18 +523,19 @@ describe("hook and mailbox files (E1)", () => {
 		createdBy: memberId,
 		createdAt: "2026-10-04T08:00:00Z",
 	};
+	const hookBody = "Payments from Stripe wake the Analyst.";
 	const hookClaim = (overrides: Record<string, unknown> = {}) =>
 		claim({
 			subjectKind: "hook",
 			operationKey: `hook-file:${secretId}:3`,
 			settings: hookSettings,
 			path: "connections/hook-stripe-payments.md",
-			body: "Payments from Stripe wake the Analyst.",
+			body: hookBody,
 			...overrides,
 		});
 
 	it("reads a hook's and a mailbox's claim by their own allow-lists, and a claim from before E1 as a vault's", () => {
-		expect(parseConnectionFileClaim(hookClaim())).toMatchObject({ subjectKind: "hook", body: hookClaim().body });
+		expect(parseConnectionFileClaim(hookClaim())).toMatchObject({ subjectKind: "hook", body: hookBody });
 		expect(
 			parseConnectionFileClaim(
 				claim({
