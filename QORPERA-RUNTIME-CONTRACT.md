@@ -4604,8 +4604,10 @@ amendment governs. In-place edits are marked "(changed in place)".
        part.
      - On an agent's machine, programs outside its commands, such as
        containers, count by the processor share of the whole machine beyond
-       its commands' own use (about 2% of the machine). That share belongs to
-       the agent that started the machine.
+       its commands' own use (about 2% of the machine). The machine's own
+       control (its watchdog and the platform's calls into it) is not
+       outside work. That share belongs to the agent that started the
+       machine, and its threshold lives with the other two.
      - A program that only waits (a dev server, an idle database, `sleep`, a
        watcher with nothing to do) is not busy.
 2. **Seats follow the same test.** A computer's seat is in use under the same

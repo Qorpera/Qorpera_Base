@@ -7,6 +7,9 @@ import {
 	type CloudCodingCommandRead,
 	type CloudCodingNasPolicy,
 	type CloudMachineCommandReceipt,
+	type IdleRuleMachineSample,
+	idleRuleBusy,
+	idleRuleOutsideBusy,
 	parseCloudCodingNasPolicy,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
@@ -30,9 +33,6 @@ const PATHS = CLOUD_MACHINE_GUEST_PATHS;
 /** Long on purpose: jobs of hours must outlive an executor restart or a
  * release cut. It stops the commands of a machine the control plane lost. */
 export const COMPANY_MACHINE_LEASE_MS = 900000;
-/** A machine that used more than this share of its processors since the last
- * pass is in use, even with no command running (a detached container). */
-const BUSY_SHARE = 0.02;
 
 export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_admit_executor_machines",
@@ -114,6 +114,14 @@ export type CompanyMachineCommand =
 	| { action: "read"; read: CloudCodingCommandRead }
 	| { action: "cancel"; commandId: string };
 
+/** One sample of a running machine (the boot's own clock, in milliseconds): the whole machine, and each open command. */
+interface GuestSample {
+	bootId: string;
+	at: number;
+	machine: IdleRuleMachineSample;
+	commands: Map<string, { cpuSeconds: number; ioBytes: number }>;
+}
+
 function record(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
 	return value as Record<string, unknown>;
@@ -155,8 +163,8 @@ export class LxdCompanyMachineHost {
 	readonly #storage: CodingNasStorage;
 	readonly #repositories: CompanyMachineRepositoryStorage;
 	readonly #work = new Map<string, Promise<unknown>>();
-	/** Per placement: the boot whose helper was checked and prepared, and the last processor sample. */
-	readonly #guests = new Map<string, { bootId: string; busyTicks: number; totalTicks: number }>();
+	/** Per placement: the boot whose helper was checked and prepared, and its last sample. */
+	readonly #guests = new Map<string, GuestSample>();
 	/** When this process first saw the placement started and its guest not yet answering. */
 	readonly #starting = new Map<string, number>();
 	readonly #generation = Math.floor(Date.now() / 1000);
@@ -380,27 +388,60 @@ export class LxdCompanyMachineHost {
 			this.#guests.delete(e.placementId);
 			return { placementId: e.placementId, step: "start", state: "done" };
 		}
-		// A running machine of this boot: how its commands ended, and whether it is busy.
+		await this.#observe(e, bootId, signal);
+		return { placementId: e.placementId, step: "commands", state: "done" };
+	}
+	/**
+	 * A running machine of this boot: how its commands ended, which of them were busy, and whether work outside them
+	 * was busy, by the one idle rule (`@qorpera/contracts` idle-rule) between this sample and the last one of the same
+	 * boot. The first sample of a boot is never busy. Busy work keeps the machine awake; a program that only waits
+	 * does not.
+	 */
+	async #observe(e: CompanyMachineEntry, bootId: string, signal: AbortSignal): Promise<void> {
 		const observed = await this.#helper(e, ["observe", e.commands.length ? e.commands.join(",") : "-"], signal);
 		const cpu = record(observed.cpu, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
 		if (
-			observed.schema !== "qorpera.machine-observation/v1" ||
+			observed.schema !== "qorpera.machine-observation/v2" ||
 			observed.bootId !== bootId ||
-			!Number.isSafeInteger(cpu.busyTicks) ||
-			!Number.isSafeInteger(cpu.totalTicks) ||
+			![observed.at, cpu.busyUsec, cpu.totalUsec, cpu.ownUsec].every(
+				(value) => Number.isSafeInteger(value) && Number(value) >= 0,
+			) ||
+			!Array.isArray(observed.running) ||
+			observed.running.length > 64 ||
 			!Array.isArray(observed.ended) ||
 			observed.ended.length > 64
 		)
 			throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
+		const sample: GuestSample = {
+			bootId,
+			at: Number(observed.at),
+			machine: {
+				busySeconds: Number(cpu.busyUsec) / 1e6,
+				totalSeconds: Number(cpu.totalUsec) / 1e6,
+				ownSeconds: Number(cpu.ownUsec) / 1e6,
+			},
+			commands: new Map(),
+		};
+		for (const value of observed.running) {
+			const item = record(value, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
+			if (
+				typeof item.commandId !== "string" ||
+				![item.cpuUsec, item.ioBytes].every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
+			)
+				throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
+			if (e.commands.includes(item.commandId))
+				sample.commands.set(item.commandId, { cpuSeconds: Number(item.cpuUsec) / 1e6, ioBytes: Number(item.ioBytes) });
+		}
 		const previous = this.#guests.get(e.placementId);
-		const busyTicks = Number(cpu.busyTicks),
-			totalTicks = Number(cpu.totalTicks);
-		const busy =
-			!!previous &&
-			previous.bootId === bootId &&
-			totalTicks > previous.totalTicks &&
-			(busyTicks - previous.busyTicks) / (totalTicks - previous.totalTicks) >= BUSY_SHARE;
-		this.#guests.set(e.placementId, { bootId, busyTicks, totalTicks });
+		const same = previous?.bootId === bootId ? previous : undefined;
+		const busyCommands = same
+			? [...sample.commands].flatMap(([commandId, now]) => {
+					const before = same.commands.get(commandId);
+					return before && idleRuleBusy({ ...before, at: same.at }, { ...now, at: sample.at }) ? [commandId] : [];
+				})
+			: [];
+		const outsideBusy = !!same && idleRuleOutsideBusy(same.machine, sample.machine);
+		this.#guests.set(e.placementId, sample);
 		const ended = observed.ended
 			.map((item) => record(item, "COMPANY_MACHINE_GUEST_REPLY_INVALID"))
 			.filter((item) => typeof item.commandId === "string" && e.commands.includes(item.commandId))
@@ -410,15 +451,19 @@ export class LxdCompanyMachineHost {
 				...(item.state === "succeeded" || item.state === "failed" ? { exitCode: item.exitCode } : {}),
 				outputTail: typeof item.outputTail === "string" ? item.outputTail.slice(-4000) : "",
 			}));
-		if (ended.length || busy)
+		if (ended.length || busyCommands.length || outsideBusy)
 			await this.#custody(e, "qorpera_record_company_machine_commands", signal, {
 				p_boot_id: bootId,
 				p_ended: ended,
-				p_busy: busy,
+				p_busy_commands: busyCommands,
+				p_outside_busy: outsideBusy,
 			});
-		return { placementId: e.placementId, step: "commands", state: "done" };
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
+		// A last look first, when this boot was seen before: what ended on its own is recorded as it ended, not as
+		// stopped, and a program busy again keeps the machine. Best effort: a guest that does not answer still stops.
+		if (e.bootId !== null && this.#guests.get(e.placementId)?.bootId === e.bootId)
+			await this.#observe(e, e.bootId, AbortSignal.any([signal, AbortSignal.timeout(30000)])).catch(() => undefined);
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
 		try {
 			await this.#authorize(e, "stop", signal);

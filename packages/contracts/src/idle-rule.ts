@@ -42,3 +42,36 @@ export function idleRuleBusy(before: IdleRuleSample, after: IdleRuleSample): boo
 		(after.ioBytes - before.ioBytes) * IDLE_RULE_SAMPLE_SECONDS >= IDLE_RULE_BUSY_BYTES_PER_SAMPLE * seconds
 	);
 }
+
+/** The bytes a process passed to read and write calls so far (/proc/<pid>/io rchar + wchar); 0 when unreadable. */
+export function idleRuleProcessIoBytes(io: string): number {
+	const read = Number(/^rchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	const written = Number(/^wchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	return Number.isSafeInteger(read) && Number.isSafeInteger(written) ? read + written : 0;
+}
+
+/**
+ * On an agent's machine, work outside its commands (containers, programs left behind) is busy while the whole
+ * machine's processors, beyond what its commands and its own control used, are at least 2% busy over the sample:
+ * a busy container counts, the machine's own quiet background does not.
+ */
+export const IDLE_RULE_OUTSIDE_BUSY_MACHINE_SHARE = 0.02;
+
+/** One sample of a whole machine: processor time (seconds, all processors) busy, in total, and its own units' use. */
+export interface IdleRuleMachineSample {
+	readonly busySeconds: number;
+	readonly totalSeconds: number;
+	readonly ownSeconds: number;
+}
+
+/**
+ * Whether work outside a machine's commands was busy between two samples of the same boot. Counters that went down
+ * (a unit's group was stopped and started again) make the sample count as nothing.
+ */
+export function idleRuleOutsideBusy(before: IdleRuleMachineSample, after: IdleRuleMachineSample): boolean {
+	const total = after.totalSeconds - before.totalSeconds,
+		busy = after.busySeconds - before.busySeconds,
+		own = after.ownSeconds - before.ownSeconds;
+	if (!(total > 0) || busy < 0 || own < 0) return false;
+	return busy - own >= IDLE_RULE_OUTSIDE_BUSY_MACHINE_SHARE * total;
+}

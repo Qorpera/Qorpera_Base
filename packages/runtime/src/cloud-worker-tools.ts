@@ -663,6 +663,12 @@ export interface CloudAgentOpenWork {
 	workers: { active: number; blocked: number };
 	/** Commands the platform stopped on the agent's computer, told once in their conversation. */
 	computerStopped?: { command: string; startedAt: string; endedAt: string; reason: string }[];
+	/** Machine commands, and busy work outside the commands of a machine the agent started, that a stop or restart of
+	 * the machine ended, told once in their conversation. */
+	machineStopped?: (
+		| { machine: string; work: "command"; command: string; startedAt: string; endedAt: string; reason: string }
+		| { machine: string; work: "outside"; busyAt: string; endedAt: string; reason: string }
+	)[];
 }
 
 export async function describeCloudAgentOpenWork(
@@ -712,10 +718,38 @@ export async function describeCloudAgentOpenWork(
 			};
 		});
 	}
+	let machineStopped: CloudAgentOpenWork["machineStopped"];
+	if (result.machineStopped !== undefined) {
+		if (!Array.isArray(result.machineStopped) || result.machineStopped.length < 1 || result.machineStopped.length > 32)
+			throw new Error("Open work differs");
+		machineStopped = result.machineStopped.map((item) => {
+			const work = (item as { work?: unknown } | null)?.work;
+			const keys =
+				work === "command"
+					? ["machine", "work", "command", "startedAt", "endedAt", "reason"]
+					: ["machine", "work", "busyAt", "endedAt", "reason"];
+			const stopped = object(item, keys, keys);
+			if (
+				(work !== "command" && work !== "outside") ||
+				keys.some((key) => typeof stopped[key] !== "string") ||
+				!["slept", "hours", "stopped", "lost"].includes(stopped.reason as string)
+			)
+				throw new Error("Open work differs");
+			const shared = {
+				machine: stopped.machine as string,
+				endedAt: stopped.endedAt as string,
+				reason: stopped.reason as string,
+			};
+			return work === "command"
+				? { ...shared, work, command: stopped.command as string, startedAt: stopped.startedAt as string }
+				: { ...shared, work, busyAt: stopped.busyAt as string };
+		});
+	}
 	return {
 		todos: { open: count(todos.open), blocked: count(todos.blocked) },
 		workers: { active: count(workers.active), blocked: count(workers.blocked) },
 		...(computerStopped ? { computerStopped } : {}),
+		...(machineStopped ? { machineStopped } : {}),
 	};
 }
 

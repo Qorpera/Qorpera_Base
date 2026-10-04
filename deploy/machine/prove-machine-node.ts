@@ -113,7 +113,7 @@ async function main(path: string): Promise<void> {
 			if (method === "qorpera_record_company_machine_commands") {
 				for (const ended of args.p_ended as { commandId: string }[])
 					entry.commands = entry.commands.filter((id) => id !== ended.commandId);
-				note("commands", { ended: args.p_ended, busy: args.p_busy });
+				note("commands", { ended: args.p_ended, busyCommands: args.p_busy_commands, outsideBusy: args.p_outside_busy });
 				return { state: "recorded" };
 			}
 			if (method === "qorpera_record_company_machine_error") {

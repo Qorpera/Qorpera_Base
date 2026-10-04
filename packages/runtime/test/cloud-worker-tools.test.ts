@@ -520,7 +520,7 @@ describe("agent todo and worker tools", () => {
 			schema: "qorpera.agent-open-work/v1",
 			runId: binding.runId,
 			...counts,
-			machineStopped: [{}],
+			coffeeStopped: [{}],
 		});
 		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual(counts);
 		for (const broken of [
@@ -536,6 +536,56 @@ describe("agent todo and worker tools", () => {
 				runId: binding.runId,
 				...counts,
 				computerStopped: broken,
+			});
+			await expect(describeCloudAgentOpenWork(binding, { call }, signal)).rejects.toThrow();
+		}
+	});
+
+	it("passes on what a machine's stop or restart ended, commands and outside work, and refuses what it does not know", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const signal = new AbortController().signal;
+		const counts = { todos: { open: 0, blocked: 0 }, workers: { active: 0, blocked: 0 } };
+		const command = {
+			machine: "build-a",
+			work: "command",
+			command: "npm run dev",
+			startedAt: "2026-10-04T02:00:00.123456+00:00",
+			endedAt: "2026-10-04T03:00:00.654321+00:00",
+			reason: "slept",
+		};
+		const outside = {
+			machine: "build-a",
+			work: "outside",
+			busyAt: "2026-10-04T02:10:00+00:00",
+			endedAt: "2026-10-04T03:00:00+00:00",
+			reason: "hours",
+		};
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			machineStopped: [command, outside],
+		}));
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual({
+			...counts,
+			machineStopped: [command, outside],
+		});
+		for (const broken of [
+			[],
+			Array.from({ length: 33 }, () => command),
+			[{ ...command, reason: "closed" }],
+			[{ ...command, work: "shell" }],
+			[{ ...command, busyAt: command.startedAt }],
+			[{ ...outside, command: "docker" }],
+			[{ ...outside, busyAt: 1 }],
+			[{ ...command, machine: null }],
+			{ ...command },
+		]) {
+			call.mockResolvedValueOnce({
+				schema: "qorpera.agent-open-work/v1",
+				runId: binding.runId,
+				...counts,
+				machineStopped: broken,
 			});
 			await expect(describeCloudAgentOpenWork(binding, { call }, signal)).rejects.toThrow();
 		}

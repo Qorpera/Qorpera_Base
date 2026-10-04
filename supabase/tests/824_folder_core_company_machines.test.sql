@@ -255,7 +255,7 @@ begin
 	foreach v_state in array array[
 		pg_temp.sql_custody('qorpera_mark_company_machine_running', 'c-run', format(', %L', '82400000-0000-4000-8000-0000000000d1')),
 		pg_temp.sql_custody('qorpera_record_company_machine_commands', 'c-run',
-			format(', %L, %L, true', '82400000-0000-4000-8000-0000000000d1', '[]')),
+			format(', %L, %L, %L, true', '82400000-0000-4000-8000-0000000000d1', '[]', '[]')),
 		pg_temp.sql_custody('qorpera_authorize_executor_machine', 'c-run', ', ''run''')] loop
 		perform dblink_send_query('fence_two', v_state);
 		if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'C: custody waited for a folder effect: %', v_state; end if;

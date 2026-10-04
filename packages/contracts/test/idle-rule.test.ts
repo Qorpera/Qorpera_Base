@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
 	IDLE_RULE_BUSY_BYTES_PER_SAMPLE,
 	IDLE_RULE_BUSY_CORE_SHARE,
+	IDLE_RULE_OUTSIDE_BUSY_MACHINE_SHARE,
 	IDLE_RULE_SAMPLE_SECONDS,
 	idleRuleBusy,
+	idleRuleOutsideBusy,
+	idleRuleProcessIoBytes,
 } from "../src/idle-rule.ts";
 
 describe("the one idle rule's busy measure", () => {
@@ -34,5 +37,45 @@ describe("the one idle rule's busy measure", () => {
 		expect(idleRuleBusy(before, later(99, 99_000_000, 0))).toBe(false);
 		expect(idleRuleBusy(before, later(99, 99_000_000, -5))).toBe(false);
 		expect(idleRuleBusy(before, later(1, 1))).toBe(false);
+	});
+
+	it("reads the bytes a process read and wrote, and nothing from what it cannot read", () => {
+		expect(
+			idleRuleProcessIoBytes(
+				"rchar: 4096\nwchar: 1024\nsyscr: 7\nsyscw: 3\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n",
+			),
+		).toBe(5120);
+		expect(idleRuleProcessIoBytes("")).toBe(0);
+		expect(idleRuleProcessIoBytes("rchar: 12\n")).toBe(12);
+		expect(idleRuleProcessIoBytes("rchar: 99999999999999999999\nwchar: 1\n")).toBe(0);
+	});
+});
+
+describe("the one idle rule's outside work on an agent's machine", () => {
+	// A two-processor machine over 10 seconds: 20 processor-seconds in all.
+	const before = { busySeconds: 100, totalSeconds: 1000, ownSeconds: 40 };
+	const after = (busy: number, own: number, total = 20) => ({
+		busySeconds: 100 + busy,
+		totalSeconds: 1000 + total,
+		ownSeconds: 40 + own,
+	});
+
+	it("states its threshold: 2% of the whole machine beyond its own units", () => {
+		expect(IDLE_RULE_OUTSIDE_BUSY_MACHINE_SHARE).toBe(0.02);
+	});
+
+	it("is busy at 2% of the whole machine beyond what the commands and the machine's own control used", () => {
+		// 0.4 of 20 processor-seconds outside: busy; just under it: not.
+		expect(idleRuleOutsideBusy(before, after(0.4, 0))).toBe(true);
+		expect(idleRuleOutsideBusy(before, after(0.39, 0))).toBe(false);
+		// A busy command is its own; it leaves nothing outside.
+		expect(idleRuleOutsideBusy(before, after(10, 9.7))).toBe(false);
+		expect(idleRuleOutsideBusy(before, after(10, 9.5))).toBe(true);
+	});
+
+	it("counts nothing from samples that cannot be compared", () => {
+		expect(idleRuleOutsideBusy(before, after(5, 0, 0))).toBe(false);
+		expect(idleRuleOutsideBusy(before, after(5, -1))).toBe(false);
+		expect(idleRuleOutsideBusy(before, after(-1, 0))).toBe(false);
 	});
 });
