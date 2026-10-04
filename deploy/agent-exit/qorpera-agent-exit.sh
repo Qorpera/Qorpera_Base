@@ -255,7 +255,8 @@ log() {
 	install -d -m 0750 "$log_dir"
 	install -d -m 0755 "$run_dir"
 	exec python3 "$logger" --netns "$NS" --log-dir "$log_dir" --heartbeat "$run_dir/logger.heartbeat" \
-		--pause-file "$run_dir/logger.pause" --cap-bytes "$log_cap" --floor-percent "$log_floor"
+		--pause-file "$run_dir/logger.pause" --failing-file "$run_dir/logger.failing" --cap-bytes "$log_cap" \
+		--floor-percent "$log_floor"
 }
 
 logs() {
@@ -308,6 +309,7 @@ verify() {
 	fi
 	# The logger pauses rather than fill the node's disk; the logs' tender keeps them under their cap.
 	[[ ! -e $run_dir/logger.pause ]] || problems+=("connection log paused: $(head -c 300 "$run_dir/logger.pause")")
+	[[ ! -e $run_dir/logger.failing ]] || problems+=("$(head -c 300 "$run_dir/logger.failing")")
 	local logs_status="$run_dir/logs.json"
 	if [[ -e $logs_status ]]; then
 		age=$(($(date +%s) - $(stat -c %Y "$logs_status")))

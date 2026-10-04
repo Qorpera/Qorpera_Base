@@ -11,14 +11,16 @@ ports, protocol, times and byte counts. E3 joins these lines with the client map
 
 The node's disk comes first. Every 5 seconds the logger reads the log folder's size and the disk's free share; past
 either line (the logs over their cap, or the disk under its floor) it pauses: it writes no connection or refusal
-lines, only a gap line when it pauses and one when it goes on (with the number of lines it did not write), and it
+lines, only a gap line when it pauses and one when it goes on (with the number of lines it did not write); it empties
+dns.log every 5 seconds (dnsmasq goes on answering; a gap line says how much of the DNS record was not kept); and it
 keeps <pause-file> while it pauses, so `verify` fails and the node takes no new agent road machines. It goes on once
 the logs are under 95% of the cap and the disk 2 points above its floor (qorpera-agent-exit-logs.py `tend` deletes
-the oldest parts to get there). A line it cannot write (a full disk, say) is counted, and the next line written is a
-gap line that says how many.
+the oldest parts to get there). A line it cannot write (a full disk, no inodes left, say) is counted, it keeps
+<failing-file> (so `verify` fails) until a line can be written again, and the first line then written is a gap line
+that says how many it lost.
 
-  qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE --pause-file FILE [--cap-bytes N]
-                            [--floor-percent P]
+  qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE --pause-file FILE --failing-file FILE
+                            [--cap-bytes N] [--floor-percent P]
   qorpera-agent-exit-log.py --parse-conntrack   (stdin: conntrack -E lines; stdout: JSON lines)
   qorpera-agent-exit-log.py --parse-set         (stdin: nft -j list set; stdout: [key, expires] per element)
   qorpera-agent-exit-log.py --diff-sets         (stdin: {previous, current}; stdout: [key, rule] per flow to log)
@@ -153,9 +155,27 @@ def disk_state(log_dir):
     return free, size
 
 
+def mark(path, text):
+    """Writes the marker file `path` (on /run, which a full log disk does not touch); a failure only goes to stderr."""
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        os.replace(path + ".tmp", path)
+    except OSError as error:
+        print(f"cannot write {path}: {error}", file=sys.stderr, flush=True)
+
+
+def unmark(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 class Writer:
-    def __init__(self, log_dir):
+    def __init__(self, log_dir, failing_file=None):
         self.log_dir = log_dir
+        self.failing_file = failing_file
         self.lock = threading.Lock()
         self.paused = False
         self.paused_at = None
@@ -172,23 +192,40 @@ class Writer:
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
+    def recover(self):
+        """Lines that could not be written: the first line that can be says how many, and since when. Under the lock."""
+        if self.unwritten:
+            self.append({"ts": time.time(), "event": "gap", "since": self.unwritten_since,
+                         "reason": f"{self.unwritten} lines could not be written ({self.unwritten_error})"})
+            self.unwritten, self.unwritten_since, self.unwritten_error = 0, None, None
+            if self.failing_file:
+                unmark(self.failing_file)
+
+    def retry(self):
+        """Every few seconds: with lines lost to a write failure, try to say so (and so be healthy again) even when no
+        new line comes."""
+        with self.lock:
+            try:
+                self.recover()
+            except OSError:
+                pass
+
     def write(self, record):
         with self.lock:
             if self.paused and record.get("event") != "gap":
                 self.held += 1
                 return
             try:
-                # Lines that could not be written: the first line that can be says how many, and since when.
-                if self.unwritten:
-                    self.append({"ts": time.time(), "event": "gap", "since": self.unwritten_since,
-                                 "reason": f"{self.unwritten} lines could not be written ({self.unwritten_error})"})
-                    self.unwritten, self.unwritten_since, self.unwritten_error = 0, None, None
+                self.recover()
                 self.append(record)
             except OSError as error:
                 if not self.unwritten:
                     self.unwritten_since = record.get("ts", time.time())
                 self.unwritten += 1
                 self.unwritten_error = error.strerror or str(error)
+                # The exit is unhealthy until a line can be written again.
+                if self.failing_file and self.unwritten == 1:
+                    mark(self.failing_file, f"cannot write the connection log: {self.unwritten_error}")
 
     def pause(self, paused, reason, pause_file):
         """Pauses or goes on, with a gap line either way; the pause file is there exactly while it pauses."""
@@ -200,15 +237,21 @@ class Writer:
             self.paused_at, self.held = (time.time(), 0) if paused else (None, 0)
         if paused:
             self.gap(f"paused: {reason}")
-            with open(pause_file + ".tmp", "w", encoding="utf-8") as f:
-                f.write(reason + "\n")
-            os.replace(pause_file + ".tmp", pause_file)
+            mark(pause_file, reason)
         else:
             self.gap(f"resumed: {held} lines not written while paused", since=since)
-            try:
-                os.unlink(pause_file)
-            except FileNotFoundError:
-                pass
+            unmark(pause_file)
+
+    def empty_dns_log(self):
+        """While paused, dnsmasq's record is emptied too (dnsmasq appends, so it writes on from the start)."""
+        path = os.path.join(self.log_dir, "dns.log")
+        try:
+            size = os.lstat(path).st_size
+            if size:
+                os.truncate(path, 0)
+                self.gap(f"paused: {size} bytes of the DNS record not kept")
+        except OSError as error:
+            print(f"cannot empty {path}: {error}", file=sys.stderr, flush=True)
 
     def gap(self, reason, since=None):
         record = {"ts": time.time(), "event": "gap", "reason": reason}
@@ -307,6 +350,7 @@ def main():
     parser.add_argument("--diff-sets", action="store_true")
     parser.add_argument("--should-pause", action="store_true")
     parser.add_argument("--pause-file")
+    parser.add_argument("--failing-file")
     parser.add_argument("--cap-bytes", type=int, default=CAP_BYTES)
     parser.add_argument("--floor-percent", type=float, default=FLOOR_PERCENT)
     args = parser.parse_args()
@@ -333,17 +377,16 @@ def main():
         for key in new_refusals(previous, current):
             print(json.dumps([list(key), rule_for(key)]))
         return
-    if not (args.netns and args.log_dir and args.heartbeat and args.pause_file):
-        parser.error("--netns, --log-dir, --heartbeat and --pause-file are required")
+    if not (args.netns and args.log_dir and args.heartbeat and args.pause_file and args.failing_file):
+        parser.error("--netns, --log-dir, --heartbeat, --pause-file and --failing-file are required")
     os.makedirs(args.log_dir, mode=0o750, exist_ok=True)
-    writer = Writer(args.log_dir)
-    # A pause file from an earlier run says nothing about now: the first check below decides afresh.
-    try:
-        os.unlink(args.pause_file)
-    except FileNotFoundError:
-        pass
+    writer = Writer(args.log_dir, args.failing_file)
+    # Markers from an earlier run say nothing about now: the first check and the first line decide afresh.
+    unmark(args.pause_file)
+    unmark(args.failing_file)
 
     def check_disk():
+        writer.retry()
         try:
             free, size = disk_state(args.log_dir)
         except OSError as error:
@@ -352,6 +395,7 @@ def main():
         if should_pause(writer.paused, free, size, args.cap_bytes, args.floor_percent):
             writer.pause(True, f"the node's disk has {free:.1f}% free (floor {args.floor_percent:g}%) and the exit's logs "
                                f"hold {size} bytes (cap {args.cap_bytes})", args.pause_file)
+            writer.empty_dns_log()
         else:
             writer.pause(False, "", args.pause_file)
 

@@ -25,7 +25,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -684,7 +684,8 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.equal(c.companies.unattributed.connections, 1);
 		assert.equal(c.companies.unattributed.machines, 0);
 		assert.equal(c.companies.cZ, undefined);
-		assert.deepEqual(c.node, { records: 24, gaps: 1, gapReasons: { "logger started": 1 }, unreadableLines: 1, lostFiles: 0 });
+		assert.deepEqual(c.node, { records: 24, gaps: 1, gapReasons: { "logger started": 1 }, unreadableLines: 1 });
+		assert.deepEqual(c.attributionAtStart, {});
 		const carried = JSON.parse(readFileSync(join(log, "attribution.json"), "utf8"));
 		assert.equal(carried.through, day);
 		assert.deepEqual(Object.keys(carried.open).sort(), ["10.210.1.1", "10.210.1.2"]);
@@ -716,10 +717,22 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		const today = JSON.parse(r.stdout);
 		assert.equal(today.companies.cA.connections, 4, "both parts and the open file");
 		assert.equal(today.attributionPartial, false);
-		// A late line for a sealed day becomes its next part.
-		append(`clients-${day}.jsonl`, [machine("10.210.1.3", "cD", "mD", t0 + 9000)]);
-		tend(t0 + 2 * DAY + 3600 * 7);
+		// A late line for a counted day (the reconciler was down: its "plugged" line is days back) becomes that day's
+		// next part, and the days from it are counted again: the address's traffic gets its company.
+		assert.equal(counts(day).companies.unattributed.connections, 1);
+		append(`clients-${day}.jsonl`, [machine("10.210.1.7", "cE", "mE", t0 + 350)]);
+		const again = tend(t0 + 2 * DAY + 3600 * 7);
+		assert.equal(again.status, 0, again.stderr);
 		assert.ok(files().includes(`clients-${day}.p002.jsonl.gz`), files().join(" "));
+		assert.equal(again.result.daysCounted, 2, "the first day and the next");
+		assert.equal(counts(day).companies.cE.connections, 1);
+		assert.equal(counts(day).companies.unattributed, undefined);
+		assert.equal(counts(next).attributionAtStart["10.210.1.7"].company, "cE");
+		const carried = JSON.parse(readFileSync(join(log, "attribution.json"), "utf8"));
+		assert.equal(carried.through, next);
+		assert.equal(carried.open["10.210.1.7"].company, "cE");
+		assert.ok(carried.clientParts.includes(`clients-${day}.p002.jsonl.gz`));
+		assert.equal(tend(t0 + 2 * DAY + 3600 * 8).result.daysCounted, 0, "counted once");
 	});
 
 	test("the report adds the days up per company", () => {
@@ -736,24 +749,52 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.match(text.stdout, /^cA\s+2\s+14\s+13\s+1\s+12\s+12\s+1\s+5\s+6$/m);
 	});
 
-	test("over the cap the oldest parts go first, the client history last, never the counts or an open file", () => {
+	test("over the cap the oldest parts go first; never the client history, the counts or an open file", () => {
 		append(`flows-${third}.jsonl`, [opened("10.210.1.1", t0 + 2 * DAY + 50)]);
-		const r = tend(t0 + 2 * DAY + 3600 * 8, "--cap-bytes", "1");
+		const r = tend(t0 + 2 * DAY + 3600 * 9, "--cap-bytes", "1");
 		assert.equal(r.status, 1, "still over a 1-byte cap: a problem");
 		assert.match(r.result.problems[0], /over their cap, or the disk under its floor/);
 		const lost = readFileSync(join(log, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 		const order = lost.map((entry) => entry.file);
-		const firstClients = order.findIndex((name) => name.startsWith("clients-"));
-		assert.ok(firstClients > 0 && order.slice(firstClients).every((name) => name.startsWith("clients-")), order.join(" "));
+		assert.ok(order.every((name) => name.startsWith("flows-") || name.startsWith("dns-")), order.join(" "));
+		assert.ok(files().includes(`clients-${day}.p001.jsonl.gz`) && files().includes(`clients-${day}.p002.jsonl.gz`));
 		assert.ok(order.indexOf(`flows-${day}.p001.jsonl.gz`) < order.indexOf(`flows-${third}.p001.jsonl.gz`), "oldest first");
 		assert.ok(lost.every((entry) => entry.reason === "over the cap" && entry.bytes > 0));
 		assert.equal(lost.find((entry) => entry.file === `flows-${day}.p001.jsonl.gz`).day, day);
 		for (const kept of [`counts-${day}.json`, `counts-${next}.json`, `flows-${third}.jsonl`, "attribution.json", "dns.log"])
 			assert.ok(files().includes(kept), kept);
 		assert.equal(JSON.parse(readFileSync(status, "utf8")).problems.length, 1);
+		// The report says how many files went before their time, from the ledger as it is now.
+		const report = JSON.parse(spawnSync("python3", [logsTool, "report", "--log-dir", log, "--json"], { encoding: "utf8" }).stdout);
+		assert.equal(report.node.deletedEarly, lost.filter((entry) => [day, next].includes(entry.day)).length);
+		assert.ok(report.node.deletedEarly > 0);
 	});
 
-	test("under the disk's floor every sealed part goes, and the pass says so; after 90 days everything goes", () => {
+	test("a pass cut short never seals a line twice, and a DNS copy left plain is compressed", () => {
+		const crashed = mkdtempSync(join(dir, "crashed-"));
+		const line = lines([opened("10.210.1.1", t0 + 10)]);
+		// Cut short after publishing the part, before removing its source.
+		writeFileSync(join(crashed, `flows-${day}.p001.jsonl.gz`), gzipSync(line));
+		writeFileSync(join(crashed, `flows-${day}.p001.sealing`), line);
+		// Cut short before publishing: the source alone.
+		writeFileSync(join(crashed, `clients-${day}.p001.sealing`), lines([machine("10.210.1.1", "cA", "mA", t0 + 5)]));
+		writeFileSync(join(crashed, "dns-2026-09-01T030000Z.log"), "q\n");
+		const r = spawnSync(
+			"python3",
+			[logsTool, "tend", "--log-dir", crashed, "--status", join(crashed, "s.json"), "--now", String(t0 + DAY + 3 * 3600), "--settle", "0", "--free-percent", "50"],
+			{ encoding: "utf8" },
+		);
+		assert.equal(r.status, 0, r.stderr);
+		const left = readdirSync(crashed).filter((name) => !name.startsWith("."));
+		assert.deepEqual(left.filter((name) => name.endsWith(".sealing") || name.endsWith(".log")), []);
+		assert.ok(!left.includes(`flows-${day}.p002.jsonl.gz`), left.join(" "));
+		assert.equal(gunzipSync(readFileSync(join(crashed, `flows-${day}.p001.jsonl.gz`))).toString("utf8"), line);
+		assert.equal(gunzipSync(readFileSync(join(crashed, "dns-2026-09-01T030000Z.log.gz"))).toString("utf8"), "q\n");
+		const c = JSON.parse(readFileSync(join(crashed, `counts-${day}.json`), "utf8"));
+		assert.equal(c.companies.cA.connections, 1, "counted once");
+	});
+
+	test("under the disk's floor the connection log and DNS parts go, and the pass says so; after 90 days all goes", () => {
 		const fresh = mkdtempSync(join(dir, "fresh-"));
 		const now = t0 + 100 * DAY;
 		// 90 days before the clock is 2026-09-11.

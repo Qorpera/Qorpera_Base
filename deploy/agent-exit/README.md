@@ -148,8 +148,8 @@ machine and the exit is bridged and would be refused as a private destination.
 `X verify` exits 0 only when the namespace, the bridge (not forwarding, a reverse-path filter on, not answering ARP),
 both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on
 10.210.0.1:53 (from a name service in the exit's current namespace), a logger heartbeat younger than 30 seconds with
-the logger not paused, a reconciler status younger than 30 seconds with no problem, and a logs' tender status younger
-than 15 minutes with no problem are all there. The heartbeat is written only while both of
+the logger neither paused nor failing to write, a reconciler status younger than 30 seconds with no problem, and a
+logs' tender status younger than 15 minutes with no problem are all there. The heartbeat is written only while both of
 the logger's readers are alive. If the exit is down, its agent road machines have no internet; nothing falls back to
 the platform road. `X health` (every 10 seconds) writes the answer for the node observer; E2d keeps new agent road
 machines off a node whose exit is not healthy.
@@ -164,34 +164,43 @@ connection log (`flows-*`), the client history (`clients-*`) and the DNS record 
 about 340 bytes of connection log; a machine opening 100 connections a second would write about 3 GB a day, and a flood
 far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
 - **Seals.** Each open file is sealed into a compressed part (`flows-YYYY-MM-DD.pNNN.jsonl.gz`, mode 0640) once its day
-  is closed (two hours after it ends, UTC: the plug's `plugged` lines carry the entry's time, at most an hour back), or
-  sooner once it holds 64 MiB. The writers open the file for each line, so a renamed file takes no new lines.
-- **Cuts the DNS record.** `dns.log` is copied into `dns-YYYY-MM-DDTHHMMSSZ.log.gz` and truncated once a day, or sooner
-  once it holds 64 MiB. dnsmasq appends (`O_APPEND`), so it writes on from the start; a line written in the moment
-  between the copy and the truncate is lost. (Renaming it and sending SIGUSR2 would not do: dnsmasq's unprivileged
-  user cannot create a file in the 0750 folder.)
+  is closed (two hours after it ends, UTC: the plug's `plugged` lines carry the entry's time, normally less than an
+  hour back), or sooner once it holds 64 MiB. The writers open the file for each line, so a renamed file takes no new
+  lines. It is renamed to its part's name first (`….pNNN.sealing`), so a pass cut short finishes that part and never
+  seals a line twice.
+- **Cuts the DNS record.** `dns.log` is copied into `dns-YYYY-MM-DDTHHMMSSZ.log` (then compressed) and truncated once a
+  day, or sooner once it holds 64 MiB. The copy stops at what was there plus 64 MiB, however fast dnsmasq writes.
+  dnsmasq appends (`O_APPEND`), so it writes on from the start; what it wrote between the copy's end and the truncate
+  is lost. (Renaming it and sending SIGUSR2 would not do: dnsmasq's unprivileged user cannot create a file in the 0750
+  folder.)
 - **Counts.** Each closed day, per company, into `counts-YYYY-MM-DD.json`: the line guard's numbers
   (`RUNTIME-AGENT-EXIT.md` §8): machines, new connections (by protocol), the most new connections in one 10-second step
   (the company's and one machine's), refused flows (by rule), unanswered connections, distinct failed destinations
   (unanswered or refused) and the most of them in one minute, and per node the gap lines and files deleted early. An
   address belongs to a company from its `plugged` line to its `unplugged` one; `attribution.json` carries the
-  addresses still plugged in from one day to the next. Traffic from an address with no company at that moment counts
-  as `unattributed`. Counting never slows or refuses anything: the brake waits for the founder's levels.
+  addresses still plugged in from one day to the next (and which client history parts it has read), and each day's
+  counts keep who was plugged in when it began. A client history line that reaches a day already counted (after the
+  plug's reconciler was down, its `plugged` line can be days back) makes the tender count again from that day on.
+  Traffic from an address with no company at that moment counts as `unattributed`. Counting never slows or refuses
+  anything: the brake waits for the founder's levels.
 - **Keeps the disk safe.** 90 days are kept. Past 80% of the cap, or with less than the floor plus 5 points of the disk
-  free, the oldest sealed parts go first (the connection log and the DNS record before the client history, which is
-  small and ties addresses to companies); the open files and the counts never. Each deleted file is a line in
+  free, the oldest sealed parts of the connection log and the DNS record go first. The client history (small, and what
+  ties addresses to companies), the open files and the counts go only after 90 days. Each deleted file is a line in
   `lost.jsonl`, so a lookup knows that day is unknown.
 
 The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
 (`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool
 for the logger and the tender alike; the logger reads them when it starts). The logger checks
 both every 5 seconds: past the cap, or under the floor, it pauses. It writes no connection or refusal lines, only a gap
-line when it pauses and one when it goes on (with how many lines it did not write), and keeps
+line when it pauses and one when it goes on (with how many lines it did not write), empties `dns.log` every 5 seconds
+(dnsmasq answers on; a gap line says how much of the DNS record was not kept), and keeps
 `/run/qorpera-agent-exit/logger.pause` meanwhile, so `verify` fails: the node takes no new agent road machines (E2d)
 while its log cannot record, and its disk never fills. Traffic and refusals go on (the log-down rule of 3 October). It
-goes on under 95% of the cap and 2 points above the floor. A line it cannot write (a full disk) is counted, and the next
-line written is a gap line saying how many. On a disk filled by something else, the exit turns unhealthy at the floor:
-for node 2 (98 GB, 16 GB free on 4 October) that is 90% used.
+goes on under 95% of the cap and 2 points above the floor. A line it cannot write (a full disk, no inodes left) is
+counted and keeps `/run/qorpera-agent-exit/logger.failing` until a line can be written again (it tries every 5
+seconds), so `verify` fails meanwhile; the first line then written is a gap line saying how many it lost. On a disk
+filled by something else, the exit turns unhealthy at the floor: for node 2 (98 GB, 16 GB free on 4 October) that is
+90% used.
 
 `X counts [--from DAY] [--to DAY] [--json]` prints the founder's table: per company, the days with traffic, connections
 (all and the busiest day), the most machines on a day, the burst peaks, refused, unanswered and the most failed
@@ -202,13 +211,14 @@ is there.
 
 `qorpera-agent-exit.test.mjs` checks the pins, the logger's parsers and pause decision, the logs' tender (a day sealed
 and counted only once closed, a company carried from an earlier day, an address that changes company, parts by size, a
-late line, the DNS cut, the report, the cap's order of deletion, the floor, 90 days) and the plug tool: allocation
+late line that makes it count again, the DNS cut, a pass cut short, the report, the cap's order of deletion, the floor,
+90 days) and the plug tool: allocation
 under the creators' umask, twelve plugs at once, quarantine, and the reconciler against a stand-in for LXD
 (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
-removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds). On Linux with
-Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04` with the
-packages above, built once and cached). The proof never leaves the container's namespaces and never unloads a
-kernel module (the kernel loads nftables' own on demand).
+removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
+On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
+with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
+a kernel module (the kernel loads nftables' own on demand).
 The proof plays a node: an agent road machine plugged into `qagent0` by a creator (a member of the plug group, umask
 077), the office network (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1
 on the tailnet. It checks:
@@ -233,8 +243,9 @@ on the tailnet. It checks:
   that ends the machine's TCP, UDP and ICMP connections in the exit and their twins on the node, a removal
   (quarantine, no more DHCP, the address skipped), and plugs never created given up;
 - the logs on the node: the day's counts per company from the live logs, the tender sealing the open files and cutting
-  `dns.log` while dnsmasq and the logger write on into new ones, and the logger pausing past its cap (no lines, traffic
-  on, `verify` failing) and going on with a gap line saying what it missed;
+  `dns.log` while dnsmasq and the logger write on into new ones, a line the logger cannot write (unhealthy at once,
+  recovered by itself with a gap line), and the logger pausing past its cap (no lines, traffic and DNS on, `dns.log`
+  emptied, `verify` failing) and going on with a gap line saying what it missed;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes

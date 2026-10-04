@@ -19,6 +19,8 @@ export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0
 pids=()
 cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
 trap cleanup EXIT
+# A command that stops the proof on its own (set -e) names itself.
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -704,6 +706,25 @@ python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count2.json" 
 python3 -c 'import json, sys; a, b = (json.load(open(f))["companies"]["c0"]["connections"] for f in sys.argv[1:]); assert b > a, (a, b)' \
 	"$work/count.json" "$work/count2.json" || fail "the count after sealing lost lines"
 pass "the tender seals open files into parts and cuts dns.log; the writers go on in new files, and counts read all"
+# A line the logger cannot write (here: a folder where its file goes) makes the exit unhealthy at once; once it can
+# write again it says how many lines it lost, and the exit is healthy again.
+for i in $(seq 1 20); do
+	mv -f "$LOG/flows-$today.jsonl" "$work/flows-moved-$i" 2>/dev/null || true
+	mkdir "$LOG/flows-$today.jsonl" 2>/dev/null && break
+done
+[[ -d $LOG/flows-$today.jsonl ]] || fail "could not put a folder where the connection log goes"
+connects agent 1.1.1.1 443 || fail "the agent cannot connect"
+for _ in $(seq 1 50); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] && break; sleep 0.2; done
+[[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "a line that could not be written left no mark: $(tail -3 "$work/log.out")"
+bash "$tool" verify 2>"$work/verify-failing.err" && fail "verify passed while the connection log could not be written"
+grep -q "cannot write the connection log: " "$work/verify-failing.err" || fail "verify: $(cat "$work/verify-failing.err")"
+rmdir "$LOG/flows-$today.jsonl"
+for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || break; sleep 0.2; done
+[[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "the logger did not recover once it could write"
+grep -Eq '"reason":"[1-9][0-9]* lines could not be written \(' "$LOG/flows-$today.jsonl" ||
+	fail "no gap line for the lines lost: $(grep gap "$LOG/flows-$today.jsonl" | tail -3)"
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "a line the logger cannot write makes the exit unhealthy at once; it recovers by itself and says what it lost"
 # Past its cap the logger pauses: no connection lines, traffic goes on, the exit is unhealthy; it goes on once there is
 # room, with a gap line that says how many lines it did not write.
 kill "$logger_pid"
@@ -719,10 +740,15 @@ for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && br
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not pause past its cap: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-pause.err" && fail "verify passed while the connection log paused"
 grep -q "connection log paused: " "$work/verify-pause.err" || fail "verify: $(cat "$work/verify-pause.err")"
-written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl")
+written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true)
 connects agent 1.1.1.1 443 || fail "a machine's traffic stopped while the log paused"
 sleep 1
-[[ $(grep -c '"event":"new"' "$LOG/flows-$today.jsonl") == "$written" ]] || fail "the paused logger wrote a connection line"
+[[ $(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true) == "$written" ]] || fail "the paused logger wrote a connection line"
+# DNS goes on answering, and its record is emptied while the log pauses.
+[[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 paused.test) == 1.1.1.1 ]] || fail "DNS while the log pauses"
+for _ in $(seq 1 75); do grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" && break; sleep 0.2; done
+grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" ||
+	fail "dns.log was not emptied while the log paused: $(wc -c <"$LOG/dns.log")"
 rm "$LOG/filler"
 for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || break; sleep 0.2; done
 [[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not go on with room again"

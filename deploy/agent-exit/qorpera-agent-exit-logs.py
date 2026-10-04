@@ -6,26 +6,32 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
 `tend` runs every 5 minutes (qorpera-agent-exit-logs.timer, root) and keeps them small and safe for the node:
 - it seals each open file into a compressed part (<kind>-YYYY-MM-DD.pNNN.jsonl.gz) once its day is closed, or sooner
   once it holds 64 MiB. A day is closed two hours after it ends (UTC): the plug's "plugged" lines carry the entry's
-  time, at most an hour back. The writers open the file for each line, so a renamed file takes no new lines;
-- it copies dns.log into dns-YYYY-MM-DDTHHMMSSZ.log.gz and truncates it once a day, or sooner once it holds 64 MiB
-  (dnsmasq appends, so it writes on from the start; a line written in the moment between the copy and the truncate
-  is lost);
+  time, normally less than an hour back. The writers open the file for each line, so a renamed file takes no new
+  lines. The open file is first renamed to <kind>-YYYY-MM-DD.pNNN.sealing, so a pass cut short finishes the same part
+  and never seals a line twice;
+- it copies dns.log into dns-YYYY-MM-DDTHHMMSSZ.log (then compressed) and truncates it once a day, or sooner once it
+  holds 64 MiB. The copy stops at what was there plus one part, however fast dnsmasq writes; dnsmasq appends, so it
+  writes on from the start, and what it wrote between the copy's end and the truncate is lost;
 - it counts each closed day, per company, from that day's parts (counts-YYYY-MM-DD.json): the line guard's numbers
   (RUNTIME-AGENT-EXIT.md §8: new connections, refusals, bursts and failed connections to many addresses), which the
-  founder reads (`report`) to set the brake's levels. Counting never slows or refuses anything;
-- it keeps 90 days, and deletes the oldest sealed parts first while the logs hold more than 80% of their cap (2 GiB
-  unless set) or the disk has less than its floor (10% unless set) plus 5 points free: the connection log and the DNS
-  record before the client history, which is small and ties addresses to companies. The open files are never
-  deleted. Each deleted file is a line in lost.jsonl (its day is unknown to a lookup from then on).
+  founder reads (`report`) to set the brake's levels. Counting never slows or refuses anything. A client history line
+  that reaches a day already counted (the plug's reconciler was down for a while, say) makes it count again from that
+  day on;
+- it keeps 90 days, and deletes the oldest sealed parts of the connection log and the DNS record while the logs hold
+  more than 80% of their cap (2 GiB unless set) or the disk has less than its floor (10% unless set) plus 5 points
+  free. The client history (small, and what ties addresses to companies), the open files and the counts go only after
+  90 days. Each deleted file is a line in lost.jsonl (its day is unknown to a lookup from then on).
 <run-dir>/logs.json says when it last ran and what it could not do; `qorpera-agent-exit.sh verify` fails while it is
 older than 15 minutes or names a problem (the logs still over their cap, or the disk under its floor, with every
-sealed part gone). The logger pauses by itself at the same two lines (qorpera-agent-exit-log.py), and the exit is
-unhealthy while it does, so the node takes no new agent road machines and its disk never fills. Shipping to the NAS and the
+part it may delete gone). The logger pauses by itself at the same two lines (qorpera-agent-exit-log.py) and keeps
+dns.log empty meanwhile, and the exit is unhealthy while it does, so the node takes no new agent road machines and
+its disk never fills. Shipping to the NAS and the
 "who used this address" lookup come with E3.
 
 An address belongs to a company from its "plugged" line to its "unplugged" one. attribution.json carries the
-addresses still plugged in from one counted day to the next, so a machine plugged in long ago keeps its company after
-its plugged line is gone. Traffic from an address with no company at that moment counts as "unattributed".
+addresses still plugged in from one counted day to the next (and which client history parts it has read), and each
+day's counts keep who was plugged in when that day began, so a day can be counted again. Traffic from an address with
+no company at that moment counts as "unattributed".
 
   qorpera-agent-exit-logs.py tend --log-dir DIR --status FILE [--cap-bytes N] [--floor-percent P] [--now T]
   qorpera-agent-exit-logs.py count --log-dir DIR --day YYYY-MM-DD   (a day's counts from what is there; writes nothing)
@@ -62,9 +68,10 @@ SETTLE_SECONDS = 2.0
 DESTINATIONS_KEPT = 100_000
 
 OPEN = re.compile(r"^(flows|clients)-(\d{4}-\d{2}-\d{2})\.jsonl$")
-SEALING = re.compile(r"^(flows|clients)-(\d{4}-\d{2}-\d{2})\.sealing$")
+SEALING = re.compile(r"^(flows|clients)-(\d{4}-\d{2}-\d{2})\.p(\d{3,})\.sealing$")
 PART = re.compile(r"^(flows|clients)-(\d{4}-\d{2}-\d{2})\.p(\d{3,})\.jsonl\.gz$")
 DNS_PART = re.compile(r"^dns-(\d{4}-\d{2}-\d{2})T\d{6}Z\.log\.gz$")
+DNS_COPY = re.compile(r"^dns-(\d{4}-\d{2}-\d{2})T\d{6}Z\.log$")
 COUNTS = re.compile(r"^counts-(\d{4}-\d{2}-\d{2})\.json$")
 TEMPORARY = re.compile(r"^\..+\.tmp$")
 
@@ -128,36 +135,54 @@ def compress(source, final):
     os.replace(tmp, final)
 
 
-def next_part(log_dir, kind, day):
-    numbers = [int(m.group(3)) for name in regular_files(log_dir) if (m := PART.match(name)) and m.group(1) == kind
-               and m.group(2) == day]
+def next_part(files, kind, day):
+    numbers = [int(m.group(3)) for name in files if (m := PART.match(name) or SEALING.match(name))
+               and m.group(1) == kind and m.group(2) == day]
     return max(numbers, default=0) + 1
 
 
 def seal_files(log_dir, now, part_bytes, settle=SETTLE_SECONDS):
-    """Seals each open file whose day is closed or which holds `part_bytes`, and any left half sealed by a crash."""
+    """Seals each open file whose day is closed or which holds `part_bytes`. It is renamed to its part's .sealing name
+    first; a .sealing file whose part is already there (a pass cut short after publishing it) is only removed."""
     files = regular_files(log_dir)
-    sealing = [(m.group(1), m.group(2)) for name in files if (m := SEALING.match(name))]
-    for name, size in files.items():
+    renamed = False
+    for name, size in sorted(files.items()):
         m = OPEN.match(name)
-        if not m or (kind_day := (m.group(1), m.group(2))) in sealing:
+        if not m or not (now >= day_start(m.group(2)) + DAY + GRACE or size >= part_bytes):
             continue
-        if now >= day_start(m.group(2)) + DAY + GRACE or size >= part_bytes:
-            os.rename(os.path.join(log_dir, name), os.path.join(log_dir, f"{m.group(1)}-{m.group(2)}.sealing"))
-            sealing.append(kind_day)
-    if sealing:
+        target = f"{m.group(1)}-{m.group(2)}.p{next_part(files, m.group(1), m.group(2)):03d}.sealing"
+        os.rename(os.path.join(log_dir, name), os.path.join(log_dir, target))
+        files[target] = files.pop(name)
+        renamed = True
+    if renamed:
         time.sleep(settle)
-    for kind, day in sorted(sealing):
-        source = os.path.join(log_dir, f"{kind}-{day}.sealing")
-        compress(source, os.path.join(log_dir, f"{kind}-{day}.p{next_part(log_dir, kind, day):03d}.jsonl.gz"))
-        os.unlink(source)
-    return len(sealing)
+    sealed = 0
+    for name in sorted(files):
+        m = SEALING.match(name)
+        if not m:
+            continue
+        final = f"{m.group(1)}-{m.group(2)}.p{m.group(3)}.jsonl.gz"
+        if final not in files:
+            compress(os.path.join(log_dir, name), os.path.join(log_dir, final))
+            sealed += 1
+        os.unlink(os.path.join(log_dir, name))
+    return sealed
+
+
+def compress_dns_copies(log_dir):
+    """A copy of dns.log not yet compressed (the pass that made it was cut short) is compressed now."""
+    for name in sorted(regular_files(log_dir)):
+        if DNS_COPY.match(name):
+            compress(os.path.join(log_dir, name), os.path.join(log_dir, f"{name}.gz"))
+            os.unlink(os.path.join(log_dir, name))
 
 
 def rotate_dns(log_dir, now, part_bytes):
-    """Copies dns.log into a compressed part and truncates it, once a day or once it holds `part_bytes`."""
+    """Copies dns.log and truncates it, once a day or once it holds `part_bytes`. The copy stops at what was there plus
+    one part, however fast dnsmasq writes, so the pass always ends."""
     path = os.path.join(log_dir, "dns.log")
     marker = os.path.join(log_dir, ".dns-rotated")
+    compress_dns_copies(log_dir)
     try:
         size = os.lstat(path).st_size
     except FileNotFoundError:
@@ -171,9 +196,21 @@ def rotate_dns(log_dir, now, part_bytes):
         rotated = day_of(now)
     if size == 0 or (rotated == day_of(now) and size < part_bytes):
         return False
-    compress(path, os.path.join(log_dir, f"dns-{time.strftime('%Y-%m-%dT%H%M%SZ', time.gmtime(now))}.log.gz"))
+    copy = os.path.join(log_dir, f"dns-{time.strftime('%Y-%m-%dT%H%M%SZ', time.gmtime(now))}.log")
+    if os.path.lexists(f"{copy}.gz"):
+        # A copy from this very second is there already; the next pass cuts it.
+        return False
+    left = size + part_bytes
+    fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+    with open(path, "rb") as src, os.fdopen(fd, "wb") as dst:
+        while left > 0 and (chunk := src.read(min(left, 1024 * 1024))):
+            dst.write(chunk)
+            left -= len(chunk)
+        dst.flush()
+        os.fsync(dst.fileno())
     os.truncate(path, 0)
     write_atomic(marker, f"{day_of(now)}\n".encode())
+    compress_dns_copies(log_dir)
     return True
 
 
@@ -201,14 +238,16 @@ def read_lines(paths):
 
 
 def day_files(log_dir, kind, day, files=None):
-    """A day's parts in order, then its open or half-sealed file (for a day that is not closed yet)."""
+    """A day's parts in order (a part being sealed as its plain file, once), then its open file."""
     files = regular_files(log_dir) if files is None else files
-    parts = sorted((int(m.group(3)), name) for name in files if (m := PART.match(name)) and m.group(1) == kind
-                   and m.group(2) == day)
-    paths = [os.path.join(log_dir, name) for _, name in parts]
-    for name in (f"{kind}-{day}.sealing", f"{kind}-{day}.jsonl"):
-        if name in files:
-            paths.append(os.path.join(log_dir, name))
+    parts = {}
+    for name in files:
+        m = PART.match(name) or SEALING.match(name)
+        if m and m.group(1) == kind and m.group(2) == day and (PART.match(name) or int(m.group(3)) not in parts):
+            parts[int(m.group(3))] = name
+    paths = [os.path.join(log_dir, parts[number]) for number in sorted(parts)]
+    if f"{kind}-{day}.jsonl" in files:
+        paths.append(os.path.join(log_dir, f"{kind}-{day}.jsonl"))
     return paths
 
 
@@ -267,7 +306,7 @@ def count_day(log_dir, day, start, files=None):
         key = who.get("company") if who and isinstance(who.get("company"), str) else "unattributed"
         if key not in companies:
             companies[key] = {"machines": set(), "connections": 0, "byProto": {}, "buckets": {}, "refused": 0,
-                              "refusedByRule": {}, "unanswered": 0, "failed": set(), "failedPast": 0,
+                              "refusedByRule": {}, "unanswered": 0, "failed": set(), "failedPast": False,
                               "peakFailed60s": 0, "peakFailed60sAt": None}
         return key, companies[key]
 
@@ -276,7 +315,7 @@ def count_day(log_dir, day, start, files=None):
             if len(entry["failed"]) < DESTINATIONS_KEPT:
                 entry["failed"].add(dst)
             else:
-                entry["failedPast"] += 1
+                entry["failedPast"] = True
         window = failed_windows.setdefault(key, {})
         minute = int(ts // 60)
         window.setdefault(minute, set()).add(dst)
@@ -340,8 +379,9 @@ def count_day(log_dir, day, start, files=None):
             "refused": entry["refused"],
             "refusedByRule": dict(sorted(entry["refusedByRule"].items())),
             "unanswered": entry["unanswered"],
-            "failedDestinations": len(entry["failed"]) + entry["failedPast"],
-            "failedDestinationsAtLeast": entry["failedPast"] > 0,
+            # Past the destinations kept the number is a lower bound.
+            "failedDestinations": len(entry["failed"]),
+            "failedDestinationsAtLeast": entry["failedPast"],
             "peakFailedDestinations60s": entry["peakFailed60s"],
             "peakFailedDestinations60sAt": entry["peakFailed60sAt"],
         }
@@ -355,57 +395,92 @@ def advance(log_dir, day, start, files=None):
     return attribution_intervals(start, events)[1]
 
 
-def lost_on(log_dir, day):
-    path = os.path.join(log_dir, "lost.jsonl")
-    lost = 0
+EXPIRED = f"kept {KEEP_DAYS} days"
+
+
+def deleted_early(log_dir):
+    """Day to the number of its files deleted before their 90 days (over the cap, or the disk low), from lost.jsonl."""
+    days = {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(os.path.join(log_dir, "lost.jsonl"), encoding="utf-8") as f:
             for line in f:
                 try:
-                    lost += json.loads(line).get("day") == day
+                    entry = json.loads(line)
                 except ValueError:
                     continue
+                if isinstance(entry, dict) and entry.get("reason") != EXPIRED and isinstance(entry.get("day"), str):
+                    days[entry["day"]] = days.get(entry["day"], 0) + 1
     except FileNotFoundError:
         pass
-    return lost
+    return days
 
 
 def load_attribution(log_dir):
+    """The last day counted, who was plugged in when it ended, and the client history parts read so far."""
     try:
         with open(os.path.join(log_dir, "attribution.json"), encoding="utf-8") as f:
             value = json.load(f)
         if isinstance(value.get("through"), str) and isinstance(value.get("open"), dict):
-            return value["through"], value["open"]
-    except (OSError, ValueError, AttributeError):
+            return value["through"], value["open"], set(value.get("clientParts") or [])
+    except (OSError, ValueError, AttributeError, TypeError):
         pass
-    return None, {}
+    return None, {}, set()
 
 
-def first_day(log_dir, files):
-    days = [m.group(2) for name in files if (m := OPEN.match(name) or SEALING.match(name) or PART.match(name))]
+def first_day(log_dir, files, kinds=("flows", "clients")):
+    days = [m.group(2) for name in files if (m := OPEN.match(name) or SEALING.match(name) or PART.match(name))
+            and m.group(1) in kinds]
     return min(days, default=None)
 
 
+def start_of(log_dir, day, files):
+    """Who was plugged in when `day` began: as its counts kept it, or else replayed from the oldest client history
+    there is (then partial: a machine plugged in before that has no company)."""
+    try:
+        with open(os.path.join(log_dir, f"counts-{day}.json"), encoding="utf-8") as f:
+            start = json.load(f).get("attributionAtStart")
+        if isinstance(start, dict):
+            return start, False
+    except (OSError, ValueError, AttributeError):
+        pass
+    plugged, current = {}, first_day(log_dir, files, ("clients",))
+    while current is not None and current < day:
+        plugged = advance(log_dir, current, plugged, files)
+        current = next_day(current)
+    return plugged, True
+
+
 def count_closed_days(log_dir, now, host):
-    """Counts each closed day after the last one counted, in order, and carries who is plugged in from day to day."""
+    """Counts each closed day after the last one counted, in order, and carries who is plugged in from day to day. A
+    client history part for a day already counted that was not there then makes it count again from that day."""
     files = regular_files(log_dir)
-    through, plugged = load_attribution(log_dir)
-    day = next_day(through) if through else first_day(log_dir, files)
+    through, plugged, read = load_attribution(log_dir)
+    client_parts = {name: m.group(2) for name in files if (m := PART.match(name)) and m.group(1) == "clients"}
+    late = sorted(day for name, day in client_parts.items() if through and day <= through and name not in read)
+    partial = False
+    if late:
+        day = late[0]
+        plugged, partial = start_of(log_dir, day, files)
+    else:
+        day = next_day(through) if through else first_day(log_dir, files)
     counted = 0
     while day is not None and now >= day_start(day) + DAY + GRACE:
-        counts, plugged = count_day(log_dir, day, plugged, files)
-        counts["node"]["lostFiles"] = lost_on(log_dir, day)
+        counts, end = count_day(log_dir, day, plugged, files)
         write_json(os.path.join(log_dir, f"counts-{day}.json"),
-                   {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now), **counts})
+                   {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now),
+                    "attributionAtStart": plugged, "attributionPartial": partial, **counts})
+        read |= {name for name, part_day in client_parts.items() if part_day == day}
+        read &= set(client_parts)
         write_json(os.path.join(log_dir, "attribution.json"),
-                   {"schema": "qorpera.agent-exit-attribution/v1", "through": day, "open": plugged})
+                   {"schema": "qorpera.agent-exit-attribution/v1", "through": day, "open": end, "clientParts": sorted(read)})
+        plugged = end
         counted += 1
         day = next_day(day)
     return counted
 
 
 def file_day(name):
-    for pattern, group in ((PART, 2), (DNS_PART, 1), (COUNTS, 1), (OPEN, 2), (SEALING, 2)):
+    for pattern, group in ((PART, 2), (DNS_PART, 1), (DNS_COPY, 1), (COUNTS, 1), (OPEN, 2), (SEALING, 2)):
         m = pattern.match(name)
         if m:
             return m.group(group)
@@ -421,23 +496,25 @@ def record_lost(log_dir, now, name, size, reason):
 
 
 def tidy(log_dir, now, cap, floor, free=free_percent):
-    """Deletes what is older than 90 days, then the oldest sealed parts while the logs are over 80% of their cap or
-    the disk has less than the floor plus 5 points free. Returns what it deleted, and whether, after that, the logs
-    are still over their cap or the disk under the floor: the lines where the logger pauses."""
+    """Deletes what is older than 90 days, then the oldest sealed parts of the connection log and the DNS record while
+    the logs are over 80% of their cap or the disk has less than the floor plus 5 points free. Returns what it deleted,
+    and whether, after that, the logs are still over their cap or the disk under the floor: the lines where the logger
+    pauses."""
     deleted = []
     files = regular_files(log_dir)
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
     for name in sorted(files):
         day = file_day(name)
-        if day is not None and day < oldest_kept and not OPEN.match(name) and not SEALING.match(name):
+        if day is not None and day < oldest_kept and (PART.match(name) or DNS_PART.match(name) or COUNTS.match(name)):
             os.unlink(os.path.join(log_dir, name))
-            record_lost(log_dir, now, name, files[name], f"kept {KEEP_DAYS} days")
+            record_lost(log_dir, now, name, files[name], EXPIRED)
             deleted.append(name)
     files = regular_files(log_dir)
-    # Oldest first; the connection log and the DNS record before the client history, which ties addresses to companies.
+    # Oldest first, the connection log and the DNS record only: the client history is small and ties addresses to
+    # companies (a part deleted before it is counted would carry the wrong company on).
     candidates = sorted(
-        (name for name in files if PART.match(name) or DNS_PART.match(name)),
-        key=lambda name: (name.startswith("clients-"), file_day(name), name),
+        (name for name in files if (PART.match(name) and name.startswith("flows-")) or DNS_PART.match(name)),
+        key=lambda name: (file_day(name), name),
     )
     low_water = floor + LOW_WATER_MARGIN
     for name in candidates:
@@ -495,7 +572,7 @@ def tend_locked(log_dir, status, cap, floor, now, part_bytes, settle, free):
         deleted, still = tidy(log_dir, now, cap, floor, free)
         result["deleted"] = len(deleted)
         if still:
-            problems.append("the logs are over their cap, or the disk under its floor, with every sealed part deleted")
+            problems.append("the logs are over their cap, or the disk under its floor, with every part it may delete gone")
     except Exception as error:  # noqa: BLE001
         problems.append(f"tidy: {error}"[:300])
         print(f"qorpera-agent-exit-logs: tidy: {error}", file=sys.stderr, flush=True)
@@ -513,11 +590,12 @@ def report(log_dir, start, end, as_json):
     days = sorted(m.group(1) for name in regular_files(log_dir) if (m := COUNTS.match(name)) and
                   (start is None or m.group(1) >= start) and (end is None or m.group(1) <= end))
     companies = {}
-    node = {"days": len(days), "gaps": 0, "lostFiles": 0, "unreadableLines": 0}
+    early = deleted_early(log_dir)
+    node = {"days": len(days), "gaps": 0, "deletedEarly": sum(early.get(day, 0) for day in days), "unreadableLines": 0}
     for day in days:
         with open(os.path.join(log_dir, f"counts-{day}.json"), encoding="utf-8") as f:
             counts = json.load(f)
-        for key in ("gaps", "lostFiles", "unreadableLines"):
+        for key in ("gaps", "unreadableLines"):
             node[key] += counts["node"].get(key, 0)
         for company, c in counts["companies"].items():
             total = companies.setdefault(company, {"days": 0, "connections": 0, "maxConnectionsDay": 0, "maxMachines": 0,
@@ -537,7 +615,7 @@ def report(log_dir, start, end, as_json):
         print(json.dumps(result, indent=2, sort_keys=False))
         return
     print(f"Agent exit counts on {socket.gethostname()}, {result['from']} to {result['to']}: {node['days']} days counted, "
-          f"{node['gaps']} gap lines, {node['lostFiles']} files deleted early.")
+          f"{node['gaps']} gap lines, {node['deletedEarly']} files deleted before their 90 days.")
     print("Per company: days with traffic, new connections (all days, busiest day), most machines on a day, the most new")
     print("connections in 10 seconds (the company, one machine), refused, unanswered, the most failed destinations in")
     print("one minute.")
@@ -584,19 +662,19 @@ def main():
     if args.command == "count":
         if not args.day:
             parser.error("count needs --day")
-        through, plugged = load_attribution(args.log_dir)
+        through, plugged, _ = load_attribution(args.log_dir)
         files = regular_files(args.log_dir)
         partial = False
         if through is None or through >= args.day:
-            # No carried state for this day: replay every client history there is before it.
-            plugged, partial, day = {}, True, first_day(args.log_dir, files)
+            # Who was plugged in when the day began: as its counts kept it, or replayed.
+            plugged, partial = start_of(args.log_dir, args.day, files)
         else:
             day = next_day(through)
-        while day is not None and day < args.day:
-            plugged = advance(args.log_dir, day, plugged, files)
-            day = next_day(day)
+            while day < args.day:
+                plugged = advance(args.log_dir, day, plugged, files)
+                day = next_day(day)
         counts, _ = count_day(args.log_dir, args.day, plugged, files)
-        counts["node"]["lostFiles"] = lost_on(args.log_dir, args.day)
+        counts["node"]["deletedEarly"] = deleted_early(args.log_dir).get(args.day, 0)
         print(json.dumps({"schema": "qorpera.agent-exit-counts/v1", "day": args.day, "attributionPartial": partial,
                           **counts}, indent=2))
         return
