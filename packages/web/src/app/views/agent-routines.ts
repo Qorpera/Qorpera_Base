@@ -811,6 +811,14 @@ export class AgentRoutines {
 		// place it was moved to whose change no read has confirmed yet.
 		const previous = this.#flipped.get(id);
 		const enabled = !this.#runsNow(routine);
+		// A routine whose login can't pay keeps it on a resume and goes on waiting (20260930064000): the switch opens
+		// its card on "Choose a login" instead. Without that read, the switch resumes as before.
+		if (enabled && this.#payers.get(id)?.canPay === false) {
+			if (this.#open !== id) this.#expand(id);
+			if (this.#choosing?.routineId === id) this.#focusChoice(id);
+			else void this.#openChoice(routine);
+			return;
+		}
 		this.#busy = true;
 		this.#moving = id;
 		this.#changes += 1;
@@ -876,7 +884,7 @@ export class AgentRoutines {
 	/** Opens "Choose a login" on the member's own logins that can pay for the routine: never a Claude login, and a
 	 * ChatGPT plan only once its member turned on work while away, and never for a file-change or webhook routine. The
 	 * web lists no company accounts, so a routine is moved to one elsewhere. */
-	async #openChoice(routine: WebRoutine): Promise<void> {
+	async #openChoice(routine: CloudRoutine): Promise<void> {
 		if (this.#busy || this.#editing || !this.#access?.canManage()) return;
 		if (!(await this.#loadAccounts()) || this.#signal.aborted || this.#editing) return;
 		const listening = routine.triggers.some((item) => item.kind === "listener");

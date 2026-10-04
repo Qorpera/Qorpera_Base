@@ -2582,6 +2582,47 @@ describe("who pays for a routine (20260930064000)", () => {
 		await expect(f.routines.setLogin(ROUTINE_ID, account)).rejects.toThrow("Invalid cloud response");
 	});
 
+	it("turns the switch of a routine whose login can't pay into Choose a login; without that read it resumes", async () => {
+		const f = mount([waiting()]);
+		f.routines.payer.mockResolvedValue(paid(waits));
+		await vi.waitFor(() => expect(whoPays(cards(f.view.el)[0]!)).not.toBeNull());
+		const lever = f.view.el.querySelector<HTMLButtonElement>('[role="switch"]')!;
+		lever.click();
+		// No resume: the card opens on the member's logins, and the switch stays off.
+		await vi.waitFor(() => expect(f.view.el.querySelector('.routine-login select[aria-label="Login"]')).not.toBeNull());
+		expect(cards(f.view.el)[0]!.classList.contains("is-open")).toBe(true);
+		expect(document.activeElement).toBe(field(f.view.el, "Login"));
+		expect(controls(cards(f.view.el)[0]!)).toContain("switch:false");
+		expect(f.routines.setEnabled).not.toHaveBeenCalled();
+		// Pressed again, it stays on the open choice.
+		f.view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+		await settle();
+		expect(f.view.el.querySelector(".routine-login select")).not.toBeNull();
+		expect(f.routines.setEnabled).not.toHaveBeenCalled();
+		f.stop.abort();
+		document.body.replaceChildren();
+		// A login that pays, a cloud without the read, and a read that failed: the switch resumes as before.
+		for (const read of [
+			async () => paid({ ...waits, canPay: true }),
+			async () => null,
+			async (): Promise<WebRoutinePayer | null> => {
+				throw new Error("offline");
+			},
+		]) {
+			const g = mount([waiting()]);
+			g.routines.payer.mockImplementation(read);
+			await vi.waitFor(() => expect(g.routines.payer).toHaveBeenCalled());
+			await settle();
+			g.view.el.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+			await vi.waitFor(() =>
+				expect(g.routines.setEnabled).toHaveBeenCalledWith(expect.anything(), account, true, expect.any(String)),
+			);
+			expect(g.view.el.querySelector(".routine-login select")).toBeNull();
+			g.stop.abort();
+			document.body.replaceChildren();
+		}
+	});
+
 	it("says what to do when no login can pay, and offers the choice only to an owner or admin while it waits", async () => {
 		const claude = {
 			...account,
