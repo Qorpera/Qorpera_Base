@@ -280,7 +280,8 @@ it("gives a human task's wake its own protocol, with the staff's judgement and n
 	expect(instructions).toContain("Follow the human-task skill");
 	expect(instructions).not.toContain("# This wake: a message from a coworker");
 	expect(instructions).not.toContain("qorpera.run-continuation/v1");
-	for (const staff of ["you are a dispatcher, not a hero", "# Writing to people"]) expect(instructions).toContain(staff);
+	for (const staff of ["you are a dispatcher, not a hero", "# Writing to people"])
+		expect(instructions).toContain(staff);
 });
 
 it("asks only whether a quiet coding session can be archived on its check-in", () => {
