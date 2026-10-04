@@ -519,7 +519,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 			},
 		});
 		expect(JSON.stringify(result)).not.toContain("hunter2");
-		expect(f.page.evaluate).toHaveBeenCalledTimes(2);
+		// Before and after the snapshot, then the check for a page that asks for a person (A1-4c).
+		expect(f.page.evaluate).toHaveBeenCalledTimes(3);
 
 		// The member sends the form while the snapshot is taken: only the first read saw the value.
 		f.locator.ariaSnapshot.mockResolvedValueOnce('- textbox "Password": hunter2-typed');
@@ -1253,6 +1254,30 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_TAB_UNREADABLE");
 		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
 		await expect(desktop()).resolves.toMatchObject({ kind: "json", value: { surface: "desktop" } });
+	});
+
+	it("reads the window on the screen rather than the run's own browser, and refuses when it cannot be waited for", async () => {
+		const { page } = fakePage();
+		const onScreen = new FakeBrowserContext();
+		onScreen.pages.mockReturnValue([page as unknown as Page]);
+		let screen: () => Promise<BrowserContext | undefined> = async () => onScreen as unknown as BrowserContext;
+		const fixture = automationFixture(true, true, () => screen());
+		const desktop = () =>
+			fixture.automation.perform({ kind: "screenshot", surface: "desktop" }, computerLease(), computerEffect(), {
+				...computerOperation(),
+				tool: "computer_screenshot",
+				arguments: { kind: "screenshot", surface: "desktop" },
+			});
+		// The screen's window holds a password; the run's own browser holds nothing.
+		page.evaluate.mockResolvedValueOnce(["hunter2"]);
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+		expect(fixture.page.evaluate).not.toHaveBeenCalled();
+		// A window that cannot be waited for is the typed refusal, never a picture.
+		screen = async () => {
+			throw new Error("window wait timed out");
+		};
+		await expect(desktop()).rejects.toThrow("PRIVATE_FIELD_TAB_UNREADABLE");
+		expect(fixture.commands.capturePng).not.toHaveBeenCalled();
 	});
 
 	it("preserves actual page dimensions while desktop images retain fixed pixel coordinates", async () => {

@@ -50,12 +50,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Enter a message of no more than 64 KiB.": "Skriv en besked på højst 64 KiB.",
 	"Connect a model account in Settings → My connections to send messages.":
 		"Forbind en modelkonto i Indstillinger → Mine forbindelser for at sende beskeder.",
-	"Group chat review changed kind.": "Gennemgangen af gruppechatten skiftede type.",
 	"The group chat could not be created. Your message is still here.":
 		"Gruppechatten kunne ikke oprettes. Din besked er her stadig.",
-	"The group chat directory is unavailable.": "Mappen til gruppechats er ikke tilgængelig.",
-	"The group chat changed. Start a new conversation.": "Gruppechatten er ændret. Start en ny samtale.",
-	"The group chat path is unavailable.": "Stien til gruppechatten er ikke tilgængelig.",
 	"The group chat is still opening. Send again to retry the same conversation.":
 		"Gruppechatten åbner stadig. Send igen for at prøve den samme samtale igen.",
 	"No model account is currently available. Try again after an account resets.":
@@ -64,6 +60,41 @@ export const WORKSPACE: Record<string, string> = {
 		"Åbn den eksisterende samtale, og gør dens ventende besked færdig, før du sender en ny.",
 	"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.":
 		"Denne samtale har en usendt kladde. Åbn den, og gør kladden færdig eller ryd den, før du sender en ny.",
+
+	// app/views/shell.ts: the Agents | Interfaces switch and the Interfaces tab
+	Interfaces: "Interfaces",
+	"Agents or interfaces": "Agenter eller interfaces",
+	"No matching interfaces.": "Ingen interfaces passer.",
+	"Search interfaces": "Søg i interfaces",
+	"Close search": "Luk søgning",
+	Views: "Visninger",
+	Kind: "Slags",
+	Due: "Frist",
+	What: "Hvad",
+	Since: "Siden",
+	"Unfinished run": "Ufærdig kørsel",
+	Mention: "Omtale",
+	Task: "Opgave",
+	Offer: "Tilbud",
+	Yes: "Ja",
+	No: "Nej",
+	Actions: "Handlinger",
+	Filter: "Filtrér",
+	"Filter {title}": "Filtrér {title}",
+	"No rows match.": "Ingen rækker passer.",
+	"Choose one to see it here.": "Vælg en for at se den her.",
+	"Text in «» is quoted from outside content, not written by me.":
+		"Tekst i «» er citeret fra udefrakommende indhold og ikke skrevet af mig.",
+	"The Co-Founder's thread can't be opened here.": "Co-Founderens tråd kan ikke åbnes her.",
+
+	// app/interfaces.ts and app/views/interface.ts
+	"{name} needs you": "{name} har brug for dig",
+	"{name} has a run that did not finish": "{name} har en kørsel, der ikke blev færdig",
+	"You were mentioned in {conversation}": "Du blev nævnt i {conversation}",
+	"This page isn't available here yet.": "Siden er ikke tilgængelig her endnu.",
+	"Back to the company": "Tilbage til virksomheden",
+	Live: "Live",
+	"Nothing here right now.": "Intet her lige nu.",
 
 	// app/views/shell.ts
 	"Profile: {name}": "Profil: {name}",
@@ -85,30 +116,22 @@ export const WORKSPACE: Record<string, string> = {
 	viewer: "læser",
 	"Resume the pending company creation before starting another.":
 		"Gør oprettelsen af den ventende virksomhed færdig, før du starter en ny.",
-	"The cloud could not provision the company's Company File.": "Skyen kunne ikke oprette Virksomhedsfilen.",
-	"The company is still being created. Resume to check its progress.":
-		"Virksomheden bliver stadig oprettet. Genoptag for at se, hvor langt den er.",
+	"Creating a company is paused. Try again later.": "Det er sat på pause at oprette virksomheder. Prøv igen senere.",
 	"Invited as {role} · expires {date}": "Inviteret som {role} · udløber {date}",
 	Accept: "Accepter",
 	"{role} · since {date}": "{role} · siden {date}",
 	"Company name": "Virksomhedsnavn",
-	"Creating {name}": "Opretter {name}",
-	"Creating the company": "Opretter virksomheden",
-	"Seeding its Company File and Co-Founder.": "Opretter Virksomhedsfilen og Co-Founder.",
+	"Opening a table for the company": "Åbner et bord til virksomheden",
 	"You have been invited": "Du er blevet inviteret",
 	"Start your first company": "Start din første virksomhed",
 	"Join a company you have been invited to, or start one of your own.":
 		"Bliv en del af en virksomhed, du er inviteret til, eller start din egen.",
-	"Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.":
-		"Giv den et navn. Qorpera opretter Virksomhedsfilen og en Co-Founder, der går i gang med det samme.",
 	or: "eller",
-	"Create company": "Opret virksomhed",
 	"Resume creating {name}": "Genoptag oprettelsen af {name}",
 	"Invited to a company? It appears here the moment someone adds you.":
 		"Inviteret til en virksomhed? Den vises her, så snart nogen tilføjer dig.",
 	"New company": "Ny virksomhed",
 	Create: "Opret",
-	"Seeds a Company File and a Co-Founder": "Opretter en Virksomhedsfil og en Co-Founder",
 	"Loading companies": "Henter virksomheder",
 
 	// app/views/new-conversation.ts

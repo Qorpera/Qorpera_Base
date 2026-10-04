@@ -70,6 +70,7 @@ async function fixture(
 	presence?: CloudCompanyPathPresenceFactory,
 	machines = false,
 	folderBytes = false,
+	folderSearch = false,
 ) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent" || mode === "company-worker") {
@@ -621,7 +622,16 @@ async function fixture(
 		binarySha256,
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
+		// The vault's company accounts route (A1-4) on every host here: who is offered company_account is the runtime's
+		// choice. This suite never opens an account.
+		companyAccounts: {
+			companyAccount: async () => {
+				throw new Error("No company account expected");
+			},
+		},
 		...(mode === "company-office" ? { computerSession: officeSession } : {}),
+		// A relay socket only offers the search here; this suite never searches.
+		...(folderSearch ? { folderSearch: { socketPath: "/run/qorpera-folder-relay/0.sock" } } : {}),
 		// Folder bytes read the files a test seeds; this suite never saves a file.
 		...(folderBytes
 			? {
@@ -633,6 +643,11 @@ async function fixture(
 							const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
 							if (text === undefined) throw new Error("No such folder bytes in this suite");
 							return new TextEncoder().encode(text);
+						},
+						range: async (file: { fileSha256: string }, offset: number, length: number) => {
+							const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+							if (text === undefined) throw new Error("No such folder bytes in this suite");
+							return new TextEncoder().encode(text).subarray(offset, offset + length);
 						},
 					}),
 				}
@@ -904,6 +919,9 @@ it.each([
 				"list_hooks",
 				"read_event",
 				"send_mail",
+				"find_mail",
+				"save_attachment",
+				"company_account",
 				"read_context",
 				"read_skill",
 				"recall_memory",
@@ -924,7 +942,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v2",
+			schema: "qorpera.hire-overlay/v3",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1021,6 +1039,11 @@ it("exposes only a named typed connector operation and keeps its grant and desti
 	expect(f.reviewedTools).toEqual(["linear_issue_create"]);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
+	// With the vault, a company run is offered its accounts (A1-4).
+	const offered = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
+		(tool: { name: string }) => tool.name,
+	);
+	expect(offered).toContain("company_account");
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(
@@ -1194,7 +1217,13 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
-	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_folder_list")).toHaveLength(1);
+	// The routine writer lists the routines folder once (composition lists the notebook and skills, P20).
+	expect(
+		f.pathCall.mock.calls.filter(
+			([method, args]) =>
+				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+		),
+	).toHaveLength(1);
 	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_read_native_wake")).toHaveLength(1);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
@@ -1204,6 +1233,65 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	expect(
 		evidence.fenced.outputs.some((output: { output: string }) => output.output.includes('\\"state\\":\\"settled\\"')),
 	).toBe(true);
+});
+
+it.each([
+	{ folder: true, search: true, offered: true },
+	{ folder: true, search: false, offered: false },
+	{ folder: false, search: true, offered: false },
+])(
+	"offers company_search only to a folder-v2 run on a host with the node's folder search (%o)",
+	async ({ folder, search, offered }) => {
+		const f = await fixture("company-dynamic", false, undefined, false, true, search);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+		expect(names.includes("company_search")).toBe(offered);
+	},
+);
+
+it.each([true, false])(
+	"gives a folder-v2 run the folder core's file tools, and other runs the legacy ones (%o)",
+	async (folder) => {
+		const f = await fixture("company-dynamic", false, undefined, false, true);
+		if (folder) f.context.folder = { agent: "nora", coworkers: {} };
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const tools = evidence.threadParameters.dynamicTools[0].tools as {
+			name: string;
+			inputSchema: { required: string[] };
+		}[];
+		const list = tools.find((tool) => tool.name === "company_list");
+		// The folder core pages a folder by its last path; the legacy listing pins a snapshot.
+		expect(list?.inputSchema.required).toEqual(
+			folder ? ["path", "after", "limit"] : ["path", "after", "snapshotId", "limit"],
+		);
+		for (const name of ["company_read", "company_write", "company_mkdir", "company_delete"])
+			expect(tools.some((tool) => tool.name === name)).toBe(true);
+	},
+);
+
+it("releases what a folder-v2 run's composition read under the composed context, before the model starts", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	f.folderFiles.set("agents/nora/memory/profile.md", "- (2026-09-01) I am Nora, the bookkeeper\n");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const calls = f.pathCall.mock.calls;
+	const start = calls.findIndex(([method]) => method === "qorpera_begin_native_company_execution_v2");
+	const released = calls.findIndex(
+		([method, args]) =>
+			method === "qorpera_folder_record_release" &&
+			(args as { p_reads: { path: string }[] }).p_reads.some(
+				(read) => read.path === "agents/nora/memory/profile.md",
+			),
+	);
+	expect(released).toBeGreaterThanOrEqual(0);
+	expect(released).toBeLessThan(start);
+	// Under exactly the context the run starts with.
+	expect((calls[released]![1] as { p_output_sha256: string }).p_output_sha256).toBe(
+		(calls[start]![1] as { p_context_sha256: string }).p_context_sha256,
+	);
 });
 
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {
@@ -1239,7 +1327,13 @@ it("has a folder-v2 dynamic routine run find its file by the woken routine's id"
 		),
 	).toBe(true);
 	expect(f.folderReleases).toHaveLength(1);
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_folder_list")).toBe(false);
+	// Found by the routine's id, without listing the routines folder (composition lists the notebook and skills, P20).
+	expect(
+		f.pathCall.mock.calls.some(
+			([method, args]) =>
+				method === "qorpera_folder_list" && (args as { p_parent?: string }).p_parent === "agents/nora/routines",
+		),
+	).toBe(false);
 });
 
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
@@ -1493,6 +1587,8 @@ it.each([
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
+		// A folder company's accounts come with its connection files (A1-7): no company_account yet.
+		expect(tools.some((tool) => tool.name === "company_account")).toBe(!folder);
 		const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
 		expect(todo.includes("Each todo is a file in your folder")).toBe(files);
 		expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);
@@ -1827,17 +1923,27 @@ it("stops before the final send when a read source loses audience permission", a
 
 it("exports native composition over HTTP before delivery begins and closes it before the send", async () => {
 	const f = await fixture("company-composition", true);
+	// Wait for the export that records the composition start, not a fixed time: under load
+	// the run can take a second or more to reach it.
+	let composed!: () => void;
+	const composing = new Promise<null>((resolve) => {
+		composed = () => resolve(null);
+	});
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		const value = await original(method, args, signal);
+		if (f.observations.some((row) => row.operation === "message_composition" && row.phase === "start")) composed();
+		return value;
+	});
 	const abort = new AbortController();
 	const execution = f.runtime.execute(f.request, f.identityRoot, abort.signal).then(
 		(result) => ({ result }),
 		(error: unknown) => ({ error }),
 	);
 	try {
-		await vi.waitFor(() =>
-			expect(f.observations.some((row) => row.operation === "message_composition" && row.phase === "start")).toBe(
-				true,
-			),
-		);
+		// The fixture holds the composition open, so a run that ends first never exported its start.
+		const ended = await Promise.race([composing, execution]);
+		if (ended) throw "error" in ended ? ended.error : new Error("The run ended before composition started");
 		const started = f.observations.find((row) => row.operation === "message_composition")!;
 		const turn = f.observations.find((row) => row.operation === "model_turn" && row.phase === "start")!;
 		expect(started).toMatchObject({

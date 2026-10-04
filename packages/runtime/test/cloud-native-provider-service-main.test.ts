@@ -1,6 +1,7 @@
 import {
 	nativeCompanyComputerConfiguration,
 	nativeCompanyRuntimeConfiguration,
+	nativeFolderSearchConfiguration,
 	nativeWarmIdleMs,
 } from "@qorpera/runtime/cloud-native-provider-service-main";
 import { systemdCredentialMetadataIsSafe } from "@qorpera/runtime/systemd-credential";
@@ -104,6 +105,24 @@ describe("native Company Computer service composition", () => {
 			{ QORPERA_COMPANY_COMPUTER_TOKEN: "A".repeat(43) },
 		])
 			expect(() => nativeCompanyComputerConfiguration(environment)).toThrow();
+	});
+});
+
+describe("native folder search composition", () => {
+	it("takes the slot's relay socket, with the governed runtime, or nothing", () => {
+		expect(nativeFolderSearchConfiguration({})).toBeUndefined();
+		const environment = {
+			QORPERA_NATIVE_RUNTIME: "company-path-v1",
+			QORPERA_FOLDER_SEARCH_SOCKET: "/run/qorpera-folder-relay/3.sock",
+		};
+		expect(nativeFolderSearchConfiguration(environment)).toEqual({ socketPath: "/run/qorpera-folder-relay/3.sock" });
+		for (const bad of [
+			{ ...environment, QORPERA_FOLDER_SEARCH_SOCKET: "/tmp/3.sock" },
+			{ ...environment, QORPERA_FOLDER_SEARCH_SOCKET: "/run/qorpera-folder-relay/../x.sock" },
+			{ ...environment, QORPERA_FOLDER_SEARCH_SOCKET: "" },
+			{ ...environment, QORPERA_NATIVE_RUNTIME: undefined },
+		])
+			expect(() => nativeFolderSearchConfiguration(bad)).toThrow();
 	});
 });
 

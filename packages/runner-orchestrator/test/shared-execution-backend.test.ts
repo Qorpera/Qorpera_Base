@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseEphemeralCloudRunnerServiceConfig } from "../../runtime/src/cloud-runner-service.ts";
 import type { LxdNativeCompanyRuntimeConfig } from "../src/lxd-company-runtime.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
 import { ProviderAdmissionRefused } from "../src/provider-shared.ts";
@@ -29,6 +30,8 @@ const secretBrokerCa = readFileSync(
 );
 const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const token = (): string => randomBytes(32).toString("base64url");
+/** The execution host's own credential (G2-3e): every database call of the service goes through its entry points. */
+const hostCredential = token();
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -127,6 +130,15 @@ interface Fixture {
 	backend: SharedExecutionProviderBackend;
 	units: FakeUnits;
 	rpc: Array<{ name: string; body: Record<string, unknown> }>;
+	/** Calls that came through the execution host's entry points (G2-3e), unwrapped into `rpc` as well. */
+	hostCalls: Array<{
+		entry: string;
+		name: string;
+		hostId: unknown;
+		credential: unknown;
+		apikey: string | null;
+		authorization: string | null;
+	}>;
 	deliveries: Array<{ port: number; authorization: string | null; body: Record<string, unknown> }>;
 	stateRoot: string;
 	runRoot: string;
@@ -153,6 +165,7 @@ async function fixture(
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
+		executionHostCredential?: string;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -206,6 +219,7 @@ async function fixture(
 		backend: undefined as unknown as SharedExecutionProviderBackend,
 		units: new FakeUnits(),
 		rpc: [],
+		hostCalls: [],
 		deliveries: [],
 		stateRoot,
 		runRoot,
@@ -244,12 +258,31 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
+		executionHostCredential: options.executionHostCredential ?? hostCredential,
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
 		if (url.pathname.startsWith("/rest/v1/rpc/")) {
-			const name = url.pathname.slice("/rest/v1/rpc/".length);
-			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			let name = url.pathname.slice("/rest/v1/rpc/".length);
+			let body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			if (name === "qorpera_execution_host_call" || name === "qorpera_execution_host_call_long") {
+				const headers = new Headers(init?.headers);
+				state.hostCalls.push({
+					entry: name,
+					name: String(body.p_name),
+					hostId: body.p_host_id,
+					credential: body.p_credential,
+					apikey: headers.get("apikey"),
+					authorization: headers.get("authorization"),
+				});
+				name = String(body.p_name);
+				body = body.p_args as Record<string, unknown>;
+				if (headers.get("apikey") !== "publishable-key" || headers.get("authorization") !== null)
+					return new Response("not the publishable key", { status: 401 });
+			} else {
+				// The service never calls the database but through the execution host's entry points (G2-3e).
+				return new Response("a direct database call", { status: 403 });
+			}
 			state.rpc.push({ name, body });
 			if (name === "qorpera_compute_identity_login_in_vault") return Response.json(state.loginInVault);
 			if (name === "qorpera_runtime_ended_runners")
@@ -278,6 +311,8 @@ async function fixture(
 					capabilities: ["agent_turn"],
 				});
 			}
+			if (name === "qorpera_bind_native_identity_credential")
+				return Response.json({ allocationId: body.p_allocation_id, holderKind: body.p_holder_kind });
 			if (name === "qorpera_reserve_runtime_machine") {
 				if (state.reservation.state !== "reserved") return Response.json(state.reservation);
 				return Response.json({
@@ -372,6 +407,39 @@ async function liveJournalNames(f: Fixture): Promise<string[]> {
 }
 
 describe("shared execution provider backend", () => {
+	it("sends the service's own calls through the execution host's entry points with its credential (G2-3e)", async () => {
+		const credential = token();
+		const f = await fixture({ executionHostCredential: credential });
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		// The service key still reaches the slot's native host (until G2-5), never a call of the service's own.
+		expect(
+			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-supabase-service-key"), "utf-8"),
+		).toBe("service-key\n");
+		await f.backend.deliver(runner, delivery(token()));
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		const host = { hostId: "qorpera-exec-test", credential, apikey: "publishable-key", authorization: null };
+		expect(f.hostCalls).toEqual([
+			{ entry: "qorpera_execution_host_call", name: "qorpera_provision_execution_runner", ...host },
+			{ entry: "qorpera_execution_host_call", name: "qorpera_reserve_runtime_machine", ...host },
+			{ entry: "qorpera_execution_host_call", name: "qorpera_bind_native_identity_credential", ...host },
+			{ entry: "qorpera_execution_host_call", name: "qorpera_compute_identity_login_in_vault", ...host },
+			{ entry: "qorpera_execution_host_call_long", name: "qorpera_release_runtime_machine", ...host },
+		]);
+		// Every database call went through an entry point; an identity read names the run it is read for.
+		expect(f.rpc.map((call) => call.name)).toEqual(f.hostCalls.map((call) => call.name));
+		expect(f.rpc[3]?.body).toEqual({ p_compute_identity_id: computeIdentityId, p_run_id: runId });
+	});
+
+	it("refuses an execution host credential that is not 32 base64url bytes (G2-3e)", async () => {
+		await expect(fixture({ executionHostCredential: "short" })).rejects.toThrow(
+			"Execution host credential is invalid",
+		);
+		await expect(fixture({ executionHostCredential: "" })).rejects.toThrow("Execution host credential is invalid");
+	});
+
 	it("hands the sandbox the coding command gateway when the host is configured for it", async () => {
 		const gateway = { origin: "https://coding.example.test:8789", token: token() };
 		const f = await fixture({ codingCommand: gateway });
@@ -394,6 +462,8 @@ describe("shared execution provider backend", () => {
 		expect(f.rpc.map((call) => call.name)).toEqual([
 			"qorpera_provision_execution_runner",
 			"qorpera_reserve_runtime_machine",
+			// G2-3: this run's machine's identity credential, bound as an exec slot once the machine is reserved.
+			"qorpera_bind_native_identity_credential",
 			// The host's material asks whether the identity's login is in the vault.
 			"qorpera_compute_identity_login_in_vault",
 		]);
@@ -411,7 +481,9 @@ describe("shared execution provider backend", () => {
 			"qorpera-cloud-secret-runtime",
 			"qorpera-coding-command",
 			"qorpera-native-bridge",
+			"qorpera-native-identity",
 			"qorpera-native-identity-epoch",
+			"qorpera-native-identity-token",
 			"qorpera-native-object-token",
 			"qorpera-native-provider-master-key",
 			"qorpera-office-native",
@@ -420,6 +492,26 @@ describe("shared execution provider backend", () => {
 			"qorpera-supabase-service-key",
 		]);
 		for (const name of credentials) expect((await stat(join(slotRun, "credentials", name))).mode & 0o077).toBe(0);
+		// G2-3: the run's machine's identity credential, bound by its hash only, for the slot's native host.
+		const identityToken = (
+			await readFile(join(slotRun, "credentials", "qorpera-native-identity-token"), "utf-8")
+		).trim();
+		expect(identityToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(JSON.parse(await readFile(join(slotRun, "credentials", "qorpera-native-identity"), "utf-8"))).toEqual({
+			schema: "qorpera.native-identity-credential/v1",
+			compute_identity_id: computeIdentityId,
+			credential: identityToken,
+			publishable_key: "publishable-key",
+		});
+		expect(f.rpc[2]?.body).toEqual({
+			p_allocation_id: runId,
+			p_provider_adapter: "native26-test",
+			p_instance_sha256: (f.rpc[1]?.body as { p_instance_sha256: string }).p_instance_sha256,
+			p_holder_kind: "exec_slot",
+			p_credential_sha256: sha256(identityToken),
+		});
+		expect(JSON.stringify(f.rpc)).not.toContain(identityToken);
+		expect(await journal(f)).toMatchObject({ credentials: { nativeIdentitySha256: sha256(identityToken) } });
 		expect((await readFile(join(slotRun, "credentials", "qorpera-native-provider-master-key"), "utf-8")).trim()).toBe(
 			f.masterKey,
 		);
@@ -450,12 +542,18 @@ describe("shared execution provider backend", () => {
 			runner_id: runnerId,
 			native_bridge_url: "http://127.0.0.1:20000/",
 			native_bridge_boundary: "virtual_machine",
+			native_identity_credential: identityToken,
 			assignment_host: "127.0.0.1",
 			assignment_port: 20001,
 			max_assignments: 1,
 			environment: {},
 			authority_state_path: join(f.stateRoot, "slots", "0", "runner", "state", "authority.json"),
 			temporary_root: join(f.stateRoot, "slots", "0", "runner", "workspace"),
+		});
+		// The slot's runner reads what the service wrote.
+		expect(parseEphemeralCloudRunnerServiceConfig(runnerConfig)).toMatchObject({
+			nativeBridgeUrl: "http://127.0.0.1:20000/",
+			nativeIdentityCredential: identityToken,
 		});
 		expect(await journal(f)).toMatchObject({
 			physicalState: "registered",
@@ -501,6 +599,8 @@ describe("shared execution provider backend", () => {
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
 		await expect(stat(slotRun)).rejects.toMatchObject({ code: "ENOENT" });
 		expect(await readdir(join(f.stateRoot, "slots", "0", "host"))).toEqual([]);
+		// The runner's configuration, with its run's identity credential, goes with the runner.
+		await expect(stat(runnerConfigPath)).rejects.toMatchObject({ code: "ENOENT" });
 		await f.backend.reconcile();
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
 		expect(await liveJournalNames(f)).toEqual([]);
@@ -947,6 +1047,22 @@ describe("warm conversations", () => {
 			bridge,
 		);
 		expect(await readFile(kept, "utf-8")).toBe("kept");
+		// G2-3: the next run is a new machine with its own identity credential, bound to its allocation and handed to
+		// the parked host through the new runner's configuration (the host's systemd credentials are the first run's).
+		const credentials = join(f.runRoot, "slots", "0", "credentials");
+		const identityToken = (await readFile(join(credentials, "qorpera-native-identity-token"), "utf-8")).trim();
+		const binds = f.rpc.filter((call) => call.name === "qorpera_bind_native_identity_credential");
+		expect(binds.map((call) => call.body.p_allocation_id)).toEqual([runId, secondRun]);
+		expect(binds[0]?.body.p_credential_sha256).not.toBe(binds[1]?.body.p_credential_sha256);
+		expect(binds[1]?.body.p_credential_sha256).toBe(sha256(identityToken));
+		const runnerConfig = JSON.parse(
+			await readFile(join(f.stateRoot, "slots", "0", "runner", "config.json"), "utf-8"),
+		);
+		expect(runnerConfig.native_identity_credential).toBe(identityToken);
+		expect(parseEphemeralCloudRunnerServiceConfig(runnerConfig).nativeIdentityCredential).toBe(identityToken);
+		expect(JSON.parse(await readFile(join(credentials, "qorpera-native-identity"), "utf-8")).credential).toBe(
+			identityToken,
+		);
 	});
 
 	it("never gives a parked host to another conversation, and parks nothing for unattended work", async () => {

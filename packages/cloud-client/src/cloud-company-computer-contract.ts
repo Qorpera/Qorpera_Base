@@ -66,6 +66,8 @@ export interface CompanyComputerEffectContext {
 	receiptId: string;
 	idempotencyKey: string;
 	signal: AbortSignal;
+	/** A vault_fill's value sealed to this computer's boot key (company accounts A1-3); only its office opens it. */
+	fill?: Readonly<Record<string, string>>;
 }
 
 export interface CompanyComputerOperations {
@@ -169,7 +171,11 @@ export class CompanyComputerActionNotStartedError extends Error {
 			| "BROWSER_TARGET_AMBIGUOUS"
 			| "BROWSER_TAB_AMBIGUOUS"
 			| "BROWSER_TAB_UNAVAILABLE"
-			| "BROWSER_TARGET_CLOSED",
+			| "BROWSER_TARGET_CLOSED"
+			// A vault_fill that cannot be opened here (company accounts A1-3): nothing was typed.
+			| "ACCOUNT_FILL_UNAVAILABLE"
+			| "ACCOUNT_FILL_UNOPENED"
+			| "ACCOUNT_FILL_EXPIRED",
 	) {
 		super(message);
 		this.name = "CompanyComputerActionNotStartedError";

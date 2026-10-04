@@ -1,6 +1,7 @@
 #!/bin/bash
-# Runs as root INSIDE qorpera-testvm-node02: lxc exec qorpera-testvm-node02 --project testmachines -- bash -s -- "<tester
-# public key>" < guest-setup.sh. Idempotent. Changes nothing in LXD's view of the VM, so its enrollment digest stays.
+# Runs as root INSIDE a test machine (qorpera-testvm-node02, qorpera-testvm-node01): lxc exec qorpera-testvm-<node>
+# --project testmachines -- bash -s -- "<tester public key>" < guest-setup.sh. Idempotent. Changes nothing in LXD's
+# view of the VM, so its enrollment digest stays.
 # Ubuntu 26.04 + rootful Docker Engine + Node 24 (pinned) + Git/build tools/Python/bubblewrap, no self-update (apt
 # units masked, every snap held), user "tester" (docker + sudo) by SSH key only, runner users ci01..ci16, the pinned
 # PostgreSQL image and the Node images the *-linux.mjs suites and runtime office probes use pre-pulled, LXD 6.9 rev

@@ -181,6 +181,12 @@ export type CloudCompanyFolderRoutineLogin =
 	| { readonly login: { readonly bindingId: string; readonly version: number } | null }
 	| { readonly refused: "acknowledgement" | "final" | "paused" };
 
+/** The run's own view of the folder, for the node's folder service (its pass opens the view there). */
+export interface CloudCompanyFolderRunView {
+	readonly viewId: string;
+	readonly pass: string;
+}
+
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
 	readonly asOfSeq: number;
@@ -203,6 +209,9 @@ export interface CloudCompanyFolderBytes {
 	/** Stages one file; its version-2 manifest carries the media type and the executable bit (C1D §2). */
 	put(bytes: Uint8Array, mediaType: string, executable: boolean, signal: AbortSignal): Promise<CloudFileReference>;
 	get(file: CloudCompanyFolderFile, signal: AbortSignal): Promise<Uint8Array>;
+	/** Bytes `offset` to `offset + length` of a file (fewer at its end), fetching only the chunks they fall in, each
+	 * checked against its hash. */
+	range(file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal): Promise<Uint8Array>;
 }
 
 /** A file's content in a change set. Text is stored as UTF-8. */
@@ -344,7 +353,9 @@ export function cloudCompanyFolderFailure(error: unknown): unknown {
 	if (error.code === "55000") return new CloudCompanyFolderError("stopped");
 	if (error.code === "42501")
 		return new CloudCompanyFolderError(READ_REVOKED.has(error.detail) ? "read_revoked" : "unavailable");
-	if (error.code === "55P03") return new CloudCompanyFolderError("contended");
+	// 55P03: a lock wait past the budget. QRC01: the folder core's conflict envelope, which a commit or release
+	// retries first and which staging answers for an object GC holds (C1D §9.7). Both are asked again later.
+	if (error.code === "55P03" || error.code === "QRC01") return new CloudCompanyFolderError("contended");
 	if (error.code === "0A000") return new CloudCompanyFolderError("unavailable");
 	return error;
 }
@@ -714,6 +725,28 @@ export class CloudCompanyFolderClient {
 		return { asOfSeq: counter(input.asOfSeq), entry: entry(input.entry) };
 	}
 
+	/** Opens the run's own view of the folder (`qorpera_folder_run_view_open`, 20260929999970), for the node's folder
+	 * search: the folder service serves and renews it by its pass, and the run's end closes it. Opening again in the
+	 * same job closes the earlier one. */
+	async openRunView(signal: AbortSignal): Promise<CloudCompanyFolderRunView> {
+		const input = record(await this.#once("qorpera_folder_run_view_open", {}, signal), [
+			"schema",
+			"viewId",
+			"pass",
+			"leaseUntil",
+		]);
+		if (
+			input.schema !== "qorpera.folder-view/v1" ||
+			typeof input.viewId !== "string" ||
+			!UUID.test(input.viewId) ||
+			typeof input.pass !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(input.pass) ||
+			typeof input.leaseUntil !== "string"
+		)
+			invalid();
+		return { viewId: input.viewId, pass: input.pass };
+	}
+
 	/** A page of the run agent's own todos from the todo index, which the commit updates with the files (thin writers
 	 * W1, `qorpera_folder_agent_todos`, 20260929770000): newest first, 32 at most, each with its cursor. */
 	async agentTodos(
@@ -868,6 +901,23 @@ export class CloudCompanyFolderClient {
 			throw new CloudCompanyPathNotText("Company folder file is not UTF-8 text");
 		}
 		return { entry: found, text };
+	}
+
+	/** Bytes `offset` to `offset + length` of a file entry this client read (fewer at its end), for a model read of one
+	 * window of a file: only the chunks the window falls in are fetched. */
+	async readRange(
+		file: CloudCompanyFolderFileEntry,
+		offset: number,
+		length: number,
+		signal: AbortSignal,
+	): Promise<Uint8Array> {
+		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0)
+			throw new Error("Invalid Company folder byte range");
+		const expected = Math.max(0, Math.min(file.file.bytes, offset + length) - offset);
+		const bytes = await this.#bytes.range(file.file, offset, length, signal);
+		if (bytes.byteLength !== expected)
+			throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
+		return bytes;
 	}
 
 	/** One page of a folder's entries (or, with `recursive`, of its whole subtree), in key order. */

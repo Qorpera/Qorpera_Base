@@ -55,12 +55,13 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-node-capacity.mjs",
 	"scripts/test-runtime-office-delete-disposition.mjs",
 	"scripts/test-runtime-office-current-provider-activation.mjs",
-	"scripts/test-coding-turn-backfill.mjs",
 	"scripts/test-runtime-room-history.mjs",
 	"scripts/test-runtime-production-review.mjs",
 	"scripts/test-runtime-wake-bus.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
+	"scripts/test-object-gateway-connection-files.mjs",
+	"scripts/test-object-gateway-company-creation.mjs",
 ];
 
 /** Scripts that keep a PostgreSQL of their own (they restart the server or alter the cluster-wide postgres
@@ -77,7 +78,6 @@ const OWN_SERVER_SCRIPTS = new Set([
 function scriptStartPoints(names) {
 	return [
 		"20260913000400_runtime_room_history.sql", // test-runtime-room-history
-		"20260925113000_runtime_coding_turn_continuity.sql", // test-coding-turn-backfill
 		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
 		newestBundleActivation(names), // test-runtime-office-delete-disposition holds it back
 	].filter((name) => names.includes(name));
@@ -123,17 +123,45 @@ function runSqlTests(cluster, database, tests) {
 	});
 }
 
+const USAGE = "Usage: node scripts/test-hosted-db.mjs [--scripts] [--only <test>[,<test>...]]";
+
+/** The command line: `--scripts` also runs the hosted-db scripts; `--only` keeps the SQL tests whose file name
+ * starts with one of the comma-separated values (`--only 811,818` or `--only=811_folder_company_search`). */
+export function parseArguments(args) {
+	let withScripts = false;
+	let only = null;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === "--scripts") withScripts = true;
+		else if (arg === "--only" || arg.startsWith("--only=")) {
+			const value = arg === "--only" ? args[++i] : arg.slice("--only=".length);
+			if (only !== null || !value) throw new Error(USAGE);
+			only = value.split(",").map((part) => part.trim());
+			if (only.some((part) => !/^[0-9a-z_][0-9a-z_.-]*$/.test(part))) throw new Error(USAGE);
+		} else throw new Error(USAGE);
+	}
+	return { withScripts, only };
+}
+
+/** The tests `--only` keeps, in their usual order. Every value must match at least one test, so a typo never
+ * passes as an empty run. A test that runs after another test's fixture (`-- @fixture`) still reads that file. */
+export function selectTests(tests, only) {
+	if (only === null) return tests;
+	const missing = only.filter((prefix) => !tests.some((test) => test.startsWith(prefix)));
+	if (missing.length) throw new Error(`No hosted database test starts with: ${missing.join(", ")}`);
+	return tests.filter((test) => only.some((prefix) => test.startsWith(prefix)));
+}
+
 async function main() {
-	const args = process.argv.slice(2);
-	if (args.some((arg) => arg !== "--scripts")) throw new Error("Usage: node scripts/test-hosted-db.mjs [--scripts]");
-	const withScripts = args.includes("--scripts");
+	const { withScripts, only } = parseArguments(process.argv.slice(2));
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
-	const tests = readdirSync(testsRoot)
+	const all = readdirSync(testsRoot)
 		.filter((name) => name.endsWith(".test.sql"))
 		.sort();
-	if (tests.length === 0) {
+	if (all.length === 0) {
 		throw new Error("No hosted database regression tests were found");
 	}
+	const tests = selectTests(all, only);
 	const started = performance.now();
 	const background = withScripts
 		? HOSTED_DB_SCRIPTS.filter((script) => OWN_SERVER_SCRIPTS.has(script)).map((script) => [script, startInBackground(script)])
@@ -152,7 +180,9 @@ async function main() {
 		cluster.create(databaseName);
 		try {
 			runSqlTests(cluster, databaseName, tests);
-			process.stdout.write(`Hosted database checks passed (${migrations} migrations, ${tests.length} tests) in ${seconds(testing)}\n`);
+			process.stdout.write(
+				`Hosted database checks passed (${migrations} migrations, ${tests.length}${only ? ` of ${all.length}` : ""} tests) in ${seconds(testing)}\n`,
+			);
 		} catch (error) {
 			process.stdout.write(`${error.message}\n`);
 			failed.push("SQL tests");

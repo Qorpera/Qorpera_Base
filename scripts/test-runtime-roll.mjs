@@ -115,6 +115,11 @@ async function rehearse(empty, path = "roll") {
 		const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
 		assert.equal(wake.length, 2);
 		sql(`${wake[0]}\ncommit;`);
+		// The fixture leases its run for 120 s. A loaded machine outlasts that: the next claim's reconcile requeues
+		// the run with its old created_at, and node B would take it before the rehearsal's N run. Renew the
+		// leases, as a live runner does.
+		sql(`update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() + interval '1 hour' where status = 'leased';
+		update public.qorpera_runner_job_claims set lease_expires_at = clock_timestamp() + interval '1 hour' where status = 'accepted';`);
 		// Two nodes: node A runs the fixture orchestrator's adapter, node B a fast host.
 		sql(`${service} set role service_role;
 			select public.qorpera_configure_runtime_node(${literal(policy(nodeA, "node-a", "a".repeat(64)))},0);
@@ -166,6 +171,10 @@ async function rehearse(empty, path = "roll") {
 		// A queued N run before the roll; node B's fast host will take it.
 		const runN = newRun();
 		const runN2 = newRun(); // a second N run, still queued when node B is about to leave N
+		// 05: the schema rehearsal applies every release migration and rolls back: nothing is recorded.
+		const rehearsal = lastJson(dryRun(p("05-rehearse-migrations.sql")));
+		assert.deepEqual(rehearsal.rehearsed, [migration.name]);
+		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "0");
 		// 10, 20: the release migration and node B declared N.
 		commit(`10-migration-${migration.name}`);
 		assert.equal(sql("select count(*) from supabase_migrations.schema_migrations where version = '20260929999000';"), "1");
@@ -219,6 +228,7 @@ async function rehearse(empty, path = "roll") {
 			assert.equal(paused(), 0, "the companies resume: " + JSON.stringify(resumed));
 		} else {
 			// 60: node B may not leave N while N work is queued; once it takes it, it empties and returns as N+1.
+			fresh(); // so that 60 reaches its queued-work check (node A live and observed)
 			assert.match(fails(p("60-runs-off-b.sql")), /still queued/);
 			assert.equal(claim(orchestratorB).work.run_id, runN2, "node B takes the queued N run");
 			// A job node B holds is running, though still queued until its runner accepts it: 60 lets B go.
@@ -253,8 +263,9 @@ async function rehearse(empty, path = "roll") {
 				heartbeat();
 				assert.equal(claim(orchestratorA), null, "node A (N+1 code) takes no N run");
 				assert.equal(claim(orchestratorB), null, "node B (N+1 code) takes no N run");
-				const clearing = JSON.parse(dryRun(p("92-clear-declarations.sql")).split("\n").find((line) => line.startsWith('{"declaredNext"')));
+				const clearing = lastJson(dryRun(p("92-clear-declarations.sql")));
 				assert.equal(clearing.declaredNext.length, 2, JSON.stringify(clearing));
+				assert.equal(clearing.stillDeclared, 0, JSON.stringify(clearing));
 				commit("92-clear-declarations.sql");
 				const resumed = lastJson(commit("93-resume.sql"));
 				assert.equal(paused(), 0, "the companies resume: " + JSON.stringify(resumed));

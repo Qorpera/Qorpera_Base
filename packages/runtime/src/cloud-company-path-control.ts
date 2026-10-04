@@ -18,6 +18,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_list",
 	"qorpera_folder_commit",
 	"qorpera_folder_record_release",
+	"qorpera_folder_run_view_open",
 	"qorpera_folder_open_upload",
 	"qorpera_folder_seal_upload",
 	"qorpera_folder_renew_upload",
@@ -111,6 +112,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_list",
 			"qorpera_folder_commit",
 			"qorpera_folder_record_release",
+			// The run's own view, for the node's folder search (F3, 20260929999970).
+			"qorpera_folder_run_view_open",
 			// Staging a folder-v2 file's bytes (core C1d).
 			"qorpera_folder_open_upload",
 			"qorpera_folder_seal_upload",
@@ -125,8 +128,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
-			// Company mail (M2b).
+			// Company mail (M2b), finding received mail, and a received attachment's stored bytes (M2c-1).
 			"qorpera_send_agent_mail",
+			"qorpera_find_agent_mail",
+			"qorpera_native_mail_attachment",
+			// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
+			"qorpera_find_company_accounts",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);

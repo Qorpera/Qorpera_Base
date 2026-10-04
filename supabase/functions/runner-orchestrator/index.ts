@@ -99,6 +99,34 @@ Deno.serve(async (request) => {
 				p_next_due_at: action.nextDueAt,
 			};
 			break;
+		case "folder_dynamic_routines":
+			rpc = "qorpera_folder_dynamic_routines_due";
+			args = {
+				p_after_routine_id: action.afterRoutineId ?? null,
+				p_limit: action.limit,
+			};
+			break;
+		case "restore_dynamic_routine":
+			rpc = "qorpera_folder_restore_dynamic_routine_run";
+			args = {
+				p_routine_id: action.routineId,
+				p_expected_version: action.expectedVersion,
+			};
+			break;
+		case "folder_materialize_due":
+			rpc = "qorpera_folder_materialize_due";
+			args = {
+				p_after_profile_id: action.afterProfileId ?? null,
+				p_limit: action.limit,
+			};
+			break;
+		case "folder_materialize_company":
+			rpc = "qorpera_folder_materialize_company";
+			args = {
+				p_profile_id: action.profileId,
+				p_limit: action.limit,
+			};
+			break;
 		case "reconcile":
 			rpc = "qorpera_reconcile_runner_orchestrator";
 			args = { p_orchestrator_id: action.orchestratorId };

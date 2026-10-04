@@ -228,7 +228,18 @@ export interface HostedStaffExecutionActivity {
 	activity: "waiting" | "working" | "needs_attention";
 	/** Expiring presentation hint; it never changes durable execution state. */
 	phase?: "working" | "writing";
+	/** A working run's last progress, when that is noProgressMinutes old (session-buildup audit gap 4, migration
+	 * 20260930002600). The run goes on; nothing stops it. The cloud sets both or neither. */
+	noProgressSince?: string;
+	noProgressMinutes?: number;
 	updatedAt: string;
+}
+
+/** A worker's own run, for a member's Stop (qorpera_get_worker_run_control; gap 4b, 20260930002800). */
+export interface WorkerRunControl {
+	runId: string;
+	status: "queued" | "leased" | "completed" | "failed" | "cancelled";
+	canCancel: boolean;
 }
 
 /** A failed or stopped run nobody has dismissed yet (qorpera_get_execution_run_recovery). */
@@ -276,18 +287,6 @@ export interface HostedCompanyFile {
 	updatedAt: string;
 }
 
-export interface HostedCompanyWorkspace {
-	workspaceId: string;
-	profileId: string;
-	environmentId: string;
-	clientWorkspaceId: string;
-	name: string;
-	headSnapshotId?: string;
-	createdByUserId: string;
-	createdAt: string;
-	updatedAt: string;
-}
-
 export interface HostedCompanySnapshot {
 	snapshotId: string;
 	profileId: string;
@@ -305,77 +304,6 @@ export interface HostedCompanySnapshot {
 	createdByUserId: string;
 	createdAt: string;
 	publicationState?: "prepared" | "published";
-}
-
-export type HostedCompanyProposalStatus = "open" | "accepted" | "rejected";
-export type HostedCompanyProposalReason = "policy" | "authority" | "conflict" | "recovery";
-
-export interface HostedCompanyProposalReview {
-	assignmentId: string;
-	proposalRevision: number;
-	reviewerStaffAgentId: string;
-	reviewerName: string;
-	status: "queued" | "running" | "approved" | "changes_requested" | "failed";
-	runId?: string;
-	commentId?: string;
-	failureReason?: string;
-	createdAt: string;
-	startedAt?: string;
-	completedAt?: string;
-}
-
-export interface HostedCompanyProposal {
-	proposalId: string;
-	profileId: string;
-	environmentId: string;
-	clientProposalId: string;
-	baseSnapshotId: string;
-	proposalSnapshot: HostedCompanySnapshot;
-	execution: { kind: "turn" | "wake" | "run"; id: string; claimantId: string };
-	sessionId?: string;
-	trailEndSequence: number;
-	reason: HostedCompanyProposalReason;
-	policyKey?: string;
-	title: string;
-	reviewerStaffIds: string[];
-	reviewRevision: number;
-	reviews: HostedCompanyProposalReview[];
-	status: HostedCompanyProposalStatus;
-	createdByUserId: string;
-	createdByName: string;
-	createdAt: string;
-	resolvedByUserId?: string;
-	resolvedAt?: string;
-}
-
-export interface HostedCompanyProposalPage {
-	items: HostedCompanyProposal[];
-	hasMore: boolean;
-	nextCreatedAt?: string;
-	nextId?: string;
-}
-
-export interface HostedCompanyProposalComment {
-	commentId: string;
-	proposalId: string;
-	body: string;
-	authorUserId?: string;
-	authorStaffAgentId?: string;
-	authorName: string;
-	createdAt: string;
-}
-
-export interface HostedCompanyProposalCommentPage {
-	items: HostedCompanyProposalComment[];
-	hasMore: boolean;
-	nextCreatedAt?: string;
-	nextId?: string;
-}
-
-export interface CreatedCompanyResult {
-	profile: HostedProfile;
-	/** Absent on clouds that predate the Order 0 bootstrap ledger. */
-	bootstrapState?: "queued" | "leased" | "completed" | "blocked";
 }
 
 /* Company tree manifests (COMPANY-FILE.md, cloud-company-snapshot.ts) */

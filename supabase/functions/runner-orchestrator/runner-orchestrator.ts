@@ -38,6 +38,30 @@ export type RunnerOrchestratorRequest =
 			expectedLastScheduledFor?: string;
 			nextDueAt: string;
 	  }
+	| {
+			action: "folder_dynamic_routines";
+			orchestratorId: string;
+			afterRoutineId?: string;
+			limit: number;
+	  }
+	| {
+			action: "restore_dynamic_routine";
+			orchestratorId: string;
+			routineId: string;
+			expectedVersion: number;
+	  }
+	| {
+			action: "folder_materialize_due";
+			orchestratorId: string;
+			afterProfileId?: string;
+			limit: number;
+	  }
+	| {
+			action: "folder_materialize_company";
+			orchestratorId: string;
+			profileId: string;
+			limit: number;
+	  }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| {
@@ -197,6 +221,40 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
 					: {}),
 				nextDueAt: new Date(input.nextDueAt).toISOString(),
+			};
+		// Folder-v2 dynamic routines (folder core C1c-3e).
+		case "folder_dynamic_routines":
+			return {
+				action: input.action,
+				orchestratorId,
+				...(input.afterRoutineId === null || input.afterRoutineId === undefined
+					? {}
+					: { afterRoutineId: uuid(input.afterRoutineId, "routine cursor") }),
+				limit: integer(input.limit, "routine page limit", 500),
+			};
+		case "restore_dynamic_routine":
+			return {
+				action: input.action,
+				orchestratorId,
+				routineId: uuid(input.routineId, "routine id"),
+				expectedVersion: integer(input.expectedVersion, "routine version", 1_000_000),
+			};
+		// Folder-v2 runs, one company per request (folder core C4, P28).
+		case "folder_materialize_due":
+			return {
+				action: input.action,
+				orchestratorId,
+				...(input.afterProfileId === null || input.afterProfileId === undefined
+					? {}
+					: { afterProfileId: uuid(input.afterProfileId, "company cursor") }),
+				limit: integer(input.limit, "company page limit", 500),
+			};
+		case "folder_materialize_company":
+			return {
+				action: input.action,
+				orchestratorId,
+				profileId: uuid(input.profileId, "company id"),
+				limit: integer(input.limit, "materialization limit", 16),
 			};
 		case "reconcile":
 		case "retained":

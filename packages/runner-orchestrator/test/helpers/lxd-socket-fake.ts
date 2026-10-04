@@ -176,6 +176,8 @@ export class FakeLxdSocket {
 				this.allocations.add(allocation);
 				return Response.json(nodeAdmissionFixture(body));
 			}
+			case "qorpera_bind_native_identity_credential":
+				return Response.json({ allocationId: body.p_allocation_id, holderKind: body.p_holder_kind });
 			case "qorpera_runtime_ended_runners":
 				return Response.json((body.p_runner_ids as string[]).filter((id) => this.endedRunners.has(id)));
 			default:

@@ -1,15 +1,7 @@
 import type {
-	CreatedCompanyResult,
 	HostedAccountEntitlement,
 	HostedAccountMatch,
 	HostedCompanyFile,
-	HostedCompanyProposal,
-	HostedCompanyProposalComment,
-	HostedCompanyProposalCommentPage,
-	HostedCompanyProposalPage,
-	HostedCompanyProposalReview,
-	HostedCompanySnapshot,
-	HostedCompanyWorkspace,
 	HostedFriend,
 	HostedIncomingProfileInvitation,
 	HostedProfile,
@@ -29,6 +21,7 @@ import type {
 	PendingSessionInputPage,
 	SessionInputReceipt,
 	StaffSessionHandle,
+	WorkerRunControl,
 } from "./types.ts";
 import { EXECUTION_SOURCE_KINDS, HOSTED_PROFILE_ROLES, HOSTED_SESSION_EVENT_TYPES } from "./types.ts";
 
@@ -141,16 +134,6 @@ export function parseAccountEntitlement(value: unknown): HostedAccountEntitlemen
 		source: nonEmptyString(input.source, "account entitlement source", 64),
 		...(typeof input.updated_at === "string" ? { updatedAt: timestamp(input.updated_at, "entitlement time") } : {}),
 	};
-}
-
-export function parseCreatedCompany(value: unknown): CreatedCompanyResult {
-	const input = record(value, "created company");
-	const profile = parseProfile(input);
-	const state = input.bootstrap_state;
-	if (state === "queued" || state === "leased" || state === "completed" || state === "blocked") {
-		return { profile, bootstrapState: state };
-	}
-	return { profile };
 }
 
 function parseInvitationDelivery(value: unknown): HostedProfileInvitation["delivery"] {
@@ -424,6 +407,12 @@ export function parseStaffList(value: unknown): HostedStaffAgent[] {
 	return array(raw, "staff list").map(parseStaff);
 }
 
+/** Minutes come only with a stall time. */
+function noStallMinutes(minutes: unknown): Record<string, never> {
+	if (minutes !== undefined && minutes !== null) throw new CloudShapeError("stall minutes without a stall time");
+	return {};
+}
+
 export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity[] {
 	return array(value, "staff execution activity").map((entry) => {
 		const activity = record(entry, "staff execution activity");
@@ -434,9 +423,27 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 			jobStatus: oneOf(activity.job_status, ["queued", "leased", "completed", "failed", "cancelled"], "job status"),
 			activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
 			...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
+			...(activity.no_progress_since === undefined || activity.no_progress_since === null
+				? noStallMinutes(activity.no_progress_minutes)
+				: {
+						noProgressSince: timestamp(activity.no_progress_since, "activity stall time"),
+						noProgressMinutes: boundedInteger(activity.no_progress_minutes, "activity stall minutes", 1, 1440),
+					}),
 			updatedAt: timestamp(activity.updated_at, "activity time"),
 		};
 	});
+}
+
+/** The control of the worker run asked for: the cloud must answer for that run. */
+export function parseWorkerRunControl(value: unknown, runId: string): WorkerRunControl {
+	const control = record(value, "worker run control");
+	if (uuid(control.run_id, "worker run id") !== runId) throw new Error("Cloud returned another worker run");
+	if (typeof control.can_cancel !== "boolean") throw new Error("Cloud returned an invalid worker run control");
+	return {
+		runId,
+		status: oneOf(control.status, ["queued", "leased", "completed", "failed", "cancelled"], "worker run status"),
+		canCancel: control.can_cancel,
+	};
 }
 
 export function parseRunRecovery(value: unknown): HostedRunRecovery {
@@ -602,136 +609,6 @@ export function parseCompanyFile(value: unknown): HostedCompanyFile {
 	};
 }
 
-export function parseCompanyWorkspaces(value: unknown): HostedCompanyWorkspace[] {
-	return array(value, "company workspace list").map((entry) => {
-		const input = record(entry, "company workspace");
-		const headSnapshotId = optionalUuid(input.head_snapshot_id, "workspace head snapshot id");
-		return {
-			workspaceId: uuid(input.workspace_id, "workspace id"),
-			profileId: uuid(input.profile_id, "workspace profile id"),
-			environmentId: uuid(input.environment_id, "workspace environment id"),
-			clientWorkspaceId: uuid(input.client_workspace_id, "client workspace id"),
-			name: typeof input.name === "string" && input.name.trim() ? input.name : "Workspace",
-			...(headSnapshotId ? { headSnapshotId } : {}),
-			createdByUserId: uuid(input.created_by_user_id, "workspace creator id"),
-			createdAt: timestamp(input.created_at, "workspace creation time"),
-			updatedAt: timestamp(input.updated_at, "workspace update time"),
-		};
-	});
-}
-
-export function parseCompanySnapshot(value: unknown): HostedCompanySnapshot {
-	const input = record(value, "company snapshot");
-	if (typeof input.tree_manifest_sha256 !== "string" || !SHA256_PATTERN.test(input.tree_manifest_sha256)) {
-		throw new CloudShapeError("company tree manifest hash");
-	}
-	const parentSnapshotId = optionalUuid(input.parent_snapshot_id, "parent snapshot id");
-	const publicationState = input.publication_state;
-	return {
-		snapshotId: uuid(input.snapshot_id, "snapshot id"),
-		profileId: uuid(input.profile_id, "snapshot profile id"),
-		environmentId: uuid(input.environment_id, "snapshot environment id"),
-		workspaceId: uuid(input.workspace_id, "snapshot workspace id"),
-		clientSnapshotId: uuid(input.client_snapshot_id, "client snapshot id"),
-		...(parentSnapshotId ? { parentSnapshotId } : {}),
-		tree: {
-			manifestSha256: input.tree_manifest_sha256,
-			manifestBytes: boundedInteger(input.tree_manifest_bytes, "tree manifest bytes", 1, Number.MAX_SAFE_INTEGER),
-			contractVersion: boundedInteger(input.tree_contract_version, "tree contract version", 1, 100),
-			fileCount: boundedInteger(input.file_count, "tree file count", 0, Number.MAX_SAFE_INTEGER),
-			totalBytes: boundedInteger(input.total_bytes, "tree total bytes", 0, Number.MAX_SAFE_INTEGER),
-		},
-		createdByUserId: uuid(input.created_by_user_id, "snapshot creator id"),
-		createdAt: timestamp(input.created_at, "snapshot creation time"),
-		...(publicationState === "prepared" || publicationState === "published" ? { publicationState } : {}),
-	};
-}
-
-export function parseCompanySnapshots(value: unknown): HostedCompanySnapshot[] {
-	return array(value, "company snapshot list").map(parseCompanySnapshot);
-}
-
-function parseProposalReview(value: unknown): HostedCompanyProposalReview {
-	const review = record(value, "company proposal review");
-	const runId = optionalUuid(review.run_id, "review run id");
-	const commentId = optionalUuid(review.comment_id, "review comment id");
-	const failureReason = optionalString(review.failure_reason, "review failure", 4000);
-	const startedAt = optionalTimestamp(review.started_at, "review start time");
-	const completedAt = optionalTimestamp(review.completed_at, "review completion time");
-	return {
-		assignmentId: uuid(review.assignment_id, "review assignment id"),
-		proposalRevision: boundedInteger(review.proposal_revision, "review revision", 1, Number.MAX_SAFE_INTEGER),
-		reviewerStaffAgentId: uuid(review.reviewer_staff_agent_id, "reviewer staff id"),
-		reviewerName: typeof review.reviewer_name === "string" ? review.reviewer_name : "Reviewer",
-		status: oneOf(review.status, ["queued", "running", "approved", "changes_requested", "failed"], "review status"),
-		...(runId ? { runId } : {}),
-		...(commentId ? { commentId } : {}),
-		...(failureReason ? { failureReason } : {}),
-		createdAt: timestamp(review.created_at, "review creation time"),
-		...(startedAt ? { startedAt } : {}),
-		...(completedAt ? { completedAt } : {}),
-	};
-}
-
-export function parseCompanyProposal(value: unknown): HostedCompanyProposal {
-	const input = record(value, "company proposal");
-	const sessionId = optionalUuid(input.session_id, "proposal session id");
-	const policyKey = optionalString(input.policy_key, "proposal policy", 128);
-	const resolvedByUserId = optionalUuid(input.resolved_by_user_id, "proposal resolver id");
-	const resolvedAt = optionalTimestamp(input.resolved_at, "proposal resolution time");
-	return {
-		proposalId: uuid(input.proposal_id, "proposal id"),
-		profileId: uuid(input.profile_id, "proposal profile id"),
-		environmentId: uuid(input.environment_id, "proposal environment id"),
-		clientProposalId: uuid(input.client_proposal_id, "client proposal id"),
-		baseSnapshotId: uuid(input.base_snapshot_id, "proposal base snapshot id"),
-		proposalSnapshot: parseCompanySnapshot(input.proposal_snapshot),
-		execution: {
-			kind: oneOf(input.execution_kind, ["turn", "wake", "run"], "proposal execution kind"),
-			id: uuid(input.execution_id, "proposal execution id"),
-			claimantId: uuid(input.execution_claimant_id, "proposal claimant id"),
-		},
-		...(sessionId ? { sessionId } : {}),
-		trailEndSequence: boundedInteger(
-			input.trail_end_sequence ?? 0,
-			"proposal trail sequence",
-			0,
-			Number.MAX_SAFE_INTEGER,
-		),
-		reason: oneOf(input.reason, ["policy", "authority", "conflict", "recovery"], "proposal reason"),
-		...(policyKey ? { policyKey } : {}),
-		title: typeof input.title === "string" && input.title.trim() ? input.title : "Proposal",
-		reviewerStaffIds: array(input.reviewer_staff_ids ?? [], "proposal reviewers").map((id) =>
-			uuid(id, "reviewer id"),
-		),
-		reviewRevision: boundedInteger(
-			input.review_revision ?? 1,
-			"proposal review revision",
-			1,
-			Number.MAX_SAFE_INTEGER,
-		),
-		reviews: array(input.reviews ?? [], "proposal reviews").map(parseProposalReview),
-		status: oneOf(input.status, ["open", "accepted", "rejected"], "proposal status"),
-		createdByUserId: uuid(input.created_by_user_id, "proposal creator id"),
-		createdByName: typeof input.created_by_name === "string" ? input.created_by_name : "Member",
-		createdAt: timestamp(input.created_at, "proposal creation time"),
-		...(resolvedByUserId ? { resolvedByUserId } : {}),
-		...(resolvedAt ? { resolvedAt } : {}),
-	};
-}
-
-export function parseCompanyProposalPage(value: unknown): HostedCompanyProposalPage {
-	const page = record(value, "company proposal page");
-	const nextCreatedAt = optionalTimestamp(page.next_created_at, "proposal cursor time");
-	const nextId = optionalUuid(page.next_id, "proposal cursor id");
-	return {
-		items: array(page.items, "company proposals").map(parseCompanyProposal),
-		hasMore: page.has_more === true,
-		...(nextCreatedAt ? { nextCreatedAt } : {}),
-		...(nextId ? { nextId } : {}),
-	};
-}
-
 export function parseSessionPage(value: unknown) {
 	const page = record(value, "session page");
 	return {
@@ -739,32 +616,5 @@ export function parseSessionPage(value: unknown) {
 		hasMore: page.has_more === true,
 		nextTime: optionalTimestamp(page.next_updated_at, "session cursor time"),
 		nextId: optionalUuid(page.next_id, "session cursor id"),
-	};
-}
-
-export function parseCompanyProposalComment(value: unknown): HostedCompanyProposalComment {
-	const input = record(value, "company proposal comment");
-	const authorUserId = optionalUuid(input.author_user_id, "comment author id");
-	const authorStaffAgentId = optionalUuid(input.author_staff_agent_id, "comment staff author id");
-	return {
-		commentId: uuid(input.comment_id, "comment id"),
-		proposalId: uuid(input.proposal_id, "comment proposal id"),
-		body: typeof input.body === "string" ? input.body : "",
-		...(authorUserId ? { authorUserId } : {}),
-		...(authorStaffAgentId ? { authorStaffAgentId } : {}),
-		authorName: typeof input.author_name === "string" ? input.author_name : "Author",
-		createdAt: timestamp(input.created_at, "comment creation time"),
-	};
-}
-
-export function parseCompanyProposalCommentPage(value: unknown): HostedCompanyProposalCommentPage {
-	const page = record(value, "company proposal comment page");
-	const nextCreatedAt = optionalTimestamp(page.next_created_at, "comment cursor time");
-	const nextId = optionalUuid(page.next_id, "comment cursor id");
-	return {
-		items: array(page.items, "company proposal comments").map(parseCompanyProposalComment),
-		hasMore: page.has_more === true,
-		...(nextCreatedAt ? { nextCreatedAt } : {}),
-		...(nextId ? { nextId } : {}),
 	};
 }

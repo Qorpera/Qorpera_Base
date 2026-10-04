@@ -26,7 +26,7 @@ the current runtime; the draft's acceptance list was used as a checklist.
 | One worker per coherent stream | `followup` continues the same worker: sequence + 1, same identity, and the child reads its own earlier stream (`qorpera.worker-stream/v1`), never the parent's conversation. A second dispatch under the same key is refused. |
 | Todos and worker handles are durable code objects | `qorpera_runtime_agent_todos`, `qorpera_runtime_workers`, `qorpera_runtime_worker_events`. Every change is idempotent by operation key through the existing run operation ledger. |
 | Todos and accepted outputs become Company File state | Every change advances the todo revision and returns the canonical document (`qorpera.agent-todo/v1`), which the run writes to `work/todos/<agent>/<todoKey>.json` through the governed path gateway and confirms against the revision it wrote. An output is a Company File revision the worker's own run wrote; the kernel refuses any other path. The parent's accept or reject is recorded on the worker and appears in the document. |
-| Cancellation policy | A worker lives no longer than its todo; the parent can cancel it; a person stopping the parent run stops its workers. A queued child never starts; a running child is fenced at its next governed effect and cannot report. |
+| Cancellation policy | A worker lives no longer than its todo; the parent can cancel it; a person stopping the parent run stops its workers. A queued child never starts; a running child is fenced at its next governed effect and cannot report. Since 20260930002800 (gap 4b) an owner, an admin or the member whose work dispatched the worker can also stop the worker's own run (`qorpera_cancel_worker_run`); the parent is revived with "A member stopped the background work." (reason `member_stopped`). |
 | Completion or revival policy | `batch` (default): revival when every worker dispatched by the same run has reported, four results per revival, one revival at a time (since v95 the next four wait until the previous revival's run has ended; `stillActive` counts the results still to come). `each`: at once. A blocked worker revives at once. Since v95 "at once" means once no revival of the same parent is running, and a person stopping a revival stops that parent's running workers and holds back its remaining reports (readable through status), as stopping the parent does. The parent's own run is never raced: revival waits until it has ended. |
 
 Limits (superseded): this step shipped with four active workers per agent,
@@ -218,7 +218,7 @@ published only by the agent's next list or change of that todo.
   `20260927150000_company_file_writer_fence` takes the fence first only in the
   member writers (save, publish, propose, submit, rebase) and for a NAS replica
   copy (which the replica guard fences anyway); no hot insert path takes a new
-  fence. SQL test 608 races each, and `scripts/load-company-file-fence.mjs` runs
+  fence. SQL test 608 races each, and `scripts/load-company-file-fence.mjs` (removed in C1c-3i) ran
   agent tool calls, Storage uploads, replica copies, a node observer and coding
   turns at once: on the text before it, about two deadlocks a second and agent
   calls near the native result boundary's 4 s budget; with it, none.

@@ -1,0 +1,180 @@
+# Qorpera guest guard (E-1). Machines on our LXD bridges reach the internet, their bridge's DNS and DHCP,
+# and the short list of our own services below. They never reach the NAS, the office network, the nodes'
+# other ports, Tailscale, link-local addresses or each other. A guest's new connections are checked;
+# replies, and connections the node itself opens to a guest, pass. Every packet from a guest must carry an
+# address of its own bridge (never its gateway's).
+#
+# Load it with qorpera-guest-guard.sh, never with `nft -f` alone: the script picks the mode (observe or
+# enforce) and replaces the table in one transaction. The same file runs on every node. See README.md.
+
+table inet qorpera_guest_guard {
+	# Bridges whose machines are guests. A name that does not exist on a node matches nothing.
+	set guest_bridges {
+		type ifname
+		elements = { "qorpera0", "coding-net", "qofficebuild0", "pr146build0", "testmach0", "machine-net" }
+	}
+
+	# The only source addresses a bridge's guests may use.
+	set bridge_subnets {
+		type ifname . ipv4_addr
+		flags interval
+		elements = {
+			"qorpera0" . 10.41.0.0/24, "coding-net" . 10.200.0.0/24, "qofficebuild0" . 10.203.0.0/24,
+			"pr146build0" . 10.133.254.0/24, "testmach0" . 10.201.0.0/24, "machine-net" . 10.88.0.0/22
+		}
+	}
+
+	# Each bridge's own address, for its own guests' DHCP, DNS and ping only.
+	set bridge_gateways {
+		type ifname . ipv4_addr
+		elements = {
+			"qorpera0" . 10.41.0.1, "coding-net" . 10.200.0.1, "qofficebuild0" . 10.203.0.1,
+			"pr146build0" . 10.133.254.1, "testmach0" . 10.201.0.1, "machine-net" . 10.88.0.1
+		}
+	}
+
+	# Never reached through a node unless listed in allowed_services: private, shared (Tailscale),
+	# loopback, link-local and special ranges, and our own public address.
+	set internal4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 93.164.62.162
+		}
+	}
+
+	# Our own services that guests call, per bridge. README.md, "What guests need", has the evidence.
+	set allowed_services {
+		type ifname . ipv4_addr . inet_proto . inet_service
+		elements = {
+			"qorpera0" . 10.41.0.1 . tcp . 8789,
+			"qorpera0" . 100.75.4.70 . tcp . 443,
+			"qorpera0" . 100.75.4.70 . tcp . 8443,
+			"qorpera0" . 100.75.4.70 . tcp . 8444,
+			"qorpera0" . 100.75.4.70 . tcp . 10000,
+			"qorpera0" . 100.75.4.70 . tcp . 18443,
+			"qorpera0" . 100.75.4.70 . tcp . 18444,
+			"qorpera0" . 100.75.4.70 . tcp . 18543,
+			"qorpera0" . 100.75.4.70 . tcp . 18544,
+			"qorpera0" . 100.80.160.64 . tcp . 10000
+		}
+	}
+
+	# A refused flow is logged once an hour (TCP and UDP per port, other protocols per protocol), so a frequent
+	# flow does not hide a rare one. Up to 10 new flows a second are logged; counters see every packet.
+	set logged_flows {
+		type ifname . ipv4_addr . ipv4_addr . inet_proto . inet_service
+		flags dynamic, timeout
+		timeout 1h
+		size 65536
+	}
+
+	set logged_other {
+		type ifname . ipv4_addr . ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout 1h
+		size 16384
+	}
+
+	counter allowed_services_used {
+	}
+
+	counter refused_forward {
+	}
+
+	counter refused_input {
+	}
+
+	counter refused_spoofed {
+	}
+
+	counter refused_invalid {
+	}
+
+	counter refused_related {
+	}
+
+	counter refused_quiet {
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		iifname @guest_bridges jump guest_forward
+	}
+
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		iifname @guest_bridges jump guest_input
+	}
+
+	# A guest's packet through the node, or (with br_netfilter) to another guest on its own bridge.
+	chain guest_forward {
+		meta nfproto ipv6 goto refuse_quiet
+		ct state invalid goto refuse_invalid
+		meta pkttype { broadcast, multicast } goto refuse_quiet
+		iifname . ip saddr @bridge_gateways goto refuse_spoofed
+		iifname . ip saddr != @bridge_subnets goto refuse_spoofed
+		ct state related iifname . ct original ip saddr != @bridge_subnets iifname . ct original ip daddr != @bridge_subnets goto refuse_related
+		ct state established,related return
+		iifname . ip daddr . meta l4proto . th dport @allowed_services counter name "allowed_services_used" return
+		oifname "tailscale0" goto refuse_forward
+		ip daddr != @internal4 return
+		goto refuse_forward
+	}
+
+	# A guest's packet to the node itself, on any of its addresses.
+	chain guest_input {
+		meta nfproto ipv6 goto refuse_quiet
+		udp sport 68 udp dport 67 ip daddr 255.255.255.255 return
+		ct state invalid goto refuse_invalid
+		meta pkttype { broadcast, multicast } goto refuse_quiet
+		iifname . ip saddr @bridge_gateways goto refuse_spoofed
+		iifname . ip saddr != @bridge_subnets goto refuse_spoofed
+		ct state related iifname . ct original ip saddr != @bridge_subnets iifname . ct original ip daddr != @bridge_subnets goto refuse_related
+		ct state established,related return
+		iifname . ip daddr @bridge_gateways udp sport 68 udp dport 67 return
+		iifname . ip daddr @bridge_gateways udp dport 53 return
+		iifname . ip daddr @bridge_gateways tcp dport 53 return
+		iifname . ip daddr @bridge_gateways icmp type echo-request return
+		iifname . ip daddr . meta l4proto . th dport @allowed_services counter name "allowed_services_used" return
+		goto refuse_input
+	}
+
+	# Observe mode stops at the end of these chains: count and log. Enforce mode appends a TCP reset and an
+	# ICMP reject to refuse_forward and refuse_input, and a drop to refuse_spoofed, refuse_invalid,
+	# refuse_related and refuse_quiet.
+	chain refuse_forward {
+		counter name "refused_forward"
+		meta l4proto { tcp, udp } iifname . ip saddr . ip daddr . meta l4proto . th dport != @logged_flows limit rate 10/second burst 100 packets update @logged_flows { iifname . ip saddr . ip daddr . meta l4proto . th dport } log prefix "qorpera-guest-guard forward: " level info
+		meta l4proto != { tcp, udp } iifname . ip saddr . ip daddr . meta l4proto != @logged_other limit rate 10/second burst 100 packets update @logged_other { iifname . ip saddr . ip daddr . meta l4proto } log prefix "qorpera-guest-guard forward: " level info
+	}
+
+	chain refuse_input {
+		counter name "refused_input"
+		meta l4proto { tcp, udp } iifname . ip saddr . ip daddr . meta l4proto . th dport != @logged_flows limit rate 10/second burst 100 packets update @logged_flows { iifname . ip saddr . ip daddr . meta l4proto . th dport } log prefix "qorpera-guest-guard input: " level info
+		meta l4proto != { tcp, udp } iifname . ip saddr . ip daddr . meta l4proto != @logged_other limit rate 10/second burst 100 packets update @logged_other { iifname . ip saddr . ip daddr . meta l4proto } log prefix "qorpera-guest-guard input: " level info
+	}
+
+	chain refuse_spoofed {
+		counter name "refused_spoofed"
+		meta l4proto { tcp, udp } iifname . ip saddr . ip daddr . meta l4proto . th dport != @logged_flows limit rate 10/second burst 100 packets update @logged_flows { iifname . ip saddr . ip daddr . meta l4proto . th dport } log prefix "qorpera-guest-guard spoofed: " level info
+		meta l4proto != { tcp, udp } iifname . ip saddr . ip daddr . meta l4proto != @logged_other limit rate 10/second burst 100 packets update @logged_other { iifname . ip saddr . ip daddr . meta l4proto } log prefix "qorpera-guest-guard spoofed: " level info
+	}
+
+	# Packets conntrack cannot place: counted, never logged.
+	chain refuse_invalid {
+		counter name "refused_invalid"
+	}
+
+	# ICMP errors a guest sends about a connection it is not part of (for example the node's own NFS
+	# connection): counted, never logged.
+	chain refuse_related {
+		counter name "refused_related"
+	}
+
+	# Broadcast and multicast copies and IPv6: counted, never logged.
+	chain refuse_quiet {
+		counter name "refused_quiet"
+	}
+}

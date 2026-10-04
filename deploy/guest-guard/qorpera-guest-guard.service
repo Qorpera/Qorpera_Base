@@ -1,0 +1,22 @@
+[Unit]
+Description=Qorpera guest guard (machines on our LXD bridges never reach the NAS, the office network, the nodes or Tailscale)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/guest-guard/README.md
+# Loaded before LXD starts any guest, and after nftables.service if that is ever enabled again (its
+# /etc/nftables.conf flushes every table). The mode file says observe or enforce; without it nothing runs.
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network-pre.target snap.lxd.daemon.service
+Wants=network-pre.target
+ConditionPathExists=/etc/qorpera-guest-guard/mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh boot
+# Reload switches to the mode file's mode in one transaction, with no moment without the table.
+ExecReload=/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh boot
+# Stopping the unit is the undo: the table is deleted.
+ExecStop=/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh remove
+
+[Install]
+WantedBy=multi-user.target

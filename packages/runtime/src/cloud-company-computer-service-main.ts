@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createSecureContext } from "node:tls";
 import { fileURLToPath } from "node:url";
+import { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
 import {
 	CompanyComputerLifecycleFailure,
 	type CompanyComputerLifecycleStage,
@@ -79,7 +80,12 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			configurationSha256: createHash("sha256").update(configBytes).digest("hex"),
 			serviceInvocationId: environment.INVOCATION_ID ?? "",
 		};
-		const startup = new CompanyComputerStartupControl(startupIdentity, registry);
+		// This service's key for company account fills (A1-3): made here, kept in memory only, its public half
+		// reported with readiness. A restart makes a new one.
+		const fillKey = new CompanyComputerFillKey();
+		const startup = new CompanyComputerStartupControl(startupIdentity, registry, {
+			fillPublicKey: fillKey.publicKey,
+		});
 		// Constructor validation has no I/O; reject malformed physical bindings
 		// before even opening TLS material. The service repeats live preflight.
 		new CompanyComputerLinuxBoundary({
@@ -111,7 +117,7 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 		service = await startCompanyComputerLinuxOfficeService({
 			scope: config.scope,
 			computerGeneration: config.computerGeneration,
-			linux: config.linux,
+			linux: { ...config.linux, fillKey },
 			registry,
 			native: { ...config.native, token: nativeToken, tls },
 			startup,

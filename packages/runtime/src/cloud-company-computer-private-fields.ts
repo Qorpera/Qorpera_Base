@@ -47,6 +47,8 @@ const OWN_WORDS = ["otp", "mfa", "2fa"];
 export const COMPANY_COMPUTER_PRIVATE_FIELD_SELECTOR = [
 	'input[type="password" i]',
 	`${TEXT_INPUT}:is(${[
+		// A box the vault filled with a secret (cloud-company-computer-account-fill.ts), whatever it is named.
+		"[data-qorpera-private]",
 		'[autocomplete~="current-password" i]',
 		'[autocomplete~="new-password" i]',
 		'[autocomplete~="one-time-code" i]',
@@ -251,38 +253,79 @@ const doubledQuotes = (value: string) => value.replace(/'/g, "''");
 /** Letters, digits and single spaces: what any of Playwright's renderings leaves of a value. */
 const skeleton = (value: string) => value.replace(/[^\p{L}\p{N}\s\0]/gu, "").replace(/\s+/g, " ");
 
+/** A value as a page address carries it: percent-encoded, or form-encoded. */
+export function companyComputerUrlForms(value: string): string[] {
+	// Percent-encoded, form-encoded, and percent-encoded with a space as + (as some scripts write a query).
+	return [
+		encodeURIComponent(value),
+		new URLSearchParams([["v", value]]).toString().slice(2),
+		encodeURIComponent(value).replace(/%20/g, "+"),
+	];
+}
+
+/** `part` split at each `form`; an all-digit form only where it is a number of its own (a code, not part of one). */
+function splitAt(part: string, form: string, bounded: boolean): Array<string | null> {
+	if (!bounded) return part.split(form).flatMap((piece, index) => (index === 0 ? [piece] : [null, piece]));
+	const out: Array<string | null> = [];
+	let from = 0;
+	for (let at = part.indexOf(form); at >= 0; at = part.indexOf(form, at + 1)) {
+		if (/\d/.test(part[at - 1] ?? "") || /\d/.test(part[at + form.length] ?? "")) continue;
+		out.push(part.slice(from, at), null);
+		from = at + form.length;
+		at = from - 1;
+	}
+	out.push(part.slice(from));
+	return out;
+}
+
 /**
  * Hide private values in an aria snapshot. When a private box on the page holds
  * a value, every typed value in the snapshot is hidden (the snapshot does not
  * say which box is which), and the private values are hidden wherever else the
  * page shows them: as text, as a box's value, inside a name or inside a quoted
  * key. A snapshot that still shows one in another form is refused.
+ *
+ * `filled` are secrets the vault typed on this screen earlier (company accounts A1-3): they are hidden the same way
+ * and also in a page address's spellings, but they do not hide every typed value (their boxes may be long gone);
+ * an authenticator code among them is hidden only as a number of its own.
  */
-export function redactCompanyComputerSnapshot(snapshot: string, privateValues: readonly string[]): string {
-	if (privateValues.length === 0) return snapshot;
+export function redactCompanyComputerSnapshot(
+	snapshot: string,
+	privateValues: readonly string[],
+	options: { filled?: readonly string[] } = {},
+): string {
+	const filled = options.filled ?? [];
+	if (privateValues.length === 0 && filled.length === 0) return snapshot;
+	const spell = (bases: string[]) =>
+		bases.flatMap((base) => [
+			base,
+			yamlInner(base),
+			jsonInner(base),
+			doubledQuotes(base),
+			doubledQuotes(jsonInner(base)),
+		]);
 	const forms = [
-		...new Set(
-			privateValues.flatMap((value) =>
-				[value, normalized(value)].flatMap((base) => [
-					base,
-					yamlInner(base),
-					jsonInner(base),
-					doubledQuotes(base),
-					doubledQuotes(jsonInner(base)),
-				]),
-			),
+		...new Map(
+			[
+				...privateValues.flatMap((value) =>
+					spell([value, normalized(value)]).map((form) => [form, false] as const),
+				),
+				...filled.flatMap((value) =>
+					spell([value, normalized(value), ...companyComputerUrlForms(value)]).map(
+						(form) => [form, /^\d+$/.test(value)] as const,
+					),
+				),
+			].reverse(),
 		),
 	]
-		.filter((form) => form.length >= MIN_HIDDEN_ELSEWHERE)
-		.sort((a, b) => b.length - a.length);
+		.filter(([form]) => form.length >= MIN_HIDDEN_ELSEWHERE)
+		.sort(([a], [b]) => b.length - a.length);
 	// Values are matched only in the page's text between hidden parts (null), never across or inside one.
-	let parts = hideTypedValues(snapshot);
-	for (const form of forms)
-		parts = parts.flatMap((part) =>
-			part === null ? [part] : part.split(form).flatMap((piece, index) => (index === 0 ? [piece] : [null, piece])),
-		);
+	let parts: Array<string | null> = privateValues.length > 0 ? hideTypedValues(snapshot) : [snapshot];
+	for (const [form, bounded] of forms)
+		parts = parts.flatMap((part) => (part === null ? [part] : splitAt(part, form, bounded)));
 	const remaining = skeleton(parts.map((part) => part ?? "\0").join(""));
-	for (const value of privateValues) {
+	for (const value of [...privateValues, ...filled]) {
 		const left = skeleton(normalized(value)).trim();
 		if (left.replace(/ /g, "").length < MIN_CHECKED_SKELETON) continue;
 		// Only as a word of its own: a code inside a longer number is that number, not the code.

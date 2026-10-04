@@ -505,8 +505,7 @@ begin
 		or v_query #> '{sections,assignments,items,0,runnerVersion}' <> 'null'::jsonb
 		or v_query #>> '{admissionRequest,requestId}' <> v_run::text
 		or v_query #> '{admissionRequest,materializedAt}' = 'null'::jsonb
-		or jsonb_array_length(v_query #> '{sections,operationReceipts,items}') <> 1
-		or jsonb_array_length(v_query #> '{sections,revisions,items}') <> 1 then
+		or jsonb_array_length(v_query #> '{sections,operationReceipts,items}') <> 1 then
 		raise exception 'Missing diagnostics were fabricated or hid canonical work'; end if;
 	perform set_config('qorpera_test.obs_initial_query',v_query::text,true);
 end
@@ -565,10 +564,7 @@ begin
 		or v_query #>> '{sections,diagnostics,items,1,event,status}' <> 'proposed'
 		or v_query #> '{sections,diagnostics,items,1,event,inputBytes}' <> '0'::jsonb
 		or v_query #> '{sections,diagnostics,items,1,event,inputTokens}' <> 'null'::jsonb
-		or v_query #> '{sections,reads,items,0,confirmed}' <> 'true'::jsonb
-		or v_query #>> '{sections,reads,items,0,includedBytes}' <> '8'
-		or v_query #> '{sections,publicSends,items,0,canonicalEventMatched}' <> 'true'::jsonb
-		or v_query #> '{sections,revisions,items,0,resourceId}' = 'null'::jsonb then
+		or v_query #> '{sections,publicSends,items,0,canonicalEventMatched}' <> 'true'::jsonb then
 		raise exception 'Operator query conflated diagnostics and canonical outcomes or lost exact linkage'; end if;
 	perform set_config('qorpera_test.obs_finish',v_finish::text,true);
 end
@@ -644,7 +640,8 @@ begin
 		'context_authority','native_result_fence','diagnostic_export','action_review',
 		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
 		'update_memory','recall_memory','read_skill','search_skills','update_skill','organize_sidebar','add_review_rule',
-		'machine_start','machine_run','machine_read','machine_cancel','machine_stop','machine_delete','machine_list','list_hooks','read_event','send_mail'] loop
+		'machine_start','machine_run','machine_read','machine_cancel','machine_stop','machine_delete','machine_list','list_hooks','read_event','send_mail','find_mail','save_attachment',
+		'company_search','company_account'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
 			'durationMs',9007199254740991,'inputBytes',9007199254740991,'outputBytes',0,'inputTokens',0,'outputTokens',1,
@@ -833,40 +830,8 @@ begin
 end
 $$;
 
--- Canonical member commands have no invented run/model/sponsor. The applied
--- timestamp is the exact governed revision time, not elapsed execution time.
-select set_config('qorpera_test.obs_member_plan',pg_temp.path_plan('PRIVATE_OPERATION_KEY_NOT_IN_QUERY','member-note.md',
-	pg_temp.path_stage_file('member-note.md','PRIVATE_MEMBER_TEXT_NOT_IN_QUERY'))::text,true);
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select set_config('qorpera_test.obs_command',public.qorpera_begin_member_company_path_command(
-	'29000000-0000-4000-8000-000000000020',current_setting('qorpera_test.obs_member_plan')::jsonb)::text,true);
-reset role;
-select pg_temp.path_claims('service_role');
-set local role service_role;
-do $$
-declare v_command jsonb := current_setting('qorpera_test.obs_command')::jsonb; v_prepared jsonb; v_tree text; v_query jsonb;
-begin
-	v_query := public.qorpera_get_company_operational_commands('29000000-0000-4000-8000-000000000010');
-	if v_query #> '{commands,items,0,appliedAt}' <> 'null'::jsonb
-		or v_query #> '{commands,items,0,runId}' <> 'null'::jsonb
-		or v_query #> '{commands,items,0,sponsorUserId}' <> 'null'::jsonb then
-		raise exception 'Pending member command acquired invented model/run/timing'; end if;
-	v_prepared := public.qorpera_prepare_member_company_path_command((v_command ->> 'commandId')::uuid,v_command ->> 'planSha256');
-	v_tree := pg_temp.path_stage_tree((v_prepared -> 'entries') || jsonb_build_array(current_setting('qorpera_test.obs_member_plan')::jsonb -> 'entry'));
-	perform public.qorpera_apply_member_company_path_command((v_command ->> 'commandId')::uuid,v_command ->> 'planSha256',
-		(v_prepared ->> 'snapshotId')::uuid,v_tree);
-	v_query := public.qorpera_get_company_operational_commands('29000000-0000-4000-8000-000000000010');
-	if v_query #>> '{commands,items,0,status}' <> 'applied' or v_query #> '{commands,items,0,revisionMatched}' <> 'true'::jsonb
-		or v_query #> '{commands,items,0,appliedAt}' = 'null'::jsonb or v_query #> '{commands,items,0,applyDurationMs}' <> 'null'::jsonb
-		or v_query #>> '{commands,items,0,actorUserId}' <> '29000000-0000-4000-8000-000000000001'
-		or v_query #> '{commands,items,0,runtimeBundleId}' = 'null'::jsonb then
-		raise exception 'Member result lost exact canonical revision linkage'; end if;
-	if v_query::text ~ 'PRIVATE_OPERATION_KEY|PRIVATE_MEMBER_TEXT|member-note.md|planSha256|"plan"|"result"' then
-		raise exception 'Operator member projection exposed a payload'; end if;
-end
-$$;
-reset role;
+-- P32 (20260930032000): the run query's commit, review and read-set sections and the company command query read the
+-- folder core; this snapshot-v1 fixture has none, so their checks are in 844. A1's legacy sweep removes this test.
 
 -- Output is closed metadata. Access-check failures themselves do not leak the
 -- existence/content of a private run to end users or the narrowly scoped broker.

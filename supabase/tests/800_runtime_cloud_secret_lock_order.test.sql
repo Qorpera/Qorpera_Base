@@ -1,5 +1,5 @@
--- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers while the executor finishes"
--- 20260929999900: a change to a vault row takes the company row's key share first. A connector tool call's lease
+-- @fixture 602_runtime_coding_lock_order.test.sql until "-- END COMMITTED FIXTURE"
+-- 20260928419980: a change to a vault row takes the company row's key share first. A connector tool call's lease
 -- locks the company row FOR UPDATE and then share-locks its grant and secret; a member's Disconnect, grant, grant
 -- withdrawal, share with agents or rotation start, and the broker's rotation seal, took the secret (or grant, or
 -- ticket) first and the company row only at their first insert's foreign key. Here a second connection holds a row

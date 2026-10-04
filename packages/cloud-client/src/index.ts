@@ -15,6 +15,7 @@ export * from "./cloud-member-company-editor.ts";
 export * from "./cloud-member-company-file.ts";
 export * from "./cloud-member-company-presence.ts";
 export * from "./cloud-member-file-exports.ts";
+export * from "./cloud-member-folder.ts";
 export * from "./cloud-native-subscription-control.ts";
 export * from "./cloud-presence.ts";
 export * from "./cloud-session-run-control.ts";

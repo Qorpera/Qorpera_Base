@@ -41,7 +41,8 @@ export interface CloudRunnerJob {
 	profileId: string;
 	environmentId: string;
 	sessionId?: string;
-	substrateVersionId: string;
+	/** Absent for a folder-v2 run, which has no Company File substrate (folder core C3, P23). */
+	substrateVersionId?: string;
 	clientJobId: string;
 	assignmentId?: string;
 	requiredCapability: CloudRunnerCapability;
@@ -332,7 +333,9 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 		...(optionalUuid(input.session_id, "runner job session id")
 			? { sessionId: uuid(input.session_id, "runner job session id") }
 			: {}),
-		substrateVersionId: uuid(input.substrate_version_id, "runner job substrate id"),
+		...(optionalUuid(input.substrate_version_id, "runner job substrate id")
+			? { substrateVersionId: uuid(input.substrate_version_id, "runner job substrate id") }
+			: {}),
 		clientJobId: uuid(input.client_job_id, "runner client job id"),
 		...(optionalUuid(input.assignment_id, "runner assignment id")
 			? { assignmentId: uuid(input.assignment_id, "runner assignment id") }

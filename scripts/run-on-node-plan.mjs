@@ -7,14 +7,16 @@
  * - every change that is not web-only (runtime-release-train's exclusion list): all runtime and
  *   cloud-client tests, all script tests (packaging, pins, vocabulary) and the runtime bundle check;
  * - path-specific steps on top (web, member-web, object-gateway, runner-orchestrator, functions, deploy,
- *   hosted-db, and company-fence-load for migrations: one company's locks under pooled load);
+ *   hosted-db, and folder-core-load for migrations: one folder-v2 company under pooled load, the folder core's
+ *   load test);
  * - shared configuration, `packages/contracts`, `packages/company` and any path no rule knows: every step.
  *
  * Release candidates still run the full `test` suite before a cut. */
 
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
-/** The function tests the old workflows ran (web-client and step2-lxd); the others never ran in CI. */
+/** The function tests the old workflows ran (web-client and step2-lxd), and the artifact GC worker's (its folder phase,
+ * C1D §9.10); the others never ran in CI. */
 const FUNCTION_TESTS = [
 	"supabase/functions/native-provider-login/native-provider-login.test.ts",
 	"supabase/functions/member-company-gateway/member-company-gateway.test.ts",
@@ -27,7 +29,9 @@ const FUNCTION_TESTS = [
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",
 	"supabase/functions/mail-outbox/mail-outbox.test.ts",
+	"supabase/functions/mail-attachments/mail-attachments.test.ts",
 	"supabase/functions/runner-control/runner-control.test.ts",
+	"supabase/functions/artifact-gc-worker/artifact-gc-worker.test.ts",
 ];
 const WEB_RELEASE_CONFIG = JSON.stringify({
 	projectUrl: "https://project.example.invalid",
@@ -197,7 +201,7 @@ export const STEPS = [
 		why: "node agent, parity and tidy-up (step2-lxd.yml)",
 		paths: [/^deploy\//, /^packages\/runner-orchestrator\/src\//],
 		commands: [
-			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs",
+			"node --test deploy/node-tidy/qorpera-node-tidy.test.mjs deploy/node-parity/qorpera-node-parity.test.mjs deploy/node-agent/qorpera-node-agent.test.mjs deploy/guest-guard/qorpera-guest-guard.test.mjs deploy/agent-exit/qorpera-agent-exit.test.mjs",
 			"python3 -m unittest discover -s deploy/node-agent -p 'test_*.py'",
 		],
 	},
@@ -215,16 +219,20 @@ export const STEPS = [
 			/^supabase\/(?!functions\/)/,
 			/^scripts\/test-hosted-db/,
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
-			/^scripts\/fixtures\/(coding-turn-pre-continuity|email-draft-e2e)/,
+			/^scripts\/fixtures\/email-draft-e2e/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
 			// The production review and wake bus scripts check SQL output with these parsers.
 			/^packages\/runtime\/src\/cloud-(native-company-context|native-tool-authority|wake-bus)\.ts$/,
-			/^packages\/runtime\/test\/fixtures\/(coding-turn-|wake-policies\.json$)/,
+			/^packages\/runtime\/test\/fixtures\/wake-policies\.json$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			// The folder service's parsers and tree, checked against the folder core's own answers.
 			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree)\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
+			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
+			// So does company creation's worker script (P14b).
+			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency)\.ts$/,
+			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
@@ -236,15 +244,17 @@ export const STEPS = [
 	},
 	{
 		// v133 (2026-09-27): a lock change on a hot path ships only with a load test at realistic concurrency.
-		// Any migration can change what one company's calls lock, so every migration runs it (about 1.5 min).
-		name: "company-fence-load",
-		why: "one company under pooled load with the production role timeouts: its agents' reads, writes, GC and foreign-key inserts; fails on a deadlock or a statement timeout",
+		// Any migration can change what one company's calls lock, so every migration runs it. Since C1c-3i
+		// (folder-v2 only) it is the folder core's load test (C1e), short: 16 runs for 30 s and a run whose read set
+		// holds 5,000 paths (about 2.5 min with its setup).
+		name: "folder-core-load",
+		why: "one folder-v2 company under pooled load with the production role timeouts on a real disk: its runs' fences, reads, writes, releases and subtree deletes, a stop, narrowing, wakes, GC and rank-0 writers; fails on a deadlock, a leak, a lost parent or bytes, an unexpected failure or a call over the result fence",
 		paths: [
 			/^supabase\/migrations\//,
-			/^supabase\/tests\/(300_runtime_wake_bus|396_runtime_coding_executor|602_runtime_coding_lock_order)\.test\.sql$/,
-			/^scripts\/load-company-fence-pool\./,
+			/^supabase\/tests\/648_folder_core_run_fence_concurrency\.test\.sql$/,
+			/^scripts\/load-folder-core\./,
 		],
-		commands: ["node scripts/load-company-fence-pool.mjs --check"],
+		commands: ["node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check"],
 	},
 ];
 

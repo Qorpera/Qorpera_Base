@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AgentFile,
+	appendWorkerFollowUp,
+	COMPANY_STATE_HUMAN_TASK_SKILL_PATH,
 	COMPANY_STATE_SEEDED_PATHS,
 	type CompanyStateFileResult,
 	type ContactFile,
@@ -14,11 +16,20 @@ import {
 	companyStateValue,
 	freeCompanyStateName,
 	type HumanTaskFile,
+	humanTaskFolder,
+	humanTaskNotePath,
+	humanTaskPersonChange,
+	humanTaskProofPath,
 	isCompanyStateName,
 	isCompanyStateTimeZoneName,
 	parseCompanyStateFile,
 	type RoutineFile,
 	setCompanyStateSettings,
+	WORKER_BRIEF_SECTIONS,
+	type WorkerBriefFile,
+	workerKeyProblem,
+	workerStandingTexts,
+	workerTextHeading,
 	writeAgentFile,
 	writeConnectionFile,
 	writeContactFile,
@@ -620,6 +631,86 @@ describe("connections, rules, todos and worker files", () => {
 		});
 	});
 
+	it("reads a website account's own keys, and only on a website account (A1)", () => {
+		const file = {
+			id: ID,
+			service: "website",
+			account: "ops@nordlys.dk",
+			status: "pending" as const,
+			actions: [],
+			connectedBy: GROUP,
+			connectedAt: "2026-10-02T08:00:00Z",
+			site: "accounts.example.com",
+			twoStep: "authenticator" as const,
+			openedFor: IDA,
+			purpose: "The supplier portal.",
+		};
+		const text = writeConnectionFile(file);
+		expect(text).toContain("site: accounts.example.com\ntwo_step: authenticator\nopened_for: ");
+		expect(ok("connections/example-portal.md", text)).toStrictEqual({ kind: "connection", ...file });
+		for (const status of ["connected", "needs_person", "broken"] as const)
+			expect(ok("connections/p.md", writeConnectionFile({ ...file, status, openedFor: null }))).toMatchObject({
+				status,
+				openedFor: null,
+			});
+		// Any other service keeps its shape: none of the three keys, and only connected or broken.
+		const gmail = writeConnectionFile({
+			...file,
+			service: "gmail",
+			status: "connected",
+			site: undefined,
+			twoStep: undefined,
+			openedFor: undefined,
+		});
+		expect(gmail).not.toContain("site:");
+		expect(Object.keys(ok("connections/g.md", gmail) as object).sort()).toEqual(
+			["kind", "id", "service", "account", "status", "actions", "connectedBy", "connectedAt", "purpose"].sort(),
+		);
+		const block = (lines: string, service = "website") =>
+			`---\nid: ${ID}\nservice: ${service}\naccount: a@b.dk\nstatus: connected\nactions: []\nconnected_by: ${JONAS}\nconnected_at: 2026-10-02T08:00:00Z\n${lines}\n---\n`;
+		const problems = (lines: string, service?: string) => keys(refused("connections/p.md", block(lines, service)));
+		expect(problems("two_step: none")).toEqual([["site", "missing"]]);
+		expect(problems("site: example.com")).toEqual([["two_step", "missing"]]);
+		for (const site of [
+			"Example.com",
+			"example",
+			"-a.example.com",
+			"a-.example.com",
+			"a..example.com",
+			"a.example.com.",
+			`${"a".repeat(64)}.com`,
+			`a.${"b".repeat(64)}`,
+			"a_b.example.com",
+			"https://example.com",
+		])
+			expect(problems(`site: "${site}"\ntwo_step: none`)).toEqual([["site", "value"]]);
+		// The vault's rule, exactly: labels of 1-63 characters, a host of up to 253.
+		expect(ok("connections/p.md", block(`site: ${"a".repeat(63)}.com\ntwo_step: none`))).toBeTruthy();
+		// A host YAML would read as a number is written in quotes, and reads back as the host.
+		for (const site of ["1.5", "1.5e10", "10.0"])
+			expect(ok("connections/p.md", writeConnectionFile({ ...file, site }))).toMatchObject({ site });
+		const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+		expect(ok("connections/p.md", block(`site: ${longest}\ntwo_step: none`))).toMatchObject({ site: longest });
+		expect(problems(`site: ${longest}d\ntwo_step: none`)).toEqual([["site", "value"]]);
+		expect(problems("site: example.com\ntwo_step: phone")).toEqual([["two_step", "value"]]);
+		expect(problems("site: example.com\ntwo_step: none\nopened_for: todo-1")).toEqual([["opened_for", "value"]]);
+		// On any other service the three keys are unknown settings, each named once.
+		expect(problems("site: example.com\ntwo_step: none", "gmail")).toEqual([
+			["site", "unknown_key"],
+			["two_step", "unknown_key"],
+		]);
+		expect(problems(`opened_for: ${IDA}`, "gmail")).toEqual([["opened_for", "unknown_key"]]);
+		// A website account's states are four.
+		expect(
+			keys(
+				refused("connections/p.md", block("site: example.com\ntwo_step: none").replace("connected\n", "closed\n")),
+			),
+		).toEqual([["status", "value"]]);
+		expect(
+			keys(refused("connections/p.md", block("").replace("connected\n", "pending\n").replace("website", "gmail"))),
+		).toEqual([["status", "value"]]);
+	});
+
 	it("keeps a rule to how the sentence ends", () => {
 		const file = { id: ID, outcome: "ask-first" as const, text: "send an email to a customer." };
 		expect(ok("rules/ask-before-emailing-customers.md", writeRuleFile(file))).toEqual({ kind: "rule", ...file });
@@ -656,14 +747,21 @@ describe("connections, rules, todos and worker files", () => {
 	});
 
 	it("reads a worker's brief and results", () => {
-		const brief = {
+		const brief: Omit<WorkerBriefFile, "kind"> = {
 			id: ID,
 			title: "Collect clinic prices",
-			species: "in-house" as const,
-			access: "write" as const,
-			revival: "each" as const,
+			species: "in-house",
+			access: "write",
+			revival: "each",
 			dispatchedAt: "2026-09-28T10:00:00.123Z",
-			brief: "## Goal\nCollect prices.",
+			followUps: 0,
+			followedUpAt: null,
+			goal: "Collect prices.",
+			doneWhen: "Ten clinics, each with a source.",
+			context: null,
+			sources: [],
+			...workerStandingTexts({ species: "in-house", access: "write", revival: "each" }),
+			followUp: null,
 		};
 		expect(ok("agents/a/todos/t/w1/brief.md", writeWorkerBriefFile(brief))).toEqual({
 			kind: "worker-brief",
@@ -674,7 +772,9 @@ describe("connections, rules, todos and worker files", () => {
 			reportedAt: "2026-09-28T11:00:00Z",
 			decision: "accepted" as const,
 			note: "Good: #1 source",
-			report: "## Summary\nDone.",
+			summary: "Done.",
+			needs: null,
+			files: [],
 		};
 		expect(ok("agents/a/todos/t/w1/results.md", writeWorkerResultsFile(results))).toEqual({
 			kind: "worker-results",
@@ -687,6 +787,271 @@ describe("connections, rules, todos and worker files", () => {
 			)[0]?.key,
 		).toBe("note");
 		expect(refused("agents/a/todos/T/w1/brief.md", writeWorkerBriefFile(brief))[0]?.code).toBe("name");
+	});
+
+	describe("worker files' sections (F2-5b)", () => {
+		const PATH = "agents/a/todos/t/w1/brief.md";
+		const RESULTS = "agents/a/todos/t/w1/results.md";
+		const standing = workerStandingTexts({ species: "in-house", access: "read", revival: "batch" });
+		const brief: Omit<WorkerBriefFile, "kind"> = {
+			id: ID,
+			title: "Compare suppliers",
+			species: "in-house",
+			access: "read",
+			revival: "batch",
+			dispatchedAt: "2026-10-03T08:00:00Z",
+			followUps: 0,
+			followedUpAt: null,
+			goal: "Find three suppliers of 4 TB NVMe disks.\n\n# Notes\n- price, delivery",
+			doneWhen: "Three suppliers with prices.",
+			context: "Node 2 needs a second disk.",
+			sources: ["ops/node-2/storage-alert.md", "notes/suppliers.md"],
+			...standing,
+			followUp: null,
+		};
+		const front = (lines: string) =>
+			`---\nid: ${ID}\ntitle: T\nspecies: in-house\naccess: read\nrevival: batch\ndispatched_at: 2026-10-03T08:00:00Z\n${lines}\n---\n`;
+		const sections = (follow = "") =>
+			`## Goal\nG\n## Done when\nD\n## Authority\nA\n## Output\nO\n## Cancellation\nC\n## Completion\nX\n${follow}`;
+
+		it("round-trips a brief, its sections in order, and a follow-up", () => {
+			const text = writeWorkerBriefFile(brief);
+			expect(text).toContain("follow_ups: 0\n");
+			expect(text).not.toContain("followed_up_at");
+			expect(text.indexOf("## Goal")).toBeLessThan(text.indexOf("## Sources"));
+			expect(text).toContain("## Sources\n- ops/node-2/storage-alert.md\n- notes/suppliers.md");
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...brief });
+			const once = appendWorkerFollowUp(PATH, text, "Add a fourth supplier.", "2026-10-03T09:00:00Z");
+			const twice = appendWorkerFollowUp(PATH, once, "Only Danish ones.", "2026-10-03T10:00:00Z");
+			expect(ok(PATH, twice)).toEqual({
+				kind: "worker-brief",
+				...brief,
+				followUps: 2,
+				followedUpAt: "2026-10-03T10:00:00Z",
+				followUp: "Only Danish ones.",
+			});
+			expect(twice).not.toContain("fourth");
+			expect(() => appendWorkerFollowUp(PATH, "nope", "x", "2026-10-03T10:00:00Z")).toThrow("does not parse");
+		});
+
+		it("refuses a brief's missing, misplaced and unbalanced sections", () => {
+			expect(ok(PATH, `${front("follow_ups: 0")}${sections()}`)).toMatchObject({
+				goal: "G",
+				context: null,
+				sources: [],
+			});
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("## Done when\nD\n", "")}`)[0]?.message,
+			).toBe("write what done is under ## Done when");
+			expect(refused(PATH, `${front("follow_ups: 0")}Hello\n${sections()}`)[0]?.message).toBe(
+				"the brief starts with ## Goal",
+			);
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 0")}${sections().replace("## Goal\nG\n## Done when\nD", "## Done when\nD\n## Goal\nG")}`,
+				)[0]?.message,
+			).toContain("come once each, in this order: ## Goal, ## Done when");
+			expect(refused(PATH, `${front("follow_ups: 1")}${sections("## Follow-up\nF\n")}`)[0]?.key).toBe(
+				"followed_up_at",
+			);
+			expect(
+				refused(PATH, `${front("follow_ups: 1\nfollowed_up_at: 2026-10-03T09:00:00Z")}${sections()}`)[0]?.message,
+			).toBe("write the latest follow-up under ## Follow-up");
+			expect(refused(PATH, `${front("follow_ups: 0")}${sections("## Follow-up\nF\n")}`)[0]?.message).toBe(
+				"## Follow-up goes with follow_ups of 1 or more",
+			);
+			expect(
+				refused(PATH, `${front("follow_ups: 0\nfollowed_up_at: 2026-10-03T09:00:00Z")}${sections()}`)[0]?.key,
+			).toBe("followed_up_at");
+			expect(refused(PATH, `${front("")}${sections()}`)[0]?.key).toBe("follow_ups");
+			expect(refused(PATH, `${front("follow_ups: -1")}${sections()}`)[0]?.key).toBe("follow_ups");
+			// Another heading is text, so a goal may hold its own headings.
+			expect(
+				ok(PATH, `${front("follow_ups: 0")}${sections().replace("G\n", "G\n## Steps\n- one\n")}`),
+			).toMatchObject({
+				goal: "G\n## Steps\n- one",
+			});
+		});
+
+		it("holds sources and sections to today's bounds", () => {
+			const at = (paths: string[]) =>
+				`${front("follow_ups: 0")}${sections().replace("## Authority", `## Sources\n${paths.map((p) => `- ${p}`).join("\n")}\n## Authority`)}`;
+			expect(ok(PATH, at(["a.md", "b/c.md"]))).toMatchObject({ sources: ["a.md", "b/c.md"] });
+			expect(refused(PATH, at(Array.from({ length: 9 }, (_, i) => `s${i}.md`)))[0]?.message).toBe(
+				"## Sources lists at most 8 paths",
+			);
+			expect(refused(PATH, at(["a.md", "A.md"]))[0]?.message).toContain("is listed twice");
+			expect(refused(PATH, at(["../x"]))[0]?.message).toContain('each line under ## Sources is "- " and a path');
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 0")}${sections().replace("## Authority", "## Sources\n\n## Authority")}`,
+				)[0]?.message,
+			).toBe("## Sources lists at least one path");
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("G\n", `${"g".repeat(4001)}\n`)}`)[0]?.message,
+			).toBe("## Goal is longer than 4000 bytes");
+		});
+
+		it("reads a report's summary, needs and files", () => {
+			const report = (lines: string, body: string) =>
+				`---\noutcome: ${lines}\nreported_at: 2026-10-03T11:00:00Z\n---\n${body}`;
+			expect(ok(RESULTS, report("blocked", "Stuck.\n\n## Needs\nA login.\n\n## Files\n- out/a.md"))).toMatchObject({
+				summary: "Stuck.",
+				needs: "A login.",
+				files: ["out/a.md"],
+			});
+			expect(refused(RESULTS, report("blocked", "Stuck."))[0]?.message).toBe(
+				"a blocked worker writes what it needs under ## Needs",
+			);
+			expect(refused(RESULTS, report("succeeded", "Done.\n## Needs\nx"))[0]?.message).toBe(
+				"## Needs is only for a blocked worker",
+			);
+			expect(refused(RESULTS, report("succeeded", "## Files\n- a.md"))[0]?.message).toBe(
+				"write the summary first, above any ## heading",
+			);
+			expect(
+				refused(
+					RESULTS,
+					report("failed", `Nope.\n## Files\n${["a", "b", "c", "d", "e"].map((x) => `- ${x}.md`).join("\n")}`),
+				)[0]?.message,
+			).toBe("## Files lists at most 4 paths");
+			expect(refused(RESULTS, report("failed", `${"s".repeat(4001)}`))[0]?.message).toBe(
+				"the summary is longer than 4000 bytes",
+			);
+			const file = {
+				outcome: "blocked" as const,
+				reportedAt: "2026-10-03T11:00:00Z",
+				decision: null,
+				note: null,
+				summary: "S",
+				needs: "N",
+				files: ["x/y.md"],
+			};
+			expect(ok(RESULTS, writeWorkerResultsFile(file))).toEqual({ kind: "worker-results", ...file });
+		});
+
+		it("refuses model text that would start a section, CRLF included, per file", () => {
+			expect(workerTextHeading("Plan:\n## Files\n- a", "worker-results")).toBe("## Files");
+			expect(workerTextHeading("Plan:\n## Files\n- a", "worker-brief")).toBeNull();
+			expect(workerTextHeading("## Goal ##", "worker-brief")).toBe("## Goal");
+			expect(workerTextHeading("Done.\r\n## Files\r\n- out/a.md", "worker-results")).toBe("## Files");
+			expect(workerTextHeading("### Goal\n## Notes\n#Goal", "worker-brief")).toBeNull();
+			expect(() => writeWorkerBriefFile({ ...brief, goal: "x\n## Sources\n- y" })).toThrow(
+				'The text for ## Goal has a line "## Sources"',
+			);
+			expect(() => writeWorkerBriefFile({ ...brief, doneWhen: "x\r\n## Context\r\ny" })).toThrow(
+				'The text for ## Done when has a line "## Context"',
+			);
+			const report = {
+				outcome: "succeeded" as const,
+				reportedAt: "2026-10-03T11:00:00Z",
+				decision: null,
+				note: null,
+				summary: "a",
+				needs: null,
+				files: [] as string[],
+			};
+			expect(() => writeWorkerResultsFile({ ...report, summary: "Done.\r\n## Files\r\n- out/a.md" })).toThrow(
+				'The summary has a line "## Files"',
+			);
+			// A results summary may hold the brief's headings: results split only on Needs and Files.
+			const sourced = writeWorkerResultsFile({ ...report, summary: "Done.\r\n## Sources\r\n- a.md" });
+			expect(ok(RESULTS, sourced)).toMatchObject({ summary: "Done.\n## Sources\n- a.md", files: [] });
+			expect(() => writeWorkerResultsFile({ ...report, files: [" a.md"] })).toThrow("## Files:");
+			expect(() => writeWorkerResultsFile({ ...report, files: ["a.md\n- b.md"] })).toThrow("## Files:");
+			expect(() => writeWorkerResultsFile({ ...report, files: [`${"f".repeat(254)}.md`] })).toThrow(
+				"longer than 256 bytes",
+			);
+			expect(() => writeWorkerBriefFile({ ...brief, sources: ["../x"] })).toThrow("## Sources:");
+			expect(WORKER_BRIEF_SECTIONS.at(-1)).toBe("Follow-up");
+		});
+
+		it("names the line of a bad item, and refuses empty, repeated and long sections", () => {
+			const text = `${front("follow_ups: 0")}## Goal\nG\n## Done when\nD\n## Sources\n\n\n- ok.md\n- ../x\n## Authority\nA\n## Output\nO\n## Cancellation\nC\n## Completion\nX\n`;
+			const problems = refused(PATH, text);
+			expect(problems[0]?.message).toContain('each line under ## Sources is "- "');
+			// The front matter is 9 lines; the body starts at 10, ## Sources at 14, the bad item at 18.
+			expect(problems[0]?.line).toBe(18);
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("## Done when\nD", "## Done when\n")}`)[0]
+					?.message,
+			).toBe("write what done is under ## Done when");
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 0")}${sections().replace("## Authority", "## Context\n\n## Authority")}`,
+				)[0]?.message,
+			).toBe("write the context under ## Context");
+			expect(refused(PATH, `${front("follow_ups: 0")}${sections()}## Goal\nAgain\n`)[0]?.message).toContain(
+				"sections come once each",
+			);
+			expect(
+				refused(PATH, `${front("follow_ups: 0")}${sections().replace("D\n", `${"d".repeat(2001)}\n`)}`)[0]?.message,
+			).toBe("## Done when is longer than 2000 bytes");
+			expect(
+				refused(
+					PATH,
+					`${front("follow_ups: 1\nfollowed_up_at: 2026-10-03T09:00:00Z")}${sections(`## Follow-up\n${"f".repeat(4001)}\n`)}`,
+				)[0]?.message,
+			).toBe("## Follow-up is longer than 4000 bytes");
+			const crlf = writeWorkerBriefFile(brief).replace(/\n/g, "\r\n");
+			expect(ok(PATH, crlf)).toEqual({ kind: "worker-brief", ...brief });
+			expect(() => appendWorkerFollowUp(RESULTS, writeWorkerBriefFile(brief), "x", "2026-10-03T10:00:00Z")).toThrow(
+				"does not parse",
+			);
+		});
+
+		it("holds a report's needs and files to their rules", () => {
+			const report = (lines: string, body: string) =>
+				`---\noutcome: ${lines}\nreported_at: 2026-10-03T11:00:00Z\n---\n${body}`;
+			expect(refused(RESULTS, report("blocked", "Stuck.\n## Needs\n"))[0]?.message).toBe(
+				"write what it needs under ## Needs",
+			);
+			expect(refused(RESULTS, report("blocked", `Stuck.\n## Needs\n${"n".repeat(1001)}`))[0]?.message).toBe(
+				"## Needs is longer than 1000 bytes",
+			);
+			expect(refused(RESULTS, report("failed", "Nope.\n## Files\n- a.md\n- A.md"))[0]?.message).toContain(
+				"is listed twice",
+			);
+			expect(refused(RESULTS, report("failed", "Nope.\n## Files\n- a.md\nb.md"))[0]?.line).toBe(8);
+			expect(refused(RESULTS, report("failed", `Nope.\n## Files\n- ${"f".repeat(254)}.md`))[0]?.message).toContain(
+				"each line under ## Files",
+			);
+			expect(refused(RESULTS, report("failed", "Nope.\n## Files\n- a.md\n## Needs\nx"))[0]?.message).toContain(
+				"sections come once each, in this order: ## Needs, ## Files",
+			);
+		});
+
+		it("gives today's standing texts and the folder key rule", () => {
+			expect(workerStandingTexts({ species: "in-house", access: "read", revival: "batch" })).toEqual({
+				authority: "Read what this agent may read. Write nothing.",
+				output:
+					"Report once through report_work: outcome, a summary the parent can act on, and the files you wrote.",
+				cancellation: "Ends with its todo, or when the parent cancels it. A cancelled worker cannot report.",
+				completion:
+					"The parent is revived once every worker it dispatched together has reported, or at once when you are blocked.",
+			});
+			expect(workerStandingTexts({ species: "in-house", access: "write", revival: "each" }).completion).toBe(
+				"The parent is revived as soon as you report.",
+			);
+			expect(workerStandingTexts({ species: "in-house", access: "write", revival: "batch" }).authority).toBe(
+				"Read what this agent may read. Write only inside outputFolder, or where this agent already holds a write grant.",
+			);
+			expect(workerStandingTexts({ species: "coding", access: "read", revival: "batch" })).toMatchObject({
+				authority:
+					"Work only in the repository and branch the cloud selected. Company File sources are read-only context. Publication is a draft PR through the trusted path.",
+				output:
+					"Finish through coding_finish with the commit to publish, or ask the owner through coding_ask when a decision is theirs.",
+			});
+			expect(workerKeyProblem("price-check-2")).toBeNull();
+			expect(workerKeyProblem("con")).toContain("are reserved names");
+			expect(workerKeyProblem("lpt1")).not.toBeNull();
+			expect(workerKeyProblem("price.check")).toContain("cannot name a worker's folder");
+			expect(workerKeyProblem("a--b")).not.toBeNull();
+			expect(workerKeyProblem("a".repeat(65))).not.toBeNull();
+		});
 	});
 });
 
@@ -976,6 +1341,66 @@ describe("human tasks and contacts (H1)", () => {
 		]);
 		expect(problems("name2: x".replace("name2", "name"))).toEqual([["name", "duplicate_key"]]);
 		expect(problems("company: x")).toEqual([["company", "unknown_key"]]);
+	});
+});
+
+describe("human tasks: the proof's names and the person's change (H2a)", () => {
+	const OPS = "7f3a9c21-44d0-4e6b-8a55-2c1f0b9e3d77";
+	const file = (status: string, extra = "", body = "## Steps\n- [ ] Order the disk\n- [x] Agree a window\n") =>
+		`---\nid: ${ID}\ntitle: Fit the disk\nstatus: ${status}\nmember: ${JONAS}\nfrom: ${OPS}\ndue: 2026-10-09T16:00:00Z\n${extra}---\n${body}`;
+	const path = "human-tasks/fit-disk.md";
+
+	it("names the task's folder, its proof and its note", () => {
+		expect(humanTaskFolder(path)).toBe("human-tasks/fit-disk");
+		expect(humanTaskProofPath(path, "photo", 1, "jpg")).toBe("human-tasks/fit-disk/proof/photo-1.jpg");
+		expect(humanTaskProofPath(path, "signature", 2, "png")).toBe("human-tasks/fit-disk/proof/signature-2.png");
+		expect(humanTaskNotePath(path)).toBe("human-tasks/fit-disk/note.md");
+		expect(() => humanTaskFolder("contacts/maria.md")).toThrow(RangeError);
+		// Only the spelling the database keeps: a compatibility or upper-case spelling is refused here, not later.
+		expect(() => humanTaskFolder("ＨＵＭＡＮ-TASKS/fit.md")).toThrow(RangeError);
+		expect(() => humanTaskFolder("human-tasks/Fit.md")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "note" as "photo", 1, "md")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "photo", 0, "jpg")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "photo", 1, "JPG")).toThrow(RangeError);
+		expect(() => humanTaskProofPath(path, "photo", 1, "")).toThrow(RangeError);
+	});
+
+	it("ticks one box and changes nothing else", () => {
+		const text = file("open");
+		const ticked = humanTaskPersonChange(path, text, { kind: "tick", step: 0, done: true });
+		expect(ticked).toBe(text.replace("- [ ] Order the disk", "- [x] Order the disk"));
+		expect(humanTaskPersonChange(path, ticked, { kind: "tick", step: 1, done: false })).toBe(
+			ticked.replace("- [x] Agree a window", "- [ ] Agree a window"),
+		);
+		// A carriage return and an upper-case X stay as the file had them.
+		const crlf = file("open").replaceAll("\n", "\r\n").replace("- [x]", "- [X]");
+		expect(humanTaskPersonChange(path, crlf, { kind: "tick", step: 1, done: true })).toBe(
+			crlf.replace("- [X] Agree", "- [x] Agree"),
+		);
+		expect(() => humanTaskPersonChange(path, text, { kind: "tick", step: 2, done: true })).toThrow(/no step 2/);
+		// A byte-order mark and notes in the settings stay as they were.
+		const noted = `\ufeff${file("open", "minutes: 40 # about\n")}`;
+		expect(humanTaskPersonChange(path, noted, { kind: "tick", step: 0, done: true })).toBe(
+			noted.replace("- [ ] Order the disk", "- [x] Order the disk"),
+		);
+		expect(humanTaskPersonChange(path, noted, { kind: "done" })).toBe(noted.replace("status: open", "status: done"));
+	});
+
+	it("marks a task done or declined, and only an open or returned one", () => {
+		const returned = file("returned", "reason: The serial is not readable\n");
+		const done = humanTaskPersonChange(path, returned, { kind: "done" });
+		expect(done).toBe(file("done"));
+		const declined = humanTaskPersonChange(path, file("open"), { kind: "declined", reason: "I am away that week" });
+		expect(ok(path, declined)).toMatchObject({ status: "declined", reason: "I am away that week" });
+		expect(declined).toBe(file("declined", "reason: I am away that week\n"));
+		for (const status of ["done", "accepted", "declined", "cancelled"])
+			expect(() =>
+				humanTaskPersonChange(path, file(status, status === "declined" ? "reason: x\n" : ""), { kind: "done" }),
+			).toThrow(/not the person's to change/);
+		expect(() => humanTaskPersonChange(path, file("open"), { kind: "declined", reason: "" })).toThrow(
+			/would be refused/,
+		);
+		expect(() => humanTaskPersonChange("human-tasks/x.md", "not a task", { kind: "done" })).toThrow(/parses/);
 	});
 });
 
@@ -1346,9 +1771,26 @@ describe("companyStateSeedTree", () => {
 			const parent = entry.path.split("/").slice(0, -1).join("/");
 			if (parent) expect(paths.slice(0, index)).toContain(parent);
 			expect(companyStatePathProblems(entry.path, entry.kind === "folder")).toEqual([]);
-			if (entry.kind === "file") expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok).toBe(true);
+			// Every structured file parses; the seeded skill is an ordinary file.
+			if (entry.kind === "file")
+				expect(parseCompanyStateFile(entry.path, entry.text ?? "")?.ok ?? entry.path).toBe(
+					entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH ? entry.path : true,
+				);
 		}
 		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
+		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct).
+		expect(paths.filter((path) => !path.includes("/"))).toEqual([
+			"vision",
+			"agents",
+			"connections",
+			"human-tasks",
+			"contacts",
+			"skills",
+			"rules",
+		]);
+		const skill = tree.find((entry) => entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH)?.text ?? "";
+		expect(skill).toMatch(/^---\nname: human-task\ndescription: .+\n---\n# Human tasks\n/);
+		expect(skill).toContain("`## Steps`");
 		expect(ok("vision/vision.md", tree.find((entry) => entry.path === "vision/vision.md")?.text ?? "")).toEqual({
 			kind: "vision",
 			name: "Nordlys Studio",

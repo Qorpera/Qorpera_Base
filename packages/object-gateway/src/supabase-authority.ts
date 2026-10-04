@@ -2,22 +2,28 @@ import {
 	companyStateFailure,
 	ObjectDependency,
 	ObjectDependencyError,
+	ObjectLockConflict,
+	postgrestError,
 	postgrestErrorCode,
 	readBoundedObjectResponse,
 	unavailableStateFailure,
 } from "./dependency.ts";
+import type { FolderGcAuthority } from "./folder-gc.ts";
 import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
 	MemberCompanyObjectIdentity,
 } from "./member-company-objects.ts";
+import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
 import type { NativeCompanyObjectAuthority } from "./native-objects.ts";
 import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
+/** `qorpera_folder_object_collecting()`'s message (migration 20260928349860). */
+const FOLDER_OBJECT_COLLECTING = "Company folder object is being collected; retry";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -98,7 +104,13 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 }
 
 export class SupabaseObjectAuthority
-	implements ObjectGatewayAuthority, NativeCompanyObjectAuthority, FolderObjectAuthority, MemberCompanyObjectAuthority
+	implements
+		ObjectGatewayAuthority,
+		NativeCompanyObjectAuthority,
+		FolderObjectAuthority,
+		FolderGcAuthority,
+		MemberCompanyObjectAuthority,
+		MemberFolderObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -448,6 +460,126 @@ export class SupabaseObjectAuthority
 		return { profileId: value.profileId, bytes: value.bytes as number };
 	}
 
+	/** A member's byte check for one object of a folder-v2 company (folder core C4, P27a/P27b), with the member's own
+	 * token. The database derives the member and the company; a refusal is the member's, never the circuit's. */
+	async authorizeMemberFolderObject(
+		userToken: string,
+		environmentId: string,
+		sha256: string,
+	): Promise<{ profileId: string; bytes: number }> {
+		const value = (await this.#rpc(
+			"qorpera_member_folder_object",
+			{ p_environment_id: environmentId, p_sha256: sha256 },
+			userToken,
+			this.#publishableKey,
+			"folder",
+		)) as Record<string, unknown> | null;
+		if (
+			!value ||
+			typeof value !== "object" ||
+			Object.keys(value).length !== 3 ||
+			value.schema !== "qorpera.folder-object-download/v1" ||
+			typeof value.profileId !== "string" ||
+			!UUID_PATTERN.test(value.profileId) ||
+			!Number.isSafeInteger(value.bytes) ||
+			(value.bytes as number) < 0 ||
+			(value.bytes as number) > 8 * 1024 * 1024
+		)
+			throw new ObjectDependencyError(403);
+		return { profileId: value.profileId, bytes: value.bytes as number };
+	}
+
+	/** The folder GC RPCs act on one company's object under a GC lease, so their 500s are read as that company's state
+	 * (`companyStateFailure`): a lock wait past their 2 s budget is 409, never the circuit. */
+	async beginFolderUnlink(
+		profileId: string,
+		sha256: string,
+		leaseId: string,
+	): Promise<{ bytes: number; backend: ObjectBackend } | "stale"> {
+		let value: unknown;
+		try {
+			value = await this.#rpc(
+				"qorpera_folder_gc_unlink_begin",
+				{ p_profile_id: profileId, p_sha256: sha256, p_lease: leaseId },
+				undefined,
+				this.#secretKey,
+				true,
+			);
+		} catch (error) {
+			// 55000: the mark is gone, expired, or another lease's.
+			if (error instanceof ObjectDependencyError && error.status === 423) return "stale";
+			throw error;
+		}
+		const answer = record(value, "folder GC unlink");
+		if (
+			answer.schema !== "qorpera.folder-object-gc-unlink/v1" ||
+			!Number.isSafeInteger(answer.bytes) ||
+			(answer.bytes as number) < 0 ||
+			(answer.bytes as number) > 8 * 1024 * 1024 ||
+			(answer.backend !== "nas-object-gateway" && answer.backend !== "supabase-storage")
+		)
+			throw new Error("Invalid folder GC unlink");
+		return { bytes: answer.bytes as number, backend: answer.backend };
+	}
+
+	async finishFolderUnlink(
+		profileId: string,
+		sha256: string,
+		leaseId: string,
+	): Promise<"removed" | "restore" | "stale"> {
+		const value = await this.#rpc(
+			"qorpera_folder_gc_unlink_finish",
+			{ p_profile_id: profileId, p_sha256: sha256, p_lease: leaseId },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		if (value !== "removed" && value !== "restore" && value !== "stale") throw new Error("Invalid folder GC finish");
+		return value;
+	}
+
+	async abandonFolderUnlink(profileId: string, sha256: string, leaseId: string): Promise<boolean> {
+		const value = await this.#rpc(
+			"qorpera_folder_gc_unlink_abandon",
+			{ p_profile_id: profileId, p_sha256: sha256, p_lease: leaseId },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		if (typeof value !== "boolean") throw new Error("Invalid folder GC abandon");
+		return value;
+	}
+
+	async folderQuarantineState(
+		profileId: string,
+		sha256: string,
+		leaseId: string,
+	): Promise<"live" | "restore" | "remove"> {
+		const value = await this.#rpc(
+			"qorpera_folder_gc_quarantine_state",
+			{ p_profile_id: profileId, p_sha256: sha256, p_lease: leaseId },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		if (value !== "live" && value !== "restore" && value !== "remove")
+			throw new Error("Invalid folder GC quarantine state");
+		return value;
+	}
+
+	async folderCatalogState(profileId: string, sha256: string): Promise<"catalogued" | "listed" | "missing" | "other"> {
+		const value = await this.#rpc(
+			"qorpera_folder_gc_catalog_state",
+			{ p_profile_id: profileId, p_sha256: sha256 },
+			undefined,
+			this.#secretKey,
+			true,
+		);
+		if (value !== "catalogued" && value !== "listed" && value !== "missing" && value !== "other")
+			throw new Error("Invalid folder GC catalog state");
+		return value;
+	}
+
 	async authorizeDelete(
 		profileId: string,
 		sha256: string,
@@ -528,6 +660,7 @@ export class SupabaseObjectAuthority
 			{ p_profile_id: profileId, p_sha256: sha256, p_bytes: bytes },
 			undefined,
 			this.#secretKey,
+			"replication",
 		);
 		if (value !== true) throw new ObjectDependencyError(403);
 	}
@@ -634,13 +767,14 @@ export class SupabaseObjectAuthority
 	 * `"folder"`, a folder core byte RPC, also reads its 400s, with `folderStateFailure` (and 413). Profile,
 	 * replication, deletion and migration RPCs must stay "unavailable" to their callers (the replication reconciler
 	 * blocks an object on any other refusal, and a profile read drops its member's read leases on one), so theirs
-	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone. */
+	 * are read with `unavailableStateFailure`: a lock conflict is still 503 but leaves the circuit alone.
+	 * `"replication"` is read the same way, and also reads folder GC's conflict as a lock conflict. */
 	async #rpc(
 		name: string,
 		body: Record<string, unknown>,
 		bearer: string | undefined,
 		apiKey: string,
-		companyState: boolean | "folder" = false,
+		companyState: boolean | "folder" | "replication" = false,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
 			...supabaseRequestHeaders(apiKey, bearer),
@@ -657,9 +791,18 @@ export class SupabaseObjectAuthority
 				if (companyState === "folder" && (response.status === 500 || response.status === 400))
 					throw folderStateFailure(await postgrestErrorCode(response, signal), response.status);
 				if (response.status === 500)
-					throw (companyState ? companyStateFailure : unavailableStateFailure)(
+					throw (companyState === true ? companyStateFailure : unavailableStateFailure)(
 						await postgrestErrorCode(response, signal),
 					);
+				// Replication meeting an object folder GC holds (C1D §9.7): the folder core's conflict envelope with its
+				// own message. To the reconciler it is a lock conflict, so the folder entry stays pending, not blocked.
+				// snapshot-v1's cleanup fence answers QRC01 too, with another message, and keeps its 409 (core §8 G3).
+				if (response.status === 409 && companyState === "replication") {
+					const error = await postgrestError(response, signal);
+					throw error.code === "QRC01" && error.message === FOLDER_OBJECT_COLLECTING
+						? new ObjectLockConflict()
+						: new ObjectDependencyError(409);
+				}
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}

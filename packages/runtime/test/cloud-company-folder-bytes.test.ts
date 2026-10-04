@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { HttpCloudCompanyFolderBytes } from "@qorpera/runtime/cloud-company-folder-bytes";
 import { CloudCompanyFolderError, type CloudCompanyFolderFile } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { afterEach, expect, it, vi } from "vitest";
 import { ObjectDependencyError } from "../../object-gateway/src/dependency.ts";
 import { ObjectGatewayJournal } from "../../object-gateway/src/journal.ts";
@@ -94,6 +95,8 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		badRequest: undefined as string | undefined,
 		/** When set, fields renew answers with in place of its own. */
 		renewAnswer: undefined as Record<string, unknown> | undefined,
+		/** Objects folder GC holds (C1D §9.7): authorizing their upload is the conflict envelope, QRC01 409. */
+		collecting: new Set<string>(),
 	};
 	const puts: string[] = [];
 	/** The folder RPCs the gateway made, in order. */
@@ -137,6 +140,16 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 			)
 				return Response.json({ code: "42501" }, { status: 403 });
 			if (method === "qorpera_folder_authorize_object_upload") {
+				if (sql.collecting.has(args.p_sha256 as string))
+					return Response.json(
+						{
+							code: "QRC01",
+							message: "Company folder object is being collected; retry",
+							details: null,
+							hint: null,
+						},
+						{ status: 409 },
+					);
 				if (sql.full && !sql.catalog.has(args.p_sha256 as string))
 					return Response.json({ code: "23514", message: "company storage allowance exceeded" }, { status: 400 });
 				if (sql.badRequest !== undefined) {
@@ -342,6 +355,33 @@ it("stages a file's chunks and manifest under an intent, seals it, and reads it 
 	expect(Buffer.from(read).equals(content)).toBe(true);
 });
 
+it("reads a window of a file from only the chunks it falls in", async () => {
+	const { bytes, sql, gatewayCalls } = await fixture();
+	const content = randomBytes(9 * 1024 * 1024);
+	const signal = new AbortController().signal;
+	const reference = await bytes.put(content, "application/octet-stream", false, signal);
+	sql.readable.add(reference.manifestSha256);
+	const file = { ...reference, executable: false };
+	// Each object is authorized twice: as the request comes in, and again inside the gateway's lane.
+	const downloads = () =>
+		gatewayCalls.filter((call) => call === "qorpera_folder_authorize_object_download").length / 2;
+	// Across the first two chunks: the manifest and those two.
+	let before = downloads();
+	const across = await bytes.range(file, 4 * 1024 * 1024 - 2, 4, signal);
+	expect(Buffer.from(across).equals(content.subarray(4 * 1024 * 1024 - 2, 4 * 1024 * 1024 + 2))).toBe(true);
+	expect(downloads() - before).toBe(3);
+	// Inside the last chunk, cut at the file's end: the manifest and that chunk.
+	before = downloads();
+	const tail = await bytes.range(file, content.byteLength - 3, 4096, signal);
+	expect(Buffer.from(tail).equals(content.subarray(content.byteLength - 3))).toBe(true);
+	expect(downloads() - before).toBe(2);
+	// Past the end, nothing is fetched.
+	before = downloads();
+	expect((await bytes.range(file, content.byteLength, 4, signal)).byteLength).toBe(0);
+	expect(downloads() - before).toBe(0);
+	await expect(bytes.range(file, -1, 4, signal)).rejects.toThrow("Invalid Company folder byte range");
+});
+
 it("gives the same reference for the same file, putting only what the run may not already read", async () => {
 	const { bytes, sql, puts } = await fixture();
 	const signal = new AbortController().signal;
@@ -526,6 +566,28 @@ it("reads a stop, a lock conflict and a lock timeout at confirm as the run's", a
 	}
 	expect(authority.health().api.status).toBe("healthy");
 	expect(gatewayCalls.filter((method) => method === "qorpera_folder_confirm_object")).toHaveLength(4);
+});
+
+it("reads an object folder GC holds as contended, at the control and at the gateway", async () => {
+	const { bytes, sql, control, authority } = await fixture();
+	const signal = new AbortController().signal;
+	// Open (or seal) refuses a present object GC holds with the conflict envelope; the writer asks again later.
+	vi.mocked(control.call).mockRejectedValueOnce(
+		new CloudCompanyFolderRpcError("QRC01", "Company folder object is being collected; retry"),
+	);
+	await expect(bytes.put(Buffer.from("held"), "text/plain", false, signal)).rejects.toMatchObject({
+		failure: "contended",
+	});
+	// The gateway passes the 409 on, and the database circuit stays closed.
+	sql.collecting.add(sha("held"));
+	await expect(bytes.put(Buffer.from("held"), "text/plain", false, signal)).rejects.toMatchObject({
+		failure: "contended",
+	});
+	expect(authority.health().api.status).toBe("healthy");
+	sql.collecting.clear();
+	await expect(bytes.put(Buffer.from("held"), "text/plain", false, signal)).resolves.toMatchObject({
+		fileSha256: sha("held"),
+	});
 });
 
 it("fails fast on any other database 500, which opens the gateway's circuit", async () => {

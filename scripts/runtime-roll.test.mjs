@@ -45,6 +45,7 @@ test("every packet is exactly one outer transaction, in the procedure's order", 
 	const packets = rollPackets(options());
 	assert.deepEqual(Object.keys(packets), [
 		"00-check.sql",
+		"05-rehearse-migrations.sql",
 		`10-migration-${migration.name}`,
 		"20-declare-b.sql",
 		"30-runs-off-a.sql",
@@ -132,7 +133,13 @@ test("the emergency packets: per-company savepoints, folder-v2 companies, declar
 	assert.ok(!packets["91-reverse.sql"].includes(", null)"), "91 clears no declaration");
 	assert.match(packets["91-reverse.sql"], /qorpera_declare_runtime_node_bundle\('[^']+'::uuid, '[0-9a-f]{64}'\) as roll_declare_b\nwhere not exists \(select 1 from public\.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null\);/);
 	assert.ok(packets["92-clear-declarations.sql"].includes(`qorpera_declare_runtime_node_bundle('${nodeA}'::uuid, null)`));
-	assert.ok(packets["92-clear-declarations.sql"].indexOf("'declaredNext'") < packets["92-clear-declarations.sql"].indexOf(", null)"), "92 lists what it clears first");
+	// 92: the copy, then both clears, then the report from the copy.
+	assert.match(
+		packets["92-clear-declarations.sql"],
+		new RegExp(
+			`create temporary table roll_next[\\s\\S]*qorpera_declare_runtime_node_bundle\\('${nodeA}'::uuid, null\\)[\\s\\S]*qorpera_declare_runtime_node_bundle\\('${nodeB}'::uuid, null\\)[\\s\\S]*from pg_temp\\.roll_next\\)`,
+		),
+	);
 	assert.ok(packets["90-pause-now.sql"].includes("set local lock_timeout = '2s';"));
 	assert.ok(packets["93-resume.sql"].includes("'runsOn'"));
 });
@@ -149,6 +156,30 @@ test("emptying one node needs the other to claim: 30 checks node B, 60 checks no
 	assert.ok(!gateOf("40-switch.sql").includes(`runs_enabled from public.qorpera_runtime_nodes where id = '${nodeB}'`), "40 does not refuse on node B");
 	assert.ok(packets["40-switch.sql"].includes("'nodeBServes'"));
 	assert.match(packets["60-runs-off-b.sql"], /claim\.status in \('claimed', 'assigned'\)[\s\S]*still queued: let node B take it first \(waiting: %; first ids: %\)/);
+});
+
+test("the row the operator reads is each packet's last statement (the runner keeps only its rows)", () => {
+	const packets = rollPackets(options());
+	const rows = {
+		"00-check.sql": "roll_check",
+		"05-rehearse-migrations.sql": "roll_rehearsal",
+		[`10-migration-${migration.name}`]: "roll_migration",
+		"31-drain-a.sql": "roll_drain",
+		"40-switch.sql": "roll_switched",
+		"50-check-n.sql": "roll_check_n",
+		"61-drain-b.sql": "roll_drain",
+		"80-finish.sql": "roll_finished",
+		"90-pause-now.sql": "roll_paused",
+		"91-reverse.sql": "roll_reversed",
+		"92-clear-declarations.sql": "roll_clearing",
+		"93-resume.sql": "roll_resumed",
+	};
+	for (const [name, row] of Object.entries(rows)) {
+		const text = packets[name];
+		const parts = statements(text).map(([start, end]) => text.slice(start, end).trim());
+		assert.equal(parts.at(-1), "commit;", name);
+		assert.match(parts.at(-2), new RegExp(`^select [\\s\\S]* as ${row};$`), name);
+	}
 });
 
 test("--empty full switches a node off fully and returns it with both switches", () => {
@@ -175,6 +206,46 @@ test("each release migration is gated on N and recorded with its own text", () =
 	assert.ok(text.includes("create table public.probe(id integer);"));
 	assert.match(text, /values \('20260928400000','probe',array\[\$roll_[0-9a-f]{12}\$/);
 	assert.ok(!text.includes("begin;\ncreate table"), "the migration's own begin is removed");
+});
+
+test("the schema rehearsal applies every release migration in order in one transaction, dry-run only", () => {
+	const later = { name: "20260928400500_later.sql", text: "begin;\nalter table public.probe add column note text;\ncommit;\n" };
+	const packets = rollPackets(options({ migrations: [later, migration] }));
+	const text = packets["05-rehearse-migrations.sql"];
+	assert.ok(DRY_RUN_ONLY.includes("05-rehearse-migrations.sql"));
+	assert.ok(text.includes(`${migration.name} is already recorded`) && text.includes(`${later.name} is already recorded`));
+	assert.match(text, /create table public\.probe\(id integer\);[\s\S]*'20260928400000','probe'[\s\S]*alter table public\.probe add column note text;[\s\S]*'20260928400500','later'/);
+	assert.ok(!text.includes("is not recorded yet"), "the rehearsal needs no migration recorded");
+	assert.ok(!text.includes("begin;\nalter table"), "each migration's own begin is removed");
+	// A roll with no release migration has no rehearsal, and packet.json lists only files it has.
+	assert.equal(rollPackets(options({ migrations: [] }))["05-rehearse-migrations.sql"], undefined);
+	// Each migration starts with its packet's settings, and the summary reports the roll's guards.
+	assert.equal(text.match(/set local lock_timeout = '5s';\nset local statement_timeout = '120s';\s*(create table|alter table)/g)?.length, 2);
+	assert.match(text, /'ok', true, 'guards', coalesce\(\(select not exists/);
+	assert.match(text, /A guard the roll relies on is missing after the release migrations[\s\S]*as roll_rehearsal;/);
+});
+
+test("a release's pg_temp helpers and temporary tables are its own migration's, under names no other one creates", () => {
+	const helper = (name, body) => ({ name, text: `create function pg_temp.${body}() returns void language sql as $$ select 1 $$;\nselect pg_temp.${body}();\n` });
+	const first = helper("20260928400100_one.sql", "roll_patch");
+	assert.throws(() => rollPackets(options({ migrations: [first, helper("20260928400200_two.sql", "roll_patch")] })), /both create pg_temp\.roll_patch/);
+	const borrow = { name: "20260928400200_two.sql", text: "select pg_temp.roll_patch();\n" };
+	assert.throws(() => rollPackets(options({ migrations: [first, borrow] })), /uses pg_temp\.roll_patch, which it does not create/);
+	// A temporary table filled with a column list is not a call; one made `if not exists` may be shared.
+	const table = (name, ifNotExists) => ({
+		name,
+		text: `create temporary table ${ifNotExists ? "if not exists " : ""}roll_rows (id integer) on commit drop;\ninsert into pg_temp.roll_rows (id) values (1);\n`,
+	});
+	assert.ok(rollPackets(options({ migrations: [first, table("20260928400200_two.sql", false)] }))["05-rehearse-migrations.sql"]);
+	assert.throws(() => rollPackets(options({ migrations: [table("20260928400100_one.sql", false), table("20260928400200_two.sql", false)] })), /both create pg_temp\.roll_rows/);
+	assert.ok(rollPackets(options({ migrations: [table("20260928400100_one.sql", true), table("20260928400200_two.sql", true)] })));
+	// A borrowed table refuses even without a parenthesis after it.
+	assert.throws(
+		() => rollPackets(options({ migrations: [table("20260928400100_one.sql", false), { name: "20260928400200_two.sql", text: "select count(*) from pg_temp.roll_rows;\n" }] })),
+		/uses pg_temp\.roll_rows, which it does not create/,
+	);
+	// A name in a comment is not a use.
+	assert.ok(rollPackets(options({ migrations: [{ name: "20260928400100_one.sql", text: "-- like pg_temp.elsewhere(x)\nselect 1;\n" }] })));
 });
 
 test("bad inputs are refused", () => {
@@ -215,6 +286,10 @@ test("the packet directory carries every file's digest, the order and the dry-ru
 			assert.equal(createHash("sha256").update(readFileSync(join(out, name))).digest("hex"), digest, name);
 		assert.deepEqual(written.dryRunOnly, DRY_RUN_ONLY);
 		assert.throws(() => writeRoll(out, options()), /written once/);
+		// Without release migrations there is no rehearsal, and dryRunOnly names only files that exist.
+		const bare = writeRoll(join(dir, "bare"), options({ migrations: [] }));
+		assert.deepEqual(bare.dryRunOnly, DRY_RUN_ONLY.filter((name) => name !== "05-rehearse-migrations.sql"));
+		for (const name of bare.dryRunOnly) assert.ok(bare.files[name], name);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

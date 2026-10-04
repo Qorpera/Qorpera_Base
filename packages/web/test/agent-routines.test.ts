@@ -723,6 +723,76 @@ describe("agent routines section", () => {
 			"New routine",
 		);
 	});
+	it("says why a paused routine waits, and keeps an archived agent's switch off until the agent is back", async () => {
+		const paused = (n: number, pauseReason?: string): WebRoutine => ({
+			...routine({
+				routineId: `10000000-0000-4000-8000-00000000010${n}`,
+				clientRoutineId: `10000000-0000-4000-8000-00000000020${n}`,
+				title: `Routine ${n}`,
+				status: "paused",
+			}),
+			...(pauseReason ? { pauseReason } : {}),
+		});
+		const items = [
+			paused(1, "member"),
+			paused(2, "agent"),
+			paused(3, "authorization_failed"),
+			paused(4, "needs_model_account"),
+			paused(5, "agent_archived"),
+			paused(6, "something_new"),
+			paused(7),
+		];
+		const reasons = (root: Element) =>
+			cards(root).map((card) => card.querySelector(".routine-card-paused")?.textContent ?? null);
+		const f = mount(items);
+		await settle();
+		expect(reasons(f.view.el)).toEqual([
+			"Paused by a member",
+			`Paused by ${staff.displayName}`,
+			"Paused: it could not start with the access it had",
+			"Paused: no model account pays for it",
+			"Paused when its agent was archived",
+			null,
+			null,
+		]);
+		// An active agent's paused routine resumes from its switch as before.
+		const lever = cards(f.view.el)[4]!.querySelector('[role="switch"]')!;
+		expect(lever.getAttribute("aria-disabled")).toBeNull();
+		expect(lever.getAttribute("title")).toBe("Resume routine");
+
+		// Under an archived agent a routine never runs: its switch is off and locked, and says what comes first.
+		const routines = {
+			list: vi.fn(async () => [paused(5, "agent_archived"), routine()]),
+			runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
+			save: vi.fn(async () => {}),
+			setEnabled: vi.fn(async () => {}),
+		} satisfies WebRoutines;
+		const view = new AgentRoutines(
+			() => ({ ...staff, employmentStatus: "archived" }),
+			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		const [off, on] = cards(view.el).map((card) => card.querySelector<HTMLButtonElement>('[role="switch"]')!);
+		expect(off!.getAttribute("aria-disabled")).toBe("true");
+		expect(off!.classList.contains("is-locked")).toBe(true);
+		expect(off!.getAttribute("title")).toBe("Reactivate the agent first");
+		off!.click();
+		await settle();
+		expect(routines.setEnabled).not.toHaveBeenCalled();
+		// A routine still on (until the cloud pauses it) can be paused.
+		expect(on!.getAttribute("aria-disabled")).toBeNull();
+		expect(on!.getAttribute("title")).toBe("Pause routine");
+		on!.click();
+		await settle();
+		expect(routines.setEnabled).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Morning brief" }),
+			account,
+			false,
+			expect.any(String),
+		);
+	});
 	it("shows the switch as the cloud reads it after a change, and where it was moved while no read has come back", async () => {
 		const other = routine({
 			routineId: "10000000-0000-4000-8000-000000000017",

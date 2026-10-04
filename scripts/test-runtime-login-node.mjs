@@ -60,14 +60,16 @@ try {
 	const login=JSON.parse(sql(`set request.jwt.claims=${quoted(JSON.stringify({role:"authenticated",sub:owner}))}; set role authenticated;
 		select public.qorpera_begin_native_provider_login(${quoted(profileId)},${quoted(randomUUID())},${quoted(clientConnectionId)},${quoted(identityId)},'openai','codex-cli',${quoted(capabilitySha)},900);`));
 	const ca=read("deploy/cloud-secret-broker/supabase-prod-ca-2021.crt");
-	const config={adapterId:"lxd",supabaseUrl:"https://fixture.invalid",supabaseServiceKey:"fixture-service",stateRoot:join(scratch,"state"),project:"qorpera-runners",loginProfile:"qorpera-login-v1",networkInterface:"enp5s0",imageServer:"local",imageFingerprint:"a".repeat(64),storagePool:"qorpera-vm",identityVolumePrefix:"identity-",identityVolumeSize:"32GiB",rootDiskSize:"64GiB",cpuLimit:4,memoryLimit:"8GiB",nativeBridgePort:8083,guestTrustedSource:"10.41.0.1",identityRecoveryCaCertificate:ca,identityRecoveryCaSha256:createHash("sha256").update(ca).digest("hex"),guestReadyTimeoutMs:10000,codexPath:"/usr/local/bin/codex",claudePath:"/usr/local/bin/claude"};
+	const config={adapterId:"lxd",supabaseUrl:"https://fixture.invalid",supabaseServiceKey:"fixture-service",supabasePublishableKey:"sb_publishable_fixtureKey",stateRoot:join(scratch,"state"),project:"qorpera-runners",loginProfile:"qorpera-login-v1",networkInterface:"enp5s0",imageServer:"local",imageFingerprint:"a".repeat(64),storagePool:"qorpera-vm",identityVolumePrefix:"identity-",identityVolumeSize:"32GiB",rootDiskSize:"64GiB",cpuLimit:4,memoryLimit:"8GiB",nativeBridgePort:8083,guestTrustedSource:"10.41.0.1",identityRecoveryCaCertificate:ca,identityRecoveryCaSha256:createHash("sha256").update(ca).digest("hex"),guestReadyTimeoutMs:10000,codexPath:"/usr/local/bin/codex",claudePath:"/usr/local/bin/claude"};
 	const {policySha256}=lxdLoginNodePolicy(config,host.machineIdSha256);
 	const nodePolicy={schema:"qorpera.runtime-node-policy/v1",nodeId,machineIdSha256:host.machineIdSha256,label:"login-node-fixture",cpuMillis:6000,memoryBytes:16*1024**3,headroomCpuMillis:2000,headroomMemoryBytes:1024**3,standardCpuMillis:4000,standardMemoryBytes:8*1024**3,enabled:true};
 	const observe=state=>sql(`${service} select public.qorpera_test_observe_runtime_node(${literal({schema:"qorpera.runtime-node-observation/v1",nodeId,machineIdSha256:host.machineIdSha256,observationId:randomUUID(),observedAt:new Date().toISOString(),cpuMillis:host.cpuMillis,memoryBytes:host.memoryBytes,state})});`);
 	const signatures={qorpera_describe_native_provider_login_route:["p_login_id","p_capability_sha256"],qorpera_reserve_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_login_id","p_capability_sha256"],qorpera_reserve_runtime_node_machine:["p_allocation_id","p_provider_kind","p_provider_id","p_policy_sha256","p_instance_sha256","p_machine_id_sha256","p_cpu_millis","p_memory_bytes"],qorpera_describe_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256"],qorpera_release_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_login_id"],
 		// Login recovery automation (2026-09-16/17): before forwarding, the gateway asks whether the identity has an
 		// established backup to restore; this new identity has none and may initialize.
-		qorpera_identity_recovery_runtime_state:["p_compute_identity_id"]};
+		qorpera_identity_recovery_runtime_state:["p_compute_identity_id"],
+		// G2-3: the login guest's identity credential, bound by its hash right after the reservation.
+		qorpera_bind_native_identity_credential:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_holder_kind","p_credential_sha256"]};
 	let loseNode=false,loseRelease=false,companyCalls=0,nodeCalls=0,forwarded=0;
 	const fetcher=async(input,init)=>{
 		init?.signal?.throwIfAborted(); const url=new URL(String(input)); assert.equal(init.redirect,"error");
@@ -76,7 +78,7 @@ try {
 			assert.equal(url.pathname,"/login"); assert.equal(new Headers(init.headers).get("authorization"),`Bearer ${capability}`); forwarded++;
 			return Response.json({schema:"qorpera.native-provider-login-result/v1",login_id:login.login_id,status:"awaiting_member",interaction_url:"https://provider.invalid/device",user_code:"FIXTURE"});
 		}
-		assert.equal(url.origin,"https://fixture.invalid"); const name=url.pathname.slice("/rest/v1/rpc/".length),args=JSON.parse(String(init.body)),keys=signatures[name];assert(keys);assert.deepEqual(Object.keys(args).sort(),[...keys].sort());
+		assert.equal(url.origin,"https://fixture.invalid"); const name=url.pathname.slice("/rest/v1/rpc/".length),args=JSON.parse(String(init.body)),keys=signatures[name];assert(keys,`unexpected database call ${name}`);assert.deepEqual(Object.keys(args).sort(),[...keys].sort());
 		const result=JSON.parse(sql(`${service} select public.${name}(${keys.map(key=>quoted(args[key])).join(",")});`));
 		if(name==="qorpera_reserve_runtime_login_machine") companyCalls++;
 		if(name==="qorpera_reserve_runtime_node_machine") {nodeCalls++;if(loseNode && result.state==="reserved"){loseNode=false;throw new Error("lost committed node admission");}}

@@ -15,7 +15,8 @@
 // Packets, in order (node A is emptied and updated first, then node B; node A must be no home of a
 // node-disk login, which 00-check enforces):
 //   00-check          dry-run only: preflight; prints the gates, the node-disk logins and N's pending inputs
-//   10-migration-*    one per release migration, gated on N being active; no pause
+//   05-rehearse-migrations  dry-run only: every release migration in one transaction, rolled back
+//   10-migration-*    one per release migration, gated on N being active and the one before it; no pause
 //   20-declare-b      node B's orchestrators declared N
 //   30-runs-off-a     node A takes no new runs (machines carry on)
 //   31-drain-a        dry-run only: node A's drain status (wait for readyForNodeRelease)
@@ -221,6 +222,22 @@ export function rollPackets(options) {
 	// The history order: two migrations that replace one function must apply in timestamp order.
 	const ordered = [...migrations].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	if (new Set(ordered.map((m) => MIGRATION_NAME.exec(m.name)?.[1])).size !== ordered.length) throw new Error("Two migrations share a version");
+	// pg_temp helpers and temporary tables: each migration creates its own, under a name no other release migration
+	// creates. 05 runs them all in one transaction (a shared name fails there) while each 10-* packet runs alone (a
+	// borrowed one fails there). A table made `if not exists` may be shared.
+	const helpers = new Map();
+	for (const migration of ordered) {
+		const text = migration.text.replace(/--[^\n]*/g, "").toLowerCase();
+		const functions = [...text.matchAll(/create\s+(?:or\s+replace\s+)?function\s+pg_temp\.([a-z0-9_]+)/g)].map((m) => m[1]);
+		const tables = [...text.matchAll(/create\s+(?:temporary|temp)\s+table\s+(if\s+not\s+exists\s+)?(?:pg_temp\.)?([a-z0-9_]+)/g)];
+		for (const name of [...new Set(functions), ...tables.filter((m) => !m[1]).map((m) => m[2])]) {
+			if (helpers.has(name)) throw new Error(`${migration.name} and ${helpers.get(name)} both create pg_temp.${name}`);
+			helpers.set(name, migration.name);
+		}
+		const created = new Set([...functions, ...tables.map((m) => m[2])]);
+		for (const [, name] of text.matchAll(/pg_temp\.([a-z0-9_]+)/g))
+			if (!created.has(name)) throw new Error(`${migration.name} uses pg_temp.${name}, which it does not create`);
+	}
 	for (const migration of ordered) {
 		if (!MIGRATION_NAME.test(migration.name) || migration.name >= activation.name)
 			throw new Error(`${migration.name} is no migration that sorts before the activation`);
@@ -254,6 +271,21 @@ export function rollPackets(options) {
 		`'nodeDiskLogins', (${NODE_DISK_LOGINS})`,
 		`'pendingInputs', (${N_PENDING(from.sha)})`,
 	]);
+	// The schema rehearsal (dry-run only): every release migration in order in one transaction, rolled back. Each
+	// 10-* packet needs the one before it recorded, so this is the only way to check them all (every exact-text
+	// patch included) before the first commit.
+	if (ordered.length)
+		files["05-rehearse-migrations.sql"] = packet([
+			gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not the active bundle`], ...ordered.map((m) => NOT_RECORDED(m.name))]),
+			// Each migration starts with its packet's settings: a `set local` of one must not carry into the next.
+			...ordered.flatMap((migration) => {
+				const body = migrationBody(migration.text);
+				return [`set local lock_timeout = '5s';\nset local statement_timeout = '120s';`, body, historyInsert(migration.name, body)];
+			}),
+			// The guards the roll relies on, after every migration: a release that loses one pauses instead.
+			gate("roll_after", [[MARKERS, "A guard the roll relies on is missing after the release migrations: commit nothing, the release pauses"]]),
+			`select jsonb_build_object('rehearsed', jsonb_build_array(${ordered.map((m) => literal(m.name)).join(", ")}), 'ok', true, 'guards', coalesce((${MARKERS}), false)) as roll_rehearsal;`,
+		]);
 	ordered.forEach((migration, index) => {
 		const body = migrationBody(migration.text);
 		// Timestamp order even by hand: each migration needs the one before it.
@@ -444,16 +476,24 @@ from public.qorpera_runtime_bundles b where singleton and b.bundle_key = 'qorper
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, ${literal(to.sha)}) as roll_declare_a,
 	public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, ${literal(to.sha)}) as roll_declare_b
 where not exists (select 1 from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null);`,
+		// The select above returns no row when declarations exist: end with one summary row for the receipt.
+		`select jsonb_build_object('activeVersion', (select b.version from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton),
+	'declaredNext', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(to.sha)}),
+	'declaredOld', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 = ${literal(from.sha)})) as roll_reversed;`,
 	]);
 	files["92-clear-declarations.sql"] = packet([
 		SERVICE,
 		gate("roll_gate", [[ACTIVE_IS(from.version, from.sha), `Runtime ${from.version} is not active (91-reverse first)`]]),
 		// Nothing here can see which code a node runs: dry-run first, and commit only once every node listed
-		// in declaredNext runs N again (agent rollback; the fast host is re-registered by its rebuild).
-		`select jsonb_build_object('declaredNext', (select coalesce(jsonb_agg(jsonb_build_object('orchestrator', o.id, 'adapter', o.provider_adapter, 'lastHeartbeatAt', o.last_heartbeat_at) order by o.id), '[]'::jsonb)
-	from public.qorpera_runner_orchestrators o where o.status <> 'revoked' and o.runtime_bundle_sha256 = ${literal(to.sha)})) as roll_clearing;`,
+		// in declaredNext runs N again (agent rollback; the fast host is re-registered by its rebuild). The
+		// list is taken before the clears and reported last: the runner keeps only the last statement's rows.
+		`create temporary table roll_next on commit drop as
+	select o.id, o.provider_adapter, o.last_heartbeat_at from public.qorpera_runner_orchestrators o
+	where o.status <> 'revoked' and o.runtime_bundle_sha256 = ${literal(to.sha)};`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeA)}::uuid, null) as roll_clear_a;`,
 		`select public.qorpera_declare_runtime_node_bundle(${literal(nodeB)}::uuid, null) as roll_clear_b;`,
+		`select jsonb_build_object('declaredNext', (select coalesce(jsonb_agg(jsonb_build_object('orchestrator', id, 'adapter', provider_adapter, 'lastHeartbeatAt', last_heartbeat_at) order by id), '[]'::jsonb) from pg_temp.roll_next),
+	'stillDeclared', (select count(*) from public.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null)) as roll_clearing;`,
 	]);
 	files["93-resume.sql"] = packet([
 		companies(false),
@@ -473,7 +513,7 @@ export function assertOneTransaction(name, text) {
 		throw new Error(`${name} is not exactly one outer transaction`);
 }
 
-export const DRY_RUN_ONLY = ["00-check.sql", "31-drain-a.sql", "50-check-n.sql", "61-drain-b.sql"];
+export const DRY_RUN_ONLY = ["00-check.sql", "05-rehearse-migrations.sql", "31-drain-a.sql", "50-check-n.sql", "61-drain-b.sql"];
 
 /** The packet directory: files plus packet.json (digests, order, dry-run-only files). */
 export function writeRoll(out, options) {
@@ -494,7 +534,7 @@ export function writeRoll(out, options) {
 		empty: options.empty ?? "runs",
 		source: options.source ?? null,
 		order: Object.keys(files),
-		dryRunOnly: DRY_RUN_ONLY,
+		dryRunOnly: DRY_RUN_ONLY.filter((name) => name in files),
 		emergencyOnly: ["90-pause-now.sql", "91-reverse.sql", "92-clear-declarations.sql", "93-resume.sql"],
 		files: digests,
 	};
