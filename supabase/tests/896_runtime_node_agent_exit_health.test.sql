@@ -37,17 +37,22 @@ select set_config('qorpera_test.exit_policy', (select policy_sha256 from public.
 create function pg_temp.ms(p_at timestamptz) returns text language sql as $$
 	select to_char(p_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
 $$;
--- The observer's report: healthy or not, the exit's check this many seconds ago (null: no check), its problems.
+-- The observer's report: healthy or not, the exit's check this many seconds ago (null: no check), its problems. Each
+-- report is at least 2 ms after the one before, so two reports never share their millisecond (the later one would
+-- then win only by its random id).
 create function pg_temp.exit_report(p_healthy boolean, p_checked_ago integer, p_problems integer,
-	p_observed_ago integer default 0, p_patch jsonb default '{}'::jsonb) returns jsonb language sql as $$
-	select jsonb_build_object('schema','qorpera.runtime-node-agent-exit/v1','nodeId','89600000-0000-4000-8000-000000000010',
+	p_observed_ago integer default 0, p_patch jsonb default '{}'::jsonb) returns jsonb language plpgsql as $$
+begin
+	perform pg_sleep(0.002);
+	return jsonb_build_object('schema','qorpera.runtime-node-agent-exit/v1','nodeId','89600000-0000-4000-8000-000000000010',
 		'machineIdSha256',repeat('8',64),
 		'policySha256',current_setting('qorpera_test.exit_policy'),
 		'observationId',extensions.gen_random_uuid(),
 		'observedAt',pg_temp.ms(clock_timestamp() - make_interval(secs => p_observed_ago)),
 		'checkedAt',case when p_checked_ago is null then null
 			else to_jsonb(pg_temp.ms(clock_timestamp() - make_interval(secs => p_checked_ago))) end,
-		'healthy',p_healthy,'problemCount',p_problems) || p_patch
+		'healthy',p_healthy,'problemCount',p_problems) || p_patch;
+end
 $$;
 create function pg_temp.exit_post(p_report jsonb) returns jsonb language sql as $$
 	select public.qorpera_observe_runtime_node_agent_exit(p_report)
