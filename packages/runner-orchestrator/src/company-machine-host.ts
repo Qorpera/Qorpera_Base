@@ -430,7 +430,10 @@ export class LxdCompanyMachineHost {
 			)
 				throw new Error("COMPANY_MACHINE_GUEST_REPLY_INVALID");
 			if (e.commands.includes(item.commandId))
-				sample.commands.set(item.commandId, { cpuSeconds: Number(item.cpuUsec) / 1e6, ioBytes: Number(item.ioBytes) });
+				sample.commands.set(item.commandId, {
+					cpuSeconds: Number(item.cpuUsec) / 1e6,
+					ioBytes: Number(item.ioBytes),
+				});
 		}
 		const previous = this.#guests.get(e.placementId);
 		const same = previous?.bootId === bootId ? previous : undefined;

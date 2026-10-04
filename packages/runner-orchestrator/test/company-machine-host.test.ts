@@ -263,7 +263,11 @@ describe("company machine host", () => {
 		const recorded = () => f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
 		const usec = (seconds: number) => Math.round(seconds * 1e6);
 		/** A sample every 10 s of a two-processor machine: id(8) runs, and the whole machine and its own units used so much. */
-		const sample = (seconds: number, command: { cpu: number; io: number }, machine: { busy: number; own: number }) => ({
+		const sample = (
+			seconds: number,
+			command: { cpu: number; io: number },
+			machine: { busy: number; own: number },
+		) => ({
 			at: seconds * 1000,
 			ended: [],
 			running: [

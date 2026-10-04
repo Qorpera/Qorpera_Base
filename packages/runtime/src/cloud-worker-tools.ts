@@ -720,7 +720,11 @@ export async function describeCloudAgentOpenWork(
 	}
 	let machineStopped: CloudAgentOpenWork["machineStopped"];
 	if (result.machineStopped !== undefined) {
-		if (!Array.isArray(result.machineStopped) || result.machineStopped.length < 1 || result.machineStopped.length > 32)
+		if (
+			!Array.isArray(result.machineStopped) ||
+			result.machineStopped.length < 1 ||
+			result.machineStopped.length > 32
+		)
 			throw new Error("Open work differs");
 		machineStopped = result.machineStopped.map((item) => {
 			const work = (item as { work?: unknown } | null)?.work;

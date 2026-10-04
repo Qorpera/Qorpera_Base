@@ -185,7 +185,9 @@ describe("machine tools", () => {
 				expect(start.description).toContain(
 					"only a busy program (over about 5% of one core, or moving data) keeps it awake",
 				);
-				expect(start.description).toContain("a server that only waits stops when it sleeps, and your next run is told");
+				expect(start.description).toContain(
+					"a server that only waits stops when it sleeps, and your next run is told",
+				);
 				expect(start.description).toContain("use it to keep a server up");
 				expect(run.description).toContain("keep a server up on an always-on machine");
 				for (const tool of tools) expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);

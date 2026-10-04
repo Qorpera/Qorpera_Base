@@ -512,7 +512,8 @@ async function unitCgroup(ports: MachineGuestPorts, unit: string): Promise<{ dir
 			.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
 	);
 	const group = String(fields.ControlGroup ?? "");
-	if (!/^\/[A-Za-z0-9_.@:\\/-]{1,512}$/.test(group) || group.split("/").includes("..")) throw new Error("MACHINE_GUEST_CGROUP_UNKNOWN");
+	if (!/^\/[A-Za-z0-9_.@:\\/-]{1,512}$/.test(group) || group.split("/").includes(".."))
+		throw new Error("MACHINE_GUEST_CGROUP_UNKNOWN");
 	return { directory: join(ports.cgroupRoot ?? "/sys/fs/cgroup", group), mainPid: String(fields.MainPID ?? "") };
 }
 /** The processor time (microseconds) a cgroup used so far, its removed descendants' included. */
@@ -566,7 +567,11 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 			ended.push({ commandId, state: current.state, exitCode: current.exitCode, outputTail: current.output });
 		// A command whose use cannot be read counts as not busy.
 		else if (current.state === "running")
-			running.push(...(await commandUsage(ports, commandId).then((usage) => [usage]).catch(() => [])));
+			running.push(
+				...(await commandUsage(ports, commandId)
+					.then((usage) => [usage])
+					.catch(() => [])),
+			);
 	}
 	const at = await (ports.nowMs ?? uptimeMs)();
 	const cpu = (await (ports.readCpu ?? (() => readFile("/proc/stat", "utf8")))())
@@ -579,7 +584,9 @@ export async function observeMachine(commandIds: readonly string[], ports: Machi
 		idle = (cpu[3] ?? 0) + (cpu[4] ?? 0);
 	let ownUsec = 0;
 	for (const unit of OWN_UNITS)
-		ownUsec += await unitCgroup(ports, unit).then(({ directory }) => cgroupUsec(ports, directory)).catch(() => 0);
+		ownUsec += await unitCgroup(ports, unit)
+			.then(({ directory }) => cgroupUsec(ports, directory))
+			.catch(() => 0);
 	return {
 		schema: "qorpera.machine-observation/v2",
 		machineId: guest.machineId,
