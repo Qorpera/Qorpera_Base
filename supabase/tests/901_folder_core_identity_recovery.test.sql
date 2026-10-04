@@ -7,6 +7,8 @@
 -- completion's epoch trigger takes its FOR SHARE without queueing behind recovery's waiting FOR UPDATE. A request on a
 -- sign-in pinned to an older epoch still goes through. A role change, two decisions on one identity, a decision and the
 -- removal of the identity's owner, and a backup and a login machine reservation of one sign-in each queue, never 40P01.
+-- Two registrations of one target, and two retirement confirmations of one identity, serialize on the identity's
+-- machine lock and the second replays the first.
 -- Every patched body carries its branch. The fixture is committed so the connections can see it, and removed at the
 -- end. Waits are detected with pg_blocking_pids. A snapshot-v1 company keeps the gc fence in each else branch, untested
 -- (folder-v2 only since 3 Oct).
@@ -656,6 +658,56 @@ begin
 		'lxd-p13b', pg_temp.sha('09010000-0000-4000-8000-000000000075'), '09010000-0000-4000-8000-000000000125'));
 end $$;
 
+-- L. Two registrations of one target, and two retirement confirmations of one identity, serialize on the identity's
+-- machine lock, as the gc fence made them: the second waits on it, then finds the first's target or receipt and replays
+-- it instead of failing on its key (23505). For the confirmations the company's deletion is requested, its machines
+-- ended over ten minutes ago, and identity 1's sign-in machine was on the login node (an allocation and its node
+-- demand, as 742 sets them).
+create function pg_temp.waiting_on(p_conn text) returns text language sql as $$
+	select string_agg(distinct locktype, ',') from pg_locks
+	where pid = current_setting('qorpera_test.pid_' || p_conn)::integer and not granted
+$$;
+do $$
+declare v_value text;
+begin
+	perform dblink_exec('p13b_a', format('set request.jwt.claims = %L', pg_temp.claims(null)));
+	perform dblink_exec('p13b_a', 'begin');
+	select r into v_value from dblink('p13b_a', pg_temp.register(4, 9)) as t(r text);
+	if v_value is distinct from pg_temp.target(9)::text then raise exception 'L: the first registration must go through: %', v_value; end if;
+	perform pg_temp.send('p13b_b', null, pg_temp.register(4, 9));
+	if not pg_temp.waits_for('p13b_b', 'p13b_a') or pg_temp.waiting_on('p13b_b') is distinct from 'advisory' then
+		raise exception 'L: the second registration must wait on the identity''s machine lock, not %', pg_temp.waiting_on('p13b_b'); end if;
+	perform dblink_exec('p13b_a', 'commit');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from pg_temp.target(9)::text then raise exception 'L: the second registration must replay the first: %', v_value; end if;
+end $$;
+insert into public.qorpera_runtime_machine_allocations(id, profile_id, login_session_id, login_compute_identity_id,
+	provider_adapter, instance_sha256, released_at)
+values ('09010000-0000-4000-8000-000000000076', '09010000-0000-4000-8000-000000000010', '09010000-0000-4000-8000-000000000106',
+	pg_temp.identity(1), 'lxd-p13b', pg_temp.sha('09010000-0000-4000-8000-000000000076'), clock_timestamp());
+insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256,
+	cpu_millis, memory_bytes, reserved_at, released_at)
+values ('09010000-0000-4000-8000-000000000076', '09010000-0000-4000-8000-000000000060', 'login', 'lxd-p13b', repeat('f', 64),
+	2000, 4294967296, clock_timestamp(), clock_timestamp());
+update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() - interval '11 minutes'
+where profile_id = '09010000-0000-4000-8000-000000000010';
+insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
+values ('09010000-0000-4000-8000-000000000010', '09010000-0000-4000-8000-000000000001');
+do $$
+declare v_first text; v_value text;
+begin
+	perform dblink_exec('p13b_a', 'begin');
+	select r into v_first from dblink('p13b_a', pg_temp.retire()) as t(r text);
+	if v_first::jsonb ->> 'computeIdentityId' is distinct from pg_temp.identity(1)::text then
+		raise exception 'L: the first confirmation must record the retirement: %', v_first; end if;
+	perform pg_temp.send('p13b_b', null, pg_temp.retire());
+	if not pg_temp.waits_for('p13b_b', 'p13b_a') or pg_temp.waiting_on('p13b_b') is distinct from 'advisory' then
+		raise exception 'L: the second confirmation must wait on the identity''s machine lock, not %', pg_temp.waiting_on('p13b_b'); end if;
+	perform dblink_exec('p13b_a', 'commit');
+	v_value := pg_temp.result('p13b_b');
+	if v_value is distinct from v_first then raise exception 'L: the second confirmation must replay the first''s receipt: %', v_value; end if;
+end $$;
+
 -- K. Each patched body carries its folder-v2 branch exactly once: a later create or replace that drops one fails here
 -- (folder-v2 only since 3 Oct, so no snapshot-v1 text pins).
 create temporary table p13b_patches(n serial, fn text, patched text) on commit preserve rows;
@@ -789,9 +841,11 @@ $p13new$),
 	end if;
 $p13new$),
 	('qorpera_register_identity_recovery_target(uuid,text,uuid,uuid,uuid,text,text,text,text)',
-		$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0; no gc fence.
+		$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0, then the identity's machine lock, which serializes two
+	-- registrations of one target as the gc fence did (the second finds the first's row); no gc fence.
 	if public.qorpera_company_is_folder_v2(v_authority.profile_id) then
 		perform public.qorpera_folder_machine_fence(v_authority.profile_id);
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
 	else
 	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
 	end if;
@@ -805,9 +859,12 @@ $p13new$),
   end if;
 $p13new$),
 	('qorpera_confirm_runtime_identity_retirement(text,text,uuid,jsonb)',
-		$p13new$		-- 20260930049000: on folder-v2 the fence and rank 0; no gc fence.
+		$p13new$		-- 20260930049000: on folder-v2 the fence and rank 0, then the identity's machine lock, which serializes
+		-- two confirmations of one identity as the gc fence did (the second finds the first's receipt), and a
+		-- confirmation with a machine reservation of the identity; no gc fence.
 		if public.qorpera_company_is_folder_v2(v_profile) then
 			perform public.qorpera_folder_machine_fence(v_profile);
+			perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
 		else
 		perform public.qorpera_lock_profile_gc_fence(v_profile);
 		end if;

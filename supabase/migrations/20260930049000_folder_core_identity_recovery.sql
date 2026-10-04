@@ -30,7 +30,10 @@
 --   checked again under the identity's lock.
 -- * A recovery target's registration, the recovery member role and an identity's retirement confirmation take the fence
 --   and rank 0 (qorpera_folder_machine_fence) in place of the gc fence; recovery_member_role's member row (rank 1)
---   follows.
+--   follows. A registration and a confirmation then take the identity's machine lock (20260930035000's key), which
+--   serializes two of them on one identity as the gc fence did: the second finds the first's target or receipt and
+--   replays it instead of failing on its key (23505). It also orders a confirmation after a machine reservation of the
+--   identity that is still in flight.
 -- Snapshot-v1 keeps every patched statement in its else branch. The patches are exact text: an anchor that is missing
 -- or found twice stops the migration.
 
@@ -228,9 +231,11 @@ $p13new$, 1);
 select pg_temp.p13b_replace('public.qorpera_register_identity_recovery_target(uuid,text,uuid,uuid,uuid,text,text,text,text)'::regprocedure,
 	$p13old$	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
 $p13old$,
-	$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0; no gc fence.
+	$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0, then the identity's machine lock, which serializes two
+	-- registrations of one target as the gc fence did (the second finds the first's row); no gc fence.
 	if public.qorpera_company_is_folder_v2(v_authority.profile_id) then
 		perform public.qorpera_folder_machine_fence(v_authority.profile_id);
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
 	else
 	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
 	end if;
@@ -248,9 +253,12 @@ $p13new$, 1);
 select pg_temp.p13b_replace('public.qorpera_confirm_runtime_identity_retirement(text,text,uuid,jsonb)'::regprocedure,
 	$p13old$		perform public.qorpera_lock_profile_gc_fence(v_profile);
 $p13old$,
-	$p13new$		-- 20260930049000: on folder-v2 the fence and rank 0; no gc fence.
+	$p13new$		-- 20260930049000: on folder-v2 the fence and rank 0, then the identity's machine lock, which serializes
+		-- two confirmations of one identity as the gc fence did (the second finds the first's receipt), and a
+		-- confirmation with a machine reservation of the identity; no gc fence.
 		if public.qorpera_company_is_folder_v2(v_profile) then
 			perform public.qorpera_folder_machine_fence(v_profile);
+			perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
 		else
 		perform public.qorpera_lock_profile_gc_fence(v_profile);
 		end if;

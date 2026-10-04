@@ -1666,10 +1666,12 @@ second renumbers.
   This closes §6.14's window.
 - **Fence and rank 0 only:** a recovery target's registration (`qorpera_register_identity_recovery_target`), the recovery
   member role (`qorpera_recovery_member_role`, then its own member row) and an identity's retirement confirmation
-  (`qorpera_confirm_runtime_identity_retirement`). The gc fence no longer serializes a confirmation with a machine
-  reservation that is still in flight, and it needs nothing in its place: the node deletes the volume on an unlocked
-  read of `qorpera_runtime_identity_retirements_due` before it confirms, the confirmation only records that evidence,
-  and the deletion's finisher and purge take the fence `FOR UPDATE`.
+  (`qorpera_confirm_runtime_identity_retirement`). The registration and the confirmation then take the identity's
+  machine lock (C1B §8), which serializes two of them on one identity as the gc fence did: the second finds the first's
+  target or receipt and replays it, instead of failing on its key with 23505 (901 L). It also orders a confirmation
+  after a machine reservation of the identity still in flight. The confirmation needs nothing more: the node deletes the
+  volume on an unlocked read of `qorpera_runtime_identity_retirements_due` before it confirms, the confirmation only
+  records that evidence, and the deletion's finisher and purge take the fence `FOR UPDATE`.
 - **No cycle:**
   - Against effects that hold only the company (`KEY SHARE` at the fence and rank 0), no conflict. Against a stop or a
     resume (the fence `FOR UPDATE`), they wait at the fence holding nothing (901 B).
@@ -1706,13 +1708,17 @@ second renumbers.
 - I: two decisions on one identity (the member's consent, the owner's cancellation) queue, and the second finds its
   review changed; a decision and the removal of the identity's owner queue, the decision holding no identity.
 - J: a backup's completion and a login machine reservation of one sign-in queue at the sign-in.
+- L: two registrations of one target, and two successful retirement confirmations of one identity (the company's
+  deletion requested, its machines ended over ten minutes ago), serialize on the identity's machine lock; the second
+  replays the first's target or receipt.
 - K: each patched branch is present, with no snapshot-v1 text pins.
 
-Fault runs (a temporary driver on the test machine), 24 faults, each caught where intended: a site or the helper that
+Fault runs (a temporary driver on the test machine), 26 faults, each caught where intended: a site or the helper that
 keeps the gc fence in A; the login's request holding its sign-in in B (or, without B, in C); a dropped re-check, or the
 backup holding its sign-in `FOR SHARE` (taken after the fence), in C; the helper without the member rows, or with the
 owners only, in D; the re-check comparing the identity's epoch in F; members `FOR UPDATE` in G; the decision without
-its locks in I; the backup without its `KEY SHARE` in J.
+its locks in I; the backup without its `KEY SHARE` in J; the registration or the confirmation without the identity's
+machine lock in L.
 
 838's `p13_allowed` list loses the eleven sites.
 

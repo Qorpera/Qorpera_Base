@@ -410,7 +410,10 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     <compute identity id>::text, 0))`. It keeps two machines of one identity
     (one disk) apart, which the gc fence did before. A run's own machine
     reservation takes the same lock, with the same key, when it leaves the gc
-    fence (C1c-3n).
+    fence (C1c-3n). So do a recovery target's registration and an identity's
+    retirement confirmation (P13's second part), after rank 0: two of them on
+    one identity serialize as the gc fence made them, and the second replays
+    the first's target or receipt.
 
     One exception, which identity recovery (P13's second part) must respect:
     a new sign-in's insert takes the identity `FOR SHARE` (its epoch trigger)
@@ -422,15 +425,15 @@ of 2026-09-28 07:07Z), and calls them from the commit:
 
     **Identity recovery holds no sign-in `FOR SHARE`** (P13's second part,
     migration `20260930049000`). A login's or a refresh's recovery request
-    reads the sign-in (or refresh request) with no lock. A key backup's
-    preparation takes it `FOR KEY SHARE`, because the backup and its receipt
-    reference it and their foreign keys would otherwise take it after the
-    identity. Then they take the fence, rank 0 and (recovery) every member row
-    `FOR SHARE`, then the identity `FOR UPDATE`. Then they read the sign-in
-    again and refuse unless it is still pending (or, for the backup,
-    completed), not expired, and re-pinned to no other recovery epoch since the
-    first read: what the old `FOR SHARE` held still. With the sign-in held
-    `FOR SHARE` or stronger, neither order works:
+    reads the sign-in (or refresh request) with no lock, then takes the fence,
+    rank 0 and every member row `FOR SHARE`, then the identity `FOR UPDATE`. A
+    key backup's preparation takes the fence and rank 0, then the sign-in `FOR
+    KEY SHARE` (the backup and its receipt reference it, and their foreign keys
+    would otherwise take it after the identity), then the identity `FOR
+    UPDATE`. Both then read the sign-in again and refuse unless it is still
+    pending (or, for the backup, completed), not expired, and re-pinned to no
+    other recovery epoch since the first read: what the old `FOR SHARE` held
+    still. With the sign-in held `FOR SHARE` or stronger, neither order works:
     - the sign-in before the identity deadlocks with a new sign-in, which
       holds the identity `FOR SHARE` and then cancels the earlier sign-in (a
       `FOR NO KEY UPDATE`, which `KEY SHARE` does not block);
