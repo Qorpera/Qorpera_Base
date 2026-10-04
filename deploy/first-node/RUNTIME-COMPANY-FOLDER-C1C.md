@@ -1370,6 +1370,8 @@ each `else`.
 |---|---|---|
 | `native_office_start` (an agent's `computer_start`) | refused with 0A000 | `qorpera_folder_office_start_enter(binding)`, then the seat lock and every computer of the company by id, as before; no gc fence (the tool run holds the folder fence and rank 0) |
 | `native_office_start_descriptor` | refused with 0A000 | serves folder-v2; its new computer takes the company's agents `KEY SHARE` before the seat lock (as `member_agent_office` does, §6.12); the gate accepts a ready folder-v2 Company File |
+| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since) |
+| `qorpera_folder_office_enter` (3j's prelude), run again inside the call | the start's agent `FOR SHARE` | `FOR SHARE NOWAIT` when nested |
 
 - **The prelude.** An agent's tool run takes its requester and agent only `KEY SHARE`. But the start-source check shares
   the start's agent (or member) after the computer, and a start may join another start of the same computer, whose
@@ -1380,10 +1382,20 @@ each `else`.
   and every active agent `KEY SHARE` (a new computer's default access takes them after the computers). An agent's
   return holds its row, then wants the seat lock (the hire's walk, §6.12), then the computers: the start now waits at
   the row and never holds what the return wants.
-- **55P03 for a start named after the read.** The prelude reads the current starts plainly. If one appears before the
-  start locks the computers, it may name someone the prelude did not lock. The start then refuses with 55P03, which the
-  runtime treats as no answer and tries again. Every writer of a start holds the computer, so nothing changes after the
-  start locks it.
+- **A start that appears after the read.** The prelude reads the current starts plainly. If one commits before the start
+  locks the computers, it may name someone the prelude did not lock, and the start then joins it:
+  - a member: the start-source check shares the member after the computer. That is safe, because a member's writers
+    (role change, removal) never take a seat lock or a computer;
+  - an agent: the start-source check takes the agent `FOR SHARE NOWAIT` on folder-v2. An agent's return holds its row
+    and wants the seat lock, so a wait there could deadlock. Only if that row is being written at that very moment does
+    the start refuse (55P03). The runtime does not retry a refused `computer_start`: its receipt stays open and the run
+    reports the outcome unconfirmed (review r1). So the refusal is kept to that narrow case.
+
+  Every writer of a start holds the computer, so nothing changes after the start locks it.
+- **3j's prelude, nested.** A member's start runs its before-idle body, and a provider's wrapper its unbound body, inside
+  the call; both run 3j's prelude again after the computer is held. Nested (`qorpera.folder_office_entered` names the
+  computer), the prelude takes a start's agent `FOR SHARE NOWAIT` too. The outer prelude took the same agent unless a
+  start appeared in between; then a wait could deadlock with that agent's return (890 E4 found it).
 - **Test 890** (648's committed fixture; Ada's run starts the company's computer):
   - A: with the company row held, the descriptor and the authorize answer at once;
   - B: with Ada's row held (her return), Ada's start waits there holding no seat lock and no computer; the holder bumps
@@ -1392,12 +1404,16 @@ each `else`.
     reserve, the withdrawal and the cancel each wait at Ada's row holding no computer, and never deadlock (the carried
     C-style tests from #739's review);
   - D: Ada's start joins the Co-Founder's start, waiting first at the Co-Founder's row;
-  - E: the Co-Founder's start commits while Ada's start waits at the seat lock; Ada's start refuses with 55P03 and records
-    nothing;
-  - E2: Ada's start joins the owner's start, waiting first at the owner's row;
+  - E: the Co-Founder's start commits while Ada's start waits at the seat lock; Ada's start joins it. E1: the same with
+    the Co-Founder's row being written; Ada's start refuses at once (55P03), records nothing and leaves its receipt open;
+  - E2: Ada's start joins the owner's start, waiting first at the owner's row. E2b: the owner's start commits after
+    Ada's read and the owner's row is held; Ada's start waits there (after the computer, which is safe) and joins;
   - E3: with an active agent's row held `FOR UPDATE`, the start waits at the agents before the seat lock;
+  - E4: a member's start waits at the computer while Ada's start commits and Ada's row is being written; the member's
+    start refuses at once (55P03) instead of deadlocking;
+  - E1 and E4 set a lock timeout, so a wait there fails the test instead of hanging it;
   - F: the descriptor's new computer waits at the agents before the seat lock;
-  - G: exactly 3 bodies name the migration.
+  - G: exactly 5 bodies name the migration.
 - **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
   up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
   folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
