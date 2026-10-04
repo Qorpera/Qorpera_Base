@@ -63,6 +63,11 @@ revoke all on public.qorpera_folder_listener_cursors, public.qorpera_folder_list
 
 -- 2. Indexes -----------------------------------------------------------------------------------------------------------
 
+-- A move_in's source at read time (qorpera_folder_file_wake_changes): its move_out in the same commit with the same prior
+-- version, without scanning a large move's unit.
+create index qorpera_folder_path_versions_move_out on public.qorpera_folder_path_versions(commit_id, prior_version)
+where op = 'move_out';
+
 -- A change set's versions under a watch: one range, whatever the size of the change set or the history under the watch
 -- (an expression index: no table rewrite; core §2's upgrade step reindexes it with the other folder keys).
 create index qorpera_folder_path_versions_commit_key
@@ -274,19 +279,20 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 
 -- The changes a file wake's run reads (§6), built when it reads them: the stored versions that still exist and the run
--- may still read, at most 8 KiB, a move's source and prior version only when the source is readable too. An erased
--- change has no version, so it drops out by itself; one past the budget counts in more.
+-- may still read, at most 8 KiB, a move's source and prior version only when the source is readable too (found through
+-- the move-out index). An erased change has no version, so it drops out by itself; one past the budget counts in more.
 create function public.qorpera_folder_file_wake_changes(p_wake public.qorpera_wake_occurrences, p_actor jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_changes jsonb := '[]'::jsonb; v_change jsonb; v_row record; v_from text; v_bytes integer := 0;
-	v_more integer := coalesce((p_wake.payload ->> 'more')::integer, 0);
+	v_more integer := 0; v_hidden boolean := false;
 begin
 	for v_row in select v.version, v.path, v.op, v.prior_version, v.unit_no
 		from jsonb_array_elements_text(coalesce(p_wake.payload -> 'versions', '[]'::jsonb)) with ordinality x(version, n)
 		join public.qorpera_folder_path_versions v on v.version = x.version::uuid and v.commit_id = p_wake.source_id
 		order by x.n
 	loop
-		continue when not public.qorpera_folder_actor_allowed(p_wake.environment_id, p_wake.profile_id, p_actor, v_row.path, 'read');
+		if not public.qorpera_folder_actor_allowed(p_wake.environment_id, p_wake.profile_id, p_actor, v_row.path, 'read') then
+			v_hidden := true; continue; end if;
 		v_change := jsonb_build_object('path', v_row.path, 'op', v_row.op, 'version', v_row.version);
 		if v_row.op = 'move_in' then
 			select o.path into v_from from public.qorpera_folder_path_versions o
@@ -307,8 +313,11 @@ begin
 			v_changes := v_changes || jsonb_build_array(v_change);
 		end if;
 	end loop;
+	-- The stored count was read under the drain's rights: once a stored change is hidden from the run, those may be too, so
+	-- it is dropped (a count never includes what the run may not read).
 	return jsonb_build_object('schema', 'qorpera.folder-file-wake/v1', 'seq', (p_wake.payload ->> 'seq')::bigint,
-		'commitId', p_wake.source_id, 'changes', v_changes, 'more', least(v_more, 1000));
+		'commitId', p_wake.source_id, 'changes', v_changes,
+		'more', least(v_more + case when v_hidden then 0 else coalesce((p_wake.payload ->> 'more')::integer, 0) end, 1000));
 end $$;
 
 -- 8. The wake's authority and its read -----------------------------------------------------------------------------------
@@ -396,6 +405,27 @@ begin
 	return;
 end $$;
 
+-- The targets hook's answer the drain accepts: {targets, sessions, admit}, each optional; targets only at ranks 1 to 3
+-- (the payer's member row, the woken agent's staff row and execution authority), KEY SHARE, keyed '<profile>:<uuid>' in
+-- this company; sessions as conversation ids; admit a boolean.
+create function public.qorpera_folder_listener_targets_valid(p_profile_id uuid, p_hook jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+	select coalesce(jsonb_typeof(p_hook) = 'object' and p_hook - array['targets','sessions','admit'] = '{}'::jsonb
+		and jsonb_typeof(coalesce(p_hook -> 'targets', '[]'::jsonb)) = 'array'
+		and jsonb_typeof(coalesce(p_hook -> 'sessions', '[]'::jsonb)) = 'array'
+		and jsonb_typeof(coalesce(p_hook -> 'admit', 'false'::jsonb)) = 'boolean'
+		and not exists (select 1 from jsonb_array_elements(coalesce(p_hook -> 'targets', '[]'::jsonb)) t(value)
+			where jsonb_typeof(t.value) <> 'object' or t.value - array['rank','tbl','key','mode'] <> '{}'::jsonb
+				or (t.value ->> 'rank', t.value ->> 'tbl') not in (('1', 'qorpera_profile_members'), ('2', 'qorpera_profile_staff'),
+					('3', 'qorpera_staff_execution_authorities'))
+				or t.value ->> 'mode' is distinct from 'keyshare'
+				or coalesce(t.value ->> 'key', '') !~ ('^' || p_profile_id::text
+					|| ':[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))
+		and not exists (select 1 from jsonb_array_elements(coalesce(p_hook -> 'sessions', '[]'::jsonb)) x(value)
+			where jsonb_typeof(x.value) <> 'string'
+				or x.value #>> '{}' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'), false)
+$$;
+
 -- A recorded failure is called again 5 s after its last attempt, then 10 s, 20 s … at most 10 minutes, so a hook that
 -- stays down is not called on every tick.
 create function public.qorpera_folder_listener_retry_at(p_attempts integer, p_last_attempt_at timestamptz)
@@ -451,7 +481,7 @@ declare
 	v_actor jsonb; v_session uuid; v_sessions uuid[]; v_routine public.qorpera_cloud_routines%rowtype; v_activation bigint;
 	v_wake public.qorpera_wake_occurrences%rowtype; v_inserted jsonb := '{}'::jsonb; v_wakes integer := 0; v_blocks integer := 0;
 	v_skipped integer := 0; v_failures integer := 0; v_done bigint; v_stop boolean := false; v_state text; v_message text;
-	v_constraint text; v_inactive uuid[] := '{}';
+	v_constraint text; v_inactive uuid[] := '{}'; v_hook_state text; v_hook_constraint text;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
@@ -471,14 +501,15 @@ begin
 				and public.qorpera_folder_listener_retry_at(attempts, last_attempt_at) <= clock_timestamp()) then
 		return jsonb_build_object('schema', c_schema, 'state', 'idle', 'processedSeq', v_start); end if;
 	-- A listener: an active folder-v2 routine whose current version listens for file changes, with the seq of the change
-	-- set that last saved it (activation: it hears only later ones). A routine whose activation cannot be read is none.
+	-- set that last saved it (activation: it hears only later ones). A routine whose activation cannot be read is none, and
+	-- so is one whose trigger no longer validates (the pin trigger would refuse its every wake, holding the cursor).
 	select coalesce(jsonb_agg(jsonb_build_object('routineId', r.id, 'version', v.version, 'staff', v.staff_agent_id,
 			'requester', v.created_by_user_id, 'trigger', t.value, 'activation', c.seq) order by r.id), '[]'::jsonb)
 	into v_listeners
 	from public.qorpera_cloud_routines r
 	join public.qorpera_cloud_routine_versions v on v.routine_id = r.id and v.version = r.current_version
 	join lateral (select x.value from jsonb_array_elements(v.triggers) x(value) where x.value ->> 'kind' = 'file-change'
-		limit 1) t on true
+		limit 1) t on public.qorpera_cloud_routine_trigger_valid(t.value)
 	join public.qorpera_folder_commits c on c.id = r.folder_commit_id and c.seq is not null
 	where r.folder_environment_id = p_environment_id and r.folder_path is not null and r.status = 'active'
 		and r.profile_id = v_profile;
@@ -525,8 +556,16 @@ begin
 		where f.environment_id = p_environment_id
 			and public.qorpera_folder_listener_retry_at(f.attempts, f.last_attempt_at) <= clock_timestamp()
 		order by f.seq limit c_retries) c;
-	v_hook := public.qorpera_folder_listener_targets(p_environment_id, v_retries || v_commits);
-	if jsonb_typeof(v_hook) is distinct from 'object' then v_hook := '{"targets":[],"sessions":[],"admit":false}'::jsonb; end if;
+	-- The hook's targets, a plain read. One that raises, or answers anything but ranks 1 to 3 KEY SHARE of this company,
+	-- conversation ids and a boolean, never blocks the step (decision 6): the hook is not called this step, and each change
+	-- set it would have heard is recorded as a failure with that SQLSTATE (steps 7 and 8, QP29T for a malformed answer).
+	begin
+		v_hook := public.qorpera_folder_listener_targets(p_environment_id, v_retries || v_commits);
+		if not public.qorpera_folder_listener_targets_valid(v_profile, v_hook) then v_hook_state := 'QP29T'; end if;
+	exception when others then
+		get stacked diagnostics v_hook_state = returned_sqlstate, v_hook_constraint = constraint_name;
+	end;
+	if v_hook_state is not null then v_hook := '{"targets":[],"sessions":[],"admit":false}'::jsonb; end if;
 	select coalesce(jsonb_agg(y.t), '[]'::jsonb) into v_targets from (
 		select distinct x.t from jsonb_array_elements(v_matches) m, lateral (values
 			(jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members', 'key', v_profile::text || ':' || (m.value ->> 'requester'),
@@ -613,8 +652,15 @@ begin
 		-- 7. The hook's recorded failures again, oldest first.
 		for v_retry in select x.value as c from jsonb_array_elements(v_retries) x loop
 			exit when v_blocks >= c_blocks;
+			-- A failure another step called since the plain read waits again.
+			continue when not exists (select 1 from public.qorpera_folder_listener_hook_failures f
+				where f.environment_id = p_environment_id and f.commit_id = (v_retry.c ->> 'commitId')::uuid
+					and public.qorpera_folder_listener_retry_at(f.attempts, f.last_attempt_at) <= clock_timestamp());
 			v_blocks := v_blocks + 1;
 			begin
+				if v_hook_state is not null then
+					raise exception 'The hook''s targets failed' using errcode = v_hook_state, constraint = coalesce(v_hook_constraint, '');
+				end if;
 				perform public.qorpera_folder_listener_commit(p_environment_id,
 					(v_retry.c - 'retry') || jsonb_build_object('paused', v_paused));
 				delete from public.qorpera_folder_listener_hook_failures
@@ -663,6 +709,9 @@ begin
 			exit when v_stop or v_blocks >= c_blocks;
 			v_blocks := v_blocks + 1;
 			begin
+				if v_hook_state is not null then
+					raise exception 'The hook''s targets failed' using errcode = v_hook_state, constraint = coalesce(v_hook_constraint, '');
+				end if;
 				perform public.qorpera_folder_listener_commit(p_environment_id,
 					(v_commit.c - 'createdAt' - 'turnRunId') || jsonb_build_object('paused', v_paused));
 			exception
@@ -703,7 +752,7 @@ revoke all on function public.qorpera_folder_listener_actor(uuid, uuid, uuid, uu
 	public.qorpera_folder_file_wake_readable(public.qorpera_wake_occurrences),
 	public.qorpera_folder_file_wake_changes(public.qorpera_wake_occurrences, jsonb),
 	public.qorpera_folder_listener_targets(uuid, jsonb), public.qorpera_folder_listener_commit(uuid, jsonb),
-	public.qorpera_folder_listener_retry_at(integer, timestamptz)
+	public.qorpera_folder_listener_retry_at(integer, timestamptz), public.qorpera_folder_listener_targets_valid(uuid, jsonb)
 	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_listen_due(uuid, integer), public.qorpera_folder_listen_company(uuid, integer)
 	from public, anon, authenticated;

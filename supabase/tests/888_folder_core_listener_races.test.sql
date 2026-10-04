@@ -179,6 +179,11 @@ delete from public.qorpera_folder_operation_keys where environment_id = '7090000
 delete from public.qorpera_company_cofounders where profile_id = '70900000-0000-4000-8000-000000000010';
 delete from public.qorpera_company_room_members where room_id in (select id from public.qorpera_company_rooms where profile_id = '70900000-0000-4000-8000-000000000010');
 delete from public.qorpera_company_rooms where profile_id = '70900000-0000-4000-8000-000000000010';
+-- A hire's kickoff input, first run and turn request (P15 makes them; none before it), before their conversations.
+delete from public.qorpera_session_turn_requests where profile_id = '70900000-0000-4000-8000-000000000010';
+delete from public.qorpera_agent_first_runs where profile_id = '70900000-0000-4000-8000-000000000010';
+delete from public.qorpera_session_inputs where session_id in (select id from public.qorpera_shared_sessions
+	where profile_id = '70900000-0000-4000-8000-000000000010');
 delete from public.qorpera_shared_sessions where profile_id = '70900000-0000-4000-8000-000000000010';
 delete from public.qorpera_profile_staff where profile_id = '70900000-0000-4000-8000-000000000010';
 set session_replication_role = origin;

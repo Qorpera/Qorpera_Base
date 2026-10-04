@@ -1769,7 +1769,10 @@ export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
 					} catch (error) {
 						if (signal?.aborted) throw error;
 						failures.push(error);
-						this.#companyBackoff.set(key, folderDrainBackoff(this.#companyBackoff.get(key), this.#now().getTime()));
+						this.#companyBackoff.set(
+							key,
+							folderDrainBackoff(this.#companyBackoff.get(key), this.#now().getTime()),
+						);
 					}
 				}
 				const next = page.hasMore ? page.nextAfterEnvironmentId : undefined;
