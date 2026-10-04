@@ -2107,7 +2107,10 @@ follows a run:
   until it resets), while the login needs a new sign-in, while its computer
   recovers and while an owner or admin has it disabled. When the member signs
   in again, the conversation follows its binding to their new connection for
-  the same account. When the login is disconnected (revoked, by the member or
+  the same account (every sign-in makes a new connection; the vault's upkeep
+  pass moves the member's pins from the older node or vault login of the same
+  kind and account to it, then switches the old one off). When the login is
+  disconnected (revoked, by the member or
   by an owner or admin), the conversation has no account and says "Choose a
   login to continue" until the member picks one of their own logins by hand:
   ending a login is no permission to use another. Only a new conversation takes a first choice, the

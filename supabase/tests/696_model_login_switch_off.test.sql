@@ -297,3 +297,81 @@ select pg_temp.so_expect((select jsonb_build_object('vault', vault.status, 'newe
 set local session authorization qorpera_secret_broker;
 select pg_temp.so_expect(pg_temp.so_pass(), '0/0/0', 'a second pass finds nothing');
 reset session authorization;
+
+-- 9. The member signs in to the vault again with the same account (20260930059000, the payer never changes without the
+-- member): the vault login needs a new sign-in, and the real completion makes a new connection beside it. Once the new
+-- login's account is recorded, the pass moves the member's pins from the old vault login to the new one and switches
+-- the old one off, so the member's conversation follows its binding to the same account. (The newer node login of
+-- section 6 is now older than the member's newest vault login of the same account, so it goes too, by its own rule.)
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '69600000-0000-4000-8000-000000000050';
+do $$
+declare v_environment uuid; v_columns text; v_base jsonb;
+begin
+	select id into strict v_environment from public.qorpera_company_environments
+	where profile_id = '16000000-0000-4000-8000-000000000010' order by created_at limit 1;
+	insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,created_by_user_id,
+		audience_kind,audience_user_id)
+	values ('69600000-0000-4000-8000-0000000000c0','69600000-0000-4000-8000-0000000000c1','16000000-0000-4000-8000-000000000010',
+		v_environment,'Re-sign-in','16000000-0000-4000-8000-000000000001','member_private','16000000-0000-4000-8000-000000000001');
+	insert into public.qorpera_member_session_accounts(profile_id,session_id,user_id,connection_id,sponsor_binding_id)
+	values ('16000000-0000-4000-8000-000000000010','69600000-0000-4000-8000-0000000000c0','16000000-0000-4000-8000-000000000001',
+		current_setting('qorpera_test.so_vault')::uuid,current_setting('qorpera_test.so_binding')::uuid);
+	-- A pending sign-in of the member, made like the fixture's own.
+	select string_agg(quote_ident(attname), ',' order by attnum) into v_columns from pg_attribute
+	where attrelid = 'public.qorpera_native_provider_login_sessions'::regclass
+		and attnum > 0 and not attisdropped and attgenerated = '';
+	select to_jsonb(session) into strict v_base from public.qorpera_native_provider_login_sessions as session
+	where session.compute_identity_id = current_setting('qorpera_test.so_identity')::uuid
+		and session.provider = 'openai' and session.native_harness = 'codex-cli'
+	order by session.created_at limit 1;
+	execute format('insert into public.qorpera_native_provider_login_sessions (%1$s) select %1$s from '
+		|| 'jsonb_populate_record(null::public.qorpera_native_provider_login_sessions, $1)', v_columns)
+	using v_base || jsonb_build_object('id','69600000-0000-4000-8000-0000000000d1',
+		'client_login_id','69600000-0000-4000-8000-0000000000d2','client_connection_id','69600000-0000-4000-8000-0000000000d3',
+		'capability_sha256',encode(sha256('sign-in-again'::bytea),'hex'),'status','pending','completed_at',null,
+		'created_at',clock_timestamp(),'expires_at',clock_timestamp() + interval '10 minutes');
+end $$;
+select set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.so_expect(public.qorpera_select_member_session_account('16000000-0000-4000-8000-000000000010',
+	'69600000-0000-4000-8000-0000000000c0')::text, current_setting('qorpera_test.so_vault'),
+	'the conversation keeps its vault login while it needs a new sign-in');
+reset role;
+select set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.so_again', public.qorpera_complete_model_login_sign_in('69600000-0000-4000-8000-000000000040',
+	repeat('c',64), '69600000-0000-4000-8000-0000000000d1', encode(sha256('sign-in-again'::bytea),'hex'),
+	'69600000-0000-4000-8000-0000000000b0', 'company-kek-1', encode('envelope-again'::bytea,'base64'),
+	encode(sha256('envelope-again'::bytea),'hex'), clock_timestamp() - interval '1 minute', clock_timestamp() + interval '10 days',
+	'account-reference', 'native-owner@example.test')::text, false);
+reset session authorization;
+-- The web binds the new login and keeps the member's standing consent to work while away.
+select set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select set_config('qorpera_test.so_again_consent', public.qorpera_consent_provider_connection_autonomous(
+	'16000000-0000-4000-8000-000000000010', (current_setting('qorpera_test.so_again')::jsonb ->> 'connectionId')::uuid, true)::text,
+	false);
+select public.qorpera_create_member_execution_sponsor('16000000-0000-4000-8000-000000000010',
+	'69600000-0000-4000-8000-0000000000d4', (current_setting('qorpera_test.so_again')::jsonb ->> 'connectionId')::uuid,
+	(current_setting('qorpera_test.so_again_consent')::jsonb ->> 'version')::bigint, true);
+reset role;
+select set_config('request.jwt.claims','{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+-- Until the new login's account is recorded, nothing pairs it with the old one.
+set local session authorization qorpera_secret_broker;
+select pg_temp.so_expect(pg_temp.so_pass(), '0/0/0', 'a new vault login with no recorded account replaces nothing');
+select pg_temp.so_expect(pg_temp.so_call(format($q$select public.qorpera_record_model_login_account('69600000-0000-4000-8000-000000000040',
+		repeat('c',64), '69600000-0000-4000-8000-0000000000b0', %L) ->> 'recorded'$q$, current_setting('qorpera_test.so_account'))),
+	'true', 'the new vault login''s account is recorded');
+select pg_temp.so_expect(pg_temp.so_pass(), '2/0/0', 'the old vault login and the older node login are switched off');
+reset session authorization;
+select pg_temp.so_expect((select sponsor.provider_connection_id::text from public.qorpera_execution_sponsor_versions sponsor
+	where sponsor.binding_id = current_setting('qorpera_test.so_binding')::uuid order by sponsor.version desc limit 1),
+	current_setting('qorpera_test.so_again')::jsonb ->> 'connectionId', 'the member''s binding pays with the new vault login');
+select pg_temp.so_expect((select status from public.qorpera_provider_connections
+	where id = current_setting('qorpera_test.so_vault')::uuid), 'revoked', 'the old vault login is switched off');
+select set_config('request.jwt.claims','{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.so_expect(public.qorpera_select_member_session_account('16000000-0000-4000-8000-000000000010',
+	'69600000-0000-4000-8000-0000000000c0')::text, current_setting('qorpera_test.so_again')::jsonb ->> 'connectionId',
+	'the conversation follows its binding to the same account''s new login');
+reset role;

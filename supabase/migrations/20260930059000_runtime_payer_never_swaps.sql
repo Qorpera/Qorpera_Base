@@ -22,6 +22,10 @@
 -- * New work there (no run to follow) takes the requester's own login with the most room left, then their used-up
 --   login (the work stops at its limit), and a company account only for a member with no login of their own. A
 --   company account is never chosen because the member's login is at its limit.
+-- * A member who signs in to the vault again with the same account gets a new connection, as every sign-in does; the
+--   vault's upkeep pass now moves their pins from the older vault login of the same kind and account to it and
+--   switches the old one off (qorpera_switch_off_replaced_node_logins, as it did for node logins), so what they started
+--   follows the same account's new login.
 -- * The usage-limit handoff (qorpera_handoff_run_sponsor), unreachable since 20260928349910, is dropped, with the two
 --   helpers of the old plan-only rule. The handoff rows and readers stay until the run continuation goes; nothing
 --   writes them any more.
@@ -260,6 +264,136 @@ as $$
 	order by candidate.rank, candidate.preferred desc, candidate.created_at desc nulls last, candidate.binding_id
 	limit 1
 $$;
+
+-- Vault re-sign-in moves the member's pins (review of #806, F1). Every sign-in makes a new connection, so a member who
+-- signs in to the vault again with the same ChatGPT account (a vault login that needs a new sign-in, or a second one)
+-- gets a new connection beside the old one. The vault's upkeep pass (qorpera_switch_off_replaced_node_logins) already
+-- moves a member's pins from an old node login to their vault login of the same account and then switches the old one
+-- off as Disconnect does; it now does the same for an older vault login of the same kind and account. Conversations,
+-- follow-up work and routines then follow their bindings to the new connection: the same account pays, so this is no
+-- change of payer. The move keeps consent: a binding that may work while its member is away moves only to a login
+-- that may too (qorpera_move_member_login_pins), so a ChatGPT plan waits until its member turns that on again.
+create function pg_temp.payer_never_swaps_replace(p_target regprocedure, p_old text, p_new text) returns void
+language plpgsql as $$
+declare v_definition text := pg_get_functiondef(p_target);
+begin
+	if (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
+		raise exception '20260930059000 anchor found % time(s) in %, expected 1',
+			(length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old), p_target; end if;
+	execute replace(v_definition, p_old, p_new);
+end $$;
+select pg_temp.payer_never_swaps_replace('public.qorpera_switch_off_replaced_node_logins(uuid,text)'::regprocedure,
+$old$		for v_pair in
+			select distinct on (node.id) node.id as old_connection_id, vault_connection.id as new_connection_id,
+				vault_connection.owner_user_id as member_id
+			from public.qorpera_model_logins as login
+			join public.qorpera_native_credential_capsules as pointer on pointer.id = login.credential_capsule_id
+			join public.qorpera_provider_connection_versions as vault_version on vault_version.credential_capsule_id = pointer.id
+			join public.qorpera_provider_connections as vault_connection on vault_connection.id = vault_version.connection_id
+			join public.qorpera_provider_connections as node on node.profile_id = vault_connection.profile_id
+				and node.owner_user_id = vault_connection.owner_user_id and node.id <> vault_connection.id
+			join lateral (
+				select version.* from public.qorpera_provider_connection_versions as version
+				where version.connection_id = node.id order by version.version desc limit 1
+			) as node_version on true
+			join public.qorpera_native_credential_capsules as node_capsule on node_capsule.id = node_version.credential_capsule_id
+			where login.broker_authority_id = v_authority.id and login.profile_id = v_authority.profile_id
+				and login.status = 'active' and login.account_identity is not null
+				and pointer.status = 'active' and pointer.encrypted_capsule_reference = 'model-login/' || login.id::text
+				and vault_connection.status = 'active' and vault_connection.profile_id = login.profile_id
+				and vault_connection.owner_user_id is not null
+				and vault_version.authorization_state = 'active'
+				and vault_version.version = (select max(latest.version) from public.qorpera_provider_connection_versions as latest
+					where latest.connection_id = vault_connection.id)
+				and node.status = 'active' and node.provider = 'openai' and node.created_at < vault_connection.created_at
+				and node_version.authentication_mode = 'native_subscription' and node_version.native_harness = 'codex-cli'
+				and node_version.authorization_state = 'active'
+				and node_capsule.status = 'active' and node_capsule.encrypted_capsule_reference !~ '^model-login/'
+				-- The account recorded for the node's current login (a version using the capsule the latest
+				-- version uses), never one recorded for an earlier login of the connection.
+				and exists (select 1 from public.qorpera_native_provider_account_metadata as seen
+					join public.qorpera_provider_connection_versions as seen_version
+						on seen_version.connection_id = seen.connection_id and seen_version.version = seen.connection_version
+					where seen.connection_id = node.id and seen_version.credential_capsule_id = node_version.credential_capsule_id
+						and seen.provider_account_identity = login.account_identity)
+			order by node.id, vault_connection.created_at desc, vault_connection.id
+			limit 4
+		loop
+$old$,
+$new$		for v_pair in
+			select pair.old_connection_id, pair.new_connection_id, pair.member_id from ((
+				select distinct on (node.id) node.id as old_connection_id, vault_connection.id as new_connection_id,
+					vault_connection.owner_user_id as member_id
+				from public.qorpera_model_logins as login
+				join public.qorpera_native_credential_capsules as pointer on pointer.id = login.credential_capsule_id
+				join public.qorpera_provider_connection_versions as vault_version on vault_version.credential_capsule_id = pointer.id
+				join public.qorpera_provider_connections as vault_connection on vault_connection.id = vault_version.connection_id
+				join public.qorpera_provider_connections as node on node.profile_id = vault_connection.profile_id
+					and node.owner_user_id = vault_connection.owner_user_id and node.id <> vault_connection.id
+				join lateral (
+					select version.* from public.qorpera_provider_connection_versions as version
+					where version.connection_id = node.id order by version.version desc limit 1
+				) as node_version on true
+				join public.qorpera_native_credential_capsules as node_capsule on node_capsule.id = node_version.credential_capsule_id
+				where login.broker_authority_id = v_authority.id and login.profile_id = v_authority.profile_id
+					and login.status = 'active' and login.account_identity is not null
+					and pointer.status = 'active' and pointer.encrypted_capsule_reference = 'model-login/' || login.id::text
+					and vault_connection.status = 'active' and vault_connection.profile_id = login.profile_id
+					and vault_connection.owner_user_id is not null
+					and vault_version.authorization_state = 'active'
+					and vault_version.version = (select max(latest.version) from public.qorpera_provider_connection_versions as latest
+						where latest.connection_id = vault_connection.id)
+					and node.status = 'active' and node.provider = 'openai' and node.created_at < vault_connection.created_at
+					and node_version.authentication_mode = 'native_subscription' and node_version.native_harness = 'codex-cli'
+					and node_version.authorization_state = 'active'
+					and node_capsule.status = 'active' and node_capsule.encrypted_capsule_reference !~ '^model-login/'
+					-- The account recorded for the node's current login (a version using the capsule the latest
+					-- version uses), never one recorded for an earlier login of the connection.
+					and exists (select 1 from public.qorpera_native_provider_account_metadata as seen
+						join public.qorpera_provider_connection_versions as seen_version
+							on seen_version.connection_id = seen.connection_id and seen_version.version = seen.connection_version
+						where seen.connection_id = node.id and seen_version.credential_capsule_id = node_version.credential_capsule_id
+							and seen.provider_account_identity = login.account_identity)
+				order by node.id, vault_connection.created_at desc, vault_connection.id
+			) union all (
+				-- 20260930059000: the member signed in to the vault again with the same ChatGPT account (a vault login that
+				-- needs a new sign-in, or a second one): a new connection for the same account, as every sign-in makes. The
+				-- older vault login of the same kind is replaced the same way, so the member's pins follow their account.
+				select distinct on (old_connection.id) old_connection.id as old_connection_id,
+					vault_connection.id as new_connection_id, vault_connection.owner_user_id as member_id
+				from public.qorpera_model_logins as login
+				join public.qorpera_native_credential_capsules as pointer on pointer.id = login.credential_capsule_id
+				join public.qorpera_provider_connection_versions as vault_version on vault_version.credential_capsule_id = pointer.id
+				join public.qorpera_provider_connections as vault_connection on vault_connection.id = vault_version.connection_id
+				join public.qorpera_provider_connections as old_connection on old_connection.profile_id = vault_connection.profile_id
+					and old_connection.owner_user_id = vault_connection.owner_user_id and old_connection.id <> vault_connection.id
+				join lateral (
+					select version.* from public.qorpera_provider_connection_versions as version
+					where version.connection_id = old_connection.id order by version.version desc limit 1
+				) as old_version on true
+				join public.qorpera_native_credential_capsules as old_pointer on old_pointer.id = old_version.credential_capsule_id
+				join public.qorpera_model_logins as old_login on old_login.credential_capsule_id = old_pointer.id
+					and old_pointer.encrypted_capsule_reference = 'model-login/' || old_login.id::text
+				where login.broker_authority_id = v_authority.id and login.profile_id = v_authority.profile_id
+					and login.status = 'active' and login.account_identity is not null
+					and pointer.status = 'active' and pointer.encrypted_capsule_reference = 'model-login/' || login.id::text
+					and vault_connection.status = 'active' and vault_connection.profile_id = login.profile_id
+					and vault_connection.owner_user_id is not null
+					and vault_version.authorization_state = 'active'
+					and vault_version.version = (select max(latest.version) from public.qorpera_provider_connection_versions as latest
+						where latest.connection_id = vault_connection.id)
+					and old_connection.status = 'active' and old_connection.provider = 'openai'
+					and old_connection.created_at < vault_connection.created_at
+					and old_version.authentication_mode = 'native_subscription' and old_version.native_harness = 'codex-cli'
+					and old_version.authorization_state = 'active' and old_pointer.status = 'active'
+					and old_login.profile_id = login.profile_id and old_login.status in ('active', 'needs_sign_in')
+					and old_login.login_kind = login.login_kind and old_login.account_identity = login.account_identity
+				order by old_connection.id, vault_connection.created_at desc, vault_connection.id
+			)) as pair
+			order by pair.old_connection_id
+			limit 4
+		loop
+$new$);
 
 drop function public.qorpera_handoff_run_sponsor(uuid, text);
 drop function public.qorpera_connection_at_limit(uuid);
