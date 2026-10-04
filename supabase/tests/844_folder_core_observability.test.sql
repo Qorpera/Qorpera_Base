@@ -121,8 +121,14 @@ begin
 		'coding', extensions.gen_random_uuid(), 'coding_session', %L)$f$, v ->> 'runId'));
 	q := public.qorpera_get_runtime_operational_run((v ->> 'runId')::uuid);
 	if not exists (select 1 from jsonb_array_elements(q #> '{sections,commits,items}') c
-		where c ->> 'commitId' = '84400000-0000-4000-8000-0000000000c1') then
-		raise exception 'A view''s commit during the turn is not the run''s work'; end if;
+		where c ->> 'commitId' = '84400000-0000-4000-8000-0000000000c1'
+		and c ->> 'turnRunId' = v ->> 'runId' and c ->> 'viewKind' = 'coding_session') then
+		raise exception 'A view''s commit during the turn is not the run''s work, marked as the turn''s'; end if;
+	-- The fixture's own run commits come through no view: they name no turn and no view.
+	if exists (select 1 from jsonb_array_elements(q #> '{sections,commits,items}') c
+		where c ->> 'commitId' <> '84400000-0000-4000-8000-0000000000c1'
+		and (c -> 'turnRunId' <> 'null'::jsonb or c -> 'viewKind' <> 'null'::jsonb)) then
+		raise exception 'The run''s own commit is marked as a turn''s: %', q #> '{sections,commits,items}'; end if;
 end $$;
 
 -- 2. The company query: the members' own commits only ------------------------------------------------------------------

@@ -18,8 +18,9 @@ set local lock_timeout = '3s';
 
 create index qorpera_folder_commits_member_time on public.qorpera_folder_commits(environment_id, created_at desc, id desc)
 	where actor_kind = 'member' and run_id is null;
--- A view's commits during a leased turn name the turn's run in turn_run_id, not run_id (C1b-3).
-create index qorpera_folder_commits_turn_run on public.qorpera_folder_commits(turn_run_id) where turn_run_id is not null;
+-- A view's commits during a leased turn name the turn's run in turn_run_id, not run_id (C1b-3). The name differs from the
+-- table's check constraint qorpera_folder_commits_turn_run.
+create index qorpera_folder_commits_turn_run_id on public.qorpera_folder_commits(turn_run_id) where turn_run_id is not null;
 
 -- 1. The run ----------------------------------------------------------------------------------------------------------
 
@@ -97,13 +98,16 @@ begin
 	) page;
 	v_pages := v_pages || jsonb_build_object('operationReceipts',public.qorpera_operational_page(v_items,p_limit));
 	-- The run's folder commits, newest first, each with its path versions (at most 32; versionsTruncated says when more).
+	-- A commit made through a view names its viewKind; one made during the run's leased turn names the run in turnRunId
+	-- (the run's own commits carry a null turnRunId).
 	-- Closed metadata, as everywhere here: version ids, operations and sizes, never a path or an operation key.
 	select jsonb_agg(item order by created_at desc,id desc) into v_items from (
 		select c.id,c.created_at,jsonb_build_object('commitId',c.id,'seq',c.seq,
 			'actorKind',c.actor_kind,'actorId',c.actor_id,'requesterKind',c.requester_kind,'requesterId',c.requester_id,
 			'approverUserId',c.approver_user_id,'receiptId',c.receipt_id,'proposalId',c.proposal_id,
 			'causalWakeId',c.causal_wake_id,'providerConnectionId',c.provider_connection_id,'audience',c.audience,
-			'runtimeBundleId',c.runtime_bundle_id,'createdAt',c.created_at,'unitCount',jsonb_array_length(c.units),
+			'runtimeBundleId',c.runtime_bundle_id,'turnRunId',c.turn_run_id,'viewKind',c.view_kind,
+			'createdAt',c.created_at,'unitCount',jsonb_array_length(c.units),
 			'versions',coalesce((select jsonb_agg(jsonb_build_object('unit',v.unit_no,'op',v.op,'kind',v.kind,
 					'version',v.version,'priorVersion',v.prior_version,'bytes',v.bytes) order by v.unit_no,v.version)
 				from (select * from public.qorpera_folder_path_versions pv where pv.commit_id=c.id
@@ -250,7 +254,7 @@ begin
 		'environmentId',v_environment,'queriedAt',statement_timestamp(),'limit',p_limit,
 		'commands',public.qorpera_operational_page(v_items,p_limit),
 		'coverage',jsonb_build_object('source','members_folder_commits',
-			'agentCommitsOutsideARun','not_listed_here_see_the_run_query_by_turn_run',
+			'agentCommitsOutsideARun','leased_turn_commits_in_the_run_query_other_view_commits_not_listed',
 			'deniedAttempts','not_recorded','applyDuration','not_recorded','memberReadAttempts','not_recorded',
 			'noRunIsInvented',true,'noModelOrSponsorIsInferred',true),
 		'retention','canonical_authority_history_not_subject_to_diagnostic_purge');
