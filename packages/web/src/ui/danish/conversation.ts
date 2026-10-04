@@ -33,6 +33,8 @@ export const CONVERSATION: Record<string, string> = {
 	"That message already quotes the same words from another email. Send it or remove that quote first.":
 		"Den besked citerer allerede de samme ord fra en anden mail. Send den, eller fjern det citat først.",
 	"Quoted from an email": "Citeret fra en mail",
+	"A quote is missing one of its « » marks. Remove it, or put the mark back.":
+		"Et citat mangler et af sine «»-tegn. Fjern det, eller sæt tegnet tilbage.",
 	"A message can hold at most {count} quotes. Remove some to share your changes.":
 		"En besked kan højst rumme {count} citater. Fjern nogle for at dele dine ændringer.",
 	"A quote was taken out: the draft now quotes the same words from another email.":

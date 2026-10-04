@@ -39,11 +39,11 @@ function wellFormed(text: string): string {
 }
 
 /** Where this browser's text stands: in the cloud, not yet (tried again), too long to share, holding more quotes than
- * a message can, or holding a quote the cloud would not keep. */
-export type DraftStatus = "saved" | "retrying" | "too-long" | "quote-limit" | "refused";
+ * a message can, holding a quote the cloud would not keep, or holding a quote's words with one of their marks gone. */
+export type DraftStatus = "saved" | "retrying" | "too-long" | "quote-limit" | "refused" | "broken-quote";
 
-/** The cloud will not take the text as it is: it waits for the member to change it. */
-const givenUp = (status: DraftStatus) => status === "too-long" || status === "quote-limit" || status === "refused";
+/** The text can't be written as it is: it waits for the member to change it. */
+const givenUp = (status: DraftStatus) => status !== "saved" && status !== "retrying";
 
 export interface DraftHost {
 	/** The text this browser shows for the draft. */
@@ -63,6 +63,8 @@ export interface DraftHost {
 	/** A quote shown here gave way in a merge: the draft quotes the same words from another email (app/quotes.ts,
 	 * mergeQuoted). */
 	dropped?(): void;
+	/** The text holds a quote's words with only one of their marks (app/quotes.ts, brokenQuotes). */
+	broken?(): boolean;
 }
 
 /** A draft as the cloud confirmed it: its text and the quotes that text holds. */
@@ -247,6 +249,12 @@ export class DraftSync {
 		if (this.#confirmed()) {
 			this.#setStatus("saved");
 			this.#resolveSettled();
+			return;
+		}
+		// The last guard: a quote's words with one mark gone are never written, where they would stand as the
+		// member's own. The draft waits until the member mends or removes them.
+		if (this.#host.broken?.()) {
+			this.#setStatus("broken-quote");
 			return;
 		}
 		// The cloud takes as much as a message holds; a longer text waits for the member to shorten it.
@@ -492,6 +500,8 @@ export interface RoomDraftsHooks {
 	draft(sessionId: string): string;
 	/** The draft's quotes of outside content (app/quotes.ts). */
 	quotes(sessionId: string): readonly MessageQuote[];
+	/** The draft holds a quote's words with one of their marks gone. */
+	broken(sessionId: string): boolean;
 	setDraft(sessionId: string, text: string, quotes: readonly MessageQuote[]): void;
 }
 
@@ -679,6 +689,7 @@ export class RoomDrafts {
 			{
 				text: () => this.#hooks.draft(sessionId),
 				quotes: () => this.#hooks.quotes(sessionId),
+				broken: () => this.#hooks.broken(sessionId),
 				caret: () => this.#editors.get(sessionId)?.caret(),
 				busy: () => this.#editors.get(sessionId)?.busy() ?? false,
 				show: (text, edit, quotes) => {

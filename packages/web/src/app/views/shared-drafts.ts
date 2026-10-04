@@ -4,7 +4,14 @@ import { h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
-import { keepQuotesWhole, placeQuotes, type QuoteRecord, quotePieces, takeQuoteRecords } from "../quotes.ts";
+import {
+	brokenQuotes,
+	keepQuotesWhole,
+	placeQuotes,
+	type QuoteRecord,
+	quotePieces,
+	takeQuoteRecords,
+} from "../quotes.ts";
 import { DRAFT_TYPING_MS, type DraftStatus, type DraftSync, type RoomDraftRoom } from "../room-drafts.ts";
 import { moveIndex, type TextEdit } from "../text-merge.ts";
 import { keepCaretOutOfQuotes, watchEdits } from "./composer-quotes.ts";
@@ -34,8 +41,8 @@ function showKeepingCaret(field: HTMLTextAreaElement, text: string, edit: TextEd
 const droppedText = () => t("A quote was taken out: the draft now quotes the same words from another email.");
 
 /** What a member is told about a draft that isn't saved as it is. Beside the member's own composer a retried write
- * says nothing (the draft stays there either way, as before), and the quote limit is said by the composer's own
- * quote note; a teammate's draft, open in its panel, says both. */
+ * says nothing (the draft stays there either way, as before), and the quote limit and a broken quote are said by the
+ * composer's own quote note; a teammate's draft, open in its panel, says all of them. */
 function statusText(status: DraftStatus, own: boolean): string {
 	if (status === "retrying") return own ? "" : t("Not saved yet. Trying again…");
 	if (status === "too-long") return t("Too long to share. Shorten it to share your changes.");
@@ -44,6 +51,8 @@ function statusText(status: DraftStatus, own: boolean): string {
 			? ""
 			: t("A message can hold at most {count} quotes. Remove some to share your changes.", { count: QUOTES_MAX });
 	if (status === "refused") return t("A quote in it can't be shared. Remove the quote to share your changes.");
+	if (status === "broken-quote")
+		return own ? "" : t("A quote is missing one of its « » marks. Remove it, or put the mark back.");
 	return "";
 }
 
@@ -344,6 +353,7 @@ export class SharedDrafts {
 		const opened = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
 			text: () => input.value,
 			quotes,
+			broken: () => brokenQuotes(input.value, records).length > 0,
 			caret: () => (document.activeElement === input ? input.selectionEnd : undefined),
 			busy: () => state.composing,
 			show: (text, edit, shown) => {
@@ -372,8 +382,7 @@ export class SharedDrafts {
 		const takeEdit = watchEdits(input, lifetime.signal);
 		input.addEventListener("input", (event) => {
 			const caret = input.selectionStart === input.selectionEnd ? input.selectionEnd : undefined;
-			const pieces = quotePieces(before, placeQuotes(before, records));
-			const kept = keepQuotesWhole(before, pieces, input.value, caret, takeEdit(event));
+			const kept = keepQuotesWhole(before, records, input.value, caret, takeEdit(event));
 			if (kept.text !== input.value) {
 				input.value = kept.text;
 				if (kept.caret !== undefined) input.setSelectionRange(kept.caret, kept.caret);

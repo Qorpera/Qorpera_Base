@@ -50,12 +50,12 @@ import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import {
 	appendQuoted,
+	brokenQuotes,
 	type FieldEdit,
 	keepQuotesWhole,
 	placeQuotes,
 	type QuotedText,
 	type QuoteRecord,
-	quotePieces,
 	takeQuoteRecords,
 } from "./quotes.ts";
 import { RoomDrafts } from "./room-drafts.ts";
@@ -475,6 +475,7 @@ export class CompanyController {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
 			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
 			quotes: (sessionId) => this.draftQuotes(sessionId),
+			broken: (sessionId) => this.draftBroken(sessionId),
 			// The merged draft's quotes take their words over: a record kept here never outlives the email its
 			// words now come from (another tab removed one quote and quoted the same words from another email).
 			setDraft: (sessionId, text, quotes) =>
@@ -2063,6 +2064,13 @@ export class CompanyController {
 		return placeQuotes(state.draft ?? "", state.quoteRecords ?? []);
 	}
 
+	/** The draft holds a quote's words with only one of their marks (app/quotes.ts, brokenQuotes): it is neither saved
+	 * nor sent until the member mends or removes them, so the words never go as their own. */
+	draftBroken(sessionId: string): boolean {
+		const state = this.conversation(sessionId, false).get();
+		return brokenQuotes(state.draft ?? "", state.quoteRecords ?? []).length > 0;
+	}
+
 	/** The member changed the draft's text in a composer; `caret` is where theirs stands. A change that reaches into a
 	 * quote removes the whole quote (app/quotes.ts). Returns the text kept, which the composer shows, and its caret. */
 	editDraft(
@@ -2073,7 +2081,7 @@ export class CompanyController {
 	): { text: string; caret: number | undefined } {
 		const store = this.conversation(sessionId, false);
 		const before = store.get().draft ?? "";
-		const kept = keepQuotesWhole(before, quotePieces(before, this.draftQuotes(sessionId)), text, caret, edit);
+		const kept = keepQuotesWhole(before, store.get().quoteRecords ?? [], text, caret, edit);
 		store.set({ draft: kept.text });
 		return kept;
 	}
@@ -2107,6 +2115,11 @@ export class CompanyController {
 		const quotes = placeQuotes(trimmed, store.get().quoteRecords ?? []);
 		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
+		// The last guard: a quote's words with one mark gone never go as the member's own.
+		if (brokenQuotes(trimmed, store.get().quoteRecords ?? []).length) {
+			store.set({ sendError: t("A quote is missing one of its « » marks. Remove it, or put the mark back.") });
+			return false;
+		}
 		if (quotes.length > QUOTES_MAX) {
 			store.set({
 				sendError: t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX }),

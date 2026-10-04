@@ -1073,15 +1073,19 @@ export class ConversationView {
 		return quotePieces(this.#composer.value, this.#composerQuotes());
 	}
 
-	/** While the draft holds quotes: that they go as quoted, and when there are more than a message carries. */
+	/** While the draft holds quotes: that they go as quoted, when there are more than a message carries, and when one
+	 * has lost a mark (it is neither saved nor sent then). */
 	#renderQuoteNote(): void {
 		const count = this.#composerQuotes().length;
+		const shown = this.#composer.value === (this.#company.conversation(this.#sessionId).get().draft ?? "");
 		const text =
-			count > QUOTES_MAX
-				? t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX })
-				: count
-					? t("Text in «» is quoted from an email. Agents read it as quoted, never as your words.")
-					: "";
+			shown && this.#company.draftBroken(this.#sessionId)
+				? t("A quote is missing one of its « » marks. Remove it, or put the mark back.")
+				: count > QUOTES_MAX
+					? t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX })
+					: count
+						? t("Text in «» is quoted from an email. Agents read it as quoted, never as your words.")
+						: "";
 		this.#quoteNote.hidden = !text;
 		if (this.#quoteNote.textContent !== text) this.#quoteNote.textContent = text;
 	}
@@ -1286,8 +1290,9 @@ export class ConversationView {
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			needsText ||
 			Boolean(attachmentIssue) ||
-			// More quotes than a message carries: the note under the field says so.
-			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX;
+			// More quotes than a message carries, or a quote with a mark gone: the note under the field says so.
+			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX ||
+			this.#company.draftBroken(this.#sessionId);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;

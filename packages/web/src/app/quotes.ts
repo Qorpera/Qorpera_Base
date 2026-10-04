@@ -1,12 +1,13 @@
 import {
 	characterIndex,
 	type MessageQuote,
+	QUOTE_CLOSE,
 	QUOTE_MAX_CHARACTERS,
 	QUOTE_OPEN,
 	quoteRefFits,
 	unitIndex,
 } from "../cloud/quotes.ts";
-import { diffText, mergeText, type TextEdit } from "./text-merge.ts";
+import { compose, diffText, mergeText, type TextEdit } from "./text-merge.ts";
 
 /* Quotes in the composer (contract, the 2026-10-02 amendment "quoted outside content in a member's message", item 2).
  * A quote is one piece of the draft: the member keeps it or removes it whole, and writes their own words around it.
@@ -161,32 +162,89 @@ function diffSpan(before: string, after: string, caret: number | undefined): Cha
 	return { prefix, removed, inserted };
 }
 
-/** The member changed a text from `before` to `after`; `caret` is where their caret stands in `after`. A change that
- * reaches into a quote (its marks or its words) removes all of it: the rest of its piece goes, and the words the
- * member typed or pasted stay. Returns the text to keep and where the caret goes in it. The field keeps the caret out
- * of a quote (`snapSelection`), so this is mostly a deletion that reached a quote's mark, removing the quote whole.
+/** A record's words standing with only one of their marks: a « that no » closes, or a » that no « opens, right beside
+ * them (marks pair as the quotes' own do, each « with the next »). Each as the span of the words and that mark. Such
+ * words would go as the member's own: a save or a send waits until the member mends or removes them. */
+export function brokenQuotes(
+	text: string,
+	records: readonly QuoteRecord[],
+): { readonly from: number; readonly to: number; readonly words: string }[] {
+	const words = [...new Set(records.map((record) => record.words))]
+		.filter((item) => item && !/[«»]/.test(item))
+		.sort((a, b) => b.length - a.length);
+	if (!words.length || !/[«»]/.test(text)) return [];
+	const lone: { at: number; opens: boolean }[] = [];
+	let open: number | undefined;
+	for (let at = 0; at < text.length; at++) {
+		if (text[at] === QUOTE_OPEN) {
+			if (open !== undefined) lone.push({ at: open, opens: true });
+			open = at;
+		} else if (text[at] === QUOTE_CLOSE) {
+			if (open === undefined) lone.push({ at, opens: false });
+			open = undefined;
+		}
+	}
+	if (open !== undefined) lone.push({ at: open, opens: true });
+	return lone.flatMap(({ at, opens }) => {
+		const found = opens
+			? words.find((item) => text.startsWith(item, at + 1))
+			: words.find((item) => item.length <= at && text.slice(at - item.length, at) === item);
+		if (found === undefined) return [];
+		return [opens ? { from: at, to: at + 1 + found.length, words: found } : { from: at - found.length, to: at + 1, words: found }];
+	});
+}
+
+/** The broken pieces of `after` (`brokenQuotes`) whose words it holds broken more often than `before` did. */
+function newlyBroken(before: string, after: string, records: readonly QuoteRecord[]): [number, number][] {
+	const count = (text: string) => {
+		const counts = new Map<string, number>();
+		for (const { words } of brokenQuotes(text, records)) counts.set(words, (counts.get(words) ?? 0) + 1);
+		return counts;
+	};
+	const was = count(before);
+	const now = count(after);
+	return brokenQuotes(after, records)
+		.filter(({ words }) => (now.get(words) ?? 0) > (was.get(words) ?? 0))
+		.map(({ from, to }): [number, number] => [from, to]);
+}
+
+/** The member changed a text from `before` to `after`; `caret` is where their caret stands in `after`, and `records`
+ * are the draft's (`placeQuotes`). A change that reaches into a quote (its marks or its words) removes all of it: the
+ * rest of its piece goes, and the words the member typed or pasted stay. Returns the text to keep and where the caret
+ * goes in it. The field keeps the caret out of a quote (`snapSelection`), so this is mostly a deletion that reached a
+ * quote's mark, removing the quote whole.
  *
- * `edit` is the field's own account of the change. Without it the change is read from the texts, which can't tell a
- * pasted «A» over «B» from an A typed over the B inside the marks (and would leave a bare A, a quote's words as the
- * member's own); with it the whole «B» was replaced, and the pasted «A» is a quote again. */
+ * `edit` is the field's own account of the change. Without it (an undo or redo, a drop, a letter composed, a change
+ * made by code) the change is read from the texts, which can't tell a pasted «A» over «B» from an A typed over the B
+ * inside the marks, nor «A» «A» undone to «A» «B» from a B typed over the A. So then a quote whole in `after` is a
+ * quote and nothing of it is cut, and a quote it brings back with one mark gone (the moment after a Backspace reached
+ * the mark) goes whole: no path leaves a quote's words as the member's own. */
 export function keepQuotesWhole(
 	before: string,
-	pieces: readonly QuotePiece[],
+	records: readonly QuoteRecord[],
 	after: string,
 	caret?: number,
 	edit?: FieldEdit,
 ): { text: string; caret: number | undefined } {
-	if (before === after || !pieces.length) return { text: after, caret };
-	const { prefix, removed, inserted } = (edit && replacedSpan(before, after, edit)) ?? diffSpan(before, after, caret);
+	if (before === after || !records.length) return { text: after, caret };
+	const pieces = quotePieces(before, placeQuotes(before, records));
+	const known = edit && replacedSpan(before, after, edit);
+	const { prefix, removed, inserted } = known ?? diffSpan(before, after, caret);
 	const shift = inserted.length - removed;
+	const whole = known ? [] : quotePieces(after, placeQuotes(after, records));
 	const cut: [number, number][] = [];
+	const cutUnlessWhole = (from: number, to: number) => {
+		if (!whole.some((piece) => piece.from <= from && to <= piece.to)) cut.push([from, to]);
+	};
 	for (const { from, to } of pieces) {
 		const touched = removed > 0 ? prefix < to && prefix + removed > from : prefix > from && prefix < to;
 		if (!touched) continue;
 		// What is left of the piece in `after`: before the change, and after it (moved by what changed).
-		if (from < prefix) cut.push([from, Math.min(to, prefix)]);
-		if (to > prefix + removed) cut.push([Math.max(from, prefix + removed) + shift, to + shift]);
+		if (from < prefix) cutUnlessWhole(from, Math.min(to, prefix));
+		if (to > prefix + removed) cutUnlessWhole(Math.max(from, prefix + removed) + shift, to + shift);
 	}
+	// Broken pieces the text already held stay the member's to mend; only those this change made go.
+	if (!known) cut.push(...newlyBroken(before, after, records));
 	if (!cut.length) return { text: after, caret };
 	cut.sort((a, b) => a[0] - b[0]);
 	let text = "";
@@ -369,13 +427,20 @@ export function mergeQuoted(
 	}
 	let dropped = false;
 	let resolved = "";
+	// The drop as an edit of the merged placeholder text, so the edit the caret and a send in progress follow
+	// (RoomDrafts.sent) keeps or removes each quote whole, never a mark of one.
+	const drop: number[] = [];
 	for (const letter of merged.text) {
 		const record = records.get(letter);
-		if (record && kept.get(record.words) !== letter) dropped = true;
+		const gone = record !== undefined && kept.get(record.words) !== letter;
+		const step = gone ? -letter.length : letter.length;
+		const last = drop[drop.length - 1];
+		if (last !== undefined && Math.sign(last) === Math.sign(step)) drop[drop.length - 1] = last + step;
+		else drop.push(step);
+		if (gone) dropped = true;
 		else resolved += letter;
 	}
 	const result = expand(resolved);
-	if (dropped) return { ...result, edit: diffText(mine.text, result.text), dropped };
 	// The edit in the real text: each placeholder it keeps or removes stands for its whole quote.
 	const edit: (number | string)[] = [];
 	let at = 0;
@@ -385,7 +450,7 @@ export function mergeQuoted(
 		at += count;
 		return units;
 	};
-	for (const step of merged.edit) {
+	for (const step of dropped ? compose(merged.edit, drop) : merged.edit) {
 		if (typeof step === "string") edit.push(expand(step).text);
 		else if (step > 0) edit.push(span(step));
 		else edit.push(-span(-step));
