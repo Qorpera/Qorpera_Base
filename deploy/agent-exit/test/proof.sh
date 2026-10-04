@@ -377,7 +377,9 @@ grep -q '1.1.1.1:443 10\.' "$work/lan-peers" && fail "a site saw an inside addre
 pass "a website is reached, and sees the node's address (phase 1)"
 # The site closed that connection: both tables hold it in TIME_WAIT for at most 30 seconds (the kernel's default 120).
 time_wait_left() { "$@" conntrack -L -p tcp --state TIME_WAIT -d 1.1.1.1 2>/dev/null | awk '$4 == "TIME_WAIT" {print $3}' | sort -n | tail -1; }
-connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
+# Read the greeting, then close: an unread greeting would make the close a reset (CLOSE, not TIME_WAIT).
+ip netns exec agent python3 -c 'import socket; s = socket.create_connection(("1.1.1.1", 443), 3); s.recv(16); s.close()' ||
+	fail "the agent machine cannot reach a website"
 wait_for "[[ -n \$(time_wait_left ip netns exec qexit) ]]"
 exit_left=$(time_wait_left ip netns exec qexit)
 wait_for "[[ -n \$(time_wait_left) ]]"
