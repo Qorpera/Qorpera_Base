@@ -1,4 +1,4 @@
--- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers"
+-- @fixture 602_runtime_coding_lock_order.test.sql until "-- END COMMITTED FIXTURE"
 -- A member's Company File writes and a NAS replica copy take the company's profile fence first
 -- (20260927150000_company_file_writer_fence). An agent tool call takes the fence (the profile row, then the
 -- company's wake admission fence) and then locks the Company File row; so do the object gateway's upload

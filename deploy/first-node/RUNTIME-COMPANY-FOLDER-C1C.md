@@ -1377,6 +1377,103 @@ P06b's second PR, folder-v2 only like part 1 (the statement that was there befor
 
   These go to C1c-3l, which runs agents on the computer, or to the activation checks (3m).
 
+### 6.13 C1c-3i part a as built: coding sessions on the folder fence (migration 20260930026000, test 827)
+
+Folder-v2 only (founder decision, 3 October 2026: production is wiped and the snapshot-v1 path is dropped), so no
+snapshot-v1 branch is kept.
+
+**Before.** A coding turn's begin, its completion, the owner's answer and a delegation locked the todo and then the
+worker `FOR UPDATE`, with no company lock. A stop's drain did not wait for any of them. The begin's wake admission took
+the company row `FOR UPDATE NOWAIT`, which is the 55P03 the executor retries. On `folder-v2` the begin could not run at
+all, because its wake had no folder admission. The executor's claim locked candidates of several companies in one
+transaction.
+
+**The coding worker's entry.** `qorpera_lock_coding_worker`, which the begin, the completion and the answer call first,
+is now the company's entry (core §3):
+- the folder fence `KEY SHARE`, and rank 0;
+- rank 1 the worker's owner, rank 2 the agent, rank 3 its execution authority, all `KEY SHARE`;
+- rank 5 the todo and then the worker, `FOR NO KEY UPDATE` (F2's table order; the completion and the answer write the
+  todo).
+
+The coding session comes after, at the sessions step (core §3, amended: one sessions step after rank 10, `FOR UPDATE`
+in id order: the conversations, then the coding sessions, then the turn inputs, as C4's materializer takes them).
+Nothing takes a conversation and a coding session together today: the completion settles the worker and its session,
+and its parent hears it from the worker drain in a later transaction. A worker of a company that is not `folder-v2` is
+refused with 0A000.
+
+**The begin.** It reads the pause again after the fence, since it inserts a wake. It admits on the folder admission row
+(step 10) last, before its wake. There is no NOWAIT and no 55P03, so the executor's busy retry no longer fires.
+
+**The claim.** It takes one company per call:
+- its candidates are `folder-v2` sessions only;
+- a candidate it does not take (an inactive worker, a live lease, another executor's pick, a switched-off node) raises
+  QSK01, so its subtransaction, and every lock it took, rolls back (review r1: the fleet pick and the node switch used
+  `continue`, which kept the candidate's locks);
+- it waits at most 1 s for any one lock (`lock_timeout`), then skips the candidate and the rest of its company for that
+  call, so a company behind a stop or a deletion costs a claim at most 1 s (review r2);
+- failing an expired lease ends the call, and the next call takes the next candidate.
+
+**The executor's quiet-session archive** (`archive_quiet_coding_sessions`) takes the quiet `folder-v2` sessions of one
+environment per call, up to 8. It enters their coding workers once, together (`qorpera_lock_coding_workers`: every
+worker's targets merged, so each rank is taken once in its tables' key order, and no rank is taken again after a later
+one, review r2), then archives each session in id order. The legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake
+inserter with no fence that locks other companies' coding rows NOWAIT) run only when the archive entered no company, and
+skip `folder-v2` sessions until 3i-b asks them per company.
+
+**The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
+archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
+is refused (review r1).
+
+**Inert** until C3 lets a `folder-v2` coding session exist (F2's worker commit refuses coding dispatch) and C4
+materializes its wake.
+
+**Tests:**
+- 827:
+  - A: the begin holds the fence, rank 0, the todo and the worker, a stop's second phase waits for it, and its wake is
+    queued and admitted;
+  - B: behind a stop's second phase it waits at the fence holding no coding row;
+  - C: a paused company refuses;
+  - D: the entry and an agent's worker change take turns at the worker, and a snapshot-v1 worker is refused;
+  - E: the claim never takes the snapshot-v1 candidate (this executor's, and the oldest), and skips an inactive worker's
+    with every lock its entry took;
+  - F: failing an expired lease ends the call;
+  - H: two entries on one worker, and an agent's worker tool against the entry, take turns at the todo (602's races
+    1-3 and 6);
+  - I: a coding machine's admission (worker, then session) and the entry: the entry waits at the worker, holding no
+    session (602's race 4);
+  - J: a non-owner's answer is refused at once while the worker is held (602's race 8);
+  - K: a stop's second phase waits for the entry, as for the completion and the answer;
+  - L: an owner removed while the answer waits at the owner's member row is refused; the owner's answer then runs,
+    holding the fence, the todo, the worker and the session, and reopens the session;
+  - M: the quiet-session archive holds one company's fence and both quiet workers while it archives both, and leaves the
+    snapshot-v1 session alone.
+- The snapshot-v1 coding tests are deleted:
+  - 395, 399, 600, 601, 602 (fleet), 603, 604, 606, 627, 655, 676, 719, 737, 739, 775 and 782;
+  - also the coding-claim section of 640.
+- 396 keeps its dispatch, and 602 keeps its committed fixture (608, 745, 754, 797 and 800 cut at its end marker).
+- The snapshot load scripts and the coding backfill script went with them. Run-on-node's `folder-core-load` step
+  replaces `company-fence-load`. The load test now also samples statements running over 2 s with their wait events, and
+  locates each statement timeout in the server log (a stall the server's `log_lock_waits` does not report: I/O, LWLocks,
+  CPU).
+
+**Release guard (release-owned).** v170's activation (20260928459990:39-52) pins these markers, and the generator's
+template carries them:
+- `v_worker := public.qorpera_lock_coding_worker(p_worker_id);` in the begin and the completion (both kept);
+- `v_worker := public.qorpera_lock_coding_worker(v_worker.id);` in the answer (kept);
+- `for update;` in `qorpera_lock_coding_worker` (gone);
+- `where id = v_worker.id for update;` in the delegation (gone: it calls the entry).
+
+The next cut must replace the two that are gone, for example with the body marker 20260930026000. Until then
+`test-runtime-office-delete-disposition` (which replays the newest activation) refuses on them: the coordinator drops
+them at the v172 cut.
+
+**Not in 3i-a (3i-b, migration 20260930026500):**
+- the `folder-v2` machine-event drain and the quiet coding check-ins, as per-company drains of the shared "folder
+  drains" orchestrator step (P29a);
+- lifting the machine-event refusals (the pin trigger, `folder_wake_authorized`, `folder_run_resolve`).
+
+The progress, heartbeat and describe calls lock only the session and change no company state.
+
 ## 7. Traps for C1c-2 and C1c-3
 
 - `decide_agent_routine` catches `manage_agent_routine`'s 55000 by its message; keep that refusal as it is.
