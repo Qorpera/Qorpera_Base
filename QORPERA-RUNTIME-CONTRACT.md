@@ -3015,11 +3015,14 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    item 5.
    Amended 2026-10-04 (the coordinator's decision, after live run 22b287a3
    denied a hire the founder had agreed to with "Agreed, hire both."):
-   - When members started the run, the reviewer also reads the agent's message
-     the member was answering: the latest agent message before the member's
-     first message in the run, bounded and marked as the agent's words.
-   - That message is context for what a short reply refers to. It is never a
-     request or an approval.
+   - When members started the run, the reviewer also reads what the member was
+     answering, bounded and marked as the agent's words:
+     - for a card answer, the card the agent asked (found by its interaction
+       id), or nothing;
+     - for a message, the agent's latest message or card before it.
+   - An approval card is the platform's, never the agent's, and is not read.
+   - What the member answered is context for what the reply refers to. It is
+     never a request or an approval.
    - Delegation to the company's own agents is denied only when the member said
      no, or when it goes against what they said. When the reviewer cannot tell
      whether the member agreed, it asks with a card.

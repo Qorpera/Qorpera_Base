@@ -105,11 +105,14 @@ Found in my own review of the approved head and fixed:
   Before, a run woken by a card answer showed the reviewer only the answer's
   raw data, so its next steps were judged against no request at all.
   - 4 October 2026 (the contract's 2026-10-04 amendment): the reviewer also
-    reads the agent's message the member was answering. It is the latest agent
-    message before the member's first message in the run, at most 1,200 bytes,
-    and marked as the agent's words. A short "yes" now reads with what it agrees
-    to. Live run 22b287a3 had denied `hire_agent` after "Agreed, hire both.",
-    because the reviewer could not see the proposal.
+    reads what the member was answering, at most 1,200 bytes, marked as the
+    agent's words:
+    - for a card answer, the card the agent asked (an `interaction_request`,
+      found by its interaction id), or nothing;
+    - for a message, the agent's latest message or card before it.
+    A short "yes" now reads with what it agrees to. Live run 22b287a3 had denied
+    `hire_agent` after "Agreed, hire both.", because the reviewer could not see
+    the proposal. An approval card is the platform's and is never read.
   - A delegation is denied only when the member said no, or when it goes
     against what they said. An unclear agreement gets a card.
 - A denial (the reviewer's or a member's) stands in its run, and in its
