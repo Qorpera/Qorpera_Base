@@ -185,8 +185,10 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   anything: the brake waits for the founder's levels.
 - **Keeps the disk safe.** 90 days are kept. Past 80% of the cap, or with less than the floor plus 5 points of the disk
   free, the oldest sealed parts of the connection log and the DNS record go first. The client history (small, and what
-  ties addresses to companies), the open files and the counts go only after 90 days. Each deleted file is a line in
-  `lost.jsonl`, so a lookup knows that day is unknown.
+  ties addresses to companies), the open files and the counts go only after 90 days, and a client history part only
+  once its day was counted with it. Each deleted file is a line in `lost.jsonl`, so a lookup knows that day is
+  unknown. A day counted again after parts of its connection log went keeps the numbers it was first counted with, and
+  says so (`lateClientHistory`); only who is plugged in moves on.
 
 The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
 (`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool
@@ -211,8 +213,9 @@ is there.
 
 `qorpera-agent-exit.test.mjs` checks the pins, the logger's parsers and pause decision, the logs' tender (a day sealed
 and counted only once closed, a company carried from an earlier day, an address that changes company, parts by size, a
-late line that makes it count again, the DNS cut, a pass cut short, the report, the cap's order of deletion, the floor,
-90 days) and the plug tool: allocation
+late line that makes it count again (or, after early deletions, keeps the numbers), the DNS cut, a pass cut short, a
+count that fails before 90 days pass, the report, the cap's order of deletion, the floor, 90 days) and the plug tool:
+allocation
 under the creators' umask, twelve plugs at once, quarantine, and the reconciler against a stand-in for LXD
 (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).

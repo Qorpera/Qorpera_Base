@@ -768,6 +768,42 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		const report = JSON.parse(spawnSync("python3", [logsTool, "report", "--log-dir", log, "--json"], { encoding: "utf8" }).stdout);
 		assert.equal(report.node.deletedEarly, lost.filter((entry) => [day, next].includes(entry.day)).length);
 		assert.ok(report.node.deletedEarly > 0);
+		// A late line for a day whose connection log lost parts: its numbers stay as first counted, and only who is
+		// plugged in moves on.
+		const before = counts(next).companies;
+		append(`clients-${next}.jsonl`, [machine("10.210.1.8", "cF", "mF", t0 + DAY + 100)]);
+		const late = tend(t0 + 2 * DAY + 3600 * 10);
+		assert.equal(late.status, 0, late.stderr);
+		assert.deepEqual(counts(next).companies, before);
+		assert.match(counts(next).lateClientHistory, /not counted again/);
+		assert.equal(JSON.parse(readFileSync(join(log, "attribution.json"), "utf8")).open["10.210.1.8"].company, "cF");
+	});
+
+	test("a count that fails keeps the client history it has not read, past 90 days, until it reads it", () => {
+		const failing = mkdtempSync(join(dir, "failing-"));
+		const second = t0 + DAY;
+		writeFileSync(join(failing, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
+		writeFileSync(join(failing, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
+		writeFileSync(
+			join(failing, `clients-${next}.jsonl`),
+			lines([machine("10.210.1.1", "cA", "mA", second + 100, "unplugged"), machine("10.210.1.1", "cB", "mB", second + 200)]),
+		);
+		writeFileSync(join(failing, `flows-${next}.jsonl`), lines([opened("10.210.1.1", second + 300)]));
+		// The first day's counts cannot be written: counting fails before it reads anything.
+		mkdirSync(join(failing, `counts-${day}.json`));
+		const run = () =>
+			spawnSync("python3", [logsTool, "tend", "--log-dir", failing, "--status", join(failing, "s.json"), "--now", String(t0 + 100 * DAY), "--settle", "0", "--free-percent", "50"], { encoding: "utf8" });
+		const failed = run();
+		assert.equal(failed.status, 0, failed.stderr);
+		assert.ok(JSON.parse(failed.stdout).countProblems.length > 0);
+		const kept = readdirSync(failing);
+		assert.ok(kept.includes(`clients-${day}.p001.jsonl.gz`) && kept.includes(`clients-${next}.p001.jsonl.gz`), kept.join(" "));
+		assert.ok(!kept.includes(`flows-${day}.p001.jsonl.gz`), "the connection log expires all the same");
+		rmSync(join(failing, `counts-${day}.json`), { recursive: true });
+		const recovered = run();
+		assert.equal(recovered.status, 0, recovered.stderr);
+		assert.equal(JSON.parse(readFileSync(join(failing, "attribution.json"), "utf8")).open["10.210.1.1"].company, "cB");
+		assert.ok(!readdirSync(failing).some((name) => name.startsWith("clients-")), "read now, and past 90 days");
 	});
 
 	test("a pass cut short never seals a line twice, and a DNS copy left plain is compressed", () => {

@@ -20,7 +20,9 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
 - it keeps 90 days, and deletes the oldest sealed parts of the connection log and the DNS record while the logs hold
   more than 80% of their cap (2 GiB unless set) or the disk has less than its floor (10% unless set) plus 5 points
   free. The client history (small, and what ties addresses to companies), the open files and the counts go only after
-  90 days. Each deleted file is a line in lost.jsonl (its day is unknown to a lookup from then on).
+  90 days, and a client history part only once its day was counted with it. Each deleted file is a line in lost.jsonl
+  (its day is unknown to a lookup from then on). A day counted again after parts of its connection log went keeps the
+  numbers it was first counted with, and says so; only who was plugged in moves on.
 <run-dir>/logs.json says when it last ran and what it could not do; `qorpera-agent-exit.sh verify` fails while it is
 older than 15 minutes or names a problem (the logs still over their cap, or the disk under its floor, with every
 part it may delete gone). The logger pauses by itself at the same two lines (qorpera-agent-exit-log.py) and keeps
@@ -415,6 +417,24 @@ def deleted_early(log_dir):
     return days
 
 
+def flows_lost_early(log_dir):
+    """Days that lost a part of their connection log before their 90 days (over the cap, or the disk low)."""
+    days = set()
+    try:
+        with open(os.path.join(log_dir, "lost.jsonl"), encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(entry, dict) and entry.get("reason") != EXPIRED and isinstance(entry.get("day"), str)
+                        and str(entry.get("file", "")).startswith("flows-")):
+                    days.add(entry["day"])
+    except FileNotFoundError:
+        pass
+    return days
+
+
 def load_attribution(log_dir):
     """The last day counted, who was plugged in when it ended, and the client history parts read so far."""
     try:
@@ -464,11 +484,26 @@ def count_closed_days(log_dir, now, host):
     else:
         day = next_day(through) if through else first_day(log_dir, files)
     counted = 0
+    lost_early = flows_lost_early(log_dir)
     while day is not None and now >= day_start(day) + DAY + GRACE:
-        counts, end = count_day(log_dir, day, plugged, files)
-        write_json(os.path.join(log_dir, f"counts-{day}.json"),
-                   {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now),
-                    "attributionAtStart": plugged, "attributionPartial": partial, **counts})
+        path = os.path.join(log_dir, f"counts-{day}.json")
+        saved = None
+        if day in lost_early and late:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    saved = json.load(f)
+            except (OSError, ValueError):
+                saved = None
+        if isinstance(saved, dict) and isinstance(saved.get("companies"), dict):
+            # Counted before its connection log lost parts: the numbers stay as they were counted, and only who was
+            # plugged in moves on with the late history.
+            end = advance(log_dir, day, plugged, files)
+            write_json(path, saved | {"attributionAtStart": plugged, "lateClientHistory":
+                                      "not counted again: parts of this day's connection log were deleted early"})
+        else:
+            counts, end = count_day(log_dir, day, plugged, files)
+            write_json(path, {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now),
+                              "attributionAtStart": plugged, "attributionPartial": partial, **counts})
         read |= {name for name, part_day in client_parts.items() if part_day == day}
         read &= set(client_parts)
         write_json(os.path.join(log_dir, "attribution.json"),
@@ -503,8 +538,13 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     deleted = []
     files = regular_files(log_dir)
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
+    # A client history part goes only once its day has been counted with it: until then it is what ties addresses to
+    # companies from that day on (a count that keeps failing keeps it).
+    read = load_attribution(log_dir)[2]
     for name in sorted(files):
         day = file_day(name)
+        if name.startswith("clients-") and name not in read:
+            continue
         if day is not None and day < oldest_kept and (PART.match(name) or DNS_PART.match(name) or COUNTS.match(name)):
             os.unlink(os.path.join(log_dir, name))
             record_lost(log_dir, now, name, files[name], EXPIRED)
