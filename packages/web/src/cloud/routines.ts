@@ -79,9 +79,9 @@ export interface WebRoutineFile {
 	readonly version: string;
 	readonly text: string;
 	readonly file: RoutineFile;
-	/** The file's trigger as the editor shows it; null for one a member's editor does not make (a time window, a
+	/** The file's trigger as the editor shows it; none for one a member's editor does not make (a time window, a
 	 * dynamic routine's next run, a file change). */
-	readonly trigger: CloudRoutineTrigger | null;
+	readonly trigger?: CloudRoutineTrigger;
 }
 
 /** A routine with what the web reads beside the SDK's fields (migration 20260929970000): why a paused
@@ -518,11 +518,8 @@ export function createWebRoutines(
 			const read = await readRoutine(from, path, routine.routineId, routine.clientRoutineId);
 			if (!read) throw new WebRoutineGoneError("This routine is no longer available.");
 			const when = read.file.trigger.when;
-			return {
-				...read,
-				routineId: routine.routineId,
-				trigger: when === "every" || when === "weekly" ? cloudRoutineTriggerOfFile(read.file) : null,
-			};
+			const trigger = when === "every" || when === "weekly" ? cloudRoutineTriggerOfFile(read.file) : null;
+			return { ...read, routineId: routine.routineId, ...(trigger ? { trigger } : {}) };
 		},
 		async save(draft, account, saveId) {
 			const from = folder();

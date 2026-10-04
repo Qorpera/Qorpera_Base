@@ -774,7 +774,7 @@ export class AgentRoutines {
 		}
 		if (this.#signal.aborted) return;
 		// The form shows the file: its schedule, name, instructions and reply.
-		const first = opened?.trigger ?? undefined;
+		const first = opened?.trigger;
 		const shape: Shape = (first && shapeOf(first)) ?? "weekly";
 		// A member's new routine runs at low effort, like a conversation; an edit keeps
 		// the file's own, which its agent may have set to medium or high.

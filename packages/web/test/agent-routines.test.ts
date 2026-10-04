@@ -231,7 +231,7 @@ function openedOf(item: CloudRoutine): WebRoutineFile {
 		version: "f0000000-0000-4000-8000-000000000999",
 		text: writeRoutineFile(fields),
 		file: { kind: "routine", ...fields },
-		trigger: mapped ? trigger! : null,
+		...(mapped && trigger ? { trigger } : {}),
 	};
 }
 /** Routine calls that answer at once: every listed routine has a file. */
@@ -1868,7 +1868,10 @@ describe("a member edit of an agent's routine", () => {
 	it("starts a new interval one interval from now, and keeps a first run reached or of another kind of schedule", async () => {
 		const longer = await saveEdited(every, (form) => type(form, "Interval", "120"));
 		expect(longer.file.trigger).toEqual({ when: "every", minutes: 120, starts: "2026-09-25T12:00:00Z" });
-		const reached = routineFile({ ...weekly, trigger: { ...weekly.trigger, starts: "2026-09-21T06:30:00Z" } });
+		const reached = routineFile({
+			...weekly,
+			trigger: { when: "weekly", days: ["mon", "wed"], time: "08:30", starts: "2026-09-21T06:30:00Z" },
+		});
 		const past = await saveEdited(reached, (form) => {
 			expect(waiting(form).hidden).toBe(true);
 			type(form, "Routine name", "Morning brief, shorter");

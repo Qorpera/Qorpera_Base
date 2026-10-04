@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { createHash, webcrypto } from "node:crypto";
+import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
+import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
@@ -1033,12 +1035,86 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		created_at: userA.created_at,
 		updated_at: userA.created_at,
 	};
+	/** The routine's file: still active, since the platform paused it in the index only (no model account paid). */
+	const routinePath = "agents/nora/routines/morning-brief.md";
+	const routineBytes = new TextEncoder().encode(
+		writeRoutineFile({
+			id: id(161),
+			title: "Morning brief",
+			status: "active",
+			trigger: { when: "every", minutes: 60, starts: null },
+			timezone: null,
+			ends: null,
+			runs: null,
+			quiet: null,
+			effort: "medium",
+			reply: "silent",
+			conclusion: null,
+			instructions: "Brief me.",
+		}),
+	);
+	/** The file's bytes and manifest as the object gateway keeps them, by hash. */
+	let stored: Promise<{ hash: string; manifestHash: string; objects: Map<string, Uint8Array> }> | undefined;
+	const objects = () => {
+		stored ??= (async () => {
+			const hash = await cloudFileBytesSha256(routineBytes);
+			const manifest = new TextEncoder().encode(
+				JSON.stringify({
+					schema: "qorpera.cloud-file-manifest/v2",
+					fileSha256: hash,
+					bytes: routineBytes.length,
+					mediaType: "text/markdown",
+					executable: false,
+					chunks: [{ sha256: hash, bytes: routineBytes.length }],
+				}),
+			);
+			const manifestHash = await cloudFileBytesSha256(manifest);
+			return {
+				hash,
+				manifestHash,
+				objects: new Map([
+					[hash, routineBytes],
+					[manifestHash, manifest],
+				]),
+			};
+		})();
+		return stored;
+	};
 	/** The member's own waiting routine, a plan that is not turned on, plans on, on a conversation page. */
 	function planApp(capabilities = team.capabilities) {
 		let connections = [planRow(2, false)];
 		const calls: string[] = [];
+		const commits: { op: string; path: string; text?: string; expectedVersion?: string }[][] = [];
 		const answer = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 			calls.push(method);
+			// A routine is its file (P34r): the member finds it in the state folders read and writes it as the member.
+			if (method === "qorpera_member_company_state_folders")
+				return {
+					schema: "qorpera.member-company-state-folders/v1",
+					agents: [{ staffAgentId: staff.id, file: "agents/nora/agent.md" }],
+					groups: [],
+					routines: [{ routineId: id(61), staffAgentId: staff.id, file: routinePath }],
+				};
+			if (method === "qorpera_member_folder_read") {
+				const { hash, manifestHash } = await objects();
+				return {
+					schema: "qorpera.folder-read/v1",
+					asOfSeq: 3,
+					found: true,
+					entry: {
+						path: routinePath,
+						kind: "file",
+						version: id(91),
+						seq: 3,
+						updatedAt: userA.created_at,
+						manifestSha256: manifestHash,
+						fileSha256: hash,
+						bytes: routineBytes.length,
+						mediaType: "text/markdown",
+						executable: false,
+					},
+				};
+			}
 			if (method === "qorpera_list_member_notifications") return [notice];
 			if (method === "qorpera_acknowledge_member_notification")
 				return { ...notice, acknowledged_at: userA.created_at };
@@ -1053,20 +1129,42 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 				return { connection_id: args.p_connection_id, version: 3, allow_autonomous: true };
 			}
 			if (method === "qorpera_create_member_execution_sponsor") return { binding_id: id(88), version: 1 };
-			if (method === "qorpera_upsert_cloud_routine")
-				return { ...routineRow, version: 2, status: "active", pause_reason: null };
 			throw new Error(`Unexpected fixture RPC: ${method}`);
 		};
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
-				Response.json(
-					await answer(
-						String(input).split("/").at(-1)!,
-						init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
-					),
-				),
-			),
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = new URL(String(input));
+				const name = url.pathname.split("/").at(-1)!;
+				if (url.pathname.includes("/v1/member-folder-objects/")) {
+					const object = (await objects()).objects.get(name);
+					if (!object) throw new Error("Unknown fixture object");
+					return new Response(Uint8Array.from(object), {
+						headers: { "x-qorpera-access-mode": "live-path-authority" },
+					});
+				}
+				if (url.pathname.includes("/v1/member-folder-commits/")) {
+					const units = (JSON.parse(String(init?.body)) as { units: (typeof commits)[number] }).units;
+					calls.push("member-folder-commit");
+					commits.push(units);
+					return Response.json({
+						schema: "qorpera.folder-commit/v1",
+						commitId: id(89),
+						seq: 4,
+						replay: false,
+						units: units.map((unit, index) => ({
+							unit: index + 1,
+							op: unit.op,
+							path: unit.path,
+							outcome: "saved",
+							version: id(90),
+						})),
+					});
+				}
+				return Response.json(
+					await answer(name, init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}),
+				);
+			}),
 		);
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		vi.mocked(f.cloud.rpc).mockImplementation((method: string, args?: Record<string, unknown>) =>
@@ -1074,7 +1172,7 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		);
 		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
 		vi.mocked(f.api.getTeam).mockResolvedValue({ ...team, capabilities });
-		return { ...f, calls };
+		return { ...f, calls, commits };
 	}
 	const card = () => document.querySelector(".company-notices .company-notice p")?.textContent;
 
@@ -1083,9 +1181,21 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
 		expect(f.calls).toContain("qorpera_record_chatgpt_plan_routine_offer");
 		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
-		await vi.waitFor(() => expect(f.calls).toContain("qorpera_upsert_cloud_routine"), { timeout: 3000 });
+		await vi.waitFor(() => expect(f.calls).toContain("member-folder-commit"), { timeout: 3000 });
 		expect(f.calls).toContain("qorpera_set_chatgpt_plan_work_while_away");
+		expect(f.calls).toContain("qorpera_create_member_execution_sponsor");
 		expect(f.calls).not.toContain("qorpera_consent_provider_connection_autonomous");
+		// The file already says active: saved as it is, it ends the pause the index recorded, paid by the plan.
+		expect(f.commits).toEqual([
+			[
+				{
+					op: "write",
+					path: routinePath,
+					text: new TextDecoder().decode(routineBytes),
+					expectedVersion: id(91),
+				},
+			],
+		]);
 	});
 
 	it("turns the plan on for a member who does not save routines, and says to ask the agent", async () => {
@@ -1099,6 +1209,6 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 				),
 			{ timeout: 3000 },
 		);
-		expect(f.calls).not.toContain("qorpera_upsert_cloud_routine");
+		expect(f.calls).not.toContain("member-folder-commit");
 	});
 });
