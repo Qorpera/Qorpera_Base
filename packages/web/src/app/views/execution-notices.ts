@@ -64,8 +64,7 @@ function offerable(
 }
 
 /** What a notice tells the member, in plain words; undefined when it gets no line.
- * A reached usage limit is told by the failed run's card in the thread. A changed
- * sponsor asks nothing of the member. */
+ * A reached usage limit is told by the failed run's card in the thread. */
 function sentence(
 	item: MemberNotification,
 	agentName?: (staffAgentId: string) => string | undefined,
@@ -78,7 +77,6 @@ function sentence(
 				minutes: subject.minutes,
 			});
 		case "qorpera.member-notification.provider-usage-limit/v1":
-		case "qorpera.member-notification.sponsor-handoff/v1":
 			return undefined;
 		case "qorpera.member-notification.machine-capacity/v1":
 			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });

@@ -183,9 +183,9 @@ describe("approved group avatar compositor", () => {
 		expect(selected.context.text.at(-1)?.color).toBe("#ffffff");
 	});
 
-	it("draws a seeded Co-Founder in its native artwork color and a chosen color once picked", async () => {
+	it("draws a Co-Founder without a colour in its native artwork color and a chosen color once picked", async () => {
 		const chosen = { ...agents(1)[0]!, templateId: "co-founder" };
-		const seeded = { ...chosen, appearance: { ...chosen.appearance, color: "qorpera-blue" } };
+		const seeded = { ...chosen, appearance: { ...chosen.appearance, color: "native" } };
 		const drawn = async (subject: HostedStaffAgent) => {
 			artwork.drawable.mockClear();
 			document.body.append(groupAvatar([subject]));

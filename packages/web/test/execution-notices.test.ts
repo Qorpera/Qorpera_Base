@@ -36,18 +36,6 @@ const item = (n = 70, at = timestamp): MemberNotification => ({
 		allocationId: id(90),
 	},
 });
-const handoff = (n = 75): MemberNotification => ({
-	...item(n),
-	kind: "sponsor_handoff",
-	subject: {
-		schema: "qorpera.member-notification.sponsor-handoff/v1",
-		runId: id(80),
-		fromConnectionId: id(81),
-		toConnectionId: id(82),
-		reason: "usage_limit",
-		at: timestamp,
-	},
-});
 function setup(items: readonly MemberNotification[] = [item()]) {
 	const client = {
 		listNotifications: vi
@@ -241,7 +229,7 @@ describe("company notices", () => {
 		expect(document.activeElement).toBe(composer);
 		expect(f.restoreFocus).not.toHaveBeenCalled();
 	});
-	it("gives a usage limit and a changed sponsor no line, and never acknowledges them", async () => {
+	it("gives a usage limit no line, and never acknowledges it", async () => {
 		const usage = {
 			...item(79),
 			kind: "provider_usage_limit" as const,
@@ -253,13 +241,13 @@ describe("company notices", () => {
 				connectionId: id(81),
 			},
 		};
-		const quiet = setup([usage, handoff()]);
+		const quiet = setup([usage]);
 		await settle();
 		expect(quiet.view.el.hidden).toBe(true);
 		expect(quiet.view.el.textContent).toBe("");
 		expect(quiet.client.acknowledgeNotification).not.toHaveBeenCalled();
-		// A notice that does get a line still shows behind them.
-		const mixed = setup([usage, handoff(), item(70, "2099-01-01T00:00:00.000Z")]);
+		// A notice that does get a line still shows behind it.
+		const mixed = setup([usage, item(70, "2099-01-01T00:00:00.000Z")]);
 		await settle();
 		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
