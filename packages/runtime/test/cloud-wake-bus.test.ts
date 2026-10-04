@@ -1492,7 +1492,7 @@ describe("human task wakes (H2c)", () => {
 					task: {
 						path: "human-tasks/sign-the-lease.md",
 						title: "Sign the lease",
-						status: reason === "overdue" ? "open" : reason,
+						status: ["done", "declined", "accepted", "returned", "cancelled"].includes(reason) ? reason : "open",
 						due: "2100-01-01T00:00:00.000000Z",
 					},
 					...payload,
