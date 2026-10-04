@@ -1194,8 +1194,9 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   does (`suspended`).
 - The list leaves out routines at their occurrence limit (819 §8). Since 20260930027000 it lists those past their
   expiry, which the restore ends (below). A routine whose next retry would fall after its expiry is still listed, and
-  answered `ended` every 30 s, until its expiry passes and the restore ends it. A raised 42501 (a missing fence or admission row) reaches the orchestrator as HTTP
-  401, which the reconciler reports like any failure; only a broken `folder-v2` company shows it.
+  answered `ended` every 30 s, until its expiry passes and the restore ends it. A raised 42501 (a missing fence or
+  admission row) reaches the orchestrator as HTTP 401, which the reconciler reports like any failure; only a broken
+  `folder-v2` company shows it.
 - **`qorpera_ensure_dynamic_routine_run`** refuses a `folder-v2` routine (0A000) as its first line. It takes no fence
   and no ranks, and none of its callers reaches `folder-v2`: the tick skips it, and the agent tools refuse it.
 - **The runner-orchestrator edge function** has two new actions, `folder_dynamic_routines` and
@@ -1218,8 +1219,8 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
     refuse).
   - The restore ends such a routine first: the company row `KEY SHARE`, the routine `FOR NO KEY UPDATE SKIP LOCKED`,
     then `status = 'expired'`. It answers `ended`, or `changed` if the routine was extended, its end removed,
-    retired or concluded meanwhile. The status triggers record whether it was active, and cancel a paused routine's queued runs. A routine
-    held by a save answers `busy`, and the next pass ends it.
+    retired or concluded meanwhile. The status triggers record whether it was active, and cancel a paused routine's
+    queued runs. A routine held by a save answers `busy`, and the next pass ends it.
   - The legacy sweep has no caller now, so a `snapshot-v1` routine no longer expires; none remains.
   - Known: a later save of the routine's file revives it while the file still says `status: active` (F2's rule, test
     708 §4), and the next pass expires it again, until C2's queue writes the platform's status into the file.
