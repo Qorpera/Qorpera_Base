@@ -103,7 +103,7 @@ Rollback:
 
 1. An agent starts a 4-CPU / 8 GiB task machine.
 2. `machine_run "docker run --rm hello-world && docker compose version"` succeeds.
-3. From the machine, `curl https://github.com` works, while `curl 192.168.0.206`, a Tailscale address, `169.254.169.254` and the bridge gateway's other ports all time out.
+3. From the machine, `curl https://github.com` works, while `curl 192.168.0.206`, a Tailscale address, `169.254.169.254` and the exit's own address (`10.210.0.1`) all fail at once: the agent exit refuses them (a TCP reset). That a refusal is the exit's own, not a closed port's, is shown by the exit's proof (`deploy/agent-exit/test/proof.sh`, `prove-lxd-vm.sh`) and its refused-flow log (`/var/log/qorpera-agent-exit/flows-*.jsonl`).
 4. With a coding session attached, the agent runs `cp -a /mnt/repository /root/repo && cd /root/repo && npm ci --ignore-scripts && npm run test:hosted-db` with `notify: true`. It ends its turn and is woken with the result.
 5. Kept as evidence:
    - The inventory shows the machine as managed and the node stays `ready` throughout.
