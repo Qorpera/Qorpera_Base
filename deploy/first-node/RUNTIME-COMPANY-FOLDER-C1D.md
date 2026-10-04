@@ -74,10 +74,14 @@ cannot learn that the company stores a hash it may not read, and cannot seal or 
 platform reads everything and holds every stored object. The commit's bytes check decides possession before it calls a
 reference malformed (20260930043000, test 903): a reference whose media type or executable bit disagrees with its
 stored manifest is 22023 only for an actor who holds the bytes; anyone else gets `bytes_unverified`, as for a hash the
-company does not store. Known gaps on the upload path, older than that fix (#794's review, follow-ups): near the storage
-limit the upload check answers the quota (413) only for hashes the catalog lacks; authorization and seal answer
-"being collected" (409) for a marked object the actor does not hold; and the gateway answers 201 or 200 for a put by
-whether the object exists, which needs the real bytes (the usual dedup channel).
+company does not store. Nor does the upload check's quota (413) depend on the catalog (20260930062000, test 914): it is
+waived only for an object the actor possesses already under its intent (item 2). Before, near the storage limit, the
+hash alone told whether the company stored it: a stored object passed and any other was refused. Two answers on the
+upload path still differ:
+- authorization and seal answer "being collected" (409) for a marked object the actor does not hold. Backlog: hiding
+  the GC mark changes how a marked object is put again, which is more than this check;
+- the gateway answers 201 or 200 for a put by whether the object exists. Accepted: it is the usual dedup channel, and
+  it needs the real bytes, so it tells only someone who has them already.
 
 Possession is judged when the intent opens. Bytes the actor could read then are bytes it could have fetched then, so a
 later narrowing does not revoke an intent already open or sealed; a sealed intent lapses within the hour unless its
@@ -92,9 +96,11 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
      others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
 2. **`qorpera_folder_authorize_object_upload(env, actor, intent, sha256, bytes)`**, per chunk, from the gateway:
    plain reads of the intent (this environment, this actor's kind and scope, `open`, unexpired) and of its object row
-   for `(sha256, bytes)`, and for an object the catalog lacks the soft quota (§5; 23514), so a company at its limit
-   is refused before the gateway writes (20260928309710). Returns the company (`profileId`); the gateway derives the
-   NAS path. No run check per chunk (core §7).
+   for `(sha256, bytes)`, and the soft quota (§5; 23514) for an object the row marks neither `held` nor `put`, so a
+   company at its limit is refused before the gateway writes (20260928309710). Whether the catalog has the object
+   does not matter (20260930062000): a stored object the actor does not possess counts as new here, although storing
+   it adds nothing, so the answer tells nothing. Returns the company (`profileId`); the gateway derives the NAS path.
+   No run check per chunk (core §7).
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
    intent checks, then marks the row `put`, then `insert into profile_objects … on conflict do nothing`; then
    `KEY SHARE` on the row. It checks no quota: the authorization before the write let this object in, and refusing
@@ -130,10 +136,11 @@ included):
   of its own for that manifest, or may already read it (§7; the platform always may). Otherwise `bytes_unverified`. A
   replay is answered at step 0 and is unaffected. Version-1 proofs are exempt: only the SQL test fixtures make them
   for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6);
-- last, for an actor that holds the bytes (20260930043000): a version-2 proof's media type and executable bit must
-  equal the unit's; a difference raises 22023 for the change set, so an entry never disagrees with its bytes. Anyone
-  else got `bytes_unverified` above, so the check tells nothing about bytes the actor does not hold. A version-1 proof
-  keeps today's rule.
+- last, for a `write` or `new_folder` file whose actor holds the bytes (20260930043000): a version-2 proof's media type
+  and executable bit must equal the unit's; a difference raises 22023 for the change set, so an entry never disagrees
+  with its bytes. Anyone else got `bytes_unverified` above, so the check tells nothing about bytes the actor does not
+  hold. A version-1 proof keeps today's rule. (A copy's files never reach this check: they come from entries that
+  already agree with their proofs.)
 
 A copy's source files are found by an equality probe on the source key and a range probe under it
 (`key_text > k || '/' and key_text < k || '0'`, both on the `(environment_id, key_text)` index). A source over the
@@ -185,9 +192,10 @@ The catalog rows a new folder reads went from N × 20,000 to 20,000 + 2N.
 - **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage and the
   limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's
-  48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the catalog lacks;
-  the confirm after the write never refuses for it (20260928309710). An object already stored never counts again,
-  so a company at its limit can still stage a file from bytes it has.
+  48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the actor does not
+  possess under its intent (§3, item 2); the confirm after the write never refuses for it (20260928309710). An object
+  the actor possesses never counts again, so a company at its limit can still stage a file from bytes the actor may
+  read; usage itself counts each stored object once.
 - GC (C1d-2) decrements the row through the same trigger.
 - `qorpera_company_file_json` still reports `company_files.storage_used_bytes`, which stops moving for `folder-v2`.
   C4's clients read the usage row instead.
