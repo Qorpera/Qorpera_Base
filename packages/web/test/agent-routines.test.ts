@@ -751,7 +751,7 @@ describe("agent routines section", () => {
 			`Paused by ${staff.displayName}`,
 			"Paused: it could not start with the access it had",
 			"Paused: no model account pays for it",
-			"Paused: its agent is archived",
+			"Paused when its agent was archived",
 			null,
 			null,
 		]);
@@ -784,6 +784,14 @@ describe("agent routines section", () => {
 		// A routine still on (until the cloud pauses it) can be paused.
 		expect(on!.getAttribute("aria-disabled")).toBeNull();
 		expect(on!.getAttribute("title")).toBe("Pause routine");
+		on!.click();
+		await settle();
+		expect(routines.setEnabled).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Morning brief" }),
+			account,
+			false,
+			expect.any(String),
+		);
 	});
 	it("shows the switch as the cloud reads it after a change, and where it was moved while no read has come back", async () => {
 		const other = routine({

@@ -114,8 +114,9 @@ function runLabel(run: CloudRoutineOccurrence): string {
 }
 
 /** Why a paused routine waits, in plain words, or null when the cloud gave no reason this page knows. The reasons are
- * the routine index's (`pause_reason`): a member or its agent paused it, it could not start three times with the access
- * it had, no model account pays for it, or its agent is archived (F2's P15, which pauses an archived agent's routines). */
+ * the routine index's (`pause_reason`): a member or its agent paused it, it could not start with the access it had, no
+ * model account pays for it, or its agent was archived (F2's P15, which pauses an archived agent's routines; the pause
+ * stays until a member resumes the routine, also after the agent is active again). */
 function pauseWords(reason: string | undefined, agentName: string): string | null {
 	switch (reason) {
 		case "member":
@@ -127,7 +128,7 @@ function pauseWords(reason: string | undefined, agentName: string): string | nul
 		case "needs_model_account":
 			return t("Paused: no model account pays for it");
 		case "agent_archived":
-			return t("Paused: its agent is archived");
+			return t("Paused when its agent was archived");
 		default:
 			return null;
 	}

@@ -57,7 +57,7 @@ export const AGENTS: Record<string, string> = {
 	"Paused by {name}": "Sat på pause af {name}",
 	"Paused: it could not start with the access it had": "På pause: den kunne ikke starte med den adgang, den havde",
 	"Paused: no model account pays for it": "På pause: ingen modelkonto betaler for den",
-	"Paused: its agent is archived": "På pause: dens agent er arkiveret",
+	"Paused when its agent was archived": "Sat på pause, da dens agent blev arkiveret",
 	"{every} between {start} and {end}, {days} ({zone})": "{every} mellem {start} og {end}, {days} ({zone})",
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",
