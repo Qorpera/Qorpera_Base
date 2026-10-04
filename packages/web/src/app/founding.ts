@@ -46,6 +46,14 @@ export interface FoundingOptions {
 	currentUserId: () => string | undefined;
 	/** Where you sit changed (joined, left, declined, closed): the hub's lists are out of date. */
 	onSeatChanged?: () => void;
+	/** The company is made and its Co-Founder's first run is on its way: open the company (once per table page). */
+	onCompanyReady?: () => void;
+}
+
+/** The hint the Co-Founder's arrival reads once, so it plays from the start (agreed with Interfaces, 4 October 2026):
+ * set when this tab's founder presses Start; the arrival removes it and ignores one older than ten minutes. */
+export function cofounderArrivalKey(profileId: string): string {
+	return `qorpera:cofounder-arrival:${profileId}`;
 }
 
 function stale(error: unknown): boolean {
@@ -68,6 +76,8 @@ export class FoundingController {
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	/** When this table was first read with its company made. */
 	#readyAt: number | undefined;
+	/** The company was opened from this page already. */
+	#opened = false;
 	#reading: Promise<void> | undefined;
 	#connections: ConnectionsView | undefined;
 	#queue: Promise<void> = Promise.resolve();
@@ -161,6 +171,17 @@ export class FoundingController {
 			...(panelDone ? { connectOpen: false } : {}),
 		});
 		if (panelDone) this.#closeConnections();
+		// Made, with its Co-Founder's first run queued or under way: the founders go straight to it (Jonas, 4 October
+		// 2026). A first run that waits for a login or failed keeps the page, which says why.
+		const firstRun = table.start?.firstRun;
+		if (
+			table.start?.companyReady &&
+			!this.#opened &&
+			(firstRun === null || firstRun === undefined || firstRun === "queued" || firstRun === "started")
+		) {
+			this.#opened = true;
+			this.#options.onCompanyReady?.();
+		}
 	}
 
 	/** Actions run one after another, in the order they were made (a role saved as you click Ready,
@@ -306,7 +327,15 @@ export class FoundingController {
 		} catch {
 			/* A blocked storage API keeps the id for this page only. */
 		}
-		await this.#act("start", (table) => this.#founding.start(this.profileId, table.revision, clientStartId));
+		const started = await this.#act("start", (table) =>
+			this.#founding.start(this.profileId, table.revision, clientStartId),
+		);
+		if (!started) return;
+		try {
+			sessionStorage.setItem(cofounderArrivalKey(this.profileId), String(Date.now()));
+		} catch {
+			/* Without storage the arrival finds its moment from the thread itself. */
+		}
 	}
 
 	dismissError(): void {
