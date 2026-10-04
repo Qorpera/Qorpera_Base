@@ -255,13 +255,31 @@ describe("an edit the field can't account for (review round 2, F1)", () => {
 		expect(own.text).toBe("«B is late´");
 	});
 
-	it("finds a quote's words with only one of their marks, pairing marks as quotes do", () => {
+	it("finds a quote's words with only one of their marks, by how the marks pair (round 3)", () => {
 		expect(brokenQuotes("«A» «B", records)).toEqual([{ from: 4, to: 6, words: "B" }]);
 		expect(brokenQuotes("x B» y", records)).toEqual([{ from: 2, to: 4, words: "B" }]);
 		expect(brokenQuotes("«A» «B» ok", records)).toEqual([]);
-		// Words inside the member's own marks, or a mark that only starts a longer word, are not a broken quote.
+		// Whatever letters follow or precede the words: only a closing mark tells a quote from a longer word.
+		expect(brokenQuotes("«A» «Btail", records)).toEqual([{ from: 4, to: 6, words: "B" }]);
+		expect(brokenQuotes("«A» headB»", records)).toEqual([{ from: 8, to: 10, words: "B" }]);
+		expect(brokenQuotes("«Apples", records)).toEqual([{ from: 0, to: 2, words: "A" }]);
+		// Marks that pair are the member's own, whatever words they hold.
 		expect(brokenQuotes("«Ask A»", records)).toEqual([]);
-		expect(brokenQuotes("«Apples", records)).toEqual([]);
+		const jane = [quoteRecord("Jane")];
+		expect(brokenQuotes("«Jane» «Janet»", jane)).toEqual([]);
+		expect(brokenQuotes("«Janet", jane)).toEqual([{ from: 0, to: 5, words: "Jane" }]);
+	});
+
+	it("takes out a quote an undo brings back with a mark gone, whatever letters stand beside it (round 3)", () => {
+		expect(keepQuotesWhole("«A» «B»tail", records, "«A» «Btail", 6, fieldEdit("deleteContentBackward", 7))).toEqual({
+			text: "«A» tail",
+			caret: 4,
+		});
+		expect(keepQuotesWhole("«A» tail", records, "«A» «Btail", 6, fieldEdit("historyUndo", 4)).text).toBe("«A» tail");
+		expect(keepQuotesWhole("«A» head«B»", records, "«A» headB»", 8, fieldEdit("deleteContentBackward", 9)).text).toBe(
+			"«A» head",
+		);
+		expect(keepQuotesWhole("«A» head", records, "«A» headB»", 10, fieldEdit("historyUndo", 8)).text).toBe("«A» head");
 	});
 
 	it("composes two edits into one", () => {
@@ -511,6 +529,16 @@ function key(field: HTMLTextAreaElement, at: number, text: string): void {
 	field.dispatchEvent(new InputEvent("input", init));
 }
 
+/** Delete (forward) at a caret. */
+function deleteAt(field: HTMLTextAreaElement, at: number): void {
+	const init = { inputType: "deleteContentForward", bubbles: true };
+	field.focus();
+	field.setSelectionRange(at, at);
+	field.dispatchEvent(new InputEvent("beforeinput", { ...init, cancelable: true }));
+	field.setRangeText("", at, at + 1, "end");
+	field.dispatchEvent(new InputEvent("input", init));
+}
+
 /** A paste as a browser makes it: the field says what it will replace, then replaces it. */
 function paste(field: HTMLTextAreaElement, start: number, end: number, text: string): void {
 	field.focus();
@@ -596,6 +624,43 @@ describe("quotes in the composer", () => {
 		expect(composer.value).toBe("«A» ");
 		history(composer, "historyUndo", "«A» «B»", 7);
 		expect(s.quotes()).toEqual([quote(1, 2), quote(5, 6)]);
+	});
+
+	it("takes out a quote an undo brings back with a mark gone, letters beside it or not (round 3)", async () => {
+		const s = await view();
+		const text = "«B»tail head«A»";
+		s.company.addToDraft(session.sessionId, { text, quotes: [quote(1, 2), quote(13, 14)] });
+		await settle();
+		const composer = s.composer();
+		const send = () => s.view.el.querySelector<HTMLButtonElement>(".composer-send")!;
+		// Backspace over B's closing mark, with letters right after it; an undo puts back the moment after it.
+		key(composer, 3, "");
+		expect(composer.value).toBe("tail head«A»");
+		history(composer, "historyUndo", "«Btail head«A»", 2);
+		expect(composer.value).toBe("tail head«A»");
+		history(composer, "historyUndo", text, 3);
+		expect(s.quotes()).toEqual([quote(1, 2), quote(13, 14)]);
+		// The mirror: Delete over A's opening mark, with letters right before it.
+		deleteAt(composer, 12);
+		expect(composer.value).toBe("«B»tail head");
+		history(composer, "historyUndo", "«B»tail headA»", 13);
+		expect(composer.value).toBe("«B»tail head");
+		history(composer, "historyUndo", text, 15);
+		// The member's own « right before a quote's words and more letters: held, never sent as their own words.
+		key(composer, 15, " Bx");
+		key(composer, 16, "«");
+		await settle();
+		expect(composer.value).toBe(`${text} «Bx`);
+		expect(s.company.draftBroken(session.sessionId)).toBe(true);
+		expect(s.note().textContent).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		expect(send().disabled).toBe(true);
+		key(composer, 18, "»");
+		// Marks that pair are the member's own, though a quote is "B".
+		key(composer, 20, " «Bob»");
+		await settle();
+		expect(composer.value).toBe(`${text} «B»x «Bob»`);
+		expect(s.quotes()).toEqual([quote(1, 2), quote(13, 14), quote(17, 18)]);
+		expect(send().disabled).toBe(false);
 	});
 
 	it("neither sends nor lets a quote's words go with one of their marks gone, and says so", async () => {
@@ -724,6 +789,10 @@ describe("sending quotes", () => {
 		const s = sending();
 		s.store.set({ draft: "«A» «B", quoteRecords: [quoteRecord("A"), quoteRecord("B")] });
 		expect(await s.controller.sendPrompt(session.sessionId, "«A» «B")).toBe(false);
+		expect(s.store.get().sendError).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		// Letters right after the words change nothing: no closing mark, no quote (round 3).
+		s.store.set({ draft: "«A» «Btail", sendError: undefined });
+		expect(await s.controller.sendPrompt(session.sessionId, "«A» «Btail")).toBe(false);
 		expect(s.store.get().sendError).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
 		expect(s.write).not.toHaveBeenCalled();
 	});
@@ -1047,6 +1116,41 @@ describe("room drafts keep their quotes", () => {
 			quote(5, 6),
 			quote(9, 10),
 		]);
+		expect(status.hidden).toBe(true);
+	});
+
+	it("takes out a teammate's quote an undo brings back with a mark gone, and never saves one (round 3)", async () => {
+		vi.useFakeTimers();
+		const text = "«B»tail head«A»";
+		const s = await view({ drafts: [roomDraft(userB.id, text, 2, { quotes: [quote(1, 2), quote(13, 14)] })] });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const panel = s.view.el.querySelector<HTMLElement>(".draft-panel")!;
+		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
+		key(input, 3, "");
+		expect(input.value).toBe("tail head«A»");
+		history(input, "historyUndo", "«Btail head«A»", 2);
+		expect(input.value).toBe("tail head«A»");
+		history(input, "historyUndo", text, 3);
+		deleteAt(input, 12);
+		expect(input.value).toBe("«B»tail head");
+		history(input, "historyUndo", "«B»tail headA»", 13);
+		expect(input.value).toBe("«B»tail head");
+		history(input, "historyUndo", text, 15);
+		key(input, 15, " Bx");
+		key(input, 16, "«");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.put).not.toHaveBeenCalled();
+		expect(status.textContent).toBe("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+		const mended = `${text} «B»x «Bob»`;
+		const quotes = [quote(1, 2), quote(13, 14), quote(17, 18)];
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userB.id, mended, 3, { quotes }) });
+		key(input, 18, "»");
+		key(input, 20, " «Bob»");
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, mended, quotes);
 		expect(status.hidden).toBe(true);
 	});
 
