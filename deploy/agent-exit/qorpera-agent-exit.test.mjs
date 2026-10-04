@@ -806,6 +806,86 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.ok(!readdirSync(failing).some((name) => name.startsWith("clients-")), "read now, and past 90 days");
 	});
 
+	test("a recount cut short goes on from where it stopped, keeping early-deleted days' numbers and unread history", () => {
+		// Two days: the first plugs 10.210.1.1 in for cA; the second unplugs it and plugs it in for cB.
+		const fixture = () => {
+			const folder = mkdtempSync(join(dir, "replay-"));
+			const second = t0 + DAY;
+			writeFileSync(join(folder, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
+			writeFileSync(join(folder, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200), opened("10.210.1.2", t0 + 300)]));
+			writeFileSync(
+				join(folder, `clients-${next}.jsonl`),
+				lines([machine("10.210.1.1", "cA", "mA", second + 100, "unplugged"), machine("10.210.1.1", "cB", "mB", second + 200)]),
+			);
+			writeFileSync(join(folder, `flows-${next}.jsonl`), lines([opened("10.210.1.1", second + 300), opened("10.210.1.2", second + 400)]));
+			return folder;
+		};
+		const run = (folder, now, ...extra) =>
+			spawnSync("python3", [logsTool, "tend", "--log-dir", folder, "--status", join(folder, "s.json"), "--now", String(now), "--settle", "0", "--free-percent", "50", ...extra], { encoding: "utf8" });
+		const read = (folder, name) => JSON.parse(readFileSync(join(folder, name), "utf8"));
+		// A late line for the first day (10.210.1.2 was cC's) arrives while the second day's counts cannot be written.
+		const lateAndCut = (folder) => {
+			writeFileSync(join(folder, `clients-${day}.jsonl`), lines([machine("10.210.1.2", "cC", "mC", t0 + 250)]));
+			mkdirSync(join(folder, `.counts-${next}.json.tmp`));
+		};
+
+		// Both days lost their connection log early (over the cap) after they were counted.
+		const early = fixture();
+		assert.equal(run(early, t0 + 2 * DAY + 3 * 3600).status, 0);
+		const counted = read(early, `counts-${next}.json`).companies;
+		assert.equal(counted.cB.connections, 1);
+		run(early, t0 + 2 * DAY + 4 * 3600, "--cap-bytes", "1");
+		assert.ok(!readdirSync(early).some((name) => name.startsWith("flows-")));
+		lateAndCut(early);
+		const cut = run(early, t0 + 2 * DAY + 5 * 3600);
+		assert.ok(JSON.parse(cut.stdout).countProblems.length > 0, cut.stdout);
+		assert.equal(read(early, "attribution.json").through, day, "the checkpoint moved on to the first day only");
+		rmSync(join(early, `.counts-${next}.json.tmp`), { recursive: true });
+		assert.equal(run(early, t0 + 2 * DAY + 6 * 3600).status, 0);
+		assert.deepEqual(read(early, `counts-${next}.json`).companies, counted, "never counted again from what is left");
+		assert.match(read(early, `counts-${next}.json`).lateClientHistory, /not counted again/);
+		const carried = read(early, "attribution.json");
+		assert.equal(carried.through, next);
+		assert.deepEqual([carried.open["10.210.1.1"].company, carried.open["10.210.1.2"].company], ["cB", "cC"]);
+
+		// The same recount cut short after 90 days: the second day's history is not in the checkpoint, so it stays.
+		const old = fixture();
+		assert.equal(run(old, t0 + 2 * DAY + 3 * 3600).status, 0);
+		lateAndCut(old);
+		const far = t0 + 100 * DAY;
+		run(old, far);
+		assert.equal(read(old, "attribution.json").through, day);
+		assert.ok(readdirSync(old).includes(`clients-${next}.p001.jsonl.gz`), readdirSync(old).join(" "));
+		assert.ok(!readdirSync(old).includes(`clients-${day}.p001.jsonl.gz`), "the first day's history is in the checkpoint");
+		rmSync(join(old, `.counts-${next}.json.tmp`), { recursive: true });
+		assert.equal(run(old, far).status, 0);
+		assert.equal(read(old, "attribution.json").open["10.210.1.1"].company, "cB", "cA's unplug and cB's plug were kept");
+		assert.ok(!readdirSync(old).some((name) => name.startsWith("clients-")), "read now, and past 90 days");
+	});
+
+	test("late history for a day whose counts are gone is marked unapplied, and no good numbers are counted again", () => {
+		const gone = mkdtempSync(join(dir, "gone-"));
+		writeFileSync(join(gone, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
+		writeFileSync(join(gone, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
+		writeFileSync(join(gone, `flows-${next}.jsonl`), lines([opened("10.210.1.1", t0 + DAY + 300), opened("10.210.1.2", t0 + DAY + 400)]));
+		const run = (now) =>
+			spawnSync("python3", [logsTool, "tend", "--log-dir", gone, "--status", join(gone, "s.json"), "--now", String(now), "--settle", "0", "--free-percent", "50"], { encoding: "utf8" });
+		assert.equal(run(t0 + 2 * DAY + 3 * 3600).status, 0);
+		const second = readFileSync(join(gone, `counts-${next}.json`), "utf8");
+		// The first day's counts are gone (as after 90 days); a late line for it cannot be applied exactly.
+		rmSync(join(gone, `counts-${day}.json`));
+		writeFileSync(join(gone, `clients-${day}.jsonl`), lines([machine("10.210.1.2", "cC", "mC", t0 + 250)]));
+		const r = run(t0 + 2 * DAY + 4 * 3600);
+		assert.equal(r.status, 0, r.stderr);
+		assert.equal(JSON.parse(r.stdout).daysCounted, 0);
+		assert.equal(readFileSync(join(gone, `counts-${next}.json`), "utf8"), second, "the second day's numbers stay");
+		const carried = JSON.parse(readFileSync(join(gone, "attribution.json"), "utf8"));
+		assert.deepEqual(carried.lateUnapplied, [`clients-${day}.p002.jsonl.gz`]);
+		assert.ok(carried.clientParts.includes(`clients-${day}.p002.jsonl.gz`));
+		assert.equal(carried.through, next);
+		assert.equal(JSON.parse(run(t0 + 2 * DAY + 5 * 3600).stdout).daysCounted, 0, "once");
+	});
+
 	test("a pass cut short never seals a line twice, and a DNS copy left plain is compressed", () => {
 		const crashed = mkdtempSync(join(dir, "crashed-"));
 		const line = lines([opened("10.210.1.1", t0 + 10)]);

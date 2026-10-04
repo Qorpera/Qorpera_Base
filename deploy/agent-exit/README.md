@@ -180,7 +180,9 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   address belongs to a company from its `plugged` line to its `unplugged` one; `attribution.json` carries the
   addresses still plugged in from one day to the next (and which client history parts it has read), and each day's
   counts keep who was plugged in when it began. A client history line that reaches a day already counted (after the
-  plug's reconciler was down, its `plugged` line can be days back) makes the tender count again from that day on.
+  plug's reconciler was down, its `plugged` line can be days back) makes the tender count again from that day on; for a
+  day whose counts are already gone (past 90 days) it cannot, so the line is noted in `attribution.json`
+  (`lateUnapplied`) and what it would have tied to a company stays unattributed.
   Traffic from an address with no company at that moment counts as `unattributed`. Counting never slows or refuses
   anything: the brake waits for the founder's levels.
 - **Keeps the disk safe.** 90 days are kept. Past 80% of the cap, or with less than the floor plus 5 points of the disk
