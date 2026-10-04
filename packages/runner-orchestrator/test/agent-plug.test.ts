@@ -148,7 +148,7 @@ describe("running the plug tool", () => {
 	}
 	it("runs it with the claim as arguments and an empty environment, and returns its MAC", async () => {
 		const { path, root } = await tool(
-			'json.dump({"argv": sys.argv[1:], "env": dict(os.environ)}, open(seen, "w"))\n' +
+			'json.dump({"argv": sys.argv[1:], "env": dict(os.environ), "isolated": sys.flags.isolated}, open(seen, "w"))\n' +
 				'print(json.dumps({"address": "10.210.3.4", "hwaddr": "0e:51:0a:d2:03:04"}))',
 		);
 		const plug = createAgentPlug(path);
@@ -169,7 +169,9 @@ describe("running the plug tool", () => {
 			"--instance",
 			claim.instance,
 		]);
-		// Python adds nothing of ours: only what an empty environment leaves (a locale variable at most).
+		// Isolated (python3 -I), and Python adds nothing of ours: only what an empty environment leaves (a locale
+		// variable at most).
+		expect(seen.isolated).toBe(1);
 		expect(Object.keys(seen.env).filter((key) => key !== "LC_CTYPE")).toEqual([]);
 		const machine = { ...claim, kind: "machine" as const, memberUserId: null };
 		await plug(machine, new AbortController().signal);
@@ -204,6 +206,11 @@ describe("running the plug tool", () => {
 			);
 			expect(refused.message).toBe(code);
 		}
+		// A crash is a failure, not a refusal.
+		const crashing = await tool('raise RuntimeError("no plug.lock")');
+		await expect(createAgentPlug(crashing.path)(claim, new AbortController().signal)).rejects.toThrow(
+			/^AGENT_PLUG_FAILED$/,
+		);
 		// The refusals are the tool's own words.
 		const source = await readFile(
 			new URL("../../../deploy/agent-exit/qorpera-agent-plug.py", import.meta.url),

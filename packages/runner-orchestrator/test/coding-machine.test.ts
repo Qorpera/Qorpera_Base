@@ -616,6 +616,9 @@ describe("a member's coding machine", () => {
 		).rejects.toThrow("AGENT_PLUG_MISSING");
 		expect(f.plug).not.toHaveBeenCalled();
 		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		// Nothing was journaled: the plan with its plug then creates as for a machine never tried.
+		expect((await f.reconcile()).state).toBe("pending");
+		expect(f.client.submitInstanceOperation.mock.calls[0][1]).toEqual({ action: "create", request: f.created });
 	});
 	it("is only the machine it is with its agent card: a plug MAC, the card's exact keys, on the agents' bridge", async () => {
 		const f = await fixture();

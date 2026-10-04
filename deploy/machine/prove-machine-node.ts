@@ -14,7 +14,9 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 // commands, stop and delete) against the node's LXD, with a small in-memory
 // stand-in for the kernel's custody RPCs. It never calls the database.
 //
-// Run as the coding executor's account (LXD socket, NAS control directory):
+// Run as the coding executor's account (LXD socket, NAS control directory, and the group
+// qorpera-agent-plug: the machine is plugged into the node's agent exit, which must be installed
+// and healthy, deploy/agent-exit/README.md):
 //   node prove-machine-node.mjs <proof.json>
 // proof.json: { policy, helperSha256, storagePolicy, journalRoot, cpus, memoryGiB, diskGiB,
 //               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host:port", ...] }

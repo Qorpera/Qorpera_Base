@@ -26,7 +26,7 @@ unplugged as gone, and one never seen has a new hour to appear.
 The reconciler (root, the plug unit) reads LXD every few seconds and keeps the map true:
 - a machine that stopped (asleep) keeps its address and its entry, and its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour of
-  its plug) is unplugged under the plug lock: its address is quarantined for 15 minutes first, then its lease is
+  its last plug) is unplugged under the plug lock: its address is quarantined for 15 minutes first, then its lease is
   removed (dnsmasq reloads), its connections and the exit's per-machine counts are cleared, and its entry is removed;
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy

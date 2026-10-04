@@ -358,7 +358,7 @@ describe("company machine host", () => {
 			"create",
 			"start",
 		]);
-		// Plugged in before each create, as the same machine: the same MAC both times.
+		// Plugged in before each create, with the same claim both times (the tool gives that claim its one entry).
 		expect(f.agentPlug).toHaveBeenCalledTimes(2);
 		expect(f.agentPlug.mock.calls[1][0]).toEqual(f.agentPlug.mock.calls[0][0]);
 		const g = await fixture();
