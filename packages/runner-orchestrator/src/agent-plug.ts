@@ -107,6 +107,13 @@ export function parseAgentPlugAnswer(text: string): string {
 	return value.hwaddr;
 }
 
+/** The plug tool's refusals (qorpera-agent-plug.py `plug`), by the codes the creators' logs keep. */
+export const PLUG_REFUSALS: readonly (readonly [RegExp, string])[] = [
+	[/^no free address in the agents' range$/, "NO_FREE_ADDRESS"],
+	[/ is already plugged in for another machine \(/, "PLUGGED_IN_FOR_ANOTHER_MACHINE"],
+	[/'s entry belongs to another creator$/, "ANOTHER_CREATORS_ENTRY"],
+];
+
 /** A plug that runs the node's plug tool: no shell, an empty environment (it reads its folders from its own
  * defaults), a bounded answer and a hard timeout. Tests point it at a stand-in tool. */
 export function createAgentPlug(tool = AGENT_PLUG_TOOL, python = "/usr/bin/python3", timeoutMs = 10_000): AgentPlug {
@@ -133,6 +140,8 @@ function plugWith(
 	)
 		return Promise.reject(new Error("AGENT_PLUG_CLAIM_INVALID"));
 	const args = [
+		// Isolated: no user site, no environment, no current folder on the path.
+		"-I",
 		tool,
 		"plug",
 		"--kind",
@@ -181,9 +190,10 @@ function plugWith(
 		child.on("error", () => finish(new Error("AGENT_PLUG_UNAVAILABLE")));
 		child.on("close", (status) => {
 			if (status !== 0) {
-				// The tool's own refusal ("no free address", "already plugged in for another machine") is one line.
-				const why = Buffer.concat(err).toString("utf8").trim().split("\n").at(-1)?.slice(0, 200) ?? "";
-				return finish(new Error(`AGENT_PLUG_REFUSED${why ? `: ${why}` : ""}`));
+				// The tool's own refusal is one line, which names machines and addresses: only its code goes on.
+				const why = Buffer.concat(err).toString("utf8").trim().split("\n").at(-1) ?? "";
+				const refusal = PLUG_REFUSALS.find(([words]) => words.test(why))?.[1];
+				return finish(new Error(refusal ? `AGENT_PLUG_REFUSED:${refusal}` : "AGENT_PLUG_REFUSED"));
 			}
 			try {
 				finish(null, parseAgentPlugAnswer(Buffer.concat(out).toString("utf8")));

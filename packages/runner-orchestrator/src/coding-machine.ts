@@ -14,6 +14,7 @@ import {
 	type AgentPlugClaim,
 	agentPlugCard,
 	isAgentPlugCard,
+	isAgentPlugMac,
 	runAgentPlug,
 	withAgentPlug,
 } from "./agent-plug.ts";
@@ -761,6 +762,14 @@ export async function reconcileCodingMachine(
 		const hwaddr = await (options.plug ?? runAgentPlug)(plan.agentPlug.claim, options.signal);
 		request = withAgentPlug(request, plan.agentPlug.device, hwaddr);
 	}
+	// No card on the agents' bridge goes out without a plug MAC: a plan that names no plug never makes one.
+	if (
+		action === "create" &&
+		Object.values(request?.devices ?? {}).some(
+			(device) => device.parent === AGENT_BRIDGE && !isAgentPlugMac(device.hwaddr),
+		)
+	)
+		throw new Error("AGENT_PLUG_MISSING");
 	// Fresh authority immediately before irreversible dispatch; journal CAS
 	// chooses one winner across processes. A crash after claiming is unknown.
 	signal = await authorize();

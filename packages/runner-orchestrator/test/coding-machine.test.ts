@@ -591,7 +591,9 @@ describe("a member's coding machine", () => {
 			project: "coding",
 			instance: f.plan.request.name,
 		});
-		// The fresh authority for the dispatch comes after the plug, so the plug costs none of it.
+		// The plug comes after LXD showed no instance, and the fresh authority for the dispatch after the plug, so
+		// the plug costs none of it.
+		expect(f.client.getInstance.mock.invocationCallOrder[0]).toBeLessThan(f.plug.mock.invocationCallOrder[0]);
 		expect(f.plug.mock.invocationCallOrder[0]).toBeLessThan(f.authorize.mock.invocationCallOrder.at(-1) as number);
 		expect(f.client.submitInstanceOperation.mock.calls[0][1]).toEqual({ action: "create", request: f.created });
 		expect(f.created.devices.network).toEqual({ ...agentPlugCard("eth0"), hwaddr: testAgentMac });
@@ -600,11 +602,20 @@ describe("a member's coding machine", () => {
 	});
 	it("dispatches nothing when the plug refuses", async () => {
 		const f = await fixture();
-		f.plug.mockRejectedValueOnce(new Error("AGENT_PLUG_REFUSED: no free address in the agents' range"));
+		f.plug.mockRejectedValueOnce(new Error("AGENT_PLUG_REFUSED:NO_FREE_ADDRESS"));
 		await expect(f.reconcile()).rejects.toThrow("AGENT_PLUG_REFUSED");
 		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 		expect((await f.reconcile()).state).toBe("pending");
 		expect(f.client.submitInstanceOperation.mock.calls[0][1]).toEqual({ action: "create", request: f.created });
+	});
+	it("never creates an agent card without a plug MAC: a plan that names no plug is refused before the dispatch", async () => {
+		const f = await fixture();
+		const { agentPlug: _, ...unplugged } = f.journal;
+		await expect(
+			reconcileCodingMachine({ ...f.options, plan: unplugged as CodingMachineJournalPlan }),
+		).rejects.toThrow("AGENT_PLUG_MISSING");
+		expect(f.plug).not.toHaveBeenCalled();
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 	});
 	it("is only the machine it is with its agent card: a plug MAC, the card's exact keys, on the agents' bridge", async () => {
 		const f = await fixture();

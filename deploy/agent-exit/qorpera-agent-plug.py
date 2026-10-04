@@ -20,8 +20,8 @@ LXD backs get into them: a claim LXD does not back gets no traffic at all.
 
 A creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses an address
 it stored: `plug` is the only source of a machine's address. A repeated `plug` for the
-same instance returns its entry, with a new time when the machine it was given to has been seen (it is being made
-again).
+same instance returns its entry with a new time: the machine is about to be made (again), so one that was seen is not
+unplugged as gone, and one never seen has a new hour to appear.
 
 The reconciler (root, the plug unit) reads LXD every few seconds and keeps the map true:
 - a machine that stopped (asleep) keeps its address and its entry, and its connections are flushed once;
@@ -306,14 +306,14 @@ def plug(paths, kind, company, machine, member, project, instance):
             wanted = {"kind": kind, "company": company, "machine": machine, "member": member}
             if any(entry.get(key) != value for key, value in wanted.items()):
                 raise SystemExit(f"{project}/{instance} is already plugged in for another machine ({entry['address']})")
-            if seen_since(paths, entry["address"]) == entry["since"]:
-                # Its machine was seen, and the creator plugs it again: the machine is being made again. A new time
-                # tells the reconciler that this entry's machine is a new one, so it is not unplugged as gone.
-                entry = dict(entry, since=now_iso(max(at, parse_iso(entry["since"]) + 1)))
-                try:
-                    write_replace(paths.entry(entry["address"]), json.dumps(entry, sort_keys=True) + "\n")
-                except PermissionError:
-                    raise SystemExit(f"{project}/{instance}'s entry belongs to another creator") from None
+            # The creator plugs it again: the machine is about to be made (again). A new time tells the reconciler so.
+            # A machine it saw is a new one, not unplugged as gone; one it never saw has a new hour to appear, so a
+            # create retried late is not unplugged as never created while it lands.
+            entry = dict(entry, since=now_iso(max(at, parse_iso(entry["since"]) + 1)))
+            try:
+                write_replace(paths.entry(entry["address"]), json.dumps(entry, sort_keys=True) + "\n")
+            except PermissionError:
+                raise SystemExit(f"{project}/{instance}'s entry belongs to another creator") from None
             ensure_lease(paths, entry)
             return entry
         for address in candidates():

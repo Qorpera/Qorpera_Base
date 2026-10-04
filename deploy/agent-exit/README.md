@@ -57,8 +57,9 @@ It prints `{"address": "10.210.x.y", "hwaddr": "0e:51:0a:d2:xx:yy"}`: the lowest
 (kept for the exit's own services) that is not in quarantine and not still held by a machine, and a MAC made from it.
 It writes the client map entry `/var/lib/qorpera-agent-exit/clients/<address>.json` (created exclusively, so two
 creators never share an address) and the lease `dhcp-hosts/<address>`, which dnsmasq reads by itself. Asked again for
-the same instance, it gives the same answer (with a new time when the machine it was given to has been seen: it is
-being made again); for another machine on the same instance it refuses. Files get mode 0644 whatever the creator's
+the same instance, it gives the same answer with a new time (the machine is about to be made again: one that was seen
+is not unplugged as gone, and one never seen has a new hour to appear); for another machine on the same instance it
+refuses. Files get mode 0644 whatever the creator's
 umask (dnsmasq's unprivileged user reads the leases). The creator then makes the machine with this card, and nothing
 else on `qagent0`:
 

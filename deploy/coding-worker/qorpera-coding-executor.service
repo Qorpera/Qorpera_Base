@@ -9,11 +9,11 @@ User=qorpera-coding-executor
 Group=qorpera-coding-executor
 # qorpera-agent-plug: the executor plugs every machine it makes into the node's agent exit
 # (deploy/agent-exit, qorpera-agent-plug.py plug) right before the create. The exit must be installed first: a
-# missing group fails the start.
+# missing group or folder fails the start.
 SupplementaryGroups=lxd qorpera-agent-plug
-# The plug tool writes the client map entry and the lease, and takes its lock; nothing else of the exit's state.
+# The plug tool writes the client map entry and the lease, nothing else of the exit's state. Its lock (plug.lock,
+# which the exit makes) it opens read-only: flock needs no write access.
 ReadWritePaths=/var/lib/qorpera-agent-exit/clients /var/lib/qorpera-agent-exit/dhcp-hosts
-ReadWritePaths=/var/lib/qorpera-agent-exit/plug.lock
 # Deployment must install a drop-in with RequiresMountsFor=<dedicated NAS mount>
 # and ReadWritePaths=<dedicated service-owned NAS root>. Missing mount fails closed.
 ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs

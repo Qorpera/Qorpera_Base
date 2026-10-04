@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	AGENT_BRIDGE,
@@ -9,6 +11,7 @@ import {
 	createAgentPlug,
 	isAgentPlugCard,
 	isAgentPlugMac,
+	PLUG_REFUSALS,
 	parseAgentPlugAnswer,
 	withAgentPlug,
 } from "../src/agent-plug.ts";
@@ -66,6 +69,24 @@ describe("the agent card", () => {
 			7,
 		])
 			expect(isAgentPlugMac(mac)).toBe(false);
+	});
+	it("carries a MAC the plug tool gives some address, and no other MAC of the agents' /16", () => {
+		// Every address of 10.210.0.0/16 through the tool's own hwaddr_for, and whether its candidates() gives it out.
+		const tool = fileURLToPath(new URL("../../../deploy/agent-exit/qorpera-agent-plug.py", import.meta.url));
+		const script = [
+			"import importlib.util, ipaddress, json, sys",
+			'spec = importlib.util.spec_from_file_location("plug", sys.argv[1])',
+			"plug = importlib.util.module_from_spec(spec)",
+			"spec.loader.exec_module(plug)",
+			"given = set(plug.candidates())",
+			'print(json.dumps([[plug.hwaddr_for(str(a)), str(a) in given] for a in ipaddress.ip_network("10.210.0.0/16")]))',
+		].join("\n");
+		const macs = JSON.parse(
+			execFileSync("/usr/bin/python3", ["-I", "-c", script, tool], { encoding: "utf8", maxBuffer: 16 << 20 }),
+		) as [string, boolean][];
+		expect(macs).toHaveLength(65536);
+		expect(macs.filter(([, given]) => given).length).toBe(255 * 254);
+		expect(macs.filter(([mac, given]) => isAgentPlugMac(mac) !== given)).toEqual([]);
 	});
 	it("gets the plug's MAC only on an agent card that has none yet", () => {
 		const plugged = withAgentPlug(request, "network", "0e:51:0a:d2:01:01");
@@ -167,11 +188,31 @@ describe("running the plug tool", () => {
 			await expect(plug(bad, new AbortController().signal)).rejects.toThrow("AGENT_PLUG_CLAIM_INVALID");
 		await expect(readFile(join(root, "seen.json"), "utf8")).rejects.toThrow();
 	});
-	it("passes the tool's own refusal on, and refuses an answer that is not one", async () => {
-		const refusing = await tool('sys.exit("no free address in the agents\' range")');
-		await expect(createAgentPlug(refusing.path)(claim, new AbortController().signal)).rejects.toThrow(
-			"AGENT_PLUG_REFUSED: no free address in the agents' range",
+	it("passes the tool's own refusal on as a code, and refuses an answer that is not one", async () => {
+		for (const [words, code] of [
+			["no free address in the agents' range", "AGENT_PLUG_REFUSED:NO_FREE_ADDRESS"],
+			[
+				"coding/m is already plugged in for another machine (10.210.1.1)",
+				"AGENT_PLUG_REFUSED:PLUGGED_IN_FOR_ANOTHER_MACHINE",
+			],
+			["coding/m's entry belongs to another creator", "AGENT_PLUG_REFUSED:ANOTHER_CREATORS_ENTRY"],
+			["kind must be one of coding, machine, office", "AGENT_PLUG_REFUSED"],
+		]) {
+			const refusing = await tool(`sys.exit(${JSON.stringify(words)})`);
+			const refused = await createAgentPlug(refusing.path)(claim, new AbortController().signal).catch(
+				(error) => error,
+			);
+			expect(refused.message).toBe(code);
+		}
+		// The refusals are the tool's own words.
+		const source = await readFile(
+			new URL("../../../deploy/agent-exit/qorpera-agent-plug.py", import.meta.url),
+			"utf8",
 		);
+		const raised = [...source.matchAll(/raise SystemExit\(f?"([^"]+)"\)/g)].map(([, words]) =>
+			words.replace(/\{[^}]*\}/g, "x"),
+		);
+		for (const [words] of PLUG_REFUSALS) expect(raised.filter((text) => words.test(text))).toHaveLength(1);
 		const lying = await tool('print(json.dumps({"address": "10.210.3.4", "hwaddr": "0e:51:0a:d2:03:05"}))');
 		await expect(createAgentPlug(lying.path)(claim, new AbortController().signal)).rejects.toThrow(
 			"AGENT_PLUG_ANSWER_INVALID",
@@ -204,7 +245,6 @@ describe("the coding executor's unit", () => {
 		expect(writable.sort()).toEqual([
 			"/var/lib/qorpera-agent-exit/clients",
 			"/var/lib/qorpera-agent-exit/dhcp-hosts",
-			"/var/lib/qorpera-agent-exit/plug.lock",
 		]);
 	});
 });

@@ -358,6 +358,9 @@ describe("company machine host", () => {
 			"create",
 			"start",
 		]);
+		// Plugged in before each create, as the same machine: the same MAC both times.
+		expect(f.agentPlug).toHaveBeenCalledTimes(2);
+		expect(f.agentPlug.mock.calls[1][0]).toEqual(f.agentPlug.mock.calls[0][0]);
 		const g = await fixture();
 		g.client.inspectInstanceOperation.mockImplementation(async () => "failed");
 		expect((await g.host.pass(g.signal))[0]).toMatchObject({
@@ -369,6 +372,7 @@ describe("company machine host", () => {
 			"create",
 			"create",
 		]);
+		expect(g.agentPlug).toHaveBeenCalledTimes(3);
 		// Nothing was ever made: a member's delete has nothing to wait for.
 		Object.assign(g.entry, { desiredState: "deleted", removeDue: true, reserved: false });
 		expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);

@@ -27,7 +27,7 @@ An agent picks the size (CPUs, memory, disk). Inside, the agent's commands run a
 
 ### What a machine can reach
 
-A machine is an agent road machine: its only network card is a port of the agents' bridge `qagent0`, and its internet traffic leaves through the node's agent exit (`deploy/agent-exit/README.md`, contract section 19 "agent traffic leaves through the agent exit"). The executor plugs each machine in right before it creates it (`agent-plug.ts`: the node's plug tool gives the machine its address and the MAC its card carries), so the policy's `network` must be `qagent0`. The exit refuses our own networks and TCP port 25, its bridge rules tie each machine to its port, MAC and address, and LXD's MAC filter and port isolation keep machines apart; the exit's log names the machine's company. The agent exit must be installed and healthy on the node first (`deploy/agent-exit/ROLLOUT.md`).
+A machine is an agent road machine: its only network card is a port of the agents' bridge `qagent0`, and its internet traffic leaves through the node's agent exit (`deploy/agent-exit/README.md`, contract section 19 "agent traffic leaves through the agent exit"). The executor plugs each machine in right before it creates it (`agent-plug.ts`: the node's plug tool gives the machine its address and the MAC its card carries), so the policy's `network` must be `qagent0`. The exit refuses our own networks and TCP port 25, its bridge rules tie each machine to its port, MAC and address, and LXD's MAC filter and port isolation keep machines apart; the exit's log names the machine's company. The agent exit must be installed and healthy on the node first (`deploy/agent-exit/README.md`, "Switching a node on").
 
 Until 3 October 2026 machines used their own NAT bridge, made by `setup-machine-network.sh` (default `machine-net`, `10.88.0.1/22`), with an ACL that dropped these destinations. The script stays for reference; no machine uses that bridge any more:
 
@@ -65,7 +65,7 @@ The steps below need root on the node and a maintenance window. The coordinator 
 
 1. **Package the guest** from a checkout whose `npm run check` passes:
    `node scripts/package-machine-guest.mjs --out /task-owned/machine-guest`. The helper must stay under 64 KiB, because the executor re-reads it to check its pin.
-2. **Create the project** on the node, with the agent exit installed and healthy (`deploy/agent-exit/ROLLOUT.md`):
+2. **Create the project** on the node, with the agent exit installed and healthy (`deploy/agent-exit/README.md`, "Switching a node on"):
    - `lxc project create machines -c features.images=false -c features.profiles=false`
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
    - The executor's unit joins the group `qorpera-agent-plug` and may write the exit's client map (`deploy/coding-worker/qorpera-coding-executor.service`).

@@ -15,7 +15,7 @@ import {
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInstanceRecord } from "../src/lxd-client.ts";
-import { testAgentMac } from "./helpers/coding-machine.ts";
+import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const mocked = vi.hoisted(() => ({
 	reconcile: vi.fn(),
@@ -506,6 +506,7 @@ async function fixture() {
 		repositoryCredentials: {
 			withRepositoryToken: vi.fn(async (_scope, _repository, use) => use("test-token-never-sent-to-guest")),
 		},
+		agentPlug: testAgentPlug,
 	};
 	const host = new LxdCodingExecutorHost(options),
 		signal = new AbortController().signal;
@@ -623,6 +624,8 @@ describe("a coding turn on its member's machine", () => {
 		expect(reconciled()).toEqual(["running"]);
 		const journal = (mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions).plan;
 		expect(journal).toMatchObject({ machineId: f.machine.machineId, journalName: f.machine.machineId });
+		// The node's agent plug, for the create.
+		expect((mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions).plug).toBe(testAgentPlug);
 		expect(vi.mocked(f.client.replaceInstanceDevices).mock.calls).toEqual([
 			["coding", f.plan.request.name, { ...f.base, ...f.sessionDevices(f.claim.workerId) }, f.signal],
 		]);
