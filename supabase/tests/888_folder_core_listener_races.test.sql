@@ -174,6 +174,13 @@ delete from public.qorpera_folder_company_index where environment_id = '70900000
 delete from public.qorpera_folder_journal where environment_id = '70900000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_path_versions where environment_id = '70900000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '70900000-0000-4000-8000-000000000020';
+-- P17's conflict copies hold their commits (RESTRICT): gone first, once the table exists.
+do $$
+begin
+	if to_regclass('public.qorpera_folder_conflict_copies') is not null then
+		execute 'delete from public.qorpera_folder_conflict_copies where environment_id = ''70900000-0000-4000-8000-000000000020''';
+	end if;
+end $$;
 delete from public.qorpera_folder_commits where environment_id = '70900000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_operation_keys where environment_id = '70900000-0000-4000-8000-000000000020';
 delete from public.qorpera_company_cofounders where profile_id = '70900000-0000-4000-8000-000000000010';
