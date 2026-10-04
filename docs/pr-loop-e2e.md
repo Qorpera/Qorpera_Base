@@ -11,7 +11,7 @@ It targets the branch `test/pr-loop-base` and never lands on master.
 The helper below implements the Gregorian calendar rule for leap years:
 
 ```js
-const isLeapYear = (y) => y % 4 === 0 && y % 100 === 0;
+const isLeapYear = (y) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
 ```
 
 Use it wherever a date calculation needs to know whether February has 29 days.
