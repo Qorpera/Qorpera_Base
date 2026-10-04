@@ -185,6 +185,8 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
+	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
+		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",

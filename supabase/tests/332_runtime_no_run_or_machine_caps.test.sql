@@ -83,8 +83,9 @@ begin
 			'qorpera_runtime_worker_events_sequence_check') and pg_get_constraintdef(oid) ~ '<=') then
 		raise exception 'A worker or chain count remains'; end if;
 	-- Waiting to start is bounded from the last time a job was queued, which every requeue records.
-	if (select count(*) from pg_proc where oid in ('public.qorpera_terminalize_runner_attempt_before_native_start(uuid,text,text,boolean)'::regprocedure,
-			'public.qorpera_handoff_run_sponsor(uuid,text)'::regprocedure) and prosrc like '%queued_at = statement_timestamp()%') <> 2 then
+	-- (The usage-limit handoff, the other requeue path, is gone since 20260930048000.)
+	if (select count(*) from pg_proc where oid = 'public.qorpera_terminalize_runner_attempt_before_native_start(uuid,text,text,boolean)'::regprocedure
+			and prosrc like '%queued_at = statement_timestamp()%') <> 1 then
 		raise exception 'A requeue path does not record when the job was queued again'; end if;
 end
 $$;

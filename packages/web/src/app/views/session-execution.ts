@@ -22,8 +22,10 @@ function remainingAllowance(connection: NativeMemberConnection, now: number): nu
 	return windows.length ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
 }
 
-/** A conversation keeps its own account until that account becomes unavailable.
- * New conversations choose the member's account with the most remaining allowance. */
+/** A conversation keeps its own account, also at its usage limit: sending waits until it
+ * resets, and only the member moves a conversation to another account (founder decision
+ * 2026-10-04, migration 20260930048000). New conversations choose the member's account with
+ * the most remaining allowance. */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;
@@ -307,8 +309,16 @@ export class SessionExecutionView {
 			return;
 		const available = this.#available();
 		const kept = conversation.executionSponsor;
-		// Follow a runtime handoff on the same durable binding before selecting
-		// another account. A retry still keeps its exact original request authority.
+		// A conversation keeps its account even when it cannot pay now; only one the
+		// member disconnected is replaced, as a new conversation chooses.
+		const keeps =
+			kept !== undefined &&
+			this.#observed.connections.some(
+				(connection) => connection.connectionId === kept.connectionId && connection.connectionStatus === "active",
+			);
+		// Follow the conversation's binding to the member's new connection after they
+		// sign in again; never to another account. A retry still keeps its exact
+		// original request authority.
 		const handedOff =
 			kept &&
 			this.#observed.connections
@@ -324,7 +334,7 @@ export class SessionExecutionView {
 				? this.#serverConnectionId
 				: undefined
 			: (handedOff?.connectionId ??
-				(kept && available.includes(kept.connectionId) ? kept.connectionId : available[0]));
+				(kept && keeps ? (available.includes(kept.connectionId) ? kept.connectionId : undefined) : available[0]));
 		if (!next) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
@@ -391,17 +401,23 @@ export class SessionExecutionView {
 						),
 					)
 				: this.#observed && !this.#error && !this.canSend && !this.#busy
-					? h(
-							"p",
-							{ class: "muted" },
-							this.#observed.connections.some((connection) => remainingAllowance(connection, Date.now()) === 0)
-								? t(
-										"Your model accounts have reached their usage limits. Sending resumes when an account resets.",
-									)
-								: t("Connect a model account in Settings → My connections to send messages."),
-						)
+					? h("p", { class: "muted" }, this.#unavailableReason(this.#observed))
 					: null,
 		);
+	}
+
+	/** Why sending is off. A conversation's own account at its limit is named first: the
+	 * conversation waits for it and never moves to another account on its own. */
+	#unavailableReason(observed: NativeExecutionConnections): string {
+		const now = Date.now();
+		const own =
+			this.#serverConnectionId ?? this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
+		if (own && atLimit.some((connection) => connection.connectionId === own))
+			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
+		if (atLimit.length)
+			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
+		return t("Connect a model account in Settings → My connections to send messages.");
 	}
 
 	dispose(): void {

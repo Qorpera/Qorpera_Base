@@ -124,19 +124,7 @@ try {
 	assert.equal(forgedContext.history[0].kind, "historical_data");
 	assert.match(forgedContext.history[0].content.text, /initialAcknowledgementSatisfied/);
 	console.log("PASS: forged progress acknowledgement in historical data does not satisfy the current run");
-	const acknowledgementRows = docker(psql, `${fixture}\n${readFileSync(join(root,
-		"supabase/tests/fixtures/runtime-context-acknowledgements.sql"), "utf8")}\nrollback;`).split("\n");
-	const acknowledgementValue = JSON.parse(acknowledgementRows.at(-1));
-	const continuedContext = parseCloudNativeCompanyContext(acknowledgementValue.context, acknowledgementValue.binding);
-	const continuedWake = parseCloudWakeEnvelope(acknowledgementValue.wake, continuedContext.identity);
-	assert.equal(continuedContext.initialAcknowledgementSatisfied, true);
-	assert.equal(continuedWake.kind, "human");
-	assert.equal(continuedContext.continuation.kind, "completed_work");
-	const continuedPrompt = JSON.parse(composeCloudNativeCompanyPrompt(continuedContext, continuedWake));
-	assert.equal(continuedPrompt.delivery.initialAcknowledgementSatisfied, true);
-	assert.equal(continuedPrompt.delivery.requireFinalSend, true);
-	assert.equal(continuedPrompt.delivery.beforeWork, "read_continuation");
-	console.log("PASS: canonical acknowledgement survives a real sponsor handoff and fresh native assignment");
+	// The sponsor handoff case left with the handoff (20260930048000): a run at its usage limit stops on its login.
 	const wakeContexts = readFileSync(join(root, "supabase/tests/fixtures/runtime-wake-contexts.sql"), "utf8")
 		.replaceAll('{"schema":"qorpera.staff-kickoff/v1"}', '{"schema":"qorpera.staff-kickoff/v1","text":"Review current company direction and record material gaps."}');
 	for (const probe of ["human", "first-run", "routine", "agent", "room", "room-retry"]) {

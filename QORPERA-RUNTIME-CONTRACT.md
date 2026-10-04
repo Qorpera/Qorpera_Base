@@ -2069,11 +2069,9 @@ no longer makes a sponsor handoff (migration 20260928349910): the paragraphs
 above that describe one, and the old text of acceptance 29, are superseded for
 every login. A rate limit or a provider outage is still not a usage limit: it
 neither stops the work as one nor shows the usage-limit message. Choosing the
-payer for new work is unchanged by this amendment: a member's next turn and
-follow-up work still take a login with room left first, which can be the
-member's other login, and routines and coding turns follow the handoff
-versions made before this change (no new ones are made). Whether new work
-must also stay on the exhausted login is a separate decision.
+payer for new work was left unchanged by this amendment (a member's next turn
+and follow-up work still took a login with room left first, which could be the
+member's other login); the 2026-10-04 amendment below settles it.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -2094,6 +2092,33 @@ or rotated; is retried, for a failed run or a change's review, only by the
 member whose plan pays; and is not used while its company is being deleted. A
 run in progress is never handed to another login (the amendment above, #601).
 Codex logins are unchanged by this amendment.
+
+2026-10-04 amendment: the payer never changes without the member (founder
+decision: "the system should never be able to swap what member pays without
+permission"; migration 20260930048000). For every kind of login, not only
+ChatGPT plans:
+
+- A conversation keeps its login, also at its usage limit (sending waits
+  until it resets), while the login needs a new sign-in and while its computer
+  recovers. When the member signs in again, the conversation follows its
+  binding to their new connection for the same account. Only a login the
+  member disconnected is replaced, by a new conversation's first choice: the
+  member's login with the most room left.
+- Work that follows a run (a coworker's or a worker's wake, a review of the
+  run's change and its retry) stays on that run's login or company account,
+  also at its usage limit, which then stops it there. When that login can no
+  longer pay at all (disconnected, or its consent to work while the member is
+  away switched off), the work does not start; it never moves to another login
+  or to a company account.
+- New work with no run to follow takes the requester's own login with the
+  most room left, then their used-up login, whose limit stops the work. A
+  company account pays only for a member with no login of their own and never
+  stands in for a login at its limit.
+- The sponsor handoff is removed. Moving work to another login is the member's
+  own act; today that is starting a new conversation.
+
+This supersedes the follow-up order of the 2026-09-28 amendment above (the
+requester's login with room left first, then a company account).
 
 ## 18. Short constitution
 
@@ -5003,9 +5028,10 @@ while Azure backup/overflow remains disabled.
 29. When a sponsoring connection reaches its usage limit, the member is
     notified, the affected run fails without moving to another login, its
     recovery read names the usage limit, and the thread says the work stopped
-    (2026-10-01 amendment, section 17). A rate limit or a provider outage is not
-    a usage limit and does not show the usage-limit message. No other member's
-    credential is ever used.
+    (2026-10-01 amendment, section 17). The conversation and the work that
+    follows the run stay on that login (2026-10-04 amendment). A rate limit or a
+    provider outage is not a usage limit and does not show the usage-limit
+    message. No other member's credential is ever used.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the

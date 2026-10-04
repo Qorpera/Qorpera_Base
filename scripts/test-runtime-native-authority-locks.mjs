@@ -102,11 +102,11 @@ try {
 	}
 	console.log("PASS: actual host validation overlaps repeated native helpers and public send without a profile/job deadlock");
 
-	// Direct control-plane handoff and member recovery must also select job
-	// before run. Their normal callers may already own job, but the RPCs are
-	// independently callable, including against an active run they will refuse.
+	// Member recovery must also select job before run. Its normal callers may
+	// already own job, but the RPC is independently callable, including against
+	// an active run it will refuse. (The control-plane sponsor handoff is gone
+	// since 20260930048000.)
 	for (const [kind, actor, operation, expectedState] of [
-		["handoff", service, `select public.qorpera_handoff_run_sponsor(${literal(binding.runId)},'fixture has no usage-limit signal');`, null],
 		["recovery", `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;`,
 			`select public.qorpera_resolve_failed_execution_run(${literal(binding.runId)},'discard');`, "55000"],
 	]) {
@@ -131,7 +131,7 @@ try {
 			assert.equal(results[1].output, "");
 		}
 	}
-	console.log("PASS: direct handoff and member recovery overlap host job ownership while preserving their no-handoff/active-run-refusal results");
+	console.log("PASS: member recovery overlaps host job ownership while preserving its active-run refusal");
 
 	// Concurrent ordinary renewals plus native/office readers all execute their
 	// real entry points, retaining the same original admitted authority tuple.
@@ -164,7 +164,6 @@ try {
 	const unauthorizedResult = await unauthorizedRecovery.done;
 	assert.match(unauthorizedResult.error, /42501/);
 	assert.doesNotMatch(unauthorizedResult.error, /57014/);
-	assert.equal(query(`${service} select public.qorpera_handoff_run_sponsor(${literal(randomUUID())},'unknown run');`), "");
 	const waiting = session();
 	waiting.child.stdin.end(`set application_name='native-lock-revocation'; ${service} ${validate()}`);
 	await until(() => query("select count(*) from pg_stat_activity where application_name='native-lock-revocation' and wait_event_type='Lock';") === "1");
@@ -203,10 +202,9 @@ try {
 		from unnest(array['service_role','anon','authenticated','qorpera_secret_broker']) role;`));
 	assert.deepEqual(privileges, { service_role: true, anon: false, authenticated: false, qorpera_secret_broker: false });
 	const terminalPrivileges = JSON.parse(query(`select jsonb_build_object(
-		'handoffService',has_function_privilege('service_role','public.qorpera_handoff_run_sponsor(uuid,text)','EXECUTE'),
-		'handoffMember',has_function_privilege('authenticated','public.qorpera_handoff_run_sponsor(uuid,text)','EXECUTE'),
+		'handoffGone',to_regprocedure('public.qorpera_handoff_run_sponsor(uuid,text)') is null,
 		'recoveryMember',has_function_privilege('authenticated','public.qorpera_resolve_failed_execution_run(uuid,text)','EXECUTE'));`));
-	assert.deepEqual(terminalPrivileges, { handoffService: true, handoffMember: false, recoveryMember: true });
+	assert.deepEqual(terminalPrivileges, { handoffGone: true, recoveryMember: true });
 	const recovered = JSON.parse(query(`begin;
 		set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;
 		select public.qorpera_cancel_runner_job(${literal(binding.jobId)});
