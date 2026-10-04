@@ -32,6 +32,9 @@ export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
 });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** A folder version's op, as a file wake's change names it (folder core P29). */
+const FOLDER_FILE_WAKE_OPS: ReadonlySet<string> = new Set(["write", "mkdir", "delete", "move_out", "move_in", "copy"]);
+
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud wake");
 	const object = value as Record<string, unknown>;
@@ -364,27 +367,39 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			if (source.id !== routine.id || parentRunId !== null || actorStaffId !== null)
 				throw new Error("Invalid schedule identity");
 		} else if (source.kind === "company-file") {
-			const event = closed(payloadBody, [
-				"eventId",
-				"path",
-				"previousVersion",
-				"version",
-				"operation",
-				"receiptId",
-				"proposalId",
-			]);
+			// A folder change set that touched the routine's watch (folder core P29): what it did there, as the run may
+			// read it now, at most 21 changes; more counts readable ones left out (up to 1000).
+			const change = closed(payloadBody, ["schema", "seq", "commitId", "changes", "more"]);
 			if (
-				uuid(event.eventId) !== source.id ||
-				typeof event.path !== "string" ||
-				!event.path ||
-				Buffer.byteLength(event.path) > 4096 ||
-				(event.operation !== "upsert" && event.operation !== "delete")
+				change.schema !== "qorpera.folder-file-wake/v1" ||
+				uuidKey(change.commitId) !== uuidKey(source.id) ||
+				!Number.isSafeInteger(change.seq) ||
+				(change.seq as number) < 1 ||
+				!Array.isArray(change.changes) ||
+				change.changes.length > 21 ||
+				!Number.isSafeInteger(change.more) ||
+				(change.more as number) < 0 ||
+				(change.more as number) > 1000
 			)
 				throw new Error("Invalid file wake metadata");
-			uuid(event.version);
-			nullableUuid(event.previousVersion);
-			nullableUuid(event.receiptId);
-			nullableUuid(event.proposalId);
+			for (const item of change.changes) {
+				const one = closedWithOptional(item, ["path", "op", "version"], ["priorVersion", "from"]);
+				if (
+					typeof one.path !== "string" ||
+					!one.path ||
+					Buffer.byteLength(one.path) > 4096 ||
+					typeof one.op !== "string" ||
+					!FOLDER_FILE_WAKE_OPS.has(one.op) ||
+					(Object.hasOwn(one, "from") &&
+						(one.op !== "move_in" ||
+							typeof one.from !== "string" ||
+							!one.from ||
+							Buffer.byteLength(one.from) > 4096))
+				)
+					throw new Error("Invalid file wake metadata");
+				uuid(one.version);
+				if (Object.hasOwn(one, "priorVersion")) uuid(one.priorVersion);
+			}
 		} else if (source.kind === "event") {
 			// Events from one of the company's hooks (W2): outside content, at most 20 a wake.
 			const batch = closed(payloadBody, ["hookId", "firstDeliveryId", "hook", "events", "more"]);

@@ -1181,6 +1181,81 @@ describe("dynamic routine wakes", () => {
 	});
 });
 
+describe("folder file wakes", () => {
+	function fileWake(payload: Record<string, unknown> = {}) {
+		const { authority, envelope } = fixture();
+		const routineId = randomUUID();
+		const commitId = randomUUID();
+		return {
+			identity: authority.identity,
+			commitId,
+			wake: {
+				...envelope,
+				kind: "routine",
+				actorUserId: null,
+				source: { kind: "company-file", id: commitId, occurrenceKey: "file:42:1" },
+				policy: policies[2].policy,
+				routine: { id: routineId, version: 1, intent: "Check every new contract." },
+				payload: {
+					schema: "qorpera.folder-file-wake/v1",
+					seq: 42,
+					commitId,
+					changes: [
+						{ path: "docs/contracts/acme.md", op: "write", version: randomUUID(), priorVersion: randomUUID() },
+						{
+							path: "docs/contracts/beta.md",
+							op: "move_in",
+							version: randomUUID(),
+							priorVersion: randomUUID(),
+							from: "inbox/beta.md",
+						},
+					],
+					more: 3,
+					...payload,
+				},
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it("admits a change set's changes under the watch, with the readable rest counted", () => {
+		const { wake, identity } = fileWake();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.payload.changes).toHaveLength(2);
+		expect(parsed.payload.more).toBe(3);
+	});
+	it.each([
+		{ schema: "qorpera.folder-file-wake/v2" },
+		{ commitId: randomUUID() },
+		{ seq: 0 },
+		{ more: -1 },
+		{ more: 1001 },
+		{ changes: Array.from({ length: 22 }, () => ({ path: "docs/x.md", op: "write", version: randomUUID() })) },
+		{ changes: [{ path: "", op: "write", version: randomUUID() }] },
+		{ changes: [{ path: "docs/x.md", op: "rename", version: randomUUID() }] },
+		{ changes: [{ path: "docs/x.md", op: "write", version: randomUUID(), from: "docs/y.md" }] },
+		{ changes: [{ path: "docs/x.md", op: "write", version: randomUUID(), extra: true }] },
+		{ eventId: randomUUID() },
+	])("rejects a file wake with %j", (payload) => {
+		const { wake, identity } = fileWake(payload);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
+	});
+	it("refuses the snapshot-v1 shape", () => {
+		const { wake, identity, commitId } = fileWake();
+		const legacy = {
+			...wake,
+			payload: {
+				eventId: commitId,
+				path: "docs/a.md",
+				previousVersion: null,
+				version: randomUUID(),
+				operation: "upsert",
+				receiptId: null,
+				proposalId: null,
+			},
+		} as unknown as CloudWakeEnvelope;
+		expect(() => parseCloudWakeEnvelope(legacy, identity)).toThrow();
+	});
+});
+
 describe("event wakes", () => {
 	function eventWake(payload: Record<string, unknown> = {}, source: Record<string, unknown> = {}) {
 		const { authority, envelope } = fixture();

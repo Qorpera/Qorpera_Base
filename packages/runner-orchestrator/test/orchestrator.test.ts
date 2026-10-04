@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	type CloudFolderDrainPage,
+	type CloudFolderDrainResult,
+	CloudFolderDrains,
 	type CloudFolderDynamicRoutine,
 	type CloudFolderDynamicRoutinePage,
 	type CloudFolderDynamicRoutineRun,
@@ -831,6 +834,177 @@ describe("cloud runner orchestrator", () => {
 		expect(() => new CloudFolderRunMaterializer({ pageSize: 0 })).toThrow(
 			"Folder materialization page size is outside the supported range",
 		);
+	});
+
+	it("lists a folder drain's due environments and runs one through the private control plane", async () => {
+		const environmentId = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d";
+		const requests: unknown[] = [];
+		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push(body);
+			return Response.json({
+				value:
+					body.action === "folder_drain_due"
+						? {
+								items: [{ environment_id: environmentId }],
+								has_more: true,
+								next_after_environment_id: environmentId,
+							}
+						: { schema: "qorpera.folder-listen/v1", state: "done", processedSeq: 7, wakes: 1 },
+			});
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			fakeFetch as typeof fetch,
+		);
+		await expect(control.listFolderDrainDue("listen", undefined, 100)).resolves.toEqual({
+			items: [environmentId],
+			hasMore: true,
+			nextAfterEnvironmentId: environmentId,
+		});
+		await expect(control.runFolderDrain("listen", environmentId, 32)).resolves.toEqual({ state: "done" });
+		expect(requests).toEqual([
+			{ action: "folder_drain_due", orchestratorId, drain: "listen", limit: 100 },
+			{ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId, limit: 32 },
+		]);
+		await expect(control.listFolderDrainDue("Listen!", undefined, 100)).rejects.toThrow(
+			"Folder drain name is invalid",
+		);
+		await expect(control.runFolderDrain("listen", environmentId, 257)).rejects.toThrow(
+			"Folder drain limit is outside the supported range",
+		);
+		await expect(control.listFolderDrainDue("listen", "not-a-uuid", 100)).rejects.toThrow("Folder drain cursor");
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { state: "Fired!" } }));
+		await expect(control.runFolderDrain("listen", environmentId, 32)).rejects.toThrow("invalid folder drain state");
+		fakeFetch.mockImplementationOnce(async () =>
+			Response.json({ value: { items: [{ environment_id: environmentId }], has_more: true } }),
+		);
+		await expect(control.listFolderDrainDue("listen", undefined, 100)).rejects.toThrow(
+			"inconsistent folder drain pagination",
+		);
+	});
+
+	it("runs each folder drain's companies in their own requests; a drain's outage or a company's failure stops no other", async () => {
+		const first = "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e";
+		const second = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
+		const control = controlPlane();
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		const list = vi.fn(async (drain: string, after: string | undefined): Promise<CloudFolderDrainPage> => {
+			if (drain === "workers") throw unknown;
+			return after
+				? { items: [second], hasMore: false }
+				: { items: [first], hasMore: true, nextAfterEnvironmentId: first };
+		});
+		const run = vi.fn(
+			async (drain: string, environmentId: string, _limit: number): Promise<CloudFolderDrainResult> => {
+				if (drain === "listen" && environmentId === first) throw failure;
+				return { state: "done" };
+			},
+		);
+		control.listFolderDrainDue = list;
+		control.runFolderDrain = run;
+		let now = new Date("2026-10-04T09:00:00.000Z");
+		const drains = new CloudFolderDrains({
+			now: () => now,
+			drains: [
+				{ name: "workers", companyLimit: 8 },
+				{ name: "listen", companyLimit: 32 },
+			],
+		});
+		await expect(drains.reconcile(control)).rejects.toMatchObject({ errors: [unknown, failure] });
+		expect(run.mock.calls).toEqual([
+			["listen", first, 32],
+			["listen", second, 32],
+		]);
+		// The drain the edge function did not know waits ten minutes; the other goes on every pass.
+		now = new Date("2026-10-04T09:05:00.000Z");
+		run.mockImplementation(async () => ({ state: "idle" }));
+		await expect(drains.reconcile(control)).resolves.toBeUndefined();
+		expect(list.mock.calls.filter(([drain]) => drain === "workers")).toHaveLength(1);
+		now = new Date("2026-10-04T09:11:00.000Z");
+		await expect(drains.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		expect(list.mock.calls.filter(([drain]) => drain === "workers")).toHaveLength(2);
+		// A control plane without the actions makes no request; the bounds and names are checked.
+		await expect(new CloudFolderDrains().reconcile(controlPlane())).resolves.toBeUndefined();
+		expect(() => new CloudFolderDrains({ drains: [{ name: "listen", companyLimit: 257 }] })).toThrow(
+			"Folder drain company limit is outside the supported range",
+		);
+		expect(() => new CloudFolderDrains({ drains: [{ name: "Listen", companyLimit: 1 }] })).toThrow(
+			"Folder drain name is invalid",
+		);
+		expect(
+			() =>
+				new CloudFolderDrains({
+					drains: [
+						{ name: "listen", companyLimit: 1 },
+						{ name: "listen", companyLimit: 2 },
+					],
+				}),
+		).toThrow("listed twice");
+	});
+
+	it("backs off a failing folder drain and a failing company on their own, doubling, and forgets it after a success", async () => {
+		const first = "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e";
+		const second = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
+		const control = controlPlane();
+		const outage = new CloudRunnerOrchestratorRequestError(503);
+		let workersDown = true;
+		let firstFails = true;
+		const list = vi.fn(async (drain: string): Promise<CloudFolderDrainPage> => {
+			if (drain === "workers" && workersDown) throw outage;
+			return { items: [first, second], hasMore: false };
+		});
+		const run = vi.fn(async (drain: string, environmentId: string): Promise<CloudFolderDrainResult> => {
+			if (drain === "listen" && environmentId === first && firstFails) throw outage;
+			return { state: "done" };
+		});
+		control.listFolderDrainDue = list;
+		control.runFolderDrain = run;
+		const start = Date.parse("2026-10-04T09:00:00.000Z");
+		let now = new Date(start);
+		const at = (ms: number) => {
+			now = new Date(start + ms);
+		};
+		const drains = new CloudFolderDrains({
+			now: () => now,
+			drains: [
+				{ name: "workers", companyLimit: 8 },
+				{ name: "listen", companyLimit: 32 },
+			],
+		});
+		const listed = (drain: string) => list.mock.calls.filter(([name]) => name === drain).length;
+		const ran = (environmentId: string) =>
+			run.mock.calls.filter(([drain, id]) => drain === "listen" && id === environmentId).length;
+
+		await expect(drains.reconcile(control)).rejects.toMatchObject({ errors: [outage, outage] });
+		expect([listed("workers"), ran(first), ran(second)]).toEqual([1, 1, 1]);
+		// Within the first second neither the failed drain nor the failed company is asked; the others are.
+		at(500);
+		await expect(drains.reconcile(control)).resolves.toBeUndefined();
+		expect([listed("workers"), listed("listen"), ran(first), ran(second)]).toEqual([1, 2, 1, 2]);
+		// After 1 s both are asked again and fail again: now they wait 2 s.
+		at(1_000);
+		await expect(drains.reconcile(control)).rejects.toMatchObject({ errors: [outage, outage] });
+		expect([listed("workers"), ran(first)]).toEqual([2, 2]);
+		at(2_500);
+		await expect(drains.reconcile(control)).resolves.toBeUndefined();
+		expect([listed("workers"), ran(first), ran(second)]).toEqual([2, 2, 4]);
+		// Both recover; a later failure waits 1 s again.
+		workersDown = false;
+		firstFails = false;
+		at(3_000);
+		await expect(drains.reconcile(control)).resolves.toBeUndefined();
+		expect([listed("workers"), ran(first)]).toEqual([3, 3]);
+		firstFails = true;
+		at(4_000);
+		await expect(drains.reconcile(control)).rejects.toMatchObject({ errors: [outage] });
+		at(5_000);
+		await expect(drains.reconcile(control)).rejects.toMatchObject({ errors: [outage] });
+		expect(ran(first)).toBe(5);
 	});
 
 	it("recomputes an unadmitted initial slot from the existing latest-slot rule", async () => {

@@ -390,7 +390,7 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 | `id` | yes | UUID: the routine id cursors and occurrences use |
 | `title` | yes | 1–160 bytes |
 | `status` | yes | `active`, `paused`, `concluded` ("expired" is derived by the scheduler) |
-| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (refused on `folder-v2` until core C4 brings the folder's file events); `event` comes with W2 (#519): `hook` (the hook's lowercase uuid), optional `only` (1–20 distinct event types), plus `timezone` and `reply`, added by whichever of W2 and F2-6 lands second |
+| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (on `folder-v2` since core C4's P29, below); `event` comes with W2 (#519): `hook` (the hook's lowercase uuid), optional `only` (1–20 distinct event types), plus `timezone` and `reply`, added by whichever of W2 and F2-6 lands second |
 | `minutes` | every, window | 5–10080 |
 | `starts` | every, weekly: optional | UTC instant, to the millisecond at most (what a schedule keeps) |
 | `days` | weekly (required), window (optional) | list of `mon`…`sun`, at least one |
@@ -409,6 +409,16 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 | `reply` | no | optional (default), required, silent |
 | `conclusion` | when concluded, and only then | 1–2000 bytes |
 | body | yes | what to do each time, up to 32768 bytes trimmed |
+
+**`file-change`** (core C4, P29; `RUNTIME-COMPANY-FOLDER-LISTENER.md`): the agent is woken once for each saved change
+set that touches `watch` (the path itself for `exact`, the path or anything under it for `subtree`), with the changed
+paths it may read. Its own change sets never wake it.
+- The save refuses a `watch` the agent, with its requester, may not read, and a routine a ChatGPT plan would pay for.
+- The routine listens from the change set that last saved its file. **Any save of the file, even one that changes
+  nothing, drops the changes the listener had not reached yet:** they are never delivered. A resume is a save, so it
+  starts again from the resume.
+- While the company is paused, changes wake nothing and are not replayed after the resume.
+- A path the agent may not read is never named or counted. The wake names at most 21 changes and counts the rest.
 
 **Ownership:**
 - A key of another `when` is refused by name.
@@ -1402,7 +1412,7 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    briefs and results, with core C3's writers: the worker tools commit them as the run (see
    "Plan (F2-5b)").
 7. **F2-6** routines (migration 20260928259310), last because the scheduler, schedule positions
-   and decisions are the most delicate part. `file-change` routines wait for core C4.
+   and decisions are the most delicate part. `file-change` routines came with core C4 (P29).
 
 Each step comes after F1's C1 (C1b brings the call sites), is `folder-v2` only, rides the release
 train, and gets an independent exact-head review. The web screens for each kind follow with
