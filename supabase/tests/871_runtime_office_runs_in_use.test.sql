@@ -148,13 +148,14 @@ begin
 	where id = '64800000-0000-4000-8000-0000000000f2';
 	set local session_replication_role = origin;
 end $$;
--- A durable receipt of Ada's run, written p_ago ago (as a tool call's effect begins).
-create function pg_temp.receipt(p_ago interval) returns void language plpgsql as $$
+-- A durable receipt of Ada's run (or of another run), written p_ago ago (as a tool call's effect begins).
+create function pg_temp.receipt(p_ago interval, p_run_id uuid default '64800000-0000-4000-8000-0000000000f1')
+returns void language plpgsql as $$
 begin
 	set local session_replication_role = replica;
 	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
 		input_sha256, downstream_idempotency_sha256, created_at)
-	values (extensions.gen_random_uuid(), '64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-0000000000f2',
+	values (extensions.gen_random_uuid(), p_run_id, '64800000-0000-4000-8000-0000000000f2',
 		'64800000-0000-4000-8000-0000000000f5', 'tool:' || extensions.gen_random_uuid(), 'cloud_tool', repeat('a', 64), repeat('b', 64),
 		clock_timestamp() - p_ago);
 	set local session_replication_role = origin;
@@ -213,6 +214,28 @@ select pg_temp.check(not public.qorpera_run_model_request_in_flight('64800000-00
 select pg_temp.check(not pg_temp.in_use() and not pg_temp.demand(), 'then the run counts by its progress clock alone: idle');
 rollback;
 begin;
+-- The bound holds for a reply that keeps pulsing too.
+select pg_temp.record('native_result_fence', 'start', '121 minutes');
+select pg_temp.view('121 minutes');
+select pg_temp.record('native_result_fence', 'finish', '121 minutes');
+select pg_temp.record('message_composition', 'start', '100 minutes');
+select pg_temp.check(not public.qorpera_run_model_request_in_flight('64800000-0000-4000-8000-0000000000f1')
+	and not pg_temp.in_use(), 'a reply still pulsing two hours after its context view is no longer in flight');
+rollback;
+begin;
+-- The newest request's view counts, not an older one's.
+select pg_temp.record('native_result_fence', 'start', '150 minutes');
+select pg_temp.view('150 minutes');
+select pg_temp.record('native_result_fence', 'finish', '150 minutes');
+select pg_temp.record('native_result_fence', 'start', '30 minutes');
+select pg_temp.view('30 minutes');
+select pg_temp.record('native_result_fence', 'finish', '30 minutes');
+select pg_temp.check(pg_temp.in_use(), 'a request 30 minutes old is in flight, whatever older requests the run made');
+-- Another run's receipt after the view does not end it.
+select pg_temp.receipt('25 minutes', '87100000-0000-4000-8000-0000000000e1');
+select pg_temp.check(pg_temp.in_use(), 'another run''s receipt leaves this run''s request in flight');
+rollback;
+begin;
 select pg_temp.record('native_result_fence', 'start', '30 minutes');
 select pg_temp.view('30 minutes');
 select pg_temp.record('native_result_fence', 'finish', '30 minutes');
@@ -232,7 +255,7 @@ select pg_temp.check(pg_temp.in_use(), 'a receipt from before the request leaves
 rollback;
 
 -- 3. The run's reply streams: its newest record is a "writing" pulse, older than 15 minutes (a hang inside the request
---    keeps the computer awake until the run ends).
+--    keeps the computer awake for at most two hours from its context view, 2b).
 begin;
 select pg_temp.record('native_result_fence', 'start', '30 minutes');
 select pg_temp.view('30 minutes');

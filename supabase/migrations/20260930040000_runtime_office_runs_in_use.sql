@@ -6,13 +6,14 @@
 --   keeps the computer awake on its own: its resources are not yet drained.
 -- - A model request is in flight from its context view until the run records anything else. The run's own records
 --   arrive in order, so: the newest of them that is not a "writing" pulse is the request's result fence (recorded
---   around its context view), or the newest of all is a pulse of its reply. A long single request never makes a run
---   idle. The exception ends at the latest two hours after the request's context view (durable, written before every
---   request; the longest real requests take well under an hour), or at any durable receipt the run writes after that
---   view: so a harness that hangs inside a request, or lost diagnostics after a tool call, hold the computer at most
---   two hours, and then the run counts by its progress clock alone (the coordinator, 4 October 2026). These are
---   diagnostic records: if they are lost, a request counts only through its context view, for
---   qorpera_run_stall_minutes().
+--   around its context view), or the newest of all is a pulse of its reply. A long single request keeps its run in
+--   use for up to two hours: the exception ends at the latest two hours after the request's context view (durable,
+--   written before every request; the longest real requests take well under an hour), or at any durable receipt the
+--   run writes after that view. So a harness that hangs inside a request, or lost diagnostics after a tool call, hold
+--   the computer at most two hours, and then the run counts by its progress clock alone (the coordinator, 4 October
+--   2026). These are diagnostic records: if a request's own records are lost, it counts only through its context
+--   view, for qorpera_run_stall_minutes(); if the records after it are lost, it stays in flight until the two hours
+--   or the run's next receipt.
 -- - qorpera_runtime_office_has_demand counts a leased run of an agent with access, and an agent run's screen lease,
 --   only while that run is in use. A queued run still counts (its job start is its first progress), as do runs and
 --   requests waiting for the computer to start.
@@ -20,10 +21,11 @@
 --   is not handed to another agent, but the computer may sleep.
 
 -- Whether a run's model request is in flight, from its newest records (at most 400, as gap 4's clock reads them),
--- within two hours of the request's context view and before any receipt the run wrote after it.
+-- within two hours of the request's context view and before any receipt the run wrote after it. Its clock is the
+-- statement's, as gap 4's.
 create function public.qorpera_run_model_request_in_flight(p_run_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
-	select coalesce((select view.created_at > clock_timestamp() - interval '2 hours'
+	select coalesce((select view.created_at > statement_timestamp() - interval '2 hours'
 			and not exists (select 1 from public.qorpera_run_operation_receipts receipt
 				where receipt.run_id = p_run_id and receipt.created_at > view.created_at)
 		from public.qorpera_native_context_views view where view.run_id = p_run_id order by view.ordinal desc limit 1), false)
