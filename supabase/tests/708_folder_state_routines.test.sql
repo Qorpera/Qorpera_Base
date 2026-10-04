@@ -421,12 +421,14 @@ begin
 			jsonb_build_array('two', pg_temp.rparse(ea, 'Two', pg_temp.every()))))));
 	if pg_temp.problem(r) is distinct from 'two routine files in one change carry the same id' then
 		raise exception 'One file per routine within a unit: %', r; end if;
-	-- Timing the scheduler runs: file-change waits for the folder's file events; time zones the database knows; starts to
-	-- the millisecond.
+	-- Timing the scheduler runs: a file-change routine watches only what its agent may read (P29, 20260930020000; 887 has
+	-- the rest); time zones the database knows; starts to the millisecond.
 	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0005', jsonb_build_array(pg_temp.routine('agents/nora/routines/watch.md',
-		pg_temp.rparse(ea, 'Watch', '{"when":"file-change","watch":"sales","match":"subtree"}'))))) is distinct from
-		'a file-change routine waits for the folder''s file events, which come later; use every, weekly, window or once' then
-		raise exception 'file-change waits'; end if;
+		pg_temp.rparse(ea, 'Watch', '{"when":"file-change","watch":"members/70700000-0000-4000-8000-000000000002/private","match":"subtree"}'))))) is distinct from
+		'this routine''s agent may not read members/70700000-0000-4000-8000-000000000002/private, so it cannot watch it' then
+		raise exception 'file-change watches only what its agent may read: %', pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0005b',
+			jsonb_build_array(pg_temp.routine('agents/nora/routines/watch.md', pg_temp.rparse(ea, 'Watch',
+				'{"when":"file-change","watch":"members/70700000-0000-4000-8000-000000000002/private","match":"subtree"}'))))); end if;
 	if pg_temp.problem(pg_temp.commit(pg_temp.owner(), 'rule-0006', jsonb_build_array(pg_temp.routine('agents/nora/routines/mars.md',
 		pg_temp.rparse(ea, 'Mars', '{"when":"weekly","days":["mon"],"time":"09:00","starts":null}', '{"timezone":"Mars/Olympus"}'))))) is distinct from
 		'the platform does not know the time zone Mars/Olympus; use a name like Europe/Copenhagen' then
