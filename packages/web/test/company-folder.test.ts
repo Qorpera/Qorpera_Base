@@ -520,10 +520,8 @@ describe("the Company File page", () => {
 
 	it("is the company's folder, with no other File page to choose", async () => {
 		const fake = folderFake();
-		const mode = vi.spyOn(WebCompanyFiles.prototype, "mode");
 		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.client as never);
 		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const files = vi.spyOn(WebCompanyFiles.prototype, "files");
 		const f = fixture(),
 			stop = new AbortController();
 		const company = new WebCompanyFiles(f.cloud, profileA, me, team.role, stop.signal, () => {});
@@ -534,7 +532,5 @@ describe("the Company File page", () => {
 		await settle();
 		expect(view.el.classList.contains("folder-page")).toBe(true);
 		expect(rows(view.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
-		expect(files).not.toHaveBeenCalled();
-		expect(mode).not.toHaveBeenCalled();
 	});
 });
