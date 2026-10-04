@@ -405,6 +405,16 @@ is never upgraded. The steps:
    rows (§5), the queue rows (§5) and the commit row. A unit whose version
    check failed is not applied: nobody's work is overwritten, and its bytes
    stay on the receipt as a conflict copy.
+   - Built in slice P17 (`20260930033000`, SQL test 823): a write or new
+     folder that conflicted keeps each of its files as a row of
+     `qorpera_folder_conflict_copies` (commit, unit, file number, the path it
+     would have been stored at, the file reference). A conflict is decided
+     before the bytes, so a copy is kept only when the whole unit's files
+     would have passed the bytes check against step 6's locked objects (the
+     proof, no GC mark, the actor's possession); otherwise nothing is kept.
+     The commit's units JSON is unchanged. A copy reads as an old version of
+     its path (`qorpera_folder_object_readable`), so whoever may read the
+     path can fetch it and commit it again.
 9. **Check.** An explicit check over the structured units confirms that every
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
@@ -822,7 +832,9 @@ An object is retained while it is referenced by any of:
 - a path version (kept for good, apart from the git-object exception and
   erasure);
 - an open upload intent;
-- a conflict copy on a receipt;
+- a conflict copy on a receipt (P17: `qorpera_folder_conflict_copies`, in
+  `qorpera_folder_object_rooted`; erasing a path will remove its copies,
+  which the folder GC + erasure session adds to `qorpera_folder_erase`);
 - an open proposal, including units parked on a review card, which never
   expire (2026-09-25 amendment, item 5); or
 - a retention hold.
