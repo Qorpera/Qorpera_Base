@@ -12,11 +12,11 @@ import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
 
 /* The company hub: every cloud company the member belongs to, pending
- * invitations, founding tables, and creation of a new company. Once the cloud
- * creates companies on the company folder, "New company" opens a founding
- * table (qorpera_open_company_founding); until then it creates the company at
- * once (qorpera_create_cloud_company). There is no local company list — the
- * cloud is the only registry. */
+ * invitations, founding tables, and creation of a new company. "New company"
+ * opens a founding table (qorpera_open_company_founding), where the founders
+ * start it together. While the cloud has switched the lobby off, creating a
+ * company is paused; there is no other way to create one. There is no local
+ * company list — the cloud is the only registry. */
 
 /** A role as the hub names it; the English is the role's own word. */
 const ROLE_LABELS: Record<HostedProfileRole, string> = {
@@ -34,11 +34,11 @@ export interface HubState {
 	invitations: HostedIncomingProfileInvitation[];
 	/** Founding tables you sit at or are invited to. */
 	tables: FoundingTableEntry[];
-	/** New companies start at a founding table; undefined until the cloud has said. */
+	/** New companies can start at a founding table now; undefined until the cloud has said. */
 	foundingAvailable?: boolean;
 	busyTable?: string;
 	error?: string;
-	creating?: { name: string; clientCreationId: string; state: string; table?: boolean };
+	creating?: { name: string; clientCreationId: string };
 	creationRetry?: { name: string; clientCreationId: string };
 	busyInvitation?: string;
 	/** The "New company" tile is open for typing. */
@@ -53,7 +53,8 @@ export class HubController {
 	#disposed = false;
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
-	#creation: { name: string; clientCreationId: string; table?: boolean } | undefined;
+	/** A table being opened, kept across a reload so a retry reuses its creation id. */
+	#creation: { name: string; clientCreationId: string } | undefined;
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
@@ -63,23 +64,22 @@ export class HubController {
 			const saved: unknown = JSON.parse(
 				this.#creationKey ? (sessionStorage.getItem(this.#creationKey) ?? "null") : "null",
 			);
+			// Only a table's creation is kept; one the old "create at once" form left is dropped.
 			if (
 				saved &&
 				typeof saved === "object" &&
 				"name" in saved &&
 				"clientCreationId" in saved &&
+				"table" in saved &&
+				saved.table === true &&
 				typeof saved.name === "string" &&
 				saved.name.trim() &&
 				typeof saved.clientCreationId === "string" &&
 				UUID_PATTERN.test(saved.clientCreationId)
 			) {
-				this.#creation = {
-					name: saved.name,
-					clientCreationId: saved.clientCreationId,
-					...("table" in saved && saved.table === true ? { table: true } : {}),
-				};
+				this.#creation = { name: saved.name, clientCreationId: saved.clientCreationId };
 				this.store.set({ creationRetry: this.#creation });
-			}
+			} else if (saved !== null && this.#creationKey) sessionStorage.removeItem(this.#creationKey);
 		} catch {
 			/* A blocked storage API must not block the company hub. */
 		}
@@ -125,8 +125,8 @@ export class HubController {
 		}
 	}
 
-	/** Tables never hold up the company list. A cloud without the founding lobby yet ("no such
-	 * function") keeps the old "New company" form; any other failure keeps what the hub knew. */
+	/** Tables never hold up the company list. A cloud without the founding lobby ("no such function")
+	 * creates no company here; any other failure keeps what the hub knew. */
 	async #readFounding(): Promise<Pick<HubState, "tables" | "foundingAvailable">> {
 		try {
 			const [available, tables] = await Promise.all([
@@ -185,75 +185,35 @@ export class HubController {
 			return;
 		}
 		const route = location.hash;
-		this.store.set({ creating: { name: trimmed, clientCreationId: "", state: "requested" }, error: undefined });
-		// Whether a new company starts at a table must be known, never guessed: a failed read would
-		// otherwise create the company at once once tables are on.
-		let table = this.store.get().foundingAvailable;
-		if (table === undefined) {
-			try {
-				table = await this.#api.companyFoundingAvailable();
-				this.store.set({ foundingAvailable: table });
-			} catch (error) {
-				if (!(error instanceof CloudRpcError && error.missing)) {
-					this.store.set({ creating: undefined, error: describeError(error) });
-					return;
-				}
-				table = false;
-			}
-			if (this.#disposed) return;
-		}
-		// A pending creation of the other kind is a different ledger: start this one afresh.
-		const clientCreationId =
-			this.#creation && (this.#creation.table ?? false) === table
-				? this.#creation.clientCreationId
-				: crypto.randomUUID();
-		this.#creation = { name: trimmed, clientCreationId, table };
+		this.store.set({ creating: { name: trimmed, clientCreationId: "" }, error: undefined });
+		// Asked every time, never taken from an older read: the cloud may have switched the lobby on or off since.
+		let available: boolean;
 		try {
-			if (this.#creationKey) sessionStorage.setItem(this.#creationKey, JSON.stringify(this.#creation));
+			available = await this.#api.companyFoundingAvailable();
+		} catch (error) {
+			if (this.#disposed) return;
+			available = false;
+			if (!(error instanceof CloudRpcError && error.missing)) {
+				this.store.set({ creating: undefined, error: describeError(error) });
+				return;
+			}
+		}
+		if (this.#disposed) return;
+		this.store.set({ foundingAvailable: available });
+		if (!available) {
+			this.store.set({ creating: undefined, error: t("Creating a company is paused. Try again later.") });
+			return;
+		}
+		const clientCreationId = this.#creation?.clientCreationId ?? crypto.randomUUID();
+		this.#creation = { name: trimmed, clientCreationId };
+		try {
+			if (this.#creationKey)
+				sessionStorage.setItem(this.#creationKey, JSON.stringify({ ...this.#creation, table: true }));
 		} catch {
 			/* Keep the in-memory operation when storage is unavailable. */
 		}
-		this.store.set({ creating: { name: trimmed, clientCreationId, state: "requested", table } });
-		if (table) {
-			await this.#openTable(trimmed, clientCreationId, route);
-			return;
-		}
-		try {
-			let result = await this.#api.createCompany(clientCreationId, trimmed);
-			if (this.#disposed) return;
-			const started = Date.now();
-			// Clouds with the Order 0 bootstrap ledger report queued/leased until
-			// the Company File and Co-Founder are seeded; re-calling with the same
-			// client creation id is idempotent and returns progress.
-			while (
-				(result.bootstrapState === "queued" || result.bootstrapState === "leased") &&
-				Date.now() - started < 90_000
-			) {
-				this.store.set({
-					creating: { name: trimmed, clientCreationId, state: result.bootstrapState, table: false },
-				});
-				await new Promise((resolve) => setTimeout(resolve, 2000));
-				if (this.#disposed) return;
-				result = await this.#api.createCompany(clientCreationId, trimmed);
-				if (this.#disposed) return;
-			}
-			if (result.bootstrapState === "blocked")
-				throw new Error(t("The cloud could not provision the company's Company File."));
-			if (result.bootstrapState === "queued" || result.bootstrapState === "leased")
-				throw new Error(t("The company is still being created. Resume to check its progress."));
-			this.#creation = undefined;
-			try {
-				if (this.#creationKey) sessionStorage.removeItem(this.#creationKey);
-			} catch {
-				/* The admitted company is also recoverable from the cloud list. */
-			}
-			this.store.set({ creating: undefined, creationRetry: undefined });
-			await this.refresh();
-			if (!this.#disposed && location.hash === route)
-				navigate({ name: "company", profileId: result.profile.profileId, section: "meet" });
-		} catch (error) {
-			this.store.set({ creating: undefined, creationRetry: this.#creation, error: describeError(error) });
-		}
+		this.store.set({ creating: { name: trimmed, clientCreationId } });
+		await this.#openTable(trimmed, clientCreationId, route);
 	}
 
 	/** The table is the company being founded: open it, then invite co-founders there. */
@@ -392,13 +352,11 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 		h(
 			"div",
 			{ class: "hub-progress" },
-			state.creating?.table
-				? spinner(t("Opening a table for {name}", { name: state.creating.name }))
-				: spinner(state.creating ? t("Creating {name}", { name: state.creating.name }) : t("Creating the company")),
-			// Only a company created at once is seeded now; a table is not, and neither is known yet.
-			state.creating?.table === false
-				? h("span", { class: "muted small" }, t("Seeding its Company File and Co-Founder."))
-				: null,
+			spinner(
+				state.creating
+					? t("Opening a table for {name}", { name: state.creating.name })
+					: t("Opening a table for the company"),
+			),
 		);
 	const invitations = [
 		...state.tables
@@ -409,7 +367,6 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 	const myTables = state.tables
 		.filter((table) => table.myState === "joined")
 		.map((table) => tableCard(hub, table, state.busyTable === table.profileId));
-	const founding = state.foundingAvailable === true;
 
 	if (welcome) {
 		// The character persists across re-renders so its motion is never
@@ -436,13 +393,9 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 						{ class: "hub-lead" },
 						invited
 							? t("Join a company you have been invited to, or start one of your own.")
-							: founding
-								? t(
-										"Give it a name. Your co-founders join you at its table, and it starts when everyone is ready.",
-									)
-								: t(
-										"Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.",
-									),
+							: t(
+									"Give it a name. Your co-founders join you at its table, and it starts when everyone is ready.",
+								),
 					),
 					invited ? h("div", { class: "invite-list" }, ...invitations) : null,
 					invited ? h("div", { class: "hub-or", "aria-hidden": "true" }, h("span", null, t("or"))) : null,
@@ -452,11 +405,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 								"form",
 								{ class: "hub-create", onsubmit: onSubmit },
 								nameInput,
-								h(
-									"button",
-									{ type: "submit", class: "hub-create-submit" },
-									founding ? t("Open a table") : t("Create company"),
-								),
+								h("button", { type: "submit", class: "hub-create-submit" }, t("Open a table")),
 							),
 					state.error ? notice("danger", state.error) : null,
 					state.creationRetry && !busy
@@ -492,11 +441,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					h(
 						"div",
 						{ class: "row" },
-						h(
-							"button",
-							{ type: "submit", class: "hub-create-submit" },
-							founding ? t("Open a table") : t("Create"),
-						),
+						h("button", { type: "submit", class: "hub-create-submit" }, t("Open a table")),
 						button(t("Cancel"), () => hub.store.set({ composing: false })),
 					),
 				)
@@ -509,13 +454,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					},
 					h("span", { class: "company-new-mark", "aria-hidden": "true" }, "+"),
 					h("span", { class: "company-name" }, t("New company")),
-					h(
-						"span",
-						{ class: "muted small" },
-						founding
-							? t("Opens a table for you and your co-founders")
-							: t("Seeds a Company File and a Co-Founder"),
-					),
+					h("span", { class: "muted small" }, t("Opens a table for you and your co-founders")),
 				);
 	replace(
 		container,

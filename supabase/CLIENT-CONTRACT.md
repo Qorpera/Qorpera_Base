@@ -488,10 +488,11 @@ its members and an empty company folder (no seeded files); nothing else exists
 until Start (no Co-Founder or first run), so no agent runs and nothing is
 charged before it (20260930010000).
 
-- `qorpera_company_founding_available()` → boolean. False until new companies
-  are created on the company folder; until then the hub keeps
-  `qorpera_create_cloud_company`, and opening or starting a table is refused
-  (`0A000`).
+- `qorpera_company_founding_available()` → boolean. True since P39
+  (20260930031000): new companies start at a founding table on the company
+  folder. False is the rollback: opening or starting a table is then refused
+  (`0A000`), and the hub says creating a company is paused. The hub has no
+  other way to create a company.
 - `qorpera_open_company_founding(p_client_creation_id, p_company_name)` opens
   a table with the caller's seat; repeat-safe per creation id. Needs a
   confirmed email. A creation id that already belongs to a company that is not

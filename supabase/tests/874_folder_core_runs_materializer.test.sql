@@ -113,6 +113,8 @@ begin
 		or v_request.failure_reason is distinct from 'The selected execution sponsor or computer is no longer available'
 		or v_input.failed_at is null or v_input.execution_run_id is not null then
 		raise exception 'A request on a revoked login did not fail: % % %', v_result, to_jsonb(v_request), to_jsonb(v_input); end if;
+	if public.qorpera_folder_company_first_run_state(v_profile) is distinct from 'failed' then
+		raise exception 'The table does not show the failed first run'; end if;
 	if exists (select 1 from public.qorpera_execution_runs where profile_id = v_profile)
 		or exists (select 1 from public.qorpera_runner_jobs where profile_id = v_profile)
 		or exists (select 1 from public.qorpera_wake_occurrences where profile_id = v_profile) then
@@ -175,6 +177,8 @@ begin
 	if pg_temp.admitted(v_profile) <> v_admitted + 1
 		or not exists (select 1 from public.qorpera_execution_run_events where run_id = v_run.id and event_type = 'queued') then
 		raise exception 'The pass was not admitted once'; end if;
+	if public.qorpera_folder_company_first_run_state(v_profile) is distinct from 'started' then
+		raise exception 'The table does not show the first run started'; end if;
 	-- Nothing more is due.
 	if pg_temp.listed(v_profile) or pg_temp.materialize(v_profile) ->> 'state' is distinct from 'idle' then
 		raise exception 'The company is still due after its first run'; end if;

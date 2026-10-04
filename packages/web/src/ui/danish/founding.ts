@@ -37,6 +37,13 @@ export const FOUNDING: Record<string, string> = {
 	"Opening the table": "Åbner bordet",
 	"Opens a table for you and your co-founders": "Åbner et bord til dig og dine medstiftere",
 	"Preparing {name}": "Gør {name} klar",
+	"{name} could not be set up": "{name} kunne ikke sættes op",
+	"Setting up {name} failed. We have been told and are looking at it; nothing you did caused it.":
+		"Opsætningen af {name} mislykkedes. Vi har fået besked og ser på det; det skyldes ikke noget, du har gjort.",
+	"The Co-Founder has not started: no ChatGPT account could pay for its first run. Connect yours in Settings → My connections, then write to the Co-Founder in its thread.":
+		"Co-Founderen er ikke gået i gang: ingen ChatGPT-konto kunne betale for dens første kørsel. Forbind din i Indstillinger → Mine forbindelser, og skriv så til Co-Founderen i dens tråd.",
+	"The Co-Founder's first run did not start. Write to the Co-Founder in its thread to begin.":
+		"Co-Founderens første kørsel startede ikke. Skriv til Co-Founderen i dens tråd for at gå i gang.",
 	Ready: "Klar",
 	"Ready ✓": "Klar ✓",
 	"Remove {name} from the table?": "Vil du fjerne {name} fra bordet?",
