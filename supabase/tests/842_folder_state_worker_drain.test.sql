@@ -19,15 +19,19 @@ $$;
 create function pg_temp.wake(p_id uuid) returns public.qorpera_wake_occurrences language sql as $$
 	select * from public.qorpera_wake_occurrences where id = p_id
 $$;
--- The runner ends a run's job (as 385's finish_job), and its wake follows through the job-status trigger.
+-- The runner ends a run's job (as 385's finish_job), and its wake with it (the job-status trigger's work: the fixture's
+-- hand-built jobs change with foreign keys and triggers off).
 create function pg_temp.finish(p_run uuid, p_status text default 'completed') returns void language plpgsql as $$
 begin
-	update public.qorpera_runner_jobs set status = p_status, result = case when p_status = 'completed' then '{}'::jsonb end,
-		last_error = case when p_status = 'failed' then 'Fixture failure' end,
-		finished_at = case when p_status <> 'cancelled' then statement_timestamp() end,
-		cancelled_at = case when p_status = 'cancelled' then statement_timestamp() end,
-		cancelled_by_user_id = case when p_status = 'cancelled' then '63400000-0000-4000-8000-000000000001'::uuid end,
-		lease_token_sha256 = null, lease_expires_at = null where run_id = p_run;
+	perform pg_temp.fx(format($q$update public.qorpera_runner_jobs set status = %L,
+		result = case when %L = 'completed' then '{}'::jsonb end, last_error = case when %L = 'failed' then 'Fixture failure' end,
+		finished_at = case when %L <> 'cancelled' then statement_timestamp() end,
+		cancelled_at = case when %L = 'cancelled' then statement_timestamp() end,
+		cancelled_by_user_id = case when %L = 'cancelled' then '63400000-0000-4000-8000-000000000001'::uuid end,
+		lease_token_sha256 = null, lease_expires_at = null where run_id = %L$q$, p_status, p_status, p_status, p_status, p_status,
+		p_status, p_run));
+	perform pg_temp.fx(format($q$update public.qorpera_wake_occurrences set status = %L, finished_at = clock_timestamp()
+		where run_id = %L and status = 'materialized'$q$, p_status, p_run));
 end $$;
 -- A wake that ends before any run took it (as the materializer cancels one).
 create function pg_temp.cancel_wake(p_id uuid) returns void language plpgsql as $$
