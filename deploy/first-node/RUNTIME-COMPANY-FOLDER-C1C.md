@@ -753,15 +753,18 @@ Needed before any view goes live (C1B §4).
   (633, 644, 648, 812 and the slices' own) and the C1e load test check those by running them.
 
   The open sites on 4 October 2026 (inventory §16, and the review of #779), by owner:
-  - S1: the model login and account refresh machines, identity recovery and retirement;
-  - S3: the run machine's reservation for a run (partial) and its release, node update drains (C1c-3n), and coding's
-    quiet check-ins through the old wake admission (C1c-3i);
-  - A1: office access and activation wakes (C1c-3k part 2, 3l);
-  - to be named: the node machine's `native` and `login` kinds (partial), and artifacts: a member's
-    `register_artifact`, or a run's artifact output, inserts an artifact with no core test, and the artifact triggers
-    and plans take the gc fence. The fix is to refuse artifacts on folder-v2.
-  Each slice removes its lines from 838's list as it moves its sites. The test prints them as a NOTICE, which a
-  failing run shows.
+  - S1: the model login and account refresh machines and the node machine's `login` kind (partial; sign-in machines,
+    `20260930035000`), identity recovery and retirement;
+  - S3: the run machine's reservation for a run (partial; the first item of C1c-3n) and its release, the node
+    machine's `native` kind (partial) and node update drains (C1c-3n);
+  - A1: office activation wakes (C1c-3l);
+  - F3: artifacts (`20260930041000`). A member's `register_artifact_v2`, or a run's artifact output, inserts an
+    artifact with no core test. The artifact triggers, graph completion and the GC plans then take the gc fence. The
+    fix refuses artifacts on folder-v2.
+  Office access (C1c-3k part 2) and the quiet coding check-ins (`20260930026000`) moved off the list on 4 October.
+  Each slice removes its lines from 838's list as it moves its sites; a partial line pins its core test's text, so a
+  changed test fails until the line is checked again. The test prints the open lines as a NOTICE, which a failing run
+  shows.
 - **Deletion drains the folder fence** for `folder-v2` (C1C §5.5): the folder pause's second phase, with no gc fence.
 
 ### 6.1 Inventory, split and decisions (2026-09-29)

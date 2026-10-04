@@ -40,19 +40,20 @@ from p13_code c;
 -- legacy: reached only on snapshot-v1 (the reason says why), removed in the old-code cleanup pass;
 -- open: a folder-v2 site that still takes it; its owner moves it, and then removes the line;
 -- partial: a function that tests the core first, but whose core test leaves a folder-v2 branch that still takes it;
---   the order check passes it, so it is listed by hand, printed with the open sites, and its owner removes the line.
+--   the order check passes it, so it is listed by hand with the text of its core test (`pin`), printed with the open
+--   sites, and its owner removes the line. A changed core test fails until the line is checked again.
 create temporary table p13_allowed(name text primary key,
-	kind text not null check (kind in ('fence', 'legacy', 'open', 'partial')), reason text not null) on commit drop;
-insert into p13_allowed values
+	kind text not null check (kind in ('fence', 'legacy', 'open', 'partial')), reason text not null,
+	pin text check ((kind = 'partial') = (pin is not null))) on commit drop;
+insert into p13_allowed(name, kind, reason) values
 	('qorpera_lock_profile_gc_fence', 'fence', 'The gc fence itself; every caller is checked.'),
-	-- Legacy stores and their GC: a folder-v2 company is enabled untouched, has no snapshots, substrate versions or
-	-- graphs, and today's GC never claims its objects (20260928120000).
-	('qorpera_authorize_profile_object_deletion', 'legacy', 'Company object GC; never claims a folder-v2 company''s objects.'),
+	-- Legacy stores and their GC: a folder-v2 company is enabled untouched and has no snapshots, so no substrate
+	-- versions; today's GC never claims its objects (20260928120000).
+	('qorpera_authorize_profile_object_deletion', 'legacy', 'Company object GC, which never claims a folder-v2 company''s objects, and artifact GC, whose object claim marks a folder-v2 plan''s entries retained before any deletion (20260928120000).'),
 	('qorpera_finalize_profile_object_deletion', 'legacy', 'Company object GC; never claims a folder-v2 company''s objects.'),
 	('qorpera_complete_company_object_gc', 'legacy', 'Company object GC; never claims a folder-v2 company''s objects.'),
 	('qorpera_renew_company_object_gc', 'legacy', 'Company object GC; never claims a folder-v2 company''s objects.'),
-	('qorpera_reject_gc_substrate_version', 'legacy', 'Trigger on substrate versions; folder-v2 runs have none (P28a).'),
-	('qorpera_reject_graph_completion_during_gc', 'legacy', 'Trigger on reachability graphs; no folder-v2 writer.'),
+	('qorpera_reject_gc_substrate_version', 'legacy', 'Trigger on substrate versions; runs (P28a) and members'' captures need a company snapshot, which folder-v2 never has.'),
 	-- The old Company File gateway: a folder-v2 row has no path gateway (the qorpera_company_files check, verified below).
 	('qorpera_company_path_actor', 'legacy', 'Refuses 55000 on a missing path_gateway_version before the fence (both checked below).'),
 	('qorpera_enable_company_path_gateway', 'legacy', 'Operator only; takes the fence, then the files check refuses a folder-v2 row.'),
@@ -60,30 +61,27 @@ insert into p13_allowed values
 	('qorpera_verify_company_path_tree', 'legacy', 'Old tree proof; its callers refuse folder-v2 first: finalize_company_bootstrap (C1c-1) and the old path lane''s routes.'),
 	('qorpera_wake_path_authorized', 'legacy', 'Old file wake check; folder-v2 callers dispatch to folder bodies first, and manage_agent_worker refuses at company_path_actor.'),
 	('qorpera_sync_company_file_listener', 'legacy', 'Takes the fence only for an old file-wake cursor; folder-v2 file wakes use the P29 listener.'),
+	('qorpera_serialize_wake_admission', 'legacy', 'Old wake admission; every caller tests the core first: the drains filter folder-v2, P28a took the old materializers out of reconcile, and the quiet coding check-ins skip folder-v2 (20260930026000).'),
 	('qorpera_register_governed_company_computer', 'legacy', 'Old logical computers (C1C §13); no caller.'),
 	('qorpera_register_legacy_company_computer_teardown', 'legacy', 'Old logical computers (C1C §13); no caller.'),
-	-- Folder-v2 sites still to move (C1c-3 inventory §16, and the office and coding slices).
-	('qorpera_serialize_wake_admission', 'open', 'Old wake admission; its folder-v2 caller ask_quiet_coding_sessions has no core test (S3, C1c-3i). Its drains test the core first, and P28a took the old materializers out of reconcile.'),
-	-- Artifacts reach folder-v2: register_artifact(_v2) (members) and the runner broker's outputs insert artifacts with
-	-- no core test, and the artifact triggers take the gc fence (review of #779, M2). Then the rest of the family is
-	-- reachable. To go: refuse artifacts on folder-v2 (owner to be named).
-	('qorpera_reject_profile_root_during_gc', 'open', 'Trigger on artifacts and snapshots; an artifact insert reaches it on folder-v2.'),
-	('qorpera_reject_gc_artifact_index_entry', 'open', 'Trigger on artifact index entries; reachable once an artifact exists.'),
-	('qorpera_reject_gc_artifact_retention_hold', 'open', 'Trigger on artifact retention holds; reachable once an artifact exists.'),
-	('qorpera_cancel_artifact_gc_plan', 'open', 'Artifact GC plans; reachable once an artifact exists.'),
-	('qorpera_claim_artifact_gc_plans', 'open', 'Artifact GC plans; takes the fence before its folder-v2 retain-everything branch.'),
-	('qorpera_renew_artifact_gc_lease', 'open', 'Artifact GC plans; reachable once an artifact exists.'),
-	-- A run's own machines: the core test covers only some kinds (20260928469240).
-	('qorpera_reserve_runtime_machine', 'partial', 'Only the office branch (no run) tests the core; a run''s own reservation, which every run machine makes, takes the gc fence on folder-v2 (S3, with the release, C1c-3n).'),
-	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding and office test the core; native and login take the gc fence on folder-v2 (owner to be named).'),
+	-- Folder-v2 sites still to move (C1c-3 inventory §16, the review of #779, and the office slices). Owners named by the
+	-- coordinator, 4 October 2026.
+	-- Artifacts reach folder-v2: a member's register_artifact_v2 and the runner broker's artifact outputs insert artifacts
+	-- with no core test, and the artifact triggers take the gc fence (review of #779, M2); then the rest of the family,
+	-- graph completion included, is reachable. F3 refuses artifacts on folder-v2 (20260930041000).
+	('qorpera_reject_profile_root_during_gc', 'open', 'Trigger on artifacts and snapshots; an artifact insert reaches it on folder-v2 (F3, 20260930041000).'),
+	('qorpera_reject_gc_artifact_index_entry', 'open', 'Trigger on artifact index entries; reachable once an artifact exists (F3, 20260930041000).'),
+	('qorpera_reject_gc_artifact_retention_hold', 'open', 'Trigger on artifact retention holds; reachable once an artifact exists (F3, 20260930041000).'),
+	('qorpera_reject_graph_completion_during_gc', 'open', 'Trigger on reachability graphs; a member can graph an artifact of their own and complete it (F3, 20260930041000).'),
+	('qorpera_cancel_artifact_gc_plan', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
+	('qorpera_claim_artifact_gc_plans', 'open', 'Artifact GC plans; takes the fence per plan, and only the next step, the object claim, retains a folder-v2 plan''s objects (F3, 20260930041000).'),
+	('qorpera_renew_artifact_gc_lease', 'open', 'Artifact GC plans; reachable once an artifact exists (F3, 20260930041000).'),
 	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).'),
-	('qorpera_runtime_office_access_status', 'open', 'Office access (A1, C1c-3k part 2).'),
-	('qorpera_set_runtime_office_access', 'open', 'Office access (A1, C1c-3k part 2).'),
 	('qorpera_release_runtime_machine', 'open', 'Run machine release (S3, C1c-3n).'),
-	('qorpera_reserve_runtime_login_machine', 'open', 'Model login machine (S1).'),
-	('qorpera_release_runtime_login_machine', 'open', 'Model login machine (S1).'),
-	('qorpera_reserve_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1).'),
-	('qorpera_release_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1).'),
+	('qorpera_reserve_runtime_login_machine', 'open', 'Model login machine (S1, 20260930035000).'),
+	('qorpera_release_runtime_login_machine', 'open', 'Model login machine (S1, 20260930035000).'),
+	('qorpera_reserve_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1, 20260930035000).'),
+	('qorpera_release_runtime_account_refresh_machine', 'open', 'Account refresh machine (S1, 20260930035000).'),
 	('qorpera_activate_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_cancel_identity_recovery', 'open', 'Identity recovery (S1).'),
 	('qorpera_consent_identity_recovery', 'open', 'Identity recovery (S1).'),
@@ -98,6 +96,12 @@ insert into p13_allowed values
 	('qorpera_authorize_node_update_drain', 'open', 'Node update drain (S3, C1c-3n).'),
 	('qorpera_node_update_locked', 'open', 'Node update drain (S3, C1c-3n).'),
 	('qorpera_release_node_update_admission', 'open', 'Node update drain (S3, C1c-3n).');
+-- A run's own machines: the core test covers only some branches (20260928469240).
+insert into p13_allowed(name, kind, reason, pin) values
+	('qorpera_reserve_runtime_machine', 'partial', 'Only the office branch (no run) tests the core; a run''s own reservation, which every run machine makes, takes the gc fence on folder-v2 (S3, first item of C1c-3n).',
+		'if p_run_id is null and public.qorpera_company_is_folder_v2(v_profile) then'),
+	('qorpera_reserve_runtime_node_machine', 'partial', 'Kinds machine, coding and office test the core; native (S3, C1c-3n) and login (S1, 20260930035000) take the gc fence on folder-v2.',
+		'p_provider_kind in (''machine'', ''coding'', ''office'') and public.qorpera_company_is_folder_v2(v_profile) then');
 
 do $$
 declare v_list text;
@@ -122,6 +126,11 @@ begin
 	select string_agg(a.name, ', ' order by a.name) into v_list from p13_allowed a
 	where a.kind = 'partial' and not exists (select 1 from p13_strong s where s.name = a.name and s.lock_at < 1000000);
 	if v_list is not null then raise exception 'Take these off the P13 list (gone, or they no longer take the lock): %', v_list; end if;
+	-- A partial entry's core test is pinned: when its owner changes it, the line is checked again (and comes off).
+	select string_agg(a.name, ', ' order by a.name) into v_list from p13_allowed a
+	where a.kind = 'partial' and not exists (select 1 from p13_code c where c.name = a.name and position(a.pin in c.src) > 0);
+	if v_list is not null then
+		raise exception 'The core test of these partial P13 sites changed: % (take the line off if folder-v2 no longer takes the lock, or pin the new test)', v_list; end if;
 	-- The legacy reason the gateway entries rest on: a folder-v2 row has no path gateway, and the gateway's actor
 	-- refuses a missing one before it takes the fence.
 	if not exists (select 1 from pg_constraint where conrelid = 'public.qorpera_company_files'::regclass and contype = 'c'
@@ -196,6 +205,13 @@ begin
 			< least(coalesce(nullif(position('qorpera_execution_run_budgets' in c.src), 0), 1000000),
 				coalesce(nullif(position('public.qorpera_folder_append_transcript_event(' in c.src), 0), 1000000)));
 	if v_list is not null then raise exception 'These folder-v2 functions use the run mutex without taking it first: %', v_list; end if;
+	-- The old mutex functions take the job before the budget row, so they refuse folder-v2 (0A000) before the job.
+	select string_agg(n, ', ' order by n) into v_list
+	from unnest(array['qorpera_append_runner_transcript_event', 'qorpera_begin_run_operation_receipt']) n
+	where not exists (select 1 from p13_code c where c.name = n
+		and position('if public.qorpera_job_is_folder_v2(p_job_id) then raise exception' in c.src)
+			between 1 and position('public.qorpera_runner_broker_locked_job(' in c.src));
+	if v_list is not null then raise exception 'These old run mutex functions no longer refuse folder-v2 before the job: %', v_list; end if;
 	select string_agg(name, ', ' order by name) into v_list from (
 		select c.name, position('qorpera_execution_run_budgets' in c.src) as mutex_at,
 			(select min(nullif(position(m[1] in c.src), 0)) from regexp_matches(c.src,
