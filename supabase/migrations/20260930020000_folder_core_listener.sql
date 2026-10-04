@@ -389,8 +389,9 @@ end $$;
 
 -- 11. The due list ---------------------------------------------------------------------------------------------------------
 
--- The folder-v2 environments whose clock is ahead of their cursor (an absent cursor counts as behind), in environment
--- order after p_after_environment, leaving out companies being deleted. A plain read.
+-- The folder-v2 environments whose clock is ahead of their cursor (an absent cursor counts as behind), or with a hook
+-- failure to call again, in environment order after p_after_environment, leaving out companies being deleted. A plain
+-- read.
 create function public.qorpera_folder_listen_due(p_after_environment uuid default null, p_limit integer default 100)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_environments uuid[];
@@ -403,7 +404,8 @@ begin
 		select f.environment_id from public.qorpera_company_files f
 		join public.qorpera_folder_clocks k on k.environment_id = f.environment_id
 		left join public.qorpera_folder_listener_cursors c on c.environment_id = f.environment_id
-		where f.core = 'folder-v2' and k.last_seq > coalesce(c.processed_seq, 0)
+		where f.core = 'folder-v2' and (k.last_seq > coalesce(c.processed_seq, 0)
+				or exists (select 1 from public.qorpera_folder_listener_hook_failures h where h.environment_id = f.environment_id))
 			and (p_after_environment is null or f.environment_id > p_after_environment)
 			and not public.qorpera_company_deleting(f.profile_id)
 		order by f.environment_id limit p_limit) x;
@@ -442,7 +444,10 @@ begin
 	-- 1. Plain reads: the cursor and the clock, the listeners, the window's change sets, their matches, the hook's targets.
 	v_start := coalesce((select processed_seq from public.qorpera_folder_listener_cursors where environment_id = p_environment_id), 0);
 	select last_seq into v_last from public.qorpera_folder_clocks where environment_id = p_environment_id;
-	if coalesce(v_last, 0) <= v_start then return jsonb_build_object('schema', c_schema, 'state', 'idle', 'processedSeq', v_start); end if;
+	-- Nothing new and no hook failure to call again: idle.
+	if coalesce(v_last, 0) <= v_start and not exists (select 1 from public.qorpera_folder_listener_hook_failures
+			where environment_id = p_environment_id) then
+		return jsonb_build_object('schema', c_schema, 'state', 'idle', 'processedSeq', v_start); end if;
 	-- A listener: an active folder-v2 routine whose current version listens for file changes, with the seq of the change
 	-- set that last saved it (activation: it hears only later ones). A routine whose activation cannot be read is none.
 	select coalesce(jsonb_agg(jsonb_build_object('routineId', r.id, 'version', v.version, 'staff', v.staff_agent_id,
