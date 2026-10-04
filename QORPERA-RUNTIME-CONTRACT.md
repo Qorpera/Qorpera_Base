@@ -2105,9 +2105,11 @@ follows a run:
   until it resets), while the login needs a new sign-in, while its computer
   recovers and while an owner or admin has it disabled. When the member signs
   in again, the conversation follows its binding to their new connection for
-  the same account. Only a login the member disconnected (revoked) is
-  replaced, by a new conversation's first choice: the member's login with the
-  most room left.
+  the same account. When the member disconnects (revokes) the login, the
+  conversation has no account and says "Choose a login to continue" until the
+  member picks one of their own logins by hand: ending a login is no
+  permission to use another. Only a new conversation takes a first choice, the
+  member's login with the most room left.
 - Work that follows a run (a coworker's, a worker's or another agent wake, a
   review of the run's change and its retry) stays on that run's login or
   company account, also at its usage limit, which then stops it there. When

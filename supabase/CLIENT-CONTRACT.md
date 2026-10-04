@@ -198,6 +198,18 @@ they answer 42501 "native host call is refused".
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
     acknowledging stays open) or a change's review on it
     (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+- `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
+  `qorpera_choose_member_session_account(p_profile_id, p_session_id,
+  p_connection_id)` (20260930048000, the payer never changes without the
+  member): select keeps a conversation's login for every kind of login, also at
+  its usage limit, while it needs a new sign-in, while its computer recovers and
+  while an owner or admin has it disabled (it returns that login; sending waits).
+  It answers `null` for a new conversation with no login that has room, and for a
+  conversation whose login the member disconnected: that conversation waits for
+  the member's own pick ("Choose a login to continue"). Choose saves the member's
+  pick, one of their own logins that could pay now whatever its usage, and
+  returns its connection id; 22023 "This login cannot pay for your conversation"
+  for any other login, 42501 when the conversation cannot be read.
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so

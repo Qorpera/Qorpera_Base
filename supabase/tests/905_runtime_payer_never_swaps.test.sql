@@ -216,12 +216,26 @@ select pg_temp.wake_assert(public.qorpera_select_member_session_account('3000000
 reset role;
 update public.qorpera_provider_connections set status = 'active' where id = pg_temp.p905('a');
 
--- 7. The owner disconnects A: work that follows its run does not start; the conversation takes the owner's first choice.
+-- 7. The owner disconnects A: work that follows its run does not start, and the conversation has no account until the
+-- owner picks one by hand; ending A is no permission to use B. A new conversation still takes its first choice.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_revoke_native_provider_connection('30000000-0000-4000-8000-000000000010',pg_temp.p905('a'));
 select pg_temp.wake_assert(public.qorpera_select_member_session_account('30000000-0000-4000-8000-000000000010',
-	'30000000-0000-4000-8000-000000000040') = pg_temp.p905('b'), 'a conversation kept a disconnected login');
+	'30000000-0000-4000-8000-000000000040') is null, 'a conversation moved off a disconnected login on its own');
+select pg_temp.wake_error($q$select public.qorpera_choose_member_session_account('30000000-0000-4000-8000-000000000010',
+	'30000000-0000-4000-8000-000000000040',(current_setting('qorpera_test.wake_connection')::jsonb ->> 'connection_id')::uuid)$q$,
+	'22023','This login cannot pay for your conversation');
+select pg_temp.wake_assert(public.qorpera_choose_member_session_account('30000000-0000-4000-8000-000000000010',
+	'30000000-0000-4000-8000-000000000040',pg_temp.p905('b')) = pg_temp.p905('b'), 'the owner could not pick B by hand');
+select pg_temp.wake_assert(public.qorpera_select_member_session_account('30000000-0000-4000-8000-000000000010',
+	'30000000-0000-4000-8000-000000000040') = pg_temp.p905('b'), 'the conversation did not keep the login picked by hand');
+reset role;
+-- Another member cannot pick a login for the owner's conversation.
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+set local role authenticated;
+select pg_temp.wake_error($q$select public.qorpera_choose_member_session_account('30000000-0000-4000-8000-000000000010',
+	'90500000-0000-4000-8000-000000000040','$q$ || pg_temp.p905('b') || $q$')$q$,'42501');
 reset role;
 select pg_temp.wake_assert(pg_temp.p905_payer('1', pg_temp.p905('aBinding')) is null,
 	'follow-up work of a disconnected login started on another login');

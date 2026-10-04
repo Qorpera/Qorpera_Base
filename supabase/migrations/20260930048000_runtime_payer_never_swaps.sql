@@ -12,8 +12,9 @@
 -- * A conversation keeps its login, also at its usage limit (sending waits until it resets), while it needs a new
 --   sign-in, while its computer is recovering and while an owner or admin has it disabled. Its binding still follows
 --   the member to their new connection for the same account after they sign in again (qorpera_move_member_login_pins).
---   Only a login the member disconnected (revoked) is replaced, by the same first choice as a new conversation's: the
---   member's login with the most room left.
+--   A conversation whose login the member disconnected (revoked) has no account until the member picks another by
+--   hand (qorpera_choose_member_session_account, new): ending a login is no permission to use another. Only a new
+--   conversation takes a first choice, the member's login with the most room left.
 -- * Work that follows a run (qorpera_starter_sponsor's callers: coworker, worker and other agent wakes, a change's
 --   review and its retry) stays on that run's login or company account, also at its usage limit, which then stops it
 --   there. When that login or account can no longer pay at all (disconnected, or its consent to work while the member
@@ -117,11 +118,13 @@ begin
         end if;
         -- A login that cannot pay right now (a new sign-in needed, its computer recovering, consent or the provider
         -- switched off, an owner or admin's reversible disable) stays the conversation's, and sending waits for it.
-        -- Only a login the member disconnected (revoked) is replaced, as a new conversation chooses.
+        -- A login the member disconnected (revoked) leaves the conversation with no account until the member picks
+        -- one by hand (qorpera_choose_member_session_account): ending a login is no permission to use another.
         if exists (select 1 from public.qorpera_provider_connections connection where connection.id = v_current
             and connection.profile_id = p_profile_id and connection.owner_user_id = v_user and connection.status <> 'revoked') then
             return v_current;
         end if;
+        return null;
     end if;
     -- A new conversation's first choice: the member's login with the most room left; unknown usage sorts last.
     select * into v_choice from public.qorpera_eligible_member_accounts(p_profile_id,v_user) candidate
@@ -135,6 +138,35 @@ begin
                 then qorpera_member_session_accounts.selected_at else clock_timestamp() end;
     return v_choice.connection_id;
 end $$;
+
+-- The member picks the login a conversation of theirs pays with, by hand: one of their own logins that could pay
+-- (qorpera_member_live_accounts), whatever its usage. This is the member's permission the payer rule asks for; the
+-- web offers it when the conversation's login was disconnected.
+create function public.qorpera_choose_member_session_account(p_profile_id uuid, p_session_id uuid, p_connection_id uuid)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_user uuid := auth.uid(); v_choice record;
+begin
+    if auth.role() is distinct from 'authenticated' or v_user is null
+        or not public.qorpera_can_read_session(p_session_id) then
+        raise exception 'Conversation accounts unavailable' using errcode = '42501'; end if;
+    -- The same row lock as the automatic choice: one conversation's choices are serialized.
+    perform 1 from public.qorpera_shared_sessions where id = p_session_id and profile_id = p_profile_id for update;
+    if not found then raise exception 'Conversation accounts unavailable' using errcode = '42501'; end if;
+    -- 20260930048000: only the member's own login that could pay.
+    select * into v_choice from public.qorpera_member_live_accounts(p_profile_id,v_user) candidate
+        where candidate.connection_id = p_connection_id
+        order by candidate.binding_id limit 1;
+    if not found then raise exception 'This login cannot pay for your conversation' using errcode = '22023'; end if;
+    insert into public.qorpera_member_session_accounts(profile_id,session_id,user_id,connection_id,sponsor_binding_id)
+        values(p_profile_id,p_session_id,v_user,v_choice.connection_id,v_choice.binding_id)
+        on conflict(profile_id,session_id,user_id) do update set
+            connection_id = excluded.connection_id,sponsor_binding_id = excluded.sponsor_binding_id,
+            selected_at = case when qorpera_member_session_accounts.connection_id = excluded.connection_id
+                then qorpera_member_session_accounts.selected_at else clock_timestamp() end;
+    return v_choice.connection_id;
+end $$;
+revoke all on function public.qorpera_choose_member_session_account(uuid,uuid,uuid) from public,anon,authenticated,service_role;
+grant execute on function public.qorpera_choose_member_session_account(uuid,uuid,uuid) to authenticated;
 
 -- Who pays for work a member started. Never another member's login, and never a Claude login (coding only,
 -- 2026-09-24).

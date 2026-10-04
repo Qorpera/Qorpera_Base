@@ -187,6 +187,10 @@ export const CONVERSATION: Record<string, string> = {
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
 	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
 		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
+	"Choose a login to continue.": "Vælg et login for at fortsætte.",
+	"Use {account}": "Brug {account}",
+	"Model account {number}": "Modelkonto {number}",
+	"The login could not be chosen. Try again.": "Login kunne ikke vælges. Prøv igen.",
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",

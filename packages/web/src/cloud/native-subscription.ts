@@ -62,6 +62,9 @@ export interface WebNativeSubscription {
 	 * even inside the window of a completed attempt: the member pressed Refresh. */
 	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
 	selectSessionAccount?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>;
+	/** The member picks a conversation's login by hand (20260930048000): the only way a
+	 * conversation moves to another login, offered once its own login was disconnected. */
+	chooseSessionAccount?(sessionId: string, connectionId: string, signal?: AbortSignal): Promise<string>;
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
 	createMemberSponsor(
@@ -626,6 +629,18 @@ export function createWebNativeSubscription(
 			if (value === null) return undefined;
 			if (typeof value !== "string" || !UUID_PATTERN.test(value))
 				throw new Error("Invalid conversation account response.");
+			return value;
+		},
+		chooseSessionAccount: async (sessionId, connectionId, signal) => {
+			if (!UUID_PATTERN.test(sessionId) || !UUID_PATTERN.test(connectionId))
+				throw new Error("Invalid conversation account request.");
+			const value = await rpc(
+				"qorpera_choose_member_session_account",
+				{ p_profile_id: profileId, p_session_id: sessionId, p_connection_id: connectionId },
+				signal,
+				sessionId,
+			);
+			if (value !== connectionId) throw new Error("Invalid conversation account response.");
 			return value;
 		},
 		listSessionTurnProvenance: (sessionId, signal) => client(signal, sessionId).listSessionTurnProvenance(sessionId),

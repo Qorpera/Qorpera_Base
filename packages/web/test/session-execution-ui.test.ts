@@ -90,6 +90,7 @@ function setup(
 	observed: NativeExecutionConnections = connections(),
 	selectSessionAccount?: WebNativeSubscription["selectSessionAccount"],
 	refreshAccountMetadata?: WebNativeSubscription["refreshAccountMetadata"],
+	chooseSessionAccount?: WebNativeSubscription["chooseSessionAccount"],
 ) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
@@ -114,6 +115,7 @@ function setup(
 		listSessionTurnProvenance,
 		...(selectSessionAccount ? { selectSessionAccount } : {}),
 		...(refreshAccountMetadata ? { refreshAccountMetadata } : {}),
+		...(chooseSessionAccount ? { chooseSessionAccount } : {}),
 		requestSessionTurn: vi.fn(),
 		createMemberSponsor: vi.fn(),
 		revokeConnection: vi.fn(),
@@ -331,8 +333,9 @@ describe("conversation execution account", () => {
 
 	it("polls the authoritative selection without window focus and waits on an exhausted account", async () => {
 		vi.useFakeTimers();
-		const select = vi.fn(async () => id(90));
-		const f = setup(true, withUsage([80, 40]), select);
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(true, withUsage([80, 40]), select, undefined, choose);
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
 		// The cloud keeps the conversation's account at its limit (20260930048000).
@@ -344,11 +347,19 @@ describe("conversation execution account", () => {
 		expect(f.send().disabled).toBe(true);
 		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
 		expect(f.view.el.textContent).not.toContain("Your model accounts have reached");
-		// Only a disconnected account is replaced, by the cloud's new choice.
-		select.mockResolvedValue(id(91));
+		expect(f.view.el.textContent).not.toContain("Choose a login to continue.");
+		// The member disconnected that account: the cloud gives the conversation no account until the member picks one.
+		select.mockResolvedValue(undefined);
 		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.textContent).toContain("Choose a login to continue.");
+		expect(f.send().disabled).toBe(true);
+		expect(choose).not.toHaveBeenCalled();
+		select.mockResolvedValue(id(91));
+		buttonNamed(f.view, "Use Model account 1")!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
 		expect(f.sponsor()?.connectionId).toBe(id(91));
-		expect(select).toHaveBeenCalledTimes(3);
+		expect(select).toHaveBeenCalledTimes(4);
 	});
 
 	it("resumes sending at a known quota reset before the next regular poll", async () => {
@@ -695,13 +706,19 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		// An account the member disconnected is replaced as a new conversation chooses.
+		// An account the member disconnected leaves the conversation waiting for the member's own pick.
 		const disconnected = withUsage([30, 40]);
 		disconnected.connections[0]!.connectionStatus = "revoked";
 		f.listConnections.mockResolvedValue(disconnected);
 		refresh();
 		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain("Choose a login to continue.");
+		buttonNamed(f.view, "Use Model account 1")!.click();
+		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.send().disabled).toBe(false);
 		expect(selector()).toBeNull();
 	});
 
