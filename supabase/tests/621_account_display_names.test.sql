@@ -7,10 +7,22 @@ values
 	('96210000-0000-4000-8000-00000000000a', 'name-owner@example.test', statement_timestamp(), '{"name":"Provider Name","full_name":"Original Name"}'),
 	('96210000-0000-4000-8000-00000000000b', 'name-friend@example.test', statement_timestamp(), '{"name":"Friend Provider"}');
 
+-- The owner's companies are folder-v2 companies, opened the way the company creation opens one (856), while the
+-- owner's session still carries a stale JWT name.
 select set_config('request.jwt.claims', '{"sub":"96210000-0000-4000-8000-00000000000a","email":"name-owner@example.test","role":"authenticated","user_metadata":{"full_name":"Old JWT Name"}}', true);
+select set_config('qorpera_test.name_profile_a', public.qorpera_folder_company_open('96210000-0000-4000-8000-00000000000a',
+	'96210000-0000-4000-8000-0000000000e1', 'Name A') ->> 'profile_id', true);
+select set_config('qorpera_test.name_profile_b', public.qorpera_folder_company_open('96210000-0000-4000-8000-00000000000a',
+	'96210000-0000-4000-8000-0000000000e2', 'Name B') ->> 'profile_id', true);
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.name_profile_a')::uuid)
+		or not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.name_profile_b')::uuid) then
+		raise exception 'a display name company is not a folder-v2 company';
+	end if;
+end
+$$;
 set local role authenticated;
-select set_config('qorpera_test.name_profile_a', public.qorpera_create_hosted_profile('Name A', 'main', 1) ->> 'profile_id', true);
-select set_config('qorpera_test.name_profile_b', public.qorpera_create_hosted_profile('Name B', 'main', 1) ->> 'profile_id', true);
 select public.qorpera_send_friend_request('name-friend@example.test');
 reset role;
 
@@ -72,8 +84,9 @@ end
 $$;
 
 -- A third company created with the same old JWT still gets the saved name.
+select set_config('qorpera_test.name_profile_c', public.qorpera_folder_company_open('96210000-0000-4000-8000-00000000000a',
+	'96210000-0000-4000-8000-0000000000e3', 'Name C') ->> 'profile_id', true);
 set local role authenticated;
-select set_config('qorpera_test.name_profile_c', public.qorpera_create_hosted_profile('Name C', 'main', 1) ->> 'profile_id', true);
 do $$
 declare
 	v_team jsonb := public.qorpera_profile_team_info(current_setting('qorpera_test.name_profile_c')::uuid);
