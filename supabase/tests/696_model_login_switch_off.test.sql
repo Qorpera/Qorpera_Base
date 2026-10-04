@@ -437,16 +437,17 @@ begin
 	values ('16000000-0000-4000-8000-000000000010','69600000-0000-4000-8000-0000000000c2','16000000-0000-4000-8000-000000000001',
 		(current_setting('qorpera_test.so_plan_a')::jsonb ->> 'connectionId')::uuid,current_setting('qorpera_test.so_plan_a_binding')::uuid);
 end $$;
--- The broker now lists a plan login for its account, and records its subject.
+-- Plan A needs a new sign-in before the broker read its account: it is still listed for its account, a plan login
+-- like any other, and its subject is recorded.
+update public.qorpera_model_logins set status = 'needs_sign_in' where id = '69600000-0000-4000-8000-0000000001a0';
 set local session authorization qorpera_secret_broker;
 select pg_temp.so_expect(pg_temp.so_call($q$select (public.qorpera_model_logins_without_account('69600000-0000-4000-8000-000000000040',
 		repeat('c',64)) -> 'logins') @> '[{"loginId":"69600000-0000-4000-8000-0000000001a0"}]' $q$),
-	'true', 'a plan login is listed for its account');
+	'true', 'a plan login that needs a new sign-in is listed for its account');
 reset session authorization;
 select pg_temp.so_expect(pg_temp.so_plan_account('a', 'subject-1'), 'true', 'plan A''s subject is recorded');
 reset session authorization;
--- Plan A needs a new sign-in; the member signs in with another person's plan: nothing pairs them.
-update public.qorpera_model_logins set status = 'needs_sign_in' where id = '69600000-0000-4000-8000-0000000001a0';
+-- The member signs in with another person's plan: nothing pairs them.
 select set_config('qorpera_test.so_plan_b', pg_temp.so_plan('b')::text, false);
 select pg_temp.so_expect(pg_temp.so_plan_account('b', 'subject-2'), 'true', 'plan B''s subject is recorded');
 select pg_temp.so_expect(pg_temp.so_pass(), '0/0/0', 'a plan of another person replaces nothing');

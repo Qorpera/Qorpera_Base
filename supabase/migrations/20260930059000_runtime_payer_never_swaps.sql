@@ -399,10 +399,11 @@ $new$);
 -- A plan login's account is recorded too (review of #806, round 2): the broker reads its verified OpenAI subject and
 -- records it in a namespace of its own (sha256 of 'openai-subject:' || subject), which matches only another plan login
 -- of the same person. So the pass above also moves a member's pins from a plan login that needs a new sign-in to the
--- plan they signed in with again, and never to a plan of another person.
+-- plan they signed in with again, and never to a plan of another person. A login that came to need a new sign-in before
+-- its account was recorded is still listed (round 3): its envelope still names its account, so it can be paired.
 select pg_temp.payer_never_swaps_replace('public.qorpera_model_logins_without_account(uuid,text)'::regprocedure,
 	$old$and login.status = 'active' and login.account_identity is null and login.login_kind = 'codex'$old$,
-	$new$and login.status = 'active' and login.account_identity is null$new$);
+	$new$and login.status in ('active', 'needs_sign_in') and login.account_identity is null$new$);
 select pg_temp.payer_never_swaps_replace('public.qorpera_record_model_login_account(uuid,text,uuid,text)'::regprocedure,
 	$old$where id = p_login_id and broker_authority_id = v_authority.id and account_identity is null and login_kind = 'codex';$old$,
 	$new$where id = p_login_id and broker_authority_id = v_authority.id and account_identity is null;$new$);

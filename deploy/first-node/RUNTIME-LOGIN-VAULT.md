@@ -695,7 +695,8 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
     follow-up work and routines: their pins follow to the same account's new login. A ChatGPT plan
     login's account is recorded too: sha256 of `openai-subject:` + OpenAI's verified subject, a
     namespace of its own, so it pairs only with another plan login of the same person (the broker's
-    `recordAccounts` reads it from the plan envelope; the secret broker needs that build).
+    `recordAccounts` reads it from the plan envelope; the secret broker needs that build). A login that
+    needs a new sign-in before its account was read is still listed for it, so it can be paired.
   - It moves the member's pins to the vault connection first (`qorpera_move_member_login_pins`, #450:
     routines, coding sessions and agent work follow).
   - Once no queued or leased job, live lease, queued wake, queued turn or queued change review names
