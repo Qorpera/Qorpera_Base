@@ -160,7 +160,7 @@ begin
  values(origin.profile_id,reviewer,'Queue reviewer','Reviewer','Review proposed work.','blue','round','active','active',
   'openai','gpt-test',(p_company->>'owner')::uuid,statement_timestamp(),statement_timestamp());
  -- A standing authority names a company account only (20260928230000); a native review is
- -- paid by the member who started the change, through their own login.
+ -- paid by the member who started the change, through their own login (set below).
  if not p_native then
   perform pg_temp.queue_auth((p_company->>'owner')::uuid);
   execute 'set local role authenticated';
@@ -179,6 +179,13 @@ begin
  values(proposal,origin.profile_id,origin.environment_id,proposal,origin.company_snapshot_id,proposed,
   'run',origin.id,extensions.gen_random_uuid(),origin.session_id,0,'policy','queue-review','Review fixture',
   array[reviewer],(p_company->>'owner')::uuid);
+ -- A native review follows a change made on the owner's own login (20260930048000: a review stays on the login of
+ -- the run whose change it reviews). This fixture's change ran on the company account, so the review's payer is set
+ -- to the owner's login here.
+ if p_native then
+  update public.qorpera_company_proposal_review_assignments set reviewer_sponsor_binding_id=(sponsor->>'binding_id')::uuid,
+   reviewer_sponsor_version=(sponsor->>'version')::bigint where proposal_id=proposal;
+ end if;
  return proposal;
 end $$;
 create function pg_temp.queue_claim_healthy() returns void language plpgsql as $$

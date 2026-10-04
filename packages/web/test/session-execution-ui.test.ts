@@ -1081,7 +1081,7 @@ describe("conversation execution account", () => {
 		expect(f.company.conversation(session.sessionId).get().retrySend?.executionSponsor.sponsorVersion).toBe(2);
 	});
 
-	it("explicitly releases a failed attempt for automatic account selection while preserving the draft and files", async () => {
+	it("explicitly releases a failed attempt while preserving the draft, the files and the conversation's account", async () => {
 		const f = setup();
 		await settle();
 		const selected = f.sponsor()!;
@@ -1113,7 +1113,9 @@ describe("conversation execution account", () => {
 		expect(state.draft).toBe("Keep this draft");
 		expect(state.attachments?.[0]).toBe(image);
 		expect(selector()).toBeNull();
-		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// Releasing the request is not a choice of another account: the exhausted account stays (20260930048000).
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain("This conversation's model account has reached its usage limit");
 		expect(f.sendMessage).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});

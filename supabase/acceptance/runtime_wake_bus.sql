@@ -396,81 +396,10 @@ begin
 		p_context_sha,10);
 end $$;
 
-select pg_temp.wake_acceptance_case('usage_limit_sponsor_handoff_continues_the_run',$test$
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
-	v_login jsonb; v_connection jsonb; v_second jsonb; v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype;
-	v_launch public.qorpera_native_execution_launches%rowtype;
-begin
-	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
-	-- A second connection of the same member for the same compute identity (the fixture's login route).
-	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	execute 'set local role authenticated';
-	v_login := public.qorpera_begin_native_provider_login(v_base.profile_id,'30000000-0000-4000-8000-000000000053',
-		'30000000-0000-4000-8000-000000000054',v_base.compute_identity_id,'openai','codex-cli',repeat('c',64),900);
-	execute 'reset role';
-	perform pg_temp.path_claims('service_role');
-	execute 'set local role service_role';
-	v_connection := public.qorpera_complete_native_provider_login((v_login ->> 'login_id')::uuid,repeat('c',64),
-		'30000000-0000-4000-8000-000000000062','object://native-capsules/30000000-0000-4000-8000-000000000062',repeat('d',64),
-		'fixture-openai-account-2','personal-subscription','qorpera-native-provider-consent/v1',
-		'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}');
-	execute 'reset role';
-	-- The first attempt acknowledges, then the sponsoring connection hits its usage limit.
-	perform pg_temp.handoff_begin(v_binding,repeat('c',64));
-	select * into strict v_launch from public.qorpera_native_execution_launches where run_id=v_base.id;
-	perform pg_temp.wake_error(format('update public.qorpera_native_execution_launches set context_sha256=%L where run_id=%L',
-		repeat('d',64),v_base.id),'42501');
-	perform pg_temp.wake_error(format('delete from public.qorpera_native_execution_launches where run_id=%L',v_base.id),'42501');
-	perform pg_temp.wake_public_send(v_binding,'progress');
-	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	-- 20260928349910: the runner's failure report no longer hands a run off at a usage limit (the run fails;
-	-- SQL test 765). This case calls the handoff function directly to keep proving it, as the report did.
-	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
-	select * into strict v_job from public.qorpera_runner_jobs where id = (v_binding ->> 'jobId')::uuid;
-	select * into strict v_run from public.qorpera_execution_runs where id = v_base.id;
-	perform pg_temp.wake_assert(v_job.status = 'queued' and v_run.sponsor_version = v_base.sponsor_version + 1,
-		'The run continues on a new sponsor version instead of failing');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_execution_sponsor_handoffs handoff
-		where handoff.run_id = v_base.id and handoff.to_connection_id = (v_connection ->> 'connection_id')::uuid
-			and handoff.reason = 'usage_limit' and handoff.actor = 'control_plane'),'Handoff recorded with full provenance');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_execution_run_events where run_id = v_base.id and event_type = 'sponsor_handoff'),
-		'Handoff is a run event');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
-		and user_id = '30000000-0000-4000-8000-000000000001' and kind = 'sponsor_handoff'),'Member notified of the handoff');
-	perform pg_temp.wake_assert((select status <> 'active' and released_at is not null from public.qorpera_native_provider_connection_leases
-		where id = (v_binding ->> 'leaseId')::uuid),'Exhausted attempt released its native authority');
-	-- The next attempt runs on the other connection with context rebuilt from the transcript.
-	v_second := pg_temp.wake_start(null);
-	perform pg_temp.wake_assert((v_second ->> 'runId') = v_base.id::text,'Same run, new attempt');
-	perform pg_temp.wake_assert((select provider_connection_id = (v_connection ->> 'connection_id')::uuid
-		from public.qorpera_native_provider_connection_leases where id = (v_second ->> 'leaseId')::uuid),'New attempt leases the other connection');
-	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_second) ->> 'kind' = 'human','Same wake, same policy');
-	-- A handoff alone cannot authorize an unarchived or unbound launch rewrite.
-	perform pg_temp.wake_error(format('update public.qorpera_native_execution_launches set context_sha256=%L where run_id=%L',
-		repeat('d',64),v_base.id),'42501');
-	perform pg_temp.handoff_begin(v_second,repeat('d',64));
-	perform pg_temp.wake_assert((select count(*)=1 from public.qorpera_native_execution_launch_history
-		where run_id=v_base.id and runtime_bundle_id=v_launch.runtime_bundle_id
-		and runtime_bundle_sha256=v_launch.runtime_bundle_sha256 and binary_sha256=v_launch.binary_sha256
-		and reasoning_effort=v_launch.reasoning_effort and reasoning_policy_sha256=v_launch.reasoning_policy_sha256
-		and tool_catalog_sha256=v_launch.tool_catalog_sha256 and context_sha256=v_launch.context_sha256
-		and context_bytes=v_launch.context_bytes and launched_at=v_launch.created_at),'Exact prior launch remains in history');
-	perform pg_temp.wake_assert((select context_sha256=repeat('d',64) from public.qorpera_native_execution_launches
-		where run_id=v_base.id),'Continuation records its fresh context');
-	perform pg_temp.wake_error(format('select pg_temp.handoff_begin(%L,%L)',v_second,repeat('e',64)),'55000');
-	perform pg_temp.wake_error(format('update public.qorpera_native_execution_launches set context_sha256=%L where run_id=%L',
-		repeat('e',64),v_base.id),'42501');
-	perform pg_temp.wake_error(format('delete from public.qorpera_native_execution_launches where run_id=%L',v_base.id),'42501');
-	perform pg_temp.wake_public_send(v_second,'final','handoff-final');
-	perform pg_temp.wake_acceptance_finish(v_second);
-	perform pg_temp.wake_assert(public.qorpera_handoff_run_sponsor(v_base.id,'again') is null,'A completed run has no second handoff');
-end $$;
-$test$);
-
--- Additional handoff regressions use real login, member admission, runner
+-- Second-connection and capacity fixtures use real login, member admission, runner
 -- assignment and lease entrypoints in this disposable database. No provider
--- process or production credential participates.
+-- process or production credential participates. (The sponsor handoff they were
+-- written for is gone since 20260930048000; later reviews still use them.)
 create function pg_temp.handoff_connection()
 returns jsonb language plpgsql as $$
 declare v_base public.qorpera_execution_runs%rowtype; v_login jsonb; v_connection jsonb; v_capsule uuid := extensions.gen_random_uuid();
@@ -534,112 +463,7 @@ begin
 		'assignmentId',v_assignment ->> 'assignment_id','leaseId',v_lease ->> 'lease_id');
 end $$;
 
-select pg_temp.wake_acceptance_case('handoff_skips_connection_at_native_capacity',$test$
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_busy jsonb; v_free jsonb;
-begin
-	v_busy := pg_temp.handoff_connection();
-	perform pg_temp.handoff_competing_assignment(v_busy,true);
-	v_free := pg_temp.handoff_connection();
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
-	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	-- The failure report no longer hands off (20260928349910): call the handoff function directly.
-	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
-	perform pg_temp.wake_assert((select to_connection_id = (v_free ->> 'connection_id')::uuid
-		from public.qorpera_execution_sponsor_handoffs where run_id = (v_binding ->> 'runId')::uuid),
-		'Handoff skips a full connection and selects the next eligible account');
-end $$;
-$test$);
-
-select pg_temp.wake_acceptance_case('handoff_rechecks_capacity_before_rebinding_native_lease',$test$
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_connection jsonb;
-	v_competitor jsonb; v_before jsonb; v_second jsonb;
-begin
-	v_connection := pg_temp.handoff_connection();
-	-- Admit a separate job, but acquire its native slot only after the handoff
-	-- selected this still-free connection. Selection alone is not a reservation.
-	v_competitor := pg_temp.handoff_competing_assignment(v_connection,false);
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
-	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	-- The failure report no longer hands off (20260928349910): call the handoff function directly.
-	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
-	perform public.qorpera_acquire_native_provider_connection_lease((v_competitor ->> 'runId')::uuid,
-		(v_competitor ->> 'runnerId')::uuid,repeat('2',64),(v_competitor ->> 'assignmentId')::uuid,repeat('3',64),120);
-	select to_jsonb(l) into strict v_before from public.qorpera_native_provider_connection_leases l
-	where id = (v_binding ->> 'leaseId')::uuid;
-	perform pg_temp.wake_error(format('select pg_temp.wake_start(%L)',v_binding ->> 'runId'),'55000',
-		'native provider connection already has its allowed execution lease');
-	perform pg_temp.wake_assert((select to_jsonb(l) = v_before from public.qorpera_native_provider_connection_leases l
-		where id = (v_binding ->> 'leaseId')::uuid),'Rejected rebind preserves the exhausted lease exactly');
-	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_native_provider_connection_lease_history
-		where run_id = (v_binding ->> 'runId')::uuid),'Rejected rebind appends no lease history');
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_native_provider_connection_leases
-		where provider_connection_id = (v_connection ->> 'connection_id')::uuid and status = 'active'),
-		'Exactly one native lease occupies the connection');
-	perform public.qorpera_fail_runner_job((v_competitor ->> 'runnerId')::uuid,repeat('2',64),
-		(v_competitor ->> 'jobId')::uuid,repeat('3',64),'Release fixture capacity',false);
-	v_second := pg_temp.wake_start((v_binding ->> 'runId')::uuid);
-	perform pg_temp.wake_assert((select provider_connection_id = (v_connection ->> 'connection_id')::uuid and status = 'active'
-		from public.qorpera_native_provider_connection_leases where id = (v_second ->> 'leaseId')::uuid),
-		'Same run acquires the intended fallback after capacity is actually released');
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_native_provider_connection_lease_history
-		where run_id = (v_binding ->> 'runId')::uuid),'Successful rebind retains exactly one prior lease record');
-	perform pg_temp.wake_assert(public.qorpera_acquire_native_provider_connection_lease((v_second ->> 'runId')::uuid,
-		(v_second ->> 'runnerId')::uuid,repeat('2',64),(v_second ->> 'assignmentId')::uuid,repeat('3',64),120)
-		->> 'lease_id' = v_second ->> 'leaseId','Active lease replay succeeds without consuming another capacity slot');
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_native_provider_connection_lease_history
-		where run_id = (v_binding ->> 'runId')::uuid),'Active replay appends no duplicate handoff history');
-end $$;
-$test$);
-
-select pg_temp.wake_acceptance_case('handoff_with_no_available_capacity_keeps_sponsor',$test$
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_busy jsonb;
-	v_version bigint;
-begin
-	select sponsor_version into strict v_version from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
-	v_busy := pg_temp.handoff_connection();
-	perform pg_temp.handoff_competing_assignment(v_busy,true);
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
-	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	-- The failure report no longer hands off (20260928349910): ask the handoff function itself, whose capacity
-	-- rule this case proves, then report the failure.
-	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
-	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
-		repeat('3',64),'Native harness failed (provider allowance unavailable)',false);
-	perform pg_temp.wake_assert((select sponsor_version = v_version from public.qorpera_execution_runs
-		where id = (v_binding ->> 'runId')::uuid),'No available capacity leaves the sponsor unchanged');
-	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_execution_sponsor_handoffs
-		where run_id = (v_binding ->> 'runId')::uuid),'No unavailable handoff is recorded');
-	perform pg_temp.wake_assert((select status = 'failed' from public.qorpera_runner_jobs
-		where id = (v_binding ->> 'jobId')::uuid),'Exhausted job terminates when no fallback can execute');
-	perform pg_temp.wake_assert((select status <> 'active' and released_at is not null
-		from public.qorpera_native_provider_connection_leases where id = (v_binding ->> 'leaseId')::uuid),
-		'Exhausted native authority is released even without a fallback');
-end $$;
-$test$);
-
-select pg_temp.wake_acceptance_case('handoff_skips_connection_requiring_reauthentication',$test$
-do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_unavailable jsonb; v_free jsonb;
-begin
-	v_unavailable := pg_temp.handoff_connection();
-	-- Explicit isolated authorization-state fixture; no production credential is changed.
-	update public.qorpera_provider_connection_versions set authorization_state = 'reauthentication_required'
-	where connection_id = (v_unavailable ->> 'connection_id')::uuid;
-	v_free := pg_temp.handoff_connection();
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
-	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
-	-- The failure report no longer hands off (20260928349910): call the handoff function directly.
-	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (provider allowance unavailable)');
-	perform pg_temp.wake_assert((select to_connection_id = (v_free ->> 'connection_id')::uuid
-		from public.qorpera_execution_sponsor_handoffs where run_id = (v_binding ->> 'runId')::uuid),
-		'Handoff skips a connection which needs renewed authorization');
-end $$;
-$test$);
-
-create function pg_temp.handoff_non_quota_failure(p_kind text)
+create function pg_temp.non_quota_failure(p_kind text)
 returns void language plpgsql as $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_version bigint;
 begin
@@ -647,9 +471,6 @@ begin
 	perform pg_temp.handoff_connection();
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform public.qorpera_record_provider_usage_signal(v_binding,p_kind,null);
-	-- The failure report no longer hands off (20260928349910): ask the handoff function itself, which must
-	-- refuse a run that only met a rate limit or an outage, then report the failure.
-	perform public.qorpera_handoff_run_sponsor((v_binding ->> 'runId')::uuid,'Native harness failed (' || p_kind || ')');
 	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
 		repeat('3',64),'Native harness failed (' || p_kind || ')',false);
 	perform pg_temp.wake_assert((select sponsor_version = v_version from public.qorpera_execution_runs
@@ -665,10 +486,10 @@ begin
 		'Non-quota failure releases native authority');
 end $$;
 
-select pg_temp.wake_acceptance_case('rate_limit_does_not_trigger_handoff',
-	$test$select pg_temp.handoff_non_quota_failure('rate_limited');$test$);
-select pg_temp.wake_acceptance_case('provider_outage_does_not_trigger_handoff',
-	$test$select pg_temp.handoff_non_quota_failure('provider_outage');$test$);
+select pg_temp.wake_acceptance_case('rate_limit_is_not_a_usage_limit',
+	$test$select pg_temp.non_quota_failure('rate_limited');$test$);
+select pg_temp.wake_acceptance_case('provider_outage_is_not_a_usage_limit',
+	$test$select pg_temp.non_quota_failure('provider_outage');$test$);
 
 select pg_temp.wake_acceptance_case('member_consents_to_autonomous_work_on_own_connection',$test$
 do $$

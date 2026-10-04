@@ -6,7 +6,6 @@ import { hash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseCloudNativeCompanyContext, composeCloudNativeCompanyPrompt } from "../packages/runtime/src/cloud-native-company-context.ts";
 import { hostedDatabase, MIGRATIONS, migrationNames } from "./test-hosted-db-cluster.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -89,13 +88,7 @@ try {
 	report.cases = JSON.parse(sql(fixture + acceptance).split("\n").at(-1)).cases;
 	for (const item of report.cases) console.log(`${item.passed ? "PASS" : "FAIL"} ${item.name}${item.error ? `: ${item.error}` : ""}`);
 	assert(report.cases.every((item) => item.passed), "Database regression failed");
-	const projection = JSON.parse(sql(fixture + original.slice(0, end) + regression +
-		"\nselect pg_temp.review_completed_handoff();\nrollback;\n").split("\n").at(-1));
-	const context = parseCloudNativeCompanyContext(projection.context, projection.binding);
-	assert.equal(context.continuation?.kind, "completed_work");
-	assert.equal(JSON.parse(composeCloudNativeCompanyPrompt(context)).continuation.id, projection.binding.runId);
-	report.contextParity = true;
-	console.log("PASS real continuation SQL -> production TypeScript parser -> native prompt");
+	// The sponsor handoff's continuation parity left with the handoff (20260930048000).
 	const parallelSetup = JSON.parse(sql(fixture + original.slice(0, end) + regression
 		+ readFileSync(join(root, "supabase/acceptance/runtime_second_review_concurrency.sql"), "utf8")).split("\n").at(-1));
 	const connection = parallelSetup.connection;
