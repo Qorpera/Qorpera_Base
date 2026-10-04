@@ -173,27 +173,25 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   dnsmasq appends (`O_APPEND`), so it writes on from the start; what it wrote between the copy's end and the truncate
   is lost. (Renaming it and sending SIGUSR2 would not do: dnsmasq's unprivileged user cannot create a file in the 0750
   folder.)
-- **Counts.** Each closed day, per company, into `counts-YYYY-MM-DD.json`: the line guard's numbers
-  (`RUNTIME-AGENT-EXIT.md` §8): machines, new connections (by protocol), the most new connections in one 10-second step
-  (the company's and one machine's), refused flows (by rule), unanswered connections, distinct failed destinations
-  (unanswered or refused) and the most of them in one minute, and per node the gap lines and files deleted early. An
-  address belongs to a company from its `plugged` line to its `unplugged` one; `attribution.json` carries the
-  addresses still plugged in from one day to the next (and which client history parts it has read), and each day's
-  counts keep who was plugged in when it began. A client history line that reaches a day already counted (after the
-  plug's reconciler was down, its `plugged` line can be days back) makes the tender count again from that day on; for a
-  day whose counts are already gone (past 90 days) it cannot, so the line is noted in `attribution.json`
-  (`lateUnapplied`) and what it would have tied to a company stays unattributed.
-  Traffic from an address with no company at that moment counts as `unattributed`. Counting never slows or refuses
-  anything: the brake waits for the founder's levels.
+- **Counts, once.** Each closed day is counted once, per company, into `counts-YYYY-MM-DD.json`, as soon as all its
+  files are sealed; its counts never change after. The numbers are the line guard's (`RUNTIME-AGENT-EXIT.md` §8):
+  machines, new connections (by protocol), the most new connections in one 10-second step (the company's and one
+  machine's), refused flows (by rule), unanswered connections, distinct failed destinations (unanswered or refused) and
+  the most of them in one minute, and per node the gap lines. An address belongs to a company from its `plugged` line
+  to its `unplugged` one. Each counts file keeps the parts it counted and who was plugged in when its day ended: the
+  newest one is the checkpoint the next day starts from (`attribution.json` is a copy), and the counts file, written
+  whole and then renamed, is the one commit point. A part that turns up for a day already counted (after the plug's
+  reconciler was down, its `plugged` line can be days back) is counted with the next day the tender counts, under its
+  own day (`late`, with its own numbers per company); the day it belongs to never changes. Traffic from an address with
+  no company at that moment counts as `unattributed`, also when a late plug for it turns up afterwards. Counting never
+  slows or refuses anything: the brake waits for the founder's levels. A closed day the tender cannot count (a part it
+  cannot seal) is a problem in `logs.json`, so `verify` fails.
 - **Keeps the disk safe.** 90 days are kept. Past 80% of the cap, or with less than the floor plus 5 points of the disk
-  free, the oldest sealed parts of the connection log and the DNS record go first. The client history (small, and what
-  ties addresses to companies), the open files and the counts go only after 90 days, and a client history part only
-  once its day was counted with it. Each deleted file is a line in `lost.jsonl`, so a lookup knows that day is
-  unknown. A day counted again after parts of its connection log went keeps the numbers it was first counted with, and
-  says so (`lateClientHistory`); only who is plugged in moves on. A recount writes its starting point to
-  `attribution.json` before it counts anything; and from the first day whose client history the checkpoint does not
-  hold yet, every day's client history and counts stay until it does. So a pass cut short (even one that could not
-  write its starting point) goes on from where it stopped.
+  free, the oldest parts go first: the DNS record's and the connection log's, then the client history's (small, and
+  what ties addresses to companies). One rule for the connection log and the client history, at 90 days and under
+  pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
+  pressure; so while a day cannot be counted, the logger's pause is what keeps the disk. Each deleted file is a line
+  in `lost.jsonl`, so a lookup knows that day is unknown, and a part's name is never used twice.
 
 The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
 (`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool
@@ -218,11 +216,10 @@ is there.
 
 `qorpera-agent-exit.test.mjs` checks the pins, the logger's parsers and pause decision, the logs' tender (a day sealed
 and counted only once closed, a company carried from an earlier day, an address that changes company, parts by size, a
-late line that makes it count again (or, after early deletions, keeps the numbers), the DNS cut, a pass cut short, a
-count that fails before 90 days pass, the report, the cap's order of deletion, the floor, 90 days) and the plug tool:
-allocation
-under the creators' umask, twelve plugs at once, quarantine, and the reconciler against a stand-in for LXD
-(attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
+late part counted with the next day under its own day, a pass cut short after the counts file, a closed day that
+cannot be counted, the DNS cut, a pass cut short while sealing, the report, the cap's order of deletion, the floor,
+90 days) and the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
+reconciler against a stand-in for LXD (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
 On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
 with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
