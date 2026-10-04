@@ -723,7 +723,8 @@ Other side effects converge after the commit:
 Today they run inside the publish (20260828019600:528-615). In this design
 (P15, STATE-FILES "Plan (P15)"):
 - The commit writes an insert-only mark per changed subject (an agent hired,
-  archived, reactivated, retired or restored; a company whose name changed),
+  archived, reactivated, retired or restored; the company on every `vision.md`
+  write, whose name the queue copies),
   with no lock and no foreign key.
 - A pg_cron step every 2 seconds takes one subject per transaction: its marks
   become its work row's (one row per subject, with attempts and a back-off).

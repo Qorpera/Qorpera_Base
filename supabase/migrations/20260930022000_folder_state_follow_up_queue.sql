@@ -2,7 +2,7 @@
 -- commit"). Folder-v2 only.
 --
 -- 1. Marks and work rows: apply marks an agent when a save hires, archives, reactivates, retires or restores it, and the
---    company when its name changes; a pg_cron step (every 2 seconds, one subject a transaction) converges each subject
+--    company on every vision.md write; a pg_cron step (every 2 seconds, one subject a transaction) converges each subject
 --    to its current state, never replaying. Service-role writers kick a subject at once.
 -- 2. Converging an agent: an active one gets its default grant (with one widening authority journal row, written at
 --    the step's top level, never inside a savepoint), the shared connectors, and its first run (the kickoff for a hire,
@@ -86,7 +86,7 @@ alter table public.qorpera_folder_follow_ups enable row level security;
 revoke all on public.qorpera_folder_follow_ups from public, anon, authenticated, service_role;
 
 -- 3. The commit's marks (apply): an agent hired, archived, reactivated or restored by a save, an agent retired by a
--- delete, and a company whose name the vision changes.
+-- delete, and the company on every vision write (its name is copied by the queue).
 select pg_temp.p15_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$	v_h2_rows bigint; v_h2_moved bigint;
 begin$old$,
