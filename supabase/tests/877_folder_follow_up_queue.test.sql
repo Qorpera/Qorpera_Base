@@ -304,6 +304,21 @@ begin
 		raise exception 'The activating member authors the first run: %', v; end if;
 end $$;
 
+-- The member whose commit first made the agent active authors its first run, though others archived and reactivated it
+-- before the step.
+do $$
+declare a10 constant uuid := '87700000-0000-4000-8000-0000000000b0'; v jsonb;
+begin
+	perform pg_temp.expect(pg_temp.save(pg_temp.mem(), 'hire-agent-b0', jsonb_build_array(pg_temp.hire_as('jo', a10, 'active'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'archive-b0-0001', jsonb_build_array(pg_temp.agent('jo', a10, 'archived'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save(pg_temp.owner(), 'activate-b0-0001', jsonb_build_array(pg_temp.agent('jo', a10, 'active'))), 1, 'saved');
+	v := pg_temp.step();
+	if v ->> 'result' is distinct from 'done' or pg_temp.marked(a10) <> 0
+		or (pg_temp.work(a10)).hired_by_user_id is distinct from '70700000-0000-4000-8000-000000000002'
+		or (pg_temp.kickoff(a10)).author_user_id is distinct from '70700000-0000-4000-8000-000000000002' then
+		raise exception 'The first activating member authors: % / %', v, to_jsonb(pg_temp.kickoff(a10)); end if;
+end $$;
+
 -- 6. An archive: the agent's routines paused, its execution access, sessions and secret grants gone -----------------------
 
 -- Ada's routines (an active one, one its file pauses, an expired one that was active), her execution authority, her

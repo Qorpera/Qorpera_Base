@@ -76,14 +76,17 @@ end $$;
 select pg_temp.expect(pg_temp.save(pg_temp.owner(), 'race-hire-rua', jsonb_build_array(
 	pg_temp.hire('rua', '87800000-0000-4000-8000-0000000000a5', 'Rua'))), 1, 'saved') \g /dev/null
 do $$
-declare a5 constant uuid := '87800000-0000-4000-8000-0000000000a5'; v jsonb; v_text text;
+declare a5 constant uuid := '87800000-0000-4000-8000-0000000000a5'; v jsonb; v_text text; v_started timestamptz;
 begin
-	-- Another taker inserting Rua's first row: the kick waits for that insert 200 ms at most.
+	-- Another taker inserting Rua's first row: the kick waits for that insert 200 ms at most (well short of the 2 seconds
+	-- its own call allows).
 	perform dblink_exec('rrace_hold', 'begin');
 	perform * from dblink('rrace_hold', format($q$select (public.qorpera_folder_follow_up_take(%L, 'agent', %L)).dirty::text$q$,
 		'70900000-0000-4000-8000-000000000020', a5)) as t(r text);
+	v_started := clock_timestamp();
 	v := public.qorpera_folder_follow_up_now('70900000-0000-4000-8000-000000000020', 'agent', a5);
-	if v ->> 'result' is distinct from 'busy' then raise exception 'A kick on a row being inserted: %', v; end if;
+	if v ->> 'result' is distinct from 'busy' or clock_timestamp() - v_started > interval '1500 milliseconds' then
+		raise exception 'A kick on a row being inserted: % after %', v, clock_timestamp() - v_started; end if;
 	-- The other taker rolls back: its marks are there again, and the step converges Rua.
 	perform dblink_exec('rrace_hold', 'rollback');
 	select r into v_text from dblink('rrace_sched', current_setting('qorpera_test.step')) as t(r text);

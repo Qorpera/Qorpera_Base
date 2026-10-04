@@ -518,7 +518,13 @@ begin
 		or exists (select 1 from public.qorpera_company_path_grants g where g.principal_kind = 'staff_agent' and g.principal_id = v_cofounder)
 		or public.qorpera_folder_company_ready(v_profile) then
 		raise exception 'The creation queued its turn or granted before the follow-up queue'; end if;
+	-- Taken but not converged yet (a dirty work row): still pending.
+	perform public.qorpera_folder_follow_up_take(v_env, 'agent', v_cofounder);
+	if public.qorpera_folder_company_ready(v_profile) or public.qorpera_folder_company_setup(v_profile) is distinct from 'pending' then
+		raise exception 'A Co-Founder not converged yet is ready'; end if;
 	perform pg_temp.follow_ups(v_env);
+	if not public.qorpera_folder_company_ready(v_profile) or public.qorpera_folder_company_setup(v_profile) is distinct from 'ready' then
+		raise exception 'A converged Co-Founder is not ready'; end if;
 	if not exists (select 1 from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
 		where r.environment_id = v_env and r.path = '' and g.principal_kind = 'staff_agent' and g.principal_id = v_cofounder
 			and g.permissions = array['read','write'] and g.origin = 'default_agent_read' and g.revoked_at is null) then
