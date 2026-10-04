@@ -1,23 +1,13 @@
--- @fixture 396_runtime_coding_executor.test.sql until "-- 2. The turn as the runner sees it"
--- One lock order for a coding session's rows (v117): the company's profile fence
--- and Company File, todo, worker, coding session, then the session's turn or
--- machine. Each race makes two real calls meet on one session: a third
--- connection holds one row, the first call starts and waits there, the second
--- starts (and waits, unless it needs nothing the first holds), and the holder
--- lets go. Races 1-5 each ended in "deadlock detected" on the previous function
--- text; race 6 did with an admission that held the todo. With one order neither
--- call is killed: both land, or one is refused for its own plain reason. Two
--- single calls then show what a call no longer waits for. Row locks show only
--- across connections, so the dispatch fixture above is committed here and
--- removed again at the end; the test refuses to run beside other connections to
--- this database, whose rows the cleanup could not tell from its own. A run that
--- fails before its cleanup leaves the fixture committed: CI starts a fresh
--- database each time, but a local database must be rebuilt before a rerun.
+-- @fixture 396_runtime_coding_executor.test.sql until "-- END DISPATCH FIXTURE"
+-- A committed fixture for tests that make real calls meet across connections: 396's dispatch, committed here and
+-- removed again at the end, with three more connections, the exclusive-database guard and the exact cleanup. Its
+-- coding lock-order races are gone since C1c-3i (20260930026000): coding sessions serve folder-v2 only, and this
+-- fixture is snapshot-v1. The test refuses to run beside other connections to this database, whose rows the cleanup
+-- could not tell from its own.
 
--- What the races need outlives this transaction.
+-- What the dependents need outlives this transaction.
 reset role;
-select set_config(name, current_setting(name), false) from unnest(array['qorpera_test.parent_binding','qorpera_test.coding_claim',
-	'qorpera_test.coding_storage','qorpera_test.coding_binding','qorpera_test.coding_vm']) name;
+select set_config(name, current_setting(name), false) from unnest(array['qorpera_test.parent_binding']) name;
 select set_config('qorpera_test.lock_order_first_xid', xid(pg_current_xact_id())::text, false);
 -- Three more connections to this same database, whatever the runner named it (a copy made from a
 -- template has another name, and its calls would otherwise land in a database without the fixture).
@@ -137,25 +127,6 @@ $$;
 create function pg_temp.lock_row(p_table text, p_column text, p_id uuid) returns text language sql as $$
 	select format('select 1 from public.%I where %I = %L for update', p_table, p_column, p_id)
 $$;
-create function pg_temp.lock_cancel(p_operation text) returns text language sql as $$
-	select format('select public.qorpera_manage_agent_worker(%L::jsonb, %L::jsonb)', current_setting('qorpera_test.parent_binding'),
-		jsonb_build_object('action','cancel','operationKey',p_operation,'todoKey','composer-latency','workerKey','fix-send'))
-$$;
--- The executor claims the next turn; the owner follows up first when the last one has ended.
-create function pg_temp.lock_claim() returns void language plpgsql as $$
-begin
-	perform pg_temp.path_claims('service_role');
-	perform set_config('qorpera_test.lock_lease', public.qorpera_claim_coding_session('exec-test', 300) ->> 'leaseToken', false);
-end
-$$;
-create function pg_temp.lock_next_turn(p_text text, p_request uuid) returns void language plpgsql as $$
-begin
-	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_answer_coding_session((pg_temp.worker_row('fix-send')).id, p_text, p_request);
-	perform pg_temp.lock_claim();
-end
-$$;
-
 -- At the end: remove what the test committed. Every row written since the fixture's first write goes,
 -- with triggers and foreign-key checks off, and the rows it changed come back as they were. Every table
 -- must hold again exactly what other connections saw before.
@@ -189,169 +160,7 @@ begin
 	if cardinality(v_wrong) > 0 then raise exception 'Lock order cleanup left other row counts: %', v_wrong; end if;
 end $$;
 
--- 1. The owner answers while the executor finishes the turn with a question. The completion waits for
---    the todo first; the answer used to lock the worker and wait for the session the completion held.
---    (The main connection writes nothing in a race's own transaction: the calls would wait for it.)
-do $$
-begin
-	perform pg_temp.path_claims('service_role');
-	perform public.qorpera_heartbeat_coding_session((pg_temp.worker_row('fix-send')).id,
-		(current_setting('qorpera_test.coding_claim')::jsonb ->> 'leaseToken')::uuid, 300);
-end $$;
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-	v_lease uuid := (current_setting('qorpera_test.coding_claim')::jsonb ->> 'leaseToken')::uuid;
-begin
-	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_runtime_agent_todos', 'id', v_worker.todo_id),
-		format($q$select public.qorpera_complete_coding_turn(%L, %L, 'blocked', 'Composer fixed; the poll interval is your call.',
-			'Keep 250 ms, or raise to 500 ms?', null, null, null, null, null, '["Keep 250 ms","Raise to 500 ms"]')$q$, v_worker.id, v_lease),
-		'{"role":"service_role"}',
-		format($q$select public.qorpera_answer_coding_session(%L, 'Keep 250 ms.', '60200000-0000-4000-8000-000000000001')$q$, v_worker.id),
-		'{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}');
-	perform pg_temp.lock_race_ok(v_outcome, 'owner answer against executor completion');
-	perform pg_temp.wake_assert(v_outcome #>> '{first,result,phase}' = 'awaiting_input' and v_outcome #>> '{second,result,phase}' = 'input_ready'
-		and (pg_temp.worker_row('fix-send')).state = 'active' and (pg_temp.worker_row('fix-send')).sequence = 2,
-		'The question lands first and the owner''s answer opens the next turn: ' || v_outcome::text);
-end $$;
-
--- 2. The agent cancels while the executor finishes. The agent's worker tool took todo, worker, then
---    session; the completion took the session first.
-select pg_temp.lock_claim();
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
-		format($q$select public.qorpera_complete_coding_turn(%L, %L, 'succeeded', 'Composer posts first.')$q$, v_worker.id,
-			current_setting('qorpera_test.lock_lease')),
-		'{"role":"service_role"}', pg_temp.lock_cancel('lock-order-cancel-1'), '{"role":"service_role"}');
-	perform pg_temp.lock_race_ok(v_outcome, 'agent cancel against executor completion');
-	perform pg_temp.wake_assert(v_outcome #>> '{first,result,phase}' = 'completed' and v_outcome #>> '{second,result,action}' = 'cancel'
-		and (pg_temp.worker_row('fix-send')).state = 'succeeded' and (pg_temp.session_row('fix-send')).phase = 'completed',
-		'The completion lands first; the cancel then finds nothing running: ' || v_outcome::text);
-end $$;
-
--- 3. The agent cancels while the executor begins the turn. The begin took the session first. Now it
---    waits for the todo; the cancel, queued behind it, already holds the company's profile fence (every
---    agent tool call takes it first), so the turn's wake admission refuses at once (55P03, its fail-fast
---    for producers that hold other locks) instead of waiting in a cycle. The cancel lands, and nothing of
---    the turn remains.
-select pg_temp.lock_next_turn('Also cover the group chat composer.', '60200000-0000-4000-8000-000000000002');
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
-		format($q$select public.qorpera_begin_coding_turn(%L, %L, %L::jsonb)$q$, v_worker.id, current_setting('qorpera_test.lock_lease'),
-			jsonb_build_object('vmId', current_setting('qorpera_test.coding_vm'), 'turnId', public.qorpera_coding_turn_id(v_worker.id, 3))),
-		'{"role":"service_role"}', pg_temp.lock_cancel('lock-order-cancel-2'), '{"role":"service_role"}');
-	if v_outcome #>> '{first,state}' = '55P03' and v_outcome #>> '{first,error}' like '%"qorpera_profiles"%' then
-		v_outcome := v_outcome - 'first'; end if;
-	perform pg_temp.lock_race_ok(v_outcome, 'agent cancel against executor begin');
-	perform pg_temp.wake_assert(v_outcome #>> '{second,result,action}' = 'cancel'
-		and (pg_temp.worker_row('fix-send')).state = 'cancelled' and (pg_temp.session_row('fix-send')).phase = 'cancelled'
-		and not exists (select 1 from public.qorpera_wake_occurrences where source_id = v_worker.id
-			and occurrence_key = 'worker-dispatch:' || v_worker.id::text || ':3' and status <> 'cancelled'),
-		'The cancel lands and the turn leaves no live wake: ' || v_outcome::text);
-end $$;
-
--- 4. The owner writes while the executor admits the turn to its machine. The admission took the
---    session, then the worker; the answer took the worker, then the session. Now the admission lands and
---    the answer is refused plainly: the session is working.
-select pg_temp.lock_next_turn('Pick the composer work up again.', '60200000-0000-4000-8000-000000000003');
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
-		format($q$select public.qorpera_authorize_coding_machine_run(%L, %L, %L, %L::jsonb, %L)$q$, v_worker.id,
-			current_setting('qorpera_test.lock_lease'), current_setting('qorpera_test.coding_binding'),
-			current_setting('qorpera_test.coding_storage'), repeat('c', 64)),
-		'{"role":"service_role"}',
-		format($q$select public.qorpera_answer_coding_session(%L, 'Is it done yet?', '60200000-0000-4000-8000-000000000005')$q$, v_worker.id),
-		'{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}');
-	perform pg_temp.wake_assert(v_outcome #>> '{second,state}' = '55000'
-		and v_outcome #>> '{second,error}' = 'The session is still working; wait for its question or its result',
-		'The answer is refused because the session works, not killed: ' || v_outcome::text);
-	perform pg_temp.lock_race_ok(v_outcome - 'second', 'owner answer against machine admission');
-	perform pg_temp.wake_assert(v_outcome #>> '{first,result,intent}' = 'run' and v_outcome #>> '{first,result,machineId}' = current_setting('qorpera_test.coding_vm')
-		and (pg_temp.worker_row('fix-send')).state = 'active' and (pg_temp.worker_row('fix-send')).sequence = 4,
-		'The machine is admitted for the turn: ' || v_outcome::text);
-end $$;
-
--- 5. The executor detaches the session from the machine while the turn is admitted there again. The
---    detach took the machine, then the session; the admission takes the session before the machine.
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
-		format($q$select public.qorpera_authorize_coding_machine_run(%L, %L, %L, %L::jsonb, %L)$q$, v_worker.id,
-			current_setting('qorpera_test.lock_lease'), current_setting('qorpera_test.coding_binding'),
-			current_setting('qorpera_test.coding_storage'), repeat('c', 64)),
-		'{"role":"service_role"}',
-		format($q$select public.qorpera_authorize_coding_machine_custody(%L, 'exec-test', %L, %L, 'detach', %L, %L)$q$,
-			current_setting('qorpera_test.coding_vm'), current_setting('qorpera_test.coding_binding'), repeat('c', 64), v_worker.id,
-			current_setting('qorpera_test.lock_lease')),
-		'{"role":"service_role"}');
-	perform pg_temp.lock_race_ok(v_outcome, 'machine detach against machine admission');
-	perform pg_temp.wake_assert(v_outcome #>> '{first,result,intent}' = 'run' and v_outcome #>> '{second,result,intent}' = 'detach',
-		'The admission lands first, then the turn''s own detach: ' || v_outcome::text);
-end $$;
-
--- 6. The agent edits the todo while the executor admits the turn to its machine. The admission locks the
---    worker, never the todo: its node reservation waits for the company's profile fence, which the todo
---    tool holds while it locks the todo, so the admission must not hold the todo then.
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
-		format($q$select public.qorpera_authorize_coding_machine_run(%L, %L, %L, %L::jsonb, %L)$q$, v_worker.id,
-			current_setting('qorpera_test.lock_lease'), current_setting('qorpera_test.coding_binding'),
-			current_setting('qorpera_test.coding_storage'), repeat('c', 64)),
-		'{"role":"service_role"}',
-		format($q$select public.qorpera_manage_agent_todo(%L::jsonb, %L::jsonb)$q$, current_setting('qorpera_test.parent_binding'),
-			'{"action":"upsert","operationKey":"lock-order-todo-1","todoKey":"composer-latency","title":"Fix the delay after send, then the group chat"}'),
-		'{"role":"service_role"}', false);
-	perform pg_temp.lock_race_ok(v_outcome, 'agent todo edit against machine admission');
-	perform pg_temp.wake_assert(v_outcome #>> '{first,result,intent}' = 'run'
-		and (select title from public.qorpera_runtime_agent_todos where id = v_worker.todo_id) = 'Fix the delay after send, then the group chat',
-		'The todo edit and the admission both land: ' || v_outcome::text);
-end $$;
-
--- 7. A delegation only records an event, so it starts at the worker: the owner hands a question to the
---    agent while an agent tool holds the todo, and does not wait for it.
-do $$
-begin
-	perform pg_temp.path_claims('service_role');
-	perform public.qorpera_complete_coding_turn((pg_temp.worker_row('fix-send')).id, current_setting('qorpera_test.lock_lease')::uuid,
-		'blocked', 'Both composers post first now.', 'Ship the direct chat first, or both together?');
-end $$;
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_runtime_agent_todos', 'id', v_worker.todo_id),
-		format($q$select public.qorpera_delegate_coding_session(%L, '60200000-0000-4000-8000-000000000006')$q$, v_worker.id),
-		'{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}');
-	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome #>> '{result,phase}' = 'awaiting_input'
-		and exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = v_worker.id and event.kind = 'delegated'
-			and event.body ->> 'clientRequestId' = '60200000-0000-4000-8000-000000000006'),
-		'The delegation lands without waiting for the todo: ' || v_outcome::text);
-end $$;
-
--- 8. Someone who does not own the session locks nothing: a company member's answer is refused while
---    another connection holds the worker, without waiting for it.
-do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
-begin
-	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_runtime_workers', 'id', v_worker.id),
-		format($q$select public.qorpera_answer_coding_session(%L, 'Both together.', '60200000-0000-4000-8000-000000000007')$q$, v_worker.id),
-		'{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000002"}');
-	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501'
-		and v_outcome ->> 'error' like 'Only the owner of this coding session can talk to it%',
-		'A non-owner is refused without taking a lock: ' || v_outcome::text);
-end $$;
-
--- 9. The helper is internal.
-select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_lock_coding_worker(uuid)', 'EXECUTE'),
-	'Only the kernel locks a coding worker: ' || role_name)
-from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) role_name;
+-- END COMMITTED FIXTURE (608, 745, 754, 797 and 800 cut here).
 
 -- Remove what this test committed.
 select pg_temp.lock_order_cleanup();

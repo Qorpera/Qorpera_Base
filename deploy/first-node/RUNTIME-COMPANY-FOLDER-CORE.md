@@ -337,7 +337,9 @@ is never upgraded. The steps:
    9. unique-key claims, by kind then key.
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
-   every session the transaction will write, `FOR UPDATE` in id order; and the company's operation clock, which the
+   every session the transaction will write, `FOR UPDATE` in id order: the conversations, then the coding sessions
+   (C1c-3i), then the turn inputs, as C4's materializer (P28) takes them; and the company's operation
+   clock, which the
    first session write takes (an insert, a title or status change, or an event). Admission and the folder clock stay last.
 
    These numbers are the lock ranks, and all nine come before paths (step 5),
@@ -968,8 +970,8 @@ against exactly that (20260927150000:1-37, 20260927130000). So:
   (as 20260927162900:89-110 does); and
 - it is load-tested before any company uses it.
 
-**The load test.** It extends `scripts/load-company-file-fence.mjs`, which
-today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
+**The load test.** It replaces `scripts/load-company-file-fence.mjs` (removed in
+C1c-3i), which ran on tmpfs, drove one sequential agent and excused 55P03. It must:
 - run on a real disk;
 - drive 32 to 64 concurrent runs mixing change sets, reads, listings, stop,
   wakes, ACL narrowing, subtree deletes, the post-commit worker and GC;
@@ -990,7 +992,13 @@ materializer, so on `folder-v2` admission is only the admission row's count.
 Machine admission is not driven. `--probe-only --big-paths N` times one run
 whose read set holds N paths, alone, with function statistics. Its first
 finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
-later slices").
+later slices"). Its second was the upload's presence check, which under a plan
+that scanned the company's catalog first checked every object it stores, fixed
+by P24c (C1D §7). It reports statements running over 2 s with their wait
+events, statements over 1 s with their plans (auto_explain), and PL/pgSQL
+functions by self time over the load. Since C1c-3i every migration change runs it short (run-on-node's
+`folder-core-load` step: 16 runs for 30 s and a 5,000-path read set), in place
+of the snapshot-era pool load.
 
 ## 10. What goes, and when
 
@@ -1029,7 +1037,8 @@ the old code until the reset, so it is removed in C6:
 Some things are rewritten earlier, because the reset or the proof company
 needs them:
 - **By C4:** the observability functions on revisions
-  (20260828019970:244,367), so the proof company is visible.
+  (20260828019970:244,367), so the proof company is visible. Done in P32
+  (20260930032000): they read the folder core's commits, reviews and read sets.
 - **By C5:**
   - the Company File acceptance gates that launch item 19 names;
   - the SQL tests in `scripts/test-*.mjs` that use snapshots;
@@ -1193,7 +1202,8 @@ For `folder-v2` companies:
   "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
   returns".
 - The members' and clients' hint (the feed itself is C1f).
-- The observability views.
+- The observability views (P32, migration `20260930032000`: the operator's run and company queries read commits,
+  reviews and read sets).
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write
   and read files for `folder-v2`. No member writer of `folder-v2` files goes

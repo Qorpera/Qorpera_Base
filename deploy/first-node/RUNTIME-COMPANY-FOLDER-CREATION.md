@@ -3,8 +3,8 @@
 Status: design, 3 October 2026 (F2, the coordinator's slice P14); revised after design review r1 and the coordinator's
 answers. The core's §5 "Company creation is one commit" and §11 C2 say what; this says how. It fills the stubs the
 founding lobby left for C2 (`20260928248200_company_founding_lobby.sql`): `qorpera_folder_company_open`, `_seed` and
-`_ready`. Nothing changes for customers until C5 turns creation on (`qorpera_company_founding_available()`, P39); the
-coordinator keeps it off until C4's materializer (P28) runs the first run.
+`_ready`. C5 turned creation on (`qorpera_company_founding_available()`, P39, 20260930031000) once C4's materializer
+(P28) ran the first run; switching it off again is the rollback.
 
 In short:
 - **Open** makes the company row, its environment and its owner, already on `folder-v2`: no seeded tree yet.
@@ -22,8 +22,8 @@ In short:
 ## 1. What exists (master 186cd8646)
 
 - **The stubs** (`20260928248200:20-44`): open and seed raise `0A000`, and ready returns false. All three are revoked
-  from every API role. `qorpera_company_founding_available()` returns false; it is granted to `authenticated`, and C5
-  flips it.
+  from every API role. `qorpera_company_founding_available()` returned false then; it is granted to `authenticated`, and
+  C5 flipped it (P39).
 - **The lobby's callers:**
   - `qorpera_open_company_founding` calls `open` as the signed-in member, with no lock held, and reads `profile_id`.
   - `qorpera_start_company_founding` calls `seed` once, inside its own transaction. A repeated Start returns early at
