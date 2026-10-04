@@ -209,6 +209,33 @@ export interface CloudFolderMaterializationPage {
 	nextAfterProfileId?: string;
 }
 
+/** A per-company folder drain (folder core C4, P29, deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): a due list
+ * of environments and one company's step, each its own request and transaction, run before the folder materializer.
+ * The edge function maps the name to its two RPCs. */
+export interface CloudFolderDrainSpec {
+	/** The drain's name, as the edge function knows it. */
+	name: string;
+	/** The most one company's request may do (1 to 256). */
+	companyLimit: number;
+}
+
+/** The drains the orchestrator runs, in order. Another drain adds its entry here and in the edge function's table. */
+export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freeze([
+	Object.freeze({ name: "listen", companyLimit: 32 }),
+]);
+
+/** A page of folder-v2 environments with work for one drain. */
+export interface CloudFolderDrainPage {
+	items: readonly string[];
+	hasMore: boolean;
+	nextAfterEnvironmentId?: string;
+}
+
+/** What one company's drain step did: its own state word (`done`, `idle`, `busy`, `paused` …). */
+export interface CloudFolderDrainResult {
+	state: string;
+}
+
 /** What one company's materialization did: `done` with the runs it made, or why it made none. */
 export interface CloudFolderMaterialization {
 	state: "done" | "idle" | "paused" | "at_zero" | "not_folder";
@@ -252,6 +279,19 @@ export interface CloudRunnerOrchestratorControlPlane {
 		limit: number,
 		signal?: AbortSignal,
 	): Promise<CloudFolderMaterialization>;
+	/** The per-company folder drains (folder core C4, P29): each company's step in its own transaction. */
+	listFolderDrainDue?(
+		drain: string,
+		afterEnvironmentId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDrainPage>;
+	runFolderDrain?(
+		drain: string,
+		environmentId: string,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDrainResult>;
 	reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void>;
 	retainedClaims(orchestratorId: string, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]>;
 	claimNext(
@@ -291,6 +331,12 @@ export interface CloudRoutineScheduleReconcilerOptions {
 	catchUpLimit?: number;
 	/** How often the folder-v2 dynamic routines are listed (folder core C1c-3e); default 30 s. */
 	folderDynamicIntervalMs?: number;
+}
+
+export interface CloudFolderDrainsOptions {
+	now?: () => Date;
+	pageSize?: number;
+	drains?: readonly CloudFolderDrainSpec[];
 }
 
 export interface CloudFolderRunMaterializerOptions {
@@ -415,6 +461,8 @@ type CloudRunnerOrchestratorRequest =
 	| { action: "restore_dynamic_routine"; orchestratorId: string; routineId: string; expectedVersion: number }
 	| { action: "folder_materialize_due"; orchestratorId: string; afterProfileId?: string; limit: number }
 	| { action: "folder_materialize_company"; orchestratorId: string; profileId: string; limit: number }
+	| { action: "folder_drain_due"; orchestratorId: string; drain: string; afterEnvironmentId?: string; limit: number }
+	| { action: "folder_drain_company"; orchestratorId: string; drain: string; environmentId: string; limit: number }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| { action: "claim"; orchestratorId: string; clientClaimId: string; leaseSeconds: number }
@@ -692,6 +740,41 @@ function parseFolderDynamicRoutineRun(value: unknown): CloudFolderDynamicRoutine
 		throw new Error("Runner orchestrator returned an inserted folder dynamic routine run without its id");
 	}
 	return { status, ...(occurrenceId ? { occurrenceId } : {}) };
+}
+
+const FOLDER_DRAIN_NAME = /^[a-z][a-z0-9_]{0,31}$/;
+
+function folderDrainName(drain: string): void {
+	if (!FOLDER_DRAIN_NAME.test(drain)) throw new Error("Folder drain name is invalid");
+}
+
+function parseFolderDrainPage(value: unknown): CloudFolderDrainPage {
+	const input = record(value, "folder drain page");
+	if (!Array.isArray(input.items) || typeof input.has_more !== "boolean") {
+		throw new Error("Runner orchestrator returned invalid folder drain page");
+	}
+	const nextAfterEnvironmentId =
+		input.next_after_environment_id === null || input.next_after_environment_id === undefined
+			? undefined
+			: responseUuid(input.next_after_environment_id, "folder drain cursor");
+	if (input.has_more !== (nextAfterEnvironmentId !== undefined)) {
+		throw new Error("Runner orchestrator returned inconsistent folder drain pagination");
+	}
+	return {
+		items: input.items.map((item) =>
+			responseUuid(record(item, "folder drain company").environment_id, "folder environment id"),
+		),
+		hasMore: input.has_more,
+		...(nextAfterEnvironmentId ? { nextAfterEnvironmentId } : {}),
+	};
+}
+
+function parseFolderDrainResult(value: unknown): CloudFolderDrainResult {
+	const input = record(value, "folder drain result");
+	if (typeof input.state !== "string" || !/^[a-z_]{1,32}$/.test(input.state)) {
+		throw new Error("Runner orchestrator returned an invalid folder drain state");
+	}
+	return { state: input.state };
 }
 
 function parseFolderMaterializationPage(value: unknown): CloudFolderMaterializationPage {
@@ -1589,6 +1672,128 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	}
 }
 
+/** A drain whose list fails, or a company whose step fails, is asked again after 1 s, then 2 s, 4 s … at most 5 minutes;
+ * a drain the edge function does not know (400) after ten minutes. */
+const FOLDER_DRAIN_BACKOFF_MS = 1_000;
+const FOLDER_DRAIN_BACKOFF_MAX_MS = 5 * 60_000;
+
+interface FolderDrainBackoff {
+	until: number;
+	failures: number;
+}
+
+function folderDrainBackoff(previous: FolderDrainBackoff | undefined, now: number, wait?: number): FolderDrainBackoff {
+	const failures = (previous?.failures ?? 0) + 1;
+	return {
+		failures,
+		until:
+			now +
+			(wait ?? Math.min(FOLDER_DRAIN_BACKOFF_MAX_MS, FOLDER_DRAIN_BACKOFF_MS * 2 ** Math.min(failures - 1, 20))),
+	};
+}
+
+/** The per-company folder drains (folder core C4, P29: the shared step before the materializer;
+ * deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): for each drain in order, every company with due work in its
+ * own request and transaction. Each drain has its own pause and backoff, and each of its companies its own: a drain
+ * whose list fails, or that the edge function does not know, stops only itself, and one company's failure stops no
+ * other. The wakes a drain admits are materialized in the same pass. */
+export class CloudFolderDrains implements CloudRunnerOccurrenceReconciler {
+	readonly #now: () => Date;
+	readonly #pageSize: number;
+	readonly #drains: readonly CloudFolderDrainSpec[];
+	readonly #drainBackoff = new Map<string, FolderDrainBackoff>();
+	/** Keyed by drain name and environment id. */
+	readonly #companyBackoff = new Map<string, FolderDrainBackoff>();
+
+	constructor(options: CloudFolderDrainsOptions = {}) {
+		this.#now = options.now ?? (() => new Date());
+		this.#pageSize = options.pageSize ?? 100;
+		this.#drains = options.drains ?? CLOUD_FOLDER_DRAINS;
+		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
+			throw new Error("Folder drain page size is outside the supported range");
+		}
+		const names = new Set<string>();
+		for (const drain of this.#drains) {
+			folderDrainName(drain.name);
+			if (names.has(drain.name)) throw new Error("Folder drain is listed twice");
+			names.add(drain.name);
+			if (!Number.isSafeInteger(drain.companyLimit) || drain.companyLimit < 1 || drain.companyLimit > 256) {
+				throw new Error("Folder drain company limit is outside the supported range");
+			}
+		}
+	}
+
+	async reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void> {
+		if (!controlPlane.listFolderDrainDue || !controlPlane.runFolderDrain) return;
+		const now = this.#now().getTime();
+		// A company no longer due is forgotten once its wait has long passed.
+		for (const [key, backoff] of this.#companyBackoff) {
+			if (backoff.until + FOLDER_DRAIN_BACKOFF_MAX_MS < now) this.#companyBackoff.delete(key);
+		}
+		const failures: unknown[] = [];
+		for (const drain of this.#drains) {
+			if (now < (this.#drainBackoff.get(drain.name)?.until ?? 0)) continue;
+			const failed = (error: unknown, wait?: number) => {
+				failures.push(error);
+				this.#drainBackoff.set(
+					drain.name,
+					folderDrainBackoff(this.#drainBackoff.get(drain.name), this.#now().getTime(), wait),
+				);
+			};
+			let afterEnvironmentId: string | undefined;
+			let listed = true;
+			do {
+				let page: CloudFolderDrainPage;
+				try {
+					page = signal
+						? await controlPlane.listFolderDrainDue(drain.name, afterEnvironmentId, this.#pageSize, signal)
+						: await controlPlane.listFolderDrainDue(drain.name, afterEnvironmentId, this.#pageSize);
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					failed(
+						error,
+						error instanceof CloudRunnerOrchestratorRequestError && error.status === 400
+							? ROUTINE_ADVANCE_RETRY_MS
+							: undefined,
+					);
+					listed = false;
+					break;
+				}
+				for (const environmentId of page.items) {
+					const key = `${drain.name} ${environmentId}`;
+					if (now < (this.#companyBackoff.get(key)?.until ?? 0)) continue;
+					try {
+						if (signal) await controlPlane.runFolderDrain(drain.name, environmentId, drain.companyLimit, signal);
+						else await controlPlane.runFolderDrain(drain.name, environmentId, drain.companyLimit);
+						this.#companyBackoff.delete(key);
+					} catch (error) {
+						if (signal?.aborted) throw error;
+						failures.push(error);
+						this.#companyBackoff.set(
+							key,
+							folderDrainBackoff(this.#companyBackoff.get(key), this.#now().getTime()),
+						);
+					}
+				}
+				const next = page.hasMore ? page.nextAfterEnvironmentId : undefined;
+				if (page.hasMore && !next) {
+					failed(new Error(`Folder drain ${drain.name} pagination lost its cursor`));
+					listed = false;
+					break;
+				}
+				if (next !== undefined && afterEnvironmentId !== undefined && next <= afterEnvironmentId) {
+					failed(new Error(`Folder drain ${drain.name} pagination did not move forward`));
+					listed = false;
+					break;
+				}
+				afterEnvironmentId = next;
+			} while (afterEnvironmentId);
+			if (listed) this.#drainBackoff.delete(drain.name);
+		}
+		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
+	}
+}
+
 /** Folder-v2 runs (folder core C4, P28): every company with due work in its own request, so each is its own
  * transaction (one company per admitting transaction, core §3 step 10). The legacy materializers inside `reconcile`
  * skip folder-v2. One company's failure never stops the others. */
@@ -1925,8 +2130,10 @@ export class CloudRunnerOrchestrator {
 		this.#orchestratorId = options.orchestratorId;
 		this.#controlPlane = options.controlPlane;
 		this.#providerAdapter = options.providerAdapter;
-		// The folder materializer first: a routine schedule outage (whose list error ends the pass) never stops runs.
+		// The folder drains, then the folder materializer (which runs the wakes the drains admitted in the same pass): a
+		// routine schedule outage (whose list error ends the pass) never stops runs.
 		this.#occurrenceReconcilers = [
+			new CloudFolderDrains(),
 			new CloudFolderRunMaterializer(),
 			new CloudRoutineScheduleReconciler(),
 			...(options.occurrenceReconcilers ?? []),
@@ -2657,6 +2864,53 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		return parseFolderMaterialization(
 			await this.#request(
 				{ action: "folder_materialize_company", orchestratorId: this.#orchestratorId, profileId, limit },
+				signal,
+			),
+		);
+	}
+
+	async listFolderDrainDue(
+		drain: string,
+		afterEnvironmentId: string | undefined,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDrainPage> {
+		folderDrainName(drain);
+		if (afterEnvironmentId !== undefined) requiredUuid(afterEnvironmentId, "Folder drain cursor");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+			throw new Error("Folder drain page limit is outside the supported range");
+		}
+		const page = parseFolderDrainPage(
+			await this.#request(
+				{
+					action: "folder_drain_due",
+					orchestratorId: this.#orchestratorId,
+					drain,
+					...(afterEnvironmentId ? { afterEnvironmentId } : {}),
+					limit,
+				},
+				signal,
+			),
+		);
+		if (page.items.length > limit)
+			throw new Error("Runner orchestrator returned more folder drain companies than asked");
+		return page;
+	}
+
+	async runFolderDrain(
+		drain: string,
+		environmentId: string,
+		limit: number,
+		signal?: AbortSignal,
+	): Promise<CloudFolderDrainResult> {
+		folderDrainName(drain);
+		requiredUuid(environmentId, "Folder environment id");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
+			throw new Error("Folder drain limit is outside the supported range");
+		}
+		return parseFolderDrainResult(
+			await this.#request(
+				{ action: "folder_drain_company", orchestratorId: this.#orchestratorId, drain, environmentId, limit },
 				signal,
 			),
 		);

@@ -119,8 +119,9 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   - the roster's default-grant trigger (`ensure_default_agent_read_grants`): `folder-v2` agents need its grant on the
     company-shared root to read and write there (test 632 fails without it). F2's concern is how it is written:
     outside the authority journal and after the commit's rank-6 and rank-7 locks. The grant is a widening, so the
-    authority check does not need a journal row for it. Writing it through the folder's grant path, in the commit
-    that creates the agent, belongs to C2 (creation) and C1c-3 (lock order);
+    authority check does not need a journal row for it. Since P15 the follow-up queue writes it after the commit
+    that creates the agent, at rank 6 and 7, with one widening journal row, and the trigger skips `folder-v2`
+    (STATE-FILES "Plan (P15)");
   - `verify_company_path_file` and `_tree`: service-role functions that register uploaded bytes; the folder core has
     no other way to get them until C1d's byte check replaces them. Members have no upload path for `folder-v2` at all
     until C1d's upload intents;
@@ -280,7 +281,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -755,11 +756,12 @@ Needed before any view goes live (C1B §4).
   The open sites on 4 October 2026 (inventory §16, and the review of #779), by owner:
   - S1: identity recovery and retirement;
   - A1: office activation wakes (C1c-3l);
-  - F3: artifacts (`20260930041000`). A member's `register_artifact_v2`, or a run's artifact output, inserts an
-    artifact with no core test. The artifact triggers, graph completion and the GC plans then take the gc fence. The
-    fix refuses artifacts on folder-v2.
   Office access (C1c-3k part 2), the quiet coding check-ins (`20260930026000`), the sign-in machines (P13, §6.14), and
-  a run's machine and node update drains (C1c-3n, §6.15) moved off the list on 4 October.
+  a run's machine and node update drains (C1c-3n, §6.15) moved off the list on 4 October, and so did artifacts with
+  `20260930041000`: a member's `register_artifact_v2`, or a run's artifact output, inserted an artifact with no core
+  test, and the artifact triggers, graph completion and the GC plans then took the gc fence. Every artifact path and
+  member function that would take it now refuses folder-v2 first (0A000), which 838 pins, and the artifact entries are
+  `legacy`.
   Each slice removes its lines from 838's list as it moves its sites; a partial line pins its core test's text, so a
   changed test fails until the line is checked again. The test prints the open lines as a NOTICE, which a failing run
   shows.
@@ -1623,12 +1625,75 @@ A company that is not `folder-v2` keeps the gc fence in each `else` branch, unte
 
 824 H gains this migration's layer, undone first.
 
+### 6.16 C1c-3l part 1 as built: an agent starts the Company Computer (migration 20260930030000, test 890)
+
+The coordinator's P06c, first of two PRs. Folder-v2 only, like 3j and 3k: the statement that was there before stays in
+each `else`.
+
+| Path | Before (on folder-v2) | Now |
+|---|---|---|
+| `native_office_start` (an agent's `computer_start`) | refused with 0A000 | `qorpera_folder_office_start_enter(binding)`, then the seat lock and every computer of the company by id, as before; no gc fence (the tool run holds the folder fence and rank 0) |
+| `native_office_start_descriptor` | refused with 0A000 | serves folder-v2; its new computer takes the company's agents `KEY SHARE` before the seat lock (as `member_agent_office` does, §6.12); the gate accepts a ready folder-v2 Company File |
+| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since) |
+| `qorpera_folder_office_enter` (3j's prelude), run again inside the call | the start's agent `FOR SHARE` | `FOR SHARE NOWAIT` when nested |
+
+- **The prelude.** An agent's tool run takes its requester and agent only `KEY SHARE`. But the start-source check shares
+  the start's agent (or member) after the computer, and a start may join another start of the same computer, whose
+  agent or member it then shares. So before the seat lock and the computers, the tool run takes `FOR SHARE`:
+  - the members (rank 1) and agents (rank 2) named by any current start of the company's computers;
+  - the run's own agent;
+
+  and every active agent `KEY SHARE` (a new computer's default access takes them after the computers). An agent's
+  return holds its row, then wants the seat lock (the hire's walk, §6.12), then the computers: the start now waits at
+  the row and never holds what the return wants.
+- **A start that appears after the read.** The prelude reads the current starts plainly. If one commits before the start
+  locks the computers, it may name someone the prelude did not lock, and the start then joins it:
+  - a member: the start-source check shares the member after the computer. That is safe, because a member's writers
+    (role change, removal) never take a seat lock or a computer;
+  - an agent: the start-source check takes the agent `FOR SHARE NOWAIT` on folder-v2. An agent's return holds its row
+    and wants the seat lock, so a wait there could deadlock. Only if that row is being written at that very moment does
+    the start refuse (55P03). The runtime does not retry a refused `computer_start`: its receipt stays open and the run
+    reports the outcome unconfirmed (review r1). So the refusal is kept to that narrow case.
+
+  Every writer of a start holds the computer, so nothing changes after the start locks it.
+- **The receipt before the start record.** The start locks its operation receipt before the start of the computer
+  (a rank-9-level row before an office-level one, as it was). That is acyclic: only the run's own calls and its
+  completion take the receipt, and none of them takes a start record.
+- **3j's prelude, nested.** A member's start runs its before-idle body, and a provider's wrapper its unbound body, inside
+  the call; both run 3j's prelude again after the computer is held. Nested (the transaction-local
+  `qorpera.folder_office_entered` lists every computer the transaction entered), the prelude takes a start's agent
+  `FOR SHARE NOWAIT` too. The start-source check's NOWAIT covers only the agent's row, not its access row: no prelude
+  takes the access row, and no writer of it waits for a computer or the seat lock after taking it (reviews r2, r3).
+  The outer prelude took the same agent unless a start appeared in between; then a wait could deadlock with that
+  agent's return (890 E4 found it).
+- **Test 890** (648's committed fixture; Ada's run starts the company's computer):
+  - A: with the company row held, the descriptor and the authorize answer at once;
+  - B: with Ada's row held (her return), Ada's start waits there holding no seat lock and no computer; the holder bumps
+    the computer's revision and commits; the start lands;
+  - C: with Ada's start recorded, the owner's before-idle, the provider's offer, placement, the unbound check and
+    reserve, the withdrawal and the cancel each wait at Ada's row holding no computer, and never deadlock (the carried
+    C-style tests from #739's review);
+  - D: Ada's start joins the Co-Founder's start, waiting first at the Co-Founder's row;
+  - E: the Co-Founder's start commits while Ada's start waits at the seat lock; Ada's start joins it. E1: the same with
+    the Co-Founder's row being written; Ada's start refuses at once (55P03), records nothing and leaves its receipt open;
+  - E2: Ada's start joins the owner's start, waiting first at the owner's row. E2b: the owner's start commits after
+    Ada's read and the owner's row is held; Ada's start waits there (after the computer, which is safe) and joins;
+  - E3: with an active agent's row held `FOR UPDATE`, the start waits at the agents before the seat lock;
+  - E4: a member's start waits at the computer while Ada's start commits and Ada's row is being written; the member's
+    start refuses at once (55P03) instead of deadlocking;
+  - E1 and E4 set a lock timeout, so a wait there fails the test instead of hanging it;
+  - F: the descriptor's new computer waits at the agents before the seat lock;
+  - G: exactly 5 bodies name the migration.
+- **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
+  up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
+  folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
+  ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
+
 ### 6.17 P13 part 2 as built: identity recovery and retirement (migration 20260930049000, test 901)
 
 F3's activation check (838) listed eleven `folder-v2` gc-fence holders in identity recovery and retirement. Each took the
 gc fence (the company row `FOR UPDATE`), on `folder-v2` a stall of every effect of the company; the login's and refresh's
-recovery requests also took the sign-in before it (§6.14's window). Section 6.16 is A1's (C1c-3l part 1); whichever lands
-second renumbers.
+recovery requests also took the sign-in before it (§6.14's window).
 - **Recovery** (`qorpera_activate_identity_recovery`, `qorpera_cancel_identity_recovery`,
   `qorpera_consent_identity_recovery`, `qorpera_request_identity_recovery`, `qorpera_request_login_identity_recovery`,
   `qorpera_request_account_refresh_identity_recovery`, and `qorpera_recovery_locked`, the first step of
@@ -1721,6 +1786,55 @@ its locks in I; the backup without its `KEY SHARE` in J; the registration or the
 machine lock in L.
 
 838's `p13_allowed` list loses the eleven sites.
+
+### 6.19 P06d part 1 as built: a screenshot stored nowhere travels in its answer (runtime only)
+
+The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
+office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
+The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.17) and
+gives the capture its folder-v2 authority. Until then nothing reaches this path.
+
+- **The office service** (`CloudCompanyComputerScreenshots.publish`):
+  - when the capture's authorize answers `{state: "authorized", storage: "none"}`, it uploads nothing;
+  - the published identity must name the operation's receipt (`assetId` is the receipt id);
+  - the PNG then waits in memory for the native gateway's answer.
+
+  `{state: "authorized"}` alone still means the stored legacy path. A session keeps one publisher for its whole life,
+  so a new automation (a reattached browser) doesn't lose a waiting screenshot.
+- **The native gateway** attaches the waiting PNG as `image` (base64), and only to a `computer_screenshot` perform
+  answer, taking it once. An answer with `image` may be up to 11 MiB (`COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE`,
+  an 8 MiB PNG as base64). Every other answer keeps the 48 KiB bound.
+- **The native host** (`HttpCompanyComputerNativeEndpoint.perform`):
+  - reads a screenshot's answer up to 11 MiB;
+  - accepts `image` only on a screenshot's answer, only as strict base64, only with JSON content whose identity names
+    this receipt, and only when the bytes are exactly that capture's (PNG header, size, width, height, sha256);
+  - then hands the bytes to the run's capture reader and returns the content without them, so the receipt stores only
+    the identity, as before.
+
+  The factory makes one capture reader per run and shares it between the endpoint and the boundary's
+  `CloudNativeCaptureImages`.
+- **To the model.** `read` makes the SQL read check, takes the bytes from memory once, checks them, and makes the SQL
+  check again. It never fetches them from the object store. A second read finds nothing in memory and goes to the
+  object store, as a stored capture does.
+- **Bounds.** `CompanyComputerInlineScreenshots` holds at most 4 screenshots, each for at most 60 s, on both sides; past
+  the bound the oldest goes. The executor runs one operation at a time, so one is the usual count.
+- **Mixed versions:**
+  - an old office service with the new host: no `image` ever comes;
+  - a new office service with an old host: it sends `image` only after a `storage: none` answer, which no database
+    gives until part 2;
+  - part 2 is applied after this release has rolled to every node and office (v173).
+- **Tests:**
+  - `cloud-company-computer-screenshots.test.ts`:
+    - nothing uploaded, the receipt named, and the pixels taken once;
+    - any other storage answer or identity refused;
+    - an inline read with both SQL checks and no fetch;
+    - pixels that aren't the published capture's refused;
+    - the holder's 4 and 60 s bounds;
+  - `cloud-company-computer-native.test.ts`, over real TLS:
+    - a 256 KiB PNG (past the 48 KiB bound) goes from the guest session through the gateway, the host, the receipt
+      and the capture reader to the model's data URL, with no object fetch;
+    - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
+      base64 is refused before anything is kept.
 
 ## 7. Traps for C1c-2 and C1c-3
 

@@ -438,19 +438,32 @@ describe("member writes (P34a)", () => {
 			agents: [{ staffAgentId: agent, file: "agents/nora/agent.md" }],
 			groups: [{ roomId: room, file: "agents/groups/launch/group.md" }],
 		};
+		// Before P34r's SQL the answer has no routines: routines' files are not known.
 		expect(parseCloudMemberCompanyStateFolders(answer)).toEqual({
 			agents: [{ staffAgentId: agent, file: "agents/nora/agent.md" }],
 			groups: [{ roomId: room, file: "agents/groups/launch/group.md" }],
+			routines: null,
 		});
 		expect(parseCloudMemberCompanyStateFolders({ ...answer, agents: [], groups: [] })).toEqual({
 			agents: [],
 			groups: [],
+			routines: null,
 		});
+		// As test 899 pins them.
+		const routine = { routineId: commitId, staffAgentId: agent, file: "agents/nora/routines/inbox.md" };
+		expect(parseCloudMemberCompanyStateFolders({ ...answer, routines: [routine] }).routines).toEqual([routine]);
+		expect(parseCloudMemberCompanyStateFolders({ ...answer, routines: [] }).routines).toEqual([]);
 		for (const bad of [
 			{ ...answer, schema: "qorpera.member-company-state-folders/v2" },
 			{ ...answer, extra: 1 },
 			{ ...answer, agents: [{ staffAgentId: agent, file: "agents/nora/agent.md", path: "x" }] },
 			{ ...answer, groups: [{ roomId: "nope", file: "agents/groups/launch/group.md" }] },
+			{ ...answer, routines: {} },
+			{ ...answer, routines: [{ routineId: commitId, file: "agents/nora/routines/inbox.md" }] },
+			{
+				...answer,
+				routines: [{ routineId: commitId, staffAgentId: "nope", file: "agents/nora/routines/inbox.md" }],
+			},
 		])
 			expect(() => parseCloudMemberCompanyStateFolders(bad)).toThrow();
 	});
@@ -580,7 +593,11 @@ describe("member writes (P34a)", () => {
 		const { folder, calls } = client(() =>
 			Response.json({ schema: "qorpera.member-company-state-folders/v1", agents: [], groups: [] }),
 		);
-		expect(await folder.stateFolders(new AbortController().signal)).toEqual({ agents: [], groups: [] });
+		expect(await folder.stateFolders(new AbortController().signal)).toEqual({
+			agents: [],
+			groups: [],
+			routines: null,
+		});
 		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_company_state_folders");
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ p_environment_id: env });
 	});
