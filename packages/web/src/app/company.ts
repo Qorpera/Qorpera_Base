@@ -1368,26 +1368,30 @@ export class CompanyController {
 	/** The Co-Founder's shared thread; there is no member-private conversation. */
 	async openCofounderConversation(): Promise<{ sessionId?: string; reason?: string }> {
 		if (this.#stopped) return { reason: t("This company is no longer open.") };
-		const { organization, organizationState, team, sessions } = this.store.get();
-		if (organizationState === "not-deployed") {
-			return {
-				reason: t(
-					"The organization kernel (Order 0) is not deployed on this cloud yet, so there is no Co-Founder home here.",
-				),
-			};
-		}
-		if (!organization)
+		const { organization, organizationState, team, sessions, staff } = this.store.get();
+		// A company on the folder core has no organization record (that is the old core's Order 0): its Co-Founder is the
+		// active agent hired from the Co-Founder template, which company creation makes.
+		const cofounderId =
+			organization?.cofounder.staffAgentId ??
+			staff.find((agent) => agent.templateId === "co-founder" && agent.employmentStatus === "active")?.id;
+		if (!cofounderId) {
+			if (organizationState === "not-deployed") {
+				return {
+					reason: t(
+						"The organization kernel (Order 0) is not deployed on this cloud yet, so there is no Co-Founder home here.",
+					),
+				};
+			}
 			return {
 				reason: t("This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company."),
 			};
-		if (organization.cofounder.memberSessionId) return { sessionId: organization.cofounder.memberSessionId };
-		const thread = sessions.find(
-			(session) => session.staffAgentId === organization.cofounder.staffAgentId && isAgentThreadSession(session),
-		);
+		}
+		if (organization?.cofounder.memberSessionId) return { sessionId: organization.cofounder.memberSessionId };
+		const thread = sessions.find((session) => session.staffAgentId === cofounderId && isAgentThreadSession(session));
 		if (thread) return { sessionId: thread.sessionId };
 		if (!team?.capabilities.read) return { reason: t("This company is not readable.") };
 		try {
-			const handle = await this.#api.agentThread(this.profile.environmentId, organization.cofounder.staffAgentId);
+			const handle = await this.#api.agentThread(this.profile.environmentId, cofounderId);
 			await this.refreshSessions();
 			return { sessionId: handle.sessionId };
 		} catch (error) {

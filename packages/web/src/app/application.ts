@@ -27,7 +27,7 @@ import { CompanyController } from "./company.ts";
 import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
-import { currentRoute, navigate, type Route } from "./router.ts";
+import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -584,9 +584,24 @@ export function mountApplication(
 				const userId = auth.userId!;
 				if (founding?.controller.profileId !== route.profileId) {
 					teardownFounding();
-					const controller = new FoundingController(api, userId, route.profileId, {
+					const profileId = route.profileId;
+					const controller = new FoundingController(api, userId, profileId, {
 						currentUserId: () => auth.userId,
 						onSeatChanged: () => void hub.refresh(),
+						// Still on this table's page: open the company, which opens its Co-Founder's thread. The table's
+						// page leaves the history, so Back does not return to a table that is done. A company list read
+						// before the company was made may still be out, and opening a company it leaves out would fail:
+						// open only after a read that started after this one, and only once it lists the company (else
+						// the table's own Open button stays).
+						onCompanyReady: () => {
+							const page = routeHash({ name: "found", profileId });
+							const currentHub = hub;
+							void currentHub.refreshAfter().then(() => {
+								if (disposed || hub !== currentHub || location.hash !== page) return;
+								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId))
+									navigate({ name: "company", profileId, section: "home" }, true);
+							});
+						},
 					});
 					founding = { controller, view: new FoundingView(controller) };
 					let companyListed = false;
