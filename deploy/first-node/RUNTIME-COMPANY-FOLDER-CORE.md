@@ -777,8 +777,10 @@ check reports drift.
     (`qorpera_wake_ancestry`, 20260907000860:1053-1055): an agent's own commit
     never wakes its own subscription, and the commit's causal wake is on the
     commit row.
-  - Listener activation reads `last_seq` from the clock row, so no event is
-    missed or doubled.
+  - Listener activation is the seq of the change set that last saved the
+    routine (P29: `RUNTIME-COMPANY-FOLDER-LISTENER.md` §2). A listener hears
+    only later change sets, so none is doubled; one saved while the drain had
+    not reached it is dropped, as decided on 4 October 2026.
 - **The pin.** A wake's `companySnapshotId` becomes `companySeq`: the run was
   composed as of at least this commit. Reads stay live, as today. The
   transcript check (`qorpera_run_head_follows_session_pin`, which walks up to
@@ -896,7 +898,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
 | Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks |
-| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A transaction over several companies takes one company per transaction, or every company's fence in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or deletion's finisher batch `FOR UPDATE` (C1C §6.10) |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post, a room delivery's retry and a member's answer in an agent's thread take their room `FOR SHARE` (C1C §6.2, §6.3) |

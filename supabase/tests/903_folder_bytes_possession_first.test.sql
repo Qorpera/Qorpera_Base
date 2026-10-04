@@ -33,7 +33,11 @@ begin
 		v_outcomes := v_outcomes || jsonb_build_array(pg_temp.commit(b, 'oracle-probe-' || lpad(v_no::text, 2, '0'),
 			jsonb_build_array(jsonb_build_object('op','write','path','desk/probe-' || v_no || '.md','file',v_ref))) -> 'units' -> 0);
 	end loop;
-	if exists (select 1 from jsonb_array_elements(v_outcomes) o
+	-- The same through a new folder's file.
+	v_outcomes := v_outcomes || jsonb_build_array(pg_temp.commit(b, 'oracle-probe-folder', jsonb_build_array(jsonb_build_object(
+		'op','new_folder','path','desk/probe-folder','contents', jsonb_build_array(jsonb_build_object('kind','file','path','plan.md',
+			'file', v_secret || '{"mediaType":"image/png"}'))))) -> 'units' -> 0);
+	if jsonb_array_length(v_outcomes) <> 5 or exists (select 1 from jsonb_array_elements(v_outcomes) o
 		where o ->> 'outcome' is distinct from 'refused' or o ->> 'reason' is distinct from 'bytes_unverified') then
 		raise exception 'An actor who does not hold a file learns nothing about it: %', v_outcomes; end if;
 

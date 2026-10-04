@@ -74,7 +74,10 @@ cannot learn that the company stores a hash it may not read, and cannot seal or 
 platform reads everything and holds every stored object. The commit's bytes check decides possession before it calls a
 reference malformed (20260930043000, test 903): a reference whose media type or executable bit disagrees with its
 stored manifest is 22023 only for an actor who holds the bytes; anyone else gets `bytes_unverified`, as for a hash the
-company does not store.
+company does not store. Known gaps on the upload path, older than that fix (#794's review, follow-ups): near the storage
+limit the upload check answers the quota (413) only for hashes the catalog lacks; authorization and seal answer
+"being collected" (409) for a marked object the actor does not hold; and the gateway answers 201 or 200 for a put by
+whether the object exists, which needs the real bytes (the usual dedup channel).
 
 Possession is judged when the intent opens. Bytes the actor could read then are bytes it could have fetched then, so a
 later narrowing does not revoke an intent already open or sealed; a sealed intent lapses within the hour unless its
@@ -119,8 +122,6 @@ treats an intent's `expires_at` as the end of that root (G4).
 For every `write`, every file of a `new_folder`, and every file a `copy` newly references (a copied folder's files
 included):
 - the proof row matches `(profile, manifest, file, bytes)`;
-- a version-2 proof's media type and executable bit must equal the unit's; a difference raises 22023 for the change
-  set, so an entry never disagrees with its bytes. A version-1 proof keeps today's rule;
 - the manifest and every chunk of the proof's closure are taken `FOR KEY SHARE`, sorted `collate "C"`, inside step 6
   (after paths, before admission). Step 6 keeps the set it locked, and the decision refuses as `bytes_unverified` any
   closure object outside that set or missing from the catalog with its size. A proof that became visible after
@@ -128,7 +129,11 @@ included):
 - possession (§3), for a `write` or `new_folder` file with a version-2 proof: the actor has an unexpired sealed intent
   of its own for that manifest, or may already read it (§7; the platform always may). Otherwise `bytes_unverified`. A
   replay is answered at step 0 and is unaffected. Version-1 proofs are exempt: only the SQL test fixtures make them
-  for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6).
+  for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6);
+- last, for an actor that holds the bytes (20260930043000): a version-2 proof's media type and executable bit must
+  equal the unit's; a difference raises 22023 for the change set, so an entry never disagrees with its bytes. Anyone
+  else got `bytes_unverified` above, so the check tells nothing about bytes the actor does not hold. A version-1 proof
+  keeps today's rule.
 
 A copy's source files are found by an equality probe on the source key and a range probe under it
 (`key_text > k || '/' and key_text < k || '0'`, both on the `(environment_id, key_text)` index). A source over the
