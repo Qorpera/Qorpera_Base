@@ -193,6 +193,14 @@ picker, which always keeps the current colour. The meet page keeps the stored
 colour until a different figure is picked there, so returning to it never
 replaces a colour chosen in the details.
 
+**Superseded in part (2026-10-04).** On the company folder a colour is a
+name in the agent's file (`colour: blue`), which the index keeps as
+`qorpera-blue`, and founding (P15, #789) seeds the Co-Founder's file with
+no colour, which the index keeps as `native`. A member who picks Blue for the
+Co-Founder is therefore stored as the old seed token, so the seed-token rule
+is gone: the Co-Founder is drawn by the same rule as every agent, and its
+own shade comes from `native`.
+
 ## 2026-09-24 — Rail menu, pinned cards and sections (Grok Bot's rail)
 
 Jonas asked for Grok Bot's right-click menu on agents, pinned agents as square

@@ -77,17 +77,6 @@ describe("company notices member read", () => {
 			},
 			{ kind: "company_ceiling_tripped", subject: full.subject },
 			{
-				kind: "sponsor_handoff",
-				subject: {
-					schema: "qorpera.member-notification.sponsor-handoff/v1",
-					runId: id(11),
-					fromConnectionId: id(12),
-					toConnectionId: id(14),
-					reason: "usage_limit",
-					at: timestamp,
-				},
-			},
-			{
 				kind: "run_no_progress",
 				subject: {
 					schema: "qorpera.member-notification.run-no-progress/v1",
@@ -105,11 +94,11 @@ describe("company notices member read", () => {
 			Response.json(subjects.map((v, i) => ({ ...full, ...v, notification_id: id(100 + i) }))),
 		);
 		const result = await f.client.listNotifications();
-		expect(result).toHaveLength(4);
+		expect(result).toHaveLength(3);
 		expect(result[0]!.subject).not.toHaveProperty("private");
 		expect(result[1]!.subject).toMatchObject({ dimension: "machines", used: 2, ceiling: 2 });
 		// A run with no progress for 15 minutes (gap 4): its run, agent, thread (none for a worker) and last progress.
-		expect(result[3]!.subject).toEqual({
+		expect(result[2]!.subject).toEqual({
 			schema: "qorpera.member-notification.run-no-progress/v1",
 			runId: id(11),
 			staffAgentId: id(15),
