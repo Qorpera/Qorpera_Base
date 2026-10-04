@@ -176,7 +176,12 @@ member's other routes (its Edge Function allows the route with a 1 MiB body), wi
   6. each state file's entry, built from the same text by `parseCompanyStateFile`, as the runtime's `structured()`
      does: `{path, kind, text, parse, parserVersion}`, or `{path, kind, problems}` when the parse fails (the hook
      refuses it with those codes). `path` is the whole stored path, also for a new folder's contents;
-  7. one `qorpera_folder_commit` as the member, with the namespaced key and neither a review nor a receipt.
+  7. one `qorpera_folder_commit` as the member, with the namespaced key and neither a review nor a receipt;
+  8. when the commit saved anything, its follow-up at once (F2's P15): the service-role
+     `qorpera_folder_follow_up_commit(environment, commit)` settles one subject a call (a hire's default grant,
+     connectors and first run; an archive's clean-up), and is called again while it answers `more`, at most 8 times
+     and 3 s, before the answer goes back. A best effort: any error ends it (before P15 the function does not exist),
+     and the core's own step converges whatever is left within about 2 s.
 - **The answer** is the core's commit answer (`qorpera.folder-commit/v1`) as it is: for each unit, `saved`, or the
   outcome with its reason and problems. A lock conflict is 409: send the same request again, with the same key (a
   first try that did commit replays its outcome). A company being deleted or paused is 423.

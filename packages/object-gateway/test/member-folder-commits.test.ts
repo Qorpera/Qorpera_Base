@@ -34,7 +34,10 @@ const agentText = (name = "Nora") =>
 	});
 
 /** The database and the store as the route sees them: every call recorded. */
-async function gateway(options: { member?: () => unknown; commit?: () => unknown } = {}) {
+async function gateway(
+	options: { member?: () => unknown; commit?: () => unknown; followUp?: (call: number) => unknown } = {},
+) {
+	let followUps = 0;
 	const calls: { side: "member" | "publisher"; method: string; args: Record<string, unknown>; token?: string }[] = [];
 	const stored = new Map<string, Uint8Array>();
 	const manifests = new Map<string, string>();
@@ -91,6 +94,10 @@ async function gateway(options: { member?: () => unknown; commit?: () => unknown
 								replay: false,
 								units: (args.p_units as unknown[]).map((_, n) => ({ unit: n + 1, outcome: "saved" })),
 							};
+				case "qorpera_folder_follow_up_commit":
+					// Before P15 the function does not exist: PostgREST answers 404.
+					if (!options.followUp) throw new ObjectDependencyError(404);
+					return options.followUp(++followUps);
 			}
 			throw new Error(`unexpected ${method}`);
 		},
@@ -165,7 +172,9 @@ describe("a member's change set to a folder-v2 company", () => {
 			token: memberToken,
 		});
 		// Every staging call and the commit went as that member, never as the platform.
-		for (const call of g.calls.filter((c) => c.side === "publisher"))
+		for (const call of g.calls.filter(
+			(c) => c.side === "publisher" && c.method !== "qorpera_folder_follow_up_commit",
+		))
 			expect(call.args.p_actor).toEqual({ kind: "member", userId });
 		const [commit] = g.commits();
 		// The member's key, in a namespace of its own: the platform's writers never use it.
@@ -357,6 +366,68 @@ describe("a member's change set to a folder-v2 company", () => {
 		);
 		expect(folderEntry.status).toBe(400);
 		expect(g.staged()).toEqual([]);
+	});
+
+	it("follows a saved commit up at once, one subject a call while the core says there is more", async () => {
+		const answers = [true, true, false].map((more) => ({
+			schema: "qorpera.folder-follow-up/v1",
+			subjectKind: "agent",
+			subjectId: agentId,
+			result: "converged",
+			more,
+		}));
+		const g = await gateway({ followUp: (n) => answers[n - 1] });
+		expect((await g.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		const followUps = g.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit");
+		expect(followUps).toHaveLength(3);
+		for (const call of followUps)
+			expect(call.args).toEqual({
+				p_environment_id: environmentId,
+				p_commit_id: "34000000-0000-4000-8000-0000000000c1",
+			});
+		// After the commit, never before.
+		expect(g.calls.findIndex((call) => call.method === "qorpera_folder_commit")).toBeLessThan(
+			g.calls.findIndex((call) => call.method === "qorpera_folder_follow_up_commit"),
+		);
+	});
+
+	it("keeps the follow-up a best effort: bounded, and never the member's failure", async () => {
+		const always = await gateway({
+			followUp: () => ({
+				schema: "qorpera.folder-follow-up/v1",
+				subjectKind: "agent",
+				subjectId: agentId,
+				result: "converged",
+				more: true,
+			}),
+		});
+		expect((await always.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(always.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toHaveLength(8);
+		// Before P15 the function is not there: the commit's answer still goes back.
+		const missing = await gateway();
+		expect((await missing.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(missing.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toHaveLength(1);
+		const failing = await gateway({
+			followUp: () => {
+				throw new ObjectDependencyError(409, true);
+			},
+		});
+		expect((await failing.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		// A commit that saved nothing has nothing to follow up.
+		const refused = await gateway({
+			commit: () => ({
+				schema: "qorpera.folder-commit/v1",
+				commitId: "34000000-0000-4000-8000-0000000000c1",
+				seq: null,
+				replay: false,
+				units: [{ unit: 1, op: "mkdir", path: "drafts", outcome: "refused", reason: "x" }],
+			}),
+			followUp: () => {
+				throw new Error("not expected");
+			},
+		});
+		expect((await refused.send(request([{ op: "mkdir", path: "drafts" }]))).status).toBe(200);
+		expect(refused.calls.filter((call) => call.method === "qorpera_folder_follow_up_commit")).toEqual([]);
 	});
 
 	it("lets a member's browser send it across origins", () => {
