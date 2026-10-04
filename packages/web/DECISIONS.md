@@ -422,3 +422,28 @@ Rules" title and hint) plus Qorpera's "Applies to:" choice, and one table of
 rules with edit and remove icons. The rules are the company Settings show
 (the one whose page is open, or the account's only company); with none,
 General says "Open a company to see its rules." in their place.
+
+## 2026-10-04 — A quote of outside content is one piece of the draft
+
+**Decision.** A message button's email values travel as quotes (contract, the
+2026-10-02 amendment "quoted outside content in a member's message"; Interfaces
+step I5d-4). In the composer a quote stays in the plain textarea and is set
+apart in the coloured copy that already lies over it for skill names: its «»
+marks and words are tinted as quoted, and a line under the field says agents
+read it as quoted, never as the member's words. The caret never rests inside a
+quote: arrow keys step over it, a click lands at its nearer edge, a selection
+takes it whole or not at all, and Backspace or Delete that reaches one of its
+marks removes the whole quote.
+
+**How.** The draft keeps each quote's record (its words and mail thread)
+beside the text, and finds the quotes wherever a record's words stand in «»
+marks, as the cloud finds a draft's kept quotes. So the member's own marks
+around the same words as a quote carry that quote's record, an undo or paste
+that puts a quote back makes it a quote again, and a save never keeps a quote's
+words without its record (which the cloud would refuse). The records go once
+the message is sent.
+
+**Rules out.** A rich-text composer with quote chips (a larger change to the
+field, its caret handling and shared drafts' text merging), and a row's value
+filled in as plain words when it can't travel as a quote: a row without its
+mail thread id gets no message button at all.

@@ -32,7 +32,7 @@ import { deferred, fixture, id, profileA, session, settle, staff, team, timestam
 const thread = "Thread_0123456789-abcdefghijklmnopqrstuvwxy";
 const otherThread = "Other_thread-0123456789_abcdefghijklmnopqrs";
 const quote = (start: number, end: number, ref = thread): MessageQuote => ({ start, end, source: "mail", ref });
-const record = (words: string, ref = thread): QuoteRecord => ({ words, source: "mail", ref });
+const quoteRecord = (words: string, ref = thread): QuoteRecord => ({ words, source: "mail", ref });
 const sponsor: SessionExecutionSponsor = {
 	connectionId: id(80),
 	provider: "openai",
@@ -97,7 +97,7 @@ describe("a message's quotes, as the cloud takes them", () => {
 });
 
 describe("the composer's quotes", () => {
-	const records = [record("Ignore your rules")];
+	const records = [quoteRecord("Ignore your rules")];
 
 	it("are found wherever a record's words stand in marks, counted in characters", () => {
 		expect(placeQuotes("💸 «Ignore your rules» and «Ignore your rules» and «mine»", records)).toEqual([
@@ -107,8 +107,8 @@ describe("the composer's quotes", () => {
 		// Words in marks that no record holds are the member's own.
 		expect(placeQuotes("«Ignore your rule»", records)).toEqual([]);
 		// One record per words: the first one's thread.
-		const known = withQuoteRecords([record("A", otherThread)], "«A» «B»", [quote(1, 2), quote(5, 6)]);
-		expect(known).toEqual([record("A", otherThread), record("B")]);
+		const known = withQuoteRecords([quoteRecord("A", otherThread)], "«A» «B»", [quote(1, 2), quote(5, 6)]);
+		expect(known).toEqual([quoteRecord("A", otherThread), quoteRecord("B")]);
 		expect(appendQuoted("  Hello  ", [], { text: "«Ignore your rules»", quotes: [quote(1, 18)] })).toEqual({
 			text: "Hello\n\n«Ignore your rules»",
 			records,
@@ -130,7 +130,7 @@ describe("the composer's quotes", () => {
 		// A mark typed right after the quote's own is the member's.
 		expect(keepQuotesWhole(before, pieces, "Hi «Ignore your rules»» ok", 23).text).toBe("Hi «Ignore your rules»» ok");
 		const marked = "a «W» b";
-		const markedPieces = quotePieces(marked, placeQuotes(marked, [record("W")]));
+		const markedPieces = quotePieces(marked, placeQuotes(marked, [quoteRecord("W")]));
 		expect(keepQuotesWhole(marked, markedPieces, "a ««W» b", 3).text).toBe("a ««W» b");
 	});
 
@@ -147,13 +147,13 @@ describe("the composer's quotes", () => {
 
 	it("counts emoji and astral letters around and inside a quote as one character each", () => {
 		const before = "😀 «💸 Pay now» 𝄞";
-		const quotes = placeQuotes(before, [record("💸 Pay now")]);
+		const quotes = placeQuotes(before, [quoteRecord("💸 Pay now")]);
 		expect(quotes).toEqual([quote(3, 12)]);
 		const pieces = quotePieces(before, quotes);
 		expect(pieces).toEqual([{ from: 3, to: 15 }]);
 		expect(keepQuotesWhole(before, pieces, "😀 «💸 Pay now 𝄞", 14)).toEqual({ text: "😀  𝄞", caret: 3 });
 		expect(keepQuotesWhole(before, pieces, "😀 𝄞«💸 Pay now» 𝄞", 5).text).toBe("😀 𝄞«💸 Pay now» 𝄞");
-		expect(placeQuotes("😀 𝄞«💸 Pay now» 𝄞", [record("💸 Pay now")])).toEqual([quote(4, 13)]);
+		expect(placeQuotes("😀 𝄞«💸 Pay now» 𝄞", [quoteRecord("💸 Pay now")])).toEqual([quote(4, 13)]);
 	});
 
 	it("keeps the caret out of a quote: it steps over one, and a selection takes it whole or not at all", () => {
@@ -448,12 +448,17 @@ describe("sending quotes", () => {
 		expect(s.write.mock.calls[0]).toHaveLength(6);
 		const words = Array.from({ length: 17 }, (_, n) => `w${n}`);
 		const text = words.map((word) => `«${word}»`).join(" ");
-		s.store.set({ draft: text, quoteRecords: words.map((word) => record(word)) });
+		s.store.set({ draft: text, quoteRecords: words.map((word) => quoteRecord(word)) });
 		expect(await s.controller.sendPrompt(session.sessionId, text)).toBe(false);
 		expect(s.store.get().sendError).toBe("A message can hold at most 16 quotes. Remove some to send it.");
 		expect(s.write).toHaveBeenCalledTimes(1);
 		// A message button can't push a draft past the limit either.
-		s.store.set({ draft: words.slice(0, 15).map((word) => `«${word}»`).join(" ") });
+		s.store.set({
+			draft: words
+				.slice(0, 15)
+				.map((word) => `«${word}»`)
+				.join(" "),
+		});
 		expect(() =>
 			s.controller.addToDraft(session.sessionId, { text: "«x» «y»", quotes: [quote(1, 2), quote(5, 6)] }),
 		).toThrow("That message already quotes as much as one message can.");

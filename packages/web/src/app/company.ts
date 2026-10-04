@@ -2104,8 +2104,7 @@ export class CompanyController {
 		const sameFiles = (other: readonly File[]) =>
 			other.length === files.length && other.every((file, index) => file === files[index]);
 		// The cloud compares a repeated call's whole body, quotes included.
-		const sameRequest =
-			retry?.text === trimmed && sameFiles(retry.files) && sameQuotes(retry.quotes ?? [], quotes);
+		const sameRequest = retry?.text === trimmed && sameFiles(retry.files) && sameQuotes(retry.quotes ?? [], quotes);
 		if (retry && !sameRequest) {
 			store.set({
 				draft: text,

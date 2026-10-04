@@ -102,7 +102,12 @@ export function createWebSessionInputWriter(
 	return (sessionId, clientInputId, text, signal, files = [], executionSponsor, roomTarget, quotes = []) => {
 		const room = roomTarget ? { ...roomTarget } : undefined;
 		// Checked as the cloud checks them, and copied: a retry sends exactly these.
-		const quoted = quotes.length ? parseQuotes(quotes.map((quote) => ({ ...quote })), text) : undefined;
+		const quoted = quotes.length
+			? parseQuotes(
+					quotes.map((quote) => ({ ...quote })),
+					text,
+				)
+			: undefined;
 		return withCloudDeadline(
 			async (deadline) => {
 				if (

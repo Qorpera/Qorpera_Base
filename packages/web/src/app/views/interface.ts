@@ -28,7 +28,6 @@ import { isPhoneLayout } from "../../ui/layout.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
-import type { QuotedText } from "../quotes.ts";
 import {
 	blockButtons,
 	companyInterface,
@@ -44,6 +43,7 @@ import {
 	type ViewBlock,
 	viewBlocks,
 } from "../interfaces.ts";
+import type { QuotedText } from "../quotes.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */

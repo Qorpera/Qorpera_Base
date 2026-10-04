@@ -988,12 +988,7 @@ columns = ["from", "title"]
 	it("cuts a long outside value between characters, never inside one, and counts the quote in characters", () => {
 		const nameOf = (_column: string, value: unknown) => String(value);
 		const thread = "Thread_0123456789-abcdefghijklmnopqrstuvwxy";
-		const filled = messageText(
-			"😀 {subject}",
-			{ thread, subject: `${"a".repeat(1998)}😀😀😀` },
-			"mail",
-			nameOf,
-		);
+		const filled = messageText("😀 {subject}", { thread, subject: `${"a".repeat(1998)}😀😀😀` }, "mail", nameOf);
 		expect(filled?.text).toBe(`😀 «${"a".repeat(1998)}😀…»`);
 		// The emoji before the quote is one character, as the cloud counts them.
 		expect(filled?.quotes).toEqual([{ start: 3, end: 2003, source: "mail", ref: thread }]);
