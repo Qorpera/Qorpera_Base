@@ -1211,6 +1211,16 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   stays `queued`, and the list skips the routine (its run is pending). Like the legacy tick, the restore inserts the
   wake even when the company has no computer hours left; P28's materializer holds it ("Waiting for computer hours"),
   as routine firing's deferral does before admission.
+- **Expiry (migration 20260930027000, test 889).** The legacy expiry sweep (`qorpera_expire_cloud_routines`) ran only
+  inside the Company File drain, which P28 took out of the reconcile RPC. So the tick also ends `folder-v2` routines:
+  - The list also names any `folder-v2` routine, of any origin and trigger, that is active or paused and past its
+    `expires_at`, paused company included.
+  - The restore ends such a routine first: the company row `KEY SHARE`, the routine `FOR NO KEY UPDATE SKIP LOCKED`,
+    then `status = 'expired'`. It answers `ended`. The status triggers record whether it was active, and cancel a
+    paused routine's queued runs. A routine held by a save answers `busy`, and the next pass ends it.
+  - An expired routine leaves the schedule heads, so the scheduler stops offering its slots, which the lifecycle
+    trigger would refuse.
+  - The routine file keeps its status until core C2's queue writes platform statuses into files (STATE "Status").
 
 ### 6.10 C1c-3g as built: deletion drains the folder fence (migration 20260930015000, test 828)
 

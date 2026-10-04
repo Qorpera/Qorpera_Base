@@ -71,10 +71,12 @@ begin
 	perform pg_temp.path_claims('service_role');
 	if not pg_temp.listed(v_ended) or pg_temp.listed(v_running) then
 		raise exception 'On a paused company, only the routine past its end is listed'; end if;
-	if pg_temp.restore(v_ended) ->> 'status' <> 'ended' or pg_temp.restore(v_running) ->> 'status' <> 'paused'
-		or (select status from public.qorpera_cloud_routines where id = v_ended) <> 'expired'
+	if pg_temp.restore(v_ended) ->> 'status' <> 'ended' or pg_temp.restore(v_running) ->> 'status' <> 'paused' then
+		raise exception 'A paused company''s expired routine ends; the other answers paused'; end if;
+	-- Read in a statement of its own: one expression's subqueries see the snapshot from before its restores.
+	if (select status from public.qorpera_cloud_routines where id = v_ended) <> 'expired'
 		or (select status from public.qorpera_cloud_routines where id = v_running) <> 'active' then
-		raise exception 'A paused company''s expired routine ends; the other answers paused and stays active'; end if;
+		raise exception 'A paused company''s expired routine is expired; the other stays active'; end if;
 	perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L',
 		'63400000-0000-4000-8000-000000000010'));
 end $$;
@@ -93,9 +95,10 @@ begin
 			extensions.gen_random_uuid(), 'Control', 'Control.', '[{"id":"s1","kind":"schedule","intervalMinutes":60}]',
 			'medium', extensions.gen_random_uuid(), 1, repeat('e', 64), '63400000-0000-4000-8000-000000000001')$f$, v_control));
 	perform pg_temp.path_claims('service_role');
-	if pg_temp.listed(v_control) or pg_temp.restore(v_control) ->> 'status' <> 'not_folder'
-		or (select status from public.qorpera_cloud_routines where id = v_control) <> 'active' then
+	if pg_temp.listed(v_control) or pg_temp.restore(v_control) ->> 'status' <> 'not_folder' then
 		raise exception 'A snapshot-v1 routine is not the folder tick''s'; end if;
+	if (select status from public.qorpera_cloud_routines where id = v_control) <> 'active' then
+		raise exception 'A snapshot-v1 routine is left active'; end if;
 end $$;
 
 rollback;
