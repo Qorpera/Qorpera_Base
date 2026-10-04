@@ -11,10 +11,11 @@
 --
 -- * open_upload collects the upload's own objects the catalog has first, and checks readability on those alone; the
 --   lock (FOR KEY SHARE in hash order, G1) and the GC mark check that follows are unchanged.
--- * qorpera_folder_object_readable decides the paths that name an object once per covering resource, through P24b's
---   set-based qorpera_folder_paths_authority: an object many unreadable paths name costs one pass, not one authority
---   check per path. Its meaning is unchanged: readable when the actor may read any path whose manifest is the object,
---   or whose version-2 manifest has it as a chunk, an old version's path too.
+-- * qorpera_folder_object_readable checks the first few live paths that name an object one by one (content many
+--   readable paths share is decided at the first), and only then every path through P24b's set-based
+--   qorpera_folder_paths_authority, once per covering resource: an object many unreadable paths name costs one pass,
+--   not one authority check per path. Its meaning is unchanged: readable when the actor may read any path whose
+--   manifest is the object, or whose version-2 manifest has it as a chunk, an old version's path too.
 -- No new lock. Every patched body carries the marker 20260930039500.
 
 create function pg_temp.p24c_replace(p_target regprocedure, p_old text, p_new text) returns void language plpgsql as $$
@@ -30,22 +31,32 @@ end $$;
 
 create or replace function public.qorpera_folder_object_readable(p_environment_id uuid, p_profile_id uuid, p_auth jsonb,
 	p_sha256 text)
-returns boolean language sql stable security definer set search_path = '' as $$
-	-- P24c (20260930039500): every path that names the object (its manifest's, or a manifest's that has it as a chunk;
-	-- live entries and path versions), then P24b's set-based authority over those paths.
-	select coalesce(bool_or(decided.ok), false)
-	from public.qorpera_folder_paths_authority(p_environment_id, p_profile_id, p_auth, array(
-		select distinct named.path from (select p_sha256 as manifest
-				union all
-				select c.manifest_sha256 from public.qorpera_folder_file_chunks c
-				where c.profile_id = p_profile_id and c.chunk_sha256 = p_sha256) m
-			cross join lateral (
-				select e.path from public.qorpera_folder_entries e
-				where e.environment_id = p_environment_id and e.kind = 'file' and e.manifest_sha256 = m.manifest
-				union all
-				select v.path from public.qorpera_folder_path_versions v
-				where v.environment_id = p_environment_id and v.manifest_sha256 = m.manifest) named)) decided
-$$;
+returns boolean language plpgsql stable security definer set search_path = '' as $$
+begin
+	-- P24c (20260930039500). First a few live paths that name the object, one by one: content many readable paths share
+	-- (a template, an empty file) is decided at the first. Then, only if none of them is readable, every path that
+	-- names it (its manifest's, or a manifest's that has it as a chunk; live entries and path versions) through P24b's
+	-- set-based authority, once per covering resource.
+	if exists (select 1 from (select e.path from public.qorpera_folder_entries e
+			where e.environment_id = p_environment_id and e.kind = 'file' and e.manifest_sha256 in (
+				select p_sha256 union all select c.manifest_sha256 from public.qorpera_folder_file_chunks c
+				where c.profile_id = p_profile_id and c.chunk_sha256 = p_sha256)
+			limit 8) probe
+		where public.qorpera_folder_actor_allowed(p_environment_id, p_profile_id, p_auth, probe.path, 'read')) then
+		return true; end if;
+	return coalesce((select bool_or(decided.ok)
+		from public.qorpera_folder_paths_authority(p_environment_id, p_profile_id, p_auth, array(
+			select distinct named.path from (select p_sha256 as manifest
+					union all
+					select c.manifest_sha256 from public.qorpera_folder_file_chunks c
+					where c.profile_id = p_profile_id and c.chunk_sha256 = p_sha256) m
+				cross join lateral (
+					select e.path from public.qorpera_folder_entries e
+					where e.environment_id = p_environment_id and e.kind = 'file' and e.manifest_sha256 = m.manifest
+					union all
+					select v.path from public.qorpera_folder_path_versions v
+					where v.environment_id = p_environment_id and v.manifest_sha256 = m.manifest) named)) decided), false);
+end $$;
 
 -- 2. The upload's presence check: its own objects first -------------------------------------------------------------------
 

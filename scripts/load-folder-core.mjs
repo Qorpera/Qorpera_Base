@@ -175,6 +175,8 @@ function percentile(values, fraction) {
 }
 
 let pool;
+let statsClient;
+let logLinesBeforeLoad = 0;
 let end = 0;
 const running = () => performance.now() < end;
 
@@ -562,7 +564,7 @@ async function bigRun(runRow, bigId) {
 	}
 }
 
-/** PL/pgSQL function statistics (track_functions = pl), flushed from this backend first. */
+/** Function statistics (track_functions = all: SQL functions too), flushed from this backend first. */
 async function functionTimes(client) {
 	await client.query("select pg_stat_force_next_flush()");
 	await client.query("select pg_stat_clear_snapshot()");
@@ -659,7 +661,8 @@ function slowPlans(lines) {
 			if (!/^\t/.test(lines[next])) break;
 			const query = /Query Text: (.*)$/.exec(lines[next]);
 			if (query && !text) text = query[1].replace(/\s+/g, " ").trim().slice(0, 160);
-			else if (text && /->|Scan|Join|Loop|Filter|Cond|SubPlan|InitPlan|Sort|Aggregate|LockRows/.test(lines[next])) plan.push(lines[next].replace(/^\t/, ""));
+			// The plan starts at its first costed node; the query text's own continuation lines come before it.
+			else if (plan.length || /\(cost=/.test(lines[next])) plan.push(lines[next].replace(/^\t/, ""));
 		}
 		const entry = counts.get(text) ?? { count: 0, maxMs: 0, plan: [] };
 		entry.count += 1;
@@ -785,7 +788,7 @@ try {
 		"deadlock_timeout=1s",
 		// Where the time goes: PL/pgSQL functions' totals, and every statement over 1 s, nested ones too, with its text.
 		"-c",
-		"track_functions=pl",
+		"track_functions=all",
 		"-c",
 		"shared_preload_libraries=auto_explain",
 		"-c",
@@ -836,9 +839,10 @@ try {
 	pool.on("connect", (client) => {
 		client.query("set statement_timeout = '8s'; set lock_timeout = '8s'").catch(() => undefined);
 	});
-	const statsClient = new pg.Client({ host: "127.0.0.1", port: Number(port), user: "postgres", password, database });
+	statsClient = new pg.Client({ host: "127.0.0.1", port: Number(port), user: "postgres", password, database });
 	await statsClient.connect();
 	const functionsBeforeLoad = await functionTimes(statsClient);
+	logLinesBeforeLoad = serverLog().length;
 	end = performance.now() + (options.probeOnly ? 0 : options.seconds * 1000);
 	const started = performance.now();
 	const bigRow = runs.find((row) => row.big);
@@ -869,6 +873,7 @@ try {
 		.sort((a, b) => b.selfMs - a.selfMs)
 		.slice(0, 12);
 	await statsClient.end();
+	statsClient = undefined;
 
 	// The big run alone: no load, no statement timeout. Each probe is one transaction.
 	const quiet = {};
@@ -975,11 +980,11 @@ try {
 			where profile_id = '${COMPANY}' and created_at >= '${loadBegan}' group by status) x;`),
 	);
 	// The objects the most paths name (entries and path versions), for reading the upload's presence check.
-	const referenced = psql(`select count(*) || ' paths name ' || left(x.manifest_sha256, 12) || coalesce(' (' || min(x.path) || ' …)', '')
+	const referenced = psql(`select count(distinct x.path) || ' paths name ' || left(x.manifest_sha256, 12) || coalesce(' (' || min(x.path) || ' …)', '')
 		from (select manifest_sha256, path from public.qorpera_folder_entries where environment_id = '${ENVIRONMENT}' and kind = 'file'
 			union all select manifest_sha256, path from public.qorpera_folder_path_versions where environment_id = '${ENVIRONMENT}'
 				and manifest_sha256 is not null) x
-		group by x.manifest_sha256 order by count(*) desc limit 4;`)
+		group by x.manifest_sha256 order by count(distinct x.path) desc limit 4;`)
 		.trim()
 		.split("\n")
 		.filter(Boolean);
@@ -995,7 +1000,8 @@ try {
 	const cycles = deadlockCycles(lines);
 	const waits = lockWaits(lines);
 	const timeouts = statementTimeouts(lines);
-	const plans = slowPlans(lines);
+	// Only what the load ran: the log before it is the migrations and the fixture.
+	const plans = slowPlans(lines.slice(logLinesBeforeLoad));
 	const { lines: table, summary } = report(seconds);
 	const leaked = leaks();
 	const drains = stops.map((stop) => stop.drainMs);
@@ -1102,5 +1108,6 @@ try {
 	}
 } finally {
 	await pool?.end();
+	await statsClient?.end().catch(() => undefined);
 	spawnSync("docker", ["rm", "--force", "--volumes", containerName]);
 }

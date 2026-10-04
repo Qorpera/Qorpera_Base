@@ -1,13 +1,14 @@
 -- @fixture 634_folder_core_authority.test.sql until "-- Mutators: owners and admins"
--- Company folder core, P24c (migration 20260930039500): an upload's presence check reads only what it must. The set-based
--- qorpera_folder_object_readable answers what the per-path one answered, for every object and both agents; under a plan
--- that scans the company's catalog first, open_upload checks readability on the upload's own objects only (the per-path
--- filter in one statement with the catalog checked every object the company stores); and an object 3,000 paths the agent
--- cannot read name is decided at once. 634's fixture, rolled back.
+-- Company folder core, P24c (migration 20260930039500): an upload's presence check reads only what it must. The new
+-- qorpera_folder_object_readable answers what the per-path one answered, for every object, both agents and two members;
+-- under a plan that scans the company's catalog first, open_upload checks readability on the upload's own objects only
+-- (the per-path filter in one statement with the catalog checked every object the company stores); and an object 3,000
+-- paths the agent cannot read name is decided at once, in a few path checks and one set-based pass. 634's fixture,
+-- rolled back.
 
 -- The company's files, written by the platform: wide/ holds 3,000 files of one text in an area only agent B may read;
 -- docs/ holds 100 files of their own texts, which both agents read; docs/old.md was overwritten, so only its path version
--- still names its first text.
+-- still names its first text; a mixed text is named by 500 files in wide/ and one in docs/.
 do $$
 declare
 	c_owner constant jsonb := pg_temp.member(1); c_env constant uuid := '63400000-0000-4000-8000-000000000020';
@@ -25,6 +26,10 @@ begin
 			'path', 'docs/d' || d, 'contents', (select jsonb_agg(jsonb_build_object('path', 'f' || f || '.md', 'kind', 'file',
 				'file', pg_temp.stage('Doc ' || d || '/' || f || E'.\n'))) from generate_series(1, 25) f)))), 1, 'saved');
 	end loop;
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p24c-mixed', jsonb_build_array(jsonb_build_object('op', 'new_folder',
+		'path', 'wide/w4', 'contents', (select jsonb_agg(jsonb_build_object('path', 'f' || f || '.md', 'kind', 'file',
+			'file', pg_temp.stage(E'Mixed file.\n'))) from generate_series(1, 500) f)),
+		jsonb_build_object('op', 'write', 'path', 'docs/mixed.md', 'file', pg_temp.stage(E'Mixed file.\n')))), 2, 'saved');
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p24c-old-1', jsonb_build_array(jsonb_build_object('op', 'write',
 		'path', 'docs/old.md', 'file', pg_temp.stage(E'First text.\n')))), 1, 'saved');
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p24c-old-2', jsonb_build_array(jsonb_build_object('op', 'write',
@@ -59,26 +64,28 @@ create function pg_temp.readable_before(p_auth jsonb, p_sha256 text) returns boo
 		where public.qorpera_folder_actor_allowed('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
 			p_auth, p.path, 'read'))
 $$;
-create function pg_temp.readable_calls() returns bigint language sql as $$
-	select coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public'
-		and funcname = 'qorpera_folder_object_readable'), 0)
+create function pg_temp.calls(p_function text default 'qorpera_folder_object_readable') returns bigint language sql as $$
+	select coalesce((select calls from pg_stat_xact_user_functions where schemaname = 'public' and funcname = p_function), 0)
 $$;
+create function pg_temp.readable_calls() returns bigint language sql as $$ select pg_temp.calls() $$;
 create function pg_temp.sha(p_text text) returns text language sql immutable as $$
 	select encode(extensions.digest(convert_to(p_text, 'utf8'), 'sha256'), 'hex')
 $$;
 
--- A. The set-based check answers what the per-path one did, for every object of the company (manifests and chunks, live
--- or only in a path version, read through a grant or not) and both agents.
+-- A. The new check answers what the per-path one did, for every object of the company (manifests and chunks, live or
+-- only in a path version, read through a grant or not, named by readable and unreadable paths at once), both agents and
+-- two members.
 do $$
-declare v_auth jsonb; v_bad text[]; v_agent text;
+declare v_auth jsonb; v_bad text[]; v_who text;
 begin
-	foreach v_agent in array array['run_a', 'run_b'] loop
-		v_auth := pg_temp.resolved(current_setting('qorpera_test.' || v_agent)::jsonb);
+	foreach v_who in array array['run_a', 'run_b', 'member_2', 'member_3'] loop
+		v_auth := case when v_who like 'run_%' then pg_temp.resolved(current_setting('qorpera_test.' || v_who)::jsonb)
+			else public.qorpera_folder_read_actor('63400000-0000-4000-8000-000000000020', pg_temp.member(right(v_who, 1)::integer)) end;
 		select array_agg(o.sha256) into v_bad from public.qorpera_profile_objects o
 		where o.profile_id = '63400000-0000-4000-8000-000000000010'
 			and public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
 				v_auth, o.sha256) is distinct from pg_temp.readable_before(v_auth, o.sha256);
-		if v_bad is not null then raise exception 'A: % differs on %', v_agent, v_bad; end if;
+		if v_bad is not null then raise exception 'A: % differs on %', v_who, v_bad; end if;
 	end loop;
 	-- The cases are there: agent A reads a doc, not the wide file; agent B reads both; an old version's text is read.
 	v_auth := pg_temp.resolved(current_setting('qorpera_test.run_a')::jsonb);
@@ -88,6 +95,8 @@ begin
 			v_auth, pg_temp.sha(E'Doc 1/1.\n'))
 		or not public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
 			v_auth, pg_temp.sha(E'First text.\n'))
+		or not public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
+			v_auth, pg_temp.sha(E'Mixed file.\n'))
 		or not public.qorpera_folder_object_readable('63400000-0000-4000-8000-000000000020', '63400000-0000-4000-8000-000000000010',
 			pg_temp.resolved(current_setting('qorpera_test.run_b')::jsonb), pg_temp.sha(E'Wide file.\n')) then
 		raise exception 'A: the cases are not exercised'; end if;
@@ -100,10 +109,13 @@ set track_functions = 'all';
 set enable_indexscan = off;
 set enable_bitmapscan = off;
 set enable_indexonlyscan = off;
+-- Plans PL/pgSQL cached before (the stagings above) do not see these settings: plan every statement afresh.
+set plan_cache_mode = force_custom_plan;
+discard plans;
 do $$
 declare
 	v_run jsonb := current_setting('qorpera_test.run_a')::jsonb; v_auth jsonb := pg_temp.resolved(v_run); v_open jsonb;
-	v_before bigint; v_objects bigint; v_started timestamptz; v_ms numeric;
+	v_before bigint; v_allowed bigint; v_resource bigint; v_objects bigint; v_started timestamptz; v_ms numeric;
 begin
 	select count(*) into v_objects from public.qorpera_profile_objects where profile_id = '63400000-0000-4000-8000-000000000010';
 	-- The statement as it was: the filter runs on the catalog rows before the join narrows them.
@@ -128,20 +140,28 @@ begin
 	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', v_run, pg_temp.manifest_v2(E'New text.\n'));
 	if pg_temp.readable_calls() - v_before <> 0 or jsonb_array_length(v_open -> 'present') <> 0 then
 		raise exception 'B: new bytes are not present and need no check (% checks, %)', pg_temp.readable_calls() - v_before, v_open; end if;
-	-- The wide file's bytes, which agent A cannot read: not present (A must put them), decided at once.
+	-- The wide file's bytes, which agent A cannot read: not present (A must put them), decided at once: eight paths one
+	-- by one per object, then one set-based pass (one decision per resource), never 6,000 checks.
 	v_before := pg_temp.readable_calls();
+	v_allowed := pg_temp.calls('qorpera_folder_actor_allowed');
+	v_resource := pg_temp.calls('qorpera_folder_actor_resource_allowed');
 	v_started := clock_timestamp();
 	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', v_run, pg_temp.manifest_v2(E'Wide file.\n'));
 	v_ms := extract(epoch from clock_timestamp() - v_started) * 1000;
 	if pg_temp.readable_calls() - v_before <> 2 or jsonb_array_length(v_open -> 'present') <> 0 then
 		raise exception 'B: the wide file is checked twice and not present to agent A (% checks, %)',
 			pg_temp.readable_calls() - v_before, v_open; end if;
+	if pg_temp.calls('qorpera_folder_actor_allowed') - v_allowed > 16
+		or pg_temp.calls('qorpera_folder_actor_resource_allowed') - v_resource > 20 then
+		raise exception 'B: the wide file took % path checks and % resource decisions',
+			pg_temp.calls('qorpera_folder_actor_allowed') - v_allowed, pg_temp.calls('qorpera_folder_actor_resource_allowed') - v_resource; end if;
 	if v_ms > 1000 then raise exception 'B: deciding an object 3,000 unreadable paths name took % ms', round(v_ms); end if;
 	-- Agent B reads it: present.
 	v_open := public.qorpera_folder_open_upload('63400000-0000-4000-8000-000000000020', current_setting('qorpera_test.run_b')::jsonb,
 		pg_temp.manifest_v2(E'Wide file.\n'));
 	if jsonb_array_length(v_open -> 'present') <> 2 then raise exception 'B: agent B reads the wide file, got %', v_open; end if;
 end $$;
+reset plan_cache_mode;
 reset enable_indexscan;
 reset enable_bitmapscan;
 reset enable_indexonlyscan;
