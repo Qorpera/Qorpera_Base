@@ -1,4 +1,4 @@
--- Company folder core, C1c-3i part a (P07 part 2; deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.12): a coding
+-- Company folder core, C1c-3i part a (P07 part 2; deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.13): a coding
 -- session's rows on the folder fence. Folder-v2 only (founder decision, 3 Oct 2026: production is wiped and the
 -- snapshot-v1 path is dropped), so nothing here keeps a snapshot-v1 branch.
 --
