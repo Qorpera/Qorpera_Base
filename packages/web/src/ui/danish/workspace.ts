@@ -50,12 +50,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Enter a message of no more than 64 KiB.": "Skriv en besked på højst 64 KiB.",
 	"Connect a model account in Settings → My connections to send messages.":
 		"Forbind en modelkonto i Indstillinger → Mine forbindelser for at sende beskeder.",
-	"Group chat review changed kind.": "Gennemgangen af gruppechatten skiftede type.",
 	"The group chat could not be created. Your message is still here.":
 		"Gruppechatten kunne ikke oprettes. Din besked er her stadig.",
-	"The group chat directory is unavailable.": "Mappen til gruppechats er ikke tilgængelig.",
-	"The group chat changed. Start a new conversation.": "Gruppechatten er ændret. Start en ny samtale.",
-	"The group chat path is unavailable.": "Stien til gruppechatten er ikke tilgængelig.",
 	"The group chat is still opening. Send again to retry the same conversation.":
 		"Gruppechatten åbner stadig. Send igen for at prøve den samme samtale igen.",
 	"No model account is currently available. Try again after an account resets.":

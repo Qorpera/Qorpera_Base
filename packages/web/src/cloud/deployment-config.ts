@@ -8,10 +8,12 @@ export interface CloudConfig {
 	memberCompanyGatewayUrl?: string;
 }
 
+/** A build given no configuration (development) talks to the live cloud the release build uses: project
+ * `phqlfrkcvstmxlebljcj` and its object gateway. A release build always names its own. The key is publishable. */
 export const DEFAULT_CLOUD_CONFIG: CloudConfig = {
-	projectUrl: "https://wovsmjvghnbcbfazdtvr.supabase.co",
-	publishableKey: "sb_publishable_nOLb65dGcfMmfiEJHVPuEg_aS2uzVjS",
-	objectGatewayUrl: "https://objects.qorpera.com",
+	projectUrl: "https://phqlfrkcvstmxlebljcj.supabase.co",
+	publishableKey: "sb_publishable_xn-Yy0QJ5iGEFmsiJGmw7w_JMsDTo8N",
+	objectGatewayUrl: "https://company41-node-01.tailbb15c7.ts.net:10000",
 };
 
 function origin(value: unknown, protocol: "https:" | "wss:"): string {
