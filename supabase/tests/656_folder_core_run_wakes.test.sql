@@ -65,9 +65,7 @@ end $$;
 
 -- 1. Snapshot-v1 keeps its text: the two dispatchers with their first line removed, and every text patch reversed, are
 -- byte for byte the definitions before this migration. A later change to one of them updates its digest here, once
--- its folder-v2 branch is checked to still come first. Re-pinned for the one idle rule (20260930007000): the wake
--- read, the pin trigger and the materializer serve a machine-checkin wake as they serve a machine-event wake, and the
--- materializer asks and delivers check-ins; nothing else changed.
+-- its folder-v2 branch is checked to still come first.
 do $$
 declare v_text text; v_def text;
 begin
@@ -77,13 +75,13 @@ begin
 		raise exception 'The coworker message''s snapshot-v1 body changed'; end if;
 	v_def := pg_get_functiondef('public.qorpera_read_native_wake(jsonb)'::regprocedure);
 	if position(E'\nbegin\n\tif public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> '37f6789db3563a906503d4314182bb9b' then
+		or md5(pg_temp.without_guard(v_def)) <> '38c1993cf99b1aba48809bdc9bee678a' then
 		raise exception 'The wake read''s snapshot-v1 body changed'; end if;
 	v_text := replace(replace(replace(pg_get_functiondef('public.qorpera_pin_wake_occurrence()'::regprocedure),
 		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tif current_setting(''qorpera.folder_wake_admission'', true) is distinct from new.profile_id::text then\n'
 		|| E'\t\t\traise exception ''Folder wake admission is required'' using errcode = ''55000''; end if;\n'
-		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'', ''machine-checkin'') then\n'
+		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'') then\n'
 		|| E'\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n'
 		|| E'\telse\n'
 		|| E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'
@@ -102,7 +100,7 @@ begin
 		|| E'\t\t\tthen public.qorpera_folder_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id)\n'
 		|| E'\t\t\telse public.qorpera_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id) end;\n',
 		E'\t\tnew.session_id := public.qorpera_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id);\n');
-	if md5(v_text) <> 'd5cd88396b1a902cd636981133cf2935' then raise exception 'The pin trigger''s snapshot-v1 text changed'; end if;
+	if md5(v_text) <> '2a577812246baee7f79e7f4089077dc8' then raise exception 'The pin trigger''s snapshot-v1 text changed'; end if;
 	v_text := replace(pg_get_functiondef('public.qorpera_routine_occurrence_lifecycle()'::regprocedure),
 		E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for no key update;\n'
@@ -112,7 +110,7 @@ begin
 		E'\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for update;\n');
 	if md5(v_text) <> '7d57b1f875d2d5dc884d40e3f6593084' then raise exception 'The routine lifecycle''s snapshot-v1 text changed'; end if;
 	if md5(replace(pg_get_functiondef('public.qorpera_materialize_wake_execution_runs(integer)'::regprocedure),
-			E'\t\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '4a214d7c48c47ea9871095f0a79816a3'
+			E'\t\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '74f0959bb20aab0d1ad2f9807b2e82d9'
 		or md5(replace(pg_get_functiondef('public.qorpera_drain_office_activation_wakes(integer)'::regprocedure),
 			E'  and not exists (select 1 from public.qorpera_execution_runs parent\n'
 			|| E'   where parent.id = qorpera_runtime_office_start_waiters.parent_run_id and public.qorpera_company_is_folder_v2(parent.profile_id))\n',

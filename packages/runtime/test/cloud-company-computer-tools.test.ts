@@ -487,10 +487,10 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 	});
 
 	it("sends exactly the shell shapes the office's operation check takes, and never one it refuses", () => {
-		// Shared with supabase/tests/628_runtime_office_shell_activity.test.sql, which
+		// Shared with supabase/tests/870_runtime_office_shell_idle_rule.test.sql, which
 		// runs each through qorpera_valid_office_shell_action.
 		const sql = readFileSync(
-			new URL("../../../supabase/tests/628_runtime_office_shell_activity.test.sql", import.meta.url),
+			new URL("../../../supabase/tests/870_runtime_office_shell_idle_rule.test.sql", import.meta.url),
 			"utf8",
 		);
 		const shapes = (kind: "VALID" | "INVALID") => {

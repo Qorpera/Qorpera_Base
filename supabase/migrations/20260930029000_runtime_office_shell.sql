@@ -1,26 +1,36 @@
--- 20260929070000: Company Computer shells under one idle rule for every
--- machine (founder decisions of 28 September 2026, a shell with no 15-second
--- stop, and of 3 October 2026, the 2026-10-03 amendment "one idle rule for
--- every machine"). Each screen has its agent's shell. Every 30 seconds the
--- office reports each shell: whether it was busy (more than about 5% of one
--- core since the last sample), the commands still open and those that ended
--- since, each with the run that started it and the receipt of that start.
--- - A busy shell is demand and keeps its agent's seat (20260929070100) for 90
---   seconds after its last busy report. A shell that only waits is neither:
---   the computer may sleep, and sleep ends its commands (20260930007000).
--- - One row per command keeps who started it, so that run's conversation (a
---   worker's: the conversation that dispatched it) is told once if the
---   platform stopped it (20260930007000), and asked about it if it keeps the
---   computer busy.
--- - A command counts only when its start is the screen's own recorded effect
---   for that run (qorpera_runtime_office_resources); anything else in a report
---   is left out, never refused, so one stale item cannot stop every report.
--- - When the seat changes hands, the previous agent's commands there ended
---   with it (closed).
--- - A report is not a wake: it counts only for the office's current
---   generation, and an office already powering off is not woken by it.
--- - While the operator has paused the company, a report records nothing but
---   the pause and tells the office, which stops every shell.
+-- 20260930029000: the Company Computer's long-running shells under one idle
+-- rule for every machine (founder decisions of 28 September 2026, a shell that
+-- runs as long as the work needs, and of 3 October 2026, the amendment "one
+-- idle rule for every machine"). Folder-v2 only by the founder's decision of 3
+-- October: every function here is shared by both cores and has no snapshot-v1
+-- branch; the office paths it rides take the folder order since C1c-3j/3k.
+-- Each screen has its agent's shell. Every 30 seconds the office reports each
+-- shell: whether it was busy (more than about 5% of one core since the last
+-- sample), the commands still open and those that ended since, each with the
+-- run that started it and the receipt of that start.
+-- 1. A busy shell is demand and keeps its agent's seat for 90 seconds after its
+--    last busy report. A shell that only waits is neither: the computer may
+--    sleep.
+-- 2. One row per command keeps who started it. A command counts only when its
+--    start is the screen's own recorded effect for that run
+--    (qorpera_runtime_office_resources); anything else in a report is left
+--    out, never refused, so one stale item cannot stop every report.
+-- 3. Sleep ends what still runs (slept); any other stop of the computer, a
+--    screen gone, a seat that changed hands, a pause or a lost generation end
+--    it as closed, paused or lost; one the office stops listing without
+--    reporting its end, as unknown.
+-- 4. The agent's next run in the conversation that started a command the
+--    platform stopped (a worker's: the conversation that dispatched it) is
+--    told, once: a list in the open work the host reads at the start of every
+--    company run (qorpera_describe_agent_open_work, computerStopped).
+-- 5. The office's operation check takes every computer_shell action.
+-- A report is not a wake: it counts only for the office's current generation,
+-- and an office already powering off is not woken by it. While the operator
+-- has paused the company, a report ends every command as paused and tells the
+-- office, which stops every shell.
+-- Lock order: the report and the idle policy take the office row (the idle
+-- policy after the folder machine fence, C1c-3j), then the command rows. The
+-- told list takes command rows with SKIP LOCKED only.
 
 create table public.qorpera_runtime_office_shell_activity (
 	screen_id uuid primary key references public.qorpera_runtime_office_screens(id) on delete cascade,
@@ -65,8 +75,6 @@ create index qorpera_runtime_office_shell_commands_open on public.qorpera_runtim
 	where ended_at is null;
 create index qorpera_runtime_office_shell_commands_ended on public.qorpera_runtime_office_shell_commands(office_id, ended_at)
 	where ended_at is not null;
--- When the agent last worked with its shell on a screen, for the check-ins.
-create index qorpera_runtime_office_shell_commands_worked on public.qorpera_runtime_office_shell_commands(screen_id, staff_agent_id, worked_at);
 -- What a conversation's next run of the agent is told: a few rows, each once.
 create index qorpera_runtime_office_shell_commands_told on public.qorpera_runtime_office_shell_commands(staff_agent_id, session_id, ended_at)
 	where end_reason in ('slept','closed','paused','pressure','lost');
@@ -222,19 +230,19 @@ $$;
 revoke all on function public.qorpera_office_shell_conversation_run(public.qorpera_execution_runs)
 	from public,anon,authenticated,service_role;
 
--- Patched in place, like 20260919020000 does, so other demand patches commute.
-create function pg_temp.office_shell_activity_patch(p_target regprocedure,p_old text,p_new text)
+-- Patched in place, so other patches commute.
+create function pg_temp.office_shell_patch(p_target regprocedure,p_old text,p_new text)
 returns void language plpgsql as $$
 declare v_definition text:=pg_get_functiondef(p_target);
 begin
 	if (length(v_definition)-length(replace(v_definition,p_old,'')))/length(p_old)<>1 then
-		raise exception 'Office shell activity integration differs: %',p_target; end if;
+		raise exception 'Office shell integration differs: %',p_target; end if;
 	execute replace(v_definition,p_old,p_new);
 end $$;
-select pg_temp.office_shell_activity_patch('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure,
+select pg_temp.office_shell_patch('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure,
 	$old$and (w.status='queued' or j.status in ('queued','leased','running')))$old$,
 	$new$and (w.status='queued' or j.status in ('queued','leased','running')))
-		-- A busy Company Computer shell (20260929070000).
+		-- A busy Company Computer shell (20260930029000).
 		or exists(select 1 from public.qorpera_runtime_office_shell_activity a where a.office_id=p_office.id
 			and a.computer_generation=p_office.generation and a.busy_until>clock_timestamp())$new$);
 
@@ -246,4 +254,149 @@ do $$ declare v_owner name; begin
 		raise exception 'Office demand function has an API owner'; end if;
 	if v_owner is distinct from current_user then
 		execute format('grant select on public.qorpera_runtime_office_shell_activity to %I',v_owner); end if;
+end $$;
+
+-- A busy shell keeps its agent's seat as it keeps the machine awake: patched into
+-- qorpera_runtime_office_screen_in_use (20260928237200).
+select pg_temp.office_shell_patch('public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens)'::regprocedure,
+	$old$or exists(select 1 from public.qorpera_runtime_office_resources r where r.screen_id = p_screen.id and r.state <> 'drained')$old$,
+	$new$or exists(select 1 from public.qorpera_runtime_office_resources r where r.screen_id = p_screen.id and r.state <> 'drained')
+		-- A busy shell on the computer (20260930029000).
+		or exists(select 1 from public.qorpera_runtime_office_shell_activity a
+			join public.qorpera_runtime_offices o on o.id = a.office_id
+			where a.screen_id = p_screen.id and a.computer_generation = o.generation and a.busy_until > clock_timestamp())$new$);
+
+-- The seat function may have a private owner in production.
+do $$ declare v_owner name; begin
+	select pg_get_userbyid(proowner) into v_owner from pg_proc
+		where oid='public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens)'::regprocedure;
+	if v_owner in ('anon','authenticated','service_role','qorpera_secret_broker') then
+		raise exception 'Office seat function has an API owner'; end if;
+	if v_owner is distinct from current_user then
+		execute format('grant select on public.qorpera_runtime_office_shell_activity to %I',v_owner); end if;
+end $$;
+
+-- The office's operation check takes every computer_shell action the tool
+-- sends, and the 15-second form of the runtime before this one (until the
+-- legacy cleanup pass removes it): each action's own keys, a command or input
+-- of at most 16 KiB, a wait of at most 15 seconds, and a command id the office
+-- issued. Anything else, including a shape it cannot judge, is refused.
+create function public.qorpera_valid_office_shell_action(p_args jsonb)
+returns boolean language plpgsql immutable set search_path = '' as $$
+declare
+	v_keys text[];
+	v_wait jsonb:=p_args->'waitMs';
+	v_session text:=p_args->>'sessionId';
+begin
+	if jsonb_typeof(p_args) is distinct from 'object' or p_args->>'kind' is distinct from 'shell' then return false; end if;
+	-- The 15-second form of older runtime bundles.
+	if not p_args ? 'action' then
+		return coalesce(p_args-'kind'-'command'-'timeoutMs'='{}'::jsonb
+			and jsonb_typeof(p_args->'command')='string'
+			and p_args->>'command' ~ '[^[:space:]]' and octet_length(p_args->>'command')<=16384
+			and jsonb_typeof(p_args->'timeoutMs')='number'
+			and case when coalesce(p_args->>'timeoutMs','') ~ '^[0-9]{1,5}$'
+				then (p_args->>'timeoutMs')::integer between 1 and 15000 else false end,false);
+	end if;
+	select array_agg(key order by key collate "C") into v_keys from jsonb_object_keys(p_args) as key;
+	if p_args ? 'waitMs' and not (case when jsonb_typeof(v_wait)='number' and v_wait::text ~ '^[0-9]{1,5}$'
+		then v_wait::text::integer<=15000 else false end) then return false; end if;
+	if p_args ? 'sessionId' and (jsonb_typeof(p_args->'sessionId') is distinct from 'string'
+		or v_session !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') then return false; end if;
+	return coalesce(case p_args->>'action'
+		when 'start' then v_keys=array['action','command','kind','waitMs']
+			and jsonb_typeof(p_args->'command')='string'
+			and p_args->>'command' ~ '[^[:space:]]' and octet_length(p_args->>'command')<=16384
+		when 'read' then v_keys=array['action','kind','sessionId','waitMs']
+		when 'write' then v_keys=array['action','endInput','kind','sessionId','text','waitMs']
+			and jsonb_typeof(p_args->'text')='string' and octet_length(p_args->>'text')<=16384
+			and jsonb_typeof(p_args->'endInput')='boolean'
+			and (p_args->>'text'<>'' or p_args->'endInput'='true'::jsonb)
+		when 'stop' then v_keys=array['action','kind'] or v_keys=array['action','kind','sessionId']
+		when 'list' then v_keys=array['action','kind']
+		else false
+	end,false);
+end $$;
+revoke all on function public.qorpera_valid_office_shell_action(jsonb) from public,anon,authenticated,service_role;
+
+select pg_temp.office_shell_patch(
+	'public.qorpera_native_office_operation(jsonb,jsonb,jsonb,text,text,uuid,text)'::regprocedure,
+	$old$		if (v_operation->'arguments')-'kind'-'command'-'timeoutMs'<>'{}'::jsonb
+			or jsonb_typeof(v_operation#>'{arguments,command}') is distinct from 'string'
+			or length(btrim(v_operation#>>'{arguments,command}'))=0 or octet_length(v_operation#>>'{arguments,command}')>16384
+			or coalesce(v_operation#>>'{arguments,timeoutMs}','') !~ '^[0-9]{1,5}$'
+			or (v_operation#>>'{arguments,timeoutMs}')::integer not between 1 and 15000 then$old$,
+	$new$		-- Every computer_shell action and the older 15-second form (20260930029000).
+		if not coalesce(public.qorpera_valid_office_shell_action(v_operation->'arguments'),false) then$new$);
+
+-- The operation function may have a private owner in production.
+do $$ declare v_owner name; begin
+	select pg_get_userbyid(proowner) into v_owner from pg_proc
+		where oid='public.qorpera_native_office_operation(jsonb,jsonb,jsonb,text,text,uuid,text)'::regprocedure;
+	if v_owner in ('anon','authenticated','service_role','qorpera_secret_broker') then
+		raise exception 'Office operation function has an API owner'; end if;
+	if v_owner is distinct from current_user then
+		execute format('grant execute on function public.qorpera_valid_office_shell_action(jsonb) to %I',v_owner); end if;
+end $$;
+
+-- Sleep stops what still runs in a shell before the idle policy powers the
+-- computer off, and any other stop of the computer ends it as closed.
+select pg_temp.office_shell_patch('public.qorpera_reconcile_runtime_office_idle(jsonb,bigint,uuid,text,integer)'::regprocedure,
+	$old$		perform public.qorpera_begin_runtime_office_lifecycle(v_request);$old$,
+	$new$		-- Sleep stops what still runs in its shells; their runs are told (20260930029000).
+		update public.qorpera_runtime_office_shell_commands set ended_at=v_at,end_reason='slept'
+			where office_id=o.id and ended_at is null;
+		perform public.qorpera_begin_runtime_office_lifecycle(v_request);$new$);
+select pg_temp.office_shell_patch('public.qorpera_begin_runtime_office_lifecycle(jsonb)'::regprocedure,
+	$old$	update public.qorpera_runtime_office_viewers set state='draining' where office_id=v_office.id and state in ('issued','active');$old$,
+	$new$	update public.qorpera_runtime_office_viewers set state='draining' where office_id=v_office.id and state in ('issued','active');
+	-- Any stop of the computer stops what still runs in its shells (20260930029000).
+	update public.qorpera_runtime_office_shell_commands set ended_at=clock_timestamp(),end_reason='closed'
+		where office_id=v_office.id and ended_at is null;$new$);
+
+-- The agent's commands that the platform stopped and that belong to this
+-- run's conversation, oldest first, at most 32 a run.
+-- A row belongs to the first run that took it; the same run (a restart after a
+-- usage limit) takes it again. A run outside any conversation is told nothing.
+create function public.qorpera_take_agent_computer_stopped(p_run public.qorpera_execution_runs)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_taken jsonb;
+begin
+	if p_run.staff_agent_id is null or p_run.session_id is null then return null; end if;
+	with taken as (
+		select command.id from public.qorpera_runtime_office_shell_commands command
+		where command.staff_agent_id=p_run.staff_agent_id and command.session_id=p_run.session_id
+			and command.end_reason in ('slept','closed','paused','pressure','lost')
+			and (command.told_run_id is null or command.told_run_id=p_run.id)
+		order by command.ended_at,command.id limit 32 for update skip locked),
+	marked as (
+		update public.qorpera_runtime_office_shell_commands command
+		set told_run_id=p_run.id,told_at=coalesce(command.told_at,clock_timestamp())
+		from taken where command.id=taken.id returning command.*)
+	select jsonb_agg(jsonb_build_object('command',marked.command,'startedAt',marked.started_at,'endedAt',marked.ended_at,
+		'reason',marked.end_reason) order by marked.ended_at,marked.id) into v_taken from marked;
+	return v_taken;
+end $$;
+revoke all on function public.qorpera_take_agent_computer_stopped(public.qorpera_execution_runs) from public,anon,authenticated,service_role;
+
+select pg_temp.office_shell_patch('public.qorpera_describe_agent_open_work(jsonb)'::regprocedure,
+	$old$				and todo.state in ('open','blocked')));$old$,
+	$new$				and todo.state in ('open','blocked')))
+		-- Commands the computer stopped, told once in their conversation (20260930029000).
+		|| coalesce((select jsonb_build_object('computerStopped',taken.list)
+			from (select public.qorpera_take_agent_computer_stopped(v_run) as list) taken where taken.list is not null),'{}'::jsonb);$new$);
+
+-- The functions above may have a private owner in production.
+do $$ declare v_owner name; begin
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_reconcile_runtime_office_idle(jsonb,bigint,uuid,text,integer)'::regprocedure,
+		'public.qorpera_begin_runtime_office_lifecycle(jsonb)'::regprocedure,
+		'public.qorpera_describe_agent_open_work(jsonb)'::regprocedure)) loop
+		if v_owner in ('anon','authenticated','service_role','qorpera_secret_broker') then
+			raise exception 'Office shell idle rule function has an API owner'; end if;
+		if v_owner is distinct from current_user then
+			execute format('grant select,update on public.qorpera_runtime_office_shell_commands to %I',v_owner);
+			execute format('grant execute on function public.qorpera_take_agent_computer_stopped(public.qorpera_execution_runs) to %I',v_owner);
+		end if;
+	end loop;
 end $$;

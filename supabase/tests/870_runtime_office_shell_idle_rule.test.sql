@@ -1,510 +1,519 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- 20260930007000 (with 20260929070000): the Company Computer under one idle
--- rule for every machine (2026-10-03 amendment).
--- 1. A waiting dev server keeps nothing awake: the computer sleeps, the sleep
---    ends the command as slept, and the agent's next run in that conversation
---    is told once. Other stops end commands as closed, paused or lost.
--- 2. A busy job keeps the computer awake; after an hour busy with no turn from
---    its agent, the agent is asked whether it still needs it, in the
---    conversation of the run that worked with it last; a turn resets the count.
--- 3. Telling and asking wait for their switch, and tell nothing from before it.
--- 4. A command counts only when its start is the screen's own effect for that
---    run; a seat that changes hands ends the previous agent's commands, and no
---    stale item ever stops the office's reports. A worker's command is told and
---    asked in the conversation that dispatched it.
--- The office's registration, start and activation are the SQL policy fixture
--- of 718; guest readiness, effect records and reports are synthetic. Not a
--- Linux test.
+-- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
+-- 20260930029000: the Company Computer's long-running shells under one idle rule for every machine (the 2026-10-03
+-- amendment), on a folder-v2 company's computer (folder-v2 only, the founder's decision of 3 October).
+-- 1. The office's operation check takes exactly the computer_shell shapes the tool sends.
+-- 2. A waiting dev server keeps nothing awake; a busy job keeps the computer awake and its agent's seat for 90 seconds
+--    after its last busy report. A command counts only when its start is the screen's own recorded effect for that run;
+--    anything else is left out, never refused.
+-- 3. Sleep ends what still runs (slept), and the agent's next run in that conversation is told once. Other stops end
+--    commands as closed (a screen gone, a seat that changed hands, any stop of the computer), paused, lost or unknown.
+-- 4. A worker's command is told in the conversation that dispatched the worker.
+-- 5. Two runs racing for the told list: one winner, and the other neither waits nor sees it.
+-- 648's committed fixture; the company's computer is registered, started and activated as 894 does, and Ada's screen
+-- opened by the owner. Effect records and reports are synthetic. Not a Linux test. Everything is removed at the end.
 
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select set_config('qorpera_test.office',public.qorpera_register_runtime_office(
-	'30000000-0000-4000-8000-000000000020','34000000-0000-4000-8000-000000000001',repeat('a',64),repeat('b',64),2)::text,true);
-select set_config('qorpera_test.office_scope',(current_setting('qorpera_test.office')::jsonb-'state')::text,true);
-reset role;
-create function pg_temp.office_call(p_action text,p_lease jsonb default null)
-returns jsonb language sql as $$
-	select public.qorpera_native_office_screen(current_setting('qorpera_test.wake_binding')::jsonb,
-		current_setting('qorpera_test.office_scope')::jsonb,p_action,p_lease)
+create function pg_temp.check(p_ok boolean, p_message text) returns void language plpgsql as $$
+begin if p_ok is distinct from true then raise exception 'Office shell: %', p_message; end if; end
 $$;
-update public.qorpera_runtime_offices set state='active'
-where id=(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid;
-select pg_temp.path_claims('service_role');
-set local role service_role;
-select set_config('qorpera_test.office_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
-reset role;
-update public.qorpera_runtime_offices set state='provisioning';
-select pg_temp.path_claims('service_role');
-select public.qorpera_set_runtime_office_provider(current_setting('qorpera_test.office_scope')::jsonb,1,
-	'39000000-0000-4000-8000-000000000001',repeat('f',64),0,true);
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,
-	'39000000-0000-4000-8000-000000000002');
-select pg_temp.path_claims('service_role');
-select public.qorpera_reserve_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,
-	'39000000-0000-4000-8000-000000000002','39000000-0000-4000-8000-000000000003',repeat('c',64),repeat('a',64),repeat('b',64),repeat('d',64),
-	'39000000-0000-4000-8000-000000000001',repeat('f',64));
-insert into public.qorpera_runtime_office_activations(intent_id,activation_id,office_id,computer_generation,allocation_id,
-	provider_id,provider_policy_sha256,provider_binding_sha256,instance_sha256,image_sha256,bootstrap_sha256,attestation,mappings,
-	state,service_invocation_id,ready_at,activated_at)
-select i.id,'39000000-0000-4000-8000-000000000004',i.office_id,1,i.allocation_id,p.provider_id,p.policy_sha256,
-	i.provider_binding_sha256,i.instance_sha256,i.image_sha256,i.bootstrap_sha256,
-	jsonb_build_object('bootId','39000000-0000-4000-8000-000000000005','configurationSha256',repeat('e',64)),
-	'[]','active',repeat('a',32),clock_timestamp(),clock_timestamp()
-from public.qorpera_runtime_office_start_intents i join public.qorpera_runtime_office_providers p on p.office_id=i.office_id;
-update public.qorpera_runtime_offices set state='active';
--- The agent's run has acknowledged its wake; its screen was acquired and let go.
-select pg_temp.path_claims('service_role');
-select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');
-set local role service_role;
-select pg_temp.office_call('release',current_setting('qorpera_test.office_lease')::jsonb);
-reset role;
-select set_config('qorpera_test.screen',current_setting('qorpera_test.office_lease')::jsonb#>>'{binding,screenId}',true);
+create function pg_temp.refused(p_sql text, p_state text, p_message text default null) returns void language plpgsql as $$
+begin
+	begin execute p_sql;
+	exception when others then
+		if sqlstate = p_state and (p_message is null or sqlerrm = p_message) then return; end if;
+		raise exception 'Expected SQLSTATE % (%), got %: %', p_state, p_message, sqlstate, sqlerrm;
+	end;
+	raise exception 'Expected SQLSTATE % (%), but it succeeded: %', p_state, p_message, p_sql;
+end $$;
+create function pg_temp.claims(p_conn text, p_role text, p_user text default null) returns void language plpgsql as $$
+begin
+	perform dblink_exec(p_conn, format('set request.jwt.claims = %L',
+		jsonb_strip_nulls(jsonb_build_object('role', p_role, 'sub', p_user))::text));
+end $$;
+-- Sends a call and waits up to ten seconds for it to end; its text answer, or the error as "<sqlstate> <message>".
+create function pg_temp.settled(p_conn text, p_sql text) returns text language plpgsql as $$
+declare v_until timestamptz := clock_timestamp() + interval '10 seconds'; v_answer text;
+begin
+	perform dblink_send_query(p_conn, p_sql);
+	while dblink_is_busy(p_conn) = 1 loop
+		if clock_timestamp() > v_until then return 'WAITED'; end if;
+		perform pg_sleep(0.02);
+	end loop;
+	begin
+		select r into v_answer from dblink_get_result(p_conn) as t(r text);
+	exception when others then v_answer := sqlstate || ' ' || sqlerrm;
+	end;
+	begin
+		perform * from dblink_get_result(p_conn) as t(r text);
+	exception when others then null;
+	end;
+	return coalesce(v_answer, 'null');
+end $$;
+
+-- 1. The shapes the tool sends are exactly the valid ones. The lists between the markers are shared with
+--    cloud-company-computer-tools.test.ts: the tool sends each valid one exactly as written, and never an invalid one.
+create function pg_temp.shell_ok(p_arguments text) returns boolean language sql as $$
+	select public.qorpera_valid_office_shell_action(p_arguments::jsonb)
+$$;
+select pg_temp.check(coalesce(pg_temp.shell_ok(shape),false),'valid shell arguments: '||shape) from unnest(array[
+-- BEGIN VALID COMPUTER_SHELL SHAPES
+	'{"kind":"shell","action":"start","command":"npm run build","waitMs":10000}',
+	'{"kind":"shell","action":"start","command":"sleep 3600","waitMs":0}',
+	'{"kind":"shell","action":"start","command":"x","waitMs":15000}',
+	'{"kind":"shell","action":"start","command":"  printf \"a\\tb\\n\" | tr a c\n","waitMs":10000}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":5000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y\n","endInput":false,"waitMs":1000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":" ","endInput":false,"waitMs":1000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":true,"waitMs":1000}',
+	'{"kind":"shell","action":"stop"}',
+	'{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1"}',
+	'{"kind":"shell","action":"list"}',
+	'{"kind":"shell","command":"ls","timeoutMs":15000}',
+	'{"kind":"shell","command":"ls","timeoutMs":1}'
+-- END VALID COMPUTER_SHELL SHAPES
+]) as shape \g /dev/null
+select pg_temp.check(not coalesce(pg_temp.shell_ok(shape),true),'invalid shell arguments: '||shape) from unnest(array[
+-- BEGIN INVALID COMPUTER_SHELL SHAPES
+	'{"kind":"shell","action":"start","command":"ls"}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":15001}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":1.5}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":"100"}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":-1}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":null}',
+	'{"kind":"shell","action":"start","command":"   ","waitMs":0}',
+	'{"kind":"shell","action":"start","command":"\n\t ","waitMs":0}',
+	'{"kind":"shell","action":"start","command":null,"waitMs":0}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":0,"timeoutMs":1000}',
+	'{"kind":"shell","action":"read","sessionId":"not-a-command","waitMs":0}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000A1","waitMs":0}',
+	'{"kind":"shell","action":"read","sessionId":null,"waitMs":0}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1"}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":false,"waitMs":0}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y","endInput":"true","waitMs":0}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":null,"endInput":true,"waitMs":0}',
+	'{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":0}',
+	'{"kind":"shell","action":"list","waitMs":0}',
+	'{"kind":"shell","action":"kill"}',
+	'{"kind":"shell","timeoutMs":1000}',
+	'{"kind":"shell","command":"ls","timeoutMs":"1000"}',
+	'{"kind":"shell","command":"ls","timeoutMs":0}',
+	'{"kind":"shell","command":"ls","timeoutMs":16000}',
+	'{"kind":"shell","command":"ls","timeoutMs":1000,"waitMs":0}',
+	'{"kind":"browser","action":"list"}'
+-- END INVALID COMPUTER_SHELL SHAPES
+]) as shape \g /dev/null
+select pg_temp.check(not coalesce(pg_temp.shell_ok(jsonb_build_object('kind','shell','action','start','command',repeat('x',16385),'waitMs',0)::text),true)
+	and not coalesce(pg_temp.shell_ok(jsonb_build_object('kind','shell','action','write','sessionId','00000000-0000-4000-8000-0000000000a1',
+		'text',repeat('x',16385),'endInput',false,'waitMs',0)::text),true)
+	and coalesce(pg_temp.shell_ok(jsonb_build_object('kind','shell','action','start','command',repeat('é',8192),'waitMs',0)::text),false),
+	'a command or input over 16 KiB is invalid, one of exactly 16 KiB is not');
+select pg_temp.check(pg_get_functiondef('public.qorpera_native_office_operation(jsonb,jsonb,jsonb,text,text,uuid,text)'::regprocedure)
+	like '%if not coalesce(public.qorpera_valid_office_shell_action(v_operation->''arguments''),false) then%',
+	'the office''s operation check takes the shell action through that validator');
+
+-- The company's computer, started by its owner and brought up by the provider (894's chain), and Ada's screen opened
+-- by the owner.
+select pg_temp.claims('fence_two', 'authenticated', '64800000-0000-4000-8000-000000000001');
+do $$
+declare v_office jsonb; v_scope text; v_generation text; v_answer text; v_screen public.qorpera_runtime_office_screens%rowtype;
+begin
+	v_answer := pg_temp.settled('fence_two', format('select public.qorpera_register_runtime_office(%L, %L, %L, %L, 2)::text',
+		'64800000-0000-4000-8000-000000000020', '87000000-0000-4000-8000-000000000001', repeat('a', 64), repeat('b', 64)));
+	v_office := v_answer::jsonb;
+	v_scope := (v_office - 'state')::text;
+	v_generation := (select generation::text from public.qorpera_runtime_offices where id = (v_office ->> 'companyComputerId')::uuid);
+	perform set_config('qorpera_test.scope', v_scope, false);
+	perform set_config('qorpera_test.office_id', v_office ->> 'companyComputerId', false);
+	perform set_config('qorpera_test.generation', v_generation, false);
+	v_answer := pg_temp.settled('fence_three', format('select public.qorpera_set_runtime_office_provider(%L, %s, %L, %L, 0, true)::text',
+		v_scope, v_generation, '87000000-0000-4000-8000-0000000000b0', repeat('f', 64)));
+	v_answer := pg_temp.settled('fence_two', format('select public.qorpera_request_runtime_office_start(%L, %s, %L)::text', v_scope,
+		v_generation, '87000000-0000-4000-8000-0000000000d4'));
+	if v_answer !~ '"state": "requested"' then raise exception 'Setup: the owner starts the computer: %', v_answer; end if;
+	v_answer := pg_temp.settled('fence_three', format(
+		'select public.qorpera_reserve_runtime_office_start(%L, %s, %L, %L, %L, %L, %L, %L, %L, %L)::text', v_scope, v_generation,
+		'87000000-0000-4000-8000-0000000000d4', '87000000-0000-4000-8000-0000000000a9', repeat('c', 64), repeat('a', 64), repeat('b', 64),
+		repeat('d', 64), '87000000-0000-4000-8000-0000000000b0', repeat('f', 64)));
+	if v_answer !~ '"state": "reserved"' then raise exception 'Setup: the provider reserves the start: %', v_answer; end if;
+	v_answer := pg_temp.settled('fence_three', format(
+		'select public.qorpera_prepare_runtime_office_activation(%L, %s, %L, %L, %L, %L, %L, %L, %L, %L)::text', v_scope, v_generation,
+		'87000000-0000-4000-8000-0000000000d4', '87000000-0000-4000-8000-0000000000a9', repeat('c', 64), repeat('d', 64),
+		'87000000-0000-4000-8000-0000000000b0', repeat('f', 64), '[]', jsonb_build_object('schema', 'qorpera.office-activation-attestation/v1',
+			'activationId', '87000000-0000-4000-8000-0000000000f1', 'bootId', '87000000-0000-4000-8000-0000000000f2',
+			'preparationObservationSha256', repeat('1', 64), 'configurationObservationSha256', repeat('2', 64),
+			'configurationSha256', repeat('3', 64), 'adoptionReceiptSha256', repeat('4', 64), 'nativePort', 5900, 'viewerPort', 6080)));
+	if v_answer !~ '"state": "prepared"' then raise exception 'Setup: the provider prepares the activation: %', v_answer; end if;
+	perform set_config('qorpera_test.startup', jsonb_build_object('scope', v_scope::jsonb, 'computerGeneration', v_generation::bigint,
+		'allocationId', '87000000-0000-4000-8000-0000000000a9', 'instanceSha256', repeat('c', 64), 'imageSha256', repeat('a', 64),
+		'bootstrapSha256', repeat('b', 64), 'bootId', '87000000-0000-4000-8000-0000000000f2', 'configurationSha256', repeat('3', 64),
+		'serviceInvocationId', repeat('5', 32))::text, false);
+	v_answer := pg_temp.settled('fence_three', format('select public.qorpera_report_runtime_office_ready(%L, %L, 5900, 6080)::text',
+		current_setting('qorpera_test.startup'), '87000000-0000-4000-8000-0000000000f1'));
+	if v_answer !~ '"state": "ready"' then raise exception 'Setup: the computer reports ready: %', v_answer; end if;
+	v_answer := pg_temp.settled('fence_three', format('select public.qorpera_activate_runtime_office(%L, %s, %L, %L, %L, %L, %L)::text',
+		v_scope, v_generation, '87000000-0000-4000-8000-0000000000d4', '87000000-0000-4000-8000-0000000000f1',
+		'87000000-0000-4000-8000-0000000000b0', repeat('f', 64), repeat('5', 32)));
+	if (select state from public.qorpera_runtime_offices where id = (v_office ->> 'companyComputerId')::uuid) <> 'active' then
+		raise exception 'Setup: the computer is active: %', v_answer; end if;
+	v_answer := pg_temp.settled('fence_two', format('select public.qorpera_open_runtime_office_screen(%L, %L)::text',
+		v_scope, '64800000-0000-4000-8000-0000000000a1'));
+	if v_answer !~ '"state": "open"' then raise exception 'Setup: the owner opens Ada''s screen: %', v_answer; end if;
+	select * into strict v_screen from public.qorpera_runtime_office_screens
+	where office_id = (v_office ->> 'companyComputerId')::uuid and staff_agent_id = '64800000-0000-4000-8000-0000000000a1';
+	perform set_config('qorpera_test.screen', v_screen.id::text, false);
+end $$;
+-- Ada's computer access makes her leased run demand of its own; without it the computer starts with nothing to do.
+update public.qorpera_runtime_office_access set state = 'revoked' where office_id = current_setting('qorpera_test.office_id')::uuid;
+update public.qorpera_runtime_office_screens set touched_at = clock_timestamp() - interval '3 minutes'
+where id = current_setting('qorpera_test.screen')::uuid;
 
 create function pg_temp.office() returns public.qorpera_runtime_offices language sql as $$
-	select * from public.qorpera_runtime_offices where id=(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid
+	select * from public.qorpera_runtime_offices where id = current_setting('qorpera_test.office_id')::uuid
 $$;
 create function pg_temp.demand() returns boolean language sql as $$
 	select public.qorpera_runtime_office_has_demand(pg_temp.office())
 $$;
-create function pg_temp.idle_poll() returns jsonb language sql as $$
-	select public.qorpera_reconcile_runtime_office_idle(current_setting('qorpera_test.office_scope')::jsonb,1,
-		'39000000-0000-4000-8000-000000000001',repeat('f',64),60000)
+create function pg_temp.seat() returns boolean language sql as $$
+	select public.qorpera_runtime_office_screen_in_use(s) from public.qorpera_runtime_office_screens s
+	where s.id = current_setting('qorpera_test.screen')::uuid
 $$;
+create function pg_temp.idle_poll() returns jsonb language sql as $$
+	select public.qorpera_reconcile_runtime_office_idle(current_setting('qorpera_test.scope')::jsonb,
+		current_setting('qorpera_test.generation')::bigint, '87000000-0000-4000-8000-0000000000b0', repeat('f', 64), 60000)
+$$;
+-- Ada's leased run in her conversation with the member.
 create function pg_temp.run() returns public.qorpera_execution_runs language sql as $$
-	select * from public.qorpera_execution_runs where id=(current_setting('qorpera_test.wake_binding')::jsonb->>'runId')::uuid
+	select * from public.qorpera_execution_runs where id = '64800000-0000-4000-8000-0000000000f1'
 $$;
 create function pg_temp.command(p_n integer) returns uuid language sql as $$
-	select ('00000000-0000-4000-8000-000000000' || lpad(p_n::text,3,'0'))::uuid
+	select ('87000000-0000-4000-8000-000000000' || lpad(p_n::text, 3, '0'))::uuid
 $$;
 create function pg_temp.receipt(p_n integer) returns uuid language sql as $$
-	select ('00000000-0000-4000-8000-000000001' || lpad(p_n::text,3,'0'))::uuid
+	select ('87000000-0000-4000-8000-000000001' || lpad(p_n::text, 3, '0'))::uuid
 $$;
 create function pg_temp.command_row(p_n integer) returns public.qorpera_runtime_office_shell_commands language sql as $$
-	select * from public.qorpera_runtime_office_shell_commands where id=pg_temp.command(p_n)
+	select * from public.qorpera_runtime_office_shell_commands where id = pg_temp.command(p_n)
 $$;
 create function pg_temp.at(p_ago interval) returns text language sql as $$
-	select to_char((clock_timestamp()-p_ago) at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+	select to_char((clock_timestamp() - p_ago) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
 $$;
 -- The screen's own record of a run's start (its effect receipt), as admission writes it. The receipt rows themselves
 -- are not needed here, so foreign keys are off while it goes in.
-create function pg_temp.started(p_n integer,p_run uuid default null) returns void language plpgsql as $$
+create function pg_temp.started(p_n integer, p_run uuid default null) returns void language plpgsql as $$
 begin
 	set local session_replication_role = replica;
-	insert into public.qorpera_runtime_office_resources(office_id,screen_id,receipt_id,run_id,native_binding,screen_lease,
-		input_sha256,downstream_idempotency_sha256,state,expires_at,drained_at)
-	values((pg_temp.office()).id,current_setting('qorpera_test.screen')::uuid,pg_temp.receipt(p_n),coalesce(p_run,(pg_temp.run()).id),
-		'{}','{}',repeat('a',64),repeat('b',64),'drained',clock_timestamp(),clock_timestamp());
+	insert into public.qorpera_runtime_office_resources(office_id, screen_id, receipt_id, run_id, native_binding, screen_lease,
+		input_sha256, downstream_idempotency_sha256, state, expires_at, drained_at)
+	values ((pg_temp.office()).id, current_setting('qorpera_test.screen')::uuid, pg_temp.receipt(p_n),
+		coalesce(p_run, (pg_temp.run()).id), '{}', '{}', repeat('a', 64), repeat('b', 64), 'drained', clock_timestamp(), clock_timestamp());
 	set local session_replication_role = origin;
 end $$;
 -- A command as the office reports it: still open, or ended since the last report.
-create function pg_temp.open_item(p_n integer,p_command text,p_started interval,p_worked interval,p_run uuid default null)
+create function pg_temp.open_item(p_n integer, p_command text, p_started interval, p_worked interval, p_run uuid default null)
 returns jsonb language sql as $$
-	select jsonb_build_object('id',pg_temp.command(p_n),'runId',coalesce(p_run,(pg_temp.run()).id),'receiptId',pg_temp.receipt(p_n),
-		'command',p_command,'startedAt',pg_temp.at(p_started),'workedAt',pg_temp.at(p_worked))
+	select jsonb_build_object('id', pg_temp.command(p_n), 'runId', coalesce(p_run, (pg_temp.run()).id), 'receiptId', pg_temp.receipt(p_n),
+		'command', p_command, 'startedAt', pg_temp.at(p_started), 'workedAt', pg_temp.at(p_worked))
 $$;
-create function pg_temp.ended_item(p_n integer,p_command text,p_reason text,p_started interval default '20 minutes',
-	p_run uuid default null) returns jsonb language sql as $$
-	select jsonb_build_object('id',pg_temp.command(p_n),'runId',coalesce(p_run,(pg_temp.run()).id),'receiptId',pg_temp.receipt(p_n),
-		'command',p_command,'startedAt',pg_temp.at(p_started),'reason',p_reason,'endedAt',pg_temp.at('0 seconds'))
+create function pg_temp.ended_item(p_n integer, p_command text, p_reason text, p_run uuid default null) returns jsonb language sql as $$
+	select jsonb_build_object('id', pg_temp.command(p_n), 'runId', coalesce(p_run, (pg_temp.run()).id), 'receiptId', pg_temp.receipt(p_n),
+		'command', p_command, 'startedAt', pg_temp.at('20 minutes'), 'reason', p_reason, 'endedAt', pg_temp.at('0 seconds'))
 $$;
--- The office's report of the agent's screen.
-create function pg_temp.shells(p_busy boolean,p_open jsonb default '[]',p_ended jsonb default '[]') returns jsonb language sql as $$
-	select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.office_scope')::jsonb,
+-- The office's report of Ada's screen.
+create function pg_temp.shells(p_busy boolean, p_open jsonb default '[]', p_ended jsonb default '[]') returns jsonb language sql as $$
+	select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.scope')::jsonb,
 		current_setting('qorpera_test.generation')::bigint,
-		jsonb_build_object('schema','qorpera.office-shell-report/v1','screens',jsonb_build_array(jsonb_build_object(
-			'screenId',current_setting('qorpera_test.screen'),'busy',p_busy,'open',p_open,'ended',p_ended))))
+		jsonb_build_object('schema', 'qorpera.office-shell-report/v1', 'screens', jsonb_build_array(jsonb_build_object(
+			'screenId', current_setting('qorpera_test.screen'), 'busy', p_busy, 'open', p_open, 'ended', p_ended))))
 $$;
 create function pg_temp.open_work() returns jsonb language sql as $$
-	select public.qorpera_describe_agent_open_work(current_setting('qorpera_test.wake_binding')::jsonb)
+	select public.qorpera_describe_agent_open_work(current_setting('qorpera_test.binding')::jsonb)
 $$;
-create function pg_temp.telling(p_on boolean) returns void language sql as $$
-	update public.qorpera_idle_rule_settings set enabled=p_on
-$$;
-select set_config('qorpera_test.generation',(pg_temp.office()).generation::text,true);
--- Commands 6 and 9 are started later (a pause, a worker); 10 never is.
-select pg_temp.started(n) from unnest(array[1,2,3,4,5,7,8]) n;
+select pg_temp.started(n) from unnest(array[1, 2, 3, 4, 5, 6, 7]) n \g /dev/null
 
--- The fixture leaves a turn waiting for an agent with computer access, demand of its own; without
--- that access the computer has nothing to do.
-update public.qorpera_runtime_office_access set state='revoked' where office_id=(pg_temp.office()).id;
-select pg_temp.wake_assert(not pg_temp.demand(),'An active computer with nothing to do has no demand');
-select pg_temp.wake_assert((select not enabled and enabled_at is null from public.qorpera_idle_rule_settings),
-	'Telling and asking start switched off');
+select pg_temp.check(not pg_temp.demand(), 'an active folder-v2 computer with nothing to do has no demand');
+select pg_temp.check(not pg_temp.seat(), 'an idle screen is free');
+select pg_temp.check(pg_temp.idle_poll() -> 'request' = 'null', 'the idle policy starts counting');
 
--- 1. A waiting dev server: on record with the run that started it, and no demand.
-select pg_temp.path_claims('service_role');
-select pg_temp.wake_assert(pg_temp.shells(false,jsonb_build_array(pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes')),
-	jsonb_build_array(pg_temp.ended_item(3,'npm test','exited')))->'screens'='[]'::jsonb,'A waiting dev server is reported, not busy');
-select pg_temp.wake_assert(not pg_temp.demand(),'A waiting dev server is no demand');
-select pg_temp.wake_assert((select c.staff_agent_id=(pg_temp.run()).staff_agent_id and c.run_id=(pg_temp.run()).id
-	and c.receipt_id=pg_temp.receipt(1) and c.conversation_run_id=(pg_temp.run()).id
-	and c.session_id is not distinct from (pg_temp.run()).session_id and c.command='npm run dev' and c.ended_at is null
-	and c.computer_generation=(pg_temp.office()).generation and c.told_at is null from pg_temp.command_row(1) c),
-	'The command is on record with the run that started it');
-select pg_temp.wake_assert((select c.end_reason='exited' and c.ended_at is not null from pg_temp.command_row(3) c),
-	'A command that exited is on record as exited');
--- A command whose start is not this screen's own effect for that run is left out; the report goes on.
-select pg_temp.shells(false,jsonb_build_array(
-	pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes'),
-	pg_temp.open_item(10,'not started here','1 minute','1 minute'),
-	pg_temp.open_item(4,'another run''s receipt','1 minute','1 minute','30000000-0000-4000-8000-0000000000ff'),
-	pg_temp.open_item(4,'not a receipt','1 minute','1 minute')||'{"receiptId":"key-4"}'));
-select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_shell_commands
-	where id in (pg_temp.command(4),pg_temp.command(10))) and (pg_temp.command_row(1)).ended_at is null,
-	'Commands the screen has no record of starting are left out, and the report still counts');
--- A shape the office never sends is refused.
-select pg_temp.wake_error(format('select pg_temp.shells(false,%L::jsonb)',jsonb_build_array(pg_temp.open_item(4,repeat('x',301),'1 minute','1 minute'))),
-	'22023','Invalid office shell activity');
-select pg_temp.wake_error(format('select pg_temp.shells(false,%L::jsonb)',jsonb_build_array(pg_temp.open_item(4,'ls','1 minute','1 minute')||'{"busy":true}')),
-	'22023','Invalid office shell activity');
-select pg_temp.wake_error(format('select pg_temp.shells(false,%L::jsonb)',jsonb_build_array(pg_temp.open_item(4,'ls','1 minute','1 minute')||'{"receiptId":4}')),
-	'22023','Invalid office shell activity');
-select pg_temp.wake_error(format('select pg_temp.shells(false,''[]'',%L::jsonb)',jsonb_build_array(pg_temp.ended_item(4,'ls','slept'))),
-	'22023','Invalid office shell activity');
+-- 2. A waiting dev server: on record with the run that started it, and no demand. Only the office's service role
+--    reports, and only screens of that office.
+select pg_temp.check(pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')),
+	jsonb_build_array(pg_temp.ended_item(3, 'npm test', 'exited'))) -> 'screens' = '[]'::jsonb, 'a waiting dev server is reported, not busy');
+select pg_temp.check(not pg_temp.demand() and not pg_temp.seat(), 'a waiting dev server is no demand and holds no seat');
+select pg_temp.check((select c.staff_agent_id = (pg_temp.run()).staff_agent_id and c.run_id = (pg_temp.run()).id
+	and c.receipt_id = pg_temp.receipt(1) and c.conversation_run_id = (pg_temp.run()).id and c.session_id = (pg_temp.run()).session_id
+	and c.command = 'npm run dev' and c.ended_at is null and c.computer_generation = (pg_temp.office()).generation and c.told_at is null
+	from pg_temp.command_row(1) c), 'the command is on record with the run that started it and its conversation');
+select pg_temp.check((select c.end_reason = 'exited' and c.ended_at is not null from pg_temp.command_row(3) c),
+	'a command that exited is on record as exited');
+-- A command the screen has no record of starting is left out; the report goes on.
+select pg_temp.shells(false, jsonb_build_array(
+	pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+	pg_temp.open_item(10, 'not started here', '1 minute', '1 minute'),
+	pg_temp.open_item(4, 'another run''s receipt', '1 minute', '1 minute', '64800000-0000-4000-8000-0000000000e3'),
+	pg_temp.open_item(4, 'not a receipt', '1 minute', '1 minute') || '{"receiptId":"key-4"}')) \g /dev/null
+select pg_temp.check(not exists (select 1 from public.qorpera_runtime_office_shell_commands
+	where id in (pg_temp.command(4), pg_temp.command(10))) and (pg_temp.command_row(1)).ended_at is null,
+	'commands the screen has no record of starting are left out, and the report still counts');
+-- A shape the office never sends is refused, and so is any other office's screen, generation or caller.
+select pg_temp.refused(format('select pg_temp.shells(false, %L::jsonb)', jsonb_build_array(pg_temp.open_item(4, repeat('x', 301), '1 minute', '1 minute'))),
+	'22023', 'Invalid office shell activity');
+select pg_temp.refused(format('select pg_temp.shells(false, %L::jsonb)', jsonb_build_array(pg_temp.open_item(4, 'ls', '1 minute', '1 minute') || '{"busy":true}')),
+	'22023', 'Invalid office shell activity');
+select pg_temp.refused(format('select pg_temp.shells(false, %L::jsonb)', jsonb_build_array(pg_temp.open_item(4, 'ls', '1 minute', '1 minute') || '{"receiptId":4}')),
+	'22023', 'Invalid office shell activity');
+select pg_temp.refused(format('select pg_temp.shells(false, ''[]'', %L::jsonb)', jsonb_build_array(pg_temp.ended_item(4, 'ls', 'slept'))),
+	'22023', 'Invalid office shell activity');
+select pg_temp.refused(format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)',
+	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation')::bigint + 1,
+	'{"schema":"qorpera.office-shell-report/v1","screens":[]}'), '42501', 'Office shell activity binding differs');
+select pg_temp.refused(format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)',
+	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'),
+	'{"schema":"qorpera.office-shell-report/v1","screens":[{"screenId":"87000000-0000-4000-8000-000000000099","busy":true,"open":[],"ended":[]}]}'),
+	'42501', 'Office shell activity screen differs');
+select pg_temp.check(pg_temp.settled('fence_two', format('select public.qorpera_report_runtime_office_shell_activity(%L::jsonb, %s, %L::jsonb)::text',
+	current_setting('qorpera_test.scope'), current_setting('qorpera_test.generation'), '{"schema":"qorpera.office-shell-report/v1","screens":[]}'))
+	like '42501 %', 'a member cannot report');
 
--- 2. A busy job keeps the computer awake, for 90 seconds after its last busy report.
-select pg_temp.wake_assert(pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes'),
-	pg_temp.open_item(2,'npm run build','5 minutes','5 minutes')))->'screens'=jsonb_build_array(current_setting('qorpera_test.screen')),
-	'A busy job is reported busy');
-select pg_temp.wake_assert(pg_temp.demand(),'A busy job keeps the computer awake');
-select pg_temp.wake_assert(pg_temp.idle_poll()->'request'='null','The idle policy does not put a busy computer to sleep');
+-- A busy job keeps the computer awake and Ada's seat, for 90 seconds after its last busy report.
+select pg_temp.check(pg_temp.shells(true, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+	pg_temp.open_item(2, 'npm run build', '5 minutes', '5 minutes'))) -> 'screens' = jsonb_build_array(current_setting('qorpera_test.screen')),
+	'a busy job is reported busy');
+select pg_temp.check(pg_temp.demand() and pg_temp.seat(), 'a busy job keeps the computer awake and the seat');
+select pg_temp.check((select busy_until between clock_timestamp() + interval '80 seconds' and clock_timestamp() + interval '100 seconds'
+	from public.qorpera_runtime_office_shell_activity where screen_id = current_setting('qorpera_test.screen')::uuid),
+	'a busy report counts for 90 seconds');
+select pg_temp.check(pg_temp.idle_poll() -> 'request' = 'null', 'the idle policy does not put a busy computer to sleep');
 -- The job finishes; the dev server only waits. One quiet report does not cut the busy report's 90 seconds short.
-select pg_temp.shells(false,jsonb_build_array(pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes')),
-	jsonb_build_array(pg_temp.ended_item(2,'npm run build','exited')));
-select pg_temp.wake_assert(pg_temp.demand(),'A quiet report keeps the last busy report''s 90 seconds');
-update public.qorpera_runtime_office_shell_activity set busy_until=clock_timestamp()-interval '1 second';
-select pg_temp.wake_assert(not pg_temp.demand(),'Once those pass, the waiting dev server keeps nothing awake');
-select pg_temp.shells(false,jsonb_build_array(pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes')));
-select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_shell_activity),'A passed busy report is removed');
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')),
+	jsonb_build_array(pg_temp.ended_item(2, 'npm run build', 'exited'))) \g /dev/null
+select pg_temp.check(pg_temp.demand(), 'a quiet report keeps the last busy report''s 90 seconds');
+update public.qorpera_runtime_office_shell_activity set busy_until = clock_timestamp() - interval '1 second'
+where screen_id = current_setting('qorpera_test.screen')::uuid;
+select pg_temp.check(not pg_temp.demand() and not pg_temp.seat(), 'once those pass, the waiting dev server keeps nothing awake');
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'))) \g /dev/null
+select pg_temp.check(not exists (select 1 from public.qorpera_runtime_office_shell_activity
+	where office_id = current_setting('qorpera_test.office_id')::uuid), 'a passed busy report is removed');
+-- A report from an older generation is no demand.
+begin;
+select pg_temp.shells(true, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'))) \g /dev/null
+update public.qorpera_runtime_office_shell_activity set computer_generation = computer_generation - 1
+where screen_id = current_setting('qorpera_test.screen')::uuid;
+select pg_temp.check(not pg_temp.demand() and not pg_temp.seat(), 'a report from an older generation is no demand and holds no seat');
+rollback;
 
--- 3. The computer sleeps; sleep ends the dev server, and the next run is told once, only what stopped after telling
---    was turned on.
-savepoint before_sleep;
-update public.qorpera_runtime_office_idle_policies set idle_since=clock_timestamp()-interval '2 hours';
-do $$
-declare v_poll jsonb := pg_temp.idle_poll();
-begin
-	perform pg_temp.wake_assert(v_poll#>>'{request,action}'='power_off','A computer with only a waiting dev server goes to sleep');
-	perform pg_temp.wake_assert((select c.end_reason='slept' and c.ended_at is not null and c.told_at is null from pg_temp.command_row(1) c),
-		'Sleep ends the dev server as slept');
-	perform pg_temp.wake_assert((select c.end_reason='exited' from pg_temp.command_row(2) c)
-		and (select c.end_reason='exited' from pg_temp.command_row(3) c),'What had already ended keeps its own end');
-	perform pg_temp.wake_assert(not pg_temp.open_work() ? 'computerStopped' and (pg_temp.command_row(1)).told_at is null,
-		'Switched off, the run is not told and the command is not marked');
-	perform pg_temp.telling(true);
-	perform pg_temp.wake_assert((select enabled_at is not null from public.qorpera_idle_rule_settings)
-		and not pg_temp.open_work() ? 'computerStopped','What stopped before telling was turned on is never told');
-end $$;
-rollback to before_sleep;
-select pg_temp.telling(true);
-update public.qorpera_runtime_office_idle_policies set idle_since=clock_timestamp()-interval '2 hours';
-select pg_temp.wake_assert(pg_temp.idle_poll()#>>'{request,action}'='power_off','The computer sleeps with telling on');
+-- 3. The computer sleeps: sleep ends the dev server, and Ada's next run in that conversation is told once.
+begin;
+update public.qorpera_runtime_office_idle_policies set idle_since = clock_timestamp() - interval '2 hours'
+where office_id = current_setting('qorpera_test.office_id')::uuid;
+select pg_temp.check(pg_temp.idle_poll() #>> '{request,action}' = 'power_off', 'a computer with only a waiting dev server goes to sleep');
+select pg_temp.check((select c.end_reason = 'slept' and c.ended_at is not null and c.told_at is null from pg_temp.command_row(1) c)
+	and (pg_temp.command_row(2)).end_reason = 'exited' and (pg_temp.command_row(3)).end_reason = 'exited',
+	'sleep ends the dev server as slept; what had already ended keeps its own end');
 do $$
 declare v_work jsonb := pg_temp.open_work();
 begin
-	perform pg_temp.wake_assert(jsonb_array_length(v_work->'computerStopped')=1
-		and v_work#>>'{computerStopped,0,command}'='npm run dev' and v_work#>>'{computerStopped,0,reason}'='slept'
-		and (v_work#>>'{computerStopped,0,startedAt}')::timestamptz=(pg_temp.command_row(1)).started_at
-		and (v_work#>>'{computerStopped,0,endedAt}')::timestamptz=(pg_temp.command_row(1)).ended_at
-		and v_work->'todos' is not null and v_work->'workers' is not null and v_work->>'schema'='qorpera.agent-open-work/v1',
-		'The next run is told what sleep stopped, and only that: '||v_work::text);
-	perform pg_temp.wake_assert((pg_temp.command_row(1)).told_run_id=(pg_temp.run()).id and (pg_temp.command_row(1)).told_at is not null
+	perform pg_temp.check(jsonb_array_length(v_work -> 'computerStopped') = 1
+		and v_work #>> '{computerStopped,0,command}' = 'npm run dev' and v_work #>> '{computerStopped,0,reason}' = 'slept'
+		and (v_work #>> '{computerStopped,0,startedAt}')::timestamptz = (pg_temp.command_row(1)).started_at
+		and (v_work #>> '{computerStopped,0,endedAt}')::timestamptz = (pg_temp.command_row(1)).ended_at
+		and v_work -> 'todos' is not null and v_work -> 'workers' is not null and v_work ->> 'schema' = 'qorpera.agent-open-work/v1',
+		'the next run is told what sleep stopped, and only that: ' || v_work::text);
+	perform pg_temp.check((pg_temp.command_row(1)).told_run_id = (pg_temp.run()).id and (pg_temp.command_row(1)).told_at is not null
 		and (pg_temp.command_row(2)).told_at is null and (pg_temp.command_row(3)).told_at is null,
-		'The command is marked told by that run; what ended by itself is never told');
-	-- The same run restarted is told again; another run is not.
-	perform pg_temp.wake_assert(jsonb_array_length(pg_temp.open_work()->'computerStopped')=1,'A restart of the same run is told again');
-	update public.qorpera_runtime_office_shell_commands set told_run_id=extensions.gen_random_uuid() where id=pg_temp.command(1);
-	perform pg_temp.wake_assert(not pg_temp.open_work() ? 'computerStopped','A command told in another run is not told again');
+		'the command is marked told by that run; what ended by itself is never told');
+	perform pg_temp.check(jsonb_array_length(pg_temp.open_work() -> 'computerStopped') = 1, 'a restart of the same run is told again');
+	update public.qorpera_runtime_office_shell_commands set told_run_id = extensions.gen_random_uuid() where id = pg_temp.command(1);
+	perform pg_temp.check(not pg_temp.open_work() ? 'computerStopped', 'a command told in another run is not told again');
 	-- At most 32 a run, oldest first.
-	insert into public.qorpera_runtime_office_shell_commands(id,office_id,computer_generation,screen_id,staff_agent_id,run_id,receipt_id,
-		conversation_run_id,session_id,command,started_at,worked_at,ended_at,end_reason)
-	select extensions.gen_random_uuid(),(pg_temp.office()).id,(pg_temp.office()).generation,current_setting('qorpera_test.screen')::uuid,
-		(pg_temp.run()).staff_agent_id,(pg_temp.run()).id,extensions.gen_random_uuid(),(pg_temp.run()).id,(pg_temp.run()).session_id,
-		'job '||n,clock_timestamp()-interval '1 hour',clock_timestamp()-interval '1 hour',clock_timestamp()+n*interval '1 second','closed'
-	from generate_series(1,40) n;
+	insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
+		receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+	select extensions.gen_random_uuid(), (pg_temp.office()).id, (pg_temp.office()).generation, current_setting('qorpera_test.screen')::uuid,
+		(pg_temp.run()).staff_agent_id, (pg_temp.run()).id, extensions.gen_random_uuid(), (pg_temp.run()).id, (pg_temp.run()).session_id,
+		'job ' || n, clock_timestamp() - interval '1 hour', clock_timestamp() - interval '1 hour', clock_timestamp() + n * interval '1 second',
+		'closed'
+	from generate_series(1, 40) n;
 	v_work := pg_temp.open_work();
-	perform pg_temp.wake_assert(jsonb_array_length(v_work->'computerStopped')=32 and v_work#>>'{computerStopped,0,command}'='job 1'
-		and v_work#>>'{computerStopped,31,command}'='job 32','At most 32 a run, oldest first');
+	perform pg_temp.check(jsonb_array_length(v_work -> 'computerStopped') = 32 and v_work #>> '{computerStopped,0,command}' = 'job 1'
+		and v_work #>> '{computerStopped,31,command}' = 'job 32', 'at most 32 a run, oldest first');
 end $$;
-rollback to before_sleep;
+rollback;
 
--- 4. Other stops: a screen gone, a seat that changes hands, a paused company, an earlier generation, any other stop.
-savepoint other_stops;
-select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.office_scope')::jsonb,
-	current_setting('qorpera_test.generation')::bigint,'{"schema":"qorpera.office-shell-report/v1","screens":[]}');
-select pg_temp.wake_assert((pg_temp.command_row(1)).end_reason='closed','A shell whose screen is gone ends as closed');
-rollback to other_stops;
--- The seat changes hands while the agent's shell holds a waiting server and a crawl: the office closes that shell and
--- reports its ends under the same screen, now the new agent's. Nothing is refused, and every report goes on counting.
-select pg_temp.shells(false,jsonb_build_array(pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes'),
-	pg_temp.open_item(7,'python crawl.py','10 minutes','10 minutes')));
-update public.qorpera_runtime_office_screens set staff_agent_id='30000000-0000-4000-8000-000000000031'
-where id=current_setting('qorpera_test.screen')::uuid;
-select pg_temp.wake_assert(pg_temp.shells(true,'[]',jsonb_build_array(pg_temp.ended_item(1,'npm run dev','closed')))->'screens'
-	=jsonb_build_array(current_setting('qorpera_test.screen')),'A report naming the previous agent''s ends is taken');
-select pg_temp.wake_assert((pg_temp.command_row(1)).end_reason='closed' and (pg_temp.command_row(7)).end_reason='closed'
-	and (pg_temp.command_row(1)).staff_agent_id=(pg_temp.run()).staff_agent_id,
-	'The previous agent''s commands ended with the seat, and stay theirs to be told');
-rollback to other_stops;
+-- Other stops: a screen gone, a seat that changes hands, a pause, an earlier generation, an end the office let go of,
+-- and any other stop of the computer.
+begin;
+select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.scope')::jsonb,
+	current_setting('qorpera_test.generation')::bigint, '{"schema":"qorpera.office-shell-report/v1","screens":[]}') \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).end_reason = 'closed', 'a shell whose screen is gone ends as closed');
+rollback;
+-- The seat changes hands while Ada's shell holds a waiting server and a crawl: the office closes that shell and reports
+-- its ends under the same screen, now the Co-Founder's. Nothing is refused, and the report goes on counting.
+begin;
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+	pg_temp.open_item(7, 'python crawl.py', '10 minutes', '10 minutes'))) \g /dev/null
+update public.qorpera_runtime_office_screens set staff_agent_id = '64800000-0000-4000-8000-0000000000c0'
+where id = current_setting('qorpera_test.screen')::uuid;
+select pg_temp.check(pg_temp.shells(true, '[]', jsonb_build_array(pg_temp.ended_item(1, 'npm run dev', 'closed'))) -> 'screens'
+	= jsonb_build_array(current_setting('qorpera_test.screen')), 'a report naming the previous agent''s ends is taken');
+select pg_temp.check((pg_temp.command_row(1)).end_reason = 'closed' and (pg_temp.command_row(7)).end_reason = 'closed'
+	and (pg_temp.command_row(1)).staff_agent_id = '64800000-0000-4000-8000-0000000000a1',
+	'the previous agent''s commands ended with the seat, and stay hers to be told');
+rollback;
 -- A pause ends what still runs, and what the paused report names for the first time, as paused.
-select pg_temp.started(6);
-insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id)
-values((pg_temp.office()).profile_id,'30000000-0000-4000-8000-000000000001');
-select set_config('qorpera_test.paused',pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(1,'npm run dev','10 minutes','10 minutes'),
-	pg_temp.open_item(6,'just started','5 seconds','5 seconds')))::text,true);
-select pg_temp.wake_assert((current_setting('qorpera_test.paused')::jsonb->>'paused')::boolean
-	and (pg_temp.command_row(1)).end_reason='paused' and (pg_temp.command_row(6)).end_reason='paused'
-	and not exists(select 1 from public.qorpera_runtime_office_shell_activity),'A pause ends what still runs as paused');
-rollback to other_stops;
-update public.qorpera_runtime_office_shell_commands set computer_generation=computer_generation-1 where id=pg_temp.command(1);
-select pg_temp.shells(false);
-select pg_temp.wake_assert((pg_temp.command_row(1)).end_reason='lost','A command of an earlier generation nobody ended is lost');
-rollback to other_stops;
+begin;
+insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id)
+values ('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000001');
+select pg_temp.check((pg_temp.shells(true, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+	pg_temp.open_item(6, 'just started', '5 seconds', '5 seconds'))) ->> 'paused')::boolean, 'a paused company is told so');
+select pg_temp.check((pg_temp.command_row(1)).end_reason = 'paused' and (pg_temp.command_row(6)).end_reason = 'paused'
+	and not exists (select 1 from public.qorpera_runtime_office_shell_activity where office_id = current_setting('qorpera_test.office_id')::uuid),
+	'a pause ends what still runs as paused and keeps no busy report');
+rollback;
+begin;
+update public.qorpera_runtime_office_shell_commands set computer_generation = computer_generation - 1 where id = pg_temp.command(1);
+select pg_temp.shells(false) \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).end_reason = 'lost', 'a command of an earlier generation nobody ended is lost');
+rollback;
 -- An end the office let go of: the screen's whole lists no longer name the command. It ends as unknown, never told.
-select pg_temp.telling(true);
-select pg_temp.shells(false);
-select pg_temp.wake_assert((pg_temp.command_row(1)).end_reason='unknown' and not pg_temp.open_work() ? 'computerStopped',
-	'A command the office no longer lists ends as unknown, and nobody is told it stopped');
-rollback to other_stops;
+begin;
+select pg_temp.shells(false) \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).end_reason = 'unknown' and not pg_temp.open_work() ? 'computerStopped',
+	'a command the office no longer lists ends as unknown, and nobody is told it stopped');
+rollback;
 -- A list cut at 64 says nothing about what it leaves out.
-select pg_temp.shells(false,(select jsonb_agg(pg_temp.open_item(100+n,'not started here','1 minute','1 minute')) from generate_series(1,64) n));
-select pg_temp.wake_assert((pg_temp.command_row(1)).ended_at is null,'A full list ends nothing it leaves out');
-rollback to other_stops;
-select pg_temp.wake_assert(pg_get_functiondef('public.qorpera_begin_runtime_office_lifecycle(jsonb)'::regprocedure)
+begin;
+select pg_temp.shells(false, (select jsonb_agg(pg_temp.open_item(100 + n, 'not started here', '1 minute', '1 minute'))
+	from generate_series(1, 64) n)) \g /dev/null
+select pg_temp.check((pg_temp.command_row(1)).ended_at is null, 'a full list ends nothing it leaves out');
+rollback;
+select pg_temp.check(pg_get_functiondef('public.qorpera_begin_runtime_office_lifecycle(jsonb)'::regprocedure)
 	like '%update public.qorpera_runtime_office_shell_commands set ended_at=clock_timestamp(),end_reason=''closed''%'
 	and pg_get_functiondef('public.qorpera_reconcile_runtime_office_idle(jsonb,bigint,uuid,text,integer)'::regprocedure)
 	like '%end_reason=''slept''%perform public.qorpera_begin_runtime_office_lifecycle(v_request);%',
-	'Sleep ends commands as slept before the stop; any other stop of the computer ends them as closed');
-rollback to other_stops;
+	'sleep ends commands as slept before the stop; any other stop of the computer ends them as closed');
 
--- 5. A worker's command is told in the conversation that dispatched the worker. The worker run below is synthetic: a
---    copy of the agent's run, with a dispatch wake naming a worker whose steering run is the agent's run.
-create function pg_temp.worker_run() returns uuid language plpgsql as $$
-declare v_run public.qorpera_execution_runs := pg_temp.run(); v_worker uuid := '00000000-0000-4000-8000-0000000009a1';
-	v_worker_run uuid := '00000000-0000-4000-8000-0000000009a2';
+-- 4. A worker's command is told in the conversation that dispatched the worker. The worker run is synthetic: a copy of
+--    Ada's run outside any conversation, with a dispatch wake naming a worker whose steering run is Ada's run.
+begin;
+do $$
+declare v_run public.qorpera_execution_runs := pg_temp.run(); v_worker uuid := '87000000-0000-4000-8000-0000000009a1';
+	v_worker_run uuid := '87000000-0000-4000-8000-0000000009a2';
 begin
 	set local session_replication_role = replica;
 	insert into public.qorpera_execution_runs
-	select (jsonb_populate_record(v_run,jsonb_build_object('id',v_worker_run,'session_id',null,'job_id',extensions.gen_random_uuid(),
-		'source_id',extensions.gen_random_uuid()))).*;
-	insert into public.qorpera_runtime_workers(id,profile_id,environment_id,staff_agent_id,todo_id,worker_key,title,access,revival,
-		dispatch,requested_by_user_id,steering_run_id)
-	values(v_worker,v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,extensions.gen_random_uuid(),'shell-worker','Crawl',
-		'write','each','{}',v_run.requested_by_user_id,v_run.id);
+	select (jsonb_populate_record(v_run, jsonb_build_object('id', v_worker_run, 'session_id', null, 'job_id', extensions.gen_random_uuid(),
+		'source_id', extensions.gen_random_uuid()))).*;
+	insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, title, access, revival,
+		dispatch, requested_by_user_id, steering_run_id)
+	values (v_worker, v_run.profile_id, v_run.environment_id, v_run.staff_agent_id, extensions.gen_random_uuid(), 'shell-worker', 'Crawl',
+		'write', 'each', '{}', v_run.requested_by_user_id, v_run.id);
 	insert into public.qorpera_wake_occurrences
-	select (jsonb_populate_record(wake,jsonb_build_object('id',extensions.gen_random_uuid(),'run_id',v_worker_run,'wake_kind','agent',
-		'source_kind','worker-dispatch','source_id',v_worker,'occurrence_key','worker-dispatch:'||v_worker))).*
-	from public.qorpera_wake_occurrences wake where wake.run_id=v_run.id;
+	select (jsonb_populate_record(wake, jsonb_build_object('id', extensions.gen_random_uuid(), 'run_id', v_worker_run, 'wake_kind', 'agent',
+		'source_kind', 'worker-dispatch', 'source_id', v_worker, 'occurrence_key', 'worker-dispatch:' || v_worker))).*
+	from public.qorpera_wake_occurrences wake where wake.run_id = v_run.id;
 	set local session_replication_role = origin;
-	return v_worker_run;
+	perform pg_temp.started(9, v_worker_run);
+	perform pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+		pg_temp.open_item(9, 'npm run crawl', '1 minute', '1 minute', v_worker_run)));
+	perform pg_temp.check((select c.run_id = v_worker_run and c.conversation_run_id = v_run.id and c.session_id = v_run.session_id
+		from pg_temp.command_row(9) c), 'a worker''s command belongs to the conversation that dispatched it');
+	perform pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes')),
+		jsonb_build_array(pg_temp.ended_item(9, 'npm run crawl', 'pressure', v_worker_run)));
 end $$;
-savepoint worker;
-select set_config('qorpera_test.worker_run',pg_temp.worker_run()::text,true);
-select pg_temp.started(9,current_setting('qorpera_test.worker_run')::uuid);
-select pg_temp.telling(true);
-select pg_temp.shells(false,jsonb_build_array(pg_temp.open_item(9,'npm run crawl','1 minute','1 minute',
-	current_setting('qorpera_test.worker_run')::uuid)));
-select pg_temp.wake_assert((select c.run_id=current_setting('qorpera_test.worker_run')::uuid and c.conversation_run_id=(pg_temp.run()).id
-	and c.session_id is not distinct from (pg_temp.run()).session_id from pg_temp.command_row(9) c),
-	'A worker''s command belongs to the conversation that dispatched it');
-select pg_temp.shells(false,'[]',jsonb_build_array(pg_temp.ended_item(9,'npm run crawl','pressure','1 minute',
-	current_setting('qorpera_test.worker_run')::uuid)));
-select pg_temp.wake_assert(pg_temp.open_work()#>>'{computerStopped,0,command}'='npm run crawl'
-	and pg_temp.open_work()#>>'{computerStopped,0,reason}'='pressure','The dispatching conversation is told what stopped the worker''s command');
-rollback to worker;
-
--- 6. Check-ins, on a screen with nothing else on record. The marks: 1, 3 and 7 hours, then every 24.
-select pg_temp.wake_assert(public.qorpera_machine_checkin_mark(0.99) is null and public.qorpera_machine_checkin_mark(1)=1
-	and public.qorpera_machine_checkin_mark(2.99)=1 and public.qorpera_machine_checkin_mark(3)=3
-	and public.qorpera_machine_checkin_mark(6.99)=3 and public.qorpera_machine_checkin_mark(7)=7
-	and public.qorpera_machine_checkin_mark(30.99)=7 and public.qorpera_machine_checkin_mark(31)=31
-	and public.qorpera_machine_checkin_mark(54.99)=31 and public.qorpera_machine_checkin_mark(55)=55
-	and public.qorpera_machine_checkin_mark(null) is null,'Check-in marks: 1, 3, 7, then every 24 hours');
-delete from public.qorpera_runtime_office_shell_commands where screen_id=current_setting('qorpera_test.screen')::uuid;
--- A crawl the agent last worked with 90 minutes ago keeps the computer busy.
-select pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(5,'python crawl.py','2 hours','90 minutes')));
-select pg_temp.wake_assert(pg_temp.demand(),'The busy crawl keeps the computer awake');
-select public.qorpera_ask_busy_office_shells(32);
-select pg_temp.wake_assert(not exists(select 1 from public.qorpera_machine_checkins),'Switched off, nobody is asked');
-select pg_temp.telling(true);
-select public.qorpera_ask_busy_office_shells(32);
-select public.qorpera_ask_busy_office_shells(32);
-select pg_temp.wake_assert((select count(*)=1 and bool_and(q.machine_kind='computer' and q.subject_id=current_setting('qorpera_test.screen')::uuid
-	and q.parent_run_id=(pg_temp.run()).id and q.staff_agent_id=(pg_temp.run()).staff_agent_id and q.mark_hours=1
-	and q.since=(pg_temp.command_row(5)).worked_at and q.delivery='waiting'
-	and q.body->'running'=jsonb_build_array(jsonb_build_object('command','python crawl.py','startedAt',(pg_temp.command_row(5)).started_at))
-	and (q.body->>'busyHours')::integer=1 and (q.body->>'more')::integer=0)
-	from public.qorpera_machine_checkins q),'After an hour busy with no turn, the agent is asked once');
--- At three busy hours it is asked again.
-update public.qorpera_runtime_office_shell_commands set worked_at=worked_at-interval '2 hours' where id=pg_temp.command(5);
-select public.qorpera_ask_busy_office_shells(32);
-select pg_temp.wake_assert((select count(*) from public.qorpera_machine_checkins where mark_hours=3)=1,'At three busy hours it is asked again');
-create function pg_temp.asked_again() returns boolean language plpgsql as $$
-begin
-	delete from public.qorpera_machine_checkins;
-	perform public.qorpera_ask_busy_office_shells(32);
-	return exists(select 1 from public.qorpera_machine_checkins);
-end $$;
-savepoint asked;
--- Typing into the crawl, or starting any other command on the screen (even one that ended at once), is work with it.
-select pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(5,'python crawl.py','4 hours','0 seconds')));
-select pg_temp.wake_assert(not pg_temp.asked_again(),'Typing into the command restarts the count');
-rollback to asked;
-select pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(5,'python crawl.py','4 hours','4 hours')),
-	jsonb_build_array(pg_temp.ended_item(8,'git status','exited','5 seconds')));
-select pg_temp.wake_assert(not pg_temp.asked_again(),'Starting a short command restarts the count');
-rollback to asked;
--- A shell that only waits, an archived agent, or a seat now someone else's is not asked about.
-update public.qorpera_runtime_office_shell_activity set busy_until=clock_timestamp()-interval '1 second';
-select pg_temp.wake_assert(not pg_temp.asked_again(),'A shell that only waits is not asked about');
-rollback to asked;
-update public.qorpera_profile_staff set employment_status='archived' where staff_agent_id=(pg_temp.run()).staff_agent_id;
-select pg_temp.wake_assert(not pg_temp.asked_again(),'An archived agent is not asked');
-rollback to asked;
-update public.qorpera_runtime_office_screens set staff_agent_id='30000000-0000-4000-8000-000000000031'
-where id=current_setting('qorpera_test.screen')::uuid;
-select pg_temp.wake_assert(not pg_temp.asked_again(),'Nobody is asked about a shell whose seat changed hands');
-rollback to asked;
--- However many long commands run, the question stays within its bound.
-select pg_temp.started(n) from generate_series(11,18) n;
-select pg_temp.shells(true,jsonb_build_array(pg_temp.open_item(5,'python crawl.py','4 hours','5 hours'))
-	||(select jsonb_agg(pg_temp.open_item(n,repeat('漢',300),'5 hours','5 hours')) from generate_series(11,18) n));
-update public.qorpera_runtime_office_shell_commands set worked_at=clock_timestamp()-interval '5 hours' where id=pg_temp.command(5);
-select pg_temp.wake_assert(pg_temp.asked_again(),'Long commands are still asked about');
-select pg_temp.wake_assert((select octet_length(body::text)<=4096 and jsonb_array_length(body->'running') between 1 and 4
-	and (body->>'more')::integer>=5 and char_length(body#>>'{running,0,command}')=200 and left(body#>>'{running,0,command}',1)='漢'
-	from public.qorpera_machine_checkins),
-	'Long commands are cut to fit the question, and the rest counted');
-rollback to asked;
-
--- 7. The question reaches the run's conversation once that run has ended, as a continuation; a question that no
---    longer stands is dropped.
-do $$
-declare v_parent public.qorpera_execution_runs := pg_temp.run(); v_wake public.qorpera_wake_occurrences;
-	v_run public.qorpera_execution_runs; v_continuation jsonb;
-begin
-	perform public.qorpera_drain_machine_checkin_wakes(32);
-	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_wake_occurrences where source_kind='machine-checkin')
-		and (select count(*) from public.qorpera_machine_checkins where delivery='waiting')=2,'Nothing races the run that is still working');
-	perform pg_temp.telling(false);
-	perform pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'final','checkin-final');
-	update public.qorpera_runner_jobs set status='completed',result='{}'::jsonb,finished_at=statement_timestamp(),
-		lease_token_sha256=null,lease_expires_at=null where run_id=v_parent.id;
-	perform public.qorpera_materialize_wake_execution_runs(32);
-	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_wake_occurrences where source_kind='machine-checkin')
-		and (select count(*) from public.qorpera_machine_checkins where delivery='waiting')=2,'Switched off, nothing is delivered');
-	perform pg_temp.telling(true);
-	perform public.qorpera_materialize_wake_execution_runs(32);
-	select * into strict v_wake from public.qorpera_wake_occurrences where source_kind='machine-checkin';
-	perform pg_temp.wake_assert(v_wake.status='materialized' and v_wake.wake_kind='agent' and v_wake.parent_run_id=v_parent.id
-		and v_wake.staff_agent_id=v_parent.staff_agent_id and v_wake.session_id is not distinct from v_parent.session_id
-		and v_wake.trigger_id='machine-checkin' and v_wake.occurrence_key='machine-checkin:'||v_wake.id::text
-		and v_wake.payload->>'schema'='qorpera.machine-checkin/v1' and v_wake.payload->>'parentRunId'=v_parent.id::text
-		and v_wake.payload#>>'{checkin,kind}'='computer' and (v_wake.payload#>>'{checkin,hours}')::integer=3
-		and v_wake.payload#>>'{checkin,subjectId}'=current_setting('qorpera_test.screen')
-		and v_wake.payload#>>'{checkin,detail,running,0,command}'='python crawl.py'
-		and (select delivery='delivered' and occurrence_id=v_wake.id from public.qorpera_machine_checkins where mark_hours=3)
-		and (select delivery='suppressed' from public.qorpera_machine_checkins where mark_hours=1)
-		and public.qorpera_wake_authorized(v_wake),
-		'The latest question is a wake of the same agent in the same conversation; the one it replaced is dropped: '||v_wake.payload::text);
-	select * into strict v_run from public.qorpera_execution_runs where id=v_wake.run_id;
-	v_continuation := public.qorpera_run_continuation(v_run);
-	perform pg_temp.wake_assert(v_run.staff_agent_id=v_parent.staff_agent_id and v_run.session_id is not distinct from v_parent.session_id
-		and v_continuation->>'schema'='qorpera.machine-checkin-continuation/v1' and v_continuation->>'parentRunId'=v_parent.id::text
-		and (v_continuation#>>'{checkin,hours}')::integer=3 and v_continuation->>'parentOutcome'='completed'
-		and (public.qorpera_runtime_wake_policy(v_run.id)->>'final') is not null,
-		'The continuation run carries the question and what the run did: '||left(v_continuation::text,2000));
-	-- A question whose count was restarted since is dropped, even while another is out.
-	insert into public.qorpera_machine_checkins(profile_id,environment_id,staff_agent_id,parent_run_id,machine_kind,subject_id,since,mark_hours,body)
-	select profile_id,environment_id,staff_agent_id,parent_run_id,machine_kind,subject_id,since-interval '1 day',31,body
-	from public.qorpera_machine_checkins where mark_hours=3;
-	perform public.qorpera_drain_machine_checkin_wakes(32);
-	perform pg_temp.wake_assert((select delivery from public.qorpera_machine_checkins where mark_hours=31)='suppressed',
-		'A question whose count was restarted is dropped');
-	-- A later mark waits for the continuation to end; a person who stops it hears nothing more.
-	insert into public.qorpera_machine_checkins(profile_id,environment_id,staff_agent_id,parent_run_id,machine_kind,subject_id,since,mark_hours,body)
-	select profile_id,environment_id,staff_agent_id,parent_run_id,machine_kind,subject_id,since,7,body
-	from public.qorpera_machine_checkins where mark_hours=3;
-	perform public.qorpera_drain_machine_checkin_wakes(32);
-	perform pg_temp.wake_assert((select count(*) from public.qorpera_wake_occurrences where source_kind='machine-checkin')=1
-		and (select delivery from public.qorpera_machine_checkins where mark_hours=7)='waiting','One question at a time');
-	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_cancel_session_run(v_run.session_id,v_run.id);
-	perform pg_temp.path_claims('service_role');
-	perform public.qorpera_drain_machine_checkin_wakes(32);
-	perform pg_temp.wake_assert(public.qorpera_machine_checkin_stopped(v_parent.id)
-		and (select delivery from public.qorpera_machine_checkins where mark_hours=7)='suppressed',
-		'A run whose question a person stopped is asked nothing more');
-end $$;
-
--- 8. Only the platform: no API role reaches the tables, the switch or the functions.
-select pg_temp.wake_assert(not exists(select 1 from unnest(array['anon','authenticated','service_role']) r(role)
-	cross join unnest(array['public.qorpera_idle_rule_settings','public.qorpera_machine_checkins',
-		'public.qorpera_runtime_office_shell_commands']) t(name)
-	where has_table_privilege(r.role,t.name,'select') or has_table_privilege(r.role,t.name,'update'))
-	and not exists(select 1 from unnest(array['anon','authenticated','service_role']) r(role)
-	cross join unnest(array['public.qorpera_take_agent_computer_stopped(public.qorpera_execution_runs)',
-		'public.qorpera_ask_busy_office_shells(integer)','public.qorpera_drain_machine_checkin_wakes(integer)',
-		'public.qorpera_machine_checkin_run_continuation(public.qorpera_execution_runs,integer)',
-		'public.qorpera_machine_checkin_payload(public.qorpera_machine_checkins)',
-		'public.qorpera_machine_checkin_wake_ancestry(public.qorpera_wake_occurrences)',
-		'public.qorpera_machine_checkin_stopped(uuid)','public.qorpera_machine_checkin_mark(double precision)',
-		'public.qorpera_machine_checkin_current(public.qorpera_machine_checkins)','public.qorpera_idle_rule_settings_stamp()',
-		'public.qorpera_valid_office_shell_command(jsonb,boolean)',
-		'public.qorpera_office_shell_conversation_run(public.qorpera_execution_runs)',
-		'public.qorpera_office_shell_command_run(public.qorpera_runtime_offices,public.qorpera_runtime_office_screens,jsonb)']) f(name)
-	where has_function_privilege(r.role,f.name,'execute')),'Only the platform reads, writes and runs these');
-
+select pg_temp.check(pg_temp.open_work() #>> '{computerStopped,0,command}' = 'npm run crawl',
+	'the dispatching conversation is told what stopped the worker''s command');
 rollback;
 
--- 9. Two runs of the agent in the conversation race to read what stopped: one wins, the other is
---    told nothing and does not wait. Row locks show only across connections, so this part commits
---    its own rows (the commands alone: foreign keys are off while they are written, as nothing here
---    reads their office or screen), turns the switch on, and removes both again at the end. A run
---    that fails before the cleanup leaves them committed; CI starts from a fresh database.
-create function pg_temp.told_assert(p_ok boolean,p_message text) returns void language plpgsql as $$
-begin if p_ok is distinct from true then raise exception 'Told race assertion: %',p_message; end if; end
+-- Only the platform: no API role reaches the tables or the functions.
+select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
+	cross join unnest(array['public.qorpera_runtime_office_shell_activity','public.qorpera_runtime_office_shell_commands']) t(name)
+	where has_table_privilege(r.role, t.name, 'select') or has_table_privilege(r.role, t.name, 'update'))
+	and not exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
+	cross join unnest(array['public.qorpera_take_agent_computer_stopped(public.qorpera_execution_runs)',
+		'public.qorpera_valid_office_shell_action(jsonb)','public.qorpera_valid_office_shell_command(jsonb,boolean)',
+		'public.qorpera_office_shell_conversation_run(public.qorpera_execution_runs)',
+		'public.qorpera_office_shell_command_run(public.qorpera_runtime_offices,public.qorpera_runtime_office_screens,jsonb)']) f(name)
+	where has_function_privilege(r.role, f.name, 'execute'))
+	and not has_function_privilege('anon', 'public.qorpera_report_runtime_office_shell_activity(jsonb,bigint,jsonb)', 'execute')
+	and not has_function_privilege('authenticated', 'public.qorpera_report_runtime_office_shell_activity(jsonb,bigint,jsonb)', 'execute'),
+	'only the platform reads, writes and runs these');
+
+-- 5. Two runs of Ada in the conversation race to read what stopped: one wins, the other is told nothing and does not
+--    wait. The stopped commands are committed so the connections see them.
+insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
+	receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+select ('87000000-0000-4000-8000-00000000080' || n)::uuid, (pg_temp.office()).id, (pg_temp.office()).generation,
+	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, (pg_temp.run()).id,
+	('87000000-0000-4000-8000-00000000081' || n)::uuid, (pg_temp.run()).id, (pg_temp.run()).session_id, 'race ' || n,
+	clock_timestamp(), clock_timestamp(), clock_timestamp() + n * interval '1 minute', 'slept'
+from generate_series(1, 3) n;
+create function pg_temp.take(p_run uuid) returns text language sql as $$
+	select format('select public.qorpera_take_agent_computer_stopped(jsonb_populate_record(null::public.qorpera_execution_runs, %L::jsonb))::text',
+		jsonb_build_object('id', p_run, 'staff_agent_id', '64800000-0000-4000-8000-0000000000a1',
+			'session_id', (pg_temp.run()).session_id))
 $$;
-create function pg_temp.told_take(p_run uuid) returns text language sql as $$
-	select format('select public.qorpera_take_agent_computer_stopped(jsonb_populate_record(null::public.qorpera_execution_runs,%L::jsonb))',
-		jsonb_build_object('id',p_run,'staff_agent_id','87000000-0000-4000-8000-0000000000a3',
-			'session_id','87000000-0000-4000-8000-0000000000a5'))
-$$;
-select dblink_connect('told_first','dbname='||current_database());
-select dblink_connect('told_second','dbname='||current_database());
-select dblink_exec('told_first',$q$begin;
-	set local session_replication_role = replica;
-	insert into public.qorpera_runtime_office_shell_commands(id,office_id,computer_generation,screen_id,staff_agent_id,run_id,
-		receipt_id,conversation_run_id,session_id,command,started_at,worked_at,ended_at,end_reason)
-	select ('87000000-0000-4000-8000-00000000000'||n)::uuid,'87000000-0000-4000-8000-0000000000a1',1,
-		'87000000-0000-4000-8000-0000000000a2','87000000-0000-4000-8000-0000000000a3','87000000-0000-4000-8000-0000000000a4',
-		('87000000-0000-4000-8000-00000000001'||n)::uuid,'87000000-0000-4000-8000-0000000000a4',
-		'87000000-0000-4000-8000-0000000000a5','job '||n,clock_timestamp(),clock_timestamp(),clock_timestamp()+n*interval '1 minute','slept'
-	from generate_series(1,3) n;
-	-- Triggers are on again: the switch stamps when it was turned on.
-	set local session_replication_role = origin;
-	update public.qorpera_idle_rule_settings set enabled=true;
-	commit$q$);
 do $$
-declare v_first jsonb; v_second jsonb; v_started timestamptz;
+declare v_first text; v_second text; v_started timestamptz;
 begin
-	perform dblink_exec('told_first','begin');
-	select taken into v_first from dblink('told_first',pg_temp.told_take('87000000-0000-4000-8000-0000000000b1')) as call(taken jsonb);
+	perform dblink_exec('fence_one', 'begin');
+	select r into v_first from dblink('fence_one', pg_temp.take('87000000-0000-4000-8000-0000000008b1')) as t(r text);
 	v_started := clock_timestamp();
-	select taken into v_second from dblink('told_second',pg_temp.told_take('87000000-0000-4000-8000-0000000000b2')) as call(taken jsonb);
-	perform pg_temp.told_assert(jsonb_array_length(v_first)=3 and v_second is null and clock_timestamp()-v_started<interval '2 seconds',
-		'While one run takes what stopped, another is told nothing and does not wait: '||coalesce(v_second::text,'null'));
-	perform dblink_exec('told_first','commit');
-	select taken into v_second from dblink('told_second',pg_temp.told_take('87000000-0000-4000-8000-0000000000b2')) as call(taken jsonb);
-	select taken into v_first from dblink('told_first',pg_temp.told_take('87000000-0000-4000-8000-0000000000b1')) as call(taken jsonb);
-	perform pg_temp.told_assert(v_second is null and jsonb_array_length(v_first)=3
+	v_second := pg_temp.settled('fence_four', pg_temp.take('87000000-0000-4000-8000-0000000008b2'));
+	perform pg_temp.check(jsonb_array_length(v_first::jsonb) = 3 and v_second = 'null' and clock_timestamp() - v_started < interval '2 seconds',
+		'while one run takes what stopped, another is told nothing and does not wait: ' || v_second);
+	perform dblink_exec('fence_one', 'commit');
+	v_second := pg_temp.settled('fence_four', pg_temp.take('87000000-0000-4000-8000-0000000008b2'));
+	select r into v_first from dblink('fence_one', pg_temp.take('87000000-0000-4000-8000-0000000008b1')) as t(r text);
+	perform pg_temp.check(v_second = 'null' and jsonb_array_length(v_first::jsonb) = 3
 		and (select count(*) from public.qorpera_runtime_office_shell_commands
-			where staff_agent_id='87000000-0000-4000-8000-0000000000a3' and told_run_id='87000000-0000-4000-8000-0000000000b1')=3,
-		'Once told, only the winning run (restarted) is told again');
+			where command like 'race %' and told_run_id = '87000000-0000-4000-8000-0000000008b1') = 3,
+		'once told, only the winning run (restarted) is told again');
 end $$;
-select dblink_exec('told_first',$q$begin;
-	delete from public.qorpera_runtime_office_shell_commands where staff_agent_id='87000000-0000-4000-8000-0000000000a3';
-	update public.qorpera_idle_rule_settings set enabled=false;
-	commit$q$);
-select dblink_disconnect('told_first'),dblink_disconnect('told_second');
+
+select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
+
+-- Remove the fixture (as 894 does).
+set session_replication_role = replica;
+do $$
+declare
+	v_profiles uuid[] := array['64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000011']::uuid[];
+	v_envs uuid[] := array['64800000-0000-4000-8000-000000000020', '64800000-0000-4000-8000-000000000021']::uuid[];
+	v_runs uuid[]; v_jobs uuid[]; v_sessions uuid[]; v_rooms uuid[]; v_offices uuid[]; v_table record;
+begin
+	select array_agg(id) into v_runs from public.qorpera_execution_runs where profile_id = any (v_profiles);
+	select array_agg(id) into v_jobs from public.qorpera_runner_jobs where profile_id = any (v_profiles);
+	select array_agg(id) into v_sessions from public.qorpera_shared_sessions where profile_id = any (v_profiles);
+	select array_agg(id) into v_rooms from public.qorpera_company_rooms where profile_id = any (v_profiles);
+	select array_agg(id) into v_offices from public.qorpera_runtime_offices where profile_id = any (v_profiles);
+	delete from public.qorpera_company_path_grants where resource_id in
+		(select id from public.qorpera_company_path_resources where environment_id = any (v_envs));
+	for v_table in select c.table_name, c.column_name from information_schema.columns c
+		join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name and t.table_type = 'BASE TABLE'
+		where c.table_schema = 'public' and c.column_name in ('office_id','profile_id','environment_id','run_id','job_id','session_id','room_id')
+			and c.data_type = 'uuid' and c.table_name <> 'qorpera_runtime_offices'
+		order by c.column_name = 'office_id' desc loop
+		execute format('delete from public.%I where %I = any ($1)', v_table.table_name, v_table.column_name)
+		using case v_table.column_name when 'office_id' then v_offices when 'profile_id' then v_profiles
+			when 'environment_id' then v_envs when 'run_id' then v_runs when 'job_id' then v_jobs
+			when 'session_id' then v_sessions else v_rooms end;
+	end loop;
+	delete from public.qorpera_runtime_offices where id = any (v_offices);
+	delete from public.qorpera_logical_computers where profile_id = any (v_profiles);
+	delete from public.qorpera_provider_connection_versions where connection_id = '64800000-0000-4000-8000-0000000000b3';
+	delete from public.qorpera_execution_sponsor_versions where binding_id = '64800000-0000-4000-8000-0000000000b1';
+	delete from public.qorpera_shared_sessions where id = any (v_sessions);
+	delete from public.qorpera_runner_jobs where id = any (v_jobs);
+	delete from public.qorpera_execution_runs where id = any (v_runs);
+	delete from public.qorpera_profiles where id = any (v_profiles);
+end $$;
+set session_replication_role = origin;
+delete from storage.objects where bucket_id = 'qorpera-profile-objects' and name like '64800000-0000-4000-8000-000000000010/%';
+delete from auth.users where id in ('64800000-0000-4000-8000-000000000001','64800000-0000-4000-8000-000000000002',
+	'64800000-0000-4000-8000-000000000003');
+do $$
+begin
+	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
+			'64800000-0000-4000-8000-000000000021'))
+		or exists (select 1 from public.qorpera_runtime_offices where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_runtime_office_shell_commands where office_id = current_setting('qorpera_test.office_id')::uuid)
+		or exists (select 1 from public.qorpera_logical_computers where profile_id = '64800000-0000-4000-8000-000000000010') then
+		raise exception 'The fixture must be removed'; end if;
+end $$;

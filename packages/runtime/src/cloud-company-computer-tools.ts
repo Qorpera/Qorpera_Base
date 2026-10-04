@@ -513,7 +513,7 @@ export function createCompanyComputerTools(options: {
 					"Shell: start runs a command in this agent's own shell on its computer and replies after waitMs (default 10000, at most 15000) or when it ends; a command still running keeps going as long as the work needs. " +
 					"Use read with its sessionId for later output, write to send it input (default wait 1000; endInput closes it), stop to end it, stop without a sessionId to end everything in the shell, and list to see commands. " +
 					"Commands share the shell's localhost (not the browser's) and /tmp. A command runs until it ends, is stopped, or its computer closes or sleeps. " +
-					"Only a busy shell (over about 5% of one core) keeps the machine awake; a waiting server stops when it sleeps, and your next run is told. Hours busy with no work from you bring a check-in. " +
+					"Only a busy shell (over about 5% of one core) keeps the machine awake; a waiting server stops when it sleeps, and your next run is told. " +
 					"The shell has its own network: the public internet on any port and protocol; private and local addresses, the machine and other computers are blocked. " +
 					"Shell commands cannot open windows on the screen; open programs there with desktop actions. " +
 					"If the machine runs low on memory or processes, the largest shell is stopped first, with a note. " +
