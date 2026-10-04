@@ -107,7 +107,8 @@ web's "Erase" is the Interfaces session's). In order:
 3. **Rank 1.** The actor's member row `FOR KEY SHARE`; owner or admin (`qorpera_folder_mutator_role` and an explicit
    test), else 42501.
 4. **Rank 5.** §5's human-task, contact and (P18c) table candidates, in `qorpera_folder_structured_lock`'s table order
-   (20260928429986:547-552), then id, `FOR UPDATE` (they are deleted); each re-read after its lock. These are the
+   (20260928429986:547-552; the table index at 20260930016000:119-125), then id, `FOR UPDATE` (they are deleted); each
+   re-read after its lock. These are the
    tables the commit locks at rank 5 too.
 5. **Paths.** Every root `FOR UPDATE` and every ancestor `FOR KEY SHARE`, claiming absent keys, in one `key_text
    collate "C"` order, through `qorpera_folder_lock_path`, as the commit locks a unit's paths
