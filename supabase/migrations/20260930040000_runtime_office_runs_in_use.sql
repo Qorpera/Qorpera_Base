@@ -1,12 +1,14 @@
 -- 20260930040000: a run keeps the Company Computer awake only while it is in use (the 2026-10-03 amendment "one idle
 -- rule for every machine", item 1). Folder-v2 only by the founder's decision of 3 October: the demand function is
 -- shared by both cores and gets no snapshot-v1 branch.
--- - A run is in use while its job is leased and it made progress within qorpera_run_stall_minutes() or waits on a
---   tool (gap 4's clock: qorpera_run_no_progress_since is null), or while a model request is in flight.
+-- - A run is in use while its job is leased and it made progress within qorpera_run_stall_minutes() (gap 4's clock:
+--   qorpera_run_no_progress_since is null), or while a model request is in flight. A computer action still running
+--   keeps the computer awake on its own: its resources are not yet drained.
 -- - A model request is in flight from its context view until the run records anything else. The run's own records
 --   arrive in order, so: the newest of them that is not a "writing" pulse is the request's result fence (recorded
 --   around its context view), or the newest of all is a pulse of its reply. A long single request never makes a run
---   idle; a harness that hangs inside one keeps the computer awake until its run ends.
+--   idle; a harness that hangs inside one keeps the computer awake until its run ends. These are diagnostic records:
+--   if they are lost, a request counts only through its context view, for qorpera_run_stall_minutes().
 -- - qorpera_runtime_office_has_demand counts a leased run of an agent with access, and an agent run's screen lease,
 --   only while that run is in use. A queued run still counts (its job start is its first progress), as do runs and
 --   requests waiting for the computer to start.
@@ -19,7 +21,7 @@ returns boolean language sql stable security definer set search_path = '' as $$
 	select coalesce((select newest.operation = 'message_composition'
 			from public.qorpera_runtime_observations newest where newest.run_id = p_run_id
 			order by newest.id desc limit 1), false)
-		or coalesce((select recent.operation in ('native_result_fence', 'model_request')
+		or coalesce((select recent.operation = 'native_result_fence'
 			from (select observation.id, observation.operation from public.qorpera_runtime_observations observation
 				where observation.run_id = p_run_id order by observation.id desc limit 400) recent
 			where recent.operation <> 'message_composition' order by recent.id desc limit 1), false)
@@ -62,8 +64,6 @@ do $$ declare v_owner name; begin
 	if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 		raise exception 'Office demand function has an API owner'; end if;
 	if v_owner is distinct from current_user then
-		execute format('grant execute on function public.qorpera_office_run_in_use(uuid), public.qorpera_run_model_request_in_flight(uuid),
-			public.qorpera_run_no_progress_since(uuid, timestamptz), public.qorpera_run_last_progress_at(uuid, timestamptz),
-			public.qorpera_run_waiting_on_tool(uuid), public.qorpera_run_stall_minutes() to %I', v_owner);
+		execute format('grant execute on function public.qorpera_office_run_in_use(uuid) to %I', v_owner);
 	end if;
 end $$;

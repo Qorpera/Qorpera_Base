@@ -1,7 +1,7 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
 -- 20260930040000: a run keeps the Company Computer awake only while it is in use (the 2026-10-03 amendment "one idle
 -- rule for every machine", item 1), on a folder-v2 company's computer (folder-v2 only, the founder's decision of 3
--- October). A run is in use while its job is leased and it made progress in the last 15 minutes or waits on a tool
+-- October). A run is in use while its job is leased and it made progress in the last 15 minutes
 -- (gap 4's clock), or while a model request is in flight. A long single model request under a live computer lease
 -- keeps the computer awake; an idle run's lease keeps its seat while the computer may sleep; a queued turn still
 -- counts. 648's committed fixture; the company's computer is registered, started and activated as 894 does, and Ada's
@@ -178,9 +178,10 @@ select pg_temp.check(pg_temp.in_use() and pg_temp.demand() and pg_temp.seat(),
 	'a model request 20 minutes long keeps its run in use, the computer awake and the seat');
 select pg_temp.check(public.qorpera_run_no_progress_since('64800000-0000-4000-8000-0000000000f1',
 	clock_timestamp() - interval '20 minutes') is not null, 'gap 4''s notice still sees no progress inside the request');
-select pg_temp.job('queued');
+-- Without computer access the lease alone keeps the computer awake, while its run is in use.
 update public.qorpera_runtime_office_access set state = 'revoked' where office_id = current_setting('qorpera_test.office_id')::uuid;
--- The access clause is off; only the lease clause remains, and it counts only a leased run.
+select pg_temp.check(pg_temp.demand(), 'the lease of a run in use keeps the computer awake on its own');
+select pg_temp.job('queued');
 select pg_temp.check(not pg_temp.demand() and pg_temp.seat(), 'a lease whose run is no longer leased keeps nothing awake');
 rollback;
 
@@ -190,7 +191,8 @@ begin;
 select pg_temp.record('native_result_fence', 'start', '30 minutes');
 select pg_temp.view('30 minutes');
 select pg_temp.record('native_result_fence', 'finish', '30 minutes');
--- One of the runtime's own checks after the fence: only the pulses now show the reply is still streaming.
+-- A record other than the fence after it (the runtime writes none there today): only the pulses then show the reply
+-- is still streaming.
 select pg_temp.record('company_context', 'start', '25 minutes');
 select pg_temp.record('company_context', 'finish', '25 minutes');
 select pg_temp.record('message_composition', 'start', '20 minutes');
@@ -199,16 +201,18 @@ select pg_temp.record('message_composition', 'start', '19 minutes');
 select pg_temp.check(pg_temp.in_use() and pg_temp.demand(), 'a reply still streaming keeps its run in use');
 rollback;
 
--- 4. The run waits on a tool started 20 minutes ago (a long build is work, gap 4's rule), then the tool ends and the run
---    records nothing more: idle again, the computer may sleep, and an idle run's lease still keeps its seat.
+-- 4. The run's last tool call ended 20 minutes ago, recorded as the runtime records one (its start, the run's authority
+--    check, its end), and the run records nothing more: idle, the computer may sleep, and an idle run's lease still
+--    keeps its seat.
 begin;
 select pg_temp.record('native_result_fence', 'start', '40 minutes');
 select pg_temp.view('40 minutes');
 select pg_temp.record('native_result_fence', 'finish', '40 minutes');
 select pg_temp.record('action_review', 'start', '39 minutes');
 select pg_temp.record('action_review', 'finish', '39 minutes');
-select pg_temp.record('computer_shell', 'start', '20 minutes');
-select pg_temp.check(pg_temp.in_use() and pg_temp.demand(), 'a run waiting on a tool is in use');
+select pg_temp.record('computer_shell', 'start', '21 minutes');
+select pg_temp.record('context_authority', 'start', '21 minutes');
+select pg_temp.record('context_authority', 'finish', '21 minutes');
 select pg_temp.record('computer_shell', 'finish', '20 minutes');
 select pg_temp.lease();
 select pg_temp.check(not pg_temp.in_use() and not pg_temp.demand() and pg_temp.seat(),
@@ -240,7 +244,10 @@ rollback;
 -- 7. Only the platform runs the helpers, and the demand function names this migration.
 select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
 	cross join unnest(array['public.qorpera_office_run_in_use(uuid)','public.qorpera_run_model_request_in_flight(uuid)']) f(name)
-	where has_function_privilege(r.role, f.name, 'execute')), 'only the platform runs the helpers');
+	where has_function_privilege(r.role, f.name, 'execute'))
+	and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_office_run_in_use(uuid)', 'execute')
+	and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_run_model_request_in_flight(uuid)', 'execute'),
+	'only the platform runs the helpers');
 select pg_temp.check(pg_get_functiondef('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure)
 	~ '20260930040000', 'the demand function names this migration');
 
