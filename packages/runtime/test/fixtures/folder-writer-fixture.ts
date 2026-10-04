@@ -72,6 +72,9 @@ export async function folderWriterFixture(
 		recorder?: (request: Record<string, unknown>) => Record<string, unknown> | null;
 		login?: () => Record<string, unknown>;
 		decisionRoutineId?: string;
+		/** The worker index by todo key (`qorpera_folder_agent_workers`, with each worker's folder); a todo not named is
+		 * one the run does not have (P0002), and a cancel finds its worker here. */
+		workers?: Record<string, Record<string, unknown>[]>;
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -93,6 +96,9 @@ export async function folderWriterFixture(
 	const recordings: Record<string, unknown>[] = [];
 	const releases: Record<string, unknown>[] = [];
 	const logins: Record<string, unknown>[] = [];
+	// The worker tool's requests a worker commit carried (`qorpera_folder_worker_commit`), and the cancels.
+	const workerRequests: Record<string, unknown>[] = [];
+	const cancels: Record<string, unknown>[] = [];
 	// Routine key → how the index runs it, where that differs from its file.
 	const routineStates = new Map<string, FolderWriterRoutineState>();
 	// Whether the requester's login pays, as the last login preparation found it.
@@ -166,7 +172,36 @@ export async function folderWriterFixture(
 		),
 	};
 	const control: CloudCompanyPathControl = {
-		call: vi.fn(async (method, args) => {
+		call: vi.fn(async (called, args) => {
+			let method = called;
+			// A worker commit is a commit that carries the worker tool's request, which the hook checks (F2-5b).
+			if (method === "qorpera_folder_worker_commit") {
+				workerRequests.push(structuredClone(args.p_request as Record<string, unknown>));
+				method = "qorpera_folder_commit";
+			}
+			if (method === "qorpera_folder_agent_workers") {
+				const todoKey = (args.p_request as { todoKey: string }).todoKey;
+				const listed = options.workers?.[todoKey];
+				if (!listed) throw new CloudCompanyFolderRpcError("P0002", "Todo is unavailable");
+				return { schema: "qorpera.folder-agent-workers/v1", todoKey, workers: structuredClone(listed) };
+			}
+			if (method === "qorpera_folder_cancel_agent_worker") {
+				const request = args.p_request as { folder: string; operationKey: string };
+				cancels.push(structuredClone(args));
+				const found = Object.values(options.workers ?? {})
+					.flat()
+					.find((worker) => worker.folder === request.folder);
+				if (!found) throw new CloudCompanyFolderRpcError("P0002", "Worker is unavailable");
+				const { folder: _folder, ...worker } = found;
+				return {
+					schema: "qorpera.agent-worker-receipt/v1",
+					runId: (args.p_binding as { runId: string }).runId,
+					receiptId: uuidFrom(`cancel:${request.operationKey}`),
+					action: "cancel",
+					folder: request.folder,
+					worker: { ...worker, state: "cancelled" },
+				};
+			}
 			if (method === "qorpera_folder_read") {
 				const found = entry(args.p_path as string);
 				return { schema: "qorpera.folder-read/v1", asOfSeq: seq, found: found !== null, entry: found };
@@ -583,6 +618,8 @@ export async function folderWriterFixture(
 		reviews,
 		releases,
 		logins,
+		workerRequests,
+		cancels,
 		routineStates,
 		ledger,
 		operationControl,

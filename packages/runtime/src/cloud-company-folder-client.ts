@@ -60,6 +60,7 @@ const RECORD_RETRY = new Set(["40P01"]);
 const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_record_review",
 	"qorpera_prepare_routine_login",
+	"qorpera_folder_cancel_agent_worker",
 ]);
 /** The wake's refusals of work (`qorpera_assert_wake_work_allowed`), by SQL's message. */
 const WAKE_REFUSALS: ReadonlyMap<string, "acknowledgement" | "final" | "paused"> = new Map([
@@ -287,6 +288,47 @@ export interface CloudCompanyFolderCommitResult {
 	readonly units: readonly CloudCompanyFolderUnitResult[];
 }
 
+/** A worker tool's request, which the folder core's hook checks against exactly the units it names (F2-5b §3): the
+ * worker's folder `agents/<agent>/todos/<todo>/<worker>`, and the action's own fields as the files hold them. */
+export type CloudCompanyFolderWorkerRequest =
+	| {
+			readonly action: "dispatch";
+			readonly folder: string;
+			readonly title: string;
+			readonly access: "read" | "write";
+			readonly revival: "each" | "batch";
+			readonly goal: string;
+			readonly doneWhen: string;
+			readonly context: string | null;
+			readonly sources: readonly string[];
+	  }
+	| { readonly action: "followup"; readonly folder: string; readonly text: string }
+	| {
+			readonly action: "decide";
+			readonly folder: string;
+			readonly decision: "accepted" | "rejected";
+			readonly note: string | null;
+	  }
+	| { readonly action: "report"; readonly folder: string };
+
+/** One worker as the worker index shows it (`qorpera_worker_view`, its summary cut to 400 characters), with its folder. */
+export interface CloudCompanyFolderWorker {
+	readonly workerKey: string;
+	readonly title: string;
+	/** queued or running while active; then blocked, succeeded, failed or cancelled. */
+	readonly state: string;
+	readonly sequence: number;
+	readonly access: "read" | "write";
+	readonly revival: "each" | "batch";
+	readonly outcome: string | null;
+	readonly summary: string | null;
+	readonly needs: string | null;
+	readonly outputs: readonly string[];
+	readonly reportedAt: string | null;
+	readonly decision: { readonly decision: string; readonly note: string | null; readonly at: string | null } | null;
+	readonly folder: string;
+}
+
 /** A read released to the model: its path, the version read, and the receipt it was read under. */
 export interface CloudCompanyFolderRelease {
 	readonly path: string;
@@ -372,6 +414,67 @@ function checkCommit(operationKey: string, options: { reviewId?: string; receipt
 
 function invalid(): never {
 	throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder response is invalid");
+}
+
+const nullableString = (value: unknown): value is string | null => value === null || typeof value === "string";
+
+/** One worker of the worker index (`qorpera_worker_view` with its folder), checked key by key. */
+function folderWorker(value: unknown): CloudCompanyFolderWorker {
+	const worker = record(value, [
+		"workerKey",
+		"title",
+		"state",
+		"sequence",
+		"access",
+		"revival",
+		"outcome",
+		"summary",
+		"needs",
+		"outputs",
+		"reportedAt",
+		"decision",
+		"folder",
+	]);
+	const decision = worker.decision === null ? null : record(worker.decision, ["decision", "note", "at"]);
+	if (
+		typeof worker.workerKey !== "string" ||
+		typeof worker.title !== "string" ||
+		typeof worker.state !== "string" ||
+		(worker.access !== "read" && worker.access !== "write") ||
+		(worker.revival !== "each" && worker.revival !== "batch") ||
+		!nullableString(worker.outcome) ||
+		!nullableString(worker.summary) ||
+		!nullableString(worker.needs) ||
+		!Array.isArray(worker.outputs) ||
+		worker.outputs.some((path) => typeof path !== "string") ||
+		!nullableString(worker.reportedAt) ||
+		typeof worker.folder !== "string" ||
+		(decision !== null &&
+			(typeof decision.decision !== "string" || !nullableString(decision.note) || !nullableString(decision.at)))
+	)
+		invalid();
+	return {
+		workerKey: worker.workerKey as string,
+		title: worker.title as string,
+		state: worker.state as string,
+		sequence: counter(worker.sequence),
+		access: worker.access as "read" | "write",
+		revival: worker.revival as "each" | "batch",
+		outcome: worker.outcome as string | null,
+		summary: worker.summary as string | null,
+		needs: worker.needs as string | null,
+		outputs: worker.outputs as string[],
+		reportedAt: worker.reportedAt as string | null,
+		decision:
+			decision === null
+				? null
+				: {
+						decision: decision.decision as string,
+						note: decision.note as string | null,
+						at: decision.at as string | null,
+					},
+		folder: worker.folder as string,
+	};
 }
 
 function record(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
@@ -796,6 +899,53 @@ export class CloudCompanyFolderClient {
 		return { todos, moreTodos, nextCursor };
 	}
 
+	/** The workers of one of the run agent's todos, from the worker index, newest first (F2-5b,
+	 * `qorpera_folder_agent_workers`). A todo the run does not have, or may not read, is SQL's P0002. */
+	async agentWorkers(todoKey: string, signal: AbortSignal): Promise<readonly CloudCompanyFolderWorker[]> {
+		const input = record(await this.#once("qorpera_folder_agent_workers", { p_request: { todoKey } }, signal), [
+			"schema",
+			"todoKey",
+			"workers",
+		]);
+		if (
+			input.schema !== "qorpera.folder-agent-workers/v1" ||
+			input.todoKey !== todoKey ||
+			!Array.isArray(input.workers)
+		)
+			invalid();
+		return input.workers.map(folderWorker);
+	}
+
+	/** Cancels one of the run agent's workers (F2-5b, `qorpera_folder_cancel_agent_worker`), a run effect under its own
+	 * receipt, keyed by the operation key: a retry with the same key replays it. A worker that changed while the cancel
+	 * waited (QRC01) is asked again; one the agent does not have is SQL's P0002, kept for the caller. */
+	async cancelWorker(
+		request: { readonly folder: string; readonly operationKey: string },
+		signal: AbortSignal,
+	): Promise<{ readonly receiptId: string; readonly worker: CloudCompanyFolderWorker }> {
+		const input = record(
+			await this.#retried(
+				"qorpera_folder_cancel_agent_worker",
+				{ p_binding: this.#binding, p_request: { folder: request.folder, operationKey: request.operationKey } },
+				RELEASE_RETRY,
+				signal,
+				(error) => error.code === "P0002",
+			),
+			["schema", "runId", "receiptId", "action", "folder", "worker"],
+		);
+		if (
+			input.schema !== "qorpera.agent-worker-receipt/v1" ||
+			input.runId !== this.#identity.runId ||
+			input.action !== "cancel" ||
+			input.folder !== request.folder
+		)
+			invalid();
+		return {
+			receiptId: uuid(input.receiptId),
+			worker: folderWorker({ ...(input.worker as Record<string, unknown>), folder: request.folder }),
+		};
+	}
+
 	/** A page of the run agent's own file routines from the routine index, which the commit updates with the files (thin
 	 * writers W4c, `qorpera_folder_agent_routines`, 20260929990000): newest first, 32 at most, each with its cursor, or
 	 * the one routine `routineKey` names, whole. */
@@ -1036,14 +1186,46 @@ export class CloudCompanyFolderClient {
 		options: { reviewId?: string; receiptId?: string },
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderCommitResult> {
+		return this.#commitStaged("qorpera_folder_commit", {}, operationKey, changeSet, options, signal);
+	}
+
+	/** Commits a worker's files under the worker tool's request (F2-5b, `qorpera_folder_worker_commit`): a dispatch,
+	 * follow-up, report or decision, which the hook checks against exactly the units it names. Otherwise as
+	 * `commitStaged`. */
+	async workerCommitStaged(
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		request: CloudCompanyFolderWorkerRequest,
+		options: { reviewId?: string; receiptId?: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
+		return this.#commitStaged(
+			"qorpera_folder_worker_commit",
+			{ p_request: request },
+			operationKey,
+			changeSet,
+			options,
+			signal,
+		);
+	}
+
+	async #commitStaged(
+		method: "qorpera_folder_commit" | "qorpera_folder_worker_commit",
+		extra: Record<string, unknown>,
+		operationKey: string,
+		changeSet: CloudCompanyFolderStagedChangeSet,
+		options: { reviewId?: string; receiptId?: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult> {
 		checkCommit(operationKey, options);
 		const { units, sent } = this.#staged(changeSet);
 		const input = record(
 			await this.#retried(
-				"qorpera_folder_commit",
+				method,
 				{
 					p_operation_key: operationKey,
 					p_units: sent,
+					...extra,
 					...(options.reviewId === undefined ? {} : { p_review_id: options.reviewId }),
 					...(options.receiptId === undefined ? {} : { p_receipt_id: options.receiptId }),
 				},
