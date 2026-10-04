@@ -219,12 +219,19 @@ begin
 	v_answer := pg_temp.read(extensions.gen_random_uuid());
 	if v_answer !~ '^42501 ' then raise exception 'B: an unknown screenshot is refused: %', v_answer; end if;
 	set local session_replication_role = replica;
-	-- (Replica mode: the other run need not exist for the receipt to name it.)
-	update public.qorpera_run_operation_receipts set run_id = extensions.gen_random_uuid() where id = (v_asset ->> 'assetId')::uuid;
+	-- Another run's screenshot: its receipt and its resource both name that run. (Replica mode: the other run need not
+	-- exist for them to name it.)
+	perform set_config('qorpera_test.other_run', extensions.gen_random_uuid()::text, true);
+	update public.qorpera_run_operation_receipts set run_id = current_setting('qorpera_test.other_run')::uuid
+	where id = (v_asset ->> 'assetId')::uuid;
+	update public.qorpera_runtime_office_resources set run_id = current_setting('qorpera_test.other_run')::uuid
+	where receipt_id = (v_asset ->> 'assetId')::uuid;
 	v_answer := pg_temp.assert(jsonb_build_array(v_asset));
 	if v_answer !~ '^42501 ' then raise exception 'B: another run''s receipt is refused: %', v_answer; end if;
 	update public.qorpera_run_operation_receipts set run_id = '64800000-0000-4000-8000-0000000000f1'
 	where id = (v_asset ->> 'assetId')::uuid;
+	update public.qorpera_runtime_office_resources set run_id = '64800000-0000-4000-8000-0000000000f1'
+	where receipt_id = (v_asset ->> 'assetId')::uuid;
 end $$;
 
 -- C. The computer not running (here in maintenance) does not withdraw the screenshot: an idle power-off must not end
@@ -242,7 +249,8 @@ set session_replication_role = replica;
 update public.qorpera_runtime_offices set state = 'active' where id = current_setting('qorpera_test.office_id')::uuid;
 set session_replication_role = origin;
 
--- D. A privacy change, a member's private session, a changed or revoked grant each withdraw it.
+-- D. A privacy change, a member's private session, a changed or revoked grant, and a browser grant the screenshot was
+--    taken under that is no longer active, each withdraw it.
 do $$
 declare v_asset jsonb := current_setting('qorpera_test.asset')::jsonb; v_change text; v_answer text;
 begin
@@ -251,7 +259,10 @@ begin
 		'update public.qorpera_runtime_offices set privacy_version = privacy_version + 1 where id = %L',
 		'update public.qorpera_runtime_offices set privacy_state = ''private'' where id = %L',
 		'update public.qorpera_runtime_office_access set version = version + 1 where office_id = %L',
-		'update public.qorpera_runtime_office_access set state = ''revoked'' where office_id = %L'] loop
+		'update public.qorpera_runtime_office_access set state = ''revoked'' where office_id = %L',
+		'update public.qorpera_runtime_office_resources set target_resources = target_resources || jsonb_build_object(''browserProfileId'',
+			extensions.gen_random_uuid(), ''browserGrantId'', extensions.gen_random_uuid(), ''browserGrantVersion'', 1)
+			where office_id = %L'] loop
 		begin
 			execute format(v_change, current_setting('qorpera_test.office_id'));
 			v_answer := pg_temp.read((v_asset ->> 'assetId')::uuid);
