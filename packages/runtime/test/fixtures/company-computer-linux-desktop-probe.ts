@@ -168,6 +168,23 @@ try {
 		`[Desktop Entry]\nType=Application\nName=Detached lifecycle fixture\nExec=/usr/bin/setsid /usr/bin/bash -c "while true; do echo tick >> /srv/workbench/desktop-ticks; sleep 0.03; done"\nTerminal=false\n`,
 		{ mode: 0o600 },
 	);
+	// HTTPS from inside the desktop, with certificate checks: a server on the desktop's own loopback, its certificate
+	// signed by a CA the image trusts (the proof adds one, as the public ones are), and curl as the Terminal runs it.
+	for (const name of ["tls-proof-key.pem", "tls-proof-cert.pem"])
+		await writeFile(`/srv/workbench/${name}`, await readFile(`/opt/probe/${name}`), { mode: 0o600 });
+	await writeFile(
+		"/srv/workbench/tls-proof-server.mjs",
+		`import { readFileSync } from "node:fs";\nimport { createServer } from "node:https";\ncreateServer({ key: readFileSync("/srv/workbench/tls-proof-key.pem"), cert: readFileSync("/srv/workbench/tls-proof-cert.pem") }, (_request, response) => response.end("verified\\n")).listen(8443, "127.0.0.1");\n`,
+	);
+	await writeFile(
+		"/srv/workbench/tls-proof.sh",
+		`/usr/bin/node /srv/workbench/tls-proof-server.mjs &\nserver=$!\n/usr/bin/curl --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused https://127.0.0.1:8443/ > /srv/workbench/tls-proof.partial 2>&1\necho "exit=$?" >> /srv/workbench/tls-proof.partial\nmv /srv/workbench/tls-proof.partial /srv/workbench/tls-proof\nkill "$server"\n`,
+	);
+	await writeFile(
+		`${autostart}/tls-proof.desktop`,
+		`[Desktop Entry]\nType=Application\nName=HTTPS fixture\nExec=/usr/bin/bash /srv/workbench/tls-proof.sh\nTerminal=false\n`,
+		{ mode: 0o600 },
+	);
 	const firstStart = new AbortController();
 	const firstLaunching = launcher.launch(bindings[0], firstStart.signal);
 	await assert.rejects(launcher.launch(bindings[0], signal), /OFFICE_DESKTOP_ALREADY_OCCUPIED/);
@@ -187,6 +204,12 @@ try {
 		await delay(25);
 	}
 	assert.ok((await readFile("/srv/workbench/desktop-ticks", "utf8")).includes("tick"));
+	let tls = "";
+	for (let attempt = 0; attempt < 400 && !tls; attempt++) {
+		tls = await readFile("/srv/workbench/tls-proof", "utf8").catch(() => "");
+		if (!tls) await delay(100);
+	}
+	assert.equal(tls, "verified\nexit=0\n", "the desktop verifies HTTPS against the image's CA store");
 	// Internet for the Terminal is the desktop's own network from the root
 	// plumber, not a proxy: what the desktop starts carries no proxy settings and
 	// resolves through public name servers. This proof has no plumber, so the

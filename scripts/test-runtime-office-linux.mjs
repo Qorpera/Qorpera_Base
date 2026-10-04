@@ -65,7 +65,7 @@ async function run(args, rpc = false) {
 }
 try {
 	if (!process.env.QORPERA_OFFICE_TEST_IMAGE) {
-		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${shell ? " curl ca-certificates iproute2 nftables iputils-ping" : ""}${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " curl ca-certificates unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${shell || desktop ? " curl ca-certificates" : ""}${shell ? " iproute2 nftables iputils-ping" : ""}${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
 		await run(["build", "--tag", image, root]);
 	}
 	if (desktop) {
@@ -86,7 +86,20 @@ try {
 		// Every desktop runs the namespace entry file for its Terminal's proxy.
 		await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
 			outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\nCOPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\nRUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n${browser ? "RUN install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\n" : ""}`);
+		// A certificate authority the image trusts, as the public ones are, and a certificate it signed for 127.0.0.1:
+		// the desktop's Terminal checks HTTPS against the image's CA store.
+		await writeFile(join(root, "tls-proof.ext"), "subjectAltName=IP:127.0.0.1\n");
+		for (const args of [
+			["req","-x509","-newkey","rsa:2048","-nodes","-keyout",join(root,"proof-ca-key.pem"),"-out",join(root,"proof-ca.crt"),"-days","1","-subj","/CN=Qorpera proof CA"],
+			["req","-newkey","rsa:2048","-nodes","-keyout",join(root,"tls-proof-key.pem"),"-out",join(root,"tls-proof.csr"),"-subj","/CN=127.0.0.1"],
+			["x509","-req","-in",join(root,"tls-proof.csr"),"-CA",join(root,"proof-ca.crt"),"-CAkey",join(root,"proof-ca-key.pem"),"-CAcreateserial",
+				"-out",join(root,"tls-proof-cert.pem"),"-days","1","-extfile",join(root,"tls-proof.ext")],
+		]) {
+			const made = spawnSync("openssl", args, { encoding: "utf8", timeout: 15000 });
+			if (made.status !== 0) throw new Error(made.stderr);
+		}
+		await chmod(join(root, "tls-proof-key.pem"), 0o644);
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY proof-ca.crt /usr/local/share/ca-certificates/qorpera-proof-ca.crt\nRUN update-ca-certificates\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\nCOPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\nRUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n${browser ? "RUN install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\n" : ""}`);
 		runningImage = `qorpera-office-desktop-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}

@@ -291,19 +291,18 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				join(temporary, "resolv.conf"),
 				"/etc/resolv.conf",
 			];
-			for (const path of [
-				"/etc/passwd",
-				"/etc/group",
-				"/etc/nsswitch.conf",
-				"/etc/fonts",
-				"/etc/xdg",
-				"/etc/X11",
-				"/etc/dbus-1",
-			]) {
-				await assertCompanyComputerImageArtifact(
-					path,
-					!path.endsWith(".conf") && !["/etc/passwd", "/etc/group"].includes(path),
-				);
+			// The public CA store too: the Terminal's curl, git and the like check certificates against it.
+			for (const [path, directory] of [
+				["/etc/passwd", false],
+				["/etc/group", false],
+				["/etc/nsswitch.conf", false],
+				["/etc/fonts", true],
+				["/etc/xdg", true],
+				["/etc/X11", true],
+				["/etc/dbus-1", true],
+				["/etc/ssl/certs", true],
+			] as const) {
+				await assertCompanyComputerImageArtifact(path, directory);
 				args.push("--ro-bind", path, path);
 			}
 			args.push("--symlink", "../usr/lib/os-release", "/etc/os-release");
