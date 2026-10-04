@@ -84,6 +84,8 @@ interface Completion {
 	schema: "qorpera.machine-command-completion/v1";
 	state: "succeeded" | "failed" | "cancelled" | "lost";
 	exitCode: number | null;
+	/** The machine's stop ended it (stop-commands marked it first). */
+	stopped?: true;
 }
 
 function uuid(value: unknown): string {
@@ -284,6 +286,8 @@ function commandPaths(ports: MachineGuestPorts, commandId: string) {
 		intent: join(directory, "intent.json"),
 		completion: join(directory, "completion.json"),
 		cancel: join(directory, "cancel.json"),
+		/** Written by stop-commands before the machine's stop ends the command. */
+		stopped: join(directory, "stopped.json"),
 		log: join(directory, "output.log"),
 		unit: `${PATHS.unitPrefix}${commandId}.service`,
 	};
@@ -316,7 +320,8 @@ async function readCompletion(ports: MachineGuestPorts, commandId: string): Prom
 		value.schema !== "qorpera.machine-command-completion/v1" ||
 		!TERMINAL.has(String(value.state)) ||
 		(value.exitCode !== null &&
-			(!Number.isInteger(value.exitCode) || Number(value.exitCode) < 0 || Number(value.exitCode) > 255))
+			(!Number.isInteger(value.exitCode) || Number(value.exitCode) < 0 || Number(value.exitCode) > 255)) ||
+		(value.stopped !== undefined && (value.stopped !== true || value.state !== "lost"))
 	)
 		throw new Error("MACHINE_GUEST_COMPLETION_INVALID");
 	return value as unknown as Completion;
@@ -329,12 +334,14 @@ async function observe(
 	commandId: string,
 	intent: Intent,
 	bootId: string,
-): Promise<{ state: CloudMachineCommandReceipt["state"]; exitCode: number | null }> {
+): Promise<{ state: CloudMachineCommandReceipt["state"]; exitCode: number | null; stopped?: true }> {
 	const done = await readCompletion(ports, commandId);
-	if (done) return { state: done.state, exitCode: done.exitCode };
+	if (done) return { state: done.state, exitCode: done.exitCode, ...(done.stopped ? { stopped: true as const } : {}) };
 	const paths = commandPaths(ports, commandId);
 	let state: CloudMachineCommandReceipt["state"] = "unconfirmed";
 	let exitCode: number | null = null;
+	// The machine's stop marked it before stopping the programs: its end is the stop's.
+	const stopped = !!(await missing(() => lstat(paths.stopped)));
 	if (intent.bootId !== bootId) state = "lost";
 	else {
 		try {
@@ -357,7 +364,13 @@ async function observe(
 				else if (["inactive", "failed"].includes(fields.ActiveState) || fields.SubState === "exited") {
 					if (/^\d+$/.test(fields.ExecMainStatus) && fields.ExecMainCode === "1")
 						exitCode = Number(fields.ExecMainStatus);
-					state = cancelled ? "cancelled" : fields.Result === "success" && exitCode === 0 ? "succeeded" : "failed";
+					state = cancelled
+						? "cancelled"
+						: stopped
+							? "lost"
+							: fields.Result === "success" && exitCode === 0
+								? "succeeded"
+								: "failed";
 					if (state === "cancelled") exitCode = null;
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
@@ -368,13 +381,19 @@ async function observe(
 		}
 	}
 	if (state === "lost") exitCode = null;
+	const byStop = state === "lost" && stopped;
 	if (TERMINAL.has(state)) {
-		await retain(paths.completion, { schema: "qorpera.machine-command-completion/v1", state, exitCode });
+		await retain(paths.completion, {
+			schema: "qorpera.machine-command-completion/v1",
+			state,
+			exitCode,
+			...(byStop ? { stopped: true } : {}),
+		});
 		// The finished unit has told us everything; let systemd forget it.
 		if (state !== "lost")
 			await (ports.system ?? system)("/usr/bin/systemctl", ["stop", paths.unit]).catch(() => undefined);
 	}
-	return { state, exitCode };
+	return { state, exitCode, ...(byStop ? { stopped: true as const } : {}) };
 }
 async function receipt(
 	ports: MachineGuestPorts,
@@ -563,13 +582,15 @@ async function runningUsage(
 	after: string | null,
 ): Promise<{ running: { commandId: string; cpuUsec: number; ioBytes: number }[]; next: string | null }> {
 	const slice = join(ports.cgroupRoot ?? "/sys/fs/cgroup", "qorpera.slice", PATHS.slice);
-	const unit = new RegExp(
-		`^${PATHS.unitPrefix}([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\\.service$`,
-	);
 	const commandIds = (
 		await (ports.listSystemDirectory ?? ((path: string) => readdir(path)))(slice).catch(() => [] as string[])
 	)
-		.flatMap((name) => unit.exec(name)?.[1] ?? [])
+		.flatMap((name) =>
+			name.startsWith(PATHS.unitPrefix) && name.endsWith(".service")
+				? [name.slice(PATHS.unitPrefix.length, -".service".length)]
+				: [],
+		)
+		.filter((commandId) => UUID.test(commandId))
 		.filter((commandId) => after === null || commandId > after)
 		.sort();
 	const page = commandIds.slice(0, MACHINE_GUEST_RUNNING_MEASURED);
@@ -598,7 +619,8 @@ export async function observeMachine(
 	if (commandIds.length > 64 || (after !== null && !UUID.test(after)))
 		throw new Error("MACHINE_GUEST_OBSERVATION_INVALID");
 	const guest = await identity(ports);
-	const ended: { commandId: string; state: string; exitCode: number | null; outputTail: string }[] = [];
+	const ended: { commandId: string; state: string; exitCode: number | null; outputTail: string; stopped?: true }[] =
+		[];
 	let tailBytes = ENDED_TAIL_BUDGET;
 	for (const commandId of commandIds) {
 		let current: CloudMachineCommandReceipt;
@@ -619,7 +641,14 @@ export async function observeMachine(
 		if (TERMINAL.has(current.state)) {
 			const outputTail = tailBytes >= 4 ? current.output : "";
 			tailBytes -= Buffer.byteLength(outputTail);
-			ended.push({ commandId, state: current.state, exitCode: current.exitCode, outputTail });
+			const stopped = (await readCompletion(ports, commandId))?.stopped === true;
+			ended.push({
+				commandId,
+				state: current.state,
+				exitCode: current.exitCode,
+				outputTail,
+				...(stopped ? { stopped: true as const } : {}),
+			});
 		}
 	}
 	const { running, next } = await runningUsage(ports, after);
@@ -651,6 +680,41 @@ export async function observeMachine(
 		next,
 		ended,
 	};
+}
+
+/** The machine's stop, from the executor once SQL granted it: each command still running in this boot is marked as
+ * stopped by it (so its end, whenever and however the executor next sees it, is the stop's), then the commands, Docker
+ * and containerd are stopped and the disk synced. A mark on a command that still runs afterwards is taken back. */
+export async function stopMachineCommands(ports: MachineGuestPorts = {}) {
+	requireRoot(ports);
+	const guest = await identity(ports);
+	const marked: string[] = [];
+	for (const name of await readdir(roots(ports).commands).catch(() => [] as string[])) {
+		if (!UUID.test(name)) continue;
+		const intent = await readIntent(ports, name).catch(() => undefined);
+		if (!intent || intent.bootId !== guest.bootId) continue;
+		// Only a command still running: one that ended on its own keeps its own end.
+		if ((await observe(ports, name, intent, guest.bootId).catch(() => undefined))?.state !== "running") continue;
+		await retain(commandPaths(ports, name).stopped, { commandId: name });
+		marked.push(name);
+	}
+	await (ports.system ?? system)("/usr/bin/systemctl", [
+		"stop",
+		PATHS.slice,
+		"docker.service",
+		"containerd.service",
+	]).catch(() => undefined);
+	const stopped: string[] = [];
+	for (const commandId of marked) {
+		const intent = (await readIntent(ports, commandId))!;
+		const { state } = await observe(ports, commandId, intent, guest.bootId).catch(() => ({
+			state: "unconfirmed" as const,
+		}));
+		if (state === "running") await rm(commandPaths(ports, commandId).stopped, { force: true });
+		else stopped.push(commandId);
+	}
+	await (ports.system ?? system)("/usr/bin/sync", []).catch(() => undefined);
+	return { schema: "qorpera.machine-commands-stopped/v1", machineId: guest.machineId, bootId: guest.bootId, stopped };
 }
 
 async function refuse(ports: MachineGuestPorts, commandId: string, code: string): Promise<void> {
@@ -757,7 +821,8 @@ export async function runMachineGuestCli(argv: readonly string[], ports: Machine
 						? { tail: true, limit: Number(c ?? 4096) }
 						: { offset: Number(b), limit: Number(c ?? 4096) };
 			result = await readMachineCommand(a, read, ports);
-		} else if (second === "observe" && (rest.length === 1 || rest.length === 2))
+		} else if (second === "stop-commands" && rest.length === 0) result = await stopMachineCommands(ports);
+		else if (second === "observe" && (rest.length === 1 || rest.length === 2))
 			result = await observeMachine(a === "-" ? [] : a.split(","), ports, b === undefined || b === "-" ? null : b);
 		else throw new Error("INVALID_MACHINE_GUEST_ARGUMENTS");
 	} catch (error) {

@@ -154,10 +154,19 @@ select pg_temp.check(pg_temp.record('[]', '[]', true) ->> 'busy' = '0'
 	and (pg_temp.machine()).last_used_at > clock_timestamp() - interval '1 minute'
 	and (pg_temp.machine()).outside_busy_at > clock_timestamp() - interval '1 minute',
 	'busy work outside the commands moves the idle clock and is kept');
+-- A command busy and then ended, in one record (busy work an earlier record did not reach SQL with, sent again with
+-- the end the guest saw since): the busy work still counts, and the end keeps its own state and no end reason.
+select pg_temp.idle();
 select pg_temp.check(pg_temp.record(jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(2), 'state', 'succeeded',
-		'exitCode', 0, 'outputTail', 'built')), '[]', false) ->> 'ended' = '1'
-	and (select c.state = 'succeeded' and c.exit_code = 0 and c.end_reason is null from pg_temp.command_row(2) c),
-	'an end the guest saw keeps its own state and no end reason');
+		'exitCode', 0, 'outputTail', 'built')), jsonb_build_array(pg_temp.command(2)), false) = '{"state":"recorded","ended":1,"busy":1}'
+	and (select c.state = 'succeeded' and c.exit_code = 0 and c.end_reason is null and c.busy_at is not null from pg_temp.command_row(2) c)
+	and (pg_temp.machine()).last_used_at > clock_timestamp() - interval '1 minute',
+	'busy work counts before the end in the same record; an end the guest saw keeps its own state');
+-- Only a lost end says the machine's stop made it.
+select pg_temp.refused(format('select pg_temp.record(%L, %L, false)', jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1),
+	'state', 'failed', 'exitCode', 1, 'outputTail', '', 'stopped', true)), '[]'), '22023', 'Machine commands invalid');
+select pg_temp.refused(format('select pg_temp.record(%L, %L, false)', jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1),
+	'state', 'lost', 'stopped', false)), '[]'), '22023', 'Machine commands invalid');
 select pg_temp.check(pg_temp.record('[]', jsonb_build_array(pg_temp.command(1)), true, extensions.gen_random_uuid()) = '{"state":"stale"}'
 	and (pg_temp.command_row(1)).busy_at is null, 'another boot''s record changes nothing');
 select pg_temp.refused(format('select pg_temp.record(%L, %L, %L)', '[]', shapes.busy, shapes.outside), '22023', 'Machine commands invalid')
@@ -213,19 +222,25 @@ select pg_temp.idle();
 select pg_temp.check(pg_temp.custody('qorpera_authorize_executor_machine', ', ''stop''') ->> 'intent' = 'stop'
 	and (pg_temp.machine()).desired_state = 'stopped' and (pg_temp.machine()).desired_by = 'kernel',
 	'the stop custody agrees: the kernel wants the idle task machine stopped');
--- Granting the stop ended what still runs, with its cause, before the executor stops the programs. Should the power-off
--- then fail and the machine be woken (a member's Start) or its hours be added, what the guest shows of the stopped
--- programs changes nothing.
-select pg_temp.check((select c.state = 'lost' and c.end_reason = 'slept' from pg_temp.command_row(1) c)
-	and (pg_temp.command_row(3)).end_reason = 'slept', 'the stop custody ends what still runs as slept');
+-- The custody keeps the stop's cause; nothing has ended yet (the executor stops the programs next).
+select pg_temp.check((pg_temp.placement()).stop_cause = 'slept' and (pg_temp.command_row(1)).ended_at is null
+	and (pg_temp.command_row(3)).ended_at is null, 'the stop custody keeps its cause and ends nothing yet');
+-- Should the power-off then fail and a member wake the machine before the stop is tried again: the program the stop's
+-- helper ended (marked stopped) is told with the stop's cause; one it never reached ends on its own terms.
 savepoint woken;
 update public.qorpera_company_machines set desired_state = 'running', desired_by = 'member'
 where id = '87300000-0000-4000-8000-0000000000a1';
 update public.qorpera_company_machine_placements set stop_authorized_at = null where id = (pg_temp.placement()).id;
-select pg_temp.check(pg_temp.record(jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1), 'state', 'failed',
-		'exitCode', 143, 'outputTail', 'Terminated')), jsonb_build_array(pg_temp.command(1)), false) ->> 'ended' = '0'
-	and (select c.state = 'lost' and c.end_reason = 'slept' and c.busy_at is null and c.exit_code is null from pg_temp.command_row(1) c),
-	'woken before the power-off, the guest''s view of a stopped program changes nothing');
+select pg_temp.check(pg_temp.record(jsonb_build_array(
+		jsonb_build_object('commandId', pg_temp.command(1), 'state', 'lost', 'outputTail', '', 'stopped', true),
+		jsonb_build_object('commandId', pg_temp.command(3), 'state', 'failed', 'exitCode', 2, 'outputTail', 'crashed')), '[]', false)
+	->> 'ended' = '2', 'woken before the power-off: both ends are recorded');
+select pg_temp.check((select c.state = 'lost' and c.end_reason = 'slept' from pg_temp.command_row(1) c),
+	'what the stop ended keeps its cause: ' || (select to_jsonb(c)::text from pg_temp.command_row(1) c));
+select pg_temp.check((select c.state = 'failed' and c.end_reason is null from pg_temp.command_row(3) c),
+	'what the stop never reached ends on its own');
+select pg_temp.check((select count(*) = 1 and bool_and(stop.end_reason = 'slept') from public.qorpera_company_machine_outside_stops stop
+	where stop.machine_id = '87300000-0000-4000-8000-0000000000a1'), 'and the busy outside work it stopped is told with its cause');
 rollback to savepoint woken;
 select pg_temp.check(pg_temp.custody('qorpera_suspend_company_machine') ->> 'state' = 'suspended', 'the machine sleeps');
 select pg_temp.check((select c.state = 'lost' and c.end_reason = 'slept' from pg_temp.command_row(1) c)
@@ -312,6 +327,24 @@ select pg_temp.check(public.qorpera_computer_hour_finish_window_over('64800000-0
 	'the company is past its finishing window');
 select pg_temp.check(public.qorpera_end_company_machine_commands(pg_temp.machine(), 'lost') = 1 and (pg_temp.command_row(1)).end_reason = 'hours',
 	'an hour after the company ran out of computer hours, it ends as hours');
+rollback;
+-- The hours' stop keeps its cause though hours are added before the guest's view of it arrives.
+begin;
+update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 second';
+insert into public.qorpera_computer_hour_usage (profile_id, metered_at, run_seconds, standard_seconds)
+values ('64800000-0000-4000-8000-000000000010', clock_timestamp(), 20000, 20000);
+update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+select public.qorpera_computer_hour_zero_sweep(clock_timestamp()) \g /dev/null
+update public.qorpera_computer_hour_zero_state set ran_out_at = ran_out_at - interval '61 minutes'
+where profile_id = '64800000-0000-4000-8000-000000000010';
+select pg_temp.check(pg_temp.custody('qorpera_authorize_executor_machine', ', ''stop''') ->> 'intent' = 'stop'
+	and (pg_temp.placement()).stop_cause = 'hours', 'the stop at zero hours keeps its cause');
+delete from public.qorpera_computer_hour_zero_state where profile_id = '64800000-0000-4000-8000-000000000010';
+update public.qorpera_computer_hour_billing set zero_rule_since = null;
+select pg_temp.check(not public.qorpera_computer_hour_finish_window_over('64800000-0000-4000-8000-000000000010', clock_timestamp())
+	and pg_temp.record(jsonb_build_array(jsonb_build_object('commandId', pg_temp.command(1), 'state', 'lost', 'outputTail', '',
+		'stopped', true)), '[]', false) ->> 'ended' = '1' and (pg_temp.command_row(1)).end_reason = 'hours',
+	'hours added before the stop''s end is seen: it is still told as the hours'' stop');
 rollback;
 
 -- 6. Only the platform: no API role reaches the outside stops or the new functions; the executor's record is the

@@ -502,13 +502,76 @@ describe("company machine host", () => {
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
 		expect(f.instance()?.status).toBe("Stopped");
 		expect(f.client.submitInstanceOperation.mock.calls.at(-1)?.[1]).toMatchObject({ action: "stop", force: true });
-		// The guest's own programs are asked to stop and its disk synced first.
+		// The guest's helper marks and stops its programs (and syncs its disk) first.
+		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["stop-commands"]);
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+	});
+
+	it("stops a guest whose helper cannot mark its programs as before", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
+		const original = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			if (command[3] === "stop-commands") throw new Error("LXD exec failed");
+			return original(project, name, command);
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
 		expect(f.client.execInstance.mock.calls.at(-1)?.[2]).toEqual([
 			"/bin/sh",
 			"-c",
 			"systemctl stop qorpera-machine.slice docker.service containerd.service; sync",
 		]);
-		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+	});
+
+	it("sweeps every page of running commands before a sleep, so a busy one on a later page keeps the machine", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [] });
+		const ids = Array.from({ length: 300 }, () => randomUUID()).sort();
+		const resumed = ids[290];
+		let seconds = 0;
+		let resumedCpu = 0;
+		// The guest pages through its commands as cloud-machine-guest does, at the cursor it is given.
+		const original = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			if (command[3] === "observe") {
+				const cursor = command[5];
+				const after = cursor === "-" ? ids : ids.filter((id) => id > cursor);
+				const measured = after.slice(0, 256);
+				f.observe({
+					at: seconds * 1000,
+					ended: [],
+					running: measured.map((commandId) => ({
+						commandId,
+						cpuUsec: commandId === resumed ? resumedCpu * 1e6 : 0,
+						ioBytes: 0,
+					})),
+					next: after.length > measured.length ? (measured.at(-1) ?? null) : null,
+					cpu: { busyUsec: resumedCpu * 1e6, totalUsec: seconds * 2e6, ownUsec: resumedCpu * 1e6 },
+				});
+			}
+			return original(project, name, command);
+		});
+		// Two passes measure both pages once: the later page's command waits.
+		seconds = 10;
+		await f.host.pass(f.signal);
+		seconds = 20;
+		await f.host.pass(f.signal);
+		// It resumes work; the next pass is a sleep, which looks at every page before asking for stop custody.
+		seconds = 30;
+		resumedCpu = 5;
+		f.entry.sleepDue = true;
+		const before = f.calls.length;
+		await f.host.pass(f.signal);
+		const calls = f.calls.slice(before);
+		const recorded = calls.findIndex(
+			(call) =>
+				call.method === "qorpera_record_company_machine_commands" &&
+				(call.args.p_busy_commands as string[]).includes(resumed),
+		);
+		expect(recorded).toBeGreaterThan(-1);
+		expect(recorded).toBeLessThan(calls.findIndex((call) => call.method === "qorpera_authorize_executor_machine"));
 	});
 
 	it("keeps a running machine's lease and watches its commands while SQL refuses new run authority", async () => {

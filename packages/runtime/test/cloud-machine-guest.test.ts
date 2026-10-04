@@ -15,6 +15,7 @@ import {
 	runMachineGuestCli,
 	runMachineWatchdog,
 	startMachineCommand,
+	stopMachineCommands,
 } from "../src/cloud-machine-guest.ts";
 
 const roots: string[] = [];
@@ -32,6 +33,8 @@ async function machine() {
 	await mkdir(home);
 	let boot = randomUUID();
 	let now = 1_000_000;
+	/** Command units a stop of the whole commands' slice does not end (it did not reach them). */
+	const survivors = new Set<string>();
 	const units = new Map<string, string>([
 		["qorpera.slice", "ControlGroup=/qorpera.slice\nMainPID=0\n"],
 		["lxd-agent.service", "ControlGroup=/system.slice/lxd-agent.service\nMainPID=90\n"],
@@ -49,7 +52,14 @@ async function machine() {
 			);
 		} else if (executable === "/usr/bin/systemctl" && args[0] === "show")
 			return units.get(args[1]) ?? "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\n";
-		else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && units.has(args[1]))
+		else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && args.includes("qorpera-machine.slice")) {
+			for (const unit of units.keys())
+				if (unit.startsWith("qorpera-machine-command-") && !survivors.has(unit))
+					units.set(
+						unit,
+						"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
+					);
+		} else if (executable === "/usr/bin/systemctl" && args[0] === "stop" && units.has(args[1]))
 			units.set(
 				args[1],
 				"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
@@ -102,6 +112,7 @@ async function machine() {
 		system,
 		units,
 		files,
+		survive: (commandId: string) => survivors.add(`qorpera-machine-command-${commandId}.service`),
 		machineId,
 		request,
 		reboot: () => {
@@ -283,6 +294,48 @@ describe("machine command guest", () => {
 		m.units.set("qorpera.slice", "ControlGroup=/qorpera.slice/../../etc\n");
 		m.units.set("lxd-agent.service", "ControlGroup=\n");
 		expect(await observeMachine([], m.ports)).toMatchObject({ cpu: { ownUsec: 0 } });
+	});
+
+	it("marks what the machine's stop ends as the stop's, and nothing it did not end", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 1, m.ports);
+		await refreshMachineLease(900000, m.ports);
+		const killed = await m.request("npm run dev"),
+			survivor = await m.request("sleep 1000"),
+			done = await m.request("true");
+		for (const id of [killed, survivor, done]) await startMachineCommand(id, m.ports);
+		m.exit(done, 0);
+		m.survive(survivor);
+		expect(await stopMachineCommands(m.ports)).toEqual({
+			schema: "qorpera.machine-commands-stopped/v1",
+			machineId: m.machineId,
+			bootId: expect.any(String),
+			stopped: [killed],
+		});
+		expect(m.system).toHaveBeenCalledWith("/usr/bin/systemctl", [
+			"stop",
+			"qorpera-machine.slice",
+			"docker.service",
+			"containerd.service",
+		]);
+		expect(m.system).toHaveBeenCalledWith("/usr/bin/sync", []);
+		// The stopped one ends as lost by the stop; the one that ended before keeps its own end; the one still running runs.
+		const observed = await observeMachine([killed, survivor, done], m.ports);
+		expect(observed.ended).toEqual([
+			{ commandId: killed, state: "lost", exitCode: null, outputTail: "", stopped: true },
+			{ commandId: done, state: "succeeded", exitCode: 0, outputTail: "" },
+		]);
+		// Seen again (or after a wake), the stopped one is still the stop's.
+		expect((await observeMachine([killed], m.ports)).ended).toEqual([
+			{ commandId: killed, state: "lost", exitCode: null, outputTail: "", stopped: true },
+		]);
+		// The command line asks for it by name and takes nothing else.
+		const nonce = randomUUID();
+		expect(await runMachineGuestCli([nonce, "stop-commands"], m.ports)).toBe(0);
+		expect(JSON.parse(await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8"))).toMatchObject({
+			schema: "qorpera.machine-commands-stopped/v1",
+			stopped: [],
+		});
 	});
 
 	it("measures every running command, also the ones beyond the executor's list, a page of 256 a look", async () => {

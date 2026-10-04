@@ -127,13 +127,17 @@ interface GuestSample {
 }
 /** A command's sample is forgotten when the guest has not measured it for this long (it ended). */
 const COMMAND_SAMPLE_KEPT_MS = 600000;
-/** What one look saw: the listed commands that ended, the running ones that were busy, and busy outside work. */
+/** What one look saw: the listed commands that ended, the running ones that were busy, busy outside work, and where the
+ * guest's next page of running commands starts (null: this look reached the last one). */
 interface GuestLook {
 	bootId: string;
-	ended: { commandId: string; state: unknown; exitCode?: unknown; outputTail: string }[];
+	ended: { commandId: string; state: unknown; exitCode?: unknown; outputTail: string; stopped?: true }[];
 	busyCommands: string[];
 	outsideBusy: boolean;
+	next: string | null;
 }
+/** A sweep before a sleep looks at most this many pages (16,384 running commands); beyond, the machine stays up. */
+const SWEEP_PAGES = 64;
 
 function record(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
@@ -411,12 +415,18 @@ export class LxdCompanyMachineHost {
 	 * not, a page of 256 a look. The first sample of a boot, or of a command, is never busy. Busy work the last record
 	 * did not reach SQL with is carried until one does.
 	 */
-	async #look(e: CompanyMachineEntry, bootId: string, signal: AbortSignal): Promise<GuestLook> {
+	async #look(
+		e: CompanyMachineEntry,
+		bootId: string,
+		signal: AbortSignal,
+		after: string | null | undefined = undefined,
+	): Promise<GuestLook> {
 		const kept = this.#guests.get(e.placementId);
 		const same = kept?.bootId === bootId ? kept : undefined;
+		const page = after === undefined ? (same?.cursor ?? null) : after;
 		const observed = await this.#helper(
 			e,
-			["observe", e.commands.length ? e.commands.join(",") : "-", same?.cursor ?? "-"],
+			["observe", e.commands.length ? e.commands.join(",") : "-", page ?? "-"],
 			signal,
 		);
 		const cpu = record(observed.cpu, "COMPANY_MACHINE_GUEST_REPLY_INVALID");
@@ -475,8 +485,16 @@ export class LxdCompanyMachineHost {
 				state: item.state,
 				...(item.state === "succeeded" || item.state === "failed" ? { exitCode: item.exitCode } : {}),
 				outputTail: typeof item.outputTail === "string" ? item.outputTail.slice(-4000) : "",
+				// The machine's stop ended it (the guest marked it before stopping the programs).
+				...(item.state === "lost" && item.stopped === true ? { stopped: true as const } : {}),
 			}));
-		return { bootId, ended, busyCommands: [...busyCommands], outsideBusy };
+		return {
+			bootId,
+			ended,
+			busyCommands: [...busyCommands],
+			outsideBusy,
+			next: (observed.next as string | null) ?? null,
+		};
 	}
 	/** What a look saw, recorded in SQL: ended commands, and busy work, which keeps the machine awake. Busy work stays
 	 * pending until SQL took it. */
@@ -492,20 +510,36 @@ export class LxdCompanyMachineHost {
 		if (kept?.bootId === look.bootId) kept.pending = { busyCommands: new Set(), outsideBusy: false };
 	}
 	async #stop(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
-		// A last look first, when this boot was seen before: what ended on its own is recorded as it ended, not as
-		// stopped, and a program busy again keeps the machine (stop custody then refuses). A guest that does not answer
-		// still stops, once busy work seen earlier is recorded; a record SQL does not take leaves the machine running
-		// until a later pass records it.
-		const kept = this.#guests.get(e.placementId);
-		if (e.bootId !== null && kept?.bootId === e.bootId) {
+		// A last sweep first, when this boot was seen before: every page of running commands, each against its own last
+		// sample, so what ended on its own is recorded as it ended, not as stopped, and a program busy again keeps the
+		// machine (stop custody then refuses). A guest that does not answer still stops, once busy work seen earlier is
+		// recorded; a record SQL does not take leaves the machine running until a later pass records it.
+		if (e.bootId !== null && this.#guests.get(e.placementId)?.bootId === e.bootId) {
 			const bootId = e.bootId;
-			const look = await this.#look(e, bootId, AbortSignal.any([signal, AbortSignal.timeout(30000)])).catch(() => ({
-				bootId,
-				ended: [],
-				busyCommands: [...kept.pending.busyCommands],
-				outsideBusy: kept.pending.outsideBusy,
-			}));
-			await this.#record(e, look, signal);
+			const deadline = AbortSignal.any([signal, AbortSignal.timeout(60000)]);
+			let after: string | null = null;
+			for (let page = 1; ; page++) {
+				const look: GuestLook | undefined = await this.#look(e, bootId, deadline, after).catch(() => undefined);
+				if (!look) {
+					const kept = this.#guests.get(e.placementId);
+					await this.#record(
+						e,
+						{
+							bootId,
+							ended: [],
+							busyCommands: [...(kept?.pending.busyCommands ?? [])],
+							outsideBusy: !!kept?.pending.outsideBusy,
+							next: null,
+						},
+						signal,
+					);
+					break;
+				}
+				await this.#record(e, look, signal);
+				if (look.next === null) break;
+				if (page >= SWEEP_PAGES) return { placementId: e.placementId, step: "stop", state: "not-now" };
+				after = look.next;
+			}
 		}
 		// SQL agrees first: an idle machine someone just used again keeps running, programs and all.
 		try {
@@ -515,17 +549,22 @@ export class LxdCompanyMachineHost {
 				return { placementId: e.placementId, step: "stop", state: "not-now" };
 			throw error;
 		}
-		// Give the guest's own programs a moment to stop and its disk to settle;
-		// then the machine is powered off (its disk stays).
-		if (e.runningAt !== null)
-			await this.#options.client
-				.execInstance(
-					e.binding.project,
-					this.#plan(e).name,
-					["/bin/sh", "-c", `systemctl stop ${PATHS.slice} docker.service containerd.service; sync`],
-					AbortSignal.any([signal, AbortSignal.timeout(30000)]),
-				)
-				.catch(() => undefined);
+		// Give the guest's own programs a moment to stop and its disk to settle; then the machine is powered off (its disk
+		// stays). The helper marks each command it stops as the machine's stop, so however the stop ends, what the guest
+		// shows of them later is told with the stop's cause. A guest without it is stopped as before.
+		if (e.runningAt !== null) {
+			const stopping = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
+			await this.#helper(e, ["stop-commands"], stopping).catch(() =>
+				this.#options.client
+					.execInstance(
+						e.binding.project,
+						this.#plan(e).name,
+						["/bin/sh", "-c", `systemctl stop ${PATHS.slice} docker.service containerd.service; sync`],
+						stopping,
+					)
+					.catch(() => undefined),
+			);
+		}
 		const state = await this.#physical(e, "stopped", signal);
 		if (state === "not-now") return { placementId: e.placementId, step: "stop", state: "not-now" };
 		this.#guests.delete(e.placementId);
