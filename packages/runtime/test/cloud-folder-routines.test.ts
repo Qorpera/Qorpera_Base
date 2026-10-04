@@ -324,6 +324,36 @@ it("resumes the platform's pause by saving the file unchanged, and keeps it whil
 	await refuses(resume("resume-3"), "That routine has ended");
 });
 
+it("treats an archive's pause as the platform's: the read-back says why, and resume saves the file unchanged", async () => {
+	// A save by a run that outlived its agent's archive is recorded paused, and the read-back says why.
+	let states: Map<string, unknown> | undefined;
+	const w = await fixture(
+		{ folders: [ROUTINES] },
+		{
+			hook: (path) => {
+				if (path.endsWith("/inbox.md")) states?.set("inbox", { status: "paused", pauseReason: "agent_archived" });
+				return null;
+			},
+		},
+	);
+	states = w.routineStates;
+	const saved = parse((await w.routines().change(UPSERT, w.call())).content);
+	expect(saved).toMatchObject({ outcome: "saved", routine: { status: "paused", pauseReason: "agent_archived" } });
+	expect(saved.next).toContain("paused when you were archived");
+	// Once the agent is active again, resume is a paid save of the same bytes.
+	const f = await fixture(seeded());
+	const text = f.text(`${ROUTINES}/inbox.md`);
+	f.routineStates.set("inbox", { status: "paused", pauseReason: "agent_archived" });
+	expect(
+		parse(
+			(await f.routines().change({ action: "resume", operationKey: "resume-a", routineKey: "inbox" }, f.call()))
+				.content,
+		),
+	).toMatchObject({ outcome: "saved", routine: { status: "active" } });
+	expect(f.text(`${ROUTINES}/inbox.md`)).toBe(text);
+	expect(f.routineStates.has("inbox")).toBe(false);
+});
+
 it("removes the file with the version read, as a reviewed deletion, and answers a removal already made", async () => {
 	const f = await fixture(seeded());
 	const version = f.files.get(`${ROUTINES}/inbox.md`)?.version;

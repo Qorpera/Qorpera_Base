@@ -49,7 +49,9 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_folder_company_creation_claim"
 	| "qorpera_folder_company_create"
 	| "qorpera_folder_company_creation_release"
-	| "qorpera_folder_company_creation_fail";
+	| "qorpera_folder_company_creation_fail"
+	// Its kick of the follow-up queue for the new Co-Founder (P15).
+	| "qorpera_folder_follow_up_now";
 
 export interface MemberCompanyAuthority {
 	member(

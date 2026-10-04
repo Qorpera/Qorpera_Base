@@ -50,8 +50,8 @@ const TOOL_VERSION = "folder-v2/1";
 export const CLOUD_FOLDER_ROUTINE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const CLOUD_FOLDER_ROUTINE_NAME_BYTES = 64;
 const PLACEHOLDER_ID = "00000000-0000-4000-8000-000000000000";
-/** The pauses the platform records in the index only, until C2's queue writes them into files. */
-const PLATFORM_PAUSES = new Set(["member", "authorization_failed", "needs_model_account"]);
+/** The pauses the platform records in the index only, an archive's (`agent_archived`, P15's follow-up queue) included. */
+const PLATFORM_PAUSES = new Set(["member", "authorization_failed", "needs_model_account", "agent_archived"]);
 const UNREADABLE = "That routine's file does not read as a routine; correct it with the file tools first";
 const MISSING = "You have no routine with that routineKey: list your routines to see their keys";
 const INVALID = "This routine cannot be saved as the company's files";
@@ -210,6 +210,8 @@ function waiting(routine: CloudCompanyFolderRoutine): string | null {
 	if (routine.pauseReason === "authorization_failed")
 		return "It is paused because its model account stopped working: tell the member, and resume it once the account works again.";
 	if (routine.pauseReason === "member") return "A member stopped it: resume it only if they want it back.";
+	if (routine.pauseReason === "agent_archived")
+		return "It was paused when you were archived: once you are active again, resume it if it should still run.";
 	return null;
 }
 
