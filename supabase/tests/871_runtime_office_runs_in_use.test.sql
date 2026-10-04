@@ -148,6 +148,17 @@ begin
 	where id = '64800000-0000-4000-8000-0000000000f2';
 	set local session_replication_role = origin;
 end $$;
+-- A durable receipt of Ada's run, written p_ago ago (as a tool call's effect begins).
+create function pg_temp.receipt(p_ago interval) returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, created_at)
+	values (extensions.gen_random_uuid(), '64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-0000000000f2',
+		'64800000-0000-4000-8000-0000000000f5', 'tool:' || extensions.gen_random_uuid(), 'cloud_tool', repeat('a', 64), repeat('b', 64),
+		clock_timestamp() - p_ago);
+	set local session_replication_role = origin;
+end $$;
 create function pg_temp.in_use() returns boolean language sql as $$
 	select public.qorpera_office_run_in_use('64800000-0000-4000-8000-0000000000f1')
 $$;
@@ -183,6 +194,41 @@ update public.qorpera_runtime_office_access set state = 'revoked' where office_i
 select pg_temp.check(pg_temp.demand(), 'the lease of a run in use keeps the computer awake on its own');
 select pg_temp.job('queued');
 select pg_temp.check(not pg_temp.demand() and pg_temp.seat(), 'a lease whose run is no longer leased keeps nothing awake');
+rollback;
+
+-- 2b. The exception is bounded: it holds for at most two hours from the request's context view, and ends at any
+--     durable receipt the run writes after that view (a tool call whose diagnostics were lost).
+begin;
+select pg_temp.record('native_result_fence', 'start', '119 minutes');
+select pg_temp.view('119 minutes');
+select pg_temp.record('native_result_fence', 'finish', '119 minutes');
+select pg_temp.check(pg_temp.in_use() and pg_temp.demand(), 'a request 1 h 59 min old is still in flight');
+rollback;
+begin;
+select pg_temp.record('native_result_fence', 'start', '121 minutes');
+select pg_temp.view('121 minutes');
+select pg_temp.record('native_result_fence', 'finish', '121 minutes');
+select pg_temp.check(not public.qorpera_run_model_request_in_flight('64800000-0000-4000-8000-0000000000f1'),
+	'a request 2 h 1 min old is no longer in flight');
+select pg_temp.check(not pg_temp.in_use() and not pg_temp.demand(), 'then the run counts by its progress clock alone: idle');
+rollback;
+begin;
+select pg_temp.record('native_result_fence', 'start', '30 minutes');
+select pg_temp.view('30 minutes');
+select pg_temp.record('native_result_fence', 'finish', '30 minutes');
+select pg_temp.check(pg_temp.in_use(), 'a request with nothing after it is in flight');
+-- The tool call the model answered with left a receipt, but its diagnostic records were lost.
+select pg_temp.receipt('25 minutes');
+select pg_temp.check(not public.qorpera_run_model_request_in_flight('64800000-0000-4000-8000-0000000000f1')
+	and not pg_temp.in_use() and not pg_temp.demand(), 'a receipt after the view ends the exception: the run is idle');
+rollback;
+begin;
+-- A receipt from before the view does not end it.
+select pg_temp.receipt('35 minutes');
+select pg_temp.record('native_result_fence', 'start', '30 minutes');
+select pg_temp.view('30 minutes');
+select pg_temp.record('native_result_fence', 'finish', '30 minutes');
+select pg_temp.check(pg_temp.in_use(), 'a receipt from before the request leaves it in flight');
 rollback;
 
 -- 3. The run's reply streams: its newest record is a "writing" pulse, older than 15 minutes (a hang inside the request

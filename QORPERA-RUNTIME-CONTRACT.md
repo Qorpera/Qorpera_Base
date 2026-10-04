@@ -4592,12 +4592,17 @@ amendment governs. In-place edits are marked "(changed in place)".
      - A model request is in flight from its context view until the run's next
        tool call, its next context view or its end. So a long single request
        never makes a run idle; a harness that hangs inside a request keeps the
-       machine awake until its run ends. The run's records arrive in order,
-       so the platform reads it from them: a request is in flight while the
-       newest record other than a "writing" pulse is its result fence
-       (recorded around its context view), or while the newest record is a
-       pulse of its reply. These records are diagnostics: if they are lost, a
-       request counts only through its context view, for 15 minutes.
+       machine awake for at most two hours from the request's context view,
+       then the run counts by its progress clock (decided 4 October 2026, the
+       coordinator: the longest real requests take well under an hour, and
+       this bounds only how long a silent run holds a machine awake, never the
+       work). The run's records arrive in order, so the platform reads it from
+       them: a request is in flight while the newest record other than a
+       "writing" pulse is its result fence (recorded around its context view),
+       or while the newest record is a pulse of its reply. Any durable receipt
+       the run writes after the view also ends it. These records are
+       diagnostics: if they are lost, a request counts only through its
+       context view, for 15 minutes, or for at most the two hours.
      - A run with neither progress nor a model request for 15 minutes is
        idle. The same clock drives the run's "no progress for 15 minutes"
        notice. The notice also covers a run inside a model request, while the
