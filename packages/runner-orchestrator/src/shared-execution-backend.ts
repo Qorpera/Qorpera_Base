@@ -11,14 +11,15 @@ import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
 import {
 	canonical,
 	exactRunner,
+	nativeIdentityCredentialFile,
 	ProviderAdmissionRefused,
 	record,
 	runAttemptAcquisitionId,
 	sha256,
-	supabaseServiceHeaders,
 	token,
 	workSha256,
 } from "./provider-shared.ts";
+import { executionHostFetch } from "./shared-execution-host-call.ts";
 import {
 	mountInfoHasMountPoint,
 	readSharedExecutionIdentity,
@@ -97,6 +98,12 @@ export interface SharedExecutionProviderConfig {
 	supabaseUrl: string;
 	supabaseServiceKey: string;
 	supabasePublishableKey: string;
+	/**
+	 * G2-3e: the execution host's own credential, which the node host bound to `hostId`. The service's own database
+	 * calls go through the execution host's entry points with it and the publishable key, never the service key, which
+	 * only reaches the slots, until G2-5.
+	 */
+	executionHostCredential: string;
 	/** Journals and per-slot scratch state (disk). */
 	stateRoot: string;
 	/** Per-slot credentials and environment for PID 1 (tmpfs). */
@@ -225,7 +232,13 @@ export interface SharedExecutionJournal {
 	instanceSha256: string;
 	runner: CloudRunnerInstance;
 	physicalState: SharedExecutionPhysicalState;
-	credentials: { activationSha256: string; assignmentSha256: string; nativeBridgeSha256: string };
+	credentials: {
+		activationSha256: string;
+		assignmentSha256: string;
+		nativeBridgeSha256: string;
+		/** G2-3: this run's machine's identity credential, bound as an exec slot (a warm reuse is a new machine). */
+		nativeIdentitySha256: string;
+	};
 	/** The reservation call was sent; a release is owed even when the reply was lost. */
 	capacityRequested?: boolean;
 	/** The reservation was confirmed. */
@@ -250,6 +263,7 @@ interface SlotCredentials {
 	activationToken: string;
 	assignmentToken: string;
 	nativeBridgeToken: string;
+	nativeIdentityToken: string;
 }
 
 const execFileAsync = promisify(execFile);
@@ -341,6 +355,8 @@ async function systemAccount(name: string): Promise<SharedExecutionAccount> {
 function validateConfig(config: SharedExecutionProviderConfig): void {
 	if (!ADAPTER_PATTERN.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 	if (!/^[a-z][a-z0-9-]{0,62}$/.test(config.hostId)) throw new Error("Execution host id is invalid");
+	if (!/^[A-Za-z0-9_-]{43}$/.test(config.executionHostCredential))
+		throw new Error("Execution host credential is invalid");
 	for (const [label, path] of [
 		["State root", config.stateRoot],
 		["Run root", config.runRoot],
@@ -486,14 +502,20 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		validateConfig(config);
 		this.adapterId = config.adapterId;
 		this.#config = { ...config, nativeCompanyRuntime: structuredClone(config.nativeCompanyRuntime) };
-		this.#fetch = dependencies.fetch ?? fetch;
+		this.#fetch = executionHostFetch(
+			config.supabaseUrl,
+			{
+				hostId: config.hostId,
+				credential: config.executionHostCredential,
+				publishableKey: config.supabasePublishableKey,
+			},
+			dependencies.fetch ?? fetch,
+		);
 		this.#units = dependencies.units ?? new SystemctlUnitControl();
 		this.#identityAuthority =
-			dependencies.identityAuthority ??
-			supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, config.supabaseServiceKey, this.#fetch);
+			dependencies.identityAuthority ?? supabaseSharedExecutionIdentityAuthority(config.supabaseUrl, this.#fetch);
 		this.#loginCustody =
-			dependencies.loginCustody ??
-			supabaseSharedExecutionLoginCustody(config.supabaseUrl, config.supabaseServiceKey, this.#fetch);
+			dependencies.loginCustody ?? supabaseSharedExecutionLoginCustody(config.supabaseUrl, this.#fetch);
 		this.#account = dependencies.account ?? systemAccount;
 		this.#now = dependencies.now ?? Date.now;
 		this.#requireIdentityMount = dependencies.requireIdentityMount;
@@ -600,7 +622,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					await readFile(this.#mountInfoPath, "utf-8"),
 					join(this.#config.identityRoot, work.computeIdentityId),
 				) &&
-				!(await this.#loginCustody(work.computeIdentityId, signal))
+				!(await this.#loginCustody(work.computeIdentityId, signal, work.runId))
 			) {
 				const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
 				this.#identityWaits.delete(acquisitionId);
@@ -695,6 +717,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					activationSha256: sha256(credentials.activationToken),
 					assignmentSha256: sha256(credentials.assignmentToken),
 					nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
+					nativeIdentitySha256: sha256(credentials.nativeIdentityToken),
 				},
 				createdAt: now,
 				updatedAt: now,
@@ -899,6 +922,19 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
 			await this.#writeJournal({ ...latest, capacityRegistered: true });
 		});
+		// G2-3: this run's machine's identity credential is bound to its allocation, as an exec slot, before the host
+		// can use it; only its hash leaves the service.
+		await this.#rpc(
+			"qorpera_bind_native_identity_credential",
+			{
+				p_allocation_id: current.acquisitionId,
+				p_provider_adapter: this.adapterId,
+				p_instance_sha256: current.instanceSha256,
+				p_holder_kind: "exec_slot",
+				p_credential_sha256: current.credentials.nativeIdentitySha256,
+			},
+			signal,
+		);
 	}
 
 	/** Release exactly once. A confirmed reservation must be confirmed released;
@@ -1136,6 +1172,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			activationToken: await read("qorpera-runner-activation"),
 			assignmentToken: await read("qorpera-runner-assignment"),
 			nativeBridgeToken: await read("qorpera-native-bridge"),
+			nativeIdentityToken: await read("qorpera-native-identity-token"),
 		};
 	}
 
@@ -1154,7 +1191,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (
 			sha256(credentials.activationToken) !== current.credentials.activationSha256 ||
 			sha256(credentials.assignmentToken) !== current.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== current.credentials.nativeBridgeSha256
+			sha256(credentials.nativeBridgeToken) !== current.credentials.nativeBridgeSha256 ||
+			sha256(credentials.nativeIdentityToken) !== current.credentials.nativeIdentitySha256
 		)
 			throw new Error("Shared execution slot credentials differ from the sandbox journal");
 		const office = runtime.offices?.find(
@@ -1174,8 +1212,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// A reused host was verified when its warm slot was claimed and keeps its credentials. A
 		// login kept by the vault has no volume: its host gets empty key and epoch files and asks
 		// the vault for the run's login.
-		const vaultLogin = !current.reusedHost && (await this.#loginCustody(current.computeIdentityId, signal));
-		const vaultState = vaultLogin ? await this.#identityAuthority(current.computeIdentityId, signal) : undefined;
+		const vaultLogin =
+			!current.reusedHost && (await this.#loginCustody(current.computeIdentityId, signal, current.runId));
+		const vaultState = vaultLogin
+			? await this.#identityAuthority(current.computeIdentityId, signal, current.runId)
+			: undefined;
 		if (vaultState && (vaultState.blocked || vaultState.computeIdentityId !== current.computeIdentityId))
 			throw new Error("The run's Compute Identity is fenced");
 		const identity =
@@ -1185,6 +1226,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						identityRoot: this.#config.identityRoot,
 						computeIdentityId: current.computeIdentityId,
 						authority: this.#identityAuthority,
+						runId: current.runId,
 						signal,
 						...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
 						mountInfoPath: this.#mountInfoPath,
@@ -1232,6 +1274,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				runner_version: this.#config.runnerVersion,
 				native_bridge_url: `http://127.0.0.1:${current.hostPort}/`,
 				native_bridge_boundary: "virtual_machine",
+				// G2-3: sent with each execution, so a warm host (whose credentials were fixed at its start) uses this
+				// run's machine's identity credential.
+				native_identity_credential: credentials.nativeIdentityToken,
 				assignment_host: "127.0.0.1",
 				assignment_port: current.inboxPort,
 				max_assignments: 1,
@@ -1270,9 +1315,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const runnerConfigPath = join(runnerState, "config.json");
 		await rm(runnerConfigPath, { force: true });
 		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
-		if (!identity && !vaultState) return undefined;
 		const slotRun = this.#slotRun(current.slot);
 		const credentialDirectory = join(slotRun, "credentials");
+		// G2-3: this run's machine's identity credential, also on a reused host: a running host gets it with each
+		// execution, and a host unit that starts again loads this run's, not a released machine's.
+		const identityCredentialPath = join(credentialDirectory, "qorpera-native-identity");
+		await rm(identityCredentialPath, { force: true });
+		await writePrivateFile(
+			identityCredentialPath,
+			`${nativeIdentityCredentialFile(current.computeIdentityId, credentials.nativeIdentityToken, this.#config.supabasePublishableKey)}\n`,
+		);
+		if (!identity && !vaultState) return undefined;
 		const files: Array<[string, string]> = [
 			[join(slotRun, "native-provider.env"), nativeProviderEnvironment],
 			[join(credentialDirectory, "qorpera-supabase-service-key"), `${this.#config.supabaseServiceKey}\n`],
@@ -1309,6 +1362,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// next tenant of the same account can read.
 		await rm(join(this.#slotState(slot), "runner", ".local"), { recursive: true, force: true });
 		await rm(join(this.#slotState(slot), "runner", ".cache"), { recursive: true, force: true });
+		// The runner's configuration holds its run's identity credential (G2-3); it goes with the runner.
+		await rm(join(this.#slotState(slot), "runner", "config.json"), { force: true });
 		for (const name of ["qorpera-runner-activation", "qorpera-runner-assignment"])
 			await rm(join(this.#slotRun(slot), "credentials", name), { force: true });
 	}
@@ -1396,11 +1451,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				throw new Error("Warm slot expired");
 			if (warm.masterKeySha256 === VAULT_LOGIN_MARKER) {
 				// A host that holds no key: the identity must still be at that epoch and in the vault.
-				const state = await this.#identityAuthority(work.computeIdentityId, signal);
+				const state = await this.#identityAuthority(work.computeIdentityId, signal, work.runId);
 				if (
 					state.blocked ||
 					state.epoch !== warm.epoch ||
-					!(await this.#loginCustody(work.computeIdentityId, signal))
+					!(await this.#loginCustody(work.computeIdentityId, signal, work.runId))
 				)
 					throw new Error("Warm slot identity changed");
 			} else {
@@ -1408,6 +1463,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					identityRoot: this.#config.identityRoot,
 					computeIdentityId: work.computeIdentityId,
 					authority: this.#identityAuthority,
+					runId: work.runId,
 					signal,
 					...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
 					mountInfoPath: this.#mountInfoPath,
@@ -1589,7 +1645,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			{
 				method: "POST",
 				redirect: "error",
-				headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ p_runner_ids: runnerIds }),
 				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 			},
@@ -1623,7 +1679,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
 			method: "POST",
 			redirect: "error",
-			headers: { ...supabaseServiceHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 		});

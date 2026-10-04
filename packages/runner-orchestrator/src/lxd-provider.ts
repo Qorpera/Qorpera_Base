@@ -25,6 +25,7 @@ import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
 import {
 	canonical,
 	exactRunner,
+	nativeIdentityCredentialFile,
 	ProviderAdmissionRefused,
 	ProviderRpcFailed,
 	providerRpcErrorCode,
@@ -141,6 +142,9 @@ interface LxdProviderJournal {
 	capacityRegistered?: true;
 	/** Written only after the control plane confirms the exact release; the release is never sent again. */
 	capacityReleased?: true;
+	/** Written by a settled journal's archive before it deletes the run's recovery volume, which is then no longer
+	 * demanded back (session-buildup audit gap 7). */
+	recoveryVolumeRetired?: true;
 	/** Exact node binding retained after the node reservation commits. */
 	nodeCapacity?: NativeNodePlacement;
 	guestAddress?: string;
@@ -175,6 +179,8 @@ interface LxdProviderJournal {
 		activationSha256: string;
 		assignmentSha256: string;
 		nativeBridgeSha256: string;
+		/** G2-3: the guest's identity credential, bound to its machine allocation as a job guest. */
+		nativeIdentitySha256: string;
 	};
 	createdAt: string;
 	updatedAt: string;
@@ -184,6 +190,7 @@ interface ProviderCredentials {
 	activationToken: string;
 	assignmentToken: string;
 	nativeBridgeToken: string;
+	nativeIdentityToken: string;
 }
 
 interface LxdGuestBootstrapAuthority {
@@ -393,6 +400,10 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
 		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
 		(input.capacityReleased !== undefined && input.capacityReleased !== true) ||
+		(input.recoveryVolumeRetired !== undefined &&
+			(input.recoveryVolumeRetired !== true ||
+				input.schema !== COMPANY_JOURNAL_SCHEMA ||
+				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -415,6 +426,8 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		!SHA256_PATTERN.test(credentials.assignmentSha256) ||
 		typeof credentials.nativeBridgeSha256 !== "string" ||
 		!SHA256_PATTERN.test(credentials.nativeBridgeSha256) ||
+		typeof credentials.nativeIdentitySha256 !== "string" ||
+		!SHA256_PATTERN.test(credentials.nativeIdentitySha256) ||
 		typeof input.createdAt !== "string" ||
 		!Number.isFinite(Date.parse(input.createdAt)) ||
 		typeof input.updatedAt !== "string" ||
@@ -522,6 +535,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		...(input.deletionConfirmed === true ? { deletionConfirmed: true } : {}),
 		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
 		...(input.capacityReleased === true ? { capacityReleased: true } : {}),
+		...(input.recoveryVolumeRetired === true ? { recoveryVolumeRetired: true } : {}),
 		...(input.nodeCapacity !== undefined ? { nodeCapacity: nodePlacement(input.nodeCapacity) } : {}),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
 		...(typeof input.assignmentId === "string" ? { assignmentId: input.assignmentId } : {}),
@@ -547,6 +561,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			activationSha256: credentials.activationSha256,
 			assignmentSha256: credentials.assignmentSha256,
 			nativeBridgeSha256: credentials.nativeBridgeSha256,
+			nativeIdentitySha256: credentials.nativeIdentitySha256,
 		},
 		createdAt: new Date(input.createdAt).toISOString(),
 		updatedAt: new Date(input.updatedAt).toISOString(),
@@ -821,6 +836,10 @@ const RESERVING_RETIREMENT_MS = 10 * 60_000;
 /** Settled journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
+/** A settled journal whose recovery volume cannot be retired yet is tried again at most this often, and named in the
+ * log at most once an hour (company delete D4's identity retirement keeps the same minute). */
+const RECOVERY_RETIREMENT_RETRY_MS = 60_000;
+const RECOVERY_RETIREMENT_REPORT_MS = 60 * 60_000;
 /** Journals one reconcile pass works on side by side. */
 const RECONCILE_CONCURRENCY = 8;
 /** A guest waiting this long for (or on) its one assignment is asked about at most once per
@@ -872,6 +891,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
 	readonly #settled = new Map<string, number>();
+	/** When each settled journal whose recovery volume could not be retired was last tried, and last named in the log. */
+	readonly #retirementTried = new Map<string, number>();
+	readonly #retirementReported = new Map<string, number>();
 	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
@@ -960,8 +982,31 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (settledAt !== undefined) this.#settled.set(acquisitionId, settledAt);
 		}
 		const settledAt = this.#settled.get(acquisitionId);
-		if (settledAt !== undefined && Date.now() - settledAt >= SETTLED_JOURNAL_RETENTION_MS)
+		if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) return;
+		// Housekeeping never fails the pass (a failed pass stops the node's claims): a volume that is in use or drifted
+		// keeps its journal for an operator, named in the log at most once an hour, and is tried again each minute.
+		const triedAt = this.#retirementTried.get(acquisitionId);
+		if (triedAt !== undefined && Date.now() - triedAt < RECOVERY_RETIREMENT_RETRY_MS) return;
+		let retired: boolean;
+		try {
+			retired = await this.#retireRecoveryVolume(acquisitionId, signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			this.#retirementTried.set(acquisitionId, Date.now());
+			const reportedAt = this.#retirementReported.get(acquisitionId);
+			if (reportedAt === undefined || Date.now() - reportedAt >= RECOVERY_RETIREMENT_REPORT_MS) {
+				this.#retirementReported.set(acquisitionId, Date.now());
+				console.error(
+					`recovery volume kept: acquisition=${acquisitionId} reason=${error instanceof Error ? error.message : "unknown"}`,
+				);
+			}
+			return;
+		}
+		if (retired) {
 			await this.#archive(acquisitionId);
+			this.#retirementTried.delete(acquisitionId);
+			this.#retirementReported.delete(acquisitionId);
+		}
 	}
 
 	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
@@ -1141,6 +1186,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					activationSha256: sha256(credentials.activationToken),
 					assignmentSha256: sha256(credentials.assignmentToken),
 					nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
+					nativeIdentitySha256: sha256(credentials.nativeIdentityToken),
 				},
 				createdAt: now,
 				updatedAt: now,
@@ -1324,7 +1370,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	/** A job guest serves exactly one run. Once it is done the guest has no further
 	 * purpose: the canonical transcript and the provider session live in the cloud
 	 * and on the identity host, so the guest is deleted rather than left behind.
-	 * Retained custom volumes (identity, recovery) are devices and survive. */
+	 * Retained custom volumes (identity, recovery) are devices and survive; a run's recovery volume goes with its
+	 * journal's archive (#retireRecoveryVolume). */
 	async #retire(current: LxdProviderJournal, status: string, signal?: AbortSignal): Promise<void> {
 		if (status !== "Stopped") {
 			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
@@ -1603,12 +1650,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Governed coding command credential must be independent");
 		if (
 			runtime &&
-			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
-				runtime.objectGatewayToken === credentials.activationToken ||
-				runtime.objectGatewayToken === credentials.assignmentToken ||
-				runtime.secretBroker.runtimeToken === credentials.nativeBridgeToken ||
-				runtime.secretBroker.runtimeToken === credentials.activationToken ||
-				runtime.secretBroker.runtimeToken === credentials.assignmentToken)
+			Object.values(credentials).some(
+				(value) => value === runtime.objectGatewayToken || value === runtime.secretBroker.runtimeToken,
+			)
 		) {
 			throw new Error("Governed native runtime credentials must be independent");
 		}
@@ -1727,6 +1771,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 				content: `${credentials.nativeBridgeToken}\n`,
+			},
+			{
+				// G2-3: the guest's identity credential, for its native host's calls between jobs.
+				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
+				content: `${nativeIdentityCredentialFile(authority.computeIdentityId, credentials.nativeIdentityToken, this.#config.supabasePublishableKey)}\n`,
 			},
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
@@ -1981,10 +2030,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		});
 	}
 
-	async #ensureRecoveryVolume(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
-		const company = journal.lxd.companyRuntime;
-		if (!company) return;
-		const expected = {
+	/** The configuration a run's recovery volume is created with; only a volume carrying all of it is the run's. */
+	#recoveryVolumeAuthority(
+		journal: LxdProviderJournal,
+		company: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>,
+	) {
+		return {
 			size: company.recoveryVolumeSize,
 			"user.qorpera.schema": RECOVERY_VOLUME_SCHEMA,
 			"user.qorpera.run_id": journal.runId ?? journal.acquisitionId,
@@ -1996,6 +2047,26 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			"user.qorpera.compute_identity_id": journal.runner.computeIdentityId,
 			"user.qorpera.provider_adapter": this.adapterId,
 		};
+	}
+
+	#isRecoveryVolume(
+		company: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>,
+		expected: Readonly<Record<string, string | undefined>>,
+		volume: LxdStorageVolumeRecord | undefined,
+	): boolean {
+		return (
+			volume !== undefined &&
+			volume.name === company.recoveryVolume &&
+			volume.type === "custom" &&
+			volume.contentType === "filesystem" &&
+			Object.entries(expected).every(([key, value]) => volume?.config[key] === value)
+		);
+	}
+
+	async #ensureRecoveryVolume(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
+		const company = journal.lxd.companyRuntime;
+		if (!company) return;
+		const expected = this.#recoveryVolumeAuthority(journal, company);
 		let volume = await this.#lxd.getStorageVolume(
 			journal.lxd.project,
 			journal.lxd.storagePool,
@@ -2003,6 +2074,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			signal,
 		);
 		if (!volume) {
+			// The settled run's archive retired it (#retireRecoveryVolume): the run never starts again.
+			if (journal.recoveryVolumeRetired) return;
 			if (journal.physicalState !== "creating") {
 				throw new Error("Native recovery volume is missing; execution cannot restart with empty recovery state");
 			}
@@ -2029,15 +2102,38 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				signal,
 			);
 		}
-		if (
-			!volume ||
-			volume.name !== company.recoveryVolume ||
-			volume.type !== "custom" ||
-			volume.contentType !== "filesystem" ||
-			Object.entries(expected).some(([key, value]) => volume?.config[key] !== value)
-		) {
+		if (!this.#isRecoveryVolume(company, expected, volume)) {
 			throw new Error("Native recovery volume drifted from immutable company and run authority");
 		}
+	}
+
+	/** A settled run never starts again, and its recovery volume (the guest's runner home) is read by nothing once
+	 * its guest is gone: it goes when its journal is archived, a day after the run settles (session-buildup audit
+	 * gap 7, 3 Oct 2026: every overflow run left one on its node until an operator removed it). Only a volume with
+	 * exactly this run's authority is deleted; one that drifted or that LXD will not delete (in use) stays for an
+	 * operator, and so does its journal (the caller logs it and goes on). The journal records the retirement before
+	 * the delete, so a provider that stops between the two does not demand the volume back. Answers whether the
+	 * journal may be archived: not while it is no longer settled (its guest exists again, say). */
+	async #retireRecoveryVolume(acquisitionId: string, signal?: AbortSignal): Promise<boolean> {
+		const journal = await this.#readJournal(acquisitionId);
+		const company = journal?.lxd.companyRuntime;
+		if (!journal || !company) return true;
+		// Still settled: stopped or lost, its capacity released, and no guest (one LXD call, as when it settled).
+		if ((await this.#settledAt(acquisitionId, signal)) === undefined) {
+			this.#settled.delete(acquisitionId);
+			return false;
+		}
+		const { project, storagePool } = journal.lxd;
+		const volume = await this.#lxd.getStorageVolume(project, storagePool, company.recoveryVolume, signal);
+		if (!volume) return true;
+		if (!this.#isRecoveryVolume(company, this.#recoveryVolumeAuthority(journal, company), volume)) {
+			throw new Error("Native recovery volume drifted from immutable company and run authority; it is kept");
+		}
+		if (!journal.recoveryVolumeRetired) await this.#writeJournal({ ...journal, recoveryVolumeRetired: true });
+		await this.#lxd.deleteStorageVolume(project, storagePool, company.recoveryVolume, signal);
+		if (await this.#lxd.getStorageVolume(project, storagePool, company.recoveryVolume, signal))
+			throw new Error("LXD did not delete the settled run's recovery volume");
+		return true;
 	}
 
 	#assertIdentityVolumeAuthority(
@@ -2066,6 +2162,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			activationToken: await this.#privateToken(join(root, "qorpera-runner-activation")),
 			assignmentToken: await this.#privateToken(join(root, "qorpera-runner-assignment")),
 			nativeBridgeToken: await this.#privateToken(join(root, "qorpera-native-bridge")),
+			nativeIdentityToken: await this.#privateToken(join(root, "qorpera-native-identity")),
 		};
 	}
 
@@ -2086,7 +2183,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (
 			sha256(credentials.activationToken) !== journal.credentials.activationSha256 ||
 			sha256(credentials.assignmentToken) !== journal.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256
+			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256 ||
+			sha256(credentials.nativeIdentityToken) !== journal.credentials.nativeIdentitySha256
 		) {
 			throw new Error("LXD provider credentials do not match their durable journal");
 		}
@@ -2270,6 +2368,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		signal?.throwIfAborted();
 		this.#registeredCapacity.add(current.acquisitionId);
 		await this.#writeJournal(current);
+		// G2-3: the guest's identity credential is bound to this allocation before the guest can start (idempotent on
+		// a re-reservation); only its hash leaves the node host.
+		await this.#rpc(
+			"qorpera_bind_native_identity_credential",
+			{ ...identity, p_holder_kind: "job_guest", p_credential_sha256: current.credentials.nativeIdentitySha256 },
+			signal,
+		);
 		return this.#reserveNodeMachine(current, signal);
 	}
 

@@ -30,8 +30,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
 | `rules/<name>.md` | rule | yes |
-| `human-tasks/<name>.md` | human-task | yes (H1, inert until H2) |
-| `contacts/<name>.md` | contact | yes (H1, inert until H2) |
+| `human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
+| `contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
 
 A path's kind is decided on the folder's key (`companyPathKey`, the same NFKC-casefold as
 `qorpera_company_path_key`, 20260828005000), because two spellings with one key are one entry:
@@ -300,23 +300,55 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `id` | yes | the vault record's id (`qorpera_cloud_secrets.id`) |
 | `service` | yes | the connector id (gmail, github, google_drive, …) |
 | `account` | yes | the mailbox or login, up to 254 characters |
-| `status` | yes | `connected` or `broken` |
+| `status` | yes | `connected` or `broken`; a website account also `pending` (opened, not yet verified) or `needs_person` (waiting for a step only a person can do) |
 | `actions` | yes | the catalog's operation ids every agent may use (may be empty) |
-| `connected_by` | yes | member id |
+| `connected_by` | yes | member id, or for a website account the agent that opened it |
 | `connected_at` | yes | UTC instant |
+| `site` | with `service: website`, and only then | the website's host as the vault keeps it: lowercase labels of 1–63 letters, digits and inner hyphens, at least two, up to 253 characters (`qorpera_company_account_host_valid`); a host YAML would read as a number is written in quotes |
+| `two_step` | with `service: website`, and only then | `none`, `authenticator`, `email` or `sms` |
+| `opened_for` | no; `service: website` only | the id of the todo an agent opened the account for; absent when a member handed the account over |
 | body | no | what the account is for, written by the company |
+
+- **Website accounts (A1):** an account the company owns at a website (`service: website`), kept in
+  the vault (`qorpera_company_accounts`). `site` is shown and never used: where a secret may be
+  typed stays in the vault, so editing the file can never move a password. The parse has `site`,
+  `twoStep` and `openedFor` (`null` when absent) only for a website account; any other
+  connection's parse keeps its shape. Closing an account revokes its vault row at once (A1, 2
+  October; #668), so its file is removed at close, as any disconnected connection's: no file ever
+  says closed.
 
 - **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
   may change the body only, and never creates or deletes the file.
 - **Body:** company-authored.
-- **Authority:** the vault and the operation grants stay in charge (contract 5.6).
+- **Authority:** the vault and the operation grants stay in charge (contract 5.6). Every tool that acts on an account
+  (open, fill, find, use, Disconnect) reads the vault, never this file: the file describes the account and may trail
+  the vault by seconds.
+- **How it is written (P22, 3 October 2026):** only the catalog's connectors (Gmail, Drive, GitHub …) and website
+  accounts have a file; a hook's signing secret and a secret card do not (the event intake describes hooks itself). A
+  vault change on such a company-owned connection of a folder-v2 environment inserts a due mark in its own transaction (`qorpera_folder_connection_file_marks`, migration `20260930006000`): a
+  secret written or revoked, its account name changed, an operation grant on it given or withdrawn, a website
+  account's status, login, site, two-step method or todo changed. The object gateway's writer claims a due connection
+  (`qorpera_claim_connection_file`), gets what the file should say, built from an allow-list of the vault's fields only
+  (never a secret, an envelope, a key or the vault's own purpose text), commits one unit as the platform with the
+  operation key `connection-file:<secret>:<generation>` and the version it read (keeping the company's text below the
+  settings; a member's edit meanwhile makes it read again), and finishes the claim
+  (`qorpera_finish_connection_file`); a claim never waits for a vault change or a company being deleted (only,
+  briefly, for another claim's new work rows), and a writer makes one per transaction. A claim skips a company whose
+  creation has not completed (P14a, migration `20260930010000`); its marks wait until it has. A revoked secret or
+  a closed account means its file is deleted. `actions` lists the operations with an active, unexpired grant; an expiry
+  marks nothing, so the file shows an expired grant until the connection's next change.
+  `qorpera_mark_connection_files(environment)` marks every connection due at once: an operator step, in its own
+  transaction, for a company whose vault held connections before it became folder-v2 or a connector that gained
+  catalog operations later. A new file is
+  named after the site, or the connector (and the vault's name unless it is `primary`), in the name rule (cut to 64
+  characters); when the name is taken the writer numbers it `-2`, `-3` …, cutting the name so the number fits.
 - **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this
   company and environment, and never changes. A platform write matches that row: it is active and
   its connector is the `service`. One file holds one account. A file saved before this slice is not
   trusted as the saved version until the platform writes it (the index points at its path).
 - **Deleting:** only the platform deletes the file, and only once the vault record is revoked
-  (refused while it is active, whether `connected` or `broken`). Disconnecting removes the file; the
-  writer treats a file already missing as done.
+  (refused while it is active, whatever its status). Disconnecting removes the file; a file a member moved
+  meanwhile is found again through the index on the next claim.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
 
@@ -508,14 +540,19 @@ Not reviewed. Dispatching a worker is reviewed.
 | `access` | `read` or `write` |
 | `revival` | `each` or `batch` |
 | `dispatched_at` | UTC instant |
-| body | goal, what done is, context, sources, output, cancellation and completion; follow-ups are appended |
+| `follow_ups` | the number of follow-ups, 0 at dispatch (F2-5b) |
+| `followed_up_at` | UTC instant of the latest follow-up, when `follow_ups` is 1 or more |
+| body | the sections `## Goal`, `## Done when`, `## Context` (optional), `## Sources` (optional; `- <path>` items), `## Authority`, `## Output`, `## Cancellation`, `## Completion` and `## Follow-up` (the latest, after a follow-up), in that order (§8 "Plan (F2-5b)") |
 
 `…/results.md`:
 - settings: `outcome` (succeeded, blocked, failed, cancelled), `reported_at`, `decision`
   (accepted, rejected) and `note` (only with a decision, up to 1000 bytes);
-- body: summary, what it needs, the files it made.
+- body: the summary, then `## Needs` exactly when blocked, then `## Files` (`- <path>` items, the
+  files it made).
 
-Only the platform writes these two files:
+Only the worker tools write these two files, as the run that dispatches, follows up, reports or
+decides; a restore of a deleted agent brings them back as they were (§8 "Plan (F2-5b)", contract
+13):
 - the brief at dispatch and at each follow-up;
 - the results at report and at the decision.
 
@@ -526,7 +563,7 @@ write-access worker makes (today `work/todos/<agent>/<todo>/<worker>/`).
 
 Work an agent hands to a person: a member, or a contact outside the company (Q1 §5, "Work for
 people"). One file per task; the task's folder beside it holds what the person sends back. It is
-the last step of the escalation order (16.1, as the 2026-10-02 amendment widens it).
+the last step of the escalation order (16.1, as the 2026-10-02 amendment "work for people" widens it).
 
 ```
 ---
@@ -621,7 +658,9 @@ A list key is either left out or holds at least one item (`proof: []` is refused
 - **The task's folder:** `human-tasks/<name>/proof/` holds the person's files (H2 names them as
   they arrive) and `human-tasks/<name>/note.md` the person's own note. Both are ordinary files.
   The folder's name is the task file's name.
-- **What H1 does not decide (H2):**
+- **What H1 does not decide (H2):** decided in §8 "Plan (H2)". Where the two differ, the plan wins: its
+  §1 and §4 replace the person's change "by the platform", the folder carried along with its file, and
+  "only the platform writes under `human-tasks/<name>/`" below.
   - who may set which status: the agent `open`, `accepted`, `returned` and `cancelled`; the
     person `done` and `declined`. A person's own change is a tick, or `done` or `declined` with
     its proof, note and `reason`, saved in one change set by the platform as the person's change,
@@ -680,8 +719,9 @@ Our accountant since 2025. Files VAT every quarter.
 
 - **Personal data.** A contact who asks to be forgotten needs an erasure of any deleted path:
   core §8 today erases only a deleted agent's folder, and is not built yet (C2). That widening is
-  F1's, and lands before H5 sends any link. It covers the contact file, the folders of that
-  contact's tasks, and path names in commit units, as core §8 does for agents. It cannot find
+  F2's (the coordinator's plan of 2 October 2026), and lands before H5 sends any link. It covers
+  the contact file, the folders of that contact's tasks, and path names in commit units, as core
+  §8 does for agents. It cannot find
   free text elsewhere (task titles and bodies, `reason`, `## History` lines, agents' memory),
   which a member removes by hand. The writing skill tells agents to name a contact by id only.
 - **What H1 does not decide (H2):** that `asks` covers a task's work is the agent's judgement (the
@@ -771,7 +811,7 @@ of the body, for readers that should not reach the storage server.
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` (folder columns as the roster's; run ids and requester optional for folder rows) | owner from the folder, key from the name, title, status, requester, detail copy | revision, publication columns (moot for folder rows) |
 | worker-brief/results | `qorpera_runtime_workers` | dispatch and result copies | handles, leases, revival, completion |
-| human-task, contact | none until H2: the stored parse only | — | — |
+| human-task, contact | `qorpera_folder_human_task_index` and `qorpera_folder_contact_index` (H2), keyed by environment and id | path, path version, status and references of a task; whether a contact has an email | the wake markers (H2c) |
 
 - **Moves** repoint index rows without re-parsing. An agent rename carries its routines and
   todos along (core §5).
@@ -1359,7 +1399,8 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 5. **F2-4** rules (migration 20260928249190): the reviewer reads the rule index, its own table;
    the Settings RPCs refuse company rules for folder-v2.
 6. **F2-5** todos and worker files: **F2-5a** todos (migration 20260928259210); **F2-5b** worker
-   briefs and results, with core C3's writers, which dispatch and report through the platform.
+   briefs and results, with core C3's writers: the worker tools commit them as the run (see
+   "Plan (F2-5b)").
 7. **F2-6** routines (migration 20260928259310), last because the scheduler, schedule positions
    and decisions are the most delicate part. `file-change` routines wait for core C4.
 
@@ -1378,7 +1419,7 @@ saved), no seeding. Two PRs, released in this order:
   runtime bundle active, the object gateway and the folder service deployed), since SQL refuses
   a structured key that carries no parse (`qorpera_company_state_checked`), and a writer sends a
   parse only for the kinds its parser knows.
-- **H1b, the database** (one migration, 20260929999000, after H1a is live). It replaces:
+- **H1b, the database** (one migration, 20260928429900, after H1a is live). It replaces:
   - `qorpera_structured_path_kind`: `human-tasks/<name>.md` and `contacts/<name>.md`;
   - `qorpera_structured_folder_names`: the four folder places;
   - `qorpera_company_state_path_problems`: the file name at position 2 for both kinds;
@@ -1394,11 +1435,12 @@ saved), no seeding. Two PRs, released in this order:
 
   The review class stays plain, and no index, lock target or verify row is added.
 - **Before H1:** a file saved at these paths while they were ordinary (only an operator's test
-  companies can have one) can then only be deleted: an edit must parse, and a move out is a kind
-  change. H2 says how it treats a structured key whose current version has no parse.
-- **Contract:** the proposed amendment of 2 October (work for people) writes Jonas's decisions 4
-  and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's own text changes when it is
-  approved. The seeding code is H2's.
+  companies can have one) can then only be replaced by a file that parses, moved within its root,
+  or deleted: a move out is a kind change. H2 says how it treats a structured key whose current
+  version has no parse.
+- **Contract:** the amendment of 2 October (work for people, approved 3 October) writes Jonas's
+  decisions 4 and 5 into 5.6 and widens 16.1's last step to contacts; 5.6's and 16.1's text
+  carry it since 3 October. The seeding code is H2's.
 - **Tests:** the parser's cases and round trips; the comparison lists, both kept by hand
   (`supabase/tests/700_folder_state_vision_agents.test.sql` §7 and the kinds test in
   `packages/cloud-client/test/company-state-files.test.ts`), with the new spellings; and SQL test
@@ -1418,9 +1460,699 @@ while building:
   platform finds from `from` when the person opens the task, also when a company runs several machines. The file
   names nothing that can go stale; `step` and `connection` say what to do and for which account.
 
+**Built (H1b): the database** (migration 20260928429900, SQL test 785), as planned, with these choices made while
+building:
+- The seven functions are patched by exact anchors, each of which must match once or the migration stops, so a
+  definition changed since is caught rather than overwritten. Each patch carries the marker `20260929999000` in a
+  comment inside the function body, which the deploy guard reads.
+- A parse that breaks a rule is refused as for the indexed kinds: one problem naming the rules it breaks ("the
+  platform read this file differently from its rules (files)"). `files` entries are held to the core's path rule
+  (`qorpera_company_path_valid`) and to one line. On 371,581 generated paths the rule agrees with
+  `parseCloudCompanyPath` but for one, `conİn$`, which only the database refuses (it folds `İ` to `i`, giving the
+  reserved name `conin$`; §1's case, failing closed).
+- The secret rule reads the stored parse of the version the save replaces (the current version at the same key), as
+  the agent rules read their base, and refuses with `structured_rule` and the problem on `secret_state`. A move keeps
+  the file's bytes and so its mark; a copy of a task file is refused anyway (`structured_copy`). 785 §6 holds a
+  member, an agent's run (the decision its commit takes) and a new folder's file to it.
+- A folder with no `.md` file directly inside it may still be moved or copied onto `contacts` or `human-tasks` while
+  that root does not exist: what lands there is ordinary (`x/sub/a.md` becomes `contacts/sub/a.md`), and under
+  `human-tasks` its folders must also pass the task-folder name rule.
+- A task or contact save takes no lock and its review class stays plain (785 §7).
+- Proof besides 785 and 700 §7: 6,000 random files written by `writeHumanTaskFile` and `writeContactFile`; every parse
+  the parser accepted (4,962) passes `qorpera_company_state_parse_problems`. 81 mutants of the migration (every rule,
+  limit, place and root, both review rounds' included) are each caught by 785.
+
+**Plan (H2): human tasks on the folder core** (Q1 §5's H2: "the index, who may set which status,
+`human-tasks/` and `contacts/` seeded in every new company, and the wake of the asking agent on done,
+declined and overdue"; §2's "What H1 does not decide"). Stacked on H1b. Still no web screen (H3), email
+(H4) or contact link (H5). Revised after design review r1 and Q1's answers.
+
+What the core gives H2, and what it does not (inventory of 2 October):
+- A unit is atomic; a change set is not. Each unit is decided and applied on its own, and a later unit
+  sees an earlier one's result, so two units cannot be made to land together.
+- Actors are `member {userId}`, `platform {}` (no other field), and a run or view. The hooks see a run,
+  and an agent's view, as `staff_agent {staffAgentId, runId, requesterUserId, ...}`; a member's own
+  desktop view as that `member`. No actor speaks "for" a member.
+- No member can write a folder-v2 file yet: the web and the object gateway write snapshot-v1 only, until
+  C4, and a member's desktop gets its folder with F3. The only folder writer in production is the
+  runtime's run client.
+- The commit never inserts a wake. Folder-v2 wakes are queued by run effects and delivered once C4 adds
+  their drain; C4 also brings the folder listener (core §6), which reacts to commits after they land.
+
+**1. The person, and the person's change.**
+- A member's task: the person is the member named in `member`, and the person's change is a commit by
+  that member's own actor (Q1 agreed). A member who creates a task naming themselves creates it as the
+  company; from then on they are its person. The person never acts as the company's side on their own
+  task, whatever their role, so nobody accepts their own work.
+- `member` must name a member who can write the company's shared files (owner, admin or contributor);
+  a viewer is never a task's person. Outside people are contacts (Q1).
+- A contact's task: the person has no account. Only the task link service (H5) makes the person's
+  change, as the platform, through the writers' shared helper (H2a). SQL cannot tell the link service
+  from another platform writer, so this is H5's rule.
+- On a member's task file the platform may only set `secret_state: saved` (H1b's mark, for the vault
+  writer); on a contact's task file it may also make the person's change. It never creates a task: an
+  agent's run or a member writes it (A1's takeover tasks are written by the agent's run). Its folder
+  rights are §4's.
+- The person's change may only (Q1):
+  - tick or untick boxes: the body is the same with every box mark (`- [ ]`, `- [x]`, `- [X]`) read
+    as one, and `steps` keeps its order and texts (compared by position and text; the line numbers move
+    when `reason` comes or goes);
+  - `open` or `returned` → `done`, removing any `reason`, once the proof exists (below);
+  - `open` or `returned` → `declined`, with its `reason`.
+  Every other key stays as it was. The person's change is plain (not reviewed), and its references are
+  not checked again (§3).
+- Proof: the writers name each file `human-tasks/<t>/proof/<kind>-<n>.<ext>` (`photo-1.jpg`,
+  `signature-1.png`, `file-1.pdf`), directly in `proof/`, and the note `human-tasks/<t>/note.md`.
+  `done` needs every kind `proof` lists (Q1): at least one file directly in `proof/` whose key starts
+  with `<kind>-`, per listed `photo`, `file` or `signature`, and a `note.md` of more than 0 bytes when it
+  lists `note` (SQL never reads the bytes). After `returned` the old proof still counts; the agent
+  judges it.
+- Q1's "the platform saves the proof and the status in one step" becomes two units, proof first, then
+  the status: the second sees the first.
+
+**2. The company's side** (agents, members who are not the person, and the platform only as in §1):
+- A new task is `open`, with `due` in the future.
+- `accepted` and `returned` come only from `done`. `returned` needs `reason` and a `due` in the future,
+  and the task is the person's again.
+- `cancelled` comes from `open`, `returned` or `done`; from `done` it needs `reason`, so the record says
+  why finished work was set aside (Q1). The proof stays.
+- `accepted`, `declined` and `cancelled` are final: no later save changes the file. Only a final task
+  may be deleted (§4).
+- `done` and `declined` are the person's only.
+- Changing `member` or `contact` hands an open or returned task to someone else; `due` may move to any
+  time in the future. `from` may change only while the asking agent is no longer active, only to an
+  active agent, and only by a member or the Co-Founder (Q1: "escalate to the Co-Founder"); `todo` is then
+  cleared or names an open or blocked todo of the new `from`.
+
+**3. Ids and references**, checked when a save sets or changes them, as todos check `requested_by`;
+never on the person's change, so nothing the person does not control can refuse their work:
+- `id` is unique among the tasks of the environment and never changes; the same holds for contacts.
+- `from` is an active agent of the company. An agent's run creating a task writes its own id.
+- `member` as in §1. `contact` is a contact file of this environment with an `email`.
+- `connection` is a connection file of this environment.
+- `todo` is an open or blocked todo of the `from` agent, checked whenever either key changes, so a task
+  never wakes another agent's todo.
+- A contact named by a task that is not final stays: its file is not deleted or moved out of
+  `contacts/`, and its `email` is not removed. To erase such a contact, cancel its tasks first.
+- A file saved before H2 (or a version with no parse) is trusted for its shape only: its base counts
+  only when the index points at its path, as for todos. Until it is saved again, such a task has no
+  status for §4: it counts as no task, and a member or the platform may delete its file as it may an
+  orphan folder.
+- A restore (a task file written again after its delete) compares with the task's last file, as todos
+  do, so a restored final task stays final and is never read as a new task.
+
+**4. The task's folder and its file.** File and folder are siblings, so they need two units, and two
+units cannot land together. The rules keep a folder from ever outliving its task:
+- Nothing lands at `human-tasks/<t>` or under it (a write, mkdir, new folder with its contents, or a
+  move's or copy's target, each carried descendant included) while `human-tasks/<t>.md` is absent. The
+  platform is held to it too.
+- A new task file, or a task file moved to a new name, is refused while a folder of that name exists.
+- A task file whose folder exists is neither moved nor deleted: a task with proof keeps its name (Q1
+  agreed), and its folder goes first. A task file is renamed or removed only by the company's side: never
+  by its person, and never by the platform on a member's task.
+- Directly under `human-tasks/` there are only task files (`*.md`) and task folders; another plain file
+  there would block a task's folder.
+- Under `human-tasks/<t>/`, by the task's status:
+  - `open` or `returned`: only the person (the platform on a contact's task) writes, moves or deletes;
+  - `done`: nobody changes it, while the agent checks the proof;
+  - final: a member or the platform may delete the whole folder (not single files in it); agents never;
+    nobody writes.
+  A folder without its task file (made before H2, or by an operator) may be deleted by a member or the
+  platform, and nothing else.
+- Removing a final task with proof takes two units, folder first, then the file. This may leave a task
+  without proof, never proof without a task.
+
+**5. The index.** Two tables in the connection index's style (no foreign key to the company; written in
+apply; a move repoints, a delete retires, a restore revives; `verify` checks each written row), keyed by
+`(environment_id, id)`, so one company's ids never block another's:
+- `qorpera_folder_human_task_index`: path, version, commit, retired_at, status, title, member, contact,
+  from, todo, connection, due, and `started_by_user_id`: the member who started the task (the creating
+  commit's requester; a member's own id for their own commit), who pays for the wakes (H2c).
+- `qorpera_folder_contact_index`: path, version, commit, retired_at, and whether the file has an
+  `email`.
+Both hold what the files say, so a rebuild (§4) makes them again, except `started_by_user_id`, which comes
+from the creating commit, as a routine's `origin` does: a rebuild keeps it. The path index is not unique,
+as the connection index's, so `apply`'s update never needs more than its rank-5 lock. The wake markers are
+runtime state and live elsewhere (H2c).
+
+**6. Locks** (per row, rank 5, in the company's own rows; no company-wide lock).
+`qorpera_folder_structured_lock` learns the two tables, after its current ones:
+- every unit whose `apply` writes a task's or a contact's index row (a save, move, delete or restore of
+  the file): that row, FOR NO KEY UPDATE;
+- any unit at or under `human-tasks/<t>`: that task's row, FOR SHARE, so proof, folder and status
+  changes serialize, and two removals of one task never deadlock;
+- a task save that sets or changes `contact`: the contact's row, FOR SHARE.
+`targets` finds a row with an unlocked read and names it `required: false` (a new or pre-H2 task has
+none). `decide` gets no target list and cannot lock, so it refuses the unit as a conflict when the row at
+`<t>.md` was last written by a commit whose `seq` is later than this commit's `as_of_seq`: sequence order
+is commit order, so any change since `targets` read the row is caught, with no core change.
+Read without a lock, and accepted: a todo closed, an agent archived, a member made a viewer or a
+connection removed at the same moment as a save that names them. Each leaves a task naming something no
+longer current, which the wakes (H2c) report or §2's hand-off repairs.
+
+**7. Seeding.** `human-tasks/` and `contacts/` join `companyStateSeedTree` and the seeded folders that
+are never deleted or moved (`COMPANY_STATE_SEEDED_PATHS`, `qorpera_company_state_seeded`), with the seeded
+skill `skills/human-task/SKILL.md` (how to write a good task, Q1 §5). Jonas said yes on 2 October: both
+folders are fixed in every company, like `connections/` (contract 5.6's tree and its list of seeded
+folders, written in). Existing folder-v2 companies (operator test companies) get the two folders from the
+operator's `mkdir`, and no skill.
+
+**8. Review class.** Plain for both kinds: creating or changing a task is inside the company (Q1 §5). H5
+must pin what it sends, as H1 pins the files, address and expiry: a contact's page shows the task as of
+the reviewed send, and a newer version needs a new reviewed send. A contact's proof and note are outside
+content (11.1), which H5 marks.
+
+**9. Wakes (H2c, with C4's listener).** The commit never inserts a wake, so the person's save can never be
+refused or rolled back by a wake. The coordinator agreed (2 October): H2c is F2's, a stacked draft
+against C4's listener interface, which the H2 PR body proposes:
+- C4's folder listener (core §6) reads landed commits and queues one wake of `from` for each status
+  change or reassignment made by anyone but `from` (done and declined above all; Q1: "when the status
+  changes"), and one wake of the new `from` on a hand-off;
+- a timed scan, one company per transaction, over a partial index of open and returned tasks by `due`,
+  queues one overdue wake per (task, `due`); a return or a new `due` re-arms it. Time passing is not a
+  commit, so the listener alone never sees it;
+- the pin trigger and `qorpera_folder_wake_authorized` accept an `agent` wake with source kind
+  `human-task` and no parent run;
+- the payer is `started_by_user_id` (S2: the member who started the work pays); when that member has
+  left, the requester is the task's person on a member's task, or an owner, and the payer follows
+  `qorpera_starter_sponsor`. When `from` is not active, the Co-Founder is woken, and may hand the task
+  to another agent (§2);
+- the markers (which commit or `due` was woken) live in a runtime table of H2c; a wake that cannot be
+  made is skipped and tried again on the next scan, never failing the scan.
+
+**What H2b without H2c means.** Q1's H2 row is met except the wakes, which wait for C4. Until then no
+member can write a task (no member writer before C4, no link service before H5), so no `done` or
+`declined` can happen, and nobody misses its wake. Tasks agents create can pass their `due` with no
+overdue wake. No member writer of folder-v2 files (H3's web, F3's desktop) may go live before H2c, or a
+`done` would wake nobody. Q1's step table shows H2c waiting for C4.
+
+**Three PRs, stacked on H1b:**
+- **H2a, TS:** the seed tree and seeded paths (with the TS comparison list), the skill text, the proof
+  file names, and the writers' shared helper for the person's change (tick, done, declined).
+- **H2b, SQL:** the two index tables, apply and verify, the rules of §1–§4, the lock targets of §6
+  (with `qorpera_folder_structured_lock`), and the seeded list, in one migration; SQL test 803, a race
+  test (805), and 785 updated to H2's rules.
+- **H2c, wakes:** after C4's listener exists, against its interface (§9).
+H2a and H2b do not depend on each other (`companyStateSeedTree` is used only by tests today), so their
+order is free.
+
+**Questions before building:**
+- F1 (the coordinator decides while F1 is idle): H2c's interface (§9), proposed in the H2 PR body.
+- Q1: the person never acting as the company on their own task (§1); `due` in the future when set (§2);
+  deleting only final tasks (§2, §4); H2c waiting for C4 in the step table.
+- A1: references are no longer re-checked on the person's change, so a disconnected account never
+  blocks a takeover task's `done` (§3); the platform never creates a task, so a takeover task is written
+  by the agent's own run (§1).
+
+**Built (H2a): the TS side** (`packages/cloud-client/src/company-state-files.ts`), as planned:
+- `companyStateSeedTree` seeds `human-tasks/`, `contacts/` and `skills/human-task/SKILL.md`, in contract
+  5.6's order; `COMPANY_STATE_SEEDED_PATHS` names the two folders (H2b gives SQL the same list).
+- `COMPANY_STATE_HUMAN_TASK_SKILL`: Q1's "how agents write a good task", with the file's keys and how to
+  follow a task up. It describes the wakes of H2c as they will be.
+- `humanTaskFolder`, `humanTaskProofPath` (`proof/<kind>-<n>.<ext>`, lowercase extension) and
+  `humanTaskNotePath`.
+- `humanTaskPersonChange(path, text, change)`: a tick flips one step's box on its own line and nothing
+  else; `done` sets the status and removes `reason`; `declined` sets both; only on an open or returned
+  task, and only when the result parses. The web (H3) and the link service (H5) use it, so the person's
+  change is the same bytes everywhere.
+
+**Built (H2b): the database** (migration 20260928429986, SQL test 803; test 785 updated), as planned, with these
+choices made while building:
+- The two tables carry `folder_key` beside `folder_path`, indexed with the environment (not unique), so the rules find
+  a task by its file's key without folding every row.
+- One function checks the paths of every unit first (`qorpera_company_state_task_paths`): what leaves (a delete's or
+  move's source) and what lands (a write, mkdir, new folder and its contents, a move's or copy's target). A misnamed
+  folder is left to the name check, which says what is wrong with it. Nothing moves or copies onto `human-tasks`
+  itself: it is made with a mkdir.
+- `qorpera_company_state_human_task_rules` reads the task's last file through its index row (a restore compares with
+  it); `qorpera_company_state_task_references` checks a reference only when the save sets or changes it, and `todo`
+  whenever `todo` or `from` changes; `qorpera_company_state_contact_rules` keeps one file per contact and its email
+  while a task that is not final names it.
+- The rank-5 targets come from `qorpera_company_state_task_targets`; `qorpera_folder_structured_lock` locks the two
+  tables by `environment_id:id`, after the routines. A row last written by a commit whose `seq` is past this commit's
+  `as_of_seq` (`qorpera_company_state_changed_since`) answers `version_changed`, which the commit reports as a
+  conflict.
+- `started_by_user_id` is the creating commit's requester when it is a member: the member themselves, or the member a
+  run works for. The platform never creates a task, so it is never null for a task made after H2. Later saves never
+  change it.
+- A final task's folder is removed whole (not file by file); a task file is renamed or removed by the company's side
+  only (never by its person, never by the platform on a member's task).
+- The proof check reads the proof folder's children through the entries' children index.
+- A move that leaves a task's or contact's row without its moved entry stops the commit (XX000), as for the other
+  kinds; a second run of the migration stops before it changes anything.
+- SQL test 805 races two sessions: a proof unit behind the person's done meets a conflict, and a contact's delete
+  behind a new task naming it is refused; without the rank-5 locks both would save.
+- 785 now hires its asking agent, uses a due date in 2099, makes a task's folder as its person after the task, and
+  expects H2's answers where they come first (the seeded root, a task with a folder keeping its name, the person's
+  rule); its secret cases use new ids, so H1's rule still answers them and names `secret_state`.
+- 65 distinct mutants of the migration, mine and the code review's (each path, person, company, reference, contact,
+  lock, index, verify, proof and seeding rule): 64 caught by 803, 785 or 805, and one equivalent (it rewrote the
+  final-task check into the same rule).
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
-screens; H4 the emails; H5 the contact links, after F1 widens erasure. A1's takeover becomes a
+screens; H4 the emails; H5 the contact links, after F2 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
+
+**Plan (A1-7): website accounts in connection files** (A1's request of 2 October; A1 keeps the
+vault records, #653). The keys and statuses of §2's `connections/` table for `service: website`.
+Two PRs, in this order:
+- **A1-7a, the parser:** `site`, `two_step` and `opened_for`, required or refused by service; the
+  statuses `pending` and `needs_person` for a website account only; `writeConnectionFile` writes
+  them. Another connection's parse keeps its exact shape, so the rule that a member may change
+  only the text below the settings (which compares the settings with the saved version's) keeps
+  working on every file saved before.
+- **A1-7b, the database** (migration 20260928439950, SQL test 801):
+  `qorpera_company_state_parse_problems` checks the connection parse per service, with the
+  vault's host rule. Nothing else changes: the platform's save still needs the vault row active
+  with the connector `website`.
+- Then A1's vault writer writes website account files. Before it, no file has these keys.
+
+**Built (A1-7):** as planned. A1-7b patches two anchors in `qorpera_company_state_parse_problems` (marker
+`20260929999950` in its body) and repeats the vault's host regex rather than calling
+`qorpera_company_account_host_valid`, so it does not wait for A1's migration: labels of 1–63 characters, as A1
+tightened the vault's rule on 2 October. It applies before or after H1b's migration (20260929999000): their anchors
+do not overlap. SQL test 801 (on 704's fixture): the platform saves a website file in each of its four states, a
+member changes only its text (and an old gmail file's text, whose shape is unchanged), the shapes, and which rule
+each refusal names; 13 of 13 mutants caught (the review's two survivors included).
+
+**Built (P22a, the vault's due marks; migration `20260930006000`, SQL tests 852 and 853):** the coordinator approved
+on 3 October that the vault never commits a file itself (core §3 step 4 and C4 amended): it marks, and the object
+gateway's writer (P22b, behind its own flag) converges. Triggers on `qorpera_cloud_secrets`,
+`qorpera_cloud_secret_operation_grants` and `qorpera_company_accounts` insert a mark (a plain insert with a generated
+key and the company row's foreign key, which every vault change on folder-v2 already holds `KEY SHARE`: no wait, no
+cycle) for a company-owned connection of a folder-v2 environment, only when a field its file shows changed. The writers'
+table `qorpera_folder_connection_file_work` keeps one row per connection (so each claim's generation, and its operation
+key, is new); the claim creates rows in secret order, takes one due row `SKIP LOCKED`, consumes the marks it sees (a
+mark that commits later keeps the connection due), and answers `qorpera.connection-file-claim/v1`: the generation, the
+operation key, `present`, the allow-listed `settings`, the new file's `path`, and `current` (the indexed file's path,
+version and hashes). The finish closes the claim for the current generation's writer only, or backs it off with a
+problem code (2^attempts seconds, at most ten minutes). Review round 1 added: the claim takes the companies' key share
+and the marks it consumes SKIP LOCKED, so a purge (company row, marks, then work rows) never deadlocks with it and a
+company held for deletion never stalls other companies' claims; files only for catalog connectors and website accounts
+(`qorpera_folder_connection_has_file`); `actions` only for unexpired grants; and `qorpera_mark_connection_files`. 852:
+each mark and non-mark, the claims' state, the platform commits (write, the member's text kept, a stale version,
+delete), leases, names, website and agent accounts, back-off bounds, expiries, and that nothing outside the allow-list
+leaves; 853: the races (out-of-order marks, two writers, a vault change during a claim, a purge, a company held for
+deletion).
+
+**Built (P22b, the writer; object gateway, off unless `QORPERA_CONNECTION_FILE_WRITER=1`):** `connection-files.ts`
+claims up to ten due connections every 15 s in a loop of its own (one drain at a time, 60 s each, its own database
+client, so the gateway's other maintenance never waits for it) and refuses, unread, a claim carrying any field outside the
+allow-list (finished `claim_invalid`). A new file is the canonical writer's; an existing one keeps every byte but the
+settings that changed; a file the parser refuses keeps its text below the settings. It stages the bytes as the platform
+in the gateway's own store, commits one unit with the claim's operation key and the version it read (`:2`, `:3` … and
+`-2`, `-3` … names when a new file's name is taken), deletes the file of a revoked or closed account, and finishes with
+a code on any problem (`version_changed`, `lock_conflict`, `unavailable`, …). The staging, reading and committing as
+the platform live in `platform-folder-writer.ts`, which F2's company creation (P14b) shares.
+`scripts/test-object-gateway-connection-files.mjs` (hosted-db step) runs it on a real database: 704's company, the
+first files, a member's text kept through a rewrite, a Disconnect's delete, and nothing outside the allow-list in any
+file version or writer commit.
+
+**Plan (F2-5b): worker briefs and results on the folder core** (core C3; the coordinator's slice P21 of
+2 October). Revised after design review r1 and the coordinator's answers of 3 October.
+
+In short:
+- **What a member sees:** each worker has two files in its todo's folder, `brief.md` (what it was asked
+  to do) and `results.md` (what it reported, and the agent's decision).
+- **Who writes them:** only the worker tools (`manage_worker`, `report_work`). Not the model's file tools,
+  and not a member. A restore of a deleted agent brings them back as they were.
+- **What waits:** coding workers on `folder-v2` (their machines come with C1c-3h and 3i; their dispatch
+  refuses `0A000` until then), and the wakes that start and revive workers, which run once C4's
+  `folder-v2` materializer (P28) calls the worker drain.
+
+What exists (inventory of 3 October, master 041ad1c15):
+- A worker is a row, `qorpera_runtime_workers`, with its follow-ups in `qorpera_runtime_worker_events`. The
+  row holds the brief (`dispatch`), the result, the decision and the runtime state (state, sequence, epoch,
+  the wake, revival). Nothing writes `brief.md` or `results.md` today.
+- Every worker writer (`qorpera_manage_agent_worker`, `qorpera_report_worker_result`) goes through the
+  old actor, which refuses `folder-v2` (55000). `manage_worker` is still offered to `folder-v2` runs.
+- The worker drain (dispatch failures, revival) and the wake materializer skip `folder-v2` companies,
+  until C4 gives `folder-v2` real runs (P28).
+- The hook knows the two kinds by path and checks their names, and nothing else: anyone who may write
+  the agent's folder can save a `brief.md`, and a worker folder can be deleted or moved under a running
+  worker.
+- F2-5a refuses `done` on a todo while a worker is active, but nothing locks the todo row, so a dispatch
+  can race it.
+- A commit carries a run's review (rank 7b) and receipt (after rank 9) only when the run is its actor. A
+  `platform {}` commit carries neither, and skips the pause check and the review.
+
+**1. The files.**
+- `brief.md` settings: `id`, `title`, `species`, `access`, `revival`, `dispatched_at`, and (new)
+  `follow_ups`, the number of follow-ups (0 at dispatch), with `followed_up_at` when it is 1 or more.
+- `brief.md` body: sections in this order, each a line that is exactly the heading, then its text:
+  `## Goal`, `## Done when`, `## Context` (when there is context), `## Sources` (when there are sources:
+  one `- <path>` item per folder path), `## Authority`, `## Output`, `## Cancellation`, `## Completion`, and
+  `## Follow-up` (the latest follow-up only, when `follow_ups` is 1 or more). Earlier follow-ups stay in
+  the file's history and in the events table, as today, where the row holds only the latest. No new
+  limit: today's bounds (goal 4000 bytes, done 2000, context 4000, eight sources of 512, a follow-up 4000)
+  fit within the 32 KiB body.
+- `results.md` settings as §2 (`outcome`, `reported_at`, `decision`, `note`). Body: the summary (up to
+  4000 bytes), then `## Needs` (up to 1000 bytes) exactly when the outcome is `blocked`, then `## Files`
+  when it lists any: up to four `- <path>` items, as today's report.
+- The parser reads only those headings, in that order, as section starts; any other line is text. The
+  writers refuse model text (a goal, a summary, a follow-up) that holds a line equal to one of these
+  headings, and their output round-trips through the parser.
+- The parse: the brief gives `goal`, `doneWhen`, `context`, `sources`, `authority`, `output`,
+  `cancellation`, `completion`, `followUps` and `followUp`; the results give `summary`, `needs` and
+  `files`. From these the index builds today's `dispatch` and `result` shapes, so the worker's wake keeps
+  its closed shape apart from its paths.
+- On `folder-v2` a worker key follows the folder naming rule (§1 "Names"), stricter than today's key rule
+  (no `.`, `_` or `--`), and is not a reserved name: the worker's folder is named by its key. The tools
+  check both before the receipt.
+
+**2. Who writes them** (contract 13: "The platform writes the brief when the worker is dispatched and the
+results when it reports … including coding workers, whose view of `agents/` is read-only").
+- **The reading** (the coordinator, 3 October; no contract text changes): "the platform writes" means a
+  platform worker tool commits the file, as the run, with the tool's request, receipt and review inside
+  the commit. The history then shows which run dispatched or reported. A `platform {}` commit is not
+  used, because it cannot carry the receipt and the review, and it skips the pause check.
+- **The entry:** `qorpera_folder_worker_commit(environment, actor, operationKey, units, request, receipt,
+  review)` (the service role and the native host). It refuses any actor but `run`, and refuses when a
+  request is already set in the transaction. It sets the transaction-local setting
+  `qorpera.folder_worker` to the request with the environment, the run id and the operation key, calls
+  `qorpera_folder_commit`, and clears the setting. The hook refuses a setting that does not name its own
+  commit's environment, run and operation key.
+- **The hook's guard:**
+  - `brief.md` and `results.md` are written or deleted only with a carried request that names them.
+  - A worker's folder (any folder directly in a todo's folder) is made only by a carried dispatch.
+  - Every other file inside a worker's folder is ordinary and follows folder authority: a write worker's
+    outputs.
+  - A commit that carries a request holds only the units its action names.
+  - Without a request, a worker's folder moves only with its whole agent folder (its row is repointed),
+    and is deleted only by a delete of a folder that holds it (the worker's folder, its todo's folder, the
+    todos folder or the agent's folder), which retires the worker's row. Both only while none of those
+    workers is active.
+  - A restore of a folder that holds retired workers (an agent's folder, as contract 5.6 lets a deleted
+    agent come back, or a todo's, the todos folder or a worker's own) brings each one's `brief.md` and
+    `results.md` back only at the last versions its row records, byte for byte, and the row back
+    finished, never active; the row then points at the new versions, which the check step verifies.
+    Whoever may restore that folder may do it, and the restore's own review class applies; the worker
+    files add none. Any other restore of them is refused.
+- **Authority:** dispatch, follow-up and decide follow folder authority (the run acts for its requester,
+  as W1 does). A carried report by the worker's own run passes the authority check (the read-only
+  worker's ban included, `qorpera_folder_actor_resource_allowed`), so a narrowed folder or a read-only
+  view never stops a report; the hook then allows only that worker's own `results.md`. This is the only
+  exception, and only through `report_work`.
+
+**3. The actions** (the units, then the hook's rules from the carried request and the locked rows).
+- **`dispatch`**, by the todo owner's own company run, never a worker's: the todo's folder (`mkdir`, when
+  it is missing), then `new_folder <todo>/<worker>` holding `brief.md`.
+  - The todo is open or blocked, and not retired. The worker key is free in that todo. The brief's `id` is
+    new; the runtime derives it from the run and the operation key, as hiring does.
+  - The brief agrees with the request: title, access, revival, `in-house`, goal, done, context, sources;
+    the standing texts equal the platform's own (SQL writes them today and keeps them); `follow_ups` is 0;
+    `dispatched_at` is within five minutes of the commit.
+  - Each source is readable by the run (`qorpera_folder_actor_allowed`, read) and passes the path rule.
+  - The member who started the chain pays for background work (today's check).
+  - Review: delegation, with an answered review always (R1). A worker unit that would wait for review is
+    refused, never parked.
+- **`followup`**, by the same agent's company run: `write brief.md` at its version with `follow_ups` one
+  more, `followed_up_at` within five minutes of the commit, `## Follow-up` the new text and everything else
+  unchanged; and `delete results.md` at its version when it exists.
+  - The todo is open or blocked; the worker is not active; an in-house worker that was cancelled cannot
+    continue; the starter pays (today's checks). Review: delegation.
+- **`report`**, by the worker's own run (its wake's worker, at the worker's current sequence): `write
+  results.md` while the worker is active, with an outcome other than `cancelled`, no decision, and
+  `reported_at` within five minutes of the commit. Each listed file has a version written by a commit of
+  this run (today: a revision this run wrote). Plain.
+- **`decide`**, by the agent's company run: `write results.md` at its version with only `decision` and
+  `note` changed; `accepted` only when the outcome is `succeeded`. Plain. Without a report there is no
+  `results.md`, so `decide` refuses: a worker that failed or was cancelled without reporting is not
+  decided on (today a reject of such a worker only suppressed its completion).
+- **`cancel`**: no file. A run effect like a coworker message: `qorpera_folder_tool_run` with the todo
+  (`FOR SHARE`) and the worker (`FOR NO KEY UPDATE`) at rank 5, then the receipt, then today's cancel on
+  the row (its queued wake cancelled), without touching the todo row.
+- **`status`**: a plain read of the rows, as W1's todo list. It reads no file.
+- **`archive`** is for coding sessions, and refuses on `folder-v2` with them.
+
+**3a. A todo's file and its folder** (as H2 keeps a task's file and folder). A todo's file is moved or
+deleted only when its folder holds no worker's folder, so a todo with workers is never renamed (its
+workers' folders could not follow: a change set is not atomic). To delete it, delete its folder first (an
+earlier unit of the same change set, or an earlier save), which retires its finished workers; never while
+one of its workers is active. A refused rename says so: "this todo has workers: write a new todo, or delete
+its folder first".
+
+**4. The index.** The row stays the worker's index and keeps its runtime state. On `folder-v2` the hook
+writes it in the same transaction as the files:
+- dispatch: the row (id from the brief, `dispatch` built from the parse, `occurrence_id` empty), the
+  `dispatched` event;
+- followup: as today's follow-up (sequence, `active`, result and decision cleared, completion reset,
+  `occurrence_id` empty, `steering_run_id` the follow-up's run, `dispatch` from the new parse), the event;
+- report: the state, `result` built from the parse with the run and the sequence, `reported_at` from the
+  commit's clock, `completion_state = waiting`, the event;
+- decide: the acceptance columns, a waiting completion suppressed, the event.
+- The todo's revision is not bumped (it is moot for folder rows, §4).
+- New columns, as the roster's: `folder_environment_id`, `folder_path` and `folder_key` (the worker's
+  folder), `folder_brief_version`, `folder_results_version` (empty exactly when there is no
+  `results.md`), `folder_commit_id` and `folder_retired_at`. `sequence` equals `follow_ups + 1`, checked.
+- A retired row keeps its history, runs that reference it keep working, and a waiting completion still
+  revives its parent. A rebuild keeps the runtime columns (`steering_run_id`, `requested_by_user_id`, the
+  wake and completion), as H2's `started_by_user_id`.
+- `result` is partly a copy and partly runtime state: a copy of `results.md` when the worker reported; the
+  platform's outcome (cancelled, ended or never started without a report, a stopped parent, a cancelled
+  todo) otherwise, with no file. C2's queue may later write `results.md` for those; the parser keeps
+  `cancelled` for that.
+
+**5. Locks.** Rank 5 gains two tables, after `qorpera_cloud_routines` and before
+`qorpera_folder_human_task_index`: `qorpera_runtime_agent_todos`, then `qorpera_runtime_workers`, by id.
+- Every unit that writes, moves or deletes an existing todo file takes that todo `FOR NO KEY UPDATE`; so
+  does every unit that moves or deletes a folder holding todos (from its `asOfSeq` listing).
+- A worker commit takes its todo `FOR SHARE` (so `done` and a dispatch wait for each other, and two
+  reports in one todo do not) and its worker `FOR NO KEY UPDATE` (a new worker's id is claimed), with the
+  company row `KEY SHARE` at rank 0.
+- A unit that moves, deletes or restores a folder holding workers takes them `FOR NO KEY UPDATE`, and their
+  todos as a todo write does.
+- `decide` answers `version_changed` when a todo or worker row it reads was written after the commit's
+  `as_of_seq` and it did not lock it (H2b's guard).
+- This patches F2-6's targets for todos, with a body marker. No company-wide lock, and no lock outside
+  rank 5.
+
+**6. Wakes: the folder-v2 worker drain** (F2 builds it, the coordinator agreed 3 October). The commit
+inserts no wake: the hook has no call at core §3 step 10, and a refused wake must never roll back the
+files. So a dispatch or a follow-up leaves its row active with no occurrence, and the drain starts it.
+- `qorpera_folder_drain_worker_wakes(environment, limit)`: one company in its own transaction (never
+  inside a caller's transaction that holds admission). In order:
+  1. `qorpera_folder_company_enter(environment, profile, targets, true)`: the pause (a paused company
+     refuses with 55000, and the due list leaves paused companies out), the fence `KEY SHARE` with the pause
+     read again, the company row at rank 0, and the targets at their ranks: each requester's member row
+     (rank 1, `KEY SHARE`), each parent agent's staff row (rank 2, `KEY SHARE`) and execution authority
+     (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers (`FOR NO KEY UPDATE`) at rank 5. The
+     workers are the due ones and every other waiting worker of their parents, so a revival's set of up to
+     four is always among the locked rows;
+  2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
+  3. `qorpera_folder_admit_wakes`;
+  4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
+     cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
+     (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
+     without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
+     workers (`todo_cancelled`, which no queue does yet); and revival with today's rules (`each`, `batch`,
+     at most four results, one revival of a parent at a time). A revival block that fails (42501, P0002,
+     55000) marks its workers undeliverable, as today. The drain never touches a todo row. A pass handles at
+     most 32 workers, within core §3's 64 subtransactions.
+  - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
+    acts only on final job states, which never go back, so a stale read waits one pass.
+  - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
+- `qorpera_folder_worker_wakes_due()` lists the companies with due work.
+- **The seam for P28** (written into core §11 C4): the `folder-v2` materializer calls the drain for each
+  company `qorpera_folder_worker_wakes_due()` lists, in its own transaction, before it materializes that
+  company's wakes; P28's acceptance includes "a dispatch runs and its revival returns". Until P28 nothing
+  calls it, and no `folder-v2` run exists either.
+
+**7. The runtime.**
+- `manage_worker` on `folder-v2`: dispatch, follow-up and decide build the files with the shared writers,
+  stage them, and commit through the entry under the call's receipt and, for dispatch and follow-up, the
+  automatic review's record (R1 accepts `manage_worker` for those two actions only). Cancel and status call
+  their functions.
+- `report_work` on `folder-v2` writes `results.md` the same way, under the worker run's receipt.
+- The wake shapes gain `folder-v2` paths: the output folder is the worker's folder, and the todo path is
+  the todo file. A write worker still writes where its agent may (the brief's authority text).
+- The new entry and status join the native host's call list (`qorpera_native_host_calls`) with scope
+  `folder` (run actors only; their signatures take the environment and the actor), and cancel with scope
+  `binding`. All three join the runtime client's RPC lists (test 760's pinned shapes) and its
+  `NATIVE_HOST_CALLS` in F2-5b-4.
+- A retired worker row keeps the folder key it had: a worker's folder deleted before its agent's folder is
+  renamed comes back only at its old path.
+
+**PRs, in this order** (each with an exact-head review and node 2 `changed`):
+- **F2-5b-1, the parser** (`packages/cloud-client`, no SQL): the sections, the parses, the writers with
+  their refusals, `appendWorkerFollowUp`, the key rule. Live on every writer before F2-5b-2.
+- **F2-5b-2, the database** (migration 20260930003000, SQL tests 840 and 841): the hook (shape, rules, guard, index, locks), the
+  entry, cancel, status, the authority exception, the new columns, R1's tool, the native-host list. Body
+  markers in every patched function, anchored on today's text (H2b's included). New functions for the
+  `folder-v2` payloads; the shared payload functions and the legacy drain stay untouched.
+- **F2-5b-3, the drain** (migration 20260930003100, SQL tests 842 and 843): §6.
+- **F2-5b-4, the runtime** (TS): §7.
+
+Tests: every action's rules and refusals; a worker-file unit with no request (a member, the model's file
+tool); a request that names another run, environment or operation key; a report commit holding any other
+unit; the read-only and narrowed-folder report; R1 accepting `manage_worker` for dispatch and follow-up
+only; races of dispatch against `done`, two saves of one todo, the drain against cancel, a report and a
+subtree delete, and an agent folder move against a dispatch; a mutant run, as H1b and H2b; and the legacy
+worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new columns.
+
+**Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
+step I6, with Interfaces; design, 3 October, review r1 folded). The rules are RUNTIME-INTERFACES.md §6.1 (its nine
+checks, as #751 states them) and §7 for review. Interfaces' TS side is #751: `parseInterfaceStateFile`, the parse
+types, the fixtures `interface-state.json` and `table-rows-typed.json`, and `interfaceLibraryFiles`. This plan says how
+the hook runs them. Folder-v2 only (the founder decision of 3 October): no snapshot-v1 branches and no pins of old
+function text.
+
+*The kinds.* `qorpera_structured_path_kind` names four new kinds by the path's shape alone, whatever the name:
+`interfaces/order.md` (`interface-order`), `interfaces/*/interface.toml` (`interface`), `tables/*/table.toml`
+(`table`) and `tables/*/rows.csv` (`table-rows`). So a badly named folder's file is still checked, and refused. The
+shared helpers learn them too:
+- `qorpera_company_state_path_problems` checks the folder's name at position 2 for the three kinds in a named folder,
+  and exempts all four from the `.md` rule;
+- `qorpera_structured_folder_names` names the places: `interfaces` and `tables` (no name of their own),
+  `interfaces/<name>` and `tables/<name>`;
+- `qorpera_company_state_carried` adds `interfaces` and `tables` to its roots, so a folder copied or moved into, within
+  or out of them is checked entry by entry (`kind_change`, `structured_copy`): a table or an interface is never
+  copied as a folder, and a folder holding a file named `table.toml` never becomes a table by moving;
+- `qorpera_company_state_checked` runs the shape check for the four kinds.
+
+In P16b, `companyStatePath` (the TS twin of the path kind) learns the four kinds and exempts them from the `.md`
+rule, and `parseCompanyStateFile` dispatches them to `parseInterfaceStateFile`. Writers decide what to send with
+`companyStatePath`, so only then do the runtime's tools, the web, the object gateway (the creation worker and member
+writes) and the folder service send them as structured entries. The runtime ships through the release train.
+
+*Coding sessions* see `interfaces/` and table definitions read-only (contract 5.6, RUNTIME-INTERFACES.md §7).
+`qorpera_folder_coding_protected` adds `interfaces`, everything under it, and `tables/<name>/table.toml`. The
+callers already check each key of a new folder, a delete and a move, so a coding session never creates, moves or
+deletes a table folder either; it writes `rows.csv` under `[write]` and the rules below.
+
+*(1) The parse's shape* (`qorpera_company_state_parse_problems`; §6.1 rule 1). A parse it refuses is
+`structured_invalid` with the state files' `value` problem (the parser's own codes come from the client):
+- **Full** for `table` (closed keys; a lowercase strict uuid `id`; the name and texts with the parser's bounds; 1–40
+  columns with their types and the keys each type takes; a key of 1–3 columns, each once, never optional and never a
+  number; `holder`, `time` and `[write]`), `table-rows` (§6.1 rule 1's bounds: 1–40 header names, rows of
+  `{line, fields}` with `line` at least 2 and strictly increasing, fields as wide as the header, at most 32,768 rows
+  and 65,536 bytes of fields) and `interface-order` (unique strict uuids).
+- **Shallow** for `interface`: closed top-level keys, and typed `kind`, `id`, `name`, `main` and `access` (an object of
+  exactly `members`, `agents` and `edit`, each with its parser's values). The fields review reads are typed too: `buttons` is an array of objects
+  with a string `id`, and `views` an array of objects whose `blocks` is an array of objects whose `buttons` is an array
+  of strings. The rest by JSON type and size. Three conditions keep this safe (Interfaces):
+  - readers (I7's web, I8's `interface_read`) parse the text themselves and never trust the stored parse, so the
+    parser-only refusals (`outside_value` included) hold even against a client that lies;
+  - `main` from the parse is rule 3's only input, and the web handles zero or two mains in the texts it reads;
+  - a later slice that indexes or reads a field adds that field's full check.
+
+  A stored parse that is missing (a file saved as an ordinary file before P16 in an operator's company) reads as
+  absent: an interface that is not main and open to anyone, a table with no definition (its rows are refused until
+  `table.toml` is saved again).
+
+*(2)-(9) The save check*, against the parses as they are when the unit is decided (earlier units of the change set
+applied). Placement and the owners rule run for every unit, structured or not (`structured_rule` with §6.1's codes):
+- **Placement** (rule 2): every path a unit lands, a moved folder's descendants included, is one §6.1 allows: under
+  `interfaces/` only `order.md` and one folder per interface holding `interface.toml` and `README.md`; under `tables/`
+  one folder per table holding `table.toml`, `rows.csv` and `README.md` (written `README.md` or `readme.md`). So a file
+  `tables/foo` is refused and a folder `tables/foo` allowed. `interfaces/`, `interfaces/order.md`, `tables/`,
+  `tables/areas/`, its `table.toml` and its `rows.csv` join the seeded paths, never deleted or moved. So do the main
+  interface's folder and `interface.toml`, while it is main. A table's two files go or move only with their folder,
+  and a `rows.csv` needs a `table.toml` in its folder: stored, or in the same unit.
+- **Main** (rule 3): a unit whose `interface.toml` has `main = true` is refused while another live one has it (so,
+  during a double main, saves that keep `main = false` still pass). A change set is not atomic and a refusal is per
+  unit, so this is §6.1's per-unit rule (#751): a switch is two units, the old main set to
+  false first, then the new one to true, and `save_interface` and the web send them so; the seed has exactly one main
+  (Pulse). What this gives up, recorded with Interfaces' yes:
+  - zero mains can last: a demotion with no promotion after it leaves none until someone saves one;
+  - contract 5.6's "the main interface can be changed but not deleted" holds while it is main: an interface is
+    demoted, then deleted (put to Jonas through the coordinator, since the contract governs);
+  - **no lock** serializes two promotions. Rule 3 reads the stored mains, and two units that each make a different
+    interface main, decided at the same time while there is none, both pass. This takes no new company-wide lock (the
+    rule of 27 September), at the price of a rare double main, which the web shows (I7) and which the next save of
+    either main resolves: it is refused until one is set to false. A lock on the company's index row would serialize
+    them, but every vision save would then have to take it too, before its paths (a deadlock otherwise: a vision save
+    updates that row in apply).
+- **Owners** (rule 4): while an interface's stored parse has `access.edit = "owners"`, only an owner or admin (or the
+  platform) changes, moves or deletes anything in its folder, or lands anything in it. An agent never does. Creating
+  an interface with `edit = "owners"` is open to anyone who may create one (Interfaces), and a copy out of one only
+  reads it. Like rule 3, the rule reads the stored parse without a lock: a contributor's save can land at the moment
+  an owner's change to `edit = "owners"` commits.
+- **Write** (rule 5): a `rows.csv` save under the stored definition's `[write]`. The platform passes. A table's first
+  rows, in the unit that brings its definition, are its maker's (beyond #751's rule 5, which reads a stored
+  definition; asked of Interfaces).
+- **Rows** (rule 6): the port of `parseTableRows`, set-based SQL (no loop per field or row). The header against the
+  definition (a header that fails refuses the file at line 1); each field by its column type with §6.1's patterns and
+  bounds (a time in its canonical text; years 0100–9999); one `row` problem per row, for the first column in the
+  definition's order that fails; the key as a JSON array; a later row with an earlier key is `duplicate`; at most 50
+  problems, then "and K more problems". The definition is the one the same unit brings, else the stored one.
+- **Definition change** (rule 7), on a `table.toml` save while its folder holds rows (stored, and not replaced in the
+  same unit): the stored rows fit the new definition by rule 6, and a `needs_yes` column gains or loses its flag, or
+  goes, only while every row leaves it empty (`claim`).
+- **Claim** (rule 8), on a `rows.csv` save: the stored rows against the new ones by key, typed by the definition at
+  commit; a cell changes when its value's JSON text differs. *Self* is the member. An agent has no self until I9b,
+  so it changes no claimed cell, and accept never passes until offers exist. The platform passes only changes that
+  clear a cell (a leaving member's cells, contract 5.6); seeding writes header-only rows. A new table's rows have no
+  stored rows, so each claimed cell they set must be a take: the maker's own id.
+- **Areas** (rule 9): `tables/areas/table.toml` keeps its three columns, and after a rows save no agent is in two
+  areas.
+- **Ids:** one live interface per `id`, and one live table per `id` (`duplicate`); a table folder keeps its id
+  (a save that changes it is `duplicate`, as #751's §6.1 says), since its index row is keyed by it. An interface has no index before I7, so it may take a new id.
+  The interface check takes no lock: two interfaces made at the same time with one id can both land (I7 shows it).
+  Two tables made at the same time with one id both pass decide, and the second commit fails whole on the index
+  row's key, as H2's index does.
+
+*The index and the locks.* No index is read before I7, but the rules read a table's definition when its rows change,
+and its rows when its definition changes, and their path locks don't conflict (each holds `tables/<t>` KEY SHARE and
+its own file FOR UPDATE). So P16 adds `qorpera_folder_table_index`, one row per table folder, keyed
+`(environment_id, id)` by the table's id as H2's index is: the folder's path and key, the definition's and the rows'
+versions (rows null while there is no `rows.csv`), the commit, and retired. No foreign key to `qorpera_profiles` (its
+KEY SHARE would come in apply), and a key index that is not unique. It holds only pointers, rebuilt from the files.
+- **The lock**, FOR NO KEY UPDATE at rank 5, after the contact index in the table order, on: every write of
+  `table.toml` (by its parse's id) or `rows.csv` (by its folder's live row), a new folder holding them, and a delete or
+  move at or above a table folder (never the seeded `tables` root, which is refused anyway).
+- **The window:** a row created after this commit read its targets is locked by nobody. So a save finding a table row
+  changed by a commit after this one's `as_of_seq` answers `version_changed`, H2's guard: the caller reads again. A
+  delete or move of a table folder does the same for every live table row at or under its source, so apply never
+  repoints or retires a row it did not lock.
+- **Apply** writes the row: a first `table.toml` inserts it (a retired row of that id is reused), a save moves its
+  versions, a move repoints every row at or under the source to its new path and versions (counting them, and raising
+  on a mismatch, as H2 and F2-5b do), and a delete retires them. **Verify** checks every row the commit wrote: its
+  definition version is its `table.toml` entry's, its rows version is null exactly when there is no `rows.csv` entry
+  and otherwise that entry's, and its path is the entry's spelling.
+
+There is no new company-wide lock. The core's rank-5 list (core §3 step 4) and its kinds list (core §5) are updated.
+
+*Review* (§7). `qorpera_folder_structured_review_class` returns `delegation` for an agent's change that:
+- creates an interface (no stored parse at its path);
+- changes `$.buttons`, or names under `$.views[*].blocks[*].buttons[*]` a button its stored parse names nowhere
+  there (a set, so reordering blocks stays plain);
+- changes `$.access`;
+- creates a table, or changes its `$.columns` or `$.write`.
+
+Anything else is plain, and an agent's delete or move is the core's deletion class before the hook is asked. The
+review recorder (C2 R1) gains `save_interface` as a delegation, only for change sets whose every unit is at or under
+`interfaces/` or `tables/`. An agent's delete of a page or table (`destructive`) goes through `company_delete`; I8
+decides whether `save_interface` also records deletions. A delegation-class change through the mount or a shell has no review, so the commit denies it, as §7 says.
+
+*Cost.* A `rows.csv` parse is stored with its version and sent with its request: at 64 KiB of CSV it is up to about
+1 MB. 865 times the worst case (64 KiB of rows against a 40-column definition, a definition change over them, and the
+claim rule over every row) against the core's 4-second tool bound, and reports the stored parse's bytes for the
+largest and the smallest-row 64 KiB files, the growth each saved version adds.
+
+*The seed.* `companyStateSeedTree` adds `interfaceLibraryFiles(newId)`: `interfaces/` with Pulse, Mailbox, Members
+and `order.md`, and `tables/` with `numbers`, `areas` and `cards` (header-only rows). The SQL seeded list and
+`COMPANY_STATE_SEEDED_PATHS` gain the protected paths. The creation worker's `creationUnits` (P14b) makes each
+interface folder and each table folder one `new_folder` unit, with media types by extension (`text/markdown` for
+`.md`, `text/plain` for `.toml` and `.csv`). Its ids are random on each attempt: a creation commits whole, and a
+completed one answers from its row.
+
+*Hand-overs.* P18b's erasure under `tables/` deletes retired table rows at rank 5, in the lock function's table
+order. I9b: when an agent gets a self (its area's supervisor), its rows save reads `tables/areas` and must lock the
+areas row in the same rank-5 pass; offers will need their own lock.
+
+*PRs, in this order:*
+- **P16a, the database** (migration 20260930016000), with SQL tests:
+  - 864: the kinds, shapes (the fixtures' valid parses, embedded), placement (copy and move into and within the
+    roots), coding sessions, main, owners, ids and review classes;
+  - 865: write, rows (the typed fixture), definition changes, claim (the platform clearing a cell), areas, a
+    creation-shaped new folder, and the worst-case timing;
+  - 866: races: a rows save against a definition change, the window above, a table move or delete against a rows
+    save, and two promotions;
+
+  and a mutant run, as H2b and F2-5b. P16b adds a check that 864's embedded parses equal the fixtures.
+- **P16b, the TS:** `companyStatePath` and the dispatch, the seed tree and seeded paths, and `creationUnits`, after
+  P16a and #751. A creation before P16a would send kinds the hook refuses.
 
 ## 9. The seeded tree
 
@@ -1436,7 +2168,9 @@ platform:
   its empty `memory/`, `skills/`, `routines/` and `todos/`;
 - with `firstTodo`, the Co-Founder's first todo at `COMPANY_STATE_FIRST_TODO_PATH` ("Start with the
   founders", requested by the founder who started the table);
-- `agents/groups/`, `connections/`, `skills/` and `rules/`.
+- `agents/groups/`, `connections/`, `human-tasks/`, `contacts/`, `skills/` with the seeded skill
+  `skills/human-task/SKILL.md` (`COMPANY_STATE_HUMAN_TASK_SKILL`, an ordinary file a company may edit),
+  and `rules/`.
 
 It throws a `RangeError` when a file would not parse (a founders' vision past the size limit), so
 C2 never sends a creation commit the database refuses.

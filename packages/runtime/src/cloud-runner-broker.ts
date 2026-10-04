@@ -74,8 +74,11 @@ export interface CloudRunnerBrokerDescription {
 	job: CloudRunnerJob;
 	run: CloudRunnerExecutionRun;
 	sponsor: CloudRunnerExecutionSponsor;
-	version: HostedCompanySubstrateVersion;
-	snapshot: HostedCompanySnapshot;
+	/** The Company File substrate: version, snapshot and companyFileOutputLimits are present together, or absent
+	 * together for a folder-v2 run, which the broker describes in the path lane with no substrate (folder core C3,
+	 * P23). */
+	version?: HostedCompanySubstrateVersion;
+	snapshot?: HostedCompanySnapshot;
 	proposalSnapshot?: HostedCompanySnapshot;
 	artifactIndex?: HostedArtifactIndex;
 	outputLimits: {
@@ -84,7 +87,7 @@ export interface CloudRunnerBrokerDescription {
 		maxTotalBytes: number;
 		rootContract: "qorpera.object/v1";
 	};
-	companyFileOutputLimits: {
+	companyFileOutputLimits?: {
 		maxObjectBytes: number;
 		maxObjectCount: number;
 		maxTotalBytes: number;
@@ -102,8 +105,12 @@ export interface CloudRunnerExecutionRun {
 	sourceId: string;
 	sessionId?: string;
 	jobId: string;
-	substrateVersionId: string;
-	companySnapshotId: string;
+	/** Both or neither: a folder-v2 run has no Company File substrate. */
+	substrateVersionId?: string;
+	companySnapshotId?: string;
+	/** A folder-v2 run's pin instead of a snapshot: the folder clock's last_seq when it was materialized (folder core
+	 * C4, P28). Never beside a snapshot. */
+	companySeq?: number;
 	staffAgentId: string;
 	staffVersion: number;
 	inputIds: readonly string[];
@@ -521,7 +528,9 @@ function parseBrokerJob(value: unknown): CloudRunnerJob {
 		profileId: uuid(input.profile_id, "job profile id"),
 		environmentId: uuid(input.environment_id, "job environment id"),
 		...(sessionId ? { sessionId } : {}),
-		substrateVersionId: uuid(input.substrate_version_id, "job substrate id"),
+		...(optionalUuid(input.substrate_version_id, "job substrate id")
+			? { substrateVersionId: uuid(input.substrate_version_id, "job substrate id") }
+			: {}),
 		clientJobId: uuid(input.client_job_id, "job client id"),
 		...(optionalUuid(input.assignment_id, "job assignment id")
 			? { assignmentId: uuid(input.assignment_id, "job assignment id") }
@@ -600,6 +609,14 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 	) {
 		throw new Error("Runner broker returned inconsistent execution policy");
 	}
+	if (
+		input.company_seq !== null &&
+		input.company_seq !== undefined &&
+		input.company_snapshot_id !== null &&
+		input.company_snapshot_id !== undefined
+	) {
+		throw new Error("Runner broker returned a run with both a snapshot and a folder sequence");
+	}
 	return {
 		runId: uuid(input.run_id, "execution run id"),
 		profileId: uuid(input.profile_id, "execution profile id"),
@@ -610,8 +627,16 @@ function parseExecutionRun(value: unknown): CloudRunnerExecutionRun {
 			? { sessionId: uuid(input.session_id, "execution session id") }
 			: {}),
 		jobId: uuid(input.job_id, "execution job id"),
-		substrateVersionId: uuid(input.substrate_version_id, "execution substrate id"),
-		companySnapshotId: uuid(input.company_snapshot_id, "execution Company File snapshot id"),
+		...((input.substrate_version_id === null || input.substrate_version_id === undefined) &&
+		(input.company_snapshot_id === null || input.company_snapshot_id === undefined)
+			? {}
+			: {
+					substrateVersionId: uuid(input.substrate_version_id, "execution substrate id"),
+					companySnapshotId: uuid(input.company_snapshot_id, "execution Company File snapshot id"),
+				}),
+		...(input.company_seq === null || input.company_seq === undefined
+			? {}
+			: { companySeq: integer(input.company_seq, "execution folder sequence", 0, Number.MAX_SAFE_INTEGER) }),
 		staffAgentId: uuid(input.staff_agent_id, "execution staff agent id"),
 		staffVersion: integer(input.staff_version, "execution staff version", 1, Number.MAX_SAFE_INTEGER),
 		inputIds,
@@ -1056,15 +1081,47 @@ export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBr
 		throw new Error("Runner broker returned an invalid Company File runtime selection");
 	}
 	const limits = record(input.output_limits, "output limits");
-	const companyFileLimits = record(input.company_file_output_limits, "Company File output limits");
-	integer(companyFileLimits.tree_contract_version, "Company File output tree contract", 3, 3);
 	if (limits.root_contract !== "qorpera.object/v1") {
 		throw new Error("Runner broker returned unsupported output root contract");
 	}
+	const job = parseBrokerJob(input.job);
+	const run = parseExecutionRun(input.run);
+	// A folder-v2 run (folder core C3, P23): the path lane with no substrate anywhere. Only that lane serves it, so a
+	// whole-tree reader can never be handed one; a substrate named on one side only is refused.
+	const absent = (value: unknown) => value === null || value === undefined;
+	if (absent(input.version) && absent(input.snapshot)) {
+		if (
+			input.company_runtime !== "company-path-v1" ||
+			!absent(input.company_file_output_limits) ||
+			!absent(input.proposal_snapshot) ||
+			!absent(input.artifact_index) ||
+			job.substrateVersionId !== undefined ||
+			run.substrateVersionId !== undefined
+		) {
+			throw new Error("Runner broker returned a run without a Company File substrate outside the path lane");
+		}
+		return {
+			companyRuntime: input.company_runtime,
+			job,
+			run,
+			sponsor: parseExecutionSponsor(input.sponsor),
+			outputLimits: {
+				maxObjectBytes: integer(limits.max_object_bytes, "output object bytes", 0, MAX_OBJECT_BYTES),
+				maxObjectCount: integer(limits.max_object_count, "output object count", 0, MAX_OUTPUT_OBJECTS),
+				maxTotalBytes: integer(limits.max_total_bytes, "output total bytes", 0, MAX_OUTPUT_BYTES),
+				rootContract: limits.root_contract,
+			},
+		};
+	}
+	if (job.substrateVersionId === undefined || run.substrateVersionId === undefined) {
+		throw new Error("Runner broker returned a Company File substrate for a run without one");
+	}
+	const companyFileLimits = record(input.company_file_output_limits, "Company File output limits");
+	integer(companyFileLimits.tree_contract_version, "Company File output tree contract", 3, 3);
 	return {
 		companyRuntime: input.company_runtime,
-		job: parseBrokerJob(input.job),
-		run: parseExecutionRun(input.run),
+		job,
+		run,
 		sponsor: parseExecutionSponsor(input.sponsor),
 		version: parseVersion(input.version),
 		snapshot: parseSnapshot(input.snapshot),
@@ -1101,6 +1158,22 @@ export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBr
 			),
 			treeContractVersion: 3,
 		},
+	};
+}
+
+/** A folder-v2 run has no Company File substrate (folder core C3, P23): whatever needs one refuses it. */
+function substrateOf(description: CloudRunnerBrokerDescription): {
+	version: HostedCompanySubstrateVersion;
+	snapshot: HostedCompanySnapshot;
+	companyFileOutputLimits: NonNullable<CloudRunnerBrokerDescription["companyFileOutputLimits"]>;
+} {
+	if (!description.version || !description.snapshot || !description.companyFileOutputLimits) {
+		throw new Error("This run has no Company File substrate");
+	}
+	return {
+		version: description.version,
+		snapshot: description.snapshot,
+		companyFileOutputLimits: description.companyFileOutputLimits,
 	};
 }
 
@@ -1642,19 +1715,23 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 			description.run.environmentId !== description.job.environmentId ||
 			description.run.sessionId !== description.job.sessionId ||
 			description.run.substrateVersionId !== description.job.substrateVersionId ||
-			description.run.companySnapshotId !== description.snapshot.snapshotId ||
+			description.run.companySnapshotId !== description.snapshot?.snapshotId ||
+			description.job.profileId !== this.#options.job.profileId ||
+			description.job.environmentId !== this.#options.job.environmentId ||
 			description.run.sponsorBindingId !== description.sponsor.bindingId ||
 			description.run.sponsorVersion !== description.sponsor.version ||
 			description.run.requiredCapability !== description.job.requiredCapability ||
 			description.run.jobType !== description.job.jobType ||
-			description.version.versionId !== this.#options.job.substrateVersionId ||
-			description.version.profileId !== this.#options.job.profileId ||
-			description.version.environmentId !== this.#options.job.environmentId ||
-			description.snapshot.snapshotId !== description.version.companySnapshotId ||
-			description.snapshot.profileId !== description.version.profileId ||
-			description.snapshot.environmentId !== description.version.environmentId ||
-			description.version.artifactIndexId !== description.artifactIndex?.indexId ||
-			description.version.artifactManifestSha256 !== description.artifactIndex?.contentSha256 ||
+			(description.version !== undefined &&
+				(description.snapshot === undefined ||
+					description.version.versionId !== this.#options.job.substrateVersionId ||
+					description.version.profileId !== this.#options.job.profileId ||
+					description.version.environmentId !== this.#options.job.environmentId ||
+					description.snapshot.snapshotId !== description.version.companySnapshotId ||
+					description.snapshot.profileId !== description.version.profileId ||
+					description.snapshot.environmentId !== description.version.environmentId ||
+					description.version.artifactIndexId !== description.artifactIndex?.indexId ||
+					description.version.artifactManifestSha256 !== description.artifactIndex?.contentSha256)) ||
 			(description.run.sourceKind === "proposal_review") !== (description.proposalSnapshot !== undefined) ||
 			(description.proposalSnapshot !== undefined &&
 				(description.proposalSnapshot.profileId !== description.run.profileId ||
@@ -1720,11 +1797,11 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 
 	async resolve(versionId: string): Promise<ResolvedCompanySubstrateReference> {
 		const description = await this.describe();
-		if (versionId !== description.version.versionId)
-			throw new Error("Runner broker cannot resolve another substrate");
+		const { version, snapshot } = substrateOf(description);
+		if (versionId !== version.versionId) throw new Error("Runner broker cannot resolve another substrate");
 		return {
-			version: description.version,
-			snapshot: description.snapshot,
+			version,
+			snapshot,
 			...(description.artifactIndex ? { artifactIndex: description.artifactIndex } : {}),
 		};
 	}
@@ -1830,7 +1907,7 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		limit = 200,
 	): Promise<HostedCompanyOperation[]> {
 		const description = await this.describe();
-		if (version.versionId !== description.version.versionId) {
+		if (version.versionId !== substrateOf(description).version.versionId) {
 			throw new Error("Runner broker cannot list operations for another substrate");
 		}
 		return array(
@@ -1929,6 +2006,7 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 
 	async prepareCompanyRevision(input: PrepareCloudRunnerCompanyRevisionInput): Promise<HostedCompanySnapshot> {
 		const description = await this.describe();
+		substrateOf(description);
 		const snapshot = parseSnapshot(
 			await this.#options.transport.prepareCompanyRevision(this.#authority(), this.#assignmentId(), input),
 		);
@@ -2048,7 +2126,8 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 	}
 
 	async profileId(): Promise<string> {
-		return (await this.describe()).version.profileId;
+		// The job's company, which describe() checked against the substrate's when there is one.
+		return (await this.describe()).job.profileId;
 	}
 
 	async readObject(objectSha256: string): Promise<Uint8Array> {
@@ -2213,6 +2292,7 @@ export class CloudRunnerBrokerCompanyFilePublisher implements CloudRunnerCompany
 
 	async publish(input: CloudRunnerCompanyFilePublicationInput): Promise<string | undefined> {
 		const description = await this.#broker.describe();
+		const substrate = substrateOf(description);
 		if (
 			input.profileId !== description.run.profileId ||
 			input.environmentId !== description.run.environmentId ||
@@ -2229,14 +2309,14 @@ export class CloudRunnerBrokerCompanyFilePublisher implements CloudRunnerCompany
 			this.#broker.companyFileObjects,
 			{ forceFullVerification: true },
 		);
-		if (sameTree(captured.tree, description.snapshot.tree)) return undefined;
+		if (sameTree(captured.tree, substrate.snapshot.tree)) return undefined;
 		const objects = canonicalReachability(captured);
 		const storageBytes = objects.reduce((total, object) => total + object.bytes, 0);
 		if (
 			objects.length < 1 ||
 			objects.length > 400_000 ||
-			objects.length > description.companyFileOutputLimits.maxObjectCount ||
-			storageBytes > description.companyFileOutputLimits.maxTotalBytes
+			objects.length > substrate.companyFileOutputLimits.maxObjectCount ||
+			storageBytes > substrate.companyFileOutputLimits.maxTotalBytes
 		) {
 			throw new Error("Runner Company File output exceeds its durable publication limits");
 		}
@@ -2297,11 +2377,12 @@ export class CloudRunnerBrokerOutputPublisher implements CloudRunnerOutputPublis
 
 	async publish(input: CloudRunnerOutputPublicationInput): Promise<JsonValue> {
 		const description = await this.#broker.describe();
+		const { version } = substrateOf(description);
 		if (
-			input.profileId !== description.version.profileId ||
-			input.environmentId !== description.version.environmentId ||
+			input.profileId !== version.profileId ||
+			input.environmentId !== version.environmentId ||
 			input.jobId !== description.job.jobId ||
-			input.substrateVersionId !== description.version.versionId ||
+			input.substrateVersionId !== version.versionId ||
 			input.files.length > description.outputLimits.maxObjectCount
 		) {
 			throw new Error("Runner output publication is outside its leased job");

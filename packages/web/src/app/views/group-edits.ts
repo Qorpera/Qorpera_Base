@@ -184,8 +184,9 @@ export class GroupEdits {
 						changes: new Map(this.#changes),
 					};
 					this.#retry = attempt;
+					let wrote: boolean;
 					try {
-						await this.#update(attempt.observed.sessionId, attempt.observed, attempt.draft, signal);
+						wrote = await this.#update(attempt.observed.sessionId, attempt.observed, attempt.draft, signal);
 					} catch (error) {
 						// A failed preflight can accept corrections, but cannot resolve an earlier uncertain write.
 						if (error instanceof GroupUpdateNotWrittenError && !retrying) this.#retry = undefined;
@@ -199,14 +200,15 @@ export class GroupEdits {
 						this.#changes.delete(key);
 						delete this.#draft[key];
 					}
-					// The updater increments the room document exactly once, including lost-response retries.
+					// A write raises the room's version by one. A retry that finds its write already in the file writes
+					// nothing, but the uncertain try it repeats (or another writer) raised it. Nothing written leaves it.
 					this.reconcile({
 						...attempt.observed,
 						...attempt.draft,
 						name: attempt.draft.name.trim(),
 						purpose: attempt.draft.purpose.trim(),
 						...(attempt.draft.subtitle !== undefined ? { subtitle: attempt.draft.subtitle.trim() } : {}),
-						version: attempt.observed.version + 1,
+						version: attempt.observed.version + (wrote || retrying ? 1 : 0),
 					});
 				}
 				await this.#company.refreshSessions();

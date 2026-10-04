@@ -295,6 +295,14 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
     their foreign keys take on the company's profile row and the principal row (a registration waits at
     most 2 s behind a lock on the company's profile).
+  - Null-safe checks: every broker and the shared vault share one database login, so the capability is the
+    only proof that a call is for the company. Every broker function checks it, and every other proof the
+    caller sends (capture capability, tokens, digests, operation facts), so that a NULL argument is refused:
+    for example `is distinct from` against a NOT NULL column, `coalesce(<test>, true)` around a pattern or
+    length test, an explicit `is null` check, or a match in `where … = p_…`. A plain `<>`, `!~` or
+    `not between` is unknown for a NULL argument and skips the refusal. Migration `20260928429988` fixed the
+    last three functions that did not (capture describe and seal, operation authorization); SQL test 806
+    sends them NULLs. A new broker function follows the same rule and gets the same kind of test.
   - An operator creates the principal once (`insert` with the capability hash and the start time). One
     principal is active at a time; a second with an overlapping start time is harmless (the two race to
     register each new company and the loser is refused) but serves no purpose. Retiring a principal stops

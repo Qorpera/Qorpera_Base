@@ -262,6 +262,7 @@ describe("rail sections and pins", () => {
 		await ready;
 		await settle();
 		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Fixture conversation"]);
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
 		input.value = "cy";
 		draw();
@@ -754,6 +755,7 @@ describe("dragging agents in the rail", () => {
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(rail.querySelector(".rail-scroll")!.classList.contains("rail-dragging")).toBe(false);
 		document.dispatchEvent(pointer("pointerup", 20, 0));
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
 		input.value = "c";
 		draw();
@@ -995,7 +997,7 @@ describe("group chats in the rail", () => {
 		expect(menuItems()).toEqual(["Pin", "Move to", "Copy conversation ID", "Hide from sidebar"]);
 	});
 	it("renames a group chat through its details and deletes one after confirming", async () => {
-		const updateGroup = vi.fn(async () => {});
+		const updateGroup = vi.fn(async () => true);
 		const deleteGroup = vi.fn(async () => {});
 		const { f, rail, ready } = companyWith(...launchCompany({ updateGroup, deleteGroup }));
 		await ready;

@@ -1,3 +1,4 @@
+import { AGENT_COLOUR_HEX } from "../cloud/agent-colours.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
 import { phrase, t } from "./preferences.ts";
@@ -90,19 +91,14 @@ const FIGURE_BY_TEMPLATE: Record<string, FigureId> = {
 	"costumer-relationist": "heart",
 	"outreaching-conversationalist": "flame",
 };
-const COLOR_TOKENS: Record<string, string> = {
-	"qorpera-charcoal": "#312f2d",
-	"qorpera-brown": "#87674c",
-	"qorpera-coral": "#ff365e",
-	"qorpera-orange": "#f96e2d",
-	"qorpera-gold": "#fcb51b",
-	"qorpera-green": "#00c878",
-	"qorpera-teal": "#00bfb3",
-	"qorpera-blue": "#2047bd",
-	"qorpera-purple": "#b83ff5",
-	"qorpera-pink": "#ff2994",
-	"qorpera-gray": "#7c7c7a",
-};
+const COLOR_TOKENS: Record<string, string> = Object.fromEntries(
+	Object.entries(AGENT_COLOUR_HEX).map(([colour, hex]) => [`qorpera-${colour}`, hex]),
+);
+
+/** The hex of an agent colour name (`coral`), as `agent.md` and interface files write it. */
+export function colourNameHex(colour: string): string | undefined {
+	return COLOR_TOKENS[`qorpera-${colour}`];
+}
 
 function isFigure(value: string | undefined): value is FigureId {
 	return (FIGURE_IDS as readonly string[]).includes(value ?? "");

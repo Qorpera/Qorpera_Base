@@ -15,6 +15,7 @@ import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
+import { nativeColorOf } from "../ui/avatar.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -31,13 +32,14 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
-import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
+import { savedAgentDraft } from "./views/agent-edits.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
+import { renderInterface } from "./views/interface.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
@@ -150,7 +152,6 @@ export function mountApplication(
 	let navigationFocus: "rail" | "toggle" | undefined;
 	/** Why the app could not start, when reading the cloud session failed. */
 	let startError: HTMLElement | undefined;
-	let unsubscribeFile: (() => void) | undefined;
 	let pendingCompany:
 		| { profileId: string; revision: number; promise: Promise<CompanyController | undefined> }
 		| undefined;
@@ -173,7 +174,14 @@ export function mountApplication(
 		main.inert = navigationOpen && isPhoneLayout();
 	}
 	function onEscape(event: KeyboardEvent): void {
-		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
+		if (
+			event.key === "Escape" &&
+			!event.isComposing &&
+			navigationOpen &&
+			!settings &&
+			!feedback &&
+			!event.defaultPrevented
+		) {
 			setNavigationOpen(false);
 		}
 	}
@@ -206,7 +214,6 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
-	let companyFile: CompanyFileController | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
@@ -343,10 +350,8 @@ export function mountApplication(
 		notices = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
-		unsubscribeFile?.();
 		conversation?.dispose();
 		newConversation?.dispose();
-		companyFile?.dispose();
 		liveFile?.dispose();
 		liveFile = undefined;
 		company?.stop();
@@ -354,7 +359,6 @@ export function mountApplication(
 		company = undefined;
 		computer = undefined;
 		computerPanels = undefined;
-		companyFile = undefined;
 		conversation = undefined;
 		newConversation = undefined;
 		homeReason = undefined;
@@ -468,9 +472,7 @@ export function mountApplication(
 			});
 			// Open computers outlive the thread they were opened in; leaving the company ends them.
 			computerPanels = new ComputerPanels(computer, controller.signal);
-			companyFile = new CompanyFileController(api, controller);
 			unsubscribeCompany = controller.store.subscribe(() => render());
-			unsubscribeFile = companyFile.store.subscribe(() => render());
 			void controller.start();
 			return controller;
 		})();
@@ -691,8 +693,8 @@ export function mountApplication(
 			);
 			return;
 		}
-		// Agents are Company File documents. Each write re-checks that this
-		// member still holds the authority the company showed when it began.
+		// Agents are company folders (agents/<handle>/agent.md). Each write re-checks
+		// that this member still holds the authority the company showed when it began.
 		const agents = () => {
 			const team = controller.store.get().team;
 			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can change agents."));
@@ -708,6 +710,8 @@ export function mountApplication(
 					)
 						throw new Error(t("Company access changed."));
 				}),
+				// A field the member did not touch keeps the file's own value; a figure's own shade is no colour.
+				{ saved: savedAgentDraft, native: nativeColorOf },
 			);
 		};
 		const agentActions: WorkspaceActions = {
@@ -721,7 +725,7 @@ export function mountApplication(
 			if (disposed || company !== controller || auth.userId !== controller.userId || now.accessLost)
 				throw new Error(t("Company access changed."));
 		};
-		const groupEditor = async (signal: AbortSignal) => {
+		const groupFolder = (signal: AbortSignal) => {
 			companyCurrent();
 			const team = controller.store.get().team;
 			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can edit group chats."));
@@ -729,11 +733,11 @@ export function mountApplication(
 				companyCurrent();
 				if (!controller.store.get().team?.capabilities.authorize)
 					throw new Error(t("Group chat editing access changed."));
-			}).files();
+			}).folder();
 		};
 		const groupActions: Pick<WorkspaceActions, "updateGroup" | "deleteGroup"> = {
-			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, editor: groupEditor }),
-			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, editor: groupEditor }),
+			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, folder: groupFolder }),
+			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, folder: groupFolder }),
 		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
@@ -746,9 +750,13 @@ export function mountApplication(
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 			});
 		if (navigationFocus) {
+			// The drawer opens on its first control: the chosen tab, or the search field when it is open (the tabs
+			// are inert under it) or there are no tabs.
 			const target =
 				navigationFocus === "rail"
-					? rail.querySelector<HTMLInputElement>("input")
+					? (rail.querySelector<HTMLElement>(
+							".rail-toolbar:not(.is-searching) .rail-switch:not([hidden]) [role='tab'][aria-selected='true']",
+						) ?? rail.querySelector<HTMLInputElement>(".rail-search input"))
 					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
 						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
 			target?.focus();
@@ -761,7 +769,6 @@ export function mountApplication(
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
-			companyFile?.dispose();
 			conversation?.dispose();
 			newConversation?.dispose();
 			// Revoked access ends every retained screen connection, not only the shown one.
@@ -828,7 +835,14 @@ export function mountApplication(
 							canManage: () => controller.store.get().team?.capabilities.authorize === true,
 						}
 					: undefined;
-			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }), plan);
+			notices = new ExecutionNotices(
+				client,
+				controller.signal,
+				() => main.focus({ preventScroll: true }),
+				plan,
+				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
+				api,
+			);
 			executionNotices.append(notices.el);
 		}
 		if (route.section !== "chat") {
@@ -859,7 +873,7 @@ export function mountApplication(
 							check,
 						),
 						current: check,
-						editor: async (signal) => {
+						folder: (signal) => {
 							check();
 							const team = controller.store.get().team;
 							if (!team?.capabilities.authorize)
@@ -868,7 +882,7 @@ export function mountApplication(
 								check();
 								if (!controller.store.get().team?.capabilities.authorize)
 									throw new Error(t("Group chat creation access changed."));
-							}).files();
+							}).folder();
 						},
 						send: async (sessionId, text, signal) => {
 							check();
@@ -981,16 +995,16 @@ export function mountApplication(
 									current();
 									const role = controller.store.get().team?.role;
 									if (!role) throw new Error(t("Conversation access changed."));
-									// Read with the member's own Company File access, as the Company File page reads.
-									const files = await new WebCompanyFiles(
+									// Read with the member's own access to the company's folder, as the Company File page reads.
+									const folder = new WebCompanyFiles(
 										cloud,
 										controller.profile,
 										controller.userId,
 										role,
 										controller.signal,
 										current,
-									).files();
-									return loadSkillSuggestions(files, controller.profile.profileId, agentId, controller.signal);
+									).folder();
+									return loadSkillSuggestions(folder, agentId, controller.signal);
 								});
 							},
 							sessionModel: createWebSessionModel(
@@ -1002,7 +1016,7 @@ export function mountApplication(
 							updateGroup: createGroupUpdater({
 								company: controller,
 								current: checkConversationAccess,
-								editor: async (signal) => {
+								folder: (signal) => {
 									checkConversationAccess();
 									const team = controller.store.get().team;
 									if (!team?.capabilities.authorize)
@@ -1018,7 +1032,7 @@ export function mountApplication(
 											if (!controller.store.get().team?.capabilities.authorize)
 												throw new Error(t("Group chat editing access changed."));
 										},
-									).files();
+									).folder();
 								},
 							}),
 							nativeSubscription: createWebNativeSubscription(
@@ -1106,12 +1120,6 @@ export function mountApplication(
 				return;
 			}
 			case "file": {
-				if (route.id === "history") {
-					if (!companyFile) return;
-					companyFile.start();
-					renderCompanyFile(companyFile, controller, main, {});
-					return;
-				}
 				if (state.loading) {
 					replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening Company File"))));
 					return;
@@ -1164,24 +1172,19 @@ export function mountApplication(
 						},
 						state.team.capabilities.write,
 					);
-					liveFile = new LiveCompanyFileView(files, stop, controller.profile.profileId, authorityKey, () => {
-						if (stop.signal.aborted) return;
-						liveFile?.dispose();
-						liveFile = undefined;
-						render();
-					});
+					liveFile = new LiveCompanyFileView(
+						files,
+						stop,
+						authorityKey,
+						// The folder's changes name their members and agents.
+						() => ({
+							me: controller.userId,
+							members: controller.store.get().team?.members ?? [],
+							staff: controller.store.get().staff,
+						}),
+					);
 				}
 				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
-				return;
-			}
-			case "snapshot":
-			case "proposal": {
-				if (!companyFile) return;
-				companyFile.start();
-				renderCompanyFile(companyFile, controller, main, {
-					...(route.section === "snapshot" ? { snapshotId: route.id } : {}),
-					...(route.section === "proposal" ? { proposalId: route.id } : {}),
-				});
 				return;
 			}
 			case "meet":
@@ -1202,6 +1205,9 @@ export function mountApplication(
 					},
 					current,
 				);
+				return;
+			case "interface":
+				renderInterface(main, controller, route.id ?? "");
 				return;
 			case "team":
 				renderTeam(

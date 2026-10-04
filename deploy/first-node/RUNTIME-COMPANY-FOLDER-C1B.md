@@ -380,7 +380,24 @@ of 2026-09-28 07:07Z), and calls them from the commit:
   and rows in key order:
   - rank 4: `qorpera_company_rooms`, then `qorpera_company_room_members`;
   - rank 5: sections, routines (`qorpera_cloud_routines`) with their cursors,
-    todos, connections, rules, in the order F2 fixes.
+    todos, connections, rules, in the order F2 fixes. Since P28 (4 October
+    2026) the exact order is:
+    1. `qorpera_cloud_routines`;
+    2. `qorpera_runtime_agent_todos`;
+    3. `qorpera_runtime_workers`;
+    4. `qorpera_folder_human_task_index`;
+    5. `qorpera_folder_contact_index`;
+    6. the model logins, `qorpera_provider_connections`, `FOR UPDATE`;
+    7. their versions, `qorpera_provider_connection_versions`, `FOR UPDATE`;
+    8. the compute identities, `qorpera_member_compute_identities`,
+       `FOR SHARE NOWAIT` (a busy one leaves the work for the next pass).
+
+    Items 1 to 5 are the hook's, in `qorpera_folder_structured_lock`'s list
+    order. Items 6 to 8 are the run's sponsor: the sponsor reservation
+    (`qorpera_reserve_execution_sponsor_authority`) locks a login and its
+    version `FOR UPDATE`, so every path that reserves takes them here, before
+    ranks 6 to 9 and the conversations. On `folder-v2` that is the run
+    materializer (`qorpera_folder_materialize_company`, P28).
 - **Keys.** A uuid table's key is the uuid as text (resources, grants,
   rooms, routines). Keys with no single uuid are encoded:
   - members: `profile_id:user_id`;
@@ -1060,8 +1077,14 @@ finding 1, and r4, finding 1, both reproduced).
 
 Renewal takes the view `FOR NO KEY UPDATE`, which never waits for a commit's
 `KEY SHARE`. Closing and superseding take it `FOR UPDATE`, which waits out
-the view's commit in flight. The folder service keeps one commit in flight
-per view.
+the view's commit in flight. A renewal that finds the view no longer valid
+closes it under that same `FOR NO KEY UPDATE`, without waiting for the
+view's commit or release in flight (decided 3 October 2026, after #714's
+review asked). That work may land after the close. The next view's open is
+what waits it out: it takes the machine's newest view `FOR UPDATE`, open or
+closed, and carries its reads into the new view (§5; test 644 H). A run
+box carries no reads, so nothing waits for its work. So a closing renewal
+never stalls the folder service's renewals behind a long save. The folder service keeps one commit in flight per view.
 
 ### 5. Open, renew and close
 
@@ -1374,6 +1397,19 @@ by a machine.
   keys at a dedicated anchor row that is never locked exclusively, not at
   `qorpera_company_files` (its upload quota trigger locks that row
   `FOR UPDATE`).
+- **C1e, P24b (migration 20260930019500, test 839): a read set is re-resolved
+  set-based.** The load test found re-checking a read set after a re-grant
+  quadratic: each path was re-resolved one by one (its covering resource
+  looked up against every resource, twice) and each receipt appended with
+  `jsonb ||` in a loop. A run that read 25,000 paths took 252 s for one
+  re-check, so under the 8 s statement timeout it could never make another
+  model request. `qorpera_folder_paths_resources` (the covering resource of
+  many valid paths in one hash join) and `qorpera_folder_paths_authority`
+  (each path's check and receipt in one statement, decided once per
+  resource) serve the run and view re-checks, a release's pairs and an agent
+  wake's parent-reads check. **The covering rule now has two copies:** any
+  change to `qorpera_folder_path_resource` (C2's code rules, for example)
+  must change `qorpera_folder_paths_resources` too; 839 A checks they agree.
 - **Runbook, after a PostgreSQL major upgrade** (or any change to
   `qorpera_folder_key`): besides recomputing stored keys (core §2), run
   `REINDEX INDEX qorpera_company_path_resources_folder_key`. An `update …

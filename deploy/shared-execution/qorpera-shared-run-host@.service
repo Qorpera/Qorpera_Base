@@ -20,6 +20,7 @@ EnvironmentFile=/run/qorpera-shared-execution/slots/%i/native-provider.env
 # and the slot material are unreachable from inside this unit.
 LoadCredential=qorpera-supabase-service-key:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge
+LoadCredential=qorpera-native-identity:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-identity
 LoadCredential=qorpera-native-object-token:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-object-token
 LoadCredential=qorpera-office-native:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-office-native
 LoadCredential=qorpera-coding-command:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-coding-command

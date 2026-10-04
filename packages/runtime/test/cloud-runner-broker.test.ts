@@ -478,6 +478,61 @@ class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
 	}
 }
 
+// A folder-v2 run (folder core C3, P23): the broker describes it in the path lane with no substrate anywhere.
+function folderDescriptionRecord(): Record<string, unknown> {
+	const description = descriptionRecord();
+	return {
+		...description,
+		company_runtime: "company-path-v1",
+		job: { ...(description.job as Record<string, unknown>), substrate_version_id: null },
+		// The folder clock's pin (folder core C4, P28: qorpera_folder_runner_broker_describe sends it).
+		run: {
+			...(description.run as Record<string, unknown>),
+			substrate_version_id: null,
+			company_snapshot_id: null,
+			company_seq: 7,
+		},
+		version: null,
+		snapshot: null,
+		proposal_snapshot: null,
+		artifact_index: null,
+		company_file_output_limits: null,
+	};
+}
+
+function folderBroker(description = folderDescriptionRecord()): {
+	broker: CloudRunnerJobBroker;
+	transport: MemoryBrokerTransport;
+} {
+	const transport = new MemoryBrokerTransport();
+	Object.assign(transport.description, description);
+	return {
+		broker: new CloudRunnerJobBroker({
+			job: parseCloudRunnerJob({ ...jobRecord(), substrate_version_id: null }),
+			runnerId,
+			credentials: () => ({ sessionToken, leaseToken }),
+			transport,
+		}),
+		transport,
+	};
+}
+
+// The opening statements of v169's parseCloudRunnerBrokerDescription with its `record` helper, verbatim from
+// c7878671f except that their results go unused: every host on a build before P23 runs them first.
+function previousRecord(value: unknown, label: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error(`Runner broker returned invalid ${label}`);
+	return value as Record<string, unknown>;
+}
+function previousParserOpening(value: unknown): void {
+	const input = previousRecord(value, "description");
+	if (input.company_runtime !== "whole-tree-v1" && input.company_runtime !== "company-path-v1") {
+		throw new Error("Runner broker returned an invalid Company File runtime selection");
+	}
+	previousRecord(input.output_limits, "output limits");
+	previousRecord(input.company_file_output_limits, "Company File output limits");
+}
+
 function broker(transport = new MemoryBrokerTransport()): {
 	broker: CloudRunnerJobBroker;
 	transport: MemoryBrokerTransport;
@@ -545,7 +600,7 @@ describe("cloud runner object broker", () => {
 			{ inputId, position: 1, kind: "user_message", body: { text: "Run safely" } },
 		]);
 		currentSessionToken = "n".repeat(43);
-		await expect(current.listOperations((await current.describe()).version)).resolves.toMatchObject([
+		await expect(current.listOperations((await current.resolve(versionId)).version)).resolves.toMatchObject([
 			{ sequence: 2, entityVersion: 0, payload: { message: "immutable" } },
 		]);
 		expect(memory.authorities).toMatchObject([
@@ -610,14 +665,14 @@ describe("cloud runner object broker", () => {
 		scaffoldCompany(companyRoot);
 		await writeFile(join(companyRoot, "company.md"), "# Candidate from runner\n", "utf-8");
 		const publisher = new CloudRunnerBrokerCompanyFilePublisher(current.broker);
-		const description = await current.broker.describe();
+		const { snapshot } = await current.broker.resolve(versionId);
 
 		await expect(
 			publisher.publish({
 				profileId,
 				environmentId,
 				jobId,
-				baseSnapshot: description.snapshot,
+				baseSnapshot: snapshot,
 				companyRoot,
 			}),
 		).resolves.toBe(candidateSnapshotId);
@@ -1037,5 +1092,120 @@ describe("cloud runner broker incident-scale retry budgets", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
+	it("is described in the path lane with no substrate anywhere", async () => {
+		const description = await folderBroker().broker.describe();
+		expect(description.companyRuntime).toBe("company-path-v1");
+		for (const key of ["version", "snapshot", "proposalSnapshot", "artifactIndex", "companyFileOutputLimits"]) {
+			expect(description).not.toHaveProperty(key);
+		}
+		expect(description.job).not.toHaveProperty("substrateVersionId");
+		expect(description.run).not.toHaveProperty("substrateVersionId");
+		expect(description.run).not.toHaveProperty("companySnapshotId");
+		expect(description.run.companySeq).toBe(7);
+		expect(description.run.runId).toBe(runId);
+	});
+
+	it("carries a folder-v2 run's companySeq, never beside a snapshot (P28)", async () => {
+		const folder = folderDescriptionRecord();
+		const run = folder.run as Record<string, unknown>;
+		// A description from before P28 has no key; a run with no pin sends null.
+		const { company_seq: _seq, ...withoutKey } = run;
+		for (const unpinned of [withoutKey, { ...run, company_seq: null }]) {
+			const described = await folderBroker({ ...folder, run: unpinned }).broker.describe();
+			expect(described.run).not.toHaveProperty("companySeq");
+		}
+		for (const companySeq of [-1, 1.5, "7"]) {
+			await expect(
+				folderBroker({ ...folder, run: { ...run, company_seq: companySeq } }).broker.describe(),
+			).rejects.toThrow();
+		}
+		const transport = new MemoryBrokerTransport();
+		Object.assign(transport.description, {
+			run: { ...(transport.description.run as Record<string, unknown>), company_seq: 7 },
+		});
+		await expect(broker(transport).broker.describe()).rejects.toThrow("both a snapshot and a folder sequence");
+	});
+
+	it("refuses everything that needs a Company File substrate, and names the job's company", async () => {
+		const current = folderBroker();
+		const { version, snapshot } = await broker().broker.resolve(versionId);
+		const artifacts = (await broker().broker.describe()).artifactIndex;
+		await expect(current.broker.resolve(versionId)).rejects.toThrow("no Company File substrate");
+		await expect(current.broker.listOperations(version)).rejects.toThrow("no Company File substrate");
+		expect(artifacts).toBeDefined();
+		await expect(current.broker.listArtifacts(artifacts!)).rejects.toThrow("another artifact index");
+		await expect(
+			current.broker.prepareCompanyRevision({
+				clientRevisionId: "46464646-4646-4646-8646-464646464646",
+				treeManifestSha256: "4".repeat(64),
+				treeManifestBytes: 512,
+				treeContractVersion: 3,
+				fileCount: 4,
+				totalBytes: 4096,
+			}),
+		).rejects.toThrow("no Company File substrate");
+		// None of them reached the transport.
+		expect(current.transport.companyRevisions).toEqual([]);
+		await expect(
+			new CloudRunnerBrokerOutputPublisher(current.broker).publish({
+				profileId,
+				environmentId,
+				jobId,
+				substrateVersionId: versionId,
+				outputRoot: await temporaryDirectory(),
+				files: [],
+			}),
+		).rejects.toThrow("no Company File substrate");
+		await expect(
+			new CloudRunnerBrokerCompanyFilePublisher(current.broker).publish({
+				profileId,
+				environmentId,
+				jobId,
+				baseSnapshot: snapshot,
+				companyRoot: await temporaryDirectory(),
+			}),
+		).rejects.toThrow("no Company File substrate");
+		await expect(current.broker.profileId()).resolves.toBe(profileId);
+	});
+
+	it.each([
+		["the whole-tree lane", { company_runtime: "whole-tree-v1" }, "outside the path lane"],
+		[
+			"Company File output limits",
+			{ company_file_output_limits: descriptionRecord().company_file_output_limits },
+			"outside the path lane",
+		],
+		["a substrate on the job", { job: jobRecord() }, "outside the path lane"],
+		["a substrate on the run", { run: descriptionRecord().run }, "outside the path lane"],
+		["a version for a run without a substrate", { version: descriptionRecord().version }, "for a run without one"],
+		["a version without its snapshot", { ...descriptionRecord(), snapshot: null }, "invalid company snapshot"],
+	])("never reaches a reader of a substrate with %s", async (_label, change, message) => {
+		const current = folderBroker({ ...folderDescriptionRecord(), ...change });
+		await expect(current.broker.describe()).rejects.toThrow(message);
+	});
+
+	it("refuses a substrate described for a run that names none", async () => {
+		const description = descriptionRecord();
+		const current = broker();
+		Object.assign(current.transport.description, {
+			run: {
+				...(description.run as Record<string, unknown>),
+				substrate_version_id: null,
+				company_snapshot_id: null,
+			},
+		});
+		await expect(current.broker.describe()).rejects.toThrow("for a run without one");
+	});
+
+	it("is refused by a host on the parser before P23, before it reads anything else", () => {
+		expect(() => previousParserOpening(folderDescriptionRecord())).toThrow(
+			"Runner broker returned invalid Company File output limits",
+		);
+		// A snapshot-v1 description still passes those statements.
+		expect(() => previousParserOpening(descriptionRecord())).not.toThrow();
 	});
 });

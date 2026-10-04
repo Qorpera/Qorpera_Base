@@ -7,6 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
@@ -192,7 +193,7 @@ describe("account and route ownership", () => {
 
 		// Leave the accepted send waiting for its transcript and start another
 		// compose for the same session, so session identity cannot distinguish them.
-		location.hash = `#/c/${profileA.profileId}/file/history`;
+		location.hash = `#/c/${profileA.profileId}/file`;
 		await draw();
 		location.hash = `#/c/${profileA.profileId}/new`;
 		await draw();
@@ -594,15 +595,6 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
-	it("initializes Company File once while its response is delayed", async () => {
-		const f = mounted(`#/c/${profileA.profileId}/file/history`);
-		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
-		vi.mocked(f.api.getCompanyFile).mockReturnValue(loading.promise);
-		await draw();
-		await vi.advanceTimersByTimeAsync(180);
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
-	});
-
 	it("toggles and closes company navigation without replacing the composer", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
@@ -610,11 +602,37 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		// The drawer opens on its chosen tab, never on the folded search field.
+		expect(document.activeElement).toBe(f.root.querySelector(".rail [role='tab'][aria-selected='true']"));
+		// Esc that ends a composition (a dead key, an IME) leaves the drawer open.
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true }));
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		expect(document.activeElement).toBe(f.root.querySelector("main .mobile-navigation-toggle"));
 		expect(f.root.querySelector("textarea")).toBe(composer);
+	});
+
+	it("reopens the drawer on the search field while a query keeps it open over the tabs", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		const toggle = () => f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!;
+		toggle().click();
+		await draw();
+		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
+		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
+		input.value = "Fixture";
+		input.dispatchEvent(new Event("input"));
+		await draw();
+		// The tabs are inert under the open field, so the drawer comes back to the field.
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
+		toggle().click();
+		await draw();
+		expect(document.activeElement).toBe(input);
 	});
 
 	it("keeps profile-menu focus through refreshes and closes it before the mobile drawer", async () => {
@@ -741,6 +759,36 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector<HTMLElement>("main")?.inert).toBe(false);
 	});
 
+	it("opens the company's folder as the Company File, and draws it again when the member's role changes", async () => {
+		const list = vi.fn(async () => ({
+			asOfSeq: 1,
+			entries: [
+				{ path: "notes", kind: "folder", version: id(101), seq: 1, updatedAt: session.updatedAt, file: null },
+			],
+			next: null,
+		}));
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue({ list } as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		await draw();
+		const page = f.root.querySelector("main .folder-page");
+		expect(page?.querySelector(".files-row .files-name")?.textContent).toBe("notes");
+		vi.mocked(f.api.getTeam).mockResolvedValue({
+			...team,
+			role: "viewer",
+			capabilities: { ...team.capabilities, write: false, authorize: false },
+		});
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		await draw();
+		const again = f.root.querySelector("main .folder-page");
+		expect(again?.querySelector(".files-row .files-name")?.textContent).toBe("notes");
+		expect(again).not.toBe(page);
+		expect(page?.isConnected).toBe(false);
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
+	});
+
 	it("says why the Company File cannot open when membership could not be read", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
@@ -803,14 +851,21 @@ describe("account and route ownership", () => {
 
 	it("retains creation idempotency across an ambiguous failure and controller restart", async () => {
 		const f = fixture();
-		const create = vi.spyOn(f.api, "createCompany").mockRejectedValue(new Error("Response lost"));
+		vi.mocked(f.api.companyFoundingAvailable).mockResolvedValue(true);
+		const opened: unknown[] = [];
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+			if (name !== "qorpera_open_company_founding") throw new Error(`Unexpected RPC ${name}`);
+			opened.push(args?.p_client_creation_id);
+			throw new Error("Response lost");
+		});
 		let hub = new HubController(f.api, userA.id);
 		await hub.createCompany("One company");
 		hub.dispose();
 		hub = new HubController(f.api, userA.id);
 		expect(hub.store.get().creationRetry?.name).toBe("One company");
 		await hub.createCompany("One company");
-		expect(create.mock.calls[0]?.[0]).toBe(create.mock.calls[1]?.[0]);
+		expect(opened).toHaveLength(2);
+		expect(opened[0]).toBe(opened[1]);
 		expect(new HubController(f.api, userB.id).store.get().creationRetry).toBeUndefined();
 		hub.dispose();
 	});

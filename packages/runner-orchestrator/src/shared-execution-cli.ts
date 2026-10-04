@@ -76,6 +76,11 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 	const nativeCompanyRuntime = lxdNativeCompanyRuntimeFromEnvironment(process.env);
 	if (!nativeCompanyRuntime) throw new Error("Shared execution requires the governed company-path-v1 runtime");
 	const serviceKey = await credential("qorpera-supabase-service-key", "QORPERA_SUPABASE_SERVICE_KEY");
+	// G2-3e: the execution host's own credential, minted and bound by the node host (create-/rebuild-exec-host.sh).
+	// The service's own database calls use it; the service key above only reaches the slots, until G2-5.
+	const executionHostCredential = await credential("qorpera-execution-host", "QORPERA_EXECUTION_HOST_CREDENTIAL");
+	if (!TOKEN_PATTERN.test(executionHostCredential))
+		throw new Error("The execution host credential must contain 32 base64url bytes");
 	const providerToken = await credential("qorpera-runner-provider", "QORPERA_RUNNER_PROVIDER_TOKEN");
 	if (!TOKEN_PATTERN.test(providerToken)) throw new Error("Runner provider token must contain 32 base64url bytes");
 	const host = process.env.QORPERA_RUNNER_PROVIDER_HOST ?? "127.0.0.1";
@@ -88,6 +93,7 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		supabaseUrl: required("QORPERA_SUPABASE_URL"),
 		supabaseServiceKey: serviceKey,
 		supabasePublishableKey: required("QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+		executionHostCredential,
 		stateRoot: resolve(process.env.QORPERA_SHARED_EXECUTION_STATE_ROOT ?? "/var/lib/qorpera-shared-execution"),
 		runRoot: resolve(process.env.QORPERA_SHARED_EXECUTION_RUN_ROOT ?? "/run/qorpera-shared-execution"),
 		identityRoot: resolve(process.env.QORPERA_SHARED_EXECUTION_IDENTITY_ROOT ?? "/var/lib/qorpera/identities"),

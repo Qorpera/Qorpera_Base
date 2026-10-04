@@ -108,13 +108,33 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			expect(tool.description).toContain("an assigned screen is not a private browser");
 			expect(tool.description).toContain("Never sign personal accounts into the Company Computer");
 			expect(tool.description).toContain("supported, authorized connector granted to the company");
-			expect(tool.description).toContain("use a supported typed handoff");
-			expect(tool.description).toContain("never request passwords or enter credential values through these tools");
-			expect(tool.description).toContain("If the required connector or handoff is unavailable, report the blocker");
+			// A company account's values are typed only by the vault (A1-4); a block page ends the attempt.
+			expect(tool.description).toContain("use browser vault_fill {role, name, account, field}");
+			expect(tool.description).toContain("never type or ask for a password yourself");
+			expect(tool.description).toContain("ends the attempt at once: never retry it");
+			expect(tool.description).toContain("If the required connector or account is unavailable, report the blocker");
 			expect(tool.description).toContain(
 				"Model-provider subscription credentials never belong on the Company Computer",
 			);
 		}
+		// The browser offers vault_fill: an account id and which of its values, never a value.
+		const browser = harness.session.tools.find((tool) => tool.name === "computer_browser")!;
+		const actions = (
+			browser.inputSchema.properties as { action: { oneOf: Array<{ properties: Record<string, unknown> }> } }
+		).action.oneOf;
+		expect(actions.find((schema) => (schema.properties.action as { const: string }).const === "vault_fill")).toEqual({
+			type: "object",
+			additionalProperties: false,
+			required: ["kind", "action", "role", "name", "account", "field"],
+			properties: {
+				kind: { const: "browser" },
+				action: { const: "vault_fill" },
+				role: { enum: ["textbox", "spinbutton"] },
+				name: { type: "string", maxLength: 512 },
+				account: { type: "string", pattern: expect.any(String) },
+				field: { enum: ["login", "password", "code"] },
+			},
+		});
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
@@ -417,6 +437,32 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			expect(() => parseCompanyComputerAction({ kind: "browser", action: "navigate", url })).toThrow();
 		},
 	);
+
+	it("reads a vault_fill as a box, an account and a field, never a value", () => {
+		const fill = {
+			kind: "browser",
+			action: "vault_fill",
+			role: "textbox",
+			name: "Password",
+			account: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+			field: "password",
+		};
+		// An id in either letter case is read in the lower case the database prints.
+		expect(parseCompanyComputerAction(fill)).toEqual({ ...fill, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+		expect(parseCompanyComputerAction({ ...fill, role: "spinbutton", field: "code" })).toMatchObject({
+			field: "code",
+		});
+		for (const bad of [
+			{ ...fill, text: "Pw-1234" },
+			{ ...fill, value: "Pw-1234" },
+			{ ...fill, field: "new_password" },
+			{ ...fill, field: "token" },
+			{ ...fill, role: "button" },
+			{ ...fill, account: "vercel" },
+			{ ...fill, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
 
 	it("bounds input and validates coordinates before cloud acquisition", async () => {
 		const harness = toolHarness();

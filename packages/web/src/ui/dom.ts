@@ -2,6 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
+import { leave } from "./motion.ts";
 import { attachPersonPicture } from "./person-pictures.ts";
 import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
 
@@ -151,6 +152,7 @@ export function button(
  * inherit the row's colour; an <img> could not. */
 const ICON_PATHS: Record<string, string[]> = {
 	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
+	interfaces: ["M3 12h4l3-7 4 14 3-7h4"],
 	check: ["m5 12 4 4L19 6"],
 	appearance: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 3v18", "M12 7h7M12 12h9M12 17h7"],
 	image: ["M3 3h18v18H3Z", "m3 16 5-5 4 4 3-3 6 6", "M15 7h.01"],
@@ -240,6 +242,7 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0",
 		"M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
 	],
+	download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3"],
 	trash: [
 		"M3 6h18",
 		"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6",
@@ -311,7 +314,7 @@ export function confirmDialog(
 		const close = (result: boolean) => {
 			if (closed) return;
 			closed = true;
-			dialog.remove();
+			leave(dialog, "is-leaving", () => dialog.remove());
 			signal?.removeEventListener("abort", cancel);
 			window.removeEventListener("hashchange", cancel);
 			document.removeEventListener("keydown", onKey);

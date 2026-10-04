@@ -269,6 +269,7 @@ function fetchProvisioner(
 	requests: Array<{ url: string; body: Record<string, unknown> }>,
 	expectedWork: CloudRunnerWork = work(),
 	loginInVault: boolean | "missing" = false,
+	binds: Array<Record<string, unknown>> = [],
 ): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		expect(init?.redirect).toBe("error");
@@ -281,6 +282,15 @@ function fetchProvisioner(
 		}
 		if (url.includes("qorpera_reserve_runtime_node_machine"))
 			return Response.json(nodeAdmissionFixture(JSON.parse(String(init?.body))));
+		if (url.includes("qorpera_bind_native_identity_credential")) {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			binds.push(body);
+			return Response.json({
+				allocationId: body.p_allocation_id,
+				computeIdentityId: expectedWork.computeIdentityId,
+				holderKind: body.p_holder_kind,
+			});
+		}
 		if (url.includes("qorpera_reserve_runtime_machine") || url.includes("qorpera_release_runtime_machine")) {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			return Response.json({
@@ -820,6 +830,153 @@ describe("LXD cloud runner provider", () => {
 		expect(await readdir(f.stateRoot)).toEqual(["archive"]);
 	});
 
+	it("deletes a settled run's recovery volume when its journal is archived, and only that volume", async () => {
+		// Session-buildup audit gap 7 (3 Oct 2026): every overflow run left its recovery volume on its node.
+		const stateRoot = join(await root(), "state");
+		const settings = governedConfig(stateRoot);
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		await backend.reconcile();
+		const recovery = `native-recovery-${runId}`;
+		const others = [...lxd.volumes.keys()].filter((name) => name !== recovery);
+		const journalPath = join(stateRoot, runId, "journal.json");
+		const age = async () => {
+			const old = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+			const updatedAt = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+			await writeFile(journalPath, JSON.stringify({ ...old, updatedAt }), { mode: 0o600 });
+		};
+		// Kept for the day the journal is kept.
+		expect(lxd.volumes.has(recovery)).toBe(true);
+		expect(await readdir(stateRoot)).toEqual([runId]);
+
+		// A drifted volume is not this run's: it stays, and so does the journal. The pass goes on (a failed pass stops
+		// the node's claims), and the log names the journal once an hour.
+		const volume = lxd.volumes.get(recovery)!;
+		lxd.volumes.set(recovery, { ...volume, config: { ...volume.config, "user.qorpera.profile_id": "foreign" } });
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 25 * 60 * 60_000);
+		try {
+			await backend.reconcile();
+			await backend.reconcile();
+		} finally {
+			clock.mockRestore();
+		}
+		const kept = log.mock.calls.filter(([line]) => String(line).startsWith("recovery volume kept"));
+		expect(kept).toHaveLength(1);
+		expect(String(kept[0]?.[0])).toContain(`acquisition=${runId}`);
+		expect(String(kept[0]?.[0])).toContain("it is kept");
+		log.mockRestore();
+		expect(await readdir(stateRoot)).toEqual([runId]);
+		expect(JSON.parse(await readFile(journalPath, "utf8"))).not.toHaveProperty("recoveryVolumeRetired");
+		lxd.volumes.set(recovery, volume);
+
+		// The journal records the retirement before the delete: a provider that stopped in between keeps the volume's
+		// authority check while it still exists, and does not demand it back once it is gone.
+		await age();
+		const interrupted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const remove = vi.spyOn(lxd, "deleteStorageVolume").mockRejectedValueOnce(new Error("provider stopped"));
+		const stopped = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await interrupted.reconcile();
+		expect(stopped).toHaveBeenCalledWith(expect.stringContaining("provider stopped"));
+		stopped.mockRestore();
+		expect(JSON.parse(await readFile(journalPath, "utf8"))).toMatchObject({ recoveryVolumeRetired: true });
+		expect(lxd.volumes.has(recovery)).toBe(true);
+		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
+		// Gone, as the interrupted delete would have left it (the fake also remembers its last created volume).
+		lxd.volumes.delete(recovery);
+		if (lxd.volume?.name === recovery) lxd.volume = undefined;
+		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
+		expect(await readdir(stateRoot)).toEqual([runId]);
+
+		// A day after it settled, the archive takes the journal; the volume was already gone, so nothing is deleted.
+		await age();
+		remove.mockClear();
+		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
+		expect(remove).not.toHaveBeenCalled();
+		expect(await readdir(stateRoot)).toEqual(["archive"]);
+		expect(JSON.parse(await readFile(join(stateRoot, "archive", runId, "journal.json"), "utf8"))).toMatchObject({
+			recoveryVolumeRetired: true,
+		});
+		expect([...lxd.volumes.keys()].sort()).toEqual(others.sort());
+	});
+
+	it("keeps the journal when LXD does not confirm the delete, and reads a marked journal caught stopping", async () => {
+		const stateRoot = join(await root(), "state");
+		const settings = governedConfig(stateRoot);
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		await backend.stop(runner, "idle");
+		await backend.reconcile();
+		const recovery = `native-recovery-${runId}`;
+		const journalPath = join(stateRoot, runId, "journal.json");
+		const settled = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(
+			journalPath,
+			JSON.stringify({ ...settled, updatedAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString() }),
+			{ mode: 0o600 },
+		);
+		// LXD answers the delete but the volume is still there: the journal stays, and the log says why.
+		const remove = vi.spyOn(lxd, "deleteStorageVolume").mockResolvedValue(true);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
+		expect(await readdir(stateRoot)).toEqual([runId]);
+		expect(lxd.volumes.has(recovery)).toBe(true);
+		expect(log).toHaveBeenCalledWith(expect.stringContaining("did not delete"));
+		expect(JSON.parse(await readFile(journalPath, "utf8"))).toMatchObject({ recoveryVolumeRetired: true });
+		remove.mockRestore();
+		log.mockRestore();
+		// A marked journal caught stopping (a guest that came back was being removed when the provider stopped) still
+		// reads, and its next pass settles it again without demanding the volume back.
+		lxd.volumes.delete(recovery);
+		if (lxd.volume?.name === recovery) lxd.volume = undefined;
+		const marked = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(journalPath, JSON.stringify({ ...marked, physicalState: "stopping" }), { mode: 0o600 });
+		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
+		expect(JSON.parse(await readFile(journalPath, "utf8"))).toMatchObject({
+			physicalState: "lost",
+			recoveryVolumeRetired: true,
+		});
+	});
+
+	it("archives a settled run with its recovery volume deleted, and waits while its guest exists again", async () => {
+		const stateRoot = join(await root(), "state");
+		const settings = governedConfig(stateRoot);
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(runner, delivery(work()));
+		const leftBehind = { ...structuredClone(lxd.instance!), status: "Stopped" as const, statusCode: 102 };
+		await backend.stop(runner, "idle");
+		await backend.reconcile();
+		const recovery = `native-recovery-${runId}`;
+		const others = [...lxd.volumes.keys()].filter((name) => name !== recovery);
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now + 25 * 60 * 60_000);
+		try {
+			// The settled journal's guest is back: neither the volume nor the journal goes on this pass.
+			lxd.instance = structuredClone(leftBehind);
+			await backend.reconcile();
+			expect(lxd.volumes.has(recovery)).toBe(true);
+			expect(await readdir(stateRoot)).toEqual([runId]);
+			// The next pass reconciles the journal again (the guest is removed on sight) and archives it.
+			await backend.reconcile();
+			expect(lxd.instance).toBeUndefined();
+			expect(await readdir(stateRoot)).toEqual(["archive"]);
+			expect([...lxd.volumes.keys()].sort()).toEqual(others.sort());
+			expect(lxd.createVolumeCalls.filter((call) => call.name === recovery)).toHaveLength(1);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("releases a stopped journal from an older build once more and then marks it", async () => {
 		const f = await acquiredFixture();
 		const releases = () =>
@@ -1250,8 +1407,9 @@ describe("LXD cloud runner provider", () => {
 		const lxd = new FakeLxd();
 		const guest = new FakeGuest();
 		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
-		const fetchImplementation = fetchProvisioner(requests);
+		const binds: Array<Record<string, unknown>> = [];
 		const request = work();
+		const fetchImplementation = fetchProvisioner(requests, request, false, binds);
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
 
 		const runner = await backend.acquire(runId, request, new AbortController().signal);
@@ -1300,7 +1458,27 @@ describe("LXD cloud runner provider", () => {
 		const activation = await readFile(join(stateRoot, runId, "credentials", "qorpera-runner-activation"), "utf-8");
 		const assignment = await readFile(join(stateRoot, runId, "credentials", "qorpera-runner-assignment"), "utf-8");
 		const nativeBridge = await readFile(join(stateRoot, runId, "credentials", "qorpera-native-bridge"), "utf-8");
+		const nativeIdentity = (
+			await readFile(join(stateRoot, runId, "credentials", "qorpera-native-identity"), "utf-8")
+		).trim();
+		// G2-3: the guest's identity credential, bound by its hash to the machine allocation as a job guest, the same
+		// bind again with each re-reservation.
+		expect(binds.length).toBeGreaterThan(0);
+		for (const bind of binds)
+			expect(bind).toEqual({
+				p_allocation_id: runId,
+				p_provider_adapter: "lxd",
+				p_instance_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+				p_holder_kind: "job_guest",
+				p_credential_sha256: createHash("sha256").update(nativeIdentity).digest("hex"),
+			});
+		expect(new Set(binds.map((bind) => bind.p_instance_sha256)).size).toBe(1);
+		expect(JSON.parse(journalText)).toMatchObject({
+			credentials: { nativeIdentitySha256: createHash("sha256").update(nativeIdentity).digest("hex") },
+		});
+		expect(journalText).not.toContain(nativeIdentity);
 		const createRequestText = JSON.stringify(lxd.createCalls[0]);
+		expect(createRequestText).not.toContain(nativeIdentity);
 		expect(createRequestText).not.toContain(config(stateRoot).supabaseServiceKey);
 		expect(createRequestText).not.toContain(activation.trim());
 		expect(createRequestText).not.toContain(assignment.trim());
@@ -1321,7 +1499,7 @@ describe("LXD cloud runner provider", () => {
 				bootstrapSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
 			},
 		});
-		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.filePushes).toHaveLength(8);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
 		expect(lxd.filePushes.map((file) => file.path)).toEqual([
 			"/var/lib/qorpera-bootstrap/bootstrap.json",
@@ -1330,8 +1508,17 @@ describe("LXD cloud runner provider", () => {
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-runner-activation",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-runner-assignment",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
+		expect(
+			JSON.parse(lxd.filePushes.find((file) => file.path.endsWith("qorpera-native-identity"))?.content ?? "{}"),
+		).toEqual({
+			schema: "qorpera.native-identity-credential/v1",
+			compute_identity_id: request.computeIdentityId,
+			credential: nativeIdentity,
+			publishable_key: "publishable-key",
+		});
 		expect(lxd.execCalls).toEqual([
 			["/usr/bin/test", "-d", "/var/lib/qorpera-bootstrap/credentials"],
 			["/usr/bin/systemctl", "enable", "--now", "qorpera-lxd-runner-bootstrap.service"],
@@ -1342,7 +1529,7 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(requests).toHaveLength(1);
 		expect(lxd.createVolumeCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.filePushes).toHaveLength(8);
 		expect(lxd.execCalls).toHaveLength(2);
 
 		await restarted.deliver(runner, delivery(request));

@@ -201,9 +201,16 @@ end $$;
 -- KEY SHARE at rank 1, so it waits for a removal or a demotion (the member row FOR UPDATE) before the new room copies
 -- the roster. Neither the removed member nor the new viewer is in the new thread. (Before, the save copied the roster
 -- beside the change, and the viewer could then post in the new thread.) Bytes are staged first (staging takes the
--- company row); Dan is saved archived first, committed.
-select set_config('qorpera_test.hire_' || h, format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text',
-	'64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-hire-' || h,
+-- company row), and the member who saves them takes possession of them first, committed too; Dan is saved archived
+-- first, committed.
+create function pg_temp.sql_member_save(p_key text, p_units jsonb) returns text language plpgsql as $$
+begin
+	perform pg_temp.possess('64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}',
+		p_units);
+	return format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		'{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', p_key, p_units);
+end $$;
+select set_config('qorpera_test.hire_' || h, pg_temp.sql_member_save('member-change-hire-' || h,
 	jsonb_build_array(pg_temp.hire(h, ('66500000-0000-4000-8000-0000000000' || id)::uuid, initcap(h)))), false)
 from (values ('bea', 'a2'), ('cal', 'a3')) v(h, id) \g /dev/null
 select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-dan-archived',
@@ -215,8 +222,7 @@ select pg_temp.expect(pg_temp.commit('{"kind":"member","userId":"66500000-0000-4
 		'structured', jsonb_build_array(pg_temp.entry('agents/dan/agent.md', 'agent',
 			replace(pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'), 'status: active', 'status: archived'),
 			pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan') || '{"status":"archived"}'))))), 1, 'saved') \g /dev/null
-select set_config('qorpera_test.hire_dan', format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text',
-	'64800000-0000-4000-8000-000000000020', '{"kind":"member","userId":"66500000-0000-4000-8000-000000000006"}', 'member-change-dan-active',
+select set_config('qorpera_test.hire_dan', pg_temp.sql_member_save('member-change-dan-active',
 	jsonb_build_array(pg_temp.write('agents/dan/agent.md', 'agent', pg_temp.agent_text('66500000-0000-4000-8000-0000000000a4', 'Dan'),
 		pg_temp.agent_parse('66500000-0000-4000-8000-0000000000a4', 'Dan'), pg_temp.version('agents/dan/agent.md')))), false) \g /dev/null
 do $$
@@ -282,9 +288,11 @@ begin
 	if v_post <> 'ok' or v_role <> 'ok' then raise exception 'G: the post % and the step-down %', v_post, v_role; end if;
 end $$;
 
--- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation, so the last
--- member's deletion of the company (its stop removes invitations) goes on; the join then finds no invitation. 01 is
--- made the last member first (the others removed by hand, triggers off).
+-- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation while it waits.
+-- Since C1c-3g (20260930015000) the last member's deletion takes member management's lock too (the fence FOR NO KEY
+-- UPDATE), so it waits at the fence behind the join; the join, queued first, joins once the fence is free, and the
+-- deletion then sees another member and refuses. 01 is made the last member first (the others removed by hand,
+-- triggers off).
 set session_replication_role = replica;
 delete from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
 	and user_id <> '64800000-0000-4000-8000-000000000001';
@@ -303,12 +311,14 @@ begin
 		raise exception 'H: the join must hold no invitation while it waits at the fence'; end if;
 	perform dblink_exec('fence_three', $q$set request.jwt.claims = '{"role":"authenticated","sub":"64800000-0000-4000-8000-000000000001"}'$q$);
 	perform dblink_send_query('fence_three', $q$select public.qorpera_delete_hosted_profile('64800000-0000-4000-8000-000000000010')::text$q$);
-	if not pg_temp.finishes_unblocked('fence_three', 'fence_two') then raise exception 'H: the deletion must not wait for the join'; end if;
-	v_delete := pg_temp.outcome('fence_three');
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_folder_fences') then
+		perform dblink_exec('fence_four', 'rollback');
+		raise exception 'H: the deletion must wait at the fence'; end if;
 	perform dblink_exec('fence_four', 'rollback');
 	v_join := pg_temp.outcome('fence_two');
-	if v_delete <> 'ok' or v_join not like 'P0002 profile invitation was not found%' then
-		raise exception 'H: the deletion % and the join %', v_delete, v_join; end if;
+	v_delete := pg_temp.outcome('fence_three');
+	if v_join <> 'ok' or v_delete not like '42501 Only the last member can delete the company%' then
+		raise exception 'H: the join % and the deletion %', v_join, v_delete; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
@@ -354,6 +364,10 @@ begin
 	if exists (select 1 from public.qorpera_company_files where environment_id in ('64800000-0000-4000-8000-000000000020',
 			'64800000-0000-4000-8000-000000000021'))
 		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64800000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from storage.objects where name like '64800000-0000-4000-8000-000000000010/%')
+		or exists (select 1 from public.qorpera_profile_objects where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_folder_upload_intents where profile_id = '64800000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_verified_company_file_objects where profile_id = '64800000-0000-4000-8000-000000000010') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;

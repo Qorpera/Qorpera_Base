@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	type CloudFolderDynamicRoutine,
+	type CloudFolderDynamicRoutinePage,
+	type CloudFolderDynamicRoutineRun,
+	type CloudFolderMaterialization,
+	type CloudFolderMaterializationPage,
+	CloudFolderRunMaterializer,
 	type CloudRoutineScheduleHead,
 	CloudRoutineScheduleReconciler,
 	type CloudRunnerOrchestrationClaim,
 	CloudRunnerOrchestrator,
 	type CloudRunnerOrchestratorControlPlane,
 	CloudRunnerOrchestratorRequestError,
+	type CloudRunnerWork,
 	LocalCloudRunnerProviderAdapter,
 	SupabaseCloudRunnerOrchestratorControlPlane,
 	validateCloudRunnerWork,
@@ -71,6 +78,68 @@ function claim(): CloudRunnerOrchestrationClaim {
 			attempt: 1,
 		},
 	};
+}
+
+// The control plane's raw answer for a claim, with the work's columns overridden.
+function claimResponse(expected: CloudRunnerOrchestrationClaim = claim(), work: Record<string, unknown> = {}) {
+	const value = {
+		claim_id: expected.claimId,
+		orchestrator_id: expected.orchestratorId,
+		status: expected.status,
+		lease_expires_at: expected.leaseExpiresAt,
+		work: {
+			run_id: expected.work.runId,
+			job_id: expected.work.jobId,
+			profile_id: expected.work.profileId,
+			environment_id: expected.work.environmentId,
+			source_kind: expected.work.sourceKind,
+			source_id: expected.work.sourceId,
+			session_id: expected.work.sessionId,
+			substrate_version_id: expected.work.substrateVersionId,
+			company_snapshot_id: expected.work.companySnapshotId,
+			staff_agent_id: expected.work.staffAgentId,
+			staff_version: expected.work.staffVersion,
+			input_ids: expected.work.inputIds,
+			transcript_start_sequence: expected.work.transcriptStartSequence,
+			deadline_at: expected.work.deadlineAt,
+			required_capability: expected.work.requiredCapability,
+			job_type: expected.work.jobType,
+			payload: expected.work.payload,
+			publication_mode: expected.work.publicationMode,
+			review_policy_key: null,
+			reviewer_staff_ids: expected.work.reviewerStaffIds,
+			logical_computer_id: expected.work.logicalComputerId,
+			compute_identity_id: null,
+			worker_class: expected.work.workerClass,
+			requested_by_user_id: expected.work.requestedByUserId,
+			sponsored_by_user_id: null,
+			attempt: expected.work.attempt,
+			sponsor: {
+				binding_id: expected.work.sponsor.bindingId,
+				version: expected.work.sponsor.version,
+				kind: expected.work.sponsor.kind,
+				provider_connection_id: expected.work.sponsor.providerConnectionId,
+				provider_connection_version: expected.work.sponsor.providerConnectionVersion,
+				provider: expected.work.sponsor.provider,
+				authentication_mode: expected.work.sponsor.authenticationMode,
+				native_harness: expected.work.sponsor.nativeHarness,
+				allow_autonomous: expected.work.sponsor.allowAutonomous,
+			},
+			model_policy: {
+				allowed_models: [
+					{
+						provider: expected.work.modelPolicy.provider,
+						model: expected.work.modelPolicy.model,
+					},
+				],
+				max_calls: expected.work.modelPolicy.maxCalls,
+				max_input_tokens: expected.work.modelPolicy.maxInputTokens,
+				max_output_tokens: expected.work.modelPolicy.maxOutputTokens,
+				max_cost_microusd: expected.work.modelPolicy.maxCostMicrousd,
+			},
+		},
+	};
+	return { value: { ...value, work: { ...value.work, ...work } } };
 }
 
 function controlPlane(claimed: CloudRunnerOrchestrationClaim | undefined = claim()) {
@@ -501,6 +570,267 @@ describe("cloud runner orchestrator", () => {
 			{ routineId: second.routineId, scheduledFor: "2026-08-20T10:00:00.000Z" },
 		]);
 		expect(control.listRoutineScheduleHeads).toHaveBeenLastCalledWith(first.routineId, 250);
+	});
+
+	it("lists folder-v2 dynamic routines and restores one's run through the private control plane", async () => {
+		const routineId = "12121212-1212-4212-8212-121212121212";
+		const occurrenceId = "13131313-1313-4313-8313-131313131313";
+		const requests: unknown[] = [];
+		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push(body);
+			return Response.json({
+				value:
+					body.action === "folder_dynamic_routines"
+						? { items: [{ routine_id: routineId, version: 4 }], has_more: true, next_after_routine_id: routineId }
+						: body.expectedVersion === 4
+							? { status: "inserted", occurrence_id: occurrenceId, not_before: "2026-10-03T09:00:00+00:00" }
+							: { status: "changed" },
+			});
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			fakeFetch as typeof fetch,
+		);
+
+		await expect(control.listFolderDynamicRoutines(undefined, 250)).resolves.toEqual({
+			items: [{ routineId, version: 4 }],
+			hasMore: true,
+			nextAfterRoutineId: routineId,
+		});
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 4 })).resolves.toEqual({
+			status: "inserted",
+			occurrenceId,
+		});
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 5 })).resolves.toEqual({
+			status: "changed",
+		});
+		expect(requests).toEqual([
+			{ action: "folder_dynamic_routines", orchestratorId, limit: 250 },
+			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 4 },
+			{ action: "restore_dynamic_routine", orchestratorId, routineId, expectedVersion: 5 },
+		]);
+		await expect(control.listFolderDynamicRoutines("not-a-uuid", 250)).rejects.toThrow(
+			"Folder dynamic routine cursor",
+		);
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 0 })).rejects.toThrow(
+			"Routine version is invalid",
+		);
+		expect(fakeFetch).toHaveBeenCalledTimes(3);
+		// An answer the orchestrator does not know is refused, as is an inserted run without its id.
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { status: "fired" } }));
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 4 })).rejects.toThrow(
+			"invalid folder dynamic routine status",
+		);
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { status: "inserted" } }));
+		await expect(control.restoreFolderDynamicRoutineRun({ routineId, version: 4 })).rejects.toThrow("without its id");
+	});
+
+	it("restores every listed folder-v2 dynamic routine after the schedule heads, and waits out an edge function that predates them", async () => {
+		const first = "14141414-1414-4414-8414-141414141414";
+		const second = "15151515-1515-4515-8515-151515151515";
+		const third = "16161616-1616-4616-8616-161616161616";
+		const control = controlPlane();
+		const list = vi.fn(
+			async (after: string | undefined, _limit: number): Promise<CloudFolderDynamicRoutinePage> =>
+				after
+					? { items: [{ routineId: third, version: 1 }], hasMore: false }
+					: {
+							items: [
+								{ routineId: first, version: 2 },
+								{ routineId: second, version: 3 },
+							],
+							hasMore: true,
+							nextAfterRoutineId: second,
+						},
+		);
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		const restore = vi.fn(async (routine: CloudFolderDynamicRoutine): Promise<CloudFolderDynamicRoutineRun> => {
+			if (routine.routineId === second) throw failure;
+			return { status: "inserted", occurrenceId: "17171717-1717-4717-8717-171717171717" };
+		});
+		control.listFolderDynamicRoutines = list;
+		control.restoreFolderDynamicRoutineRun = restore;
+		let now = new Date("2026-10-03T09:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now, folderDynamicIntervalMs: 0 });
+
+		// One routine's failure never stops the others; it is reported after the pass.
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		expect(restore.mock.calls.map(([routine]) => routine)).toEqual([
+			{ routineId: first, version: 2 },
+			{ routineId: second, version: 3 },
+			{ routineId: third, version: 1 },
+		]);
+		expect(list.mock.calls.map(([after, limit]) => [after, limit])).toEqual([
+			[undefined, 250],
+			[second, 250],
+		]);
+
+		// An edge function that predates the actions answers 400: reported once, then not asked for ten minutes.
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		list.mockRejectedValue(unknown);
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		now = new Date("2026-10-03T09:05:00.000Z");
+		await expect(reconciler.reconcile(control)).resolves.toBeUndefined();
+		expect(list).toHaveBeenCalledTimes(3);
+		now = new Date("2026-10-03T09:11:00.000Z");
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		expect(list).toHaveBeenCalledTimes(4);
+
+		// A control plane without the actions only schedules.
+		const scheduleOnly = new CloudRoutineScheduleReconciler({ now: () => now });
+		await expect(scheduleOnly.reconcile(controlPlane())).resolves.toBeUndefined();
+	});
+
+	it("lists the folder-v2 dynamic routines at most every 30 seconds, not on every poll", async () => {
+		const control = controlPlane();
+		const list = vi.fn(async (): Promise<CloudFolderDynamicRoutinePage> => ({ items: [], hasMore: false }));
+		control.listFolderDynamicRoutines = list;
+		control.restoreFolderDynamicRoutineRun = vi.fn(
+			async (): Promise<CloudFolderDynamicRoutineRun> => ({ status: "pending" }),
+		);
+		let now = new Date("2026-10-03T09:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+		await reconciler.reconcile(control);
+		now = new Date("2026-10-03T09:00:29.000Z");
+		await reconciler.reconcile(control);
+		expect(list).toHaveBeenCalledTimes(1);
+		now = new Date("2026-10-03T09:00:30.000Z");
+		await reconciler.reconcile(control);
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(() => new CloudRoutineScheduleReconciler({ folderDynamicIntervalMs: -1 })).toThrow(
+			"Folder dynamic routine interval is outside the supported range",
+		);
+	});
+
+	it("lists the folder-v2 companies with due work and materializes one through the private control plane", async () => {
+		const profileId = "18181818-1818-4818-8818-181818181818";
+		const madeRunId = "19191919-1919-4919-8919-191919191919";
+		const requests: unknown[] = [];
+		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push(body);
+			return Response.json({
+				value:
+					body.action === "folder_materialize_due"
+						? { items: [{ profile_id: profileId }], has_more: true, next_after_profile_id: profileId }
+						: body.limit === 16
+							? { state: "done", run_ids: [madeRunId], failed: 0, cancelled: 0, blocked: 0, skipped: 0 }
+							: { state: "paused" },
+			});
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			fakeFetch as typeof fetch,
+		);
+
+		await expect(control.listFolderMaterializationDue(undefined, 100)).resolves.toEqual({
+			items: [profileId],
+			hasMore: true,
+			nextAfterProfileId: profileId,
+		});
+		await expect(control.materializeFolderCompany(profileId, 16)).resolves.toEqual({
+			state: "done",
+			runIds: [madeRunId],
+		});
+		await expect(control.materializeFolderCompany(profileId, 4)).resolves.toEqual({ state: "paused", runIds: [] });
+		expect(requests).toEqual([
+			{ action: "folder_materialize_due", orchestratorId, limit: 100 },
+			{ action: "folder_materialize_company", orchestratorId, profileId, limit: 16 },
+			{ action: "folder_materialize_company", orchestratorId, profileId, limit: 4 },
+		]);
+		await expect(control.listFolderMaterializationDue("not-a-uuid", 100)).rejects.toThrow(
+			"Folder materialization cursor",
+		);
+		await expect(control.materializeFolderCompany(profileId, 17)).rejects.toThrow(
+			"Folder materialization limit is outside the supported range",
+		);
+		expect(fakeFetch).toHaveBeenCalledTimes(3);
+		// A state the orchestrator does not know is refused, as is a done answer without its runs.
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { state: "fired" } }));
+		await expect(control.materializeFolderCompany(profileId, 16)).rejects.toThrow(
+			"invalid folder materialization state",
+		);
+		fakeFetch.mockImplementationOnce(async () => Response.json({ value: { state: "done" } }));
+		await expect(control.materializeFolderCompany(profileId, 16)).rejects.toThrow("without its runs");
+		// A page longer than asked for is refused.
+		fakeFetch.mockImplementationOnce(async () =>
+			Response.json({ value: { items: [{ profile_id: profileId }, { profile_id: madeRunId }], has_more: false } }),
+		);
+		await expect(control.listFolderMaterializationDue(undefined, 1)).rejects.toThrow(
+			"more folder companies than asked",
+		);
+	});
+
+	it("materializes every due folder-v2 company in its own request, and waits out an edge function that predates it", async () => {
+		const first = "1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a";
+		const second = "1b1b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b";
+		const third = "1c1c1c1c-1c1c-4c1c-8c1c-1c1c1c1c1c1c";
+		const control = controlPlane();
+		const list = vi.fn(
+			async (after: string | undefined, _limit: number): Promise<CloudFolderMaterializationPage> =>
+				after
+					? { items: [third], hasMore: false }
+					: { items: [first, second], hasMore: true, nextAfterProfileId: second },
+		);
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		const materialize = vi.fn(async (profileId: string, _limit: number): Promise<CloudFolderMaterialization> => {
+			if (profileId === second) throw failure;
+			return { state: "idle", runIds: [] };
+		});
+		control.listFolderMaterializationDue = list;
+		control.materializeFolderCompany = materialize;
+		let now = new Date("2026-10-04T09:00:00.000Z");
+		const materializer = new CloudFolderRunMaterializer({ now: () => now });
+
+		// One company's failure never stops the others; it is reported after the pass.
+		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		expect(materialize.mock.calls).toEqual([
+			[first, 16],
+			[second, 16],
+			[third, 16],
+		]);
+		expect(list.mock.calls.map(([after, limit]) => [after, limit])).toEqual([
+			[undefined, 100],
+			[second, 100],
+		]);
+
+		// An edge function that predates the actions answers 400: reported once, then not asked for ten minutes.
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		list.mockRejectedValue(unknown);
+		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		now = new Date("2026-10-04T09:05:00.000Z");
+		await expect(materializer.reconcile(control)).resolves.toBeUndefined();
+		expect(list).toHaveBeenCalledTimes(3);
+		now = new Date("2026-10-04T09:11:00.000Z");
+		await expect(materializer.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		expect(list).toHaveBeenCalledTimes(4);
+
+		// A cursor that does not move forward ends the pass instead of looping.
+		list.mockReset();
+		list.mockImplementation(async (after: string | undefined) =>
+			after
+				? { items: [first], hasMore: true, nextAfterProfileId: first }
+				: { items: [second], hasMore: true, nextAfterProfileId: second },
+		);
+		await expect(new CloudFolderRunMaterializer({ now: () => now }).reconcile(control)).rejects.toThrow(
+			"did not move forward",
+		);
+
+		// A control plane without the actions makes no request; the bounds are checked.
+		await expect(new CloudFolderRunMaterializer().reconcile(controlPlane())).resolves.toBeUndefined();
+		expect(() => new CloudFolderRunMaterializer({ companyLimit: 17 })).toThrow(
+			"Folder materialization company limit is outside the supported range",
+		);
+		expect(() => new CloudFolderRunMaterializer({ pageSize: 0 })).toThrow(
+			"Folder materialization page size is outside the supported range",
+		);
 	});
 
 	it("recomputes an unadmitted initial slot from the existing latest-slot rule", async () => {
@@ -1289,66 +1619,7 @@ describe("cloud runner orchestrator", () => {
 		const calls: Array<{ url: string; init?: RequestInit }> = [];
 		const fakeFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 			calls.push({ url: String(url), init });
-			const expected = claim();
-			return Response.json({
-				value: {
-					claim_id: expected.claimId,
-					orchestrator_id: expected.orchestratorId,
-					status: expected.status,
-					lease_expires_at: expected.leaseExpiresAt,
-					work: {
-						run_id: expected.work.runId,
-						job_id: expected.work.jobId,
-						profile_id: expected.work.profileId,
-						environment_id: expected.work.environmentId,
-						source_kind: expected.work.sourceKind,
-						source_id: expected.work.sourceId,
-						session_id: expected.work.sessionId,
-						substrate_version_id: expected.work.substrateVersionId,
-						company_snapshot_id: expected.work.companySnapshotId,
-						staff_agent_id: expected.work.staffAgentId,
-						staff_version: expected.work.staffVersion,
-						input_ids: expected.work.inputIds,
-						transcript_start_sequence: expected.work.transcriptStartSequence,
-						deadline_at: expected.work.deadlineAt,
-						required_capability: expected.work.requiredCapability,
-						job_type: expected.work.jobType,
-						payload: expected.work.payload,
-						publication_mode: expected.work.publicationMode,
-						review_policy_key: null,
-						reviewer_staff_ids: expected.work.reviewerStaffIds,
-						logical_computer_id: expected.work.logicalComputerId,
-						compute_identity_id: null,
-						worker_class: expected.work.workerClass,
-						requested_by_user_id: expected.work.requestedByUserId,
-						sponsored_by_user_id: null,
-						attempt: expected.work.attempt,
-						sponsor: {
-							binding_id: expected.work.sponsor.bindingId,
-							version: expected.work.sponsor.version,
-							kind: expected.work.sponsor.kind,
-							provider_connection_id: expected.work.sponsor.providerConnectionId,
-							provider_connection_version: expected.work.sponsor.providerConnectionVersion,
-							provider: expected.work.sponsor.provider,
-							authentication_mode: expected.work.sponsor.authenticationMode,
-							native_harness: expected.work.sponsor.nativeHarness,
-							allow_autonomous: expected.work.sponsor.allowAutonomous,
-						},
-						model_policy: {
-							allowed_models: [
-								{
-									provider: expected.work.modelPolicy.provider,
-									model: expected.work.modelPolicy.model,
-								},
-							],
-							max_calls: expected.work.modelPolicy.maxCalls,
-							max_input_tokens: expected.work.modelPolicy.maxInputTokens,
-							max_output_tokens: expected.work.modelPolicy.maxOutputTokens,
-							max_cost_microusd: expected.work.modelPolicy.maxCostMicrousd,
-						},
-					},
-				},
-			});
+			return Response.json(claimResponse());
 		});
 		const controlToken = "c".repeat(43);
 		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
@@ -1366,6 +1637,39 @@ describe("cloud runner orchestrator", () => {
 			init: { headers: { apikey: "publishable-key", authorization: `Bearer ${controlToken}` } },
 		});
 		expect(calls[0]?.init?.body).not.toContain(controlToken);
+	});
+
+	it("parses a folder-v2 run without snapshot or substrate ids, and refuses one without the other", async () => {
+		const answer = (work: Record<string, unknown>) =>
+			new SupabaseCloudRunnerOrchestratorControlPlane(
+				"https://project.supabase.co",
+				"publishable-key",
+				orchestratorId,
+				"c".repeat(43),
+				vi.fn(async () => Response.json(claimResponse(claim(), work))) as typeof fetch,
+			).claimNext(orchestratorId, claimId, 120);
+		const folderWork = Object.fromEntries(
+			Object.entries(claim().work).filter(([key]) => key !== "substrateVersionId" && key !== "companySnapshotId"),
+		) as CloudRunnerWork;
+
+		await expect(answer({ substrate_version_id: null, company_snapshot_id: null })).resolves.toStrictEqual({
+			...claim(),
+			work: folderWork,
+		});
+		// Keys left out entirely parse the same.
+		await expect(answer({ substrate_version_id: undefined, company_snapshot_id: undefined })).resolves.toStrictEqual({
+			...claim(),
+			work: folderWork,
+		});
+		expect(() => validateCloudRunnerWork(folderWork)).not.toThrow();
+		await expect(answer({ substrate_version_id: null })).rejects.toThrow("invalid substrate version id");
+		await expect(answer({ company_snapshot_id: null })).rejects.toThrow("invalid Company File snapshot id");
+		expect(() =>
+			validateCloudRunnerWork({ ...folderWork, substrateVersionId: claim().work.substrateVersionId }),
+		).toThrow("go together");
+		expect(() => validateCloudRunnerWork({ ...claim().work, companySnapshotId: "not-a-uuid" })).toThrow(
+			"Company snapshot id is invalid",
+		);
 	});
 
 	it("recovers a lost control-token rotation response without storing plaintext in Supabase", async () => {
@@ -1507,6 +1811,29 @@ describe("cloud runner orchestrator", () => {
 		expect(occurrenceReconciler.reconcile).toHaveBeenCalledWith(control);
 		expect(occurrenceReconciler.reconcile.mock.invocationCallOrder[0]).toBeLessThan(
 			vi.mocked(control.reconcileExpired).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+		);
+	});
+
+	it("materializes the due folder-v2 companies on every pass, before it claims compute work", async () => {
+		const profileId = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d";
+		const control = controlPlane();
+		vi.mocked(control.claimNext).mockResolvedValue(undefined);
+		const materialize = vi.fn(async (): Promise<CloudFolderMaterialization> => ({ state: "done", runIds: [runId] }));
+		control.listFolderMaterializationDue = vi.fn(
+			async (): Promise<CloudFolderMaterializationPage> => ({ items: [profileId], hasMore: false }),
+		);
+		control.materializeFolderCompany = materialize;
+		const local = localAdapter();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+		});
+
+		await expect(orchestrator.runOnce()).resolves.toEqual({ status: "idle" });
+		expect(materialize).toHaveBeenCalledWith(profileId, 16);
+		expect(materialize.mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(control.claimNext).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
 		);
 	});
 

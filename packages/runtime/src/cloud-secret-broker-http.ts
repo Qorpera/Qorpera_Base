@@ -4,6 +4,19 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import type { JsonValue } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
+	COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA,
+	COMPANY_ACCOUNT_REQUEST_SCHEMA,
+	type CompanyAccountAnswer,
+	type CompanyAccountFillAnswer,
+	type CompanyAccountFillRequest,
+	type CompanyAccountRefusal,
+	type CompanyAccountRequest,
+	parseCompanyAccountAnswer,
+	parseCompanyAccountFillAnswer,
+	parseCompanyAccountFillRequest,
+	parseCompanyAccountRequest,
+} from "./cloud-company-account-vault.ts";
+import {
 	CloudConnectorOAuthError,
 	type CloudConnectorOAuthFlows,
 	connectorReturnLocation,
@@ -705,6 +718,26 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, result as unknown as JsonValue);
 				return;
 			}
+			// An agent's company_account tool call (company accounts A1): an account's facts or the
+			// database's refusal; a value never leaves here. Same token and company routing as operations.
+			if (path === "/v1/company-accounts" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+				const answer = await scope.broker.companyAccount(
+					parseCompanyAccountRequest(await readRequest(request)),
+					AbortSignal.timeout(35_000),
+				);
+				response(reply, 200, answer as unknown as JsonValue);
+				return;
+			}
+			// An agent's vault_fill of the Company Computer's browser (A1-3): the value sealed to that computer's boot
+			// key, which only its office service opens; the host only carries the box. Same token and routing.
+			if (path === "/v1/company-account-fills" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+				const answer = await scope.broker.companyAccountFill(
+					parseCompanyAccountFillRequest(await readRequest(request)),
+					AbortSignal.timeout(35_000),
+				);
+				response(reply, 200, answer as unknown as JsonValue);
+				return;
+			}
 			// A member's sign-in to the vault (Stateless Compute step 1, change 2B). The login
 			// gateway chooser names `<origin>/v1/model-logins/<company>/`; the web client's edge
 			// function posts its unchanged sign-in request there, server to server, with the
@@ -955,6 +988,79 @@ export class HttpCloudSecretBrokerClient {
 				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
 				try {
 					return parseContent(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+				} catch {
+					throw new Error("Cloud secret broker returned invalid data");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			35_000,
+			signal,
+		);
+	}
+
+	/** One vault_fill (A1-3): a box only the computer's office service opens, or the database's refusal. */
+	async companyAccountFill(
+		request: CompanyAccountFillRequest,
+		signal: AbortSignal,
+	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await this.#fetch(
+					`${this.#origin}/v1/company-account-fills?company=${this.#companyId}`,
+					{
+						method: "POST",
+						redirect: "error",
+						headers: {
+							authorization: `Bearer ${this.#runtimeToken}`,
+							"content-type": "application/json",
+						},
+						body: cloudToolJsonText({ schema: COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA, ...request }),
+						signal: requestSignal,
+					},
+				);
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					throw new Error("Cloud secret broker rejected the company account fill");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+				try {
+					return parseCompanyAccountFillAnswer(
+						JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+					);
+				} catch {
+					throw new Error("Cloud secret broker returned invalid data");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			// Inside the tool call's 30 s, leaving the office time to type.
+			20_000,
+			signal,
+		);
+	}
+
+	/** One company_account tool call (A1): the account's facts, or the database's refusal in its own words. */
+	async companyAccount(request: CompanyAccountRequest, signal: AbortSignal): Promise<CompanyAccountAnswer> {
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await this.#fetch(`${this.#origin}/v1/company-accounts?company=${this.#companyId}`, {
+					method: "POST",
+					redirect: "error",
+					headers: {
+						authorization: `Bearer ${this.#runtimeToken}`,
+						"content-type": "application/json",
+					},
+					body: cloudToolJsonText({ schema: COMPANY_ACCOUNT_REQUEST_SCHEMA, ...request }),
+					signal: requestSignal,
+				});
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					throw new Error("Cloud secret broker rejected the company account call");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+				try {
+					return parseCompanyAccountAnswer(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
 				} catch {
 					throw new Error("Cloud secret broker returned invalid data");
 				} finally {

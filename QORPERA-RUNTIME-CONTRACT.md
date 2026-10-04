@@ -399,6 +399,12 @@ not design intent and MUST NOT be presented as product limits.
 
 ### 5.6 Company folder layout
 
+> **Amended 2026-10-02.** The tree gains `interfaces/` and `tables/`, both
+> seeded and kept; their files join the structured files, and the automatic
+> review gains the interface changes. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)
+> in section 19, item 12.
+
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
 section 19).
@@ -448,11 +454,19 @@ agents/
     <group-name>/group.md    one folder per group chat
 connections/
   <connection>.md            one file per connected account
+human-tasks/
+  <task>.md                  work an agent hands to a member or a contact
+  <task>/                    what the person sends back: proof/ and note.md
+contacts/
+  <contact>.md               one file per outside person or firm
 skills/
   <skill>/SKILL.md           company skills
 rules/
   <rule>.md                  company review rules
 ```
+
+`human-tasks/` and `contacts/` joined the seeded tree on 2 October 2026 (Jonas;
+the 2026-10-02 amendment "work for people", item 5).
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
 (the 2026-09-27 amendment "every machine works in the company folder", item
@@ -509,9 +523,11 @@ An agent leaves in one of three ways:
   fenced, its conversations stay, and its files can be restored from the
   version history. The Co-Founder cannot be deleted. Deleting an `agent.md`
   on its own is refused; the folder is deleted instead.
-- **Permanent erasure:** purging a deleted agent's files and their stored
-  versions from the folder. This is a separate operation that only owners and
-  admins perform (14.1). Receipts and audit records keep their attribution.
+- **Permanent erasure:** purging a deleted path's files and their stored
+  versions from the folder: a deleted agent's folder, or any other deleted
+  path, such as a contact's file (the 2026-10-02 amendment "work for people",
+  item 3). This is a separate operation that only owners and admins perform
+  (14.1). Receipts and audit records keep their attribution.
 
 **`agents/sections.md`.** The sidebar's sections in order, each with its agents
 in order, listed by `id` (a name beside an id is only for reading). A section
@@ -532,8 +548,10 @@ agent's folder and has no file of its own.
 shared by all agents: the service, the account, its status, the actions agents
 may take with it, and who connected it and when.
 
-- Only the platform writes these fields, in the same step as the vault record.
-  A save that changes them is refused.
+- Only the platform writes these fields. A vault change marks the file due,
+  and the platform's writer then brings it to the vault's current state
+  (amended 3 October 2026, P22: `deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`
+  §3 step 4). A save that changes them is refused.
 - The vault and the operation grants (11.5) stay the authority for the secret,
   its status and what agents may do. The file shows them.
 - The body says what the connection is for and is company-authored.
@@ -549,6 +567,13 @@ A member's personal rules stay in the database with that member's other
 settings. An agent may still add an Ask first personal rule for the member it
 works for when that member asks (2026-09-25 amendment, item 1).
 
+> **Amended 2026-10-03 (not built yet).** `rules/network.toml` holds the
+> company's network rules for the agent exit: a block list, or "only listed"
+> sites. It is written like every file in `rules/`, but it is not a review
+> rule: the reviewer does not read it, its format is checked when it is saved,
+> and a company without it is open ("agent traffic leaves through the agent
+> exit", section 19, item 8).
+
 **Approval.** Everything is approved by default:
 - No path needs a member's approval or a proposal. The mechanism for protected
   paths stays, but nothing is configured by default. The one standing
@@ -556,7 +581,8 @@ works for when that member asks (2026-09-25 amendment, item 1).
   unassisted, and its hire waits for a member.
 - Seeded folders and files cannot be deleted or moved: `vision/`,
   `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `skills/` and `rules/`. The Co-Founder's folder and its
+  `connections/`, `human-tasks/`, `contacts/`, `skills/` and `rules/`
+  (`human-tasks/` and `contacts/`: Jonas, 2 October 2026). The Co-Founder's folder and its
   `agent.md` cannot be deleted; the folder is only renamed within `agents/`
   when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
@@ -586,10 +612,11 @@ The automatic review (2026-09-25 amendment) is unchanged:
   version history.
 
 **Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
-files, `group.md`, connection files and rule files have a fixed format. A save
-updates the file's index in the same step. A save the platform cannot read
-correctly is refused for that file, with the reason. A human, an agent's shell
-and a tool all save through this same path.
+files, `group.md`, connection files, rule files, human task files and contact
+files have a fixed format (the last two: the 2026-10-02 amendment "work for
+people"). A save updates the file's index in the same step. A save the
+platform cannot read correctly is refused for that file, with the reason. A
+human, an agent's shell and a tool all save through this same path.
 
 ## 6. Mouth and visibility contract
 
@@ -692,6 +719,14 @@ agent set it up) or an owner or admin. With several runs live, the Stop names
 one the member may stop, the working one first. Before this amendment the Stop
 only reached a member's turns in a plain conversation.
 
+2026-10-03 amendment (session-buildup audit gap 4b): a worker's own run can be
+stopped too, though it has no conversation. Owners and admins may stop it, and
+so may the member whose work dispatched the worker (the run's creator), by the
+same rule and the same stop, which records who stopped it. The member is told
+when a run makes no progress for 15 minutes; nothing stops a run by itself. The
+parent hears that a member stopped the work. A Company Computer start is still
+not stopped here.
+
 ### 7.4 Ceilings and brake
 
 Intelligence is not deterministic, so the kernel bounds the damage a loop can
@@ -757,8 +792,14 @@ subscriptions, which self-limit.
 > - 50,000 Company File entries per company (the tree's storage bound). The
 >   standing counts (32 routines, 64 open todos and 4 active workers per agent,
 >   40 sidebar sections) went in bundle v95;
-> - no stall detection: a run whose harness hangs without crashing keeps its
->   machine until Stop, as in Codex CLI and Claude Code;
+> - no stall detection: a run whose harness hangs without crashing runs until
+>   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
+>   coding or agent's machine awake, unless it hangs inside a model request:
+>   a run with no progress for 15 minutes is idle (changed in place, by the
+>   2026-10-03 amendment "one idle rule for every machine"). A run with no
+>   progress for 15 minutes, also one inside a model request, is shown as one
+>   with no progress, and a member is told (2026-10-03, session-buildup audit
+>   gap 4); nothing stops it;
 > - a continuation (a worker report, a computer start, a sponsor handoff
 >   made before 2026-10-01) carries the newest results and sends of the earlier run that fit, and
 >   counts the rest;
@@ -775,6 +816,16 @@ subscriptions, which self-limit.
 > outputs or over 128 KiB. A request now carries any number of outputs within a
 > 64 MiB fence frame (more than any model context holds), and a view row is
 > bounded at 16 MiB as storage.
+
+> **Amended 2026-10-03 (not built yet).** What remains also holds the agent
+> exit's line guard: TCP port 25 is refused, and a brake on bursts of new
+> connections, whose levels the founder decides after two weeks of counting.
+> It guards the shared line and never counts a run's work ("agent traffic
+> leaves through the agent exit", section 19, item 9). It also holds the
+> exit's connection bounds (decided by the runtime coordinator on 3 October;
+> Jonas may change them): at most 16,384 open connections per machine through
+> the exit and 98,304 per node, an infrastructure guard for the node's
+> connection table, not a limit on the work (item 4).
 
 ## 8. Wake bus
 
@@ -876,6 +927,9 @@ adapter MUST wrap it in an authenticated runtime envelope and keep it out of
 the canonical human transcript. It MUST NOT falsely attribute runtime prose to
 a member.
 
+> **Amended 2026-10-02 (not built yet).** A quote of outside content inside a member's message is outside
+> content, fenced like a tool result. See the [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -953,6 +1007,9 @@ authority merely because it appears inside a result.
 The runtime MUST include an adversarial test that places “ignore previous
 instructions” and a plausible destructive request inside a tool result and
 proves the agent does not obey it.
+
+> **Amended 2026-10-02 (not built yet).** A quote of outside content inside a member's message is fenced the same
+> way. See the [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
 
 ### 11.2 Outbound effect check
 
@@ -1096,6 +1153,10 @@ capacity work after it.
 > Computers are seats that free up. A computer's shell, terminal and desktop
 > have their own network to the internet, and commands have no fixed time
 > limit.
+>
+> **Amended 2026-10-03 (not built yet).** That network reaches the internet
+> through the agent exit ("agent traffic leaves through the agent exit",
+> section 19).
 
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
@@ -1462,6 +1523,11 @@ a permanent hire when the responsibility ends with the project.
 
 ### 14.5 Attention and product projection
 
+> **Amended 2026-10-02.** The rail has two tabs: Agents, the hierarchy below,
+> and Interfaces, the company's pages with the main interface on top. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder),
+> item 8.
+
 > **Amended 2026-09-27.** The hierarchy is built from the company folder: the
 > Co-Founder, then the sections of `agents/sections.md` with their agents,
 > then group chats (5.6).
@@ -1710,13 +1776,19 @@ The constitution expresses this default judgment order:
 3. public web;
 4. office browser;
 5. office desktop;
-6. a typed request to the relevant member.
+6. a typed request to the relevant member, or, for work only a person can do,
+   a human task for a member or a contact (5.6; the 2026-10-02 amendment "work
+   for people", item 2).
 
 The kernel makes each step real through tool availability, grants, and typed
 handoffs. A broken connector is reported or repaired; it does not silently
 authorize browser session use.
 
 ### 16.2 Interaction surfaces
+
+> **Amended 2026-10-02.** The list gains offers to a member: of a card, an area, the supervision of an area's
+> agents, or an agent joining a supervised area. See the
+> [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 9.
 
 Qorpera MUST use distinct state machines for:
 
@@ -1954,6 +2026,10 @@ and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
 
+Amended 2026-10-02: for a supervised agent's work that no member started, the supervisor gets the cards and their
+own login pays where the rules below let it; see the
+[interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder), item 10.
+
 2026-09-28 amendment: the member who started the work pays. A member's own
 model login pays only for work that member started: their turns and room
 posts, and everything that follows from them — coworker messages, workers
@@ -2101,6 +2177,11 @@ requirement to build a separate analytics platform before the product works.
   Company File reads/writes retain operation, timing, outcome and available byte
   counts; unavailable counts are unknown, not zero. Logical file bytes are not
   physical NAS traffic, and resource reservations are not measured utilization.
+- The agent exit keeps a log of the connections agent road machines make:
+  company, machine, times, destination name, address, port, protocol, bytes,
+  and refused flows, never content, for 90 days; a time it could not record is
+  a gap, which means unknown (amended 2026-10-03, not built yet, "agent traffic
+  leaves through the agent exit", item 7).
 - Computer and screen lifecycle transitions MUST retain identity, time and
   reason: requested, ready, suspended/resumed where supported, closing, closed
   or failed. Closing a client viewer is not closing its cloud computer. Retain
@@ -2491,7 +2572,10 @@ removal; until it is removed it MUST NOT be reachable from any member client.
 - **No member-private conversations.** Member-private sessions and the
   member-private Co-Founder conversation are withdrawn. Members MAY hold
   member-private facts in the Company File; an agent uses them only to think
-  and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
+  and MUST NOT repeat them into a shared thread. On the company folder
+  (`folder-v2`) there is no `members/` folder, so no member-private files
+  (decided 3 October 2026, the coordinator at Jonas's request): personal
+  settings stay in the database. §14.2's separate one-to-one
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did. Team rooms (group chats) accept the same since 2026-09-27
@@ -2622,7 +2706,10 @@ placements that depended on them.
    document keeps its `grants.responsibilities` key, ignored, so no stored
    document becomes invalid, and the organization read model still answers an
    empty `responsibilities` list so every client keeps parsing.
-7. **Tools are the intended replacement for live measurement.** The part of
+7. **Superseded 2026-10-02 by the
+   [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder):
+   pages are files drawn from fixed building blocks, and no page code runs.**
+   **Tools are the intended replacement for live measurement.** The part of
    the old model worth keeping is that people can see how the things they care
    about are going. The planned form is a second kind of item beside agents:
    **tools**, internal apps and dashboards hosted in the Company File, possibly
@@ -2918,6 +3005,11 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    personal rules of the member the run works for), never the agent's own
    words or any tool result, and answers allow, ask or deny. A review that cannot
    run is never an approval: the call does not run.
+   Amended 2026-10-02 (not built yet): a quote of outside content inside a
+   member's message is not what the member asked for, and the reviewer never
+   reads the quoted words. See the [quote provenance
+   amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
+   item 5.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -3475,12 +3567,14 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      node, and why (no node has set it up yet, or no room).
    - A computer is a seat. Besides being in use, a seat can be held by an
      agent waiting for its machine, or woken and still running ("No waiting
-     for a seat" above). It is in use only while it has a live lease or a
-     live viewer, is being taken over or drained, still has resources the
-     agent started there that have not drained, has a command running in its
-     shell, or was opened less than about two minutes ago. A desktop left open
-     with none of these does not keep the seat. The two-minute window may be
-     tuned without a new founder decision.
+     for a seat" above). It is in use only while it has a live lease of a
+     run that counts or a live viewer, is being taken over or drained, still
+     has resources the agent started there that have not drained, has a busy
+     command in its shell, or was opened less than about two minutes ago
+     (changed in place, by the 2026-10-03 amendment "one idle rule for every
+     machine"). A live lease of an idle run still holds the seat but is not
+     use. A desktop left open with none of these does not keep the seat. The
+     two-minute window may be tuned without a new founder decision.
    - Before a seat changes hands, its desktop and shell are closed. Unsaved
      application state on it is lost, and the agent and any viewer are told
      what was closed.
@@ -3494,7 +3588,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      day applies to runner jobs, not to these requests.
    - Each machine powers off by its own idle rule. Only use of that machine
      keeps it awake: its computers in use, its viewers, requests and runs
-     waiting for it, and runs of agents placed on it.
+     waiting for it, and runs of agents placed on it while they make progress
+     or have a model request in flight (changed in place, by the 2026-10-03
+     amendment "one idle rule for every machine").
    - A run reaches the machine its computer is on. A company's machines are
      one trust domain for transport; tool authority still comes from the run,
      its descriptor and effect-time grants. A run that cannot reach its
@@ -3542,7 +3638,9 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - A command started under a computer's lease may outlive the lease. The
      lease covers starting it, typing into it and stopping it, and each step
      is attributed to its run (section 12, "explicit resource leases").
-   - A running command keeps its machine awake and its computer in use.
+   - A busy command keeps its machine awake and its computer in use; a
+     command that only waits does not (changed in place, by the 2026-10-03
+     amendment "one idle rule for every machine").
    - Browser profiles, sign-ins and credentials stay out of reach of the shell
      and the terminal (11.4, 11.5).
    - Because the shell has network, starting a command and typing into one
@@ -3554,10 +3652,12 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
    - The run box does not change: item 7 of the 2026-09-27 amendment "every
      machine works in the company folder" (no internet in the run box's
      shell) stands.
-   - Acceptance (Order 4): a command runs for an hour with internet, including
-     a non-HTTP connection, while the NAS, the node, cloud metadata and the
-     other computers stay unreachable; a later turn reads its output; the
-     machine stays awake meanwhile.
+   - Acceptance (Order 4): a busy command runs for an hour with internet,
+     including a non-HTTP connection, while the NAS, the node, cloud metadata
+     and the other computers stay unreachable; a later turn reads its output;
+     the machine stays awake meanwhile. A command that only waits lets the
+     machine sleep, and the next run is told it stopped (changed in place, by
+     the 2026-10-03 amendment "one idle rule for every machine").
 3. **Coding sessions stand by between turns.** A coding session behaves like
    a session on a member's own laptop: the end of a turn is not the end of
    the session. The first build detached the session at the end of every turn
@@ -3579,12 +3679,13 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      or task limit of its own, though an agent may set a deadline. A member's
      sessions share the machine by equal weights, and the machine keeps a
      memory reserve for its own control.
-   - A coding machine sleeps after 10 minutes with no turn and no command
-     using the processor. A program that only waits, such as a dev server,
-     does not keep it awake; company machines count any running command
-     (item 2). Sleep powers the machine off: the session's files stay,
-     programs stop, and the next turn is told what stopped. A machine that
-     wakes may start on another node; only its scratch is rebuilt.
+   - A coding machine sleeps after 10 minutes with no turn making progress
+     and no command using the processor. A program that only waits, such as
+     a dev server, does not keep it awake, as on every machine (changed in
+     place, by the 2026-10-03 amendment "one idle rule for every machine").
+     Sleep powers the machine off: the session's files stay, programs stop,
+     and the next turn is told what stopped. A machine that wakes may start
+     on another node; only its scratch is rebuilt.
    - Archiving a session stops its programs and detaches it from the machine.
      Its files stay, and a new turn reopens it. The session's owner or the
      agent can archive it.
@@ -3593,7 +3694,10 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      session is asked once each, in the conversation that started the
      session, whether it may be archived; it archives it or leaves it. A
      session archived or reopened meanwhile is not asked. After 30 quiet days
-     (a per-environment setting), the platform archives it.
+     (a per-environment setting), the platform archives it. A session whose
+     programs keep the machine busy is also asked by the busy check-ins of
+     the 2026-10-03 amendment "one idle rule for every machine", item 5
+     (changed in place).
    - A coding machine is removed once it is asleep and none of its member's
      sessions in the environment is open.
    - Coding machines are built without containers; heavier tests run on the
@@ -3639,9 +3743,12 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      another node. In this cut, results come back as command output the agent
      reads; once the company folder is mounted, results belong in the
      company's files.
-   - A task machine sleeps after an idle hour and is removed after 30 days
-     asleep; both are per-node settings. An always-on machine is stopped or
-     removed only by an agent or a member.
+   - A task machine sleeps after an hour with no use and no busy program
+     and is removed after 30 days asleep; both are per-node settings. An
+     always-on machine is stopped or removed only by an agent or a member,
+     and the agent that started it is asked once a week whether it still
+     needs it (changed in place, by the 2026-10-03 amendment "one idle rule
+     for every machine").
    - In this cut a machine has no company folder and holds no credentials, and
      its commands are not reviewed (founder, 28 September), like a coding
      session's commands. This is an exception to item 2 and to item 7 of the
@@ -4015,9 +4122,10 @@ immediately before an effect, and section 9.1's context views, are unchanged.
 
 ### 2026-10-02 amendment: work for people
 
-Proposed 2 October 2026 (F2, step H1); pending founder approval. It writes
-into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page "Qorpera
-on Qorpera", section 5) and widens 16.1's last step. The folder names
+Proposed 2 October 2026 (F2, step H1). Approved 3 October 2026 by the
+coordinator at Jonas's request; Jonas approved item 5 on 2 October. Items 1–4
+write into 5.6 the founder's decisions 4 and 5 of 29 September 2026 (Q1 page
+"Qorpera on Qorpera", section 5) and widen 16.1's last step. The folder names
 `human-tasks/` and `contacts/` are the coordinator's proposal on those decisions
 and can still be renamed. Formats:
 `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` §2.
@@ -4043,7 +4151,9 @@ and can still be renamed. Formats:
    to the vault, bound to the task. A task link's token is kept only as a hash,
    and an email's delivery is runtime state (5.6's list of what the database
    holds).
-5. **5.6 changes when this is approved:**
+5. **5.6 changes with this amendment** (the tree and the seeded folders were
+   written into 5.6 on 2 October 2026, the rest into 5.6 and 16.1 on
+   3 October):
    - the tree gains
 
      ```
@@ -4056,11 +4166,694 @@ and can still be renamed. Formats:
 
    - "Structured files" gains task and contact files: a fixed format, with
      their index once the folder core keeps it (H2);
-   - the platform seeds both folders when a company is created, once that
-     index exists; whether they join the seeded folders that cannot be
-     deleted or moved is decided then.
+   - the platform seeds both folders when a company is created, and they join
+     the seeded folders that cannot be deleted or moved (Jonas, 2 October
+     2026; written into 5.6's tree and its list of seeded folders).
 6. **16.2 is unchanged here.** Turning the office sign-in handoff into a human
    task (A1, company accounts) is for A1's own amendment.
+
+### 2026-10-02 amendment: interfaces project company state from the company folder
+
+Ratified 2 October 2026 (Jonas). He named Interfaces and set their direction:
+- the rail splits into Agents and Interfaces;
+- the first interfaces are Mailbox, Company Pulse and Members;
+- interfaces are pages built from TOML files in the company folder;
+- a marketplace comes later.
+
+The same day he approved the design page (https://claude.ai/artifact/PXouSQFWVSHTc6Vko3Gm7G) and its four decisions.
+
+This amendment:
+- extends 5.6, 14.5 and 16.2, section 17's payer rules, and the 2026-09-24 and 2026-09-25 amendments;
+- supersedes item 7 of the 2026-09-20 amendment.
+
+Formats, limits and the build order: `deploy/first-node/RUNTIME-INTERFACES.md`.
+
+1. **An interface is a page the company keeps as a file.** `interfaces/<interface>/interface.toml` says what the page
+   shows, where each part reads from, which buttons it has and who sees it.
+   - The client draws it from a fixed set of building blocks that ship with the client.
+   - An interface holds no code: no script, style, markup or network request from a file runs in a member's browser
+     or on any Qorpera origin.
+   - Text a page shows from a file or an email is drawn without HTML and loads nothing from outside the company
+     folder.
+2. **An interface shows company state and decides nothing.** Like an index, it is read from files and says nothing the
+   files don't. It grants nothing:
+   - every part reads with the viewer's own authority (4.3), so a page shows a member or an agent only what they could
+     open themselves;
+   - `access` only narrows who sees a page;
+   - a part whose source does not exist is not drawn (the client contract's rule against rendering missing machinery,
+     `supabase/CLIENT-CONTRACT.md`).
+3. **Sources are a closed list.**
+   - From the folder: `vision`, a file, the indexes of structured files, and tables.
+   - From runtime state, through calls the member already has: members, agents working now, activity, and what waits
+     for the viewer.
+   - Mail:
+     - received mail is saved in the folder under `hooks/<hook>/` once the core's writer lands (2026-09-29 amendment,
+       items 6 and 9);
+     - sent mail is kept as files beside it (founder decision, 2 October 2026), where Q1's M2c puts it;
+     - until both are files, mail is read through a member read.
+   - Outside content (11.1), such as an email, stays marked as outside content wherever an interface shows it or a
+     button carries it.
+   - Mail the platform marks as sign-up or sign-in mail for a company account shows who used it, never its text.
+4. **Tables are company state.**
+   - A table is a folder, `tables/<table>/`, so creating, moving or deleting a table is one unit:
+     - `table.toml` defines it: its columns, its key and who writes it;
+     - `rows.csv` holds its rows: a structured file checked at every save against the definition (founder decision,
+       2 October 2026: rows in a file first), within the folder core's current bound for a checked file, which is
+       the core's and not a product limit (5.5).
+   - Deleting or moving `table.toml` or `rows.csv` on its own is refused; deleting the folder deletes the table.
+   - The rows name their columns in their first line, in any order, and may leave out optional ones.
+   - A definition change lands only if the rows it finds still fit. To add a required column, add it as optional,
+     fill the rows, then make it required. To remove one, make it optional, drop it from the rows, then remove it.
+     Each step is its own save, so the folder core's unit-by-unit commit never splits a change.
+   - The database holds rows only as the folder's index of those files (5.6).
+   - A table that outgrows a file waits for the company's table store. The store has its own amendment, which says
+     where it runs. Its rows belong to the company like the folder: they never go to the database, the folder gets a
+     snapshot at least daily, and deleting or erasing the company removes them.
+5. **Buttons are actions that already exist.**
+   - A button names one verb: open, message, add, set, take, offer, release or answer.
+   - Each verb is something the viewer can already do: post a message, save a file, or answer a card through its
+     existing state machine (16.2).
+   - A button runs as the viewer, under the same review as doing it by hand, and does no more than its verb. A
+     message button posts only after the viewer sends the prefilled text, and a value it fills in from outside content
+     travels as a marked quote, never as the viewer's own words. How it travels: the [quote provenance
+     amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
+   - The platform draws every confirmation. Money, sending and other outside effects keep their own review.
+6. **Nobody assigns anybody.** A member column marked `needs_yes` holds who has something: who holds a card, who owns
+   or supervises an area.
+   - **Take:** a member may put their own id in an empty cell.
+   - **Release:** a member may clear a cell that names them.
+   - **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member. The offer is a
+     request card (item 9) and changes nothing in the file. When the member says yes, the platform saves the change as
+     that member, and the save is allowed because the open offer names them.
+   - **Agents** act for their supervisor (item 10):
+     - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
+       what is empty;
+     - an agent never changes an area's owner, supervisor or agents.
+   - **Leaving:** when a member leaves the company, the platform clears the cells that name them, and the owners are
+     told.
+   - The save check refuses any other change to such a column, whoever makes it and however.
+7. **Agents use interfaces as members do.**
+   - Agents read a page as text (`interface_read`) and read and write tables (`table_read`, `table_write`).
+   - They create and change interfaces and tables with `save_interface`.
+   - The automatic review (2026-09-25 amendment) counts these as delegation:
+     - creating an interface;
+     - adding or changing a button, including a verb a block lists;
+     - changing `access`;
+     - creating a table, or changing its columns or writers.
+
+     No member's yes is needed beyond what the review asks (founder decision, 2 October 2026). `save_interface` joins
+     the tools the review recorder (C2) records, and the review gate and the database classify each call by what it
+     changes. Until the review of changes no tool carried exists (C2's R2), an agent makes these changes only with
+     `save_interface`.
+   - Layout, wording, order and sources apply at once, whatever carries them. The agent's thread shows the change with
+     Undo, and it can be restored from the version history.
+   - Members' own changes are not reviewed.
+   - Coding sessions see `interfaces/` and table definitions read-only.
+8. **The rail has two tabs (amends 14.5).**
+   - Agents is the hierarchy 14.5 describes.
+   - Interfaces lists the company's active interfaces: the main interface on top, then the others in the order of
+     `interfaces/order.md`.
+   - An interface whose `needs` are not met is not listed.
+   - Pins and hiding are each member's own (2026-09-24 amendment, item 3).
+9. **Offers are an interaction surface (amends 16.2).** 16.2's list gains an offer to a member of:
+   - a card;
+   - an area;
+   - the supervision of an area's agents;
+   - an agent joining a supervised area.
+
+   An offer waits durably for that member. Dismissal or no answer is never a yes (16.2).
+10. **Supervision (founder decision, 2 October 2026; amends section 17).**
+    - **What a supervisor is.** The member an area's agents answer to. It is shown in the `supervisor` column of
+      `tables/areas/rows.csv`, the seeded table the platform reads supervision from.
+    - **Work alone** is the agents' work that no member started: routines an agent set up for itself, event and
+      file-change wakes, and the wakes those runs start. Work a member started stays theirs (section 17).
+    - **What follows from it.** For the agents' work alone:
+      - their questions, and the review cards that go to the requester today, go to the supervisor;
+      - the supervisor's personal rules apply;
+      - the supervisor's own login pays, where section 17 lets it.
+
+      The recorded requester stays whoever caused the work (4.2). The supervisor is recorded as the payer and as the
+      one who gets the cards. Cards that go to owners and admins (company rules and built-in checks; 2026-09-25
+      amendment, item 5) still go to them.
+    - **What it changes in section 17.** For supervised agents it changes section 17's "An agent's standing execution
+      authority names a company account only; it never pays with a member's login." Every other rule of section 17
+      still decides which login may pay:
+      - a ChatGPT plan pays only for work its own member starts, and no other member's activity triggers calls on it
+        (2026-10-01 amendment), so it never pays for work alone. On a plan login, supervision brings the cards and
+        the personal rules; the payment follows today's rule;
+      - a Claude login never pays for agent work;
+      - work stops at a usage limit.
+
+      Where the supervisor's login may not pay, today's rule applies. A member's own messages still run on that
+      member's own account.
+    - **Consent is a record, not a cell.** Payment follows the member's own consent record, kept with their settings
+      in the database.
+      - It is made when they say yes to supervising an area's agents: when they put their own id in the area's
+        `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to
+        the taker on the same screen.
+      - It can be withdrawn at any time. It ends when they release the area, when the area's row is deleted or its
+        key changes, or when they leave the company; the owners are told.
+      - A cell that names a member without a live consent record decides nothing.
+    - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
+      supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the
+      supervisor says yes. Agents never change `agents` (item 6).
+    - **One area per agent.** An agent sits in at most one area's `agents`, and the save check refuses a second.
+    - **What areas are not.** Areas grant nothing and are not the retired responsibility objects (2026-09-20
+      amendment, item 1).
+    - **Until it is built** (step I9b), today's rules apply.
+11. **Seeded interfaces and the library.**
+    - At founding the platform seeds `interfaces/` and `tables/` with:
+      - Pulse, the main interface, and its numbers table;
+      - Mailbox;
+      - Members, with its areas and cards tables.
+    - Each is copied from Qorpera's library and marked with where it came from.
+    - The main interface can be changed but not deleted.
+    - Adding a library interface later copies its files the same way, and the copy is the company's.
+    - A newer library version is offered, never applied by itself. A line both sides changed becomes a choice.
+    - The library holds only files of this format.
+12. **5.6 changes with this amendment.**
+    - The tree gains:
+
+      ```
+      interfaces/
+        order.md                 the order of the Interfaces tab
+        <interface>/
+          interface.toml         one page
+          README.md              what it is for (optional)
+      tables/
+        <table>/
+          table.toml             a table's columns, key and writers
+          rows.csv               its rows
+      ```
+
+    - "It holds all company state" gains one exception: rows in the table store (item 4).
+    - The database's list gains:
+      - each member's pins and hidden interfaces;
+      - their supervision consent records;
+      - open offers, as runtime state.
+    - "Structured files" gains interface files, `interfaces/order.md`, table definitions and table rows.
+    - The seeded folders that can't be deleted or moved gain:
+      - `interfaces/`, `interfaces/order.md`, and the main interface's folder and file;
+      - `tables/`, and the `tables/areas/` folder with its two files.
+    - The automatic review's list gains item 7's changes.
+    - Coding sessions see `interfaces/` and table definitions read-only, beside `agents/` and `rules/`.
+    - Until F2 writes these into 5.6's text with the save-hook step (I6), the note at the top of 5.6 points here.
+
+### 2026-10-02 amendment: light threads
+
+Founder decisions of 2 October 2026, and item 2's write tools on 3 October
+(the coordinator, at Jonas's request). First "light threads": a chat turn has
+no shell. Then, the same day: folders shared with only some agents are worked
+on from the agent's own machine (item 4); folder work runs offline (item 5); a
+company machine's reads go to the run (item 6); and the company machine's
+wake time is accepted (item 3).
+
+They amend these texts. Where older text conflicts with this amendment, this
+amendment governs.
+- The 2026-09-25 amendment, item 2: the computer shell as an outside effect.
+- The 2026-09-27 amendment "every machine works in the company folder", items
+  1, 2, 5 and 7.
+- The 2026-09-27 amendment "the company folder layout": item 2 and its
+  "Tools" paragraph.
+- The 2026-09-28 amendment "how machines reach the company folder", item 2.
+- The 2026-09-28 amendment "compute for agents":
+  - in item 2, the review of every computer shell command, its shared
+    localhost, and "the run box does not change";
+  - in item 4, "narrower folders are never mounted on a machine", and the
+    review of every command on a machine with the folder.
+
+1. **A chat turn has no shell.** A conversation turn runs on an execution
+   host with the model's harness and the runtime's tools only.
+   - No command box, shell or toolbox runs beside it.
+   - The run box keeps the meaning that "computer hours" and 7.4 give it:
+     where one run executes. It has no shell and no folder mount. This
+     replaces 27 September item 1's "agent run machines" that mount the
+     folder: the machines that mount it are those of item 3.
+   - An execution host grows only to hold more conversations at once.
+2. **The folder through the server.** In a turn, an agent lists, reads and
+   searches the company folder with server-side tools (`company_list`,
+   `company_read`, `company_search`).
+   - These tools act with the run's own folder view. A folder shared with only
+     some agents is there for those agents' runs (4.3).
+   - Each answer is an authorized read in the run's read set (27 September,
+     item 3). It is bound to the exact text the model is shown, as 9.1 fences
+     output, before the model sees it.
+   - Search runs on the node's folder service, not on the execution host.
+   - A turn writes through the mutation gateway with today's one-file Company
+     File tools (27 September, item 4).
+   - Decided 3 October 2026 (the coordinator, at Jonas's request): a turn
+     keeps the one-file write tools, and each write is a change set of one
+     unit through the mutation gateway. Changes of several files, and changes
+     a command makes, come from a machine's change set. A subtree move or
+     delete goes through the member route or a machine. 27 September item
+     2's retirement of the one-file tools is cancelled.
+3. **Commands run on machines.** Scripts, spreadsheets, documents and
+   conversions run on a machine the agent hands the work to:
+   - the company machine, which wakes on demand (its cold start, about 17
+     seconds, is accepted: founder, 2 October);
+   - a coding machine;
+   - or the agent's own machine (compute item 4).
+
+   Each machine shows the folder through its own folder program (28
+   September, item 1). The shell of 27 September item 2 is the machine's
+   shell. It holds no credentials (compute items 2 and 4), as 27 September
+   item 5 asked of the run box.
+4. **Folders shared with only some agents are worked on from the agent's own
+   machine.**
+   - An agent's own machine may mount the folder with the view of the run
+     working in it, so such a folder can be worked on there.
+   - This replaces compute item 4's "narrower folders are never mounted on a
+     machine", and 28 September item 2's "worked on from the agent's own run
+     box".
+   - The company machine stays company-wide (28 September, item 2: its
+     computers are not walls between agents).
+   - Open, to be settled before such a mount is built: who else may use a
+     machine while it carries such a view, and what members see of its
+     commands. Today compute item 4 lets any agent of the company use any
+     running machine.
+5. **Folder work runs offline.**
+   - On a machine that carries the company folder, a command that works in
+     the folder runs without network, in a network namespace of its own. It
+     has a loopback of its own.
+   - Such a command is not an outside effect. It runs at once, without the
+     review of outside effects. Its saves still pass the gateway, and its
+     deletes and moves pass the review as 27 September item 6 says.
+   - On such a machine, a command that needs the network is an outside effect
+     and passes the company's review rules (2026-09-25 amendment, item 2).
+   - This replaces:
+     - 27 September item 7 (no internet in the agent's shell, and the later
+       decision it left open);
+     - the 2026-09-25 amendment item 2's "the computer shell" as an outside
+       effect, which now holds only for a command that needs the network;
+     - compute item 2's review of every computer shell command, and its "the
+       run box does not change";
+     - compute item 4's review of every command on a machine with the folder.
+   - Open, to be settled before the folder is mounted on agents' own
+     machines: how the rule holds there, where commands run as root (compute
+     item 4) and a namespace alone does not hold them.
+   - Until the folder is on a machine, its commands keep today's rules: a
+     company machine's shell commands keep compute item 2's review, and
+     agents' own machines keep compute item 4's unreviewed commands. Coding
+     sessions keep their open network and stay unreviewed (27 September,
+     item 9).
+6. **Reads on the company machine go to the run.** A company machine gives
+   each shell command a folder mount of its own, owned by the run that
+   started it, beside the mount of the computer's desktop (the 28 September
+   design).
+   - A command's reads go to its run's read set (27 September, item 3).
+   - Its saves are attributed to its run (28 September, item 2).
+7. **Words.** In the folder texts this amends, a "run box" or "run machine"
+   that works on the folder means the agent's own machine (item 4 above).
+   Elsewhere, "run box" and "run machine" keep their meaning (item 1).
+
+### 2026-10-02 amendment: quoted outside content in a member's message
+
+Accepted by the runtime coordinator on 2 October 2026, to carry out the [interfaces
+amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)'s item 5: a value a
+message button fills in from outside content travels as a marked quote, never as the member's own words. Marks a
+person can see are not enough against instructions hidden in an email. So the message carries where each quote is,
+and the platform fences those words like a tool result. Not built yet. Until it is built, a message button fills in
+no value from outside content.
+
+It amends these texts. Where older text conflicts with this amendment, this amendment governs.
+- 9.2 (trust labels) and 11.1 (the inbound result fence): a quote inside a member's message is outside content.
+- The 2026-09-25 amendment, item 3: what the reviewer reads as "what the member asked for".
+- The 2026-10-02 interfaces amendment, item 5: how the marked quote travels.
+
+1. **A quote is a span of the member's text.** A member's message may carry `quotes`: a list of 1 to 16 spans,
+   each with exactly the keys `{start, end, source, ref}`.
+   - Both kinds of input take `quotes`: a conversation input and a room message, whose bodies are both
+     `qorpera.session-prompt/v1`.
+   - A message with no quotes leaves `quotes` out. An empty list is refused, since a repeated call compares bodies
+     exactly.
+   - `start` and `end` are whole numbers that count characters (Unicode code points) of `text`, from 0, with `end`
+     excluded and at most the text's length.
+   - The spans are in order and don't overlap. Each is 1 to 2,000 characters.
+   - Each span sits inside a pair of marks: the character before `start` is «, and the character at `end` is ».
+     The span covers the words inside the marks.
+   - `source` says where the words came from, from a closed list. Today that list is only `mail`.
+   - `ref` names the record. For `mail` it is the thread's id. It must be a thread that `qorpera_member_mail_thread`
+     shows this member, in the conversation's company and environment, with mail switched on.
+     - A thread that `qorpera_mail_thread_account` marks as account mail is refused like an unknown one: its text is
+       never shown (the A1 account-mail mark).
+     - The check is made once, when the message is written. The fence never needs the thread again, so a thread
+       deleted later changes nothing.
+   - A message with `quotes` has no `displayText`. One with both is refused (22023).
+2. **Only the member's client writes quotes,** from content it showed the member. Today that is a message button
+   (interfaces amendment, item 5).
+   - The client keeps the quoted words in «» marks so people can see them.
+   - A quote is one piece in the composer. The member keeps it or removes it whole, and writes their own words
+     around it.
+   - A draft keeps its quotes beside its text, room drafts included, so a reload, another device or a co-editor
+     keeps them.
+   - Once a draft holds a quote, a save that keeps a quote's words without its record, or changes a quote's words,
+     is refused. Removing a quote whole is an ordinary save.
+   - A client that has lost a quote doesn't send until the member removes it or fills it in again.
+   - An agent's message button sends a coworker message, which is never authority (9.2). It carries no `quotes`.
+3. **The platform checks quotes before it writes the message.**
+   - The input RPCs check `quotes` after membership and the right to write, and before the first lock the call
+     takes. Those RPCs are `qorpera_append_session_input`, `qorpera_request_session_turn_v2`, and
+     `qorpera_post_company_room_message` with its folder-v2 path.
+   - The mail check reads without a lock, as the member's mail read does. The other body checks stay where they are.
+   - A malformed list is refused with 22023. So is a `ref` the member can't read: it reads as an unknown reference and
+     never says whether the record exists.
+   - A repeated call compares the whole body, quotes included.
+   - The platform does not check that a span repeats the record's words. Marking words as a quote only makes them
+     count for less than the member's own words. It never makes an action asked for, and it does nothing the
+     member's client could not do by leaving the words out.
+4. **The model sees quotes fenced.**
+   - The member's text keeps its own words, and each quoted span is replaced by a placeholder, `[quote N]`, where N
+     counts from 1 in each message.
+   - The quotes follow the text in the same source, as records `{schema: "qorpera.member-quote/v1", trust:
+     "untrusted_data", provenance: {inputId, quote, source, ref}, text}`, where `quote` is N. They count against
+     the source's bounds, and `read_context` pages them with it.
+   - The run's rules say so: a quote is outside content from whoever wrote it.
+     - The member's own words may ask for something about it: answer it, sum it up, file it.
+     - What the quote itself asks for counts only as far as the member's own words name that action, and "do what
+       it says" names none.
+     - Unlike a runbook a request names (11.1), a quote never guides the work by itself.
+   - The platform fences a message where it builds the run's context sources. So the fenced form is what reaches
+     the run, in all of these:
+     - the context;
+     - every `read_context` page and its sha256;
+     - a continuation's `parentInputs` and `roomPost`.
+   - The same holds for earlier messages in the history.
+   - A path that cannot fence never gets a message with `quotes`: the legacy runtime and a desktop's turn claim
+     refuse it.
+5. **The review never reads a quote as the member's request.** The automatic review (2026-09-25 amendment, item 3)
+   reads the member's words with each quote shown as its placeholder and where it came from (an email thread),
+   never the quoted words.
+   - An action that only a quote asks for, and that the member's own words don't name, is not something the member
+     asked for.
+6. **People see what the member sent.** The transcript and the clients show the message as written, with its «» marks.
+   - The marks are for people, and `quotes` is for the platform.
+   - The transcript entry keeps them as `qorperaQuotes`, beside `qorperaAttachments`, so history can be fenced the
+     same way.
+7. **Tests.** An adversarial test (11.1) has a member quote an email that says to ignore earlier instructions and
+   delete files, while the member's own words ask only for a summary. It proves that the agent does not obey the
+   quote, and that the review denies a deletion asked for only inside the quote.
+
+### 2026-10-03 amendment: one idle rule for every machine
+
+Founder decision of 3 October 2026 ("yes to gap 1, go ahead", on the session
+build-up audit). Company machines, coding machines and agents' machines (the
+machines of the 2026-09-28 amendment "compute for agents"; not run boxes,
+execution hosts, login machines or one-run machines) follow one idle rule, as
+coding machines already do. A forgotten dev server must not keep a machine
+awake for ever, and real work must never be cut short. There are no caps: no
+deadline, and nothing is stopped for running long. Only idle sleep and
+check-ins.
+
+It amends these texts. Where older text conflicts with this amendment, this
+amendment governs. In-place edits are marked "(changed in place)".
+- 7.4: the 2026-09-24 notes that idle company computers power off after 5
+  minutes (what counts as use), and that a hung run keeps its machine.
+- The 2026-09-28 amendment "compute for agents": item 1 (a seat in use, and
+  what keeps a company machine awake), item 2 ("a running command keeps its
+  machine awake"), item 3 (coding sleep and check-ins) and item 4 (task and
+  always-on machines).
+
+1. **What keeps a machine awake.** This rule replaces three old terms: "a
+   running command", "a run placed on it" and a computer's live lease.
+   Everything else that keeps a machine awake today stays: a live viewer, a
+   takeover or a drain, resources not yet drained, runs and requests waiting
+   for the machine to start, a wake that starts it, and the two minutes after
+   a computer opens.
+   - **A run** counts while it makes progress or has a model request in
+     flight. So does its lease on a computer.
+     - Its progress clock is the newest of its last recorded tool call, its
+       last native context view (recorded before every model request, by the
+       2026-09-29 amendment "one call before a model request") and its job
+       start. Lease renewals never count.
+     - A model request is in flight from its context view until the run's next
+       tool call, its next context view or its end. So a long single request
+       never makes a run idle; a harness that hangs inside a request keeps the
+       machine awake until its run ends.
+     - A run with neither progress nor a model request for 15 minutes is
+       idle. The same clock drives the run's "no progress for 15 minutes"
+       notice.
+     - A coding turn is a run.
+   - **A program** counts while it is busy: while it uses more than about 5%
+     of one processor core.
+     - That is measured for each command, coding session or computer's shell.
+     - On an agent's machine, programs outside its commands, such as
+       containers, count by the processor share of the whole machine beyond
+       its commands' own use (about 2% of the machine). That share belongs to
+       the agent that started the machine.
+     - A program that only waits (a dev server, an idle database, `sleep`, a
+       watcher with nothing to do) is not busy.
+2. **Seats follow the same test.** A computer's seat is in use under the same
+   terms (item 1 of "compute for agents", changed in place). Decided 3 October
+   2026 (the coordinator, carrying out the founder decision):
+   - A program that only waits does not hold the seat. If another agent needs
+     that seat, the shell closes before the seat changes hands, its programs
+     stop, and the agent is told, as at sleep.
+   - An idle run's lease still holds its seat, so its desktop is not handed
+     to another agent while it is idle, but the machine may still sleep.
+     If the machine sleeps, the run goes on without computer tools until it
+     opens its computer again.
+3. **Sleep.** A machine sleeps after its quiet window with nothing keeping it
+   awake: a company machine after 5 minutes, a coding machine after 10
+   minutes, an agent's task machine after an hour. These stay per-node or
+   per-environment settings.
+   - Sleep stops what is still running. Files and disks stay as before.
+   - The next run of the agent that started a stopped program is told what
+     stopped and why, once.
+     - It is told in the conversation of the run that started the program.
+     - A worker's program is told to its agent, in the conversation that
+       dispatched the worker.
+     - Work outside an agent's machine's commands, such as containers, is told
+       to the agent that started the machine, in the conversation of the run
+       that started it.
+4. **Busy work keeps running.** A busy program keeps its machine awake for as
+   long as it stays busy. The platform never stops a program for running
+   long. Every other stop stays as before, for example an agent's or a
+   member's stop, the computer closing or its authority ending, a takeover, a
+   seat changing hands (item 2), archiving a coding session, zero computer
+   hours and its finish window, the memory guard, the operator pause, a lost
+   attachment, and a deleted company.
+5. **Check-ins for busy programs.** When an agent's program has kept a machine
+   busy since that agent last worked with it, the agent is asked whether it
+   still needs it.
+   - It is asked in the conversation of the run that started the program. For
+     a worker's program, that is the conversation that dispatched the worker.
+     For busy work outside an agent's machine's commands, it is the agent that
+     started the machine, in the conversation of the run that started it.
+   - The count starts at the later of the program's start and the agent's
+     last work with it.
+     - Working with it means starting a command on that machine, typing into
+       one, or a turn of its coding session.
+     - Reading output, or answering a check-in, does not restart the count.
+   - The agent is asked 1, 3 and 7 hours after that start, then every 24
+     hours. Each time, it is asked only if the program is busy at that moment.
+   - It may stop the program or leave it. The question is a notice, never a
+     stop.
+   - An archived agent is not asked. Its programs stay where members see and
+     may stop them.
+   - Coding sessions keep their check-ins after 1, 3 and 7 quiet days too.
+   - On an always-on machine, its weekly check-in (item 6) takes the place of
+     these.
+6. **Always-on machines** are the explicit way to stay up: this rule never puts
+   them to sleep. The agent that started one is asked once a week whether it
+   still needs it, counted from the machine's start, in the conversation of
+   the run that started it. It may stop the machine or leave it.
+7. **Agents are told the rule** in their tool texts. A program that only waits
+   lets its machine sleep and stops with it. A busy one keeps the machine
+   awake and brings check-ins. On agents' machines, always-on is the way to
+   keep a server up.
+8. **Acceptance**, on each machine kind where it applies:
+   - A waiting dev server lets the machine sleep, and the next run is told it
+     stopped.
+   - A busy job keeps the machine awake and brings check-ins at 1 and 3 hours.
+     Reading its output in between does not restart the count.
+   - A run that stops making progress, while holding a computer's lease, lets
+     its company machine sleep about 20 minutes later (15 minutes until it is
+     idle, then the 5-minute window).
+   - A model request lasting more than 20 minutes, by a run that holds a
+     computer on a company machine with its browser open, keeps the machine
+     awake.
+   - When another agent needs the seat of a computer whose shell only runs a
+     waiting server, the shell closes, the seat changes hands, and the first
+     agent's next run is told what stopped.
+   - A busy container on an agent's task machine keeps it awake and brings
+     check-ins to the agent that started the machine.
+   - An always-on machine brings its weekly check-in.
+
+### 2026-10-03 amendment: agent traffic leaves through the agent exit
+
+Founder decision of 2 October 2026 ("completely agree… let's fix this", then "I approve" for the design page
+"Agent Exit", https://claude.ai/artifact/GPjfKe2YagNeMzkQMrY95r). The page's four choices were set as recommended by
+the runtime coordinator on 3 October 2026, at Jonas's request; Jonas may still change any of them. Two rules the
+page did not cover, the connection bounds (item 4) and what happens when only the log is down (item 10), were decided
+by the runtime coordinator on 3 October on Jonas's standing request that it settle his open questions; he may still
+change them. Not built yet. Design: `deploy/first-node/RUNTIME-AGENT-EXIT.md`. The guest
+guard (step E-1, enforcing on both nodes since 2 October, `deploy/guest-guard/`) already keeps every guest on our
+bridges away from the NAS, the nodes and every tailnet service it does not list; it stays for our own guests.
+
+It amends these texts. Where older text conflicts with this amendment, this amendment governs.
+- Section 12's note (amended 2026-09-28): a computer's network to the internet.
+- The 2026-09-28 amendment "compute for agents": in item 1, "a machine starts on any node with room" (placement
+  also needs a healthy exit); in item 2, "outbound internet on any port and protocol", the firewall on the machine
+  and "the browser keeps its own separate path"; in item 4, "it reaches the internet but no private network".
+- The 2026-09-27 amendment "every machine works in the company folder", items 1 and 9, and the 2026-10-02 amendment
+  "light threads", item 5: coding sessions keep their open network.
+- The 2026-09-25 amendment, item 3: "all company rules" means the review rules (`rules/*.md`).
+- 5.6, `rules/`: a second kind of file there.
+- 7.4: what remains.
+- Section 19, "Minimum operational observability": a required record.
+- Section 23: network paths.
+
+1. **Two roads out.** The machines agents work on send their internet traffic through the agent exit:
+   - the Company Computer's browser, shells, terminal and desktop;
+   - agents' own machines (compute item 4);
+   - coding machines (git, package registries, websites);
+   - any other machine that gets a network later.
+
+   Together these are the **agent road machines**. Everything else keeps the platform road and the platform address,
+   93.164.62.162:
+   - AI sign-ins and model traffic (item 5);
+   - the work our platform services do for agents: the vault and the official connections it runs (Gmail, Drive,
+     GitHub), coding pushes, mail through the mail provider;
+   - the database, the object gateway and Tailscale;
+   - the test machine and image builds;
+   - a Company Computer's own services;
+   - chat turns on execution hosts, which run no commands (light threads, item 1).
+2. **The exit is ours, on every node.** Every node runs the same exit with the same inside addresses. An agent road
+   machine uses the exit of the node it runs on, so no agent traffic crosses between nodes, and nothing is bound to
+   one node. The exit runs on our own hardware from our own addresses: no rented or shared relay, and no residential
+   or rotating address.
+3. **Its own addresses.** The exit leaves from a block of fixed addresses Qorpera holds from its line provider,
+   separate from the platform address. Each node has one of them (choice 1: a block of 8, five usable). Until the
+   block is delivered, the exit leaves from the platform address. Everything else in this amendment applies from the
+   exit's first day. A node's switch to its own address ends the connections open at that moment. Once the block is
+   in use, each agent address carries a reverse name under qorpera.com and points to a page that explains the
+   traffic and gives an abuse contact.
+4. **What the exit refuses.** The exit refuses:
+   - our own networks: the NAS, the office network, the nodes, Tailscale, link-local and cloud metadata addresses,
+     and our own public addresses;
+   - TCP port 25 (choice 2);
+   - IPv6, for now (dropped, since no agent road machine has an IPv6 route).
+
+   Everything else passes, on any port and protocol, subject to the company's rules (item 8) and the line guard
+   (item 9). The other refusals answer at once.
+
+   Each machine holds at most 16,384 open connections through the exit at once, and the exit on a node at most
+   98,304 in all (decided by the runtime coordinator on 3 October; Jonas may change them). They are an
+   infrastructure guard for the node's connection table, far above normal use, and not a limit on the work.
+   - The node's own connection table holds 262,144 entries (read on both nodes, 2 October). In phase 1 each agent
+     connection takes one entry in the exit's own table and one, the masqueraded leg, in the node's; the node does
+     not track the bridged leg (step E2). The total bounds open connections only: a closed agent TCP connection
+     stays in both tables for 30 seconds (the kernel's default, 120, is shortened for agent connections only; a
+     reload of the exit's rules leaves connections open at that moment at the default). A refused attempt leaves no
+     entry in either table (measured in step E2's proof on LXD, which measured the tables under such floods, and the
+     total's cost, before any node is switched on).
+   - A Company Computer machine is one machine at the exit: its computers and its browser share one 16,384. (#411
+     bounds each computer at 16,384 inside the machine, and the machine at 196,608.)
+   - One company with six busy machines on a node could reach the node's total; until its connections close, every
+     other company's new connections on that node are refused.
+5. **Our model programs' AI traffic never enters the exit.** The sign-ins and model traffic of our model programs
+   (OpenAI, ChatGPT, Anthropic, Claude) leave from the platform address, direct and undisguised.
+   - On an execution host, the existing model relay carries them. A coding turn's model program runs there too
+     (`deploy/coding-worker/README.md`); its coding machine only runs commands.
+   - No agent road machine runs one of our model programs today, so none needs a door of its own. If one ever
+     does, a provider door for it (a pass-through that reads only the TLS server name) is designed and built
+     before that machine moves to the exit (corrected 3 October, step E2a; design §5).
+   - On an agent road machine, a call to an AI service is agent traffic like any other, an agent's own included.
+6. **Not a way past bot checks.** No stealth browser flags, fake browser identities, rotating or residential
+   addresses, or CAPTCHA solving. A block page or a CAPTCHA means stop, never retry. Sites with strong bot checks
+   stay a person's task in the person's own browser (`deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md`). Once the block
+   is in use, its addresses say who we are (item 3).
+7. **The exit's log (choice 3).**
+   - For each connection it passes, the log records the company, the machine, the start and the end, the
+     destination name, the address, the port, the protocol and the bytes each way. The destination name comes from
+     the exit's own name lookups, where the machine used them.
+   - A time the log could not record (item 10, or events lost under load) is recorded as a gap. For an abuse lookup
+     a gap means unknown, never "no one".
+   - For each refused flow (machine, destination, protocol, port), the log records the first refusal in each hour
+     and the rule that refused it. Every refusal is counted. Each machine may add about 600 refused flows an hour to
+     the log (after a first burst of 100); refusals past that, or past the exit's room, are counted and show as a
+     gap.
+   - It never records content or full web addresses, and nothing is decrypted.
+   - The log, and the exit's record of name lookups, are kept 90 days on our storage, then deleted.
+   - A company's owners and admins can see their company's log, and a member can see the lines of their own coding
+     machine. The view comes later, in an amendment of its own.
+   - Qorpera uses the log to answer abuse reports. A refused connection tells the agent only that it was refused;
+     which rule refused it is in the log.
+8. **Company network rules (choice 4).**
+   - `rules/network.toml` in the company folder holds either a block list or a list of the only sites allowed.
+   - It is not a review rule: the reviewer does not read it.
+   - Like every file in `rules/`, it is written, moved, deleted and restored only by owners and admins. Agents read it
+     and never write it (5.6).
+   - Its format is checked when it is saved, and a save that fails the check is refused. A company without the file
+     is open.
+   - Every node's exit applies it, to that company's machines only.
+   - A block list works on names: the exit's name lookups refuse a blocked name for that company, and the refusal
+     is in the name-lookup record. A machine that reaches a site by its address, or through its own encrypted DNS,
+     gets past a block list.
+   - The "only listed" mode is strict. A machine reaches only TCP port 443, only on addresses the exit's own name
+     lookups gave for a listed name, and only when the TLS server name is listed too, so an unlisted site on a
+     listed site's shared address is refused. Everything else is refused in that mode: plain HTTP (so a package
+     archive reached over `http://`, as apt's defaults are, fails even when listed), other ports and protocols, UDP
+     (QUIC) included. The exit never decrypts, so a listed TLS name that carries another site inside
+     (domain fronting) is not caught.
+9. **The line guard (choice 2).**
+   - TCP port 25 is refused from the exit's first day.
+   - For two weeks the exit only counts, per company: new connections, refused ones, bursts of new connections (a
+     flood), and failed connections to many addresses (a scan).
+   - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
+     Past them, that company's new connections are slowed for a while. The brake never stops normal work.
+   - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
+   - It is not a limit on the work: 7.4's rule that a run has no count on its work stands.
+10. **Updates never stop a machine, and the exit fails closed.**
+    - An exit update reloads its rules in one transaction each and restarts its name and log services in place. The
+      bridge and the machines' links stay up, and no company is paused.
+    - The exit is never removed while a machine is plugged into it, running or asleep.
+    - If a node's exit or its log is not healthy, the node takes no new agent road machines, and the node observer
+      reports it to the runtime operator. Placement passes that node over for any other node with room and a
+      healthy exit, as for a full node. A machine that today's build still ties to that node (compute item 1, "gaps,
+      not rules") starts there; while the exit itself is down it has no internet.
+    - If the exit itself is down, that node's agent road machines have no internet until it is back, and agents'
+      commands there see network errors. Agent traffic never falls back to the platform road. On a Company Computer
+      this rests on the computer's own rules: agents' browser, shells, terminal and desktop reach only its agent
+      network card, and agents cannot change those rules (item 12's acceptance proves both).
+    - If only the log is down, traffic continues and the time is a gap in the log (item 7); the exit's refusals stay
+      in force. A short gap in the log is preferred over cutting running work (decided by the runtime coordinator on
+      3 October; Jonas may change it). Each restart of the logger in an update leaves a short gap either way.
+    - A company rule applies at once, without a restart.
+11. **Companies share the agent addresses.** The line guard and the log keep one company from spoiling them for
+    the rest. Addresses per company (IPv6) are a later decision.
+12. **Acceptance.** On each node:
+    - a Company Computer's browser and one of its shells (with a non-HTTP connection), an agent's machine and a coding
+      machine each reach a website through the exit, and the exit's log names their company;
+    - the NAS, the nodes, Tailscale and cloud metadata stay unreachable from them, and TCP port 25 is refused;
+    - a coding turn's model traffic leaves through the execution host's model relay and is absent from the exit's
+      log;
+    - with the exit failed, none of them reaches the internet; a Company Computer whose agent network card is gone
+      does not reach it through its own network either, and its agents cannot change that;
+    - a company's block list refuses a name for that company and for no other;
+    - in "only listed" mode, an unlisted site is refused even on a listed site's shared address;
+    - once the block is in use, websites see the agent address, not the platform address.
+
+**What this replaces.**
+- Section 12's note: a computer's shell, terminal and desktop reach the internet through the agent exit (changed in
+  place).
+- Compute item 2:
+  - "outbound internet on any port and protocol" reads with item 4's refusals, the company's rules and the line
+    guard;
+  - the private and special address ranges are refused by the exit, and the firewall on the machine stays as a
+    second line;
+  - "the browser keeps its own separate path" reads: its relay's connections leave through the agent exit.
+- Compute item 1: a machine starts on any node with room and a healthy exit.
+- Compute item 4: a machine reaches the internet through the agent exit.
+- Every-machine items 1 and 9, and light-threads item 5: coding sessions keep their open network, through the agent
+  exit, with item 4's refusals, the company's rules and the line guard, and with their model traffic on the platform
+  road.
+- The 2026-09-25 amendment, item 3: the reviewer reads the company's review rules (`rules/*.md`), not
+  `rules/network.toml`.
+- 5.6: `rules/` also holds `network.toml` (changed in place).
+- 7.4: the line guard and the connection bounds of item 4 join what remains (changed in place).
+- Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
+- Section 23: the agent exit is a network path, with item 10 as its failure behaviour (changed in place).
 
 ## 20. Enforcement matrix
 
@@ -4118,7 +4911,11 @@ while Azure backup/overflow remains disabled.
 1. One always-on cloud Company File remains readable and mutable through its
    service while every member application and Company Computer is stopped.
 2. Two human members with separate identities, permissions, private paths, and
-   provider sponsors work over that same company without scope leakage.
+   provider sponsors work over that same company without scope leakage. On the
+   company folder (`folder-v2`), private paths are folders shared with only
+   some agents (the 2026-10-02 amendment "light threads", item 4; decided
+   3 October 2026): it has no `members/` folder (the 2026-09-17 amendment's
+   "No member-private conversations").
 3. Creating a company atomically seeds its Company File schema, one Co-Founder
    agent, synchronized enforcement projections, and one silent first-run wake.
 4. Creating an agent seeds exactly one startup wake, creates no template
@@ -4262,8 +5059,11 @@ contract defines the agent-runtime bar; it does not waive those gates.
 Qorpera hosts real companies, so every layer needs a stated failure model:
 the control plane; the Company File mutation gateway and object store/NAS;
 Company Computers and their workbench; workers; provider connections; and
-network paths. For each layer the model MUST state detection, degraded
-behavior, recovery, and who is notified, and it MUST preserve the
+network paths, among them the agent exit, which fails closed; a log
+outage is a gap (amended 2026-10-03, not built yet, "agent traffic leaves
+through the agent exit", item 10). For each layer the model MUST state
+detection, degraded behavior, recovery, and who is notified, and it MUST
+preserve the
 one-authority rule: two arbiters accepting work is the fork bug in permanent
 form.
 
