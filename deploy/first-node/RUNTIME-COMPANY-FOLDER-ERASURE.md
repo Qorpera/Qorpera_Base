@@ -179,7 +179,8 @@ through the side rows' foreign key; phase 4's rows are run-owned and taken `SKIP
 step works on the first unfinished one:
 1. **Versions.** Up to `p_versions` rows under each root before its cutoff, by the key index; their manifests and
    chunks (by the new chunk index) go to the erasure's hash table; their written paths go to the needles; the run ids
-   of their commits are noted for phase 4; the first erased version's time is kept on the erasure row (phase 3's lower
+   of their commits are noted for phase 4, and so are the runs that file-change wakes about those commits started
+   (P29, by the wakes' `(source_id) where source_kind = 'company-file'` index); the first erased version's time is kept on the erasure row (phase 3's lower
    bound); the rows are deleted.
 2. **Commits.** All of the environment's commits before each root's cutoff, with no lower bound: saved ones by
    `(environment_id, seq)` (the cutoff's own commit only in units before its unit), unsaved ones by the new partial
@@ -190,7 +191,8 @@ step works on the first unfinished one:
    - in any other unit, a problem message containing a needle is blanked (`""`). Needles are paths only: every written
      spelling of an erased path and its first 100 characters (the rules quote `left(path, 100)`). A bare file stem
      would blank unrelated text, so it is not one.
-   A commit whose units were scrubbed or blanked has its run noted for phase 4.
+   A commit whose units were scrubbed or blanked has its run noted for phase 4, and again the runs its file-change
+   wakes started (P29: a run that read its wake just before phase 1 deleted the versions is materialized by now).
    The unit keeps `unit`, `op`, `outcome`, `reason` and `version`: the runtime's strict parser accepts it on replay
    (`cloud-company-folder-client.ts:474-497`), and run completion reads `outcome` (20260928279600:170).
 3. **Runs that read.** The read records of the environment, by the new `(environment_id, created_at)` index from the
@@ -248,7 +250,9 @@ for the coordinator.
 
 Worker rows (`folder_brief_version`, `folder_results_version`, F2-5b) joined in P18b (§11); when P17 lands, conflict copies
 on receipts are erased with their path; P16a's table index joined in P18c (§12; interfaces have no index before I7);
-H5's link and delivery rows and the C4 listener's file-change wakes join before they hold paths.
+H5's link and delivery rows join before they hold paths. The C4 listener's file-change wakes (P29) hold version ids,
+never paths (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §10): an erased version drops out of a wake by itself, and phases 1
+and 2 note the runs those wakes started, so phase 4 scrubs what they read.
 
 ## 6. Outside the folder tables
 

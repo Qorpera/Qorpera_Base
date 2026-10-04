@@ -270,6 +270,10 @@ begin
 	if v_claim ->> 'profileId' is distinct from v_profile::text then raise exception 'The table''s claim: %', v_claim; end if;
 	v_result := public.qorpera_folder_company_create('85700000-0000-4000-8000-0000000000f9', (v_claim ->> 'creationId')::uuid,
 		(v_claim ->> 'generation')::bigint, pg_temp.seed_units(v_claim));
+	-- The creation worker's kick: the follow-up queue gives the Co-Founder its default grant, then its first-run turn.
+	if v_result ->> 'state' = 'completed' and public.qorpera_folder_follow_up_now((v_claim ->> 'environmentId')::uuid, 'agent',
+		(v_claim ->> 'cofounderId')::uuid) ->> 'result' is distinct from 'done' then
+		raise exception 'The Co-Founder did not converge: %', v_result; end if;
 	if v_result ->> 'state' is distinct from 'completed'
 		or (select count(*) from public.qorpera_agent_first_runs where profile_id = v_profile) is distinct from 1
 		or (select count(*) from public.qorpera_session_inputs input join public.qorpera_company_rooms room on room.session_id = input.session_id

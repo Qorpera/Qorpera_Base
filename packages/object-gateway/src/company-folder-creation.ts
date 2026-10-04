@@ -25,8 +25,9 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * (companyStateSeedTree, with the ids the creation row holds, so every attempt builds the same tree), stages each file
  * as the platform, and calls qorpera_folder_company_create once: one transaction with the creation commit, the
  * Co-Founder and its silent first run. The database sorts the outcome (completed, failed, retry, stale); the worker
- * only backs off (release) or records a failure of its own (fail). Built switched off: the gateway runs it only with
- * QORPERA_COMPANY_FOLDER_CREATOR=1.
+ * only backs off (release) or records a failure of its own (fail). A completed creation then kicks the follow-up queue
+ * (P15), which gives the Co-Founder its default grant and queues its first-run turn. Built switched off: the gateway
+ * runs it only with QORPERA_COMPANY_FOLDER_CREATOR=1.
  */
 
 const CLAIM_KEYS = [
@@ -275,8 +276,23 @@ export class CompanyFolderCreator {
 			!ANSWERS.has(answer.state)
 		)
 			return "create_invalid";
+		if (answer.state === "completed") await this.#followUp(claim);
 		// Retry: an object the commit read was being deleted; the next attempt restages it.
 		return answer.state === "retry" ? "bytes_unverified" : null;
+	}
+
+	/** Converges the new Co-Founder now, in its own transaction (P15's kick). Best effort: the queue's step converges it
+	 * within seconds anyway, so a refusal or a failure here changes nothing. */
+	async #followUp(claim: CompanyCreationClaim): Promise<void> {
+		try {
+			await this.#call("qorpera_folder_follow_up_now", {
+				p_environment_id: claim.environmentId,
+				p_subject_kind: "agent",
+				p_subject_id: claim.cofounderId,
+			});
+		} catch {
+			// The step converges it.
+		}
 	}
 
 	/** Fails a claim for a problem no retry fixes, or releases it with a back-off. */

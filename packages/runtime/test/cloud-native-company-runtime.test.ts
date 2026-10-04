@@ -781,17 +781,15 @@ it.each(["available", "unavailable"])(
 		const close = vi.fn(async () => {});
 		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
 		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
-		const eventId = randomUUID();
+		const commitId = randomUUID();
 		Object.assign(f.wake, {
-			source: { kind: "company-file", id: eventId, occurrenceKey: `event:${eventId}` },
+			source: { kind: "company-file", id: commitId, occurrenceKey: `file:7:1` },
 			payload: {
-				eventId,
-				path,
-				previousVersion: null,
-				version: randomUUID(),
-				operation: "upsert",
-				receiptId: null,
-				proposalId: null,
+				schema: "qorpera.folder-file-wake/v1",
+				seq: 7,
+				commitId,
+				changes: [{ path, op: "write", version: randomUUID() }],
+				more: 0,
 			},
 		});
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);

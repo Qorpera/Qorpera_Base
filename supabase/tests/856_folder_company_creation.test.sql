@@ -14,6 +14,20 @@ insert into public.qorpera_friendships(user_low,user_high,requested_by,status,re
 	('85600000-0000-4000-8000-000000000001','85600000-0000-4000-8000-000000000002','85600000-0000-4000-8000-000000000001',
 		'accepted',statement_timestamp());
 
+-- P15: the follow-up queue, run at once as its step would: each marked subject of the company taken, then each dirty
+-- one converged.
+create function pg_temp.follow_ups(p_env uuid) returns void language plpgsql as $$
+declare v_subject record; v_work public.qorpera_folder_follow_ups%rowtype;
+begin
+	for v_subject in select distinct m.subject_kind, m.subject_id from public.qorpera_folder_follow_up_marks m
+		where m.environment_id = p_env loop
+		v_work := public.qorpera_folder_follow_up_take(p_env, v_subject.subject_kind, v_subject.subject_id);
+	end loop;
+	for v_work in select * from public.qorpera_folder_follow_ups w where w.environment_id = p_env and w.dirty
+		order by w.subject_kind = 'agent', w.subject_id loop
+		perform public.qorpera_folder_follow_up_converge(v_work);
+	end loop;
+end $$;
 create function pg_temp.as_user(p_user uuid)
 returns void language sql as $$
 	select set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',p_user,
@@ -498,6 +512,23 @@ begin
 		raise exception 'The first-run row does not match: %', to_jsonb(v_first); end if;
 	if (select count(*) from public.qorpera_session_inputs where session_id = v_thread) is distinct from 1 then
 		raise exception 'More than the kickoff in the thread'; end if;
+	-- P15: the turn request waits for the Co-Founder's default grant, which the follow-up queue makes; until then the
+	-- company is not ready.
+	if exists (select 1 from public.qorpera_session_turn_requests where input_id = v_input.id)
+		or exists (select 1 from public.qorpera_company_path_grants g where g.principal_kind = 'staff_agent' and g.principal_id = v_cofounder)
+		or public.qorpera_folder_company_ready(v_profile) then
+		raise exception 'The creation queued its turn or granted before the follow-up queue'; end if;
+	-- Taken but not converged yet (a dirty work row): still pending.
+	perform public.qorpera_folder_follow_up_take(v_env, 'agent', v_cofounder);
+	if public.qorpera_folder_company_ready(v_profile) or public.qorpera_folder_company_setup(v_profile) is distinct from 'pending' then
+		raise exception 'A Co-Founder not converged yet is ready'; end if;
+	perform pg_temp.follow_ups(v_env);
+	if not public.qorpera_folder_company_ready(v_profile) or public.qorpera_folder_company_setup(v_profile) is distinct from 'ready' then
+		raise exception 'A converged Co-Founder is not ready'; end if;
+	if not exists (select 1 from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
+		where r.environment_id = v_env and r.path = '' and g.principal_kind = 'staff_agent' and g.principal_id = v_cofounder
+			and g.permissions = array['read','write'] and g.origin = 'default_agent_read' and g.revoked_at is null) then
+		raise exception 'The follow-up queue did not grant the Co-Founder'; end if;
 	-- Anna's login pays: the turn request is queued on it.
 	select * into strict v_request from public.qorpera_session_turn_requests where input_id = v_input.id;
 	if v_request.status is distinct from 'queued' or v_request.requested_by_user_id is distinct from '85600000-0000-4000-8000-000000000001'
@@ -537,6 +568,7 @@ do $$
 declare v_claim jsonb := current_setting('qorpera_test.claim2')::jsonb; v_result jsonb; v_first public.qorpera_agent_first_runs;
 begin
 	v_result := pg_temp.create('85600000-0000-4000-8000-0000000000f2', v_claim, pg_temp.seed_units(v_claim));
+	perform pg_temp.follow_ups((v_claim ->> 'environmentId')::uuid);
 	select * into strict v_first from public.qorpera_agent_first_runs where profile_id = (v_claim ->> 'profileId')::uuid;
 	if v_result ->> 'state' is distinct from 'completed'
 		or exists (select 1 from public.qorpera_session_turn_requests where input_id = v_first.input_id)
@@ -801,30 +833,19 @@ begin
 end $$;
 
 -- 7. Snapshot-v1 (and P22a's claim) keep their text: each body with its patch reversed is the definition before this
--- migration (structured_apply's as F2-5b-2, 20260930003000, which sorts before it, and P16a, 20260930016000, which
--- sorts after it, leave it) -----------
+-- migration (the hub's with P15's change to it, 20260930022000; structured_apply is folder-v2 only and P15 patches it
+-- again, so it has no pin) -----------
 
 do $$
 declare v_case record; v_definition text;
 begin
 	for v_case in select * from (values
-		('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)',
-			$n$				perform public.qorpera_company_state_index_agent(p_environment_id, v_profile, p_commit_id, v_user, v_file.path,
-					v_version, v_entry -> 'parse', v_actor);
-				-- 20260930010000 (P14a): inside a creation, the first run of the creation's own Co-Founder.
-				perform public.qorpera_folder_company_first_run(p_environment_id, p_commit_id, (v_entry -> 'parse' ->> 'id')::uuid,
-					v_version);
-$n$,
-			$o$				perform public.qorpera_company_state_index_agent(p_environment_id, v_profile, p_commit_id, v_user, v_file.path,
-					v_version, v_entry -> 'parse', v_actor);
-$o$,
-			'6c7906bd4cbd05dd48a06177f1b9e04e'),
 		('public.qorpera_list_hosted_profiles()',
 			$n$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
 		-- 20260930010000 (P14a): a folder-v2 company shows once its creation is completed.
 		and (not exists (select 1 from public.qorpera_company_files as file where file.profile_id = profile.id and file.core = 'folder-v2')
-			or exists (select 1 from public.qorpera_folder_company_creations as creation where creation.profile_id = profile.id
-				and creation.state = 'completed'))
+			-- 20260930022000 (P15): and its Co-Founder's subject has converged.
+			or public.qorpera_folder_company_ready(profile.id))
 $n$,
 			$o$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
 $o$,
