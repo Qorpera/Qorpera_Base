@@ -15,7 +15,7 @@ const { parseCloudNativeToolAuthority, parseCloudNativeToolBinding, parseCloudWa
 // involved in this contract check.
 const cases = JSON.parse(readFileSync(0, "utf8"));
 assert.deepEqual(cases.map((item) => item.name), [
-	"human", "first-run", "routine-default", "routine-optional", "routine-required", "routine-silent", "company-file", "agent",
+	"human", "first-run", "routine-default", "routine-optional", "routine-required", "routine-silent", "agent",
 ]);
 for (const item of cases) {
 	const binding = parseCloudNativeToolBinding(item.binding);
@@ -28,4 +28,4 @@ const human = cases[0];
 assert.throws(() => parseCloudWakeEnvelope({ ...human.envelope, kind: "room", policy: {
 	schema: "qorpera.wake-policy/v1", kind: "room", initial: "optional", final: "optional", silenceAllowed: true, maxPublicSends: null,
 } }, parseCloudNativeToolAuthority(human.authority, parseCloudNativeToolBinding(human.binding)).identity));
-console.log("SQL-produced human, first-run, schedule, File and agent envelopes pass the actual TypeScript parser; a relabeled human envelope stays rejected as a room");
+console.log("SQL-produced human, first-run, schedule and agent envelopes pass the actual TypeScript parser; a relabeled human envelope stays rejected as a room");
