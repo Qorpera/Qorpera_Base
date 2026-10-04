@@ -210,8 +210,9 @@ const LINES = [
 
 class Report {
 	results = new Map();
-	/** What the company mode's cleanup left in place, and why. */
+	/** What the company mode's cleanup left in place, and why; and, on the hosted run, whether it kept a member's write. */
 	cleanup = [];
+	cleanupFailure = null;
 
 	async check(n, fn) {
 		try {
@@ -234,6 +235,10 @@ class Report {
 			process.stdout.write(`C5-${String(index + 1).padStart(2, "0")} ${result.state.padEnd(7)} ${text}${result.detail ? ` — ${result.detail}` : ""}\n`);
 		});
 		for (const line of this.cleanup) process.stdout.write(`Cleanup: ${line}\n`);
+		if (this.cleanupFailure) {
+			failed++;
+			process.stdout.write(`Cleanup FAIL ${this.cleanupFailure}\n`);
+		}
 		return failed;
 	}
 }
@@ -621,8 +626,20 @@ async function hosted(report) {
 		report.notRun(13, "the launch items are proven on the proof company (P38); run this script with --company there");
 
 		// The --company mode's own checks, on the company founded here (with --write), so they run on every suite.
+		// While it runs, a member writes a note under its scratch folder before the script's next commits: the cleanup
+		// must leave the folder, and the note, in place.
 		const second = new Report();
-		await existing(second, db, code, profileId, true, objectRoot);
+		let note = null;
+		await existing(second, db, code, profileId, true, objectRoot, {
+			afterScratch: async (scratchRoot) => {
+				note = `${scratchRoot}/a/note.md`;
+				saved(await commit(env, "foreign-note", [await writeUnit(env, note, "A member's note.\n")]), "the member's note");
+			},
+		});
+		if (!note) second.cleanupFailure = "the scratch folder was never made, so the cleanup was not tried against a member's write";
+		else if (entry(env, note)?.kind !== "file") second.cleanupFailure = `the cleanup deleted a member's write (${note})`;
+		else if (!second.cleanup.some((line) => line.startsWith(note.slice(0, note.length - "/a/note.md".length))))
+			second.cleanupFailure = "the cleanup did not say it left the scratch folder in place";
 		report.companyReport = second;
 	} finally {
 		if (scratch) await rm(scratch, { recursive: true, force: true });
@@ -635,7 +652,7 @@ async function hosted(report) {
 // folder it removes again.
 
 /** The checks for an existing company. `objectRoot` is the object share to read bytes from, when there is one. */
-async function existing(report, db, code, profileId, write, objectRoot) {
+async function existing(report, db, code, profileId, write, objectRoot, hooks = {}) {
 	const env = db.query(`select environment_id from public.qorpera_company_files where profile_id = ${literal(profileId)}
 		and core = 'folder-v2'`);
 	if (!env) throw new Error("That company has no folder-v2 environment");
@@ -666,16 +683,39 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 
 	const scratchRoot = `acceptance/${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${randomBytes(4).toString("hex")}`;
 	let createdParent = false;
-	/** The sequence number of this run's last change under the scratch folder: deletes are made as of it, so a change
-	 * someone else made under it meanwhile refuses them (unseen_change) instead of going with them. */
+	/** The sequence number of this run's last change under the scratch folder, which the move and the stale delete below
+	 * are made as of. */
 	let scratchSeq = 0;
+	/** This run's own commits. A delete goes only through a subtree whose every entry one of them wrote. */
+	const ours = new Set();
 	let keys = 0;
 	const key = (label) => `acceptance-${scratchRoot.slice(11)}-${label}-${++keys}`;
 	const commit = (units) => {
 		const answer = db.rpc("qorpera_folder_commit", { p_environment_id: env, p_actor: platform, p_operation_key: key("c"),
 			p_units: units });
 		if (answer?.seq) scratchSeq = Math.max(scratchSeq, Number(answer.seq));
+		if (answer?.commitId) ours.add(answer.commitId);
 		return answer;
+	};
+	/** Deletes a folder this run made, only if every entry in it is still as one of this run's commits left it. The check
+	 * and the clock are one snapshot, and the delete is made as of that clock: anything written there before the snapshot
+	 * shows as another commit's entry, and anything after it refuses the delete (unseen_change). */
+	const guardedDelete = (path) => {
+		const seen = db.json(`select jsonb_build_object('seq', c.last_seq,
+				'version', (select e.version from public.qorpera_folder_entries e where e.environment_id = c.environment_id
+					and e.key_text = public.qorpera_folder_key(${literal(path)}) and e.kind <> 'claim'),
+				'others', (select coalesce(jsonb_agg(e.path order by e.path), '[]') from public.qorpera_folder_entries e
+					where e.environment_id = c.environment_id and e.kind <> 'claim'
+						and (e.key_text = public.qorpera_folder_key(${literal(path)})
+							or e.key_text like public.qorpera_folder_under(public.qorpera_folder_key(${literal(path)})))
+						and not e.commit_id = any (${literal(`{${[...ours].join(",")}}`)}::uuid[])))
+			from public.qorpera_folder_clocks c where c.environment_id = ${literal(env)}`);
+		if (!seen?.version) return { left: "it is gone" };
+		if (seen.others.length) return { left: `others wrote ${seen.others.slice(0, 3).join(", ")}${seen.others.length > 3 ? ", …" : ""}` };
+		const answer = commit([{ op: "delete", path, expectedVersion: seen.version, asOfSeq: Number(seen.seq) }]);
+		const unit = answer?.units?.[0];
+		if (!unit) throw new Error(`${path}'s delete: ${JSON.stringify(answer)}`);
+		return unit.outcome === "saved" ? { saved: true } : { left: `its delete was ${unit.outcome} (${unit.reason ?? "no reason"})` };
 	};
 	const saved = (answer, what) => {
 		const bad = (answer?.units ?? []).filter((u) => u.outcome !== "saved");
@@ -708,6 +748,9 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 			saved(a, "writer a");
 			saved(b, "writer b");
 			scratchSeq = Math.max(scratchSeq, Number(a.seq), Number(b.seq));
+			ours.add(a.commitId);
+			ours.add(b.commitId);
+			await hooks.afterScratch?.(scratchRoot);
 			details.push(`two concurrent writers under ${scratchRoot} saved`);
 		} else details.push("writes not run (read-only; pass --write)");
 		return details.join("; ");
@@ -725,8 +768,8 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 		saved(commit([{ op: "mkdir", path: `${scratchRoot}/n/y` }]), "n/y");
 		const unseen = commit([{ op: "delete", path: `${scratchRoot}/n`, expectedVersion: entry(`${scratchRoot}/n`).version, asOfSeq: seen }]);
 		assert.equal(unseen.units[0].reason, "unseen_change", JSON.stringify(unseen.units));
-		saved(commit([{ op: "delete", path: `${scratchRoot}/n`, expectedVersion: entry(`${scratchRoot}/n`).version,
-			asOfSeq: scratchSeq }]), "the subtree delete");
+		const deleted = guardedDelete(`${scratchRoot}/n`);
+		if (!deleted.saved) throw new Error(`the subtree delete: ${scratchRoot}/n left in place, ${deleted.left}`);
 		return "move, a refused stale subtree delete, then the subtree deleted";
 	});
 
@@ -773,24 +816,14 @@ async function existing(report, db, code, profileId, write, objectRoot) {
 		report.notRun(11, "the races are proven by SQL test 767; read-only here: every live file's manifest is catalogued, and none is held for deletion");
 	});
 
-	// The scratch folder goes again, as of this run's last change under it: anything someone else wrote there since refuses
-	// the delete (unseen_change) instead of going with it. Then acceptance/, only when this run made it and it holds nothing
-	// else, as of the same sequence number, so a change someone makes there meanwhile refuses it too. Their history stays.
-	// A refused delete (a change it did not see, or a version moved on) leaves the folder for whoever changed it.
+	// The scratch folder goes again, then acceptance/ when this run made it, each only while everything in it is still this
+	// run's own (guardedDelete); otherwise it stays for whoever wrote there. Their history stays, as any change's does.
 	const tidy = (path) => {
-		const answer = commit([{ op: "delete", path, expectedVersion: entry(path).version, asOfSeq: scratchSeq }]);
-		const unit = answer?.units?.[0];
-		if (!unit) throw new Error(`${path}'s delete: ${JSON.stringify(answer)}`);
-		if (unit.outcome === "saved") return true;
-		report.cleanup.push(`${path} left in place: its delete was ${unit.outcome} (${unit.reason ?? "no reason"})`);
-		return false;
+		const done = guardedDelete(path);
+		if (!done.saved) report.cleanup.push(`${path} left in place: ${done.left}`);
+		return done.saved === true;
 	};
-	if (write && entry(scratchRoot) && tidy(scratchRoot) && createdParent && entry("acceptance")) {
-		const others = db.query(`select count(*) from public.qorpera_folder_entries where environment_id = ${literal(env)}
-			and kind <> 'claim' and key_text like 'acceptance/%'`);
-		if (others === "0") tidy("acceptance");
-		else report.cleanup.push(`acceptance/ left in place: it holds ${others} other entries`);
-	}
+	if (write && entry(scratchRoot) && tidy(scratchRoot) && createdParent && entry("acceptance")) tidy("acceptance");
 
 	report.notRun(12, "erasure is not run on an existing company; run it on the hosted database (no argument)");
 	report.notRun(13, "the launch items are walked by hand on the proof company (P38)");

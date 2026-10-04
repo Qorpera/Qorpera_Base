@@ -1278,10 +1278,12 @@ item, PASS, FAIL or NOT RUN with its reason.
   another and fails if they lose a live object.
 - With `--company <profileId>` it checks an existing company (P38's proof
   company, a founder's first company) through `QORPERA_ACCEPTANCE_DATABASE_URL`:
-  read-only, or with `--write` under a scratch folder of its own, which it
-  deletes again as of its own last change there (a change someone else made
-  there since leaves it in place). The suite runs that mode too, on the company
-  it founded.
+  read-only, or with `--write` under a scratch folder of its own. It deletes
+  that folder again only while every entry in it is one of its own commits',
+  as of the clock it read that from, so anything someone else wrote there
+  leaves the folder in place. The suite runs that mode too, on the company it
+  founded, with a member's note written into the scratch folder midway, which
+  the cleanup must keep.
 
 ### C6. Removal
 
