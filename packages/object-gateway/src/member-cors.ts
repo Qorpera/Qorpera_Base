@@ -5,6 +5,7 @@ const OBJECT = new RegExp(`^/v1/member-company(?:-snapshot)?-objects/${UUID}/${U
 const UPLOAD = new RegExp(`^/v1/member-company-file/${UUID}/uploads$`);
 const EXPORT = new RegExp(`^/v1/member-file-exports/${UUID}/${UUID}/[0-9a-f]{64}$`);
 const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64}$`);
+const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const FILE = new RegExp(
 	`^/v1/member-company-file/${UUID}/(edits|proposals)(?:/(${UUID}))?(?:/(review|content|file))?$`,
@@ -15,6 +16,7 @@ function route(url: string): { method: string; headers: string[] } | undefined {
 	if (PRESENCE.test(url)) return { method: "POST", headers: ["authorization", "content-type"] };
 	if (EXPORT.test(url)) return { method: "GET", headers: ["authorization"] };
 	if (FOLDER_OBJECT.test(url)) return { method: "GET", headers: ["authorization"] };
+	if (FOLDER_COMMIT.test(url)) return { method: "POST", headers: ["authorization", "content-type"] };
 	if (UPLOAD.test(url))
 		return { method: "PUT", headers: ["authorization", "content-type", "x-qorpera-company-upload"] };
 	if (OBJECT.test(url)) return { method: "GET", headers: ["authorization", "x-qorpera-company-path"] };

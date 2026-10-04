@@ -316,11 +316,19 @@ function parseNativeHostCredential(value: unknown): NativeHostJobCredential | un
 	if (
 		typeof job.lease_token !== "string" ||
 		!TOKEN_PATTERN.test(job.lease_token) ||
-		Object.keys(nativeHost).some((key) => key !== "publishable_key") ||
-		!isNativeHostPublishableKey(nativeHost.publishable_key)
+		Object.keys(nativeHost).some((key) => key !== "publishable_key" && key !== "identity_credential") ||
+		!isNativeHostPublishableKey(nativeHost.publishable_key) ||
+		(nativeHost.identity_credential !== undefined &&
+			(typeof nativeHost.identity_credential !== "string" || !TOKEN_PATTERN.test(nativeHost.identity_credential)))
 	)
 		throw new NativeHostCredentialError("NATIVE_HOST_CREDENTIAL", "Native host credential is invalid");
-	return { leaseToken: job.lease_token, publishableKey: nativeHost.publishable_key };
+	return {
+		leaseToken: job.lease_token,
+		publishableKey: nativeHost.publishable_key,
+		...(typeof nativeHost.identity_credential === "string"
+			? { identityCredential: nativeHost.identity_credential }
+			: {}),
+	};
 }
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {

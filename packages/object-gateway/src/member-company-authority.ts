@@ -19,7 +19,9 @@ export type MemberCompanyRpc =
 	| "qorpera_authorize_member_company_command_object"
 	| "qorpera_authorize_member_company_proposal_object"
 	| "qorpera_begin_member_session_attachment_upload"
-	| "qorpera_authorize_member_session_attachment";
+	| "qorpera_authorize_member_session_attachment"
+	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
+	| "qorpera_member_folder_writer";
 
 export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"
