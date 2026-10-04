@@ -75,14 +75,20 @@ const shells = vi.hoisted(
 			reported: ReturnType<typeof vi.fn>;
 		}[],
 );
-/** The processor time of each shell namespace, as /proc would show it. */
+/** The processor time of each shell namespace, and the bytes its commands moved, as /proc would show them. */
 const shellTicks = vi.hoisted(() => new Map<number, number>());
+const shellBytes = vi.hoisted(() => new Map<number, number>());
 vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/cloud-company-computer-linux-shell.ts")>();
 	return {
 		companyComputerShellBusy: actual.companyComputerShellBusy,
 		readCompanyComputerShellUsage: async (pids: readonly number[]) =>
-			new Map(pids.map((pid) => [pid, { memoryBytes: 0, tasks: 1, cpuTicks: shellTicks.get(pid) ?? 0 }])),
+			new Map(
+				pids.map((pid) => [
+					pid,
+					{ memoryBytes: 0, tasks: 1, cpuTicks: shellTicks.get(pid) ?? 0, ioBytes: shellBytes.get(pid) ?? 0 },
+				]),
+			),
 		createCompanyComputerLinuxShellLauncher: () => async () => {
 			throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
 		},
@@ -156,6 +162,7 @@ const windows = {
 beforeEach(() => {
 	shells.length = 0;
 	shellTicks.clear();
+	shellBytes.clear();
 	windows.pages = [];
 	windows.state = "maximized";
 	browsers.length = 0;
@@ -473,7 +480,7 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 
-	it("reports each shell every 30 seconds: busy by processor time, its commands, and each end once", async () => {
+	it("reports each shell every 30 seconds: busy by processor time or data moved, its commands, and each end once", async () => {
 		// The busy measure divides by the wall-clock time between samples, so the clock moves with the timers.
 		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
 		const f = await fixture();
@@ -534,12 +541,19 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 			busy: false,
 			open: [expect.objectContaining({ id: command.id })],
 		});
+		// A slow download: almost no processor, but a megabyte moved in the sample: busy.
+		shellTicks.set(pid, 1001);
+		shellBytes.set(pid, 1024 * 1024);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[3].screens[0]).toMatchObject({ busy: true });
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[4].screens[0]).toMatchObject({ busy: false });
 		// The command exits: its end is reported once, then nothing is left to say.
 		const { workedAt: _exitedWorkedAt, ...exited } = shells[0].open[0];
 		shells[0].ended.push({ ...exited, reason: "exited", endedAt: new Date().toISOString() });
 		shells[0].open = [];
 		await vi.advanceTimersByTimeAsync(30000);
-		expect(reports()[3].screens).toEqual([
+		expect(reports()[5].screens).toEqual([
 			{
 				screenId: f.binding.screenId,
 				busy: false,
@@ -549,7 +563,7 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		]);
 		expect(shells[0].reported).toHaveBeenLastCalledWith([command.id]);
 		await vi.advanceTimersByTimeAsync(60000);
-		expect(reports()).toHaveLength(4);
+		expect(reports()).toHaveLength(6);
 		expect(f.failure).not.toHaveBeenCalled();
 		await session.close();
 	});

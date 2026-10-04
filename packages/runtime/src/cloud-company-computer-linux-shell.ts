@@ -6,6 +6,7 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { idleRuleBusy } from "@qorpera/contracts";
 import type {
 	CompanyComputerGuestBoundary,
 	CompanyComputerGuestShell,
@@ -897,27 +898,39 @@ export interface CompanyComputerShellUsage {
 	 * compilers count too. It only grows while the shell's namespace lives.
 	 */
 	cpuTicks: number;
+	/**
+	 * Bytes the shell's commands passed to read and write calls (network, disk
+	 * and pipes alike), finished children's included: every process below the
+	 * shell host, never the host itself (it reads /proc and relays output even
+	 * when nothing runs). A command that ends moves its count to the host, so
+	 * the sum can go down; that sample is simply not busy.
+	 */
+	ioBytes: number;
 }
 
 /** Linux's USER_HZ, the unit of processor time in /proc/<pid>/stat on every architecture we run. */
 export const COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND = 100;
-/**
- * A shell is busy while it uses more than about 5% of one processor core, as a
- * coding session is (founder, 3 October 2026: one idle rule for every
- * machine). Per computer, whatever the machine's size: busy is what a program
- * does, and a waiting server or database stays far below it.
- */
-export const COMPANY_COMPUTER_SHELL_BUSY_SHARE = 0.05;
 
-/** Whether a shell was busy between two samples of the same namespace. */
+/**
+ * Whether a shell was busy between two samples of the same namespace, by the
+ * one idle rule (@qorpera/contracts idle-rule): at least 5% of one processor
+ * core, or at least 512 KiB moved in a 30-second sample.
+ */
 export function companyComputerShellBusy(
-	before: { cpuTicks: number; at: number },
-	after: { cpuTicks: number; at: number },
+	before: { cpuTicks: number; ioBytes: number; at: number },
+	after: { cpuTicks: number; ioBytes: number; at: number },
 ): boolean {
-	const seconds = (after.at - before.at) / 1000;
-	if (!(seconds > 0)) return false;
-	const used = (after.cpuTicks - before.cpuTicks) / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND;
-	return used >= COMPANY_COMPUTER_SHELL_BUSY_SHARE * seconds;
+	return idleRuleBusy(
+		{ cpuSeconds: before.cpuTicks / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND, ioBytes: before.ioBytes, at: before.at },
+		{ cpuSeconds: after.cpuTicks / COMPANY_COMPUTER_CLOCK_TICKS_PER_SECOND, ioBytes: after.ioBytes, at: after.at },
+	);
+}
+
+/** The bytes a process passed to read and write calls (/proc/<pid>/io rchar + wchar); 0 when it cannot be read. */
+export function companyComputerProcessIoBytes(io: string): number {
+	const read = Number(/^rchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	const written = Number(/^wchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	return Number.isSafeInteger(read) && Number.isSafeInteger(written) ? read + written : 0;
 }
 
 /**
@@ -946,17 +959,27 @@ export async function readCompanyComputerShellUsage(
 	}
 	const usages = new Map<number, CompanyComputerShellUsage>();
 	for (const rootPid of rootPids) {
-		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0 };
-		const pending = [rootPid];
+		const usage = { memoryBytes: 0, tasks: 0, cpuTicks: 0, ioBytes: 0 };
+		// Each process, and whether it is a command's: below the shell host.
+		const pending: { pid: number; command: boolean }[] = [{ pid: rootPid, command: false }];
 		let inside: number | undefined;
 		while (pending.length) {
-			const pid = pending.pop()!;
-			pending.push(...(children.get(pid) ?? []));
+			const { pid, command } = pending.pop()!;
+			const host =
+				!command &&
+				(await readCompanyComputerLinuxMetadata(`/proc/${pid}/cmdline`, 4096).catch(() => "")).includes(
+					"\0--shell-host",
+				);
+			pending.push(...(children.get(pid) ?? []).map((child) => ({ pid: child, command: command || host })));
 			if (pid !== rootPid) inside ??= pid;
 			const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
 			usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
 			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
 			usage.cpuTicks += ticks.get(pid) ?? 0;
+			if (command)
+				usage.ioBytes += companyComputerProcessIoBytes(
+					await readCompanyComputerLinuxMetadata(`/proc/${pid}/io`, 4096).catch(() => ""),
+				);
 		}
 		if (inside !== undefined) {
 			const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);

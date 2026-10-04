@@ -5,6 +5,7 @@ import {
 	CompanyComputerLinuxShell,
 	type CompanyComputerShellEnvironmentLauncher,
 	CompanyComputerShellPressureGuard,
+	companyComputerProcessIoBytes,
 	companyComputerShellBusy,
 } from "@qorpera/runtime/cloud-company-computer-linux-shell";
 import {
@@ -300,17 +301,31 @@ describe("what the platform hears of a shell", () => {
 		expect(Buffer.from(reported).toString()).toBe(reported);
 	});
 
-	it("is busy only above 5% of one core since the last sample", () => {
-		const before = { cpuTicks: 1000, at: 0 };
+	it("is busy above 5% of one core, or 512 KiB moved, in a 30-second sample", () => {
+		const before = { cpuTicks: 1000, ioBytes: 1_000_000, at: 0 };
+		const after = (cpuTicks: number, ioBytes: number, at = 30000) => ({ cpuTicks, ioBytes, at });
 		// 30 seconds: 1.5 processor-seconds (150 ticks) is busy, a tick less is not.
-		expect(companyComputerShellBusy(before, { cpuTicks: 1150, at: 30000 })).toBe(true);
-		expect(companyComputerShellBusy(before, { cpuTicks: 1149, at: 30000 })).toBe(false);
-		// A waiting server: a few ticks.
-		expect(companyComputerShellBusy(before, { cpuTicks: 1003, at: 30000 })).toBe(false);
-		// No time passed, or time ran backwards, or ticks fell (a process left the tree): never busy.
-		expect(companyComputerShellBusy(before, { cpuTicks: 5000, at: 0 })).toBe(false);
-		expect(companyComputerShellBusy(before, { cpuTicks: 5000, at: -1 })).toBe(false);
-		expect(companyComputerShellBusy(before, { cpuTicks: 10, at: 30000 })).toBe(false);
+		expect(companyComputerShellBusy(before, after(1150, 1_000_000))).toBe(true);
+		expect(companyComputerShellBusy(before, after(1149, 1_000_000))).toBe(false);
+		// A slow download: little processor, 512 KiB moved is busy, a byte less is not.
+		expect(companyComputerShellBusy(before, after(1002, 1_000_000 + 512 * 1024))).toBe(true);
+		expect(companyComputerShellBusy(before, after(1002, 1_000_000 + 512 * 1024 - 1))).toBe(false);
+		// A waiting server: a few ticks and a few bytes.
+		expect(companyComputerShellBusy(before, after(1003, 1_000_100))).toBe(false);
+		// No time passed, or time ran backwards, or counters fell (a process left the tree): never busy.
+		expect(companyComputerShellBusy(before, after(5000, 9_000_000, 0))).toBe(false);
+		expect(companyComputerShellBusy(before, after(5000, 9_000_000, -1))).toBe(false);
+		expect(companyComputerShellBusy(before, after(10, 10))).toBe(false);
+	});
+
+	it("reads the bytes a process read and wrote, and nothing from what it cannot read", () => {
+		expect(
+			companyComputerProcessIoBytes(
+				"rchar: 4096\nwchar: 1024\nsyscr: 7\nsyscw: 3\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n",
+			),
+		).toBe(5120);
+		expect(companyComputerProcessIoBytes("")).toBe(0);
+		expect(companyComputerProcessIoBytes("rchar: 12\n")).toBe(12);
 	});
 });
 
@@ -538,7 +553,9 @@ describe("the machine's memory and task safety", () => {
 	const usage = (entries: Record<number, { memoryBytes: number; tasks: number }>) =>
 		vi.fn(
 			async (pids: readonly number[]) =>
-				new Map(pids.map((pid) => [pid, { cpuTicks: 0, ...(entries[pid] ?? { memoryBytes: 0, tasks: 0 }) }])),
+				new Map(
+					pids.map((pid) => [pid, { cpuTicks: 0, ioBytes: 0, ...(entries[pid] ?? { memoryBytes: 0, tasks: 0 }) }]),
+				),
 		);
 
 	it("does nothing without pressure, then ends only the shell holding the most, with the reason", async () => {

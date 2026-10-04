@@ -288,7 +288,8 @@ printf isolated`),
 	// not busy (the computer may sleep), a loop is (it keeps the computer awake).
 	const sample = async () => {
 		const pid = shell!.namespacePid!;
-		return { cpuTicks: (await readCompanyComputerShellUsage([pid])).get(pid)!.cpuTicks, at: Date.now() };
+		const usage = (await readCompanyComputerShellUsage([pid])).get(pid)!;
+		return { cpuTicks: usage.cpuTicks, ioBytes: usage.ioBytes, at: Date.now() };
 	};
 	const waiting = await run(
 		"node -e \"require('http').createServer(()=>{}).listen(8001,'127.0.0.1',()=>console.log('listening'))\"",
@@ -308,6 +309,34 @@ printf isolated`),
 	before = await sample();
 	await delay(3000);
 	assert.equal(companyComputerShellBusy(before, await sample()), false, "once the loop ends, the server waits again");
+	// Moving data is busy too: a download throttled to 64 KB a second uses almost no processor, and the office reads
+	// what the shell's commands read and write (/proc/<pid>/io) from outside their namespace. The file comes from the
+	// shell's own localhost: by now the probe has taken the computers' network down and up again.
+	const serving = await run(
+		"node -e \"require('http').createServer((q,s)=>{const c=Buffer.alloc(65536);let n=1024;const w=()=>{while(n-->0){if(!s.write(c))return s.once('drain',w)}s.end()};w()}).listen(8002,'127.0.0.1',()=>console.log('serving'))\"",
+		3000,
+	);
+	assert.match(await printed(serving.sessionId, serving.output, "serving"), /serving/);
+	const download = await run("curl -sS --limit-rate 64k -o /tmp/large http://127.0.0.1:8002/", 200);
+	assert.equal(download.state, "running", download.output);
+	before = await sample();
+	await delay(3000);
+	const during = await sample();
+	assert.ok(
+		during.ioBytes - before.ioBytes >= 100 * 1024,
+		`the download's bytes are seen: ${during.ioBytes - before.ioBytes}`,
+	);
+	assert.equal(
+		companyComputerShellBusy({ ...before, ioBytes: 0 }, { ...during, ioBytes: 0 }),
+		false,
+		"by processor alone the download looks idle",
+	);
+	assert.equal(companyComputerShellBusy(before, during), true, "the download is busy by the data it moves");
+	assert.equal((await stop(download.sessionId)).state, "stopped");
+	assert.equal((await stop(serving.sessionId)).state, "stopped");
+	before = await sample();
+	await delay(3000);
+	assert.equal(companyComputerShellBusy(before, await sample()), false, "the waiting server still moves nothing");
 	assert.equal((await stop(waiting.sessionId)).state, "stopped");
 
 	// Never the screen's display (any X client of it could read what a member
