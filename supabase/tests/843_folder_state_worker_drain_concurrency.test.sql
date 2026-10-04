@@ -35,9 +35,9 @@ do $$
 declare one constant uuid := '84100000-0000-4000-8000-000000000101'; v_first text; v_second text;
 begin
 	perform dblink_exec('fence_one', 'begin');
-	perform * from dblink('fence_one', format($q$select public.qorpera_folder_cancel_agent_worker(%L, %L)::text$q$,
-		current_setting('qorpera_test.binding'), jsonb_build_object('folder','agents/ada/todos/race-one/worker',
-			'operationKey','f2b3-cancel-0001'))) as t(r text);
+	-- The cancel's write on the worker row, as manage_worker's cancel makes it (qorpera_cancel_worker), held open.
+	perform * from dblink('fence_one', format($q$select public.qorpera_cancel_worker(w, null, 'parent_cancelled')::text
+		from public.qorpera_runtime_workers w where w.id = %L$q$, one)) as t(r text);
 	perform dblink_send_query('fence_two', current_setting('qorpera_test.drain'));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'The drain must wait for the cancel at the worker'; end if;
 	perform dblink_send_query('fence_three', current_setting('qorpera_test.drain'));
