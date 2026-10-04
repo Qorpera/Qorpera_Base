@@ -1,42 +1,36 @@
--- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "create function pg_temp.browser("
--- 20260928329660: someone outside a company is refused before that company's gc fence. Thirteen member functions
--- looked the company up from their argument and took its fence (the profile row FOR UPDATE) before they checked
--- the caller's membership, so anyone signed in who knew an environment, computer, identity, recovery or room id
--- could hold another company's fence for the length of a call. Here a second connection holds the company's
--- profile row FOR KEY SHARE, which the fence waits for. Someone outside the company calls each function and is
--- refused at once, with the error such a caller got before; a member calls it too and still waits for the fence.
--- On the previous function text every outsider's call for an id that exists waited. A member's scope checks still
--- run under the fence. The office catalog then answers its member, and a member removed while their call waits for
--- the fence is still refused: the locked check after the fence stays. Row locks show only across connections, so
--- the fixture is committed here and removed at the end, as in 602; the test refuses to run beside other
--- connections to this database.
+-- @fixture 405_runtime_office_browser_idle_lease_reap.test.sql until "-- The office checks start here"
+-- 20260928329660 on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): someone outside a company is
+-- refused before that company's lock. Thirteen member functions once looked the company up from their argument and took
+-- its lock before they checked the caller's membership, so anyone signed in who knew an environment, computer, identity,
+-- recovery or room id could hold another company's lock for the length of a call. On folder-v2 that lock is the folder
+-- fence: a member's call takes it KEY SHARE (the machine fence, the computer's start prelude, the recovery locks, a post's
+-- company entry), and a folder stop's second phase holds it FOR UPDATE. Here a second connection holds 924's company's
+-- folder fence FOR UPDATE and nothing else. Someone outside the company (924's outsider) calls each function and is
+-- refused at once, with the refusal such a caller gets; a member calls it too and waits for the fence, except for the
+-- access status and the start status, which folder-v2 made plain reads: a member's call to them answers at once. A
+-- member's scope checks still run under the fence. The office catalog then answers its member, and a member removed
+-- while their call waits for the fence is still refused: the locked check after the fence stays. Row locks show only
+-- across connections, so the fixture (924's company, 405's computer and the rows below) is committed here and removed at
+-- the end; the test refuses to run beside other connections to this database.
 
--- Someone outside the company, and the rows the recovery and room functions look up (fixture rows: triggers and
--- key checks off). The viewer owns the compute identity; the owner is a member of the room.
+-- The rows the recovery functions look up (fixture rows: triggers and key checks off; no snapshot provenance): the
+-- viewer's compute identity, and the owner's recovery of it, awaiting the viewer. The room is Alice's thread (924): the
+-- owner, the contributor and the admin are its members, the viewer is not.
 reset role;
-insert into auth.users(id,email) values ('75500000-0000-4000-8000-000000000001','fence-outsider@example.test');
 set local session_replication_role = replica;
 insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,owner_user_id,client_identity_id,display_name)
-values ('75500000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000010','member',
-	'30000000-0000-4000-8000-000000000003','75500000-0000-4000-8000-000000000011','Viewer identity');
+values ('75500000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000010','member',
+	'92400000-0000-4000-8000-000000000003','75500000-0000-4000-8000-000000000011','Viewer identity');
 insert into public.qorpera_identity_recoveries(id,client_request_id,profile_id,compute_identity_id,authority_id,
 	backup_revision,storage_source,target_id,owner_user_id,status,expires_at)
-values ('75500000-0000-4000-8000-000000000020','75500000-0000-4000-8000-000000000021','30000000-0000-4000-8000-000000000010',
+values ('75500000-0000-4000-8000-000000000020','75500000-0000-4000-8000-000000000021','92400000-0000-4000-8000-000000000010',
 	'75500000-0000-4000-8000-000000000010','75500000-0000-4000-8000-000000000022',1,'nas','75500000-0000-4000-8000-000000000023',
-	'30000000-0000-4000-8000-000000000001','awaiting_member',clock_timestamp()+interval '30 minutes');
-insert into public.qorpera_company_rooms(id,profile_id,environment_id,room_key,name,purpose,status,version,source_path,
-	source_path_version,source_snapshot_id,source_file_sha256,created_by_user_id)
-values ('75500000-0000-4000-8000-000000000030','30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020',
-	'fence-room','Fence room','Where the fence test posts.','active',1,'rooms/fence-room.md',
-	'75500000-0000-4000-8000-000000000031','30000000-0000-4000-8000-000000000023',repeat('e',64),
-	'30000000-0000-4000-8000-000000000001');
-insert into public.qorpera_company_room_members(room_id,principal_kind,principal_id,status,source_path_version)
-values ('75500000-0000-4000-8000-000000000030','member','30000000-0000-4000-8000-000000000001','active',
-	'75500000-0000-4000-8000-000000000031');
+	'92400000-0000-4000-8000-000000000001','awaiting_member',clock_timestamp()+interval '30 minutes');
 set local session_replication_role = origin;
 
--- What the calls need outlives this transaction.
-select set_config(name, current_setting(name), false) from unnest(array['qorpera_test.office_scope']) name;
+-- What the calls need outlives this transaction: the computer's scope, the owner's sponsor, Alice's thread.
+select set_config(name, current_setting(name), false) from unnest(array['qorpera_test.office_scope','qorpera_test.base_sponsor']) name;
+select set_config('qorpera_test.fence_room', pg_temp.base_thread('92400000-0000-4000-8000-000000000030')::text, false);
 select set_config('qorpera_test.fence_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('fence_holder', 'dbname=' || current_database());
 select dblink_connect('fence_caller', 'dbname=' || current_database());
@@ -100,14 +94,20 @@ begin
 	return v_outcome;
 end
 $$;
--- The holder keeps the company's profile row FOR KEY SHARE, which the fence's FOR UPDATE waits for, while one call
--- runs: the call's result or error, and whether it waited for the holder.
+-- A folder stop's second phase: the holder takes the company's folder fence FOR UPDATE, and holds nothing else.
+create function pg_temp.fence_hold() returns void language plpgsql as $$
+begin
+	perform dblink_exec('fence_holder', 'begin');
+	perform * from dblink('fence_holder', $q$select 1 from public.qorpera_folder_fences
+		where profile_id = '92400000-0000-4000-8000-000000000010' for update$q$) as held(held integer);
+end
+$$;
+-- The holder keeps the folder fence FOR UPDATE while one call runs: the call's result or error, and whether it waited
+-- for the holder (which holds only the fence, so a wait is a wait at the fence).
 create function pg_temp.fence_call(p_user uuid, p_call text) returns jsonb language plpgsql as $$
 declare v_pid integer := current_setting('qorpera_test.fence_caller_pid')::integer; v_waited boolean := false;
 begin
-	perform dblink_exec('fence_holder', 'begin');
-	perform * from dblink('fence_holder', $q$select 1 from public.qorpera_profiles
-		where id = '30000000-0000-4000-8000-000000000010' for key share$q$) as held(held integer);
+	perform pg_temp.fence_hold();
 	perform pg_temp.fence_as(pg_temp.fence_claims(p_user));
 	perform dblink_send_query('fence_caller', p_call);
 	for attempt in 1..200 loop
@@ -123,15 +123,24 @@ $$;
 create function pg_temp.fence_refused(p_user uuid, p_call text, p_message text, p_label text) returns void language plpgsql as $$
 declare v_outcome jsonb := pg_temp.fence_call(p_user, p_call);
 begin
-	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501'
+	perform pg_temp.base_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501'
 		and v_outcome ->> 'error' = p_message, p_label || ' is refused without waiting for the fence: ' || v_outcome::text);
 end
 $$;
--- A member still takes the fence: the call waits for the holder.
+-- A member takes the fence: the call waits for the holder.
 create function pg_temp.fence_waits(p_user uuid, p_call text, p_label text) returns jsonb language plpgsql as $$
 declare v_outcome jsonb := pg_temp.fence_call(p_user, p_call);
 begin
-	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'true', p_label || ' still waits for the fence: ' || v_outcome::text);
+	perform pg_temp.base_assert(v_outcome ->> 'waited' = 'true', p_label || ' waits for the fence: ' || v_outcome::text);
+	return v_outcome;
+end
+$$;
+-- A member's call that folder-v2 made plain reads: it answers at once beside the held fence.
+create function pg_temp.fence_at_once(p_user uuid, p_call text, p_label text) returns jsonb language plpgsql as $$
+declare v_outcome jsonb := pg_temp.fence_call(p_user, p_call);
+begin
+	perform pg_temp.base_assert(v_outcome ->> 'waited' = 'false' and v_outcome ? 'result',
+		p_label || ' answers at once beside the held fence (plain reads): ' || v_outcome::text);
 	return v_outcome;
 end
 $$;
@@ -149,6 +158,12 @@ begin
 	perform set_config('session_replication_role', 'replica', true);
 	update public.qorpera_runtime_offices set state = p_state where id = (pg_temp.fence_office()).id;
 end
+$$;
+-- A post in Alice's thread on the owner's sponsor (a valid post: a folder-v2 post checks its body before its locks).
+create function pg_temp.fence_post(p_room uuid default current_setting('qorpera_test.fence_room')::uuid) returns text language sql as $$
+	select format('select public.qorpera_post_company_room_message(%L, %L, %L, %L, 1)', p_room, '75500000-0000-4000-8000-000000000042',
+		jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'Past the fence.'),
+		current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')
 $$;
 
 -- At the end: remove what the test committed. Every row written since the fixture's first write goes,
@@ -185,105 +200,109 @@ begin
 end $$;
 
 -- 1. The office catalog. Someone outside the company is refused as for an environment nobody has; the viewer waits
---    for the fence and then gets the catalog.
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
-	$q$select public.qorpera_member_office_catalog('30000000-0000-4000-8000-000000000020')$q$,
+--    for the fence (the machine fence) and then gets the catalog.
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
+	$q$select public.qorpera_member_office_catalog('92400000-0000-4000-8000-000000000020')$q$,
 	'Company unavailable', 'The catalog of another company');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	$q$select public.qorpera_member_office_catalog('75500000-0000-4000-8000-000000000099')$q$,
 	'Company unavailable', 'The catalog of an environment nobody has');
 do $$
-declare v_outcome jsonb := pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
-	$q$select public.qorpera_member_office_catalog('30000000-0000-4000-8000-000000000020')$q$, 'The viewer''s catalog');
+declare v_outcome jsonb := pg_temp.fence_waits('92400000-0000-4000-8000-000000000003',
+	$q$select public.qorpera_member_office_catalog('92400000-0000-4000-8000-000000000020')$q$, 'The viewer''s catalog');
 begin
-	perform pg_temp.wake_assert(v_outcome #>> '{result,companyId}' = '30000000-0000-4000-8000-000000000010'
+	perform pg_temp.base_assert(v_outcome #>> '{result,companyId}' = '92400000-0000-4000-8000-000000000010'
 		and v_outcome #> '{result,scope}' = current_setting('qorpera_test.office_scope')::jsonb
 		and v_outcome #> '{result,canManage}' = 'false'::jsonb and jsonb_array_length(v_outcome #> '{result,staff}') > 0,
 		'The viewer gets the catalog once the fence is free: ' || v_outcome::text);
 end $$;
 
--- 2. Registering the first computer and an agent's access to it (owners and admins).
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
-	format('select public.qorpera_register_runtime_office(%L,%L,%L,%L,2)', '30000000-0000-4000-8000-000000000020',
+-- 2. Registering the first computer and an agent's access to it (owners and admins). Registration and setting an
+--    agent's access take the machine fence, so the owner waits; the access status is plain reads on folder-v2, so the
+--    owner's read answers at once (as 895 D), and someone outside the company is refused at once all the same.
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
+	format('select public.qorpera_register_runtime_office(%L,%L,%L,%L,2)', '92400000-0000-4000-8000-000000000020',
 		'34000000-0000-4000-8000-000000000001', repeat('a',64), repeat('b',64)),
 	'Shared office registration is unavailable', 'Registering another company''s computer');
-select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
-	format('select public.qorpera_register_runtime_office(%L,%L,%L,%L,2)', '30000000-0000-4000-8000-000000000020',
+select pg_temp.base_assert(pg_temp.fence_waits('92400000-0000-4000-8000-000000000001',
+	format('select public.qorpera_register_runtime_office(%L,%L,%L,%L,2)', '92400000-0000-4000-8000-000000000020',
 		'34000000-0000-4000-8000-000000000001', repeat('a',64), repeat('b',64)), 'The owner''s registration')
 	#>> '{result,companyComputerId}' = (pg_temp.fence_office()).id::text, 'The owner registers the same computer again');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	format('select public.qorpera_runtime_office_access_status(%L::jsonb, %L)', current_setting('qorpera_test.office_scope'),
-		'30000000-0000-4000-8000-000000000030'),
+		'92400000-0000-4000-8000-000000000030'),
 	'Office grant administration unavailable', 'An agent''s access in another company');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
+select pg_temp.base_assert(pg_temp.fence_at_once('92400000-0000-4000-8000-000000000001',
 	format('select public.qorpera_runtime_office_access_status(%L::jsonb, %L)', current_setting('qorpera_test.office_scope'),
-		'30000000-0000-4000-8000-000000000030'), 'The owner reading an agent''s access');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+		'92400000-0000-4000-8000-000000000030'), 'The owner reading Alice''s access') #>> '{result,grant,state}' = 'active',
+	'The owner reads Alice''s active access');
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	format('select public.qorpera_set_runtime_office_access(%L, %L, 999, true)', (pg_temp.fence_office()).id,
-		'30000000-0000-4000-8000-000000000030'),
+		'92400000-0000-4000-8000-000000000030'),
 	'Shared office grant is unavailable', 'Setting an agent''s access in another company');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000001',
 	format('select public.qorpera_set_runtime_office_access(%L, %L, 999, true)', (pg_temp.fence_office()).id,
-		'30000000-0000-4000-8000-000000000030'), 'The owner setting an agent''s access');
+		'92400000-0000-4000-8000-000000000030'), 'The owner setting an agent''s access');
 
 -- 3. A computer's start. For someone outside the company the scope is still checked first: a scope that is not the
 --    computer's gets the refusal it got before. A start or wake gets the refusal of the branch the computer's state
---    picks. A member's call checks the scope under the fence, as before.
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+--    picks. A member's start, wake and cancellation take the computer's start prelude (the machine fence) and check the
+--    scope under it; the start status is plain reads on folder-v2 (as 894 A), so the viewer's status, and its scope
+--    refusal, answer at once.
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	format('select public.qorpera_runtime_office_start_status(%L::jsonb)', current_setting('qorpera_test.office_scope')),
 	'Office start status requires membership', 'Another company''s start status');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	format('select public.qorpera_runtime_office_start_status(%L::jsonb)',
 		current_setting('qorpera_test.office_scope')::jsonb || '{"logicalComputerId":"75500000-0000-4000-8000-000000000098"}'),
 	'Office start scope differs', 'A start status for a scope that is not the computer''s');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
+select pg_temp.base_assert(pg_temp.fence_at_once('92400000-0000-4000-8000-000000000003',
 	format('select public.qorpera_runtime_office_start_status(%L::jsonb)', current_setting('qorpera_test.office_scope')),
-	'The viewer''s start status');
-select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
+	'The viewer''s start status') #>> '{result,officeState}' = 'active', 'The viewer reads the active computer''s status');
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000003',
 	format('select public.qorpera_runtime_office_start_status(%L::jsonb)',
 		current_setting('qorpera_test.office_scope')::jsonb || '{"logicalComputerId":"75500000-0000-4000-8000-000000000098"}'),
-	'The viewer''s start status for a scope that is not the computer''s') ->> 'error' = 'Office start scope differs',
-	'The viewer learns the scope differs after the fence, as before');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_request_runtime_office_start'),
+	'Office start scope differs', 'The viewer''s start status for a scope that is not the computer''s (plain reads)');
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'Office wake unavailable', 'Waking another company''s running computer');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_request_runtime_office_start'),
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'The contributor waking the computer');
-select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000002',
+select pg_temp.base_assert(pg_temp.fence_waits('92400000-0000-4000-8000-000000000002',
 	format('select public.qorpera_request_runtime_office_start(%L::jsonb, %s, ''75500000-0000-4000-8000-000000000040'')',
 		current_setting('qorpera_test.office_scope'), (pg_temp.fence_office()).generation + 1),
 	'The contributor waking another generation of the computer') ->> 'error' = 'Office start scope differs',
 	'The contributor learns the generation differs after the fence, as before');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
 	'Office start cancellation differs', 'Cancelling the start of another company''s running computer');
-select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
+select pg_temp.base_assert(pg_temp.fence_waits('92400000-0000-4000-8000-000000000001',
 	pg_temp.fence_start('qorpera_cancel_runtime_office_start'), 'The owner cancelling the start of the running computer')
 	->> 'error' = 'Office start cancellation differs', 'The owner learns the computer is not starting after the fence, as before');
 select pg_temp.fence_state('provisioning');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_request_runtime_office_start'),
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'Office start requires founder authority', 'Starting another company''s computer');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_request_runtime_office_start'),
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_request_runtime_office_start'),
 	'The contributor starting the computer');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
 	'Office start cancellation requires founder authority', 'Cancelling the start of another company''s computer');
-select pg_temp.fence_refused('30000000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000002', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
 	'Office start cancellation requires founder authority', 'The contributor cancelling the start');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000001', pg_temp.fence_start('qorpera_cancel_runtime_office_start'),
 	'The owner cancelling the start');
 select pg_temp.fence_state('active');
 -- Withdrawing a wake asks no membership: someone outside the company with no wake request of their own on the
--- computer's current cycle has nothing to withdraw, as before, and now without the fence.
+-- computer's current cycle has nothing to withdraw, as before, and without the fence.
 do $$
-declare v_outcome jsonb := pg_temp.fence_call('75500000-0000-4000-8000-000000000001',
+declare v_outcome jsonb := pg_temp.fence_call('92400000-0000-4000-8000-000000000005',
 	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'));
 begin
-	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome -> 'result' = '{"state":"unavailable"}'::jsonb,
+	perform pg_temp.base_assert(v_outcome ->> 'waited' = 'false' and v_outcome -> 'result' = '{"state":"unavailable"}'::jsonb,
 		'Someone outside the company has no wake to withdraw, without waiting for the fence: ' || v_outcome::text);
 end $$;
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake',
 		current_setting('qorpera_test.office_scope')::jsonb || '{"logicalComputerId":"75500000-0000-4000-8000-000000000098"}'),
 	'Office start scope differs', 'Withdrawing a wake for a scope that is not the computer''s');
-select pg_temp.wake_assert(pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
+select pg_temp.base_assert(pg_temp.fence_waits('92400000-0000-4000-8000-000000000003',
 	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'), 'The viewer withdrawing a wake') -> 'result'
 	= '{"state":"unavailable"}'::jsonb, 'The viewer has no wake to withdraw either');
 -- Someone who asked for a wake while a member (fixture rows: the computer's current idle cycle and their request)
@@ -297,77 +316,73 @@ begin
 		('75500000-0000-4000-8000-000000000051',(pg_temp.fence_office()).id,(pg_temp.fence_office()).generation,'{}',clock_timestamp()),
 		('75500000-0000-4000-8000-000000000052',(pg_temp.fence_office()).id,(pg_temp.fence_office()).generation+1,'{}',null);
 	insert into public.qorpera_runtime_office_wake_requests(transition_id,user_id,request_id) values
-		('75500000-0000-4000-8000-000000000050','75500000-0000-4000-8000-000000000001','75500000-0000-4000-8000-000000000040'),
-		('75500000-0000-4000-8000-000000000051','75500000-0000-4000-8000-000000000001','75500000-0000-4000-8000-000000000042'),
-		('75500000-0000-4000-8000-000000000052','75500000-0000-4000-8000-000000000001','75500000-0000-4000-8000-000000000043');
+		('75500000-0000-4000-8000-000000000050','92400000-0000-4000-8000-000000000005','75500000-0000-4000-8000-000000000040'),
+		('75500000-0000-4000-8000-000000000051','92400000-0000-4000-8000-000000000005','75500000-0000-4000-8000-000000000042'),
+		('75500000-0000-4000-8000-000000000052','92400000-0000-4000-8000-000000000005','75500000-0000-4000-8000-000000000043');
 end $$;
 do $$
 declare v_request text; v_outcome jsonb;
 begin
 	foreach v_request in array array['75500000-0000-4000-8000-000000000041','75500000-0000-4000-8000-000000000042',
 		'75500000-0000-4000-8000-000000000043'] loop
-		v_outcome := pg_temp.fence_call('75500000-0000-4000-8000-000000000001',
+		v_outcome := pg_temp.fence_call('92400000-0000-4000-8000-000000000005',
 			replace(pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'), '75500000-0000-4000-8000-000000000040', v_request));
-		perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome -> 'result' = '{"state":"unavailable"}'::jsonb,
+		perform pg_temp.base_assert(v_outcome ->> 'waited' = 'false' and v_outcome -> 'result' = '{"state":"unavailable"}'::jsonb,
 			'A former member''s request ' || v_request || ' finds nothing, without waiting for the fence: ' || v_outcome::text);
 	end loop;
 end $$;
-select pg_temp.wake_assert(pg_temp.fence_waits('75500000-0000-4000-8000-000000000001',
+select pg_temp.base_assert(pg_temp.fence_waits('92400000-0000-4000-8000-000000000005',
 	pg_temp.fence_start('qorpera_withdraw_runtime_office_wake'), 'A former member withdrawing their own wake') -> 'result'
 	= '{"state":"withdrawn"}'::jsonb, 'A former member withdraws their own wake');
 
--- 4. Recovering a compute identity.
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+-- 4. Recovering a compute identity. A member's request, consent, list and cancellation take the recovery locks (the
+--    machine fence, then the members) and wait. What a request or a consent answers past the fence is not checked here:
+--    the recovery above has no real target or backup (901 follows a real recovery through the same locks).
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	format('select public.qorpera_request_identity_recovery(%L, %L, %L, 1, %L, ''nas'')', '75500000-0000-4000-8000-000000000010',
 		'75500000-0000-4000-8000-000000000023', '75500000-0000-4000-8000-000000000041', repeat('c',64)),
 	'recovery requires a current company owner', 'Recovering another company''s identity');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000001',
 	format('select public.qorpera_request_identity_recovery(%L, %L, %L, 1, %L, ''nas'')', '75500000-0000-4000-8000-000000000010',
 		'75500000-0000-4000-8000-000000000023', '75500000-0000-4000-8000-000000000041', repeat('c',64)),
 	'The owner requesting a recovery');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	$q$select public.qorpera_consent_identity_recovery('75500000-0000-4000-8000-000000000020')$q$,
 	'recovery member consent is unavailable', 'Consenting to another company''s recovery');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000003',
 	$q$select public.qorpera_consent_identity_recovery('75500000-0000-4000-8000-000000000020')$q$,
 	'The identity''s member consenting');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
-	$q$select public.qorpera_list_member_recovery_identities('30000000-0000-4000-8000-000000000010', null, 10)$q$,
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
+	$q$select public.qorpera_list_member_recovery_identities('92400000-0000-4000-8000-000000000010', null, 10)$q$,
 	'Recovery membership is unavailable', 'Listing another company''s recoverable identities');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	$q$select public.qorpera_list_member_recovery_identities('75500000-0000-4000-8000-000000000099', null, 10)$q$,
 	'Recovery membership is unavailable', 'Listing the identities of a company nobody has');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000003',
-	$q$select public.qorpera_list_member_recovery_identities('30000000-0000-4000-8000-000000000010', null, 10)$q$,
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000003',
+	$q$select public.qorpera_list_member_recovery_identities('92400000-0000-4000-8000-000000000010', null, 10)$q$,
 	'The viewer listing recoverable identities');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005',
 	$q$select public.qorpera_cancel_identity_recovery('75500000-0000-4000-8000-000000000020')$q$,
 	'recovery cancellation is unavailable', 'Cancelling another company''s recovery');
-select pg_temp.fence_refused('30000000-0000-4000-8000-000000000002',
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000002',
 	$q$select public.qorpera_cancel_identity_recovery('75500000-0000-4000-8000-000000000020')$q$,
 	'recovery cancellation is unavailable', 'A member who neither owns the company nor the identity cancelling');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
+select pg_temp.fence_waits('92400000-0000-4000-8000-000000000001',
 	$q$select public.qorpera_cancel_identity_recovery('75500000-0000-4000-8000-000000000020')$q$,
 	'The owner cancelling the recovery');
 
--- 5. Posting in a room: members of the company who are active members of the room. A room nobody has now gets the
---    same refusal.
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
-	$q$select public.qorpera_post_company_room_message('75500000-0000-4000-8000-000000000030',
-		'75500000-0000-4000-8000-000000000042', '{}', null, null)$q$,
+-- 5. Posting in a room: members of the company who are active members of the room. A room nobody has gets the same
+--    refusal. The owner's post takes the company entry (the folder fence KEY SHARE first) and waits; once the fence
+--    is free it lands.
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005', pg_temp.fence_post(),
 	'Room is unavailable', 'Posting in another company''s room');
-select pg_temp.fence_refused('75500000-0000-4000-8000-000000000001',
-	$q$select public.qorpera_post_company_room_message('75500000-0000-4000-8000-000000000099',
-		'75500000-0000-4000-8000-000000000042', '{}', null, null)$q$,
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000005', pg_temp.fence_post('75500000-0000-4000-8000-000000000099'),
 	'Room is unavailable', 'Posting in a room nobody has');
-select pg_temp.fence_refused('30000000-0000-4000-8000-000000000003',
-	$q$select public.qorpera_post_company_room_message('75500000-0000-4000-8000-000000000030',
-		'75500000-0000-4000-8000-000000000042', '{}', null, null)$q$,
+select pg_temp.fence_refused('92400000-0000-4000-8000-000000000003', pg_temp.fence_post(),
 	'Room is unavailable', 'A member of the company outside the room posting');
-select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
-	$q$select public.qorpera_post_company_room_message('75500000-0000-4000-8000-000000000030',
-		'75500000-0000-4000-8000-000000000042', '{}', null, null)$q$,
-	'The owner posting in the room');
+select pg_temp.base_assert(pg_temp.fence_waits('92400000-0000-4000-8000-000000000001', pg_temp.fence_post(),
+	'The owner posting in Alice''s thread') #>> '{result,roomId}' = current_setting('qorpera_test.fence_room'),
+	'The owner''s post lands in Alice''s thread once the fence is free');
 
 -- 6. The catalog's membership check after the fence stays. The viewer's call passes the plain check and waits for
 --    the fence; the holder removes the viewer from the company and lets go; the call reads the membership again
@@ -375,11 +390,9 @@ select pg_temp.fence_waits('30000000-0000-4000-8000-000000000001',
 do $$
 declare v_pid integer := current_setting('qorpera_test.fence_caller_pid')::integer; v_outcome jsonb;
 begin
-	perform dblink_exec('fence_holder', 'begin');
-	perform * from dblink('fence_holder', $q$select 1 from public.qorpera_profiles
-		where id = '30000000-0000-4000-8000-000000000010' for key share$q$) as held(held integer);
-	perform pg_temp.fence_as(pg_temp.fence_claims('30000000-0000-4000-8000-000000000003'));
-	perform dblink_send_query('fence_caller', $q$select public.qorpera_member_office_catalog('30000000-0000-4000-8000-000000000020')$q$);
+	perform pg_temp.fence_hold();
+	perform pg_temp.fence_as(pg_temp.fence_claims('92400000-0000-4000-8000-000000000003'));
+	perform dblink_send_query('fence_caller', $q$select public.qorpera_member_office_catalog('92400000-0000-4000-8000-000000000020')$q$);
 	for attempt in 1..200 loop
 		exit when cardinality(pg_blocking_pids(v_pid)) > 0 or dblink_is_busy('fence_caller') = 0;
 		perform pg_sleep(0.025);
@@ -389,10 +402,10 @@ begin
 		raise exception 'The viewer''s catalog did not wait for the fence: %', pg_temp.fence_collect(); end if;
 	perform dblink_exec('fence_holder', $q$set local session_replication_role = replica$q$);
 	perform dblink_exec('fence_holder', $q$delete from public.qorpera_profile_members
-		where profile_id = '30000000-0000-4000-8000-000000000010' and user_id = '30000000-0000-4000-8000-000000000003'$q$);
+		where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000003'$q$);
 	perform dblink_exec('fence_holder', 'commit');
 	v_outcome := pg_temp.fence_collect();
-	perform pg_temp.wake_assert(v_outcome ->> 'state' = '42501' and v_outcome ->> 'error' = 'Company unavailable',
+	perform pg_temp.base_assert(v_outcome ->> 'state' = '42501' and v_outcome ->> 'error' = 'Company unavailable',
 		'A member removed while waiting for the fence is refused: ' || v_outcome::text);
 end $$;
 
