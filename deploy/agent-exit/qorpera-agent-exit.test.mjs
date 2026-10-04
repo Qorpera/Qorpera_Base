@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -773,7 +774,7 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		const first = readFileSync(join(log, `counts-${day}.json`), "utf8");
 		const second = readFileSync(join(log, `counts-${next}.json`), "utf8");
 		// A late connection line for the second day, from the address the late plug (first day) gives to cE.
-		append(`flows-${next}.jsonl`, [opened("10.210.1.7", t0 + DAY + 500)]);
+		append(`flows-${next}.jsonl`, [opened("10.210.1.7", t0 + DAY + 500), { event: "gap", reason: "logger started", ts: t0 + DAY + 501 }]);
 		const r = tend(t0 + 3 * DAY + 3 * 3600);
 		assert.equal(r.status, 0, r.stderr);
 		assert.equal(r.result.daysCounted, 1);
@@ -792,6 +793,7 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.equal(c.pluggedInAtEnd["10.210.1.7"].company, "cE");
 		const report = JSON.parse(spawnSync("python3", [logsTool, "report", "--log-dir", log, "--json"], { encoding: "utf8" }).stdout);
 		assert.deepEqual([report.companies.cE.connections, report.companies.cE.days], [1, 0], "the report adds the late numbers");
+		assert.equal(report.node.gaps, 2, "and the late part's gap lines");
 		assert.equal(tend(t0 + 3 * DAY + 4 * 3600).result.daysCounted, 0, "counted once");
 	});
 
@@ -831,8 +833,10 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		writeFileSync(join(stuck, `flows-${next}.jsonl`), lines([opened("10.210.1.1", t0 + DAY + 200)]));
 		const run = (...extra) =>
 			spawnSync("python3", [logsTool, "tend", "--log-dir", stuck, "--status", join(stuck, "s.json"), "--now", String(t0 + 100 * DAY), "--settle", "0", "--free-percent", "50", ...extra], { encoding: "utf8" });
-		// The second day's connection log cannot be sealed (compressing it fails).
+		// The second day's connection log cannot be sealed (compressing it fails), and the checkpoint's copy cannot be
+		// written either.
 		mkdirSync(join(stuck, `.flows-${next}.p001.jsonl.gz.tmp`));
+		mkdirSync(join(stuck, ".attribution.json.tmp"));
 		const failed = run("--cap-bytes", "1");
 		assert.equal(failed.status, 1);
 		const problems = JSON.parse(failed.stdout).problems.join(" | ");
@@ -842,10 +846,44 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		// The first day's parts are counted, so they go (past 90 days); the second day's stay, whatever the cap.
 		const left = readdirSync(stuck);
 		assert.ok(!left.includes(`flows-${day}.p001.jsonl.gz`) && left.includes(`flows-${next}.p001.sealing`), left.join(" "));
+		// The first day's counts are the newest, the checkpoint (its copy cannot be written): they stay past 90 days.
+		assert.ok(left.includes(`counts-${day}.json`) && !left.includes("attribution.json"), left.join(" "));
 		rmSync(join(stuck, `.flows-${next}.p001.jsonl.gz.tmp`), { recursive: true });
+		rmSync(join(stuck, ".attribution.json.tmp"), { recursive: true });
 		const recovered = run();
 		assert.equal(recovered.status, 0, recovered.stderr);
 		assert.ok(!readdirSync(stuck).some((name) => name.startsWith("flows-") || name.startsWith("clients-")), "counted, then past 90 days");
+		assert.equal(JSON.parse(readFileSync(join(stuck, "attribution.json"), "utf8")).open["10.210.1.1"].company, "cA");
+		assert.ok(!readdirSync(stuck).includes(`counts-${day}.json`), "gone once newer counts came and its parts went");
+	});
+
+	test("expiry takes the parts before the counts that name them, so a pass cut short never counts a part twice", () => {
+		const expiring = mkdtempSync(join(dir, "expiring-"));
+		writeFileSync(join(expiring, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
+		writeFileSync(join(expiring, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 200)]));
+		writeFileSync(join(expiring, `flows-${next}.jsonl`), lines([opened("10.210.1.1", t0 + DAY + 200)]));
+		const run = (now) =>
+			spawnSync("python3", [logsTool, "tend", "--log-dir", expiring, "--status", join(dir, "expiring.json"), "--now", String(now), "--settle", "0", "--free-percent", "50"], { encoding: "utf8" });
+		assert.equal(run(t0 + 2 * DAY + 3 * 3600).status, 0);
+		// 92 days on, the first two days expire. The first pass cannot delete or write anything (a read-only folder):
+		// cut short before any expiry.
+		const later = t0 + 92 * DAY + 3 * 3600;
+		chmodSync(expiring, 0o555);
+		try {
+			assert.equal(run(later).status, 1);
+		} finally {
+			chmodSync(expiring, 0o755);
+		}
+		assert.equal(run(later).status, 0);
+		const left = readdirSync(expiring);
+		assert.ok(!left.some((name) => name.startsWith("flows-") || name.startsWith("clients-")), left.join(" "));
+		const counted = left.filter((name) => name.startsWith("counts-"));
+		assert.ok(counted.length > 80);
+		for (const name of counted)
+			assert.deepEqual(JSON.parse(readFileSync(join(expiring, name), "utf8")).late, [], `${name}: nothing counted twice`);
+		const lost = readFileSync(join(expiring, "lost.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line).file);
+		for (const [part, counts] of [[`flows-${day}.p001.jsonl.gz`, `counts-${day}.json`], [`clients-${day}.p001.jsonl.gz`, `counts-${day}.json`], [`flows-${next}.p001.jsonl.gz`, `counts-${next}.json`]])
+			assert.ok(lost.indexOf(part) >= 0 && lost.indexOf(part) < lost.indexOf(counts), lost.join(" "));
 	});
 
 	test("a pass cut short never seals a line twice, and a DNS copy left plain is compressed", () => {

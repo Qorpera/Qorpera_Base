@@ -22,7 +22,8 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
   the disk has less than its floor (10% unless set) plus 5 points free: the DNS record's and the connection log's
   first, the client history's last. One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
-  pressure. Each deleted file is a line in lost.jsonl (its day is unknown to a lookup from then on).
+  pressure; at 90 days a counts file goes after every part it names, and the newest one (the checkpoint) never. Each
+  deleted file is a line in lost.jsonl (its day is unknown to a lookup from then on).
 <run-dir>/logs.json says when it last ran and what it could not do; `qorpera-agent-exit.sh verify` fails while it is
 older than 15 minutes or names a problem (the logs still over their cap, or the disk under its floor, with every
 part it may delete gone; a part it cannot seal; a closed day it cannot count). The logger pauses by itself at the
@@ -503,6 +504,25 @@ def unsealed(files, day):
     return sorted(name for name in files if (m := OPEN.match(name) or SEALING.match(name)) and m.group(2) == day)
 
 
+def copy_matches(log_dir, through, plugged):
+    try:
+        with open(os.path.join(log_dir, "attribution.json"), encoding="utf-8") as f:
+            value = json.load(f)
+        return value.get("through") == through and value.get("open") == plugged
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def write_attribution(log_dir, through, plugged):
+    """The checkpoint's copy. A failure is only reported: the newest counts file is the checkpoint (tidy never deletes
+    it), and the next pass writes the copy again."""
+    try:
+        write_json(os.path.join(log_dir, "attribution.json"),
+                   {"schema": "qorpera.agent-exit-attribution/v1", "through": through, "open": plugged})
+    except OSError as error:
+        print(f"qorpera-agent-exit-logs: cannot write attribution.json: {error}", file=sys.stderr, flush=True)
+
+
 def count_closed_days(log_dir, now, host):
     """Counts each closed day once, in order, once all its files are sealed (each counted part keeps its name). A part
     that turns up for a day already counted (a late one) is counted with the next day counted, under its own day: it
@@ -511,6 +531,9 @@ def count_closed_days(log_dir, now, host):
     closed days it could not count yet."""
     files = regular_files(log_dir)
     through, plugged = checkpoint(log_dir, files)
+    if through and not copy_matches(log_dir, through, plugged):
+        # The copy is behind the checkpoint (an earlier write failed): written again before anything else.
+        write_attribution(log_dir, through, plugged)
     day = next_day(through) if through else first_day(log_dir, files)
     counted = counted_parts(log_dir, files)
     done = 0
@@ -529,12 +552,7 @@ def count_closed_days(log_dir, now, host):
         write_json(os.path.join(log_dir, f"counts-{day}.json"),
                    {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now),
                     "parts": own, "late": late_counts, "pluggedInAtEnd": end, **counts})
-        try:
-            write_json(os.path.join(log_dir, "attribution.json"),
-                       {"schema": "qorpera.agent-exit-attribution/v1", "through": day, "open": end})
-        except OSError as error:
-            # Only a copy: the counts file just written is the checkpoint.
-            print(f"qorpera-agent-exit-logs: cannot write attribution.json: {error}", file=sys.stderr, flush=True)
+        write_attribution(log_dir, day, end)
         counted |= set(own) | set(late)
         plugged = end
         done += 1
@@ -568,14 +586,29 @@ def tidy(log_dir, now, cap, floor, free=free_percent):
     files = regular_files(log_dir)
     counted = counted_parts(log_dir, files)
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
+
+    def expire(name):
+        os.unlink(os.path.join(log_dir, name))
+        record_lost(log_dir, now, name, files.pop(name), EXPIRED)
+        deleted.append(name)
+
+    # The parts first, the counts after: a counts file goes only once no part it names is left (so a part never
+    # outlives the counts that name it, also when a pass is cut short), and the newest one, the checkpoint, never.
     for name in sorted(files):
         day = file_day(name)
-        if day is None or day >= oldest_kept or (PART.match(name) and name not in counted):
+        if day is not None and day < oldest_kept and (DNS_PART.match(name) or (PART.match(name) and name in counted)):
+            expire(name)
+    newest = max((m.group(1) for name in files if (m := COUNTS.match(name))), default=None)
+    for name in sorted(files):
+        m = COUNTS.match(name)
+        if not m or m.group(1) >= oldest_kept or m.group(1) == newest:
             continue
-        if PART.match(name) or DNS_PART.match(name) or COUNTS.match(name):
-            os.unlink(os.path.join(log_dir, name))
-            record_lost(log_dir, now, name, files[name], EXPIRED)
-            deleted.append(name)
+        counts = read_counts(log_dir, m.group(1)) or {}
+        named = set(counts.get("parts") or []) | {p for late in counts.get("late") or [] if isinstance(late, dict)
+                                                  for p in late.get("parts") or []}
+        if named & set(files):
+            continue
+        expire(name)
     files = regular_files(log_dir)
     candidates = sorted(
         (name for name in files if DNS_PART.match(name) or (PART.match(name) and name in counted)),
@@ -664,6 +697,7 @@ def report(log_dir, start, end, as_json):
             counts = json.load(f)
         for key in ("gaps", "unreadableLines"):
             node[key] += counts["node"].get(key, 0)
+            node[key] += sum((late.get("node") or {}).get(key, 0) for late in counts.get("late") or [])
         # A day's own numbers, then the late ones counted with it (added up, but no day of their own).
         booked = [(True, counts["companies"])] + [(False, late.get("companies") or {}) for late in counts.get("late") or []]
         for own, company, c in ((own, company, c) for own, each in booked for company, c in each.items()):
