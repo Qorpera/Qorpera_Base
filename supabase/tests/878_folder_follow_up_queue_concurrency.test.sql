@@ -54,7 +54,7 @@ insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_aut
 		'87800000-0000-4000-8000-0000000000d1','company','gmail','primary','Gmail account','active',1,
 		'70900000-0000-4000-8000-000000000001','race@nordlys.test',true);
 -- Two more connections for the side-by-side rounds: a second step and the company's renames.
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['rrace_step2','rrace_name']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['rrace_step2','rrace_name']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['rrace_step2','rrace_name']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['rrace_step2','rrace_name']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
@@ -289,6 +289,78 @@ begin
 	select r into v_text from dblink('rrace_sched', current_setting('qorpera_test.step')) as t(r text);
 	if v_text::jsonb -> 'converged' ->> 'result' is distinct from 'done' or not pg_temp.granted('87800000-0000-4000-8000-0000000000a8') then
 		raise exception 'The next attempt grants: %', v_text; end if;
+end $$;
+
+-- J. After rank 2 the converge yields: a room held for update (a rename or archive commit holding the agent's room,
+-- rank 4) makes it wait 200 ms at most, fail with a back-off, and grant on the next attempt.
+
+select pg_temp.expect(pg_temp.save(pg_temp.owner(), 'race-hire-wyn', jsonb_build_array(
+	pg_temp.hire('wyn', '87800000-0000-4000-8000-0000000000aa', 'Wyn'))), 1, 'saved') \g /dev/null
+do $$
+declare v_text text; v_started timestamptz;
+begin
+	perform dblink_exec('rrace_hold', 'begin');
+	perform * from dblink('rrace_hold', $q$select id::text from public.qorpera_company_rooms
+		where profile_id = '70900000-0000-4000-8000-000000000010' and bound_staff_agent_id = '87800000-0000-4000-8000-0000000000aa'
+		for update$q$) as t(r text);
+	v_started := clock_timestamp();
+	select r into v_text from dblink('rrace_sched', current_setting('qorpera_test.step')) as t(r text);
+	if v_text::jsonb -> 'converged' ->> 'result' is distinct from 'failed' or v_text::jsonb -> 'converged' ->> 'problem' not like '55P03%'
+		or clock_timestamp() - v_started > interval '1500 milliseconds' or pg_temp.granted('87800000-0000-4000-8000-0000000000aa') then
+		raise exception 'A held room fails the attempt within 200 ms: % after %', v_text, clock_timestamp() - v_started; end if;
+	perform dblink_exec('rrace_hold', 'rollback');
+end $$;
+update public.qorpera_folder_follow_ups set not_before = null where subject_id = '87800000-0000-4000-8000-0000000000aa';
+do $$
+declare v_text text;
+begin
+	select r into v_text from dblink('rrace_sched', current_setting('qorpera_test.step')) as t(r text);
+	if v_text::jsonb -> 'converged' ->> 'result' is distinct from 'done' or not pg_temp.granted('87800000-0000-4000-8000-0000000000aa') then
+		raise exception 'The next attempt grants: %', v_text; end if;
+end $$;
+
+-- I. An archive's converge changes only the routines it read and locked: one that turns active while the converge waits
+-- (after its plain read) is left alone, and routine firing marks the agent, so the next step pauses it.
+
+select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-hire-vic', jsonb_build_array(
+	pg_temp.hire('vic', '87800000-0000-4000-8000-0000000000a9', 'Vic'),
+	jsonb_build_object('op','mkdir','path','agents/vic/routines'))), 2, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-vic-routine', jsonb_build_array(
+	pg_temp.routine('agents/vic/routines/inbox.md', pg_temp.rparse('87800000-0000-4000-8000-0000000000f3', 'Inbox', pg_temp.every())))),
+	1, 'saved') \g /dev/null
+select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'race-archive-vic', jsonb_build_array(
+	pg_temp.agent('vic', '87800000-0000-4000-8000-0000000000a9', 'archived', 'Vic'))), 1, 'saved') \g /dev/null
+-- Vic's subject marked again (as the rebuild would), with its routine paused by the archive's converge.
+insert into public.qorpera_folder_follow_up_marks(environment_id, subject_kind, subject_id)
+values ('70900000-0000-4000-8000-000000000020', 'agent', '87800000-0000-4000-8000-0000000000a9');
+do $$
+declare a9 constant uuid := '87800000-0000-4000-8000-0000000000a9'; f3 constant uuid := '87800000-0000-4000-8000-0000000000f3';
+	v_text text;
+begin
+	if (select status from public.qorpera_cloud_routines where id = f3) is distinct from 'paused' then
+		raise exception 'Fixture: Vic''s routine is paused'; end if;
+	perform dblink_exec('rrace_hold', 'begin');
+	perform * from dblink('rrace_hold', format($q$select staff_agent_id::text from public.qorpera_profile_staff
+		where profile_id = '70900000-0000-4000-8000-000000000010' and staff_agent_id = %L for no key update$q$, a9)) as t(r text);
+	perform dblink_send_query('rrace_sched', current_setting('qorpera_test.step'));
+	if not pg_temp.waits_for('rrace_sched', 'rrace_hold') then raise exception 'The converge must wait at the staff row'; end if;
+	-- The routine turns active after the converge's plain read.
+	perform dblink_exec('rrace_save', format($q$update public.qorpera_cloud_routines set status = 'active', pause_reason = null
+		where id = %L$q$, f3));
+	perform dblink_exec('rrace_hold', 'commit');
+	v_text := pg_temp.result('rrace_sched');
+	if v_text::jsonb -> 'converged' ->> 'result' is distinct from 'done'
+		or (select status from public.qorpera_cloud_routines where id = f3) is distinct from 'active' then
+		raise exception 'The converge changed a routine it did not lock: %', v_text; end if;
+	-- Firing defers it and marks Vic; the next step pauses it.
+	select r into v_text from dblink('rrace_save', format('select public.qorpera_enqueue_routine_wake(%L, %s, %L, %L, %L, %L, null, %L)::text',
+		f3, (select current_version from public.qorpera_cloud_routines where id = f3), extensions.gen_random_uuid(), 'vic-slot-1', 'file',
+		date_trunc('milliseconds', clock_timestamp()) + interval '1 minute', clock_timestamp() + interval '1 hour')) as t(r text);
+	if v_text::jsonb ->> 'status' is distinct from 'deferred' then raise exception 'Firing defers Vic''s routine: %', v_text; end if;
+	select r into v_text from dblink('rrace_sched', current_setting('qorpera_test.step')) as t(r text);
+	if v_text::jsonb -> 'converged' ->> 'result' is distinct from 'done'
+		or (select pause_reason from public.qorpera_cloud_routines where id = f3) is distinct from 'agent_archived' then
+		raise exception 'Firing''s mark pauses it: %', v_text; end if;
 end $$;
 
 -- E. Side by side: two steps, commits flipping an agent between active and archived (it has routines, a pair
