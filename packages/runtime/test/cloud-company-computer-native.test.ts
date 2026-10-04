@@ -26,6 +26,7 @@ import {
 } from "@qorpera/runtime/cloud-company-computer-native-gateway";
 import { HttpCloudCompanyComputerRegistry } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudToolAuthorizeRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -89,6 +90,8 @@ async function fixture(
 		admitWork?: () => void;
 		capabilities?: ("shell" | "browser")[];
 		accountFills?: CompanyComputerAccountFills;
+		/** The database refuses a screenshot at its authorize with these words (folder-v2, C1c-3l part 3). */
+		refuseScreenshots?: string;
 	} = {},
 ) {
 	const source = nativeToolAuthorityFixture();
@@ -147,7 +150,12 @@ async function fixture(
 		if (method === "qorpera_native_office_operation") {
 			if (body.p_action === "finish") return Response.json({ state: "drained" });
 			if (released || revoked) return new Response("private SQL diagnostic", { status: 403 });
-			if (body.p_action === "authorize") return Response.json({ state: "authorized" });
+			if (body.p_action === "authorize")
+				return Response.json(
+					options.refuseScreenshots && JSON.parse(body.p_envelope).operation.tool === "computer_screenshot"
+						? { state: "refused", message: options.refuseScreenshots }
+						: { state: "authorized" },
+				);
 			if (body.p_action === "begin") {
 				if (consumed.has(body.p_receipt_id)) return new Response("already consumed", { status: 403 });
 				consumed.set(body.p_receipt_id, randomUUID());
@@ -348,6 +356,27 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			expect(f.physicalClose).toHaveBeenCalledOnce();
 		},
 	);
+	it("tells the model why the database refused a screenshot at its authorize, before any receipt or office work", async () => {
+		const message =
+			"Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.";
+		const f = await fixture({ capabilities: ["shell", "browser"], refuseScreenshots: message });
+		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
+		const factory = createHttpCompanyComputerSessionFactory({ url: f.url, token: f.token, registry: f.registry });
+		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
+		if (!session) throw new Error("Missing admitted office session");
+		cleanups.push(session.close);
+		const tool = session.tools.find((tool) => tool.name === "computer_screenshot")!;
+		const refused = tool.execute(
+			{ operationKey: "native-office:shot", action: { kind: "screenshot", surface: "browser" } },
+			{ companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal },
+		);
+		await expect(refused).rejects.toBeInstanceOf(CloudToolAuthorizeRefusal);
+		await expect(refused).rejects.toThrow(message);
+		expect(control.beginToolOperation).not.toHaveBeenCalled();
+		expect(f.createSession).not.toHaveBeenCalled();
+		expect(f.perform).not.toHaveBeenCalled();
+		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
+	});
 	it("reaches the computer the run is placed on through a company route", async () => {
 		const f = await fixture();
 		const route = f.url.replace(f.scope.companyComputerId, "{companyComputerId}");

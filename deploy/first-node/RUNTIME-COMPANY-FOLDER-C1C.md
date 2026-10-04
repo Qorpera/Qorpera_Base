@@ -1633,6 +1633,7 @@ receipt fences the run's later operations.
   - at authorize, which the runtime calls before it begins the receipt, it answers `{state: "refused", message}`
     ("Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.");
   - at begin and check it raises 0A000.
+  - finish is unchanged: it finds no resource for a refused screenshot and raises 42501.
 
   No receipt opens, and the run goes on. Every other kind of operation is unchanged.
 - **What the model sees.** The runtime gives the message to the model as the tool's answer: `REFUSED: Screenshots are
