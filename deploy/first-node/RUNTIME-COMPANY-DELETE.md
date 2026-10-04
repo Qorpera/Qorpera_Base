@@ -189,7 +189,12 @@ records what it waits for.
   sign-ins keeps waiting, as it did.
 - **D5a** Storage (migration 20260928269480). Company File and folder objects need nothing new: their
   catalog rows have no link to the company, and the worker's deleted-profile phase removes them once
-  the company is gone. Credential capsules (`qorpera-native-compute-capsules/<capsule>.capsule`, named
+  the company is gone. Folder-v2 objects share the catalog, the NAS layout `<root>/<company>/<sha256>` and the
+  Storage replica path, so this holds for them too (test 922: a folder-v2 company's committed files, chunks, an
+  intent's object and a GC side row; its purge leaves every catalog row, and the phase's calls remove them all). Not
+  covered yet: NAS bytes with no catalog row (a put whose confirm never ran) of a company that is then purged; the
+  gateway's own sweep serves only live companies (C1D §9.9). The sweep of `<root>/<company>/` after the purge is
+  planned (the folder GC session, after the worker is live). Credential capsules (`qorpera-native-compute-capsules/<capsule>.capsule`, named
   only by the capsule) and the identity recovery prefix (`qorpera-identity-recovery/<company>/`) have
   no such record: the finisher writes them into `qorpera_company_storage_deletions` right before the
   purge, in the same step, so a purge never happens without the record. The artifact GC worker claims
