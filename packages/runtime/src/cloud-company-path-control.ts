@@ -26,6 +26,9 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_record_review",
 	"qorpera_folder_agent_routines",
 	"qorpera_prepare_routine_login",
+	"qorpera_folder_worker_commit",
+	"qorpera_folder_agent_workers",
+	"qorpera_folder_cancel_agent_worker",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -125,6 +128,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// A folder-v2 run's own routines, and the login a routine save pins (thin writers W4c).
 			"qorpera_folder_agent_routines",
 			"qorpera_prepare_routine_login",
+			// A folder-v2 run's workers: their files under the worker tool's request, a todo's workers, and a cancel (F2-5b).
+			"qorpera_folder_worker_commit",
+			"qorpera_folder_agent_workers",
+			"qorpera_folder_cancel_agent_worker",
 			// Event wakes (W2).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
@@ -175,11 +182,14 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								// change set's outcomes.
 								response.ok && method === "qorpera_folder_list"
 								? 2 * 1024 * 1024
-								: response.ok && method === "qorpera_folder_commit"
+								: response.ok &&
+										(method === "qorpera_folder_commit" || method === "qorpera_folder_worker_commit")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
-										// page of 32 with theirs cut.
-										response.ok && method === "qorpera_folder_agent_routines"
+										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
+										response.ok &&
+											(method === "qorpera_folder_agent_routines" ||
+												method === "qorpera_folder_agent_workers")
 										? 1024 * 1024
 										: response.ok
 											? 256 * 1024

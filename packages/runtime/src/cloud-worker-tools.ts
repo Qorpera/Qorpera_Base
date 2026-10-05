@@ -1,5 +1,11 @@
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderTodoChange, CloudFolderTodoListing, CloudFolderTodos } from "./cloud-folder-todos.ts";
+import type {
+	CloudFolderWorkerChange,
+	CloudFolderWorkerReport,
+	CloudFolderWorkerStatus,
+	CloudFolderWorkers,
+} from "./cloud-folder-workers.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -195,6 +201,28 @@ const CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES = CLOUD_WORKER_TOOL_DESCRIP
 	"",
 );
 
+/** A folder-v2 agent's workers are folders of its todos (F2-5b): the key names the folder, status reads one todo's
+ * workers, and coding sessions are not there yet. */
+function folderWorkerDescription(description: string): string {
+	return description
+		.replace(
+			"workerKey is the short name you give this worker, such as competitor-prices;",
+			"workerKey is the short name you give this worker, such as competitor-prices, and the name of its folder in the todo's folder (lowercase letters, digits and single hyphens), which holds brief.md (what it was asked) and results.md (what it reported, and your decision);",
+		)
+		.replace(
+			"status lists your workers, newest first, as many as fit one result, each with the start of its summary: without todoKey, those of open todos and any that changed in the last week. Filter it with todoKey, state",
+			"status lists the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary. Filter it with state",
+		)
+		.replace(
+			"Actions: dispatch, status, followup, cancel, decide, archive.",
+			"Actions: dispatch, status, followup, cancel, decide.",
+		)
+		.replace(
+			/ A coding session is a worker with species coding: .*$/,
+			" Coding sessions are not available in this company yet.",
+		);
+}
+
 export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
 	"Report your result to your parent. This is your only way out: you cannot speak to anyone, and a run that ends without a report counts as failed. Report exactly once, when the definition of done in wake.payload.dispatch is met or when you cannot continue. " +
 	"outcome: succeeded (the definition of done is met), blocked (you need something only your parent can give; say exactly what in needs), failed (it cannot be done; say why). " +
@@ -218,8 +246,8 @@ export function cloudWorkerTools(
 	gateway: Gateway,
 	wake: Pick<CloudWakeEnvelope, "kind" | "source">,
 	/** Whether this run's workers can use company machines (only when a node serves them); and, for a folder-v2
-	 * run, its todos as files. */
-	options: { machines?: boolean; folderTodos?: CloudFolderTodos } = {},
+	 * run, its todos and workers as files. */
+	options: { machines?: boolean; folderTodos?: CloudFolderTodos; folderWorkers?: CloudFolderWorkers } = {},
 ): readonly CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
@@ -375,6 +403,9 @@ export function cloudWorkerTools(
 			async execute(value, context) {
 				assertContext(context);
 				const request = value as Record<string, unknown>;
+				// A folder-v2 worker reports in its results file; the folder core decides the save.
+				if (options.folderWorkers)
+					return options.folderWorkers.report(request as unknown as CloudFolderWorkerReport, context);
 				const result = await call("qorpera_report_worker_result", request, context.signal);
 				if (result?.outcome !== request.outcome) throw new Error("Work receipt differs");
 				return receipt(result, "qorpera.worker-report-receipt/v1", context);
@@ -483,7 +514,9 @@ export function cloudWorkerTools(
 	const worker: CloudNativeTool = {
 		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
+		description: (options.folderWorkers ? folderWorkerDescription : (text: string) => text)(
+			options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
+		),
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -630,6 +663,11 @@ export function cloudWorkerTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 agent's workers are folders of its todos; the folder core decides each save.
+			if (options.folderWorkers)
+				return request.action === "status"
+					? options.folderWorkers.status(request as CloudFolderWorkerStatus, context, fitsOneResult)
+					: options.folderWorkers.change(request as unknown as CloudFolderWorkerChange, context);
 			const result = await call("qorpera_manage_agent_worker", request, context.signal);
 			if (request.action === "status") {
 				if (
