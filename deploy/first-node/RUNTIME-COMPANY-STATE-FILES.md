@@ -2334,7 +2334,9 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     an enabled executor for the harness; the agent's grant for the repository; the owner's own login for the harness,
     allowed to work while they are away, and a ChatGPT plan only for work started on it
     (`qorpera_coding_owner_problem`, which reads `qorpera_coding_owner_login`, the selection
-    `qorpera_coding_owner_sponsor` now shares). A coding session is paid by that login, not the starter's sponsor.
+    `qorpera_coding_owner_sponsor` now shares). A coding session is paid by that login, not the starter's sponsor. The
+    index takes the payer again and holds it to the plan rule (`qorpera_coding_owner_payer`): a login changed between
+    the rules and the index fails the commit rather than bill a plan that did not fund the run.
     The brief agrees with the request: the species, the harness and the repository too.
   - **The index.** An accepted coding dispatch writes the worker (`coding`, active, no wake, owned by the run's
     requester and paid by their sponsor), its session (`queued`, branch `qorpera/coding/<worker id>`, no lease, in the
@@ -2342,7 +2344,11 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     claim starts the session, and its turn's begin admits the worker's wake. A replay answers the first commit.
   - **Follow-up, report, decide.** A coding session keeps its branch, workspace and pull request through a cancel, so a
     cancelled one may be followed up, and only by the member it runs for; the follow-up queues its next turn the same
-    way. A coding session finishes through `coding_finish`: its run never writes `agents/**`, so the folder core denies it
+    way. A member's answer (`qorpera_answer_coding_session`) turns the session too without touching the brief, so a
+    coding brief's `follow_ups` counts the agent's follow-ups alone: each is one more than the brief it rewrites. A
+    worker whose folder was deleted continues only after a restore: the member's answer, the claim and the begin refuse
+    it (a todo's file goes only after its workers' folders, so a retired todo has only retired workers). A coding
+    session finishes through `coding_finish`: its run never writes `agents/**`, so the folder core denies it
     `report_work`. Decide is unchanged.
   - **The turn's wake** carries the folder-v2 dispatch payload (`qorpera_folder_worker_dispatch_payload`: the worker's
     folder and the todo's file).

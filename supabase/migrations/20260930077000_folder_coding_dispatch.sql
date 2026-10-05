@@ -10,14 +10,16 @@
 --    the harness, repository and read access, then the owner (the member who asked), then an enabled executor for the
 --    harness, then the agent's grant for the repository, then the owner's own login for the harness (allowed to work
 --    while they are away, and a ChatGPT plan only for work started on it). A coding session is paid by that login,
---    never by the starter's sponsor.
+--    never by the starter's sponsor; the index takes it again and holds it to the plan rule (qorpera_coding_owner_payer).
 -- 3. The index writes, for an accepted coding dispatch: the worker row (`coding`, active, no wake, the owner and the
 --    owner's sponsor), its session (`queued`, the harness and repository, branch `qorpera/coding/<worker id>`, no
 --    lease) and its first turn and event (qorpera_coding_session_queue). No wake: the executor's claim starts the
 --    session and its turn's begin admits the worker's wake (C1c-3i). A coding follow-up queues the session's next turn
 --    the same way; a coding session keeps its branch through a cancel, so a cancelled one may be followed up, and only
---    by the member it runs for. (A coding session's turn ends through coding_finish: its run never writes agents/**, so
---    the folder core denies it report_work before any worker rule.)
+--    by the member it runs for. Its brief counts the agent's follow-ups alone (a member's answer turns it too). A
+--    worker whose folder was deleted continues only after a restore: the member's answer, the claim and the begin
+--    refuse it (a todo's file goes only after its workers' folders). (A coding session's turn ends through coding_finish: its run never writes agents/**, so the folder
+--    core denies it report_work before any worker rule.)
 -- 4. A coding turn's wake carries the folder-v2 dispatch payload (the worker's folder and the todo's file), not the
 --    snapshot-v1 one.
 -- 5. F2's worker drain stops an active coding worker whose parent was stopped or whose todo was cancelled, as it stops
@@ -110,6 +112,26 @@ begin
 	return null;
 end $$;
 revoke all on function public.qorpera_coding_owner_problem(uuid, uuid, text, uuid) from public, anon, authenticated, service_role;
+
+-- The sponsor that pays a coding session of a run paid by p_run_binding_id: qorpera_coding_owner_sponsor's, held to the
+-- plan rule itself. The index takes the payer here, after the rules read the owner's login: when that login changed in
+-- between (its consent withdrawn, so another of the owner's logins comes first), the plan rule still holds for the one
+-- that pays, or the commit fails whole.
+create function public.qorpera_coding_owner_payer(p_profile_id uuid, p_owner_user_id uuid, p_harness text,
+	p_run_binding_id uuid)
+returns table(binding_id uuid, version bigint) language plpgsql security definer set search_path = '' as $$
+declare v_connection uuid;
+begin
+	-- 20260930077000 (C3a).
+	select sponsor.binding_id, sponsor.version, sponsor.connection_id into binding_id, version, v_connection
+	from public.qorpera_coding_owner_sponsor(p_profile_id, p_owner_user_id, p_harness) sponsor;
+	if public.qorpera_connection_is_chatgpt_plan(v_connection)
+		and v_connection is distinct from public.qorpera_sponsor_binding_connection(p_run_binding_id) then
+		raise exception 'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it'
+			using errcode = '55000'; end if;
+	return next;
+end $$;
+revoke all on function public.qorpera_coding_owner_payer(uuid, uuid, text, uuid) from public, anon, authenticated, service_role;
 
 -- The sponsor pays with exactly that login.
 select pg_temp.c3a_replace('public.qorpera_coding_owner_sponsor(uuid,uuid,text)'::regprocedure,
@@ -206,6 +228,13 @@ select pg_temp.c3a_replace('public.qorpera_company_state_worker_rules(uuid,uuid,
 				v_problem := 'the brief does not match the dispatch';$new$);
 
 select pg_temp.c3a_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+	$old$				or (p_parse ->> 'followUps')::integer is distinct from v_worker.sequence$old$,
+	$new$				-- 20260930077000 (C3a): a member's answer turns a coding session too (qorpera_answer_coding_session), so its
+				-- brief counts the agent's follow-ups alone: one more than the brief it rewrites.
+				or (p_parse ->> 'followUps')::integer is distinct from (case when v_worker.species = 'coding'
+					then (v_base ->> 'followUps')::integer + 1 else v_worker.sequence end)$new$);
+
+select pg_temp.c3a_replace('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
 	$old$			elsif v_worker.state = 'active' then
 				v_problem := 'this worker is still working; wait for its report or cancel it';
 			elsif v_worker.state = 'cancelled' then
@@ -236,11 +265,12 @@ select pg_temp.c3a_replace('public.qorpera_company_state_index_worker(uuid,uuid,
 		returning * into v_worker;
 		insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, run_id, body)
 		values (v_worker.id, v_worker.sequence, 'dispatched', v_commit.run_id, v_dispatch);$old$,
-	$new$		-- 20260930077000 (C3a): a coding session runs for the member who asked, paid by their own login (the rules
-		-- checked that it can pay).
+	$new$		-- 20260930077000 (C3a): a coding session runs for the member who asked, paid by their own login, which the payer
+		-- holds to the plan rule again (the rules checked it from a read before this one).
 		if p_parse ->> 'species' = 'coding' then
-			select sponsor.binding_id, sponsor.version into v_binding, v_version
-			from public.qorpera_coding_owner_sponsor(p_profile_id, v_commit.requester_id, p_parse ->> 'harness') sponsor;
+			select payer.binding_id, payer.version into v_binding, v_version
+			from public.qorpera_coding_owner_payer(p_profile_id, v_commit.requester_id, p_parse ->> 'harness',
+				(select run.sponsor_binding_id from public.qorpera_execution_runs run where run.id = v_commit.run_id)) payer;
 		end if;
 		insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title,
 			access, revival, dispatch, requested_by_user_id, steering_run_id, folder_environment_id, folder_path, folder_key,
@@ -274,6 +304,32 @@ select pg_temp.c3a_replace('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::
 	$old$		public.qorpera_worker_dispatch_payload(v_worker, v_todo) || jsonb_build_object('coding', p_coding || jsonb_build_object($old$,
 	$new$		-- 20260930077000 (C3a): the folder-v2 payload (the worker's folder, the todo's file).
 		public.qorpera_folder_worker_dispatch_payload(v_worker, v_todo) || jsonb_build_object('coding', p_coding || jsonb_build_object($new$);
+
+-- 6b. A retired worker never continues: its folder was deleted, so it comes back only by a restore.
+-- Only a finished worker's folder can be deleted, and the member's answer is the one path that turns a finished coding
+-- session again; the claim and the begin refuse a retired worker too. Each reads the worker under its rank-5 lock, which
+-- the delete takes as well. A retired todo has only retired workers: its file is neither deleted nor moved while a
+-- worker folder of it lives, and its id never changes.
+
+select pg_temp.c3a_replace('public.qorpera_answer_coding_session(uuid,text,uuid)'::regprocedure,
+	$old$	if v_worker.state = 'active' then
+		raise exception 'The session is still working; wait for its question or its result' using errcode = '55000'; end if;$old$,
+	$new$	-- 20260930077000 (C3a): a session whose folder was deleted continues only after its restore.
+	if v_worker.folder_retired_at is not null then
+		raise exception 'This session''s folder was deleted; restore it to continue' using errcode = '55000'; end if;
+	if v_worker.state = 'active' then
+		raise exception 'The session is still working; wait for its question or its result' using errcode = '55000'; end if;$new$);
+
+select pg_temp.c3a_replace('public.qorpera_claim_coding_session(text,integer)'::regprocedure,
+	$old$			if v_worker.state <> 'active' then raise exception 'Coding candidate skipped' using errcode = 'QSK01'; end if;$old$,
+	$new$			-- 20260930077000 (C3a): nor a retired worker.
+			if v_worker.state <> 'active' or v_worker.folder_retired_at is not null then
+				raise exception 'Coding candidate skipped' using errcode = 'QSK01'; end if;$new$);
+
+select pg_temp.c3a_replace('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::regprocedure,
+	$old$	if v_worker.state <> 'active' or v_worker.occurrence_id is not null then$old$,
+	$new$	-- 20260930077000 (C3a): nor a retired worker.
+	if v_worker.state <> 'active' or v_worker.occurrence_id is not null or v_worker.folder_retired_at is not null then$new$);
 
 -- 7. The drain ---------------------------------------------------------------------------------------------------------
 
