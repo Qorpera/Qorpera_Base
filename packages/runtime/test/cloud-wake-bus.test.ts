@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { CloudAgentMouth } from "@qorpera/runtime/cloud-agent-mouth";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import type { runCloudNativeRunToolSession } from "@qorpera/runtime/cloud-native-run-tool-session";
 import { type CloudNativeToolIdentity, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -8,6 +9,7 @@ import {
 	type CloudToolContext,
 	type CloudToolResult,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import {
 	CLOUD_WAKE_SCHEMA,
 	CloudNativeWakeBus,
@@ -719,6 +721,45 @@ describe("native coworker tool adapter", () => {
 				content: { text: "INVALID_ARGUMENTS" },
 			});
 			expect(call).not.toHaveBeenCalled();
+		} finally {
+			boundary.close();
+			run.close();
+		}
+	});
+
+	it("relays a refusal of a send, but never one of a key an earlier attempt left unknown", async () => {
+		const { run, message, call, createBoundary } = await coworkerFixture();
+		const boundary = createBoundary();
+		const text = (response: Awaited<ReturnType<typeof boundary.invoke>>) =>
+			JSON.parse(response.contentItems[0].text) as CloudToolResult;
+		try {
+			// A lost answer: the send may have committed.
+			call.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("transport_unavailable"));
+			expect(text(await boundary.invoke("send_1", "qorpera", "send_coworker_message", message))).toMatchObject({
+				status: "unconfirmed",
+				content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+			});
+			// The same key again, refused (the thread changed before the receipt was looked up): still unknown, never
+			// "nothing happened", so the agent does not send it again under a new key.
+			call.mockRejectedValueOnce(new CloudControlRpcRefused("QRC01", "Company folder view changed"));
+			expect(text(await boundary.invoke("send_2", "qorpera", "send_coworker_message", message))).toMatchObject({
+				status: "unconfirmed",
+				content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+			});
+			// Another key's refusal is the answer (control calls, 4 Oct 2026).
+			call.mockRejectedValueOnce(new CloudControlRpcRefused("55000", "Company execution is paused"));
+			expect(
+				text(
+					await boundary.invoke("send_3", "qorpera", "send_coworker_message", {
+						...message,
+						operationKey: "handoff-2",
+					}),
+				),
+			).toMatchObject({
+				status: "denied",
+				content: { text: "REFUSED: NOT_AVAILABLE: Company execution is paused" },
+			});
+			expect(call).toHaveBeenCalledTimes(3);
 		} finally {
 			boundary.close();
 			run.close();

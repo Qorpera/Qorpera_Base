@@ -42,3 +42,10 @@ export function idleRuleBusy(before: IdleRuleSample, after: IdleRuleSample): boo
 		(after.ioBytes - before.ioBytes) * IDLE_RULE_SAMPLE_SECONDS >= IDLE_RULE_BUSY_BYTES_PER_SAMPLE * seconds
 	);
 }
+
+/** The bytes a process passed to read and write calls so far (/proc/<pid>/io rchar + wchar); 0 when unreadable. */
+export function idleRuleProcessIoBytes(io: string): number {
+	const read = Number(/^rchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	const written = Number(/^wchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
+	return Number.isSafeInteger(read) && Number.isSafeInteger(written) ? read + written : 0;
+}

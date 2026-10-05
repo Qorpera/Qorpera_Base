@@ -4634,14 +4634,14 @@ amendment governs. In-place edits are marked "(changed in place)".
      in a 30-second sample, about 17 KB a second (decided 4 October 2026, the
      coordinator: a slow download is working; a waiting server, a prompt or
      a loaded page moves about nothing).
-     - That is measured for each command, coding session or computer's shell.
+     - That is measured for each coding session or computer's shell, and for
+       an agent's machine as a whole (changed in place 4 October 2026, the
+       coordinator): its commands, containers and programs left behind count
+       together, apart from the machine's own control (its watchdog, the
+       platform's calls into it and the relay that keeps a command's output).
        Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
        coding sessions take the data signal with the idle rule's coding
        part.
-     - On an agent's machine, programs outside its commands, such as
-       containers, count by the processor share of the whole machine beyond
-       its commands' own use (about 2% of the machine). That share belongs to
-       the agent that started the machine.
      - A program that only waits (a dev server, an idle database, `sleep`, a
        watcher with nothing to do) is not busy.
 2. **Seats follow the same test.** A computer's seat is in use under the same
@@ -4664,9 +4664,12 @@ amendment governs. In-place edits are marked "(changed in place)".
      - It is told in the conversation of the run that started the program.
      - A worker's program is told to its agent, in the conversation that
        dispatched the worker.
-     - Work outside an agent's machine's commands, such as containers, is told
+     - An agent's machine tells what its stop saw running just before
+       (changed in place 4 October 2026, the coordinator): its commands, at
+       most 32, oldest first, told as above, and whether containers ran, told
        to the agent that started the machine, in the conversation of the run
-       that started it.
+       that started it. A stop whose power-off fails is over; the next is a
+       new stop.
 4. **Busy work keeps running.** A busy program keeps its machine awake for as
    long as it stays busy. The platform never stops a program for running
    long. Every other stop stays as before, for example an agent's or a

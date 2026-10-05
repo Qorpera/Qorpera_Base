@@ -6,7 +6,7 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import { idleRuleBusy } from "@qorpera/contracts";
+import { idleRuleBusy, idleRuleProcessIoBytes } from "@qorpera/contracts";
 import type {
 	CompanyComputerGuestBoundary,
 	CompanyComputerGuestShell,
@@ -929,13 +929,6 @@ export function companyComputerShellBusy(
 	);
 }
 
-/** The bytes a process passed to read and write calls (/proc/<pid>/io rchar + wchar); 0 when it cannot be read. */
-export function companyComputerProcessIoBytes(io: string): number {
-	const read = Number(/^rchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
-	const written = Number(/^wchar: ([0-9]+)$/m.exec(io)?.[1] ?? 0);
-	return Number.isSafeInteger(read) && Number.isSafeInteger(written) ? read + written : 0;
-}
-
 /**
  * Each shell's usage, read from outside its namespace in one pass over /proc:
  * every process under its Bubblewrap monitor (anonymous resident memory,
@@ -981,7 +974,7 @@ export async function readCompanyComputerShellUsage(
 			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
 			usage.cpuTicks += ticks.get(pid) ?? 0;
 			if (!host)
-				usage.ioBytes += companyComputerProcessIoBytes(
+				usage.ioBytes += idleRuleProcessIoBytes(
 					await readCompanyComputerLinuxMetadata(`/proc/${pid}/io`, 4096).catch(() => ""),
 				);
 		}
