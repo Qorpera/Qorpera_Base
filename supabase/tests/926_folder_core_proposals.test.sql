@@ -134,6 +134,26 @@ begin
 	perform pg_temp.raises(format('select pg_temp.list(%L, %L)', pg_temp.member(2), '{}'), '42501');
 end $$;
 
+-- 2b. Read authority is decided at each list: once the agent may no longer read a proposal's path (its root grant
+-- revoked here), the proposal is neither listed nor counted; with the grant back, it is again.
+do $$
+declare x jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); y jsonb; p uuid; l jsonb;
+	v_grant uuid := (pg_temp.agent_grant((pg_temp.root()).id, '63400000-0000-4000-8000-0000000000a1')).id;
+begin
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40-park-revoked', jsonb_build_array(pg_temp.deletes('rr8.txt'))))).id;
+	y := pg_temp.agent_run();
+	if not (pg_temp.list(y -> 'actor') -> 'proposals' @> jsonb_build_array(jsonb_build_object('proposalId', p))) then
+		raise exception 'A readable proposal is listed'; end if;
+	perform pg_temp.fx(format('update public.qorpera_company_path_grants set revoked_at = clock_timestamp() where id = %L', v_grant));
+	l := pg_temp.list(y -> 'actor');
+	if l -> 'proposals' <> '[]'::jsonb or (l ->> 'moreProposals')::integer <> 0 then
+		raise exception 'A proposal whose paths the run may no longer read is listed: %', l; end if;
+	perform pg_temp.fx(format('update public.qorpera_company_path_grants set revoked_at = null where id = %L', v_grant));
+	if not (pg_temp.list(y -> 'actor') -> 'proposals' @> jsonb_build_array(jsonb_build_object('proposalId', p))) then
+		raise exception 'With the grant back it is listed again'; end if;
+	perform pg_temp.discard(1, p);
+end $$;
+
 -- 3. The approval path: the reviewer's allow of apply_proposal, R1's record of the proposal's own units, the apply. The
 -- unit saves, the proposal is applied and its roots go; a retry with the same key replays; any other use is refused.
 do $$
@@ -157,6 +177,11 @@ begin
 		raise exception 'The applied proposal: % %', c, to_jsonb(p); end if;
 	-- A retry with the same key replays; another key, a second record, the list: it is no longer open.
 	perform pg_temp.same(pg_temp.apply(x -> 'actor', 'apply-p1', p1, (r ->> 'reviewId')::uuid) - 'replay', c - 'replay', 'The replay');
+	-- The same key with another review or a receipt is another request: refused, as the commit refuses it.
+	perform pg_temp.raises(format('select pg_temp.apply(%L, %L, %L, %L)', x -> 'actor', 'apply-p1', p1, extensions.gen_random_uuid()),
+		'22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_apply_proposal(%L, %L, %L, %L, %L, %L)', '63400000-0000-4000-8000-000000000020',
+		x -> 'actor', 'apply-p1', p1, r ->> 'reviewId', extensions.gen_random_uuid()), '22023');
 	perform pg_temp.raises(format('select pg_temp.apply(%L, %L, %L, %L)', x -> 'actor', 'apply-p1-again', p1, r ->> 'reviewId'), 'P0002');
 	perform pg_temp.raises(format('select pg_temp.record_apply(%L, %L, %L)', x -> 'binding',
 		pg_temp.apply_action(x -> 'binding', 'apply-1b', p1) ->> 'reviewId', p1), '42501');
@@ -168,6 +193,7 @@ end $$;
 do $$
 declare x jsonb := pg_temp.agent_run(); other jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1',
 		'63400000-0000-4000-8000-000000000004');
+	same jsonb := pg_temp.agent_run();
 	p2 uuid := current_setting('qorpera_test.p2')::uuid; v_action uuid; r jsonb; v_review uuid;
 begin
 	-- The layering: arguments that are not exactly {"proposalId":…}, or a digest of another call.
@@ -195,6 +221,12 @@ begin
 	returning id into v_review;
 	perform pg_temp.raises(format('select pg_temp.apply(%L, %L, %L, %L)', x -> 'actor', 'apply-p2-plain-review', p2, v_review), '22023');
 	perform pg_temp.expect(pg_temp.apply(other -> 'actor', 'apply-p2-other-run', p2, (r ->> 'reviewId')::uuid), 1, 'denied', 'review_required');
+	-- Another run of the same agent for the same member, with this run's review: refused too, and the proposal is left
+	-- open with its units and roots, for the run that was approved.
+	perform pg_temp.expect(pg_temp.apply(same -> 'actor', 'apply-p2-same-member', p2, (r ->> 'reviewId')::uuid), 1, 'denied',
+		'review_required');
+	if (pg_temp.proposal(p2)).units = '[]' or not exists (select 1 from public.qorpera_folder_proposal_paths where proposal_id = p2) then
+		raise exception 'A refused apply emptied p2'; end if;
 	if (pg_temp.proposal(p2)).status <> 'open' or not pg_temp.present('rr2.txt') then raise exception 'A refused apply changed p2'; end if;
 	perform set_config('qorpera_test.p2_review', r ->> 'reviewId', true);
 	perform set_config('qorpera_test.p2_run', x::text, true);

@@ -62,6 +62,11 @@ begin
 		|| E'\t\t\t\t''authorization_request'', v_body);\n'
 		|| E'\t\telse\n', '');
 	v_text := replace(v_text, E'\t\t\t''authorization_request'', v_body);\n\t\tend if;\n', E'\t\t\t''authorization_request'', v_body);\n');
+	-- P40 (20260930074000): an applied proposal's binding, and its hire asking the owners and admins.
+	v_text := replace(v_text,
+		E'\t-- 20260930074000 (P40): applying a proposal is a delegation or a deletion whose arguments name the proposal, which the\n\t-- digest covers.\n\tif p_review ->> ''tool'' = ''apply_proposal'' and (p_review ->> ''effect'' not in (''delegation'',''destructive'')\n\t\tor public.qorpera_folder_proposal_of_call(p_review ->> ''argumentSha256'', p_review -> ''action'' ->> ''arguments'') is null) then\n\t\traise exception ''Action review record is invalid'' using errcode = ''22023''; end if;\n', '');
+	v_text := replace(v_text, E'\t-- 20260930074000 (P40): so does a proposal that makes an agent.\n\tif (p_review ->> ''tool'' = ''hire_agent'' or public.qorpera_folder_proposal_hires(v_run.environment_id, p_review))\n\t\tand v_decision <> ''deny''\n',
+		E'\tif p_review ->> ''tool'' = ''hire_agent'' and v_decision <> ''deny''\n');
 	-- W4a (20260928399940): a folder-v2 run's restricted hire asks the owners and admins.
 	v_text := replace(v_text, E'; v_restricted boolean := false;\n', E';\n');
 	v_text := replace(v_text,

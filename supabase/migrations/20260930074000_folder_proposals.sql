@@ -139,6 +139,14 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_folder_proposal_hires(uuid, jsonb) from public, anon, authenticated, service_role;
 
+-- Whether an actor may read, now, every path a proposal names (each decided once per covering resource).
+create function public.qorpera_folder_proposal_readable(p_environment_id uuid, p_profile_id uuid, p_auth jsonb, p_proposal_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select coalesce(bool_and(d.ok), true) from public.qorpera_folder_paths_authority(p_environment_id, p_profile_id, p_auth,
+		array(select distinct q.path from public.qorpera_folder_proposal_paths q where q.proposal_id = p_proposal_id)) d
+$$;
+revoke all on function public.qorpera_folder_proposal_readable(uuid, uuid, jsonb, uuid) from public, anon, authenticated, service_role;
+
 -- 3. The commit: parking, and applying ------------------------------------------------------------------------------
 
 select pg_temp.p40_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
@@ -156,12 +164,14 @@ select pg_temp.p40_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,u
 $old$,
 	$new$	v_change_set_sha := public.qorpera_folder_change_set_sha256(p_units);
 	-- 20260930074000 (P40), rank 7c: the proposal the review applies, FOR NO KEY UPDATE, which a second apply, a close, a
-	-- member's discard and an erasure take as well. It must still be open, of this run's agent for this run's requester,
-	-- and these units; otherwise the review stands for none of them. Its files passed the possession check when the view
+	-- member's discard and an erasure take as well. The review must be this run's, and the proposal still open, of this
+	-- run's agent for this run's requester, and these units; otherwise the review stands for none of them and the proposal
+	-- is left as it is. Its files passed the possession check when the view
 	-- parked them, so the byte checks take them as the platform's: the proof, the catalog and step 6's lock still hold.
 	if v_review.proposal_id is not null then
 		select * into v_proposal from public.qorpera_folder_proposals where id = v_review.proposal_id for no key update;
 		if not found or v_proposal.status <> 'open' or v_proposal.environment_id <> p_environment_id or v_actor_kind <> 'run'
+			or v_review.run_id is distinct from (p_actor ->> 'runId')::uuid
 			or v_proposal.staff_agent_id is distinct from v_actor_id
 			or v_proposal.member_user_id is distinct from (v_resolved ->> 'requesterUserId')::uuid
 			or v_proposal.change_set_sha256 is distinct from v_change_set_sha then
@@ -435,7 +445,9 @@ $new$);
 -- The open proposals of a run's agent for the run's requester, oldest first, at most 4 per page after `cursor` (a
 -- proposal the last page ended on), each with its first 50 units: op, path, target, a new folder's item count and its
 -- structured files' parses. Only a run that can raise a card lists them: an in-house agent's run with a session, no
--- worker, not in another agent's room (a group chat), as qorpera_record_action_review raises one.
+-- worker, not in another agent's room (a group chat), as qorpera_record_action_review raises one. A proposal is listed
+-- (and counted) only while the run may read every path it names, as decided now: a revocation since it was parked hides
+-- its paths and content (qorpera_folder_proposal_readable).
 create function public.qorpera_folder_agent_proposals(p_environment_id uuid, p_actor jsonb, p_request jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_auth jsonb; v_run public.qorpera_execution_runs%rowtype; v_after public.qorpera_folder_proposals%rowtype;
@@ -469,13 +481,15 @@ begin
 		where q.environment_id = p_environment_id and q.staff_agent_id = v_run.staff_agent_id
 			and q.member_user_id = v_run.requested_by_user_id and q.status = 'open'
 			and (v_after.id is null or (q.created_at, q.id) > (v_after.created_at, v_after.id))
+			and public.qorpera_folder_proposal_readable(p_environment_id, v_run.profile_id, v_auth, q.id)
 		order by q.created_at, q.id limit c_page + 1);
 	v_more := greatest(cardinality(v_rows) - c_page, 0);
 	if v_more > 0 then
 		select count(*) into v_more from public.qorpera_folder_proposals q
 		where q.environment_id = p_environment_id and q.staff_agent_id = v_run.staff_agent_id
 			and q.member_user_id = v_run.requested_by_user_id and q.status = 'open'
-			and (q.created_at, q.id) > ((v_rows[c_page]).created_at, (v_rows[c_page]).id);
+			and (q.created_at, q.id) > ((v_rows[c_page]).created_at, (v_rows[c_page]).id)
+			and public.qorpera_folder_proposal_readable(p_environment_id, v_run.profile_id, v_auth, q.id);
 	end if;
 	return jsonb_build_object('schema', 'qorpera.folder-agent-proposals/v1',
 		'proposals', coalesce((select jsonb_agg(jsonb_build_object('proposalId', (v_rows[i]).id, 'createdAt', (v_rows[i]).created_at,
@@ -500,7 +514,8 @@ revoke all on function public.qorpera_folder_agent_proposals(uuid, jsonb, jsonb)
 grant execute on function public.qorpera_folder_agent_proposals(uuid, jsonb, jsonb) to service_role;
 
 -- Commits an open proposal's units as the run, with the review R1's recorder made of them (its proposal_id names this
--- proposal). A retry with the same operation key after the apply decided it answers as the commit's replay.
+-- proposal). A retry with the same operation key, review and receipt after the apply decided it answers as the commit's
+-- replay; the same key with another review or receipt is refused, as the commit refuses it.
 create function public.qorpera_folder_apply_proposal(p_environment_id uuid, p_actor jsonb, p_operation_key text,
 	p_proposal_id uuid, p_review_id uuid, p_receipt_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -520,6 +535,10 @@ begin
 		where k.environment_id = p_environment_id and k.scope_id = (p_actor ->> 'runId')::uuid
 			and k.operation_key = p_operation_key and c.id = v_proposal.apply_commit_id;
 		if found then
+			-- The same request only: the review and the receipt the apply was made with (the commit's own digest covered its
+			-- units, which the decided proposal no longer keeps).
+			if v_proposal.review_id is distinct from p_review_id or v_commit.receipt_id is distinct from p_receipt_id then
+				raise exception 'Operation key was used for a different change set' using errcode = '22023'; end if;
 			return jsonb_build_object('schema','qorpera.folder-commit/v1','commitId',v_commit.id,'seq',v_commit.seq,'replay',true,
 				'units',v_commit.units);
 		end if;

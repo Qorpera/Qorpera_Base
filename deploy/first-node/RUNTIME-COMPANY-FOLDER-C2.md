@@ -279,7 +279,8 @@ delegation path keeps "use the tool made for it" (no P40d).
 - `qorpera_folder_agent_proposals(env, run, {cursor?})` lists the open proposals of the run's agent for the run's
   requester, oldest first, 4 per page, each with its first 50 units (op, path, target, a new folder's item count and
   its structured parses) and `createsAgent`. Only a run that can raise a card lists them: an in-house run with a
-  session, not a worker, not in a group chat.
+  session, not a worker, not in a group chat. A proposal is listed (and counted) only while the run may read every path
+  it names, decided at each list, so a revocation since parking hides its paths and content.
 - The runtime reviews each proposal as one call `apply_proposal`, whose arguments are exactly
   `{"proposalId":"<id>"}`. Its digest is the tool boundary's: SHA-256 of `["qorpera","apply_proposal","<arguments>"]`
   (`qorpera_folder_proposal_call_sha256`). The layering refuses an `apply_proposal` record whose arguments or digest
@@ -288,13 +289,14 @@ delegation path keeps "use the tool made for it" (no P40d).
   proposalId}`. The proposal must be open and belong to this run's agent and requester. The review it records is of
   the proposal's own units, and names the proposal (`qorpera_folder_reviews.proposal_id`).
 - `qorpera_folder_apply_proposal(env, run, operationKey, proposalId, reviewId, receiptId?)` commits the proposal's
-  units as the run with that review. At rank 7c, the commit locks the proposal and checks that it is still open, of
-  this agent and member, and of these units. If not, the review stands for none of them (`review_required`). The
+  units as the run with that review. At rank 7c, the commit locks the proposal and checks that the review is this run's
+  and the proposal still open, of this agent and member, and of these units. If not, each unit is refused
+  (`review_required`) before anything else is decided, and the proposal is left as it is. The
   files' possession was checked when the view parked them, so the byte checks take them as the platform's (the proof,
   the catalog and step 6's lock still hold). The units are decided as any reviewed unit. A moved base is a conflict,
   which P17 keeps as a copy. The proposal closes `applied` when a unit saved, else `not_applied`, and its units and
   path rows go. The commit names the proposal (`qorpera_folder_commits.proposal_id`). A retry with the same operation
-  key replays.
+  key, review and receipt replays; the same key with another review or receipt is refused (22023).
 - A restricted agent's hire through a view (contract 14.1) asks the owners and admins, as `hire_agent` does. The
   layering makes the reviewer's allow an owners-and-admins ask, and the recorder stands only on such an answer.
 
