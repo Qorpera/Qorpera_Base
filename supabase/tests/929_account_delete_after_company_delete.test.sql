@@ -1,7 +1,8 @@
 -- Deleting an account always works once its companies let it go (20260930079000). The last member of a folder-v2
 -- company, who is not its creator, deletes the company: the company is paused by a row that names them. They then
--- delete their own account, and it works: the pause stays, without their name, the company stays paused and its
--- deletion goes on to the purge, after which the creator's account can go too.
+-- delete their own account, and it works: the pause stays as it was, still naming who asked, so the node update's
+-- pause proof does not change under an authorized drain; the company stays paused and its deletion goes on to the
+-- purge, after which the creator's account can go too.
 begin;
 
 insert into auth.users(id, email) values
@@ -27,12 +28,13 @@ select pg_temp.pause_as('service_role');
 select public.qorpera_folder_enable('92900000-0000-4000-8000-000000000020') \g /dev/null
 select pg_temp.pause_assert(public.qorpera_company_is_folder_v2('92900000-0000-4000-8000-000000000010'), 'the company is folder-v2');
 
--- 1. The reference itself: nullable, and set to null when its account is deleted.
-select pg_temp.pause_assert((select is_nullable = 'YES' from information_schema.columns where table_schema = 'public'
-	and table_name = 'qorpera_company_execution_pauses' and column_name = 'paused_by_user_id'), 'the column is nullable');
-select pg_temp.pause_assert((select confdeltype = 'n' and confrelid = 'auth.users'::regclass from pg_constraint
-	where conname = 'qorpera_company_execution_pauses_paused_by_user_id_fkey'
-		and conrelid = 'public.qorpera_company_execution_pauses'::regclass), 'the reference is ON DELETE SET NULL');
+-- 1. The record itself: still required, and no longer a foreign key to the account.
+select pg_temp.pause_assert((select is_nullable = 'NO' from information_schema.columns where table_schema = 'public'
+	and table_name = 'qorpera_company_execution_pauses' and column_name = 'paused_by_user_id'), 'the column is still required');
+select pg_temp.pause_assert(not exists (select 1 from pg_constraint
+	where conrelid = 'public.qorpera_company_execution_pauses'::regclass and contype = 'f'
+		and conkey = array[(select attnum from pg_attribute where attrelid = 'public.qorpera_company_execution_pauses'::regclass
+			and attname = 'paused_by_user_id')]), 'the column has no foreign key to the account');
 
 -- 2. The creator makes the contributor a co-founder and leaves; the contributor is now the last member, and deletes the
 --    company. Its pause names them.
@@ -51,13 +53,20 @@ select pg_temp.pause_assert(public.qorpera_company_deleting('92900000-0000-4000-
 	and (select paused_by_user_id = '92900000-0000-4000-8000-000000000002' from public.qorpera_company_execution_pauses
 		where profile_id = '92900000-0000-4000-8000-000000000010'), 'the deletion is requested and its pause names the member');
 
--- 3. The last member deletes their own account: it works. The pause stays without their name; the company stays paused
---    and being deleted.
+-- 3. The last member deletes their own account: it works. The pause stays exactly as it was, so the pause proof an
+--    authorized node update compares against does not change; the company stays paused and being deleted.
+select set_config('qorpera_test.pause_proof',
+	public.qorpera_node_update_pause_proof(array['92900000-0000-4000-8000-000000000010'::uuid])::text, true) \g /dev/null
+select pg_temp.pause_assert(current_setting('qorpera_test.pause_proof')::jsonb -> 0 ->> 'pausedByUserId'
+	= '92900000-0000-4000-8000-000000000002', 'the proof names the member: ' || current_setting('qorpera_test.pause_proof'));
 delete from auth.users where id = '92900000-0000-4000-8000-000000000002';
 select pg_temp.pause_assert(not exists (select 1 from auth.users where id = '92900000-0000-4000-8000-000000000002'),
 	'the last member''s account is deleted');
-select pg_temp.pause_assert((select paused_by_user_id is null from public.qorpera_company_execution_pauses
-	where profile_id = '92900000-0000-4000-8000-000000000010'), 'the pause stays, without the member''s name');
+select pg_temp.pause_assert((select paused_by_user_id = '92900000-0000-4000-8000-000000000002'
+	from public.qorpera_company_execution_pauses where profile_id = '92900000-0000-4000-8000-000000000010'),
+	'the pause stays as it was');
+select pg_temp.pause_assert(public.qorpera_node_update_pause_proof(array['92900000-0000-4000-8000-000000000010'::uuid])
+	= current_setting('qorpera_test.pause_proof')::jsonb, 'the node update pause proof is unchanged');
 select pg_temp.pause_assert(public.qorpera_company_execution_paused('92900000-0000-4000-8000-000000000010')
 	and public.qorpera_company_deleting('92900000-0000-4000-8000-000000000010'), 'the company stays paused and being deleted');
 
