@@ -85,6 +85,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_chatgpt_plan_available(uuid)', false, true, 'member: auth.uid() membership; answers only whether plan logins are switched on'),
 	('public.qorpera_check_node_update(uuid,bigint,text,text,text)', true, true, 'internal: node capability secret (sha256 match)'),
 	('public.qorpera_check_runtime_office_private_access(jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_choose_member_session_account(uuid,uuid,uuid)', false, true, 'member: auth.uid() + qorpera_can_read_session; the caller''s own login only (20260930059000)'),
 	('public.qorpera_claim_artifact_gc_objects(uuid,uuid,integer)', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_claim_artifact_gc_plans(integer,uuid)', true, true, 'internal: auth.role() = service_role; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_claim_runner_job(uuid,text,uuid,text)', true, true, 'internal: auth.role() = service_role + token/capability hash; anon only through the platform default, authenticated only through the platform default'),

@@ -542,7 +542,8 @@ checked by each slice's functional test (647, 652, 656, 658).
     (every existing row met the old one, which the new one only widens).
 - **`handoff_run_sponsor`** refuses a run whose revision receipts have no snapshot. Its `folder-v2` mode accepts
   receipts satisfied by commits (C1c-2c part 2: one more condition, `folder_commit_id is null`, which only
-  `folder-v2` receipts can fail).
+  `folder-v2` receipts can fail). Removed by 20260930059000 (the payer never changes without the member; test 658's
+  handoff part went with it).
 - **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks
   executing receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
   `qorpera_folder_resolve_run_receipt`: `confirmed_completed` records the commit that carries the receipt (one per
