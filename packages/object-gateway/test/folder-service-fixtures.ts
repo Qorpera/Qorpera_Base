@@ -124,6 +124,11 @@ export class FakeCore implements FolderCore {
 	failFeedAt: number | undefined;
 	/** The next feed calls that fail. */
 	feedFailures = 0;
+	/** Called with each feed call's position before it is answered: it may throw (the call fails) or hold it. */
+	feedHook: ((afterSeq: number) => Promise<void> | undefined) | undefined;
+	/** When set, the storage profile of an upload waits for it, and so does a commit. */
+	uploadProfileGate: Promise<void> | undefined;
+	commitGate: Promise<void> | undefined;
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -194,6 +199,7 @@ export class FakeCore implements FolderCore {
 			this.feedFailures--;
 			throw new Error("The core did not answer this page");
 		}
+		await this.feedHook?.(afterSeq);
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>
@@ -258,6 +264,7 @@ export class FakeCore implements FolderCore {
 	}
 
 	async uploadProfile(environmentId: string, actor: FolderActor, intentId: string) {
+		await this.uploadProfileGate;
 		this.#check(actor, environmentId);
 		if (!this.intents.has(intentId)) throw new CoreRefusal("denied");
 		return PROFILE;
@@ -301,6 +308,7 @@ export class FakeCore implements FolderCore {
 	/** The core's unit rules (core §3), each unit whole or not at all, applied in order; the saved ones are one change
 	 * set on the journal. A key asked again with the same units answers the same; with others, 22023. */
 	async commit(environmentId: string, actor: FolderActor, key: string, units: readonly unknown[]) {
+		await this.commitGate;
 		this.#check(actor, environmentId);
 		const request = JSON.stringify(units);
 		this.commits.push({ key, units: units as CommitUnit[] });
@@ -491,6 +499,8 @@ export class FakeUploads implements FolderUploads {
 	readonly puts: string[] = [];
 	/** The next puts fail (the gateway refused or was unreachable). */
 	failures = 0;
+	/** When set, a put's end waits for it. */
+	endGate: Promise<void> | undefined;
 
 	constructor(root: string, core: FakeCore) {
 		this.#root = root;
@@ -504,6 +514,7 @@ export class FakeUploads implements FolderUploads {
 				parts.push(part);
 			},
 			end: async () => {
+				await this.endGate;
 				if (this.failures > 0) {
 					this.failures--;
 					throw new Error("The gateway did not store it");

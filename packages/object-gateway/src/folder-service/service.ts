@@ -807,7 +807,9 @@ export class FolderService {
 		} catch (error) {
 			if (!(error instanceof PublishFirst)) throw error;
 			await this.#publish(view);
-			this.#tree(view);
+			// The boundary must be answered and settled, and no other one running, before the change is made again: until
+			// then the view still holds what that boundary published, and settling it would undo the change (BUSY).
+			await this.#quiet(view);
 			try {
 				answer = change(pending);
 			} catch (again) {
@@ -898,27 +900,44 @@ export class FolderService {
 			// The first chunk changed in a file that still has its origin's bytes: they become its own first.
 			const origin = pending.originToCopy(part.handle);
 			if (origin) await this.#beginFromOrigin(view, part.handle, origin);
-			const intent = await staging.openChunk(view.environmentId, view.actor, part.sha256, part.bytes);
-			// The chunk counts as needed (its intent renewed) from here until it is set in the file or its put fails.
-			view.intents.set(intent.intentId, {
-				renewed: this.#now(),
-				node: pending.file(part.handle),
-				chunk: { sha256: part.sha256, bytes: part.bytes },
-			});
-			upload = {
-				sha256: part.sha256,
-				bytes: part.bytes,
-				next: 0,
-				upload: intent.present
-					? undefined
-					: staging.upload(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
-			};
-			view.uploads.set(key, upload);
-			if (!this.#profiles.has(view.environmentId))
-				this.#profiles.set(
-					view.environmentId,
-					await this.#core.uploadProfile(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
-				);
+			let started: ChunkUpload | undefined;
+			try {
+				const intent = await staging.openChunk(view.environmentId, view.actor, part.sha256, part.bytes);
+				// The chunk counts as needed (its intent renewed) from here until it is set in the file or its put fails.
+				view.intents.set(intent.intentId, {
+					renewed: this.#now(),
+					node: pending.file(part.handle),
+					chunk: { sha256: part.sha256, bytes: part.bytes },
+				});
+				started = {
+					sha256: part.sha256,
+					bytes: part.bytes,
+					next: 0,
+					upload: intent.present
+						? undefined
+						: staging.upload(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
+				};
+				view.uploads.set(key, started);
+				if (!this.#profiles.has(view.environmentId))
+					this.#profiles.set(
+						view.environmentId,
+						await this.#core.uploadProfile(
+							view.environmentId,
+							view.actor,
+							intent.intentId,
+							part.sha256,
+							part.bytes,
+						),
+					);
+			} catch (error) {
+				// A chunk that could not be started is no longer on its way: the request fails, the connection stays.
+				started?.upload?.abort();
+				if (started && view.uploads.get(key) === started) view.uploads.delete(key);
+				if (error instanceof ProtocolError) throw error;
+				if (error instanceof CoreRefusal) throw new ProtocolError(ErrorCode.denied, "The core refused the upload");
+				throw new ProtocolError(ErrorCode.unavailable, "The chunk could not be started now");
+			}
+			upload = started;
 		}
 		if (!upload || upload.sha256 !== part.sha256 || upload.bytes !== part.bytes || upload.next !== part.offset) {
 			upload?.upload?.abort();
@@ -1160,7 +1179,13 @@ export class FolderService {
 				fileSha256: file.fileSha256,
 				mediaType: file.mediaType,
 			};
-			const bytes = await this.#objects.read(await this.#uploadProfile(view), entry, 0, file.bytes);
+			let bytes: Buffer;
+			try {
+				bytes = await this.#objects.read(await this.#uploadProfile(view), entry, 0, file.bytes);
+			} catch (error) {
+				if (error instanceof ProtocolError) throw error;
+				throw new ProtocolError(ErrorCode.unavailable, "A file to publish could not be read back now");
+			}
 			let text: string;
 			try {
 				text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

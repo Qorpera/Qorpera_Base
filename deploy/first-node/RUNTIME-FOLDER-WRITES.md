@@ -206,8 +206,8 @@ origin's when none of it was sent). A
 chunk is changed by its index on the 4 MiB grid, which every version-2 manifest's chunks are on; a file laid out
 otherwise is changed whole. A write handle belongs to the view, not to the connection that opened it, since the
 program pools its connections. The version map holds the `version` of a close or the bit after a save; once that save
-is published, the service reads a base or a read naming it as the version the save's change set gave the path (read
-from that change set on the feed). A conflict's bytes leave the view only once the receipt lists every file of the
+is published, the service reads a base or a read naming it as the version the save's change set gave the path (a
+write's from the core's answer, a new folder's files' from that change set on the feed). A conflict's bytes leave the view only once the receipt lists every file of the
 unit (`qorpera_folder_conflict_copies_of`, migration `20260930101000`): the commit's answer does not say what P17 kept.
 An answered boundary settles only once the view's feed has its change set; until then the view takes no change (BUSY).
 The intents that hold pending bytes are renewed while the bytes are needed and replaced if they lapse. The wire shapes
