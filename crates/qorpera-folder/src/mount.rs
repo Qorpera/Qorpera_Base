@@ -107,21 +107,35 @@ pub enum Stop {
 enum Handle {
 	Dir(Vec<(u64, FileType, String)>),
 	File { ino: u64, path: String, version: String, size: u64 },
-	/// Open for writing: the file's writer, which every handle writing it shares.
-	Write { ino: u64, open: Arc<Mutex<Open>> },
+	/// Open for writing: the file's writer, which every handle writing it shares, and the process that opened the
+	/// handle.
+	Write { ino: u64, open: Arc<Mutex<Open>>, opener: u32 },
 }
 
 /// A file open for writing in this mount: the node's handle and the one chunk in memory. Every handle that writes the
 /// file shares it, as they would share its pages.
 ///
 /// The kernel's release of a handle comes after the program's close returns, so the node closes the file at the close
-/// (flush) of its last writing handle: a boundary asked for right after the close publishes it. A write that still comes
-/// on that handle (a duplicated descriptor, a mapped page written back) opens the file at the node again.
+/// (flush) of its last writing handle by the process that opened it: a boundary asked for right after the close
+/// publishes it. A write that still comes on that handle (a duplicated descriptor, a child that inherited it, a mapped
+/// page written back) opens the file at the node again.
+///
+/// Each file's lock is held over the node's calls for it (its open, chunks and close), never the lock of the map of
+/// open files: a slow call holds up that file alone.
 struct Open {
-	/// None once the node has closed the file.
+	/// None while the node has the file closed, and while it is first opened there.
 	writer: Option<Writer>,
+	/// The writer of the node's last close of the file, with the version that close made: opened again at that
+	/// version, it goes on from that writer, so its chunk in memory is not read back.
+	closed: Option<(String, Writer)>,
 	/// Handles open on it for writing.
 	handles: u32,
+}
+
+impl Open {
+	fn new() -> Arc<Mutex<Open>> {
+		Arc::new(Mutex::new(Open { writer: None, closed: None, handles: 0 }))
+	}
 }
 
 struct Shared {
@@ -139,7 +153,8 @@ struct Shared {
 	/// Who the files show as owned by: the account that mounted the folder (a read-only view shows root).
 	owner: (u32, u32),
 	versions: Mutex<VersionMap>,
-	/// Files open for writing, by inode.
+	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
+	/// waited for (the order is a file's lock, then this map).
 	writing: Mutex<HashMap<u64, Arc<Mutex<Open>>>>,
 }
 
@@ -290,79 +305,171 @@ impl Shared {
 		children.into_iter().find(|c| c.name == name).ok_or(libc::ENOENT)
 	}
 
-	/// Opens `ino` (at `path`, showing `attr`) for writing at the node, or joins the handles already writing it.
+	/// Opens `ino` (at `path`, showing `attr`) for writing at the node, or joins the handles already writing it (or a
+	/// file whose close the node has not taken yet). Only this file's lock is held over the node's open: two opens of it
+	/// never make two node handles, and nothing else waits.
 	fn open_write(&self, ino: u64, path: &str, attr: &Attr, truncate: bool) -> Result<Arc<Mutex<Open>>, i32> {
-		// Held over the node's open, so two opens of one file never make two node handles.
-		let mut writing = self.writing.lock().unwrap();
-		if let Some(open) = writing.get(&ino).cloned() {
+		loop {
+			let open = self.writing.lock().unwrap().entry(ino).or_insert_with(Open::new).clone();
 			let mut o = open.lock().unwrap();
-			if truncate {
-				self.writer(ino, &mut o)?.truncate(&self.link, 0).map_err(|f| f.errno())?;
+			if !self.writes(ino, &open) {
+				// Closed and let go meanwhile, or its first open failed: start again.
+				continue;
 			}
-			o.handles += 1;
+			if o.handles > 0 || o.writer.is_some() {
+				if truncate {
+					self.writer(ino, &mut o)?.truncate(&self.link, 0).map_err(|f| f.errno())?;
+				}
+				o.handles += 1;
+				drop(o);
+				return Ok(open);
+			}
+			let base = self.versions.lock().unwrap().base(path);
+			let request = OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate };
+			let opened = match self.link.open_write(&request) {
+				Ok(opened) => opened,
+				Err(f) => {
+					self.let_go(ino, &open);
+					return Err(f.errno());
+				}
+			};
+			o.writer = Some(Writer::new(opened.handle, opened.size));
+			o.handles = 1;
+			// The node's version of it now (a truncate made one at once), on the same inode; before the file's lock goes,
+			// so a close through another handle never sees its version taken back.
+			self.tree.lock().unwrap().set_local(ino, Attr { size: opened.size, version: opened.version, ..attr.clone() });
 			drop(o);
 			return Ok(open);
 		}
-		let base = self.versions.lock().unwrap().base(path);
-		let opened = self
-			.link
-			.open_write(&OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate })
-			.map_err(|f| f.errno())?;
-		let open = Arc::new(Mutex::new(Open { writer: Some(Writer::new(opened.handle, opened.size)), handles: 1 }));
-		writing.insert(ino, open.clone());
-		// The node's version of it now (a truncate made one at once), on the same inode.
-		self.tree.lock().unwrap().set_local(ino, Attr { size: opened.size, version: opened.version, ..attr.clone() });
-		Ok(open)
 	}
 
-	/// The file's writer, opening it at the node again if the node closed it (a write after its last close).
+	/// Whether `open` is what the map holds for `ino` (called with the file's lock held).
+	fn writes(&self, ino: u64, open: &Arc<Mutex<Open>>) -> bool {
+		self.writing.lock().unwrap().get(&ino).is_some_and(|o| Arc::ptr_eq(o, open))
+	}
+
+	/// The file is no longer written here (called with its lock held, no handle on it and the node's closed).
+	fn let_go(&self, ino: u64, open: &Arc<Mutex<Open>>) {
+		let mut writing = self.writing.lock().unwrap();
+		if writing.get(&ino).is_some_and(|o| Arc::ptr_eq(o, open)) {
+			writing.remove(&ino);
+		}
+	}
+
+	/// The file's writer, opening it at the node again if the node closed it (a write after its last close). Opened
+	/// again at the version that close made, it goes on from the writer it closed.
 	fn writer<'a>(&self, ino: u64, open: &'a mut Open) -> Result<&'a mut Writer, i32> {
 		if open.writer.is_none() {
-			let path = self.path_of(ino)?;
+			let path = {
+				let tree = self.tree.lock().unwrap();
+				// A file this mount removed, or replaced, since takes no more writes: its path holds another file now, or
+				// none. (One a newer version from the node replaced is still that path's file: a log published while a
+				// program that inherited its descriptor is quiet; the base tells the node which version it was.)
+				if tree.removed_here(ino) {
+					return Err(libc::ESTALE);
+				}
+				tree.path(ino).map(str::to_string).ok_or(libc::ENOENT)?
+			};
 			let base = self.versions.lock().unwrap().base(&path);
 			let opened = self
 				.link
 				.open_write(&OpenRequest { path, base, create: false, exclusive: false, truncate: false })
 				.map_err(|f| f.errno())?;
-			open.writer = Some(Writer::new(opened.handle, opened.size));
+			open.writer = Some(match open.closed.take() {
+				Some((version, w)) if version == opened.version && w.size() == opened.size => w.reopened(opened.handle),
+				_ => Writer::new(opened.handle, opened.size),
+			});
 		}
 		Ok(open.writer.as_mut().expect("opened above"))
 	}
 
 	/// What is left goes to the node, which closes the file; the version it made is the version map's and the tree's.
-	/// Errors are the program's to hear (a close).
-	fn close_at_node(&self, ino: u64, open: &mut Open) -> Result<(), i32> {
-		let Some(mut writer) = open.writer.take() else { return Ok(()) };
-		let finished = writer.finish(&self.link);
-		// After a chunk that could not be sent, the node's handle is closed at what reached it whole, never left open:
-		// an open file is never published.
-		let size = match &finished {
-			Ok(size) => *size,
-			Err(_) => writer.held_size(),
-		};
-		let version = self.link.close_write(writer.handle, size).map_err(|f| f.errno())?;
-		let mut tree = self.tree.lock().unwrap();
-		if let Some(path) = tree.path(ino).map(str::to_string) {
-			self.versions.lock().unwrap().saved(&path, &version);
-		}
-		if let Some(attr) = tree.attr(ino) {
-			tree.set_local(ino, Attr { size, version, mtime_ms: now_ms(), ..attr });
-		}
-		finished.map(|_| ()).map_err(|f| f.errno())
-	}
-
-	/// The last handle writing `ino` let go: the file is closed at the node if it is not yet, and no longer written here.
-	fn close_write(&self, ino: u64, open: &Arc<Mutex<Open>>) {
+	/// When the node does not take it, the writer stays, with its chunk in memory, for the next try: the node's handle is
+	/// never closed at a size the program did not write.
+	fn close_at_node(&self, ino: u64, open: &mut Open) -> Result<(), Fail> {
+		let Some(writer) = open.writer.as_mut() else { return Ok(()) };
+		let size = writer.finish(&self.link)?;
+		let version = self.link.close_write(writer.handle, size)?;
+		let writer = open.writer.take().expect("held above");
 		{
-			let mut writing = self.writing.lock().unwrap();
-			if writing.get(&ino).is_some_and(|o| Arc::ptr_eq(o, open)) {
-				writing.remove(&ino);
+			let mut tree = self.tree.lock().unwrap();
+			// Only for the file its path shows: one removed, or renamed over, while open saved a version no path has.
+			if tree.current(ino) {
+				if let Some(path) = tree.path(ino) {
+					self.versions.lock().unwrap().saved(path, &version);
+				}
+				if let Some(attr) = tree.attr(ino) {
+					tree.set_local(ino, Attr { size, version: version.clone(), mtime_ms: now_ms(), ..attr });
+				}
 			}
 		}
-		if let Err(e) = self.close_at_node(ino, &mut open.lock().unwrap()) {
-			eprintln!("qorpera-folder: a file could not be closed at the node (errno {e})");
-		}
+		open.closed = Some((version, writer));
+		Ok(())
 	}
+
+	/// A handle writing `ino` let go. The last one closes the file at the node, and the file is no longer written here.
+	/// A close the node does not take now (BUSY while a boundary settles, the link down, the company paused) is tried
+	/// again until it does, so the node's handle is never left open; a handle opened on the file meanwhile takes it
+	/// over.
+	fn leave(self: &Arc<Self>, ino: u64, open: Arc<Mutex<Open>>) {
+		{
+			let mut o = open.lock().unwrap();
+			o.handles -= 1;
+			if o.handles > 0 {
+				return;
+			}
+		}
+		let Err(f) = self.try_close(ino, &open) else { return };
+		eprintln!("qorpera-folder: the node did not take a file's close now ({f}); trying again");
+		let s = self.clone();
+		std::thread::spawn(move || {
+			let mut wait = Duration::from_millis(100);
+			loop {
+				std::thread::sleep(wait);
+				if s.try_close(ino, &open).is_ok() {
+					return;
+				}
+				wait = (wait * 2).min(Duration::from_secs(10));
+			}
+		});
+	}
+
+	/// One try at closing a file no handle writes at the node. Ok once nothing more is to be done: it closed, a new
+	/// handle took it over, or the node will never take the close (it no longer knows the handle, or the view closed;
+	/// what it holds of the file then goes when the view's connections end).
+	fn try_close(&self, ino: u64, open: &Arc<Mutex<Open>>) -> Result<(), Fail> {
+		let mut o = open.lock().unwrap();
+		if o.handles > 0 {
+			return Ok(());
+		}
+		match self.close_at_node(ino, &mut o) {
+			Ok(()) => {}
+			Err(f) if again(&f) => return Err(f),
+			Err(f) => {
+				eprintln!("qorpera-folder: a file could not be closed at the node: {f}");
+				o.writer = None;
+			}
+		}
+		self.let_go(ino, open);
+		Ok(())
+	}
+}
+
+/// A failure the node may get past: a request it could not take now.
+fn again(f: &Fail) -> bool {
+	match f {
+		Fail::Link(_) => true,
+		Fail::Remote(e) => [code::BUSY, code::UNAVAILABLE, code::DENIED].contains(&e.code.as_str()),
+	}
+}
+
+/// The process a request came from. The kernel names the thread; a process's threads open and close its files alike.
+/// The thread itself when /proc does not say.
+fn process_of(thread: u32) -> u32 {
+	std::fs::read_to_string(format!("/proc/{thread}/status"))
+		.ok()
+		.and_then(|status| status.lines().find_map(|l| l.strip_prefix("Tgid:")).and_then(|t| t.trim().parse().ok()))
+		.unwrap_or(thread)
 }
 
 fn now_ms() -> i64 {
@@ -417,23 +524,19 @@ impl FolderFs {
 		}
 	}
 
-	/// A file not open for writing here cut short or grown: opened at the node, its new end sent, closed.
-	fn truncate_closed(&self, ino: u64, attr: &Attr, size: u64) -> Result<(), Errno> {
+	/// A file cut short or grown (`truncate`, `ftruncate`): as through a writing handle of its own, which closes the file
+	/// at the node after unless another handle still writes it. A cut to nothing is the node's, at the open.
+	fn resize(&self, ino: u64, attr: &Attr, size: u64) -> Result<(), Errno> {
 		let path = self.s.path_of(ino).map_err(Errno::from_i32)?;
-		let base = self.s.versions.lock().unwrap().base(&path);
-		let opened = self
-			.s
-			.link
-			.open_write(&OpenRequest { path: path.clone(), base, create: false, exclusive: false, truncate: size == 0 })
-			.map_err(errno)?;
-		let mut writer = Writer::new(opened.handle, opened.size);
-		let cut = writer.truncate(&self.s.link, size).and_then(|()| writer.finish(&self.s.link));
-		let at = if cut.is_ok() { size } else { writer.held_size() };
-		let version = self.s.link.close_write(opened.handle, at).map_err(errno)?;
-		cut.map_err(errno)?;
-		self.s.versions.lock().unwrap().saved(&path, &version);
-		self.s.tree.lock().unwrap().set_local(ino, Attr { size, version, mtime_ms: now_ms(), ..attr.clone() });
-		Ok(())
+		let open = self.s.open_write(ino, &path, attr, size == 0).map_err(Errno::from_i32)?;
+		let cut = if size == 0 {
+			Ok(())
+		} else {
+			let mut o = open.lock().unwrap();
+			self.s.writer(ino, &mut o).map_err(Errno::from_i32).and_then(|w| w.truncate(&self.s.link, size).map_err(errno))
+		};
+		self.s.leave(ino, open);
+		cut
 	}
 }
 
@@ -503,8 +606,9 @@ impl Filesystem for FolderFs {
 		reply.ok();
 	}
 
-	fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-		let write = flags.acc_mode() != OpenAccMode::O_RDONLY;
+	fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+		// O_RDONLY with O_TRUNC cuts the file too (the kernel leaves the cut to `open` here, FUSE_ATOMIC_O_TRUNC).
+		let write = flags.acc_mode() != OpenAccMode::O_RDONLY || flags.0 & libc::O_TRUNC != 0;
 		if write && !self.s.writable {
 			return reply.error(Errno::EROFS);
 		}
@@ -521,7 +625,10 @@ impl Filesystem for FolderFs {
 		};
 		if write {
 			return match self.s.open_write(ino.0, &path, &attr, flags.0 & libc::O_TRUNC != 0) {
-				Ok(open) => reply.opened(self.s.handle(Handle::Write { ino: ino.0, open }), FopenFlags::empty()),
+				Ok(open) => {
+					let handle = Handle::Write { ino: ino.0, open, opener: process_of(req.pid()) };
+					reply.opened(self.s.handle(handle), FopenFlags::empty())
+				}
 				Err(e) => reply.error(Errno::from_i32(e)),
 			};
 		}
@@ -534,7 +641,7 @@ impl Filesystem for FolderFs {
 		reply.opened(self.s.handle(Handle::File { ino: ino.0, path, version: attr.version, size: attr.size }), flags);
 	}
 
-	fn create(&self, _req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
+	fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
 		let (path, name) = match self.place(parent, name) {
 			Ok(p) => p,
 			Err(e) => return reply.error(e),
@@ -551,25 +658,34 @@ impl Filesystem for FolderFs {
 			Ok(o) => o,
 			Err(f) => return reply.error(errno(f)),
 		};
-		// A program that makes a file executable at create (a checkout, `cp` of a script) gets the bit at once.
 		let mut attr =
 			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version };
+		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		let open = Open::new();
+		{
+			let mut o = open.lock().unwrap();
+			o.writer = Some(Writer::new(opened.handle, opened.size));
+			o.handles = 1;
+		}
+		self.s.writing.lock().unwrap().insert(ino, open.clone());
+		// A program that makes a file executable at create (a checkout, `cp` of a script) gets the bit at once.
 		if mode & !umask & 0o100 != 0 {
 			match self.s.link.set_executable(&path, None, true) {
 				Ok(version) => {
 					attr.executable = true;
 					attr.version = version;
+					self.s.tree.lock().unwrap().set_local(ino, attr.clone());
 				}
 				Err(f) => {
-					let _ = self.s.link.close_write(opened.handle, opened.size);
+					// The file is made, but the program gets no handle on it: it is closed at the node, and the kernel
+					// holds no entry for it.
+					self.s.leave(ino, open);
+					self.s.tree.lock().unwrap().forget(ino, 1);
 					return reply.error(errno(f));
 				}
 			}
 		}
-		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
-		let open = Arc::new(Mutex::new(Open { writer: Some(Writer::new(opened.handle, opened.size)), handles: 1 }));
-		self.s.writing.lock().unwrap().insert(ino, open.clone());
-		let fh = self.s.handle(Handle::Write { ino, open });
+		let fh = self.s.handle(Handle::Write { ino, open, opener: process_of(req.pid()) });
 		reply.created(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
 	}
 
@@ -586,7 +702,7 @@ impl Filesystem for FolderFs {
 	) {
 		let (ino, file, written) = match self.s.handles.lock().unwrap().get(&fh.0) {
 			Some(Handle::File { ino, path, version, size }) => (*ino, Some((path.clone(), version.clone(), *size)), None),
-			Some(Handle::Write { ino, open }) => (*ino, None, Some(open.clone())),
+			Some(Handle::Write { ino, open, .. }) => (*ino, None, Some(open.clone())),
 			_ => return reply.error(Errno::EBADF),
 		};
 		// A file being written here reads as written, whichever handle reads it (once the node has closed it, it reads as
@@ -611,17 +727,35 @@ impl Filesystem for FolderFs {
 				_ => None,
 			}
 		};
-		let Some((path, version, file_size)) = current.or(file) else { return reply.error(Errno::EIO) };
+		let (path, version, file_size) = match current.or(file) {
+			Some(f) => f,
+			// A writing handle on a file the node has closed, whose attributes a change made unknown since: listed again.
+			None => match self.s.attr(ino) {
+				Ok((a, _)) if a.kind == EntryKind::File => match self.s.path_of(ino) {
+					Ok(path) => (path, a.version, a.size),
+					Err(e) => return reply.error(Errno::from_i32(e)),
+				},
+				Ok(_) => return reply.error(Errno::EISDIR),
+				Err(e) => return reply.error(Errno::from_i32(e)),
+			},
+		};
 		if offset >= file_size {
 			return reply.data(&[]);
 		}
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
 		match self.s.link.read(&path, &version, offset, len) {
 			Ok(data) => {
-				// The version map: the newest version this mount read of the path, a save's base. A file still open from
-				// before a newer version arrived reads an older one, which is not the newest seen.
-				if self.s.writable && self.s.tree.lock().unwrap().current(ino) {
-					self.s.versions.lock().unwrap().read(&path, &version);
+				// The version map: the newest version this mount read of the path, a save's base. Only a read of the version
+				// the path shows now, through the inode it names: a file still open from before a newer version arrived
+				// reads an older one, and a read under way while this mount saves the file read the version before the save.
+				if self.s.writable {
+					let tree = self.s.tree.lock().unwrap();
+					if tree.current(ino)
+						&& tree.path(ino) == Some(path.as_str())
+						&& tree.attr(ino).is_some_and(|a| a.version == version)
+					{
+						self.s.versions.lock().unwrap().read(&path, &version);
+					}
 				}
 				reply.data(&data)
 			}
@@ -651,7 +785,7 @@ impl Filesystem for FolderFs {
 		reply: ReplyWrite,
 	) {
 		let (ino, open) = match self.s.handles.lock().unwrap().get(&fh.0) {
-			Some(Handle::Write { ino, open }) => (*ino, open.clone()),
+			Some(Handle::Write { ino, open, .. }) => (*ino, open.clone()),
 			_ => return reply.error(Errno::EBADF),
 		};
 		let result = {
@@ -669,20 +803,27 @@ impl Filesystem for FolderFs {
 
 	/// Each close of a descriptor: what was written goes to the node, so a failure reaches the program's close. The
 	/// last handle writing the file closes it at the node, so a boundary right after the close publishes it.
-	fn flush(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
-		let (ino, open) = match self.s.handles.lock().unwrap().get(&fh.0) {
-			Some(Handle::Write { ino, open }) => (*ino, open.clone()),
+	///
+	/// A close by another process than the one that opened the handle (a child that inherited the descriptor, exiting)
+	/// leaves it all to the opener's close, or to the release: children closing one by one would each close the file at
+	/// the node, and stage it there.
+	fn flush(&self, req: &Request, _ino: INodeNo, fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
+		let (ino, open, opener) = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::Write { ino, open, opener }) => (*ino, open.clone(), *opener),
 			_ => return reply.ok(),
 		};
+		if process_of(req.pid()) != opener {
+			return reply.ok();
+		}
 		let mut o = open.lock().unwrap();
 		let result = if o.handles == 1 {
-			self.s.close_at_node(ino, &mut o).map_err(Errno::from_i32)
+			self.s.close_at_node(ino, &mut o)
 		} else {
-			o.writer.as_mut().map_or(Ok(()), |w| w.flush(&self.s.link).map_err(errno))
+			o.writer.as_mut().map_or(Ok(()), |w| w.flush(&self.s.link))
 		};
 		match result {
 			Ok(()) => reply.ok(),
-			Err(e) => reply.error(e),
+			Err(f) => reply.error(errno(f)),
 		}
 	}
 
@@ -710,15 +851,8 @@ impl Filesystem for FolderFs {
 		reply: ReplyEmpty,
 	) {
 		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
-		if let Some(Handle::Write { ino, open }) = handle {
-			let last = {
-				let mut o = open.lock().unwrap();
-				o.handles -= 1;
-				o.handles == 0
-			};
-			if last {
-				self.s.close_write(ino, &open);
-			}
+		if let Some(Handle::Write { ino, open, .. }) = handle {
+			self.s.leave(ino, open);
 		}
 		reply.ok();
 	}
@@ -757,18 +891,7 @@ impl Filesystem for FolderFs {
 			if attr.kind == EntryKind::Folder {
 				return reply.error(Errno::EISDIR);
 			}
-			let open = self.s.writing.lock().unwrap().get(&ino.0).cloned();
-			let result = match open {
-				Some(open) => {
-					let mut o = open.lock().unwrap();
-					self.s
-						.writer(ino.0, &mut o)
-						.map_err(Errno::from_i32)
-						.and_then(|w| w.truncate(&self.s.link, size).map_err(errno))
-				}
-				None => self.truncate_closed(ino.0, &attr, size),
-			};
-			if let Err(e) = result {
+			if let Err(e) = self.resize(ino.0, &attr, size) {
 				return reply.error(e);
 			}
 		}

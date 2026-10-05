@@ -48,6 +48,11 @@ struct State {
 	opens: Vec<(String, Option<String>)>,
 	renames: Vec<RenameRequest>,
 	publishes: usize,
+	/// Chunks asked back.
+	gets: usize,
+	/// How many of the next chunks and closes to answer BUSY (a boundary settling).
+	busy_chunks: usize,
+	busy_closes: usize,
 }
 
 pub struct FakeNode {
@@ -184,6 +189,26 @@ impl FakeNode {
 	pub fn publishes(&self) -> usize {
 		self.state.lock().unwrap().publishes
 	}
+
+	pub fn version(&self, path: &str) -> Option<String> {
+		self.state.lock().unwrap().entries.get(path).map(version_of)
+	}
+
+	pub fn gets(&self) -> usize {
+		self.state.lock().unwrap().gets
+	}
+
+	/// Files open for writing at the node.
+	pub fn open_handles(&self) -> usize {
+		self.state.lock().unwrap().handles.len()
+	}
+
+	/// The next `chunks` chunks and `closes` closes are answered BUSY.
+	pub fn busy(&self, chunks: usize, closes: usize) {
+		let mut s = self.state.lock().unwrap();
+		s.busy_chunks = chunks;
+		s.busy_closes = closes;
+	}
 }
 
 impl Drop for FakeNode {
@@ -316,6 +341,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		kind::CHUNK => {
 			let len = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
 			let header: ChunkHeader = serde_json::from_slice(&body[4..4 + len]).unwrap();
+			if header.offset == 0 && st.busy_chunks > 0 {
+				st.busy_chunks -= 1;
+				return error(s, code::BUSY);
+			}
 			let data = &body[4 + len..];
 			let key = (header.handle, header.index);
 			let sofar = st.parts.entry(key).or_default();
@@ -341,6 +370,7 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::GET_CHUNK => {
 			let req: GetChunk = serde_json::from_slice(body).unwrap();
+			st.gets += 1;
 			let c = &st.handles[&req.handle].chunks[req.index as usize];
 			let start = (req.offset as usize).min(c.len());
 			let end = (start + req.length as usize).min(c.len());
@@ -348,6 +378,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::CLOSE => {
 			let req: CloseRequest = serde_json::from_slice(body).unwrap();
+			if st.busy_closes > 0 {
+				st.busy_closes -= 1;
+				return error(s, code::BUSY);
+			}
 			let open = st.handles.remove(&req.handle).expect("an open handle");
 			let count = req.size.div_ceil(CHUNK) as usize;
 			assert!(open.chunks.len() >= count, "the chunks do not make up the size");

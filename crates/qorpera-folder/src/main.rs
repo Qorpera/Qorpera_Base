@@ -21,8 +21,9 @@ on what was read before.
 Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.
 
 publish: publishes what the view in <file> has pending, as one change set, and prints each path's outcome.
-Exit codes: 0 every path saved (or nothing was pending), 1 failed, 2 usage, 3 the view is closed, 4 a path was not
-saved (a conflict, a refusal, or a file still open).
+Exit codes: 0 every path saved (or nothing was pending), 1 failed (when no answer came after the request went out,
+whether the boundary ran is unknown: publish again to see what is still pending), 2 usage, 3 the view is closed, 4 a
+path was not saved (a conflict, a refusal, or a file still open).
 
 relay: carries each connection to <socket> (systemd: the one its socket unit passed) to the node's folder service,
 byte for byte (the execution host's native hosts, which cannot open vsock).";

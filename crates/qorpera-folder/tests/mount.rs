@@ -6,8 +6,10 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
+use std::ffi::CString;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use support::{FakeNode, PASS};
@@ -303,6 +305,125 @@ fn the_version_map_outlives_the_program() {
 	// An editor saves its buffer in place: based on the version read before the restart, not the newest.
 	std::fs::write(company.join("notes.md"), "mine").unwrap();
 	assert_eq!(node.opens().last().unwrap(), &("notes.md".to_string(), Some("v1".to_string())));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+fn c_path(path: &Path) -> CString {
+	CString::new(path.to_str().unwrap()).unwrap()
+}
+
+/// The errno a libc call that returned -1 left.
+fn last_errno() -> Option<i32> {
+	std::io::Error::last_os_error().raw_os_error()
+}
+
+#[test]
+fn a_close_the_node_does_not_take_at_once_is_tried_again_until_it_does() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let (company, runner) = start(&node);
+	// A boundary is settling: the node answers BUSY to the next chunk and the next close.
+	node.busy(1, 1);
+	let mut f = std::fs::File::create(company.join("busy.md")).unwrap();
+	f.write_all(b"written whole").unwrap();
+	// The program's close hears it; the file is still closed at the node soon after, with every byte.
+	// SAFETY: closes the descriptor this test owns.
+	assert_eq!(unsafe { libc::close(f.into_raw_fd()) }, -1);
+	assert_eq!(last_errno(), Some(libc::EBUSY));
+	assert!(eventually(Duration::from_secs(5), || node.open_handles() == 0), "the node's handle was left open");
+	assert_eq!(node.content("busy.md").unwrap(), b"written whole");
+	// No longer written here: the next save opens it at the node again.
+	std::fs::write(company.join("busy.md"), "again").unwrap();
+	assert_eq!(node.content("busy.md").unwrap(), b"again");
+	assert_eq!(node.open_handles(), 0);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("docs/plan.md", "the plan", false);
+	let (company, runner) = start(&node);
+	let log = company.join("log.txt");
+
+	// A descriptor closed while its duplicate goes on writing: the close closes the file at the node, and the next
+	// write opens it again there, going on from the chunk still in memory.
+	let mut f = std::fs::File::create(&log).unwrap();
+	f.write_all(b"one ").unwrap();
+	let mut dup = f.try_clone().unwrap();
+	drop(f);
+	assert_eq!(node.content("log.txt").unwrap(), b"one ");
+	dup.write_all(b"two").unwrap();
+	drop(dup);
+	assert_eq!(node.content("log.txt").unwrap(), b"one two");
+	assert_eq!(node.gets(), 0, "the chunk in memory was read back");
+
+	// A child that inherited the descriptor writes and exits: its close leaves the file open at the node; the
+	// opener's close closes it. (The copy handed to the child closes in this process with the command, which is the
+	// opener's close; the child writes after it.)
+	let f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+	let mut command = std::process::Command::new("sh");
+	command.arg("-c").arg("sleep 0.5; printf ' three'").stdout(f.try_clone().unwrap());
+	let mut child = command.spawn().unwrap();
+	drop(command);
+	assert!(child.wait().unwrap().success());
+	assert_eq!(node.content("log.txt").unwrap(), b"one two", "the child's exit closed the file at the node");
+	assert_eq!(node.open_handles(), 1);
+	drop(f);
+	assert_eq!(node.content("log.txt").unwrap(), b"one two three");
+
+	// ftruncate of the open file, then an O_TRUNC open that joins it: one handle at the node throughout.
+	let opens = node.opens().len();
+	let f = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+	f.set_len(3).unwrap();
+	assert_eq!(std::fs::metadata(&log).unwrap().len(), 3);
+	let mut g = std::fs::OpenOptions::new().write(true).truncate(true).open(&log).unwrap();
+	g.write_all(b"fresh").unwrap();
+	drop(g);
+	assert_eq!(std::fs::read(&log).unwrap(), b"fresh");
+	drop(f);
+	assert_eq!(node.content("log.txt").unwrap(), b"fresh");
+	assert_eq!((node.opens().len(), node.open_handles()), (opens + 1, 0));
+
+	// The executable bit at create.
+	let mut script = std::fs::OpenOptions::new().write(true).create(true).mode(0o755).open(company.join("run.sh")).unwrap();
+	script.write_all(b"#!/bin/sh\n").unwrap();
+	drop(script);
+	assert!(node.executable("run.sh"));
+
+	// `touch`: times are the folder's, so nothing changes. Owners are the mount's. Two names cannot swap.
+	let plan = c_path(&company.join("docs/plan.md"));
+	let version = node.version("docs/plan.md");
+	// SAFETY: a path from CString; null times mean now.
+	assert_eq!(unsafe { libc::utimensat(libc::AT_FDCWD, plan.as_ptr(), std::ptr::null(), 0) }, 0);
+	assert_eq!(node.version("docs/plan.md"), version);
+	// SAFETY: as above; a gid of -1 leaves it.
+	assert_eq!(unsafe { libc::chown(plan.as_ptr(), 4242, u32::MAX) }, -1);
+	assert_eq!(last_errno(), Some(libc::EPERM));
+	const RENAME_EXCHANGE: libc::c_uint = 2;
+	let other = c_path(&log);
+	// SAFETY: two paths from CString, and the renameat2 flags.
+	let swapped = unsafe {
+		libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, plan.as_ptr(), libc::AT_FDCWD, other.as_ptr(), RENAME_EXCHANGE)
+	};
+	assert_eq!((swapped, last_errno()), (-1, Some(libc::EINVAL)));
+
+	// O_RDONLY with O_TRUNC cuts the file too.
+	// SAFETY: a path from CString, opened and closed.
+	let fd = unsafe { libc::open(plan.as_ptr(), libc::O_RDONLY | libc::O_TRUNC) };
+	assert!(fd >= 0);
+	// SAFETY: closes the descriptor opened above.
+	assert_eq!(unsafe { libc::close(fd) }, 0);
+	assert_eq!(node.content("docs/plan.md").unwrap(), b"");
+	assert_eq!(std::fs::metadata(company.join("docs/plan.md")).unwrap().len(), 0);
+
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

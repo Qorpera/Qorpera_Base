@@ -333,10 +333,27 @@ impl Link {
 		Ok(saved.version)
 	}
 
-	/// Publishes what the mount has pending; the answer is the boundary's report. Asked again when the link breaks: a
-	/// second boundary publishes what is still pending, nothing twice.
+	/// Publishes what the mount has pending; the answer is the boundary's report. Sent once, on a connection of its own
+	/// that waits as long as the boundary takes (staging, the commit, the feed): the node answers, or its service goes
+	/// and the connection with it. When the link breaks after the request went out, the boundary may have run, and its
+	/// report is lost: a second one would publish only what is still pending, and leave the first one's conflicts out.
 	pub fn publish(&self) -> Result<Report, Fail> {
-		self.call(kind::PUBLISH, b"{}", kind::REPORT).and_then(|b| parse(&b))
+		let (mut s, _) = self.hello(Role::Io, REQUEST_TIMEOUT).inspect_err(|f| self.note(f))?;
+		let answer = s.set_timeouts(None, Some(REQUEST_TIMEOUT)).map_err(Fail::Link).and_then(|()| {
+			write_frame(&mut s, kind::PUBLISH, b"{}").map_err(Fail::Link)?;
+			read_answer(&mut s, kind::REPORT).map_err(|f| match f {
+				Fail::Link(e) => Fail::Link(io::Error::new(
+					e.kind(),
+					format!("the request went out but no answer came ({e}), so whether the boundary ran is unknown"),
+				)),
+				f => f,
+			})
+		});
+		s.shutdown();
+		if let Err(f) = &answer {
+			self.note(f);
+		}
+		answer.and_then(|b| parse(&b))
 	}
 
 	fn note(&self, f: &Fail) {
@@ -806,6 +823,18 @@ mod tests {
 		assert_eq!(got.lock().unwrap().iter().filter(|(k, _)| *k == kind::MKDIR).count(), 1);
 		// The pool goes on with a new connection.
 		link.mkdir("next").unwrap();
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn a_publish_whose_answer_is_lost_is_never_sent_twice() {
+		let dir = tempdir();
+		// The node takes the publish, then the link breaks before its report: the boundary may have run.
+		let (addr, got, _) = dropping_node(&dir, |k, _| k == kind::PUBLISH);
+		let link = Link::new(addr, view("right"), 2);
+		let err = link.publish().unwrap_err();
+		assert!(matches!(err, Fail::Link(_)) && err.to_string().contains("unknown"), "{err}");
+		assert_eq!(got.lock().unwrap().iter().filter(|(k, _)| *k == kind::PUBLISH).count(), 1);
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 

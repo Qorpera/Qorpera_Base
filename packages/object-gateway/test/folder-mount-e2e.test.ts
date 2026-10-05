@@ -3,7 +3,7 @@
  * names the machine's CID. Needs the built program, root and /dev/fuse, so it runs only when
  * QORPERA_FOLDER_MOUNT_BIN names the program (the run-on-node step "folder-program" does, in a container). */
 import { type ChildProcess, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,7 +155,7 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		expect(await mounted(company)).toBe(false);
 	}, 30_000);
 
-	it("writes through a writable mount, publishes, and keeps stale saves after a service restart as conflicts", async () => {
+	it("writes through a writable mount, publishes what may go, and keeps stale saves after a service restart as conflicts", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-e2e-"));
 		cleanup.push(() => rm(dir, { recursive: true, force: true }));
 		const root = join(dir, "share");
@@ -165,6 +165,8 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 			folder("docs"),
 			await storeFile(root, "docs/plan.md", "plan one", 1, BIG),
 			await storeFile(root, "docs/other.md", "other one", 1, BIG),
+			folder("reports"),
+			await storeFile(root, "reports/q1.md", "q1 one", 1, BIG),
 		]);
 		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 		const uploads = new FakeUploads(root, core);
@@ -274,6 +276,42 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 			fileSha256: hashOf("hello"),
 			mediaType: "text/markdown",
 		});
+
+		// A file still open for writing is left out of a boundary, and goes with the next one after its close.
+		const held = await open(join(company, "docs/open.md"), "w");
+		await held.write("held open");
+		published = await publish();
+		expect(published.code, published.text + output).toBe(4);
+		expect(published.text).toMatch(/waiting\s+docs\/open\.md\s+\(still open for writing/);
+		expect(core.entries.has("docs/open.md")).toBe(false);
+		await held.close();
+		published = await publish();
+		expect(published, output).toMatchObject({ code: 0 });
+		expect(published.text).toMatch(/saved\s+docs\/open\.md/);
+		expect(core.entries.get("docs/open.md")?.fileSha256).toBe(hashOf("held open"));
+
+		// Lock, swap and backup names stay in this view, unpublished; a published path cannot go there.
+		await writeFile(join(company, "docs/.~lock.plan.md#"), "locked");
+		await writeFile(join(company, "docs/.plan.md.swp"), "swap");
+		published = await publish();
+		expect(published, output).toMatchObject({ code: 0 });
+		expect(published.text).toMatch(/nothing to publish/);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("docs/."))).toEqual([]);
+		expect(await readFile(join(company, "docs/.~lock.plan.md#"), "utf8")).toBe("locked");
+		await expect(rename(join(company, "docs/other.md"), join(company, "docs/other.md~"))).rejects.toMatchObject({
+			code: "EXDEV",
+		});
+
+		// A folder moved here, a file in it read at its new path and saved in place: the move publishes first and gives
+		// the file a new version, and the save is based on that one, not taken for a stale one.
+		await rename(join(company, "reports"), join(company, "archive"));
+		expect(await readFile(join(company, "archive/q1.md"), "utf8")).toBe("q1 one");
+		await writeFile(join(company, "archive/q1.md"), "q1 mine");
+		published = await publish();
+		expect(published, published.text + output).toMatchObject({ code: 0 });
+		expect(published.text).toMatch(/saved\s+archive\/q1\.md/);
+		expect(core.entries.has("reports/q1.md")).toBe(false);
+		expect(core.entries.get("archive/q1.md")?.fileSha256).toBe(hashOf("q1 mine"));
 
 		// Two editors read their files (the version map takes version one of each); then the node's service restarts,
 		// and another machine saves both meanwhile.

@@ -42,9 +42,11 @@ export interface ListPage {
 	readonly next: string | null;
 }
 
-/** One change of a change set on the feed (20260928237000). */
+/** One change of a change set on the feed (20260928237000). A move's arrival names the version the path had where it
+ * came from (`priorVersion`), when the actor may read that path too. */
 export interface FeedChange extends CoreEntry {
 	readonly op: "write" | "mkdir" | "delete" | "move_out" | "move_in" | "copy";
+	readonly priorVersion?: string;
 }
 
 export type FeedEvent =
@@ -410,7 +412,12 @@ export function parseFeedPage(value: unknown): FeedPage {
 					removal ? { path: change.path, kind: change.kind, version: change.version } : c,
 					removal,
 				);
-				return { ...entry, op: change.op as FeedChange["op"] };
+				const prior = change.op === "move_in" ? change.priorVersion : undefined;
+				return {
+					...entry,
+					op: change.op as FeedChange["op"],
+					...(prior !== undefined && prior !== null ? { priorVersion: versionOf(prior) } : {}),
+				};
 			}),
 		};
 	});
