@@ -15,6 +15,7 @@ export type RuntimeNodeObserverMethod =
 	| "qorpera_runtime_node_inventory_context"
 	| "qorpera_observe_runtime_node_inventory"
 	| "qorpera_observe_runtime_node_health"
+	| "qorpera_observe_runtime_node_agent_exit"
 	| "qorpera_observe_runtime_node";
 export interface RuntimeNodeObserverRegistry {
 	call(method: RuntimeNodeObserverMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
