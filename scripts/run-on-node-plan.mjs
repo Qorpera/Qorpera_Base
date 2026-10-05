@@ -235,6 +235,8 @@ export const STEPS = [
 			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
+			// The agent exit's placement undo (test-agent-exit-placement-undo).
+			/^deploy\/agent-exit\/undo-\d{14}\.sql$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
 		// Those two import the runtime's TypeScript, which imports built packages.
