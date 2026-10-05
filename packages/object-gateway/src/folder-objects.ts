@@ -14,12 +14,22 @@ export interface FolderRunActor {
 	readonly assignmentId: string;
 }
 
+/** The folder service's actors (F3 step 3, deploy/first-node/RUNTIME-FOLDER-WRITES.md): an operator's mount of a member
+ * or of the platform, or a view (core C1b-3) with its pass. */
+export type FolderServiceActor =
+	| { readonly kind: "member"; readonly userId: string }
+	| { readonly kind: "platform" }
+	| { readonly kind: "view"; readonly viewId: string; readonly pass: string };
+
+/** Any actor the folder core's byte checks take; SQL judges each (C1D §3). */
+export type FolderActor = FolderRunActor | FolderServiceActor;
+
 /** The folder core's byte checks (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md §3, §7). */
 export interface FolderObjectAuthority {
 	/** Per chunk: the object is listed by this actor's open upload intent. Returns the company, the NAS place. */
 	authorizeFolderUpload(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		intentId: string,
 		sha256: string,
 		bytes: number,
@@ -27,7 +37,7 @@ export interface FolderObjectAuthority {
 	/** After the NAS put: the catalog row. */
 	confirmFolderObject(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		intentId: string,
 		sha256: string,
 		bytes: number,
@@ -35,7 +45,7 @@ export interface FolderObjectAuthority {
 	/** An entry or path version the actor may read references the hash. */
 	authorizeFolderDownload(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		sha256: string,
 	): Promise<{ profileId: string; bytes: number }>;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
@@ -72,38 +82,7 @@ export async function serveFolderObject(
 		assignmentId: (binding.assignmentId as string).toLowerCase(),
 	};
 	if (request.method === "PUT") {
-		const intent = request.headers["x-qorpera-upload-intent"];
-		if (typeof intent !== "string" || !UUID.test(intent)) throw new ObjectDependencyError(400);
-		const declared = request.headers["content-length"];
-		if (!declared || !/^(0|[1-9][0-9]{0,7})$/.test(declared) || Number(declared) > MAX_BYTES)
-			throw new ObjectDependencyError(413);
-		const length = Number(declared);
-		const { profileId } = await options.authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
-		const bytes = await boundedObjectOperation(async () => {
-			const chunks: Uint8Array[] = [];
-			let count = 0;
-			for await (const part of request) {
-				const chunk = typeof part === "string" ? Buffer.from(part) : Buffer.from(part);
-				count += chunk.byteLength;
-				if (count > length) throw new ObjectDependencyError(413);
-				chunks.push(chunk);
-			}
-			if (count !== length) throw new ObjectDependencyError(400);
-			return Buffer.concat(chunks);
-		});
-		if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
-		const status = await replication.uploadWithAuthority(profileId, sha256, bytes, {
-			authorize: async () => {
-				const again = await options.authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
-				if (again.profileId !== profileId) throw new ObjectDependencyError(403);
-			},
-			confirm: () => options.authority.confirmFolderObject(environmentId, actor, intent, sha256, length),
-		});
-		response.writeHead(status === "stored" ? 201 : 200, {
-			"cache-control": "no-store",
-			"content-type": "application/json",
-		});
-		response.end(JSON.stringify({ status, sha256, bytes: length, replication: "pending" }));
+		await putFolderObject(request, response, environmentId, sha256, actor, options.authority, replication);
 		return;
 	}
 	if (request.method !== "GET") throw new ObjectDependencyError(405);
@@ -144,4 +123,49 @@ export async function serveFolderObject(
 		etag: `"sha256-${sha256}"`,
 	});
 	response.end(bytes);
+}
+
+/** A put under an upload intent, for any folder actor: the intent lists the object for this actor (no other check per
+ * chunk, core §7), the body is the object its hash names, then the NAS put with replication and the catalog row. */
+export async function putFolderObject(
+	request: IncomingMessage,
+	response: ServerResponse,
+	environmentId: string,
+	sha256: string,
+	actor: FolderActor,
+	authority: FolderObjectAuthority,
+	replication: ObjectGatewayReplication,
+): Promise<void> {
+	const intent = request.headers["x-qorpera-upload-intent"];
+	if (typeof intent !== "string" || !UUID.test(intent)) throw new ObjectDependencyError(400);
+	const declared = request.headers["content-length"];
+	if (!declared || !/^(0|[1-9][0-9]{0,7})$/.test(declared) || Number(declared) > MAX_BYTES)
+		throw new ObjectDependencyError(413);
+	const length = Number(declared);
+	const { profileId } = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
+	const bytes = await boundedObjectOperation(async () => {
+		const chunks: Uint8Array[] = [];
+		let count = 0;
+		for await (const part of request) {
+			const chunk = typeof part === "string" ? Buffer.from(part) : Buffer.from(part);
+			count += chunk.byteLength;
+			if (count > length) throw new ObjectDependencyError(413);
+			chunks.push(chunk);
+		}
+		if (count !== length) throw new ObjectDependencyError(400);
+		return Buffer.concat(chunks);
+	});
+	if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
+	const status = await replication.uploadWithAuthority(profileId, sha256, bytes, {
+		authorize: async () => {
+			const again = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
+			if (again.profileId !== profileId) throw new ObjectDependencyError(403);
+		},
+		confirm: () => authority.confirmFolderObject(environmentId, actor, intent, sha256, length),
+	});
+	response.writeHead(status === "stored" ? 201 : 200, {
+		"cache-control": "no-store",
+		"content-type": "application/json",
+	});
+	response.end(JSON.stringify({ status, sha256, bytes: length, replication: "pending" }));
 }

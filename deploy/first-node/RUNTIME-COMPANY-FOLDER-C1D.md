@@ -249,7 +249,11 @@ that the Storage mirror inserted is still served.
 ## 8. The gateway and the runtime
 
 - **Gateway** (`packages/object-gateway`): `/v1/folder-objects/<environmentId>/<sha256>`, on the native token, with
-  the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. Put: authorize, read the body, check the
+  the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. The folder service's puts for its views (F3
+  step 3, `RUNTIME-FOLDER-WRITES.md`, slice 3b) go to `PUT /v1/folder-service-objects/<environmentId>/<sha256>`, on
+  the folder service's own token (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN`, distinct from every other; the route
+  is off without it), naming the actor in `x-qorpera-folder-actor` (canonical base64url JSON of exactly a member's,
+  the platform's or a view's fields) and the intent. The same checks and store as a run's put (`putFolderObject`). Put: authorize, read the body, check the
   hash, `uploadWithAuthority` (NAS put, confirm, replication). Get: authorize, NAS read, check, re-authorize. The
   native route's token check and binding format are shared; SQL judges the run by the folder actor (run, job, runner
   and assignment, as commit and read do), not by the provider execution lease the native route checks.
