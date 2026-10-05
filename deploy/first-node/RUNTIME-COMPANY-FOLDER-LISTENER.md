@@ -354,7 +354,8 @@ touching nothing else here.
 **The edge function** (`supabase/functions/runner-orchestrator/runner-orchestrator.ts`):
 - the closed table `FOLDER_DRAINS` maps a drain name (`^[a-z][a-z0-9_]{0,31}$`) to `{due, company, maximum}`:
   today `listen: {due: 'qorpera_folder_listen_due', company: 'qorpera_folder_listen_company', maximum: 256}`,
-  `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}` and
+  `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}`,
+  `human_tasks: {due: 'qorpera_folder_human_tasks_due', company: 'qorpera_folder_human_tasks_company', maximum: 32}`,
   `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
   maximum: 64}` and `machine_checkins: {due: 'qorpera_folder_machine_checkins_due',
   company: 'qorpera_folder_machine_checkins_company', maximum: 64}`;
@@ -367,8 +368,8 @@ touching nothing else here.
 
 **The orchestrator** (`CloudFolderDrains` in `packages/runner-orchestrator/src/orchestrator.ts`):
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
-  `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'machine_events', companyLimit: 8},
-  {name: 'machine_checkins', companyLimit: 8}]`;
+  `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'human_tasks', companyLimit: 32},
+  {name: 'machine_events', companyLimit: 8}, {name: 'machine_checkins', companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
