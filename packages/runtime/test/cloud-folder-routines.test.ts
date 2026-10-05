@@ -211,6 +211,30 @@ it("writes each trigger, the end, the runs, quiet hours and effort as the file s
 		trigger: { when: "once", at: "2026-10-03T10:00:00Z" },
 		timezone: "Europe/Copenhagen",
 	});
+	// A file change (P29): the path as given, with its match and time zone; the folder core folds the watch.
+	await routines.change(
+		{
+			...UPSERT,
+			operationKey: "watch-1",
+			routineKey: "vision-check",
+			trigger: {
+				kind: "listener",
+				source: "company-file",
+				path: "vision/Vision.md",
+				match: "exact",
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "optional",
+			},
+			maxOccurrences: 50,
+		},
+		f.call(),
+	);
+	expect(f.routine("vision-check")).toMatchObject({
+		trigger: { when: "file-change", watch: "vision/Vision.md", match: "exact" },
+		timezone: "Europe/Copenhagen",
+		runs: 50,
+		reply: "optional",
+	});
 });
 
 it("saves over an existing file with its id, its version and its effort, and answers an unchanged save", async () => {
@@ -623,7 +647,13 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	expect(tool?.description).toContain("routines/<routineKey>.md");
 	expect(tool?.description).toContain("cursor: the nextCursor of an earlier page");
 	expect(tool?.description).toContain("resume switches a routine back on");
-	expect(tool?.description).not.toMatch(/No member approval|file_change|hookId|list_hooks/);
+	expect(tool?.description).toContain(
+		"or file_change (a Company File path you can read, match exact or subtree); routines that react to events are not available in this company yet. ",
+	);
+	expect(tool?.description).toContain(
+		"It listens from the save that set it up, so a later save of the routine drops changes not delivered yet.",
+	);
+	expect(tool?.description).not.toMatch(/No member approval|hookId|list_hooks|files or events/);
 	expect(legacy?.inputSchema).not.toHaveProperty("properties.cursor");
 	expect(tool?.inputSchema).toHaveProperty("properties.cursor");
 	// list: one routine, or a page from a cursor.
@@ -636,7 +666,7 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 		tool?.parseArguments({ action: "list", routineKey: "inbox", cursor: "0f1a2b3c-8888-4888-8888-000000000001" }),
 	).toThrow(CloudToolArgumentRefusal);
 	expect(() => tool?.parseArguments({ action: "list", cursor: "next" })).toThrow(CloudToolArgumentRefusal);
-	// The key is a file name, said in words; file and event routines are refused; the file is checked.
+	// The key is a file name, said in words; a file change is taken and an event routine refused; the file is checked.
 	expect(() => tool?.parseArguments({ action: "pause", operationKey: "p-1", routineKey: "weekly.report" })).toThrow(
 		/lowercase letters, digits and single hyphens/,
 	);
@@ -648,23 +678,35 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 		intent: FILE.instructions,
 		trigger: { kind: "every", minutes: 60 },
 	};
-	expect(() =>
+	expect(
 		tool?.parseArguments({ ...upsert, trigger: { kind: "file_change", path: "sales", timeZone: "UTC" } }),
-	).toThrow(/routines that react to files or events are not available yet/);
+	).toMatchObject({
+		trigger: {
+			kind: "listener",
+			source: "company-file",
+			path: "sales",
+			match: "exact",
+			timeZone: "UTC",
+			replyPolicy: "optional",
+		},
+	});
+	expect(() =>
+		tool?.parseArguments({ ...upsert, trigger: { kind: "file_change", path: "sales/../hr", timeZone: "UTC" } }),
+	).toThrow();
 	expect(() =>
 		tool?.parseArguments({
 			...upsert,
 			trigger: { kind: "event", hookId: "0a1b2c3d-1111-4111-8111-111111111111", timeZone: "UTC" },
 		}),
-	).toThrow(CloudToolArgumentRefusal);
+	).toThrow(/routines that react to events are not available yet/);
 	expect(() => tool?.parseArguments({ ...upsert, title: "In\tbox" })).toThrow(CloudToolArgumentRefusal);
-	// The schema offers the file name rule and only clock triggers.
+	// The schema offers the file name rule, the clock triggers and a file change.
 	expect(tool?.inputSchema).toHaveProperty("properties.routineKey.pattern", "^[a-z0-9]+(?:-[a-z0-9]+)*$");
 	const kinds = (schema: unknown) =>
 		(
 			schema as { properties: { trigger: { oneOf: { properties: { kind: { const: string } } }[] } } }
 		).properties.trigger.oneOf.map((item) => item.properties.kind.const);
-	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly"]);
+	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change"]);
 	expect(kinds(legacy?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
 	const list = parse((await tool?.execute({ action: "list" }, f.context)) as { value: unknown });
 	expect(list.routines.map((routine: { routineKey: string }) => routine.routineKey)).toEqual(["inbox"]);

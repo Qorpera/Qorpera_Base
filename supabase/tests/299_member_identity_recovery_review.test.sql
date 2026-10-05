@@ -36,6 +36,13 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
   ('29900000-0000-4000-8000-000000000010','29900000-0000-4000-8000-000000000001','review-owner@example.test','Owner','owner'),
   ('29900000-0000-4000-8000-000000000010','29900000-0000-4000-8000-000000000002','review-member@example.test','Member','contributor'),
   ('29900000-0000-4000-8000-000000000010','29900000-0000-4000-8000-000000000003','review-admin@example.test','Admin','admin');
+-- A folder-v2 company (the company folder core).
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+values ('29900000-0000-4000-8000-000000000011','29900000-0000-4000-8000-000000000010','Review fixture',1,'29900000-0000-4000-8000-000000000001');
+select set_config('request.jwt.claims','{"role":"service_role"}',true) \g /dev/null
+select public.qorpera_folder_enable('29900000-0000-4000-8000-000000000011') \g /dev/null
+select pg_temp.assert_review(public.qorpera_company_is_folder_v2('29900000-0000-4000-8000-000000000010'),'Review company is not a folder-v2 company');
+select set_config('request.jwt.claims','',true) \g /dev/null
 insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,owner_user_id,client_identity_id,display_name)
 values
   ('29900000-0000-4000-8000-000000000020','29900000-0000-4000-8000-000000000010','member','29900000-0000-4000-8000-000000000002','29900000-0000-4000-8000-000000000020','Member identity'),

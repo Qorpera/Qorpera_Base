@@ -875,6 +875,7 @@ export function mountApplication(
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
 				api,
+				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 			);
 			executionNotices.append(notices.el);
 		}

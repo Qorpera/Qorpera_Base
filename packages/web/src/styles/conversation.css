@@ -617,7 +617,11 @@
 .routine-card-when { display: flex; gap: 6px; }
 .routine-card-when > .icon { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--text-muted); }
 .routine-card-trigger { display: block; }
-.routine-card-when small { display: block; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
+.routine-card-when small, .routine-login small, .routine-login p { display: block; margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
+/* "Choose a login" under who pays, for a routine whose login cannot pay. */
+.routine-login { display: grid; justify-items: start; gap: 6px; margin-top: 6px; }
+.routine-login select { width: 100%; min-width: 0; font-size: 12.5px; }
+.routine-login-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .routine-list-footer { padding-top: 16px; }
 .agent-routines > .surface-status { margin: 0 0 12px; }
 .routine-editor { display: grid; gap: 14px; font-size: 12px; }

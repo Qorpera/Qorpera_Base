@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, readlink, rename, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { CompanyComputerLinuxCommands } from "../../src/cloud-company-computer-linux-commands.ts";
 import { companyComputerLinuxSandboxArgs } from "../../src/cloud-company-computer-linux-host.ts";
@@ -50,7 +50,7 @@ const commands = new CompanyComputerLinuxCommands(options);
 const input = {
 	program: "/bin/bash",
 	args: [] as string[],
-	environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+	environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 	workingDirectory: layout.workbenchRoot,
 	timeoutMs: 5000,
 	maxOutputBytes: 16384,
@@ -110,6 +110,12 @@ test ! -e /run/office-captures
 test ! -e /run/office-x
 test ! -e /sys/fs/cgroup
 test ! -e /tmp/.X11-unix/X2
+# Never the screen's display: any X client of it could read what a member types there.
+test -z "\${DISPLAY-}"
+test ! -e /tmp/.X11-unix/X1
+test ! -e /tmp/office-x
+node -e 'for (const p of ["\\0/tmp/.X11-unix/X1", "/tmp/.X11-unix/X1", "/tmp/office-x/X1"]) { const s = require("net").connect(p); s.on("connect", () => process.exit(34)); s.on("error", () => {}); } setTimeout(() => process.exit(0), 2000);' || exit $?
+if DISPLAY=:1 xdotool getdisplaygeometry >/dev/null 2>&1; then exit 35; fi
 test "$(readlink /proc/self/ns/net)" != '${namespace}'
 test -z "$(ls /sys 2>/dev/null || true)"
 if timeout 1 bash -c 'echo canary >/dev/tcp/127.0.0.1/${address.port}' 2>/dev/null; then exit 19; fi
@@ -118,7 +124,27 @@ if touch /usr/office-write-canary 2>/dev/null; then exit 21; fi
 printf isolated`),
 		"isolated",
 	);
-	const geometry = await commands.run({ ...input, program: "/usr/bin/xdotool", args: ["getdisplaygeometry"] });
+	// The display server's own sockets, which this machine reaches and a shell command does not.
+	for (const path of ["\0/tmp/.X11-unix/X1", options.xSocket])
+		assert.equal(
+			await new Promise<string>((resolve) => {
+				const socket = createConnection(path);
+				socket.once("connect", () => {
+					socket.destroy();
+					resolve("connected");
+				});
+				socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
+			}),
+			"connected",
+			path,
+		);
+	// The screen's own tools do reach it.
+	const geometry = await commands.run({
+		...input,
+		program: "/usr/bin/xdotool",
+		args: ["getdisplaygeometry"],
+		environment: { ...input.environment, DISPLAY: ":1" },
+	});
 	assert.equal(geometry.code, 0, geometry.stderr);
 	assert.equal(geometry.stdout.trim(), "1920 1200");
 	const png = Buffer.from(
