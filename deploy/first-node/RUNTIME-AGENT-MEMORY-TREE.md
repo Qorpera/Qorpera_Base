@@ -128,8 +128,10 @@ one.**
   are wiped with the folder's existing erasure tool.
 - The helper reads those earlier entries themselves, never their summaries. So an erased fact cannot travel on from
   line to line.
-- **Work logs follow the same rule.** When a file is erased, every step that read it shows "[erased]", and its
-  summary lines are rebuilt. An owner or admin can also erase one step, as they erase a message.
+- **Work logs follow the same rule.** When a file is erased, every step that read it, wrote it or named it is erased,
+  and so is every copy of that step another agent opened. Their summary lines are rebuilt. An owner or admin can also
+  erase one step, as they erase a message. A run that is still working keeps what it has until it ends; then the
+  erase happens.
 - **Today there is no way to erase a single message.** We build it before the tree is switched on for real
   companies. Owners and admins may erase, as they can erase files today.
 - When an agent or a group chat is deleted for good, its trees and work logs go with its folder.
@@ -162,13 +164,13 @@ We measure on the Qorpera Live Test company, each time against how it works toda
 ## The steps
 
 M steps build the tree of words. W steps make it the whole context.
-1. **M0.** A short test on the test machine: check that the provider reuses its cache, and that our patched Codex
-   accepts a request we built.
+1. **M0.** A short test on the test machine, with our Codex as it is today: check that the provider reuses its cache.
 2. **M1.** Trees of words for agents' own threads, on the Live Test company only.
 3. **W1.** Work logs for every answer, that agents can zoom into, with erasing.
 4. **M2.** Measure and tune.
 5. **M3.** Erasing a single message, with its summaries. Then the 7-day cleanup of old copies.
-6. **W2.** Every request built from the folder. Measure long work and swaps.
+6. **W2.** After your yes: check that our patched Codex accepts a request we built. Then every request built from
+   the folder. Measure long work and swaps.
 7. **W3.** The head.
 8. **M4.** Group chats, each agent's other conversations, and the Co-Founder's branches.
 9. **W4.** Helpers start from their agent's view.
@@ -508,15 +510,29 @@ beside its parent's, under the same root, so a log moves, is restored and is era
 - `reads` are the read references the fence recorded for this result in the context view (§1). Erasure uses them
   (§10.1).
 - `text` is the agent's own text before the call. Reasoning items are never stored (§6.3).
-- A send or a card keeps only its call and its receipt. Its words are in the conversation, and are not copied.
+- **A send or a card keeps its arguments as a hash only**, in its pre-commit (below) too: `args` is empty, and
+  `args_bytes` and `args_hash` stay. Its result is its receipt. Its words are in the conversation or on the card, and
+  are not copied.
+- Other arguments can hold a file's text, for example `company_write`'s `text`. A file's erasure reaches them by the
+  path they name (§10.1).
 
 **Commits.**
-- A run commits its new steps as one batch every STEP_COMMIT and at run end. It uses the folder commit and the
-  generation check of §4.3, against its row in `qorpera_memory_run_logs`, which holds `memory_generation` for the log.
-  That row is run-owned, so it is taken at core §3's run-owned step.
+- A run commits its new steps as one batch every STEP_COMMIT and at run end, as an ordinary folder commit at the
+  block's expected version. Its row in `qorpera_memory_run_logs` (step count and `memory_generation`) is run-owned, so
+  it is taken at core §3's run-owned step.
+- **A step batch only appends.** Steps already in the block are kept as the file has them, never rewritten from the
+  run's memory. On a version conflict the run reads the block again and appends again. So a batch never brings back a
+  step that was erased.
+- **Step records are never discarded.** They are the only copy of the work: context views keep digests only (§1). So a
+  step batch does not take §4.3's generation check. Only batches of step lines do (§7.5); like tree batches, they are
+  derived and are discarded whole on `memory_generation_stale`.
+- **No erase changes the log of a live run.** An erase that reaches it (of one step, or through a file's or a message's
+  erasure) stays pending until the run ends, as P18 does for receipts (§10.1). So a running run, its folded work and
+  its resume (W5) never meet a hole in its log.
 - **An effectful call is committed alone, before it runs**, as a step with no result yet. Effectful means any call that
-  `cloudActionEffect` does not class as a read. Its result joins the next batch. So after a cut-off, the log names
-  every effect that may have happened (§12).
+  `cloudActionEffect` does not class as a read. **The call runs only once that commit has landed.** If it cannot land,
+  the call does not run, and the host answers it with an error result, as for any refused call. Its result joins the
+  next batch. So after a cut-off, the log names every effect that may have happened (§12).
 - A log block is final once its 16 steps are written. The last block is rewritten as batches land, and the 7-day prune
   removes that rewrite noise (§10, GC).
 
@@ -592,7 +608,8 @@ fold(T, built, budget):
 - **Never a whole message, and never cut text.** The new inputs that woke the run still appear in full, as today's
   "current inputs" (up to 16 KiB each). The view covers `[0, T)` before them.
 - The view carries the same trust label as today's history block (C §9.2). It is conversation data, and the agent's
-  instructions stay where they are.
+  instructions stay where they are. Its text is escaped as today's prompt is (`<`, `>`, `&` and direction controls,
+  `rt/cloud-native-company-context.ts:664-667`), so a message cannot close the tag or open another.
 - A fixed paragraph, VIEW_DOC, goes before the view. It explains the line format, that old lines are coarse, that
   placeholders exist, and that the agent must **zoom before it acts, guesses or asks** about anything a line only
   hints at. It also says that each of its sends links to the run's work, which `zoom` opens (§8), and that its own
@@ -626,12 +643,27 @@ never a permission: every agent may zoom into every conversation of the company 
 
 ### 5.6 The head (W3)
 
-The head is the fixed top of every request, in the developer instructions after the stable part (§6.1). It takes the
+The head is the fixed top of every request, in the developer message after the stable part (§6.1). It takes the
 place of files like `AGENTS.md`, which Codex never loads here (§1).
 - **The company head**: the approved `vision/vision.md`, whole. C:887 asks every run to read it in full; no composer
   does today (§1).
-- **The agent head**: its role text, which moves here from later in the developer instructions, and its profile page
-  (at most 6 KiB). If Jonas chooses pins, they take the profile page's place (§11).
+- **The agent head**: its job specification (the body of its `agent.md`, today in the prompt's hire overlay) and its
+  profile page (at most 6 KiB, today in the prompt's `memory`). If Jonas chooses pins, they take the profile page's
+  place (§11). The host-owned behaviour of the agent's kind (`cloudRuntimeHireBehavior`) stays in the stable part, as
+  today.
+- **Data, not instructions.** Today the developer message holds only host-owned rules, and names, charters and
+  assignments stay in data (`rt/cloud-native-company-context.ts:550-551`). The head keeps that split (C §9.2):
+  - it is one serialized object, escaped as today's prompt is (`:664-667`), so its text cannot close a tag, add a role
+    or change the rules before it;
+  - each part names its source (path and version) and carries a trust label. The vision is
+    `company_instructions_not_authority` (new): the company's own instructions file (C §9.3), which guides the work
+    and never overrides the platform's rules. The job specification is `job_specification_not_authority`, as the hire
+    overlay carries it today (`:650-658`). The profile page and pins are `own_notebook_not_authority`, as today
+    (`rt/cloud-memory-tools.ts:113`), and a pinned line also keeps its source's label (§11);
+  - the stable part says what the labels mean, as it does for tool results today.
+
+  So a profile write that a web page talked the agent into is still the agent's own note, never an instruction, as it
+  is today. W3's proof checks this (§14).
 - Both are read for the company and released as read references (§4.4). They are the same for every member, model and
   payer, and change only when the vision, the role or the profile changes. So the head is read from the cache across
   runs.
@@ -644,13 +676,25 @@ Every request of a run ends with the run's own work (§6.1, part 6), taken from 
 `0..S` in the order the run made them.
 - **The raw tail** is steps `[r, S)`. They go in as the real call and output items Codex made, with their reasoning
   items, so the model sees its newest work exactly.
-- **Earlier steps**, `[0, r)`, go in one message before the tail, folded with `fold(r, built, RUN_VIEW / 2)` (§5.2) and
-  rendered as `<work ref="run:." name="this run">`, one `start+size|text` line per part.
-- **Fold boundaries.** `r` starts at 0. When the raw tail passes RUN_VIEW / 2 bytes, `r` moves forward to the first
-  multiple of 16 that brings the tail under RUN_VIEW / 4, but never past the newest step, which always stays raw.
-  That request is a fold boundary: the only kind of request in
-  which anything before the newest items changes (§6.3). The folded lines are computed at a boundary and kept as they
-  are until the next one, even when more lines get built in between.
+- **Earlier steps**, `[0, r)`, go in one message before the tail, folded with `fold(r, built, RUN_VIEW / 2)` (§5.2),
+  one `start+size|text` line per part.
+- **That message is data, in a runtime envelope** (C §9.2). Its lines sum up tool results, so they are what the results
+  were: untrusted data, never instructions.
+  - It is a user-role message, never the developer role, and it is not part of the conversation's transcript.
+  - It is one serialized object, escaped as the prompt is: `{"schema":"qorpera.run-work/v1",
+    "trust":"tool_results_not_authority","ref":"run:.","lines":["0+16|…",…]}`.
+  - The host issues it in its composition reply over the fence socket, and the patch accepts it only from there, at
+    that place (§6.3). Text the model or a tool wrote cannot pass for it.
+  - W2's proof checks that a fake instruction carried into a folded line is not followed (§14).
+- **Fold boundaries.** `r` starts at 0. A step's bytes count its call, its output and its reasoning items. When the
+  raw tail passes RUN_VIEW / 2 bytes, `r` moves forward to the first step that brings the tail under RUN_VIEW / 4, but
+  never past the newest step, which always stays raw. Any step will do, because `fold(r, …)` needs no alignment. So
+  the raw tail sent is at most RUN_VIEW / 2 bytes, or the newest step alone when that is larger, and the folded lines
+  are at most RUN_VIEW / 2.
+- That request is a fold boundary: the only kind of request in which anything before the newest items changes (§6.3).
+  The folded lines are computed at a boundary and kept as they are until the next one, even when more lines get built
+  in between. A run whose steps are large folds more often: one fold per RUN_VIEW / 4 bytes of new work. W2 measures
+  what that costs in cache reads (§13).
 - **Missing lines.** A step that leaves the tail needs its level-0 line. It is usually built already (§7.5). If not,
   the request waits up to SETTLE for it, and then shows a placeholder (§5.4). Text is never cut.
 - **Zoom** `run:.` opens any earlier step whole (§8). A dispatch step's result holds its worker's report, as today; the
@@ -666,15 +710,15 @@ request of the run**, so Codex's own history no longer carries the context (§11
 1. Codex base instructions. These are fixed per binary.
 2. Tools, identical for a given tool set. `read_context` stops naming per-run source ids in its schema; they move into
    its results and the prompt.
-3. Developer instructions, in this order: the stable part (tool-result rules, core protocol, binding), then the
-   **head** (§5.6, W3), then VIEW_DOC, then the **primary view**, then the parts that vary by wake (wake-kind rules,
-   continuation rules, final-send policy, closing reminder).
+3. Developer instructions, in this order: the stable part (tool-result rules, core protocol, binding, the behaviour of
+   the agent's kind), then the **head** (§5.6, W3) and VIEW_DOC with the **primary view**, both as labelled data, then
+   the parts that vary by wake (wake-kind rules, continuation rules, final-send policy, closing reminder).
 4. Codex's environment context (with the random working directory), after the developer message. M0 checks this
    order.
 5. The user message: `observedAt`, wake, `conversationMessages`, current inputs, branches and the rest, as today
    without `history`.
-6. From W2, **the run's own work** (§5.7): one message with the folded lines of its earlier steps, then its newest
-   steps raw, as the call and output items Codex made.
+6. From W2, **the run's own work** (§5.7): one user-role message, a runtime envelope with the folded lines of its
+   earlier steps, then its newest steps raw, as the call and output items Codex made.
 
 Parts 1 to 5 are composed once, at run start, and stay byte-identical for every request of the run. Only part 6 grows.
 
@@ -702,12 +746,14 @@ the run's history itself and compacts it when it nears the window.
   - every output follows its call, and every call before the newest model output has its output;
   - every call is one the run made: in Codex's own history, or in the run's log after a resume (W5);
   - reasoning items come only from this process's own history;
+  - the work message of part 6 is the one the host's reply added, in the user role, just before the raw steps; any
+    other item that claims its schema is refused;
   - the base instructions, the tools and the model are unchanged.
 
   Then the fence runs over every output as today, so every result in the input is still a host-issued envelope.
 - **Folds only at boundaries.** Between folds, each request is the previous one plus Codex's new items. The provider
   reads the previous part from the cache, and the WebSocket transport can send only the new items. When the raw steps
-  outgrow RUN_VIEW, the host folds the oldest of them into lines (§5.7). That one request changes part 6, and growth
+  outgrow RUN_VIEW / 2, the host folds the oldest of them into lines (§5.7). That one request changes part 6, and growth
   starts again from there.
 - **Reasoning items** stay next to their calls among the raw steps. After a model change, a payer change or a restart
   they are dropped, because they belong to the model and account that made them. The agent's own text stays.
@@ -726,11 +772,15 @@ It runs on the node test machine with the patched Codex 0.155.1 and a test login
   prefix;
 - the same for a growing conversation: a second run after a few new messages, whose view differs from the first
   run's only in its last lines, still reads the unchanged start of the view from the cache;
-- for W2, with a test build of the hook: that an input returned unchanged, reordered and folded is accepted; that a
-  request after a fold reads parts 1 to 5 from the cache; whether the WebSocket transport still sends only new items
-  between folds; and what makes Codex's own compaction start.
+- what makes Codex's own compaction start, read from the unchanged patched build and its config.
 
-If the provider ignores the key for ChatGPT-login requests, the view still works. It just costs more.
+M0 uses only the patch as it is today, so it needs no new sign-off. If the provider ignores the key for ChatGPT-login
+requests, the view still works. It just costs more.
+
+**The compose probe** comes first in W2, after Jonas's sign-off on the patch (§6.3, §16), never before. With a test
+build of the hook on a test login, it checks that an input returned unchanged, reordered and folded is accepted; that a
+request after a fold reads parts 1 to 5 from the cache; and whether the WebSocket transport still sends only new items
+between folds.
 
 **Until W2**, nothing changes within a run: Codex keeps the thread, and each step reads earlier steps from the cache.
 
@@ -861,8 +911,9 @@ folder.
   never from a summary. An erased event shows `(erased)`.
   - An agent's send or card also names the run that wrote it, with its size: `work: run:7f3a19c2 (148 steps)`. That
     is the link from the words to the work.
-  - In a run log it returns the step as committed: the call, its arguments and the result envelope (§4.5). A dispatch
-    step names its worker's log, `run:<id>`, and a coding step its session's child log (W6).
+  - In a run log it returns the step as committed: the call, its arguments and the result envelope (§4.5). An erased
+    step shows its tool and `(erased)`. A dispatch step names its worker's log, `run:<id>`, and a coding step its
+    session's child log (W6).
 - **Fitted to the fence, never cut by it.** Every result is fitted after encoding, as `fittedContextPage` does for
   `read_context` (`rt/cloud-native-company-context.ts:685-716`).
   - The fence JSON-encodes a result and escapes `<`, `>` and `&`, so text full of markup can grow up to six times.
@@ -1025,23 +1076,41 @@ just get coarser in the view. Run logs live under the conversation's root (§4.5
 A run log is a log like a conversation, with steps in place of messages. Its lines follow the same bound: the step
 compactor's window holds only the same run's raw steps (§7.5), so step `j` is a source of `node(l, k)` exactly when
 `w(s) ≤ j < e`. The hard rule therefore applies to steps unchanged.
-- **Erasing one step.** Owners and admins may erase a step, as they erase a message. It follows §10's steps 1 to 6,
-  with the run log's row in place of the session row: `qorpera_memory_run_logs.memory_generation` goes up in the same
-  commit, taken `FOR UPDATE` at core §3's run-owned step, where step batches check it `FOR SHARE` (§4.5). The step's
-  record becomes `{"erased": true}` and keeps its tool name, so pairing still holds. Its log block and every tree block
-  with the step among its sources are deleted, rewritten without it, and their earlier lives erased through P18.
-- **A file's erasure reaches steps.** Each step keeps the read references the fence recorded for its result (§4.5):
-  the paths and versions the result came from, as the context view holds them (§1). When P18 erases a path, it finds
-  the steps whose references name an erased version, the way it finds receipts that quote an erased path (P18 §6). It
-  scrubs each result to `[erased]`, keeping the envelope, and then raises the run log's generation and deletes and
-  rewrites the derived blocks, as for a step erase.
+- **Erasing one step.** Owners and admins may erase a step, as they erase a message. For step `j` of run A, it follows
+  §10's steps 1 to 6 with A's log in place of conversation C:
+  - A's `qorpera_memory_run_logs` row in place of the session row: `memory_generation` goes up in the same commit,
+    taken `FOR UPDATE` at core §3's run-owned step, where step-line batches check it `FOR SHARE` (§4.5, §7.5);
+  - the step's record keeps only `j`, `tool`, `call`, `args_bytes` and `args_hash`, with `"erased": true`. Its
+    arguments, result, read references and text go. The call id keeps pairing intact, and the hash is what receipts
+    keep today (`inputSha256`, P18 §6);
+  - its log block and every tree block with the step among its sources are deleted, rewritten without it, and their
+    earlier lives erased through P18 (steps 1 to 3);
+  - step 4 scrubs every zoom **in the company** whose target is run A and whose range may hold text from `j`, by the
+    same range rule as §10. It matches by run id and range, never by a block version, which the 7-day prune may have
+    removed. A zoom is kept in two places, and both are scrubbed: its receipt, and the zoom step in the zooming run's
+    own log. Scrubbing that step is a step erase of that run's log, so a zoom of the zoom is reached too. Each zoom is
+    later than what it opened, so this ends.
+- **When.** An erase that reaches a live run's log stays `pending` until that run ends, as P18 §6 does for receipts.
+  So no erase changes a log while its run writes it (§4.5). A cut-off or paused run is not live: it resumes from its
+  log as it then is (W5).
+- **A file's erasure reaches steps.** P18 §6's rule for receipts applies to run-log steps, as a new row of its table:
+  - over the runs P18 notes in phases 1 to 3 (the runs that wrote, refused, were refused about, or read the erased
+    path), once they have ended;
+  - a step is reached when the JSON text of its `args` or of its `result` contains a needle (an erased path as P18
+    spells it, §4.3 there), or when its read references name an erased version (§4.5);
+  - a reached step gets the full step erase above: its record keeps only the call's identity and hash, its log block
+    and the tree blocks over it are deleted, rewritten and their earlier lives erased, and zooms of it are scrubbed
+    company-wide.
+
+  So a `company_write` step, whose `args` hold the file's text, is reached by the path it names, as P18 reaches a
+  card's arguments. A search or list result that names the path is reached the same way.
 - **A message's erasure reaches steps** through zoom. A zoom call is a step, and its result is the zoom receipt of §8.
-  So step 4 of §10 scrubs it where it lies, by target and range, and the run log's lines over it are rebuilt.
+  So step 4 of §10 scrubs it in both places, by target and range, as a step erase of the zooming run's log.
 - **Rebuild.** Lines missing in a past run's log are built at the next settle in that conversation, after the
   conversation's own gaps, on the settling run's own payer (§7.2). Until then zoom shows placeholders, with the raw steps below.
 - **Not reached**, by P18's existing decision (P18 §1: transcripts are free text that a member removes): an agent's
-  own words that repeated a message or a file, and shell output that printed a file with no read reference. An owner
-  or admin erases such a step, and its lines follow.
+  own words that repeated a message or a file, and shell output that printed a file's text with neither its path nor
+  a read reference. An owner or admin erases such a step, and its lines follow.
 
 ## 11. What the tree replaces
 
@@ -1068,7 +1137,9 @@ same day: the tree is the agents' whole context, so it also replaces Codex's own
 **Proposal for Jonas, not decided: pins.** The profile page is a file the agent writes about itself. Pins would be
 its successor: a member or the agent pins a message or a line of any conversation or run log into the agent's head,
 up to PINS bytes, and the agent's head then shows the pinned text with its address. A pin keeps the exact words and
-their source, and an erase of the source removes the pin. The profile page stays until Jonas decides.
+their source, and an erase of the source removes the pin. A pin keeps its source's trust label too: a pinned work
+line is tool-result data and a pinned message is conversation data, never an instruction (§5.6). The profile page
+stays until Jonas decides.
 
 ## 12. Routines, workers, coding, resume, review and onboarding
 
@@ -1164,14 +1235,14 @@ words; W steps make it the whole context.
 
 | Step | What | Proof |
 | --- | --- | --- |
-| **M0** | Probe, no product code: the Codex 0.155.1 request order, `prompt_cache_key`, cross-run `cachedInputTokens` with a fixed prefix and with a growing conversation; today's real per-run sizes on Live Test from `model_turn`. **Compose probe:** a test build of the patched Codex whose host returns the request's input unchanged, then reordered and folded; check pairing errors, WebSocket delta reuse, cache hits across a fold, and where Codex's auto-compaction starts | a short report; decides §6 |
+| **M0** | Probe, no product code, with the patch as it is today: the Codex 0.155.1 request order, `prompt_cache_key`, cross-run `cachedInputTokens` with a fixed prefix and with a growing conversation, and where Codex's auto-compaction starts; today's real per-run sizes on Live Test from `model_turn` | a short report; decides §6 |
 | **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; fold, rendering and VIEW_DOC; closing compactor with its raw window, and settle that fills gaps any run left; `zoom` into any agent's thread, with fitted results; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index, write refusals, ordinary reads and search of tree files, and the generation check (a batch read before a generation change is discarded), and a dblink race of a batch commit and a zoom receipt against a payer's role change (`qorpera_folder_member_change_enter`) that ends with no deadlock; runtime tests for fold determinism, budget, placeholders, size enforcement, a zoom by an agent into another agent's thread whose result is the same whichever member the run works for, and a markup-heavy zoom read whole through `from`; one live run that writes and reads a tree |
-| **W1** | Run logs (§3, §4.5): step records committed in batches, the run index, platform-only paths, step lines at closing, `zoom` into run logs, and a message's zoom naming its run; erasure of work (§10.1): one step's erase, the P18 scrub of steps by read reference, and the zoom-step scrub of a message erase | SQL tests for run-log refusals, the run generation check, a step scrubbed because its read reference names an erased path, and a step erase that rebuilds the lines over it; runtime test that a run's log matches its context views call for call; the folder probe |
+| **W1** | Run logs (§3, §4.5): step records committed in batches that only append, effectful calls committed before they run, the run index, platform-only paths, step lines at closing, `zoom` into run logs, and a message's zoom naming its run; erasure of work (§10.1): one step's erase, the P18 scrub of steps by needle and read reference, the scrub of zooms into a run log, the zoom-step scrub of a message erase, and erases of a live run's log held until it ends | SQL tests for run-log refusals; a step-line batch read before a step erase is discarded, and a step batch is never discarded; a step scrubbed because its read reference names an erased path; a `company_write` step whose `args` are scrubbed when its path is erased; run B zooms a step of run A that read file F, and erasing F scrubs A's step, B's receipt and B's zoom step, and leaves no earlier version of A's log block; an erase of a live run's step stays pending while the run's batches keep landing, and runs when it ends; a step erase that rebuilds the lines over it. Runtime tests: a run's log matches its context views call for call; an effectful call whose pre-commit fails is not run. The folder probe |
 | **M2** | Measure and tune: the memory probe, VIEW at 48,000 vs 96,000, Luna low vs medium | probe report against §13's targets |
 | **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, a compactor batch and a zoom receipt racing the erase (each either lands before it and is deleted or scrubbed, or is discarded and redone at the new generation), and an erase racing a role change, with no deadlock; a block with an earlier life at its agent's former path (a renamed folder), erased at both paths; live: erase, then see the lines rebuilt and old versions gone |
 | **M3b** | The 7-day prune of replaced tree versions (§10, GC) | SQL tests: a block version replaced by a write more than 7 days ago is pruned. Kept: the current version, one replaced less than 7 days ago, a life's first version, the last version before a delete or a move, both rows of a move pair, and old versions of a notebook file. Regression: an agent's folder is renamed, a block is rewritten at its new path, and 8 days pass; the prune keeps the `move_in`, and a message erase then erases the block's lives at both paths |
-| **W2** | Every request composed from the tree (§6): the composition capability in the Codex patch, in-run folding of the run's own work (§5.7), step lines built during the run. **Needs Jonas's sign-off on the patch scope (§16)** | the native proofs run again with the new capability; runtime tests for pairing after composition, folds only at boundaries, reasoning dropped after a model or payer switch, and Codex's own compaction never reached; the work probe and the swap probe without restarts |
-| **W3** | The head (§5.6): vision, role and profile page in the stable prefix | runtime test that the head is byte-identical across runs and members; the memory probe's standing instruction |
+| **W2** | Every request composed from the tree (§6): first the compose probe (§6.4), then the composition capability in the Codex patch, in-run folding of the run's own work (§5.7) in its runtime envelope, step lines built during the run. **Needs Jonas's sign-off on the patch scope (§16) before the compose probe** | the native proofs run again with the new capability; runtime tests for pairing after composition, a forged work message refused, folds only at boundaries, the raw tail within RUN_VIEW / 2 or one step, reasoning dropped after a model or payer switch, and Codex's own compaction never reached; contract Order 2's fake-instruction proof (C:2136) through a tool result that has been folded into a step line; the work probe and the swap probe without restarts |
+| **W3** | The head (§5.6): vision, job specification and profile page in the stable prefix, as labelled data | runtime test that the head is byte-identical across runs and members, and that its text is escaped; contract Order 2's fake-instruction proof (C:2136) through a profile write that a fetched page asked for; the memory probe's standing instruction |
 | **M4** | Group chats, branches of every conversation the agent takes part in, and the Co-Founder's branches of every agent's thread | runtime tests for branch choice and budget; probe: a fact said in a group chat is recalled in the agent's own thread, and the Co-Founder recalls a fact from another agent's thread |
 | **W4** | Workers start from their parent's view by reference, and their logs nest under the dispatching step (§12) | runtime test: a worker's first request shares the parent's prefix and reads it from the cache on the same payer; zoom from the parent's step into the worker's log |
 | **M5** | On for every folder-v2 company; notebook trimmed to its profile page (§11) | the probe on a fresh company |
@@ -1230,7 +1301,9 @@ words; W steps make it the whole context.
   the erasure generation on the conversation and on each run log.
 - **9.1**: "recent canonical transcript" becomes "the conversation's view and branches of the agent's other
   conversations". **Every model request of a run** is composed from the head, these views and the run's own folded
-  work (§6). The vision is read at every run as 9.1 already says (C:887), now as part of the head.
+  work (§6). The vision is read at every run as 9.1 already says (C:887), now as part of the head. Every part keeps
+  its source and trust label (9.2): the head is labelled data, and the run's folded work is tool-result data in a
+  runtime envelope (§5.6, §5.7).
 - **13 (workers)**: a worker starts from its parent's view by reference, plus its bounded dispatch.
 - **14.2**: the Co-Founder's view holds branches of every agent's thread; it still receives no copies.
 - **15.1**: the notebook keeps only its profile tier (§11); `zoom`, which reads any conversation or run log of the
@@ -1246,8 +1319,9 @@ words; W steps make it the whole context.
   sit under tree roots (§4.5), so the prune also removes the versions of a log block written while its 16 steps
   filled; each later version holds every step the earlier one held.
 - **17**: a run's summaries, and the gaps it fills, are part of its work and are paid by its payer.
-- **P18**: erasing one message or one step by an owner or admin, and the tree's rebuild after it; steps whose read
-  references name an erased path are scrubbed like receipts (§10.1).
+- **P18**: erasing one message or one step by an owner or admin, and the tree's rebuild after it. A new row in P18 §6:
+  run-log steps whose arguments or results contain an erased path, or whose read references name an erased version,
+  get the full step erase once their run has ended, with every zoom of them (§10.1).
 - **Company-wide conversations**: every member and agent of the company may read every conversation, run log and tree.
   Group membership decides who takes part and whom a post wakes. The rule in `RUNTIME-COMPANY-STATE-FILES.md:280-281`
   that an agent adds to `people` only the member its run works for loses its reason ("adding a person lets them read
