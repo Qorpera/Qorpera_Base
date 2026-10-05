@@ -142,7 +142,7 @@ describe("shared drafts above the composer", () => {
 		s.panelInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenCalledTimes(1);
-		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan the launch now");
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan the launch now", []);
 		await settle();
 
 		// Bo keeps writing: the words arrive where Bo wrote them, the caret stays.
@@ -174,7 +174,7 @@ describe("shared drafts above the composer", () => {
 		await settle();
 		expect(s.panelInput().value).toBe("Please plan the launch today");
 		await vi.advanceTimersByTimeAsync(310);
-		expect(s.put).toHaveBeenNthCalledWith(2, roomId, userB.id, 4, "Please plan the launch today");
+		expect(s.put).toHaveBeenNthCalledWith(2, roomId, userB.id, 4, "Please plan the launch today", []);
 	});
 
 	it("keeps the member's caret when others' words reach their own draft, and says who writes with them", async () => {
@@ -200,7 +200,7 @@ describe("shared drafts above the composer", () => {
 		});
 		type(s.composer(), "Hey there team", 9);
 		await vi.advanceTimersByTimeAsync(310);
-		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 3, "Hey there team");
+		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 3, "Hey there team", []);
 	});
 
 	it("holds others' words while the member composes a letter, then merges them when it ends", async () => {
@@ -223,7 +223,7 @@ describe("shared drafts above the composer", () => {
 		expect(composer.value).toBe("Hi é all");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenCalledTimes(1);
-		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 3, "Hi é all");
+		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 3, "Hi é all", []);
 	});
 
 	it("merges a teammate's words into their draft once a letter composed in it ends, without another input", async () => {
@@ -242,7 +242,7 @@ describe("shared drafts above the composer", () => {
 		await settle();
 		expect(input.value).toBe("Well, Plan é");
 		await vi.advanceTimersByTimeAsync(310);
-		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 4, "Well, Plan é");
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 4, "Well, Plan é", []);
 	});
 
 	it("keeps what was typed when the same draft is opened again before it was written", async () => {
@@ -259,11 +259,11 @@ describe("shared drafts above the composer", () => {
 		expect(s.panelInput().value).toBe("Plan x");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenCalledTimes(1);
-		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan x");
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan x", []);
 		// Emptying it now empties what was written, too.
 		type(s.panelInput(), "");
 		await vi.advanceTimersByTimeAsync(310);
-		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 4, "");
+		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 4, "", []);
 	});
 
 	it("says when what was typed in a teammate's draft is not saved yet, and saves it once the cloud answers", async () => {
@@ -296,7 +296,7 @@ describe("shared drafts above the composer", () => {
 		expect(status.textContent).toBe("Too long to share. Shorten it to share your changes.");
 		type(s.panelInput(), "Plan short");
 		await vi.advanceTimersByTimeAsync(310);
-		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan short");
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan short", []);
 		expect(status.hidden).toBe(true);
 	});
 

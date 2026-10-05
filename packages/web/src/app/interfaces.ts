@@ -68,10 +68,11 @@ export function drawableBlock(block: InterfaceBlock): boolean {
 	return DRAWN_BLOCKS.has(block.kind) && block.from.length === 1 && Object.hasOwn(SOURCES, block.from[0] ?? "");
 }
 
-/** The columns of each source that carry outside content (contract 11.1), such as an email's sender or subject.
- * They keep their outside-content mark wherever they are shown or sent. */
-export const OUTSIDE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
-	mail: ["from_name", "from_address", "subject"],
+/** The column of each quote source's rows that names the record its outside values came from, which a quote of them
+ * carries as its `ref`: a mail row's thread (RUNTIME-INTERFACES.md §4; the member mail read's `thread`, step I5a).
+ * The columns that carry outside content are the cloud client's (`interfaceOutsideColumns`). */
+export const QUOTE_RECORD_COLUMNS: Readonly<Record<string, string>> = {
+	mail: "thread",
 };
 
 /** A block in a view. A view built from another (`from_view`) shows that view's blocks and narrows each with its

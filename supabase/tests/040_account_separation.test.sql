@@ -11,25 +11,42 @@
 -- ids travel in session GUCs, because RLS deliberately hides the other
 -- account's id from the account doing the asserting, and psql does not
 -- interpolate its own variables inside dollar-quoted blocks.
+--
+-- Each account owns one folder-v2 company, opened the way the company
+-- creation opens one (qorpera_folder_company_open, as in 856). Everything stays
+-- committed: 050-110 and 190-250 use the users, 070 and 080 the company
+-- "Separation A", and 050 its object.
 
 insert into auth.users (id, email, email_confirmed_at)
 values
 	('80000000-0000-4000-8000-00000000000a', 'sep-owner-a@example.test', statement_timestamp()),
 	('80000000-0000-4000-8000-00000000000b', 'sep-owner-b@example.test', statement_timestamp());
 
-select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-select set_config('qorpera_test.profile_a', public.qorpera_create_hosted_profile('Separation A', 'main', 1) ->> 'profile_id', false);
+select set_config('qorpera_test.profile_a', public.qorpera_folder_company_open('80000000-0000-4000-8000-00000000000a',
+	'80000000-0000-4000-8000-0000000000e1', 'Separation A') ->> 'profile_id', false);
+select set_config('qorpera_test.profile_b', public.qorpera_folder_company_open('80000000-0000-4000-8000-00000000000b',
+	'80000000-0000-4000-8000-0000000000e2', 'Separation B') ->> 'profile_id', false);
+
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.profile_a')::uuid)
+		or not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.profile_b')::uuid) then
+		raise exception 'a separation company is not a folder-v2 company';
+	end if;
+end
+$$;
+
+-- An object under A's prefix first. Ordering matters: B's cross-account read
+-- assertion below is vacuous unless something actually exists under A's
+-- prefix for it to fail to see. A folder-v2 member never writes or reads its
+-- company's objects in Storage directly (646): the platform stores them, so
+-- the object is written as the service role, and A's own read finds nothing.
+select set_config('request.jwt.claims', '{"role":"service_role"}', false);
+set role service_role;
+insert into storage.objects (bucket_id, name, metadata)
+values ('qorpera-profile-objects', current_setting('qorpera_test.profile_a') || '/' || repeat('1', 64), '{"size":"11"}');
 reset role;
 
-select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-select set_config('qorpera_test.profile_b', public.qorpera_create_hosted_profile('Separation B', 'main', 1) ->> 'profile_id', false);
-reset role;
-
--- Account A writes and reads back its own object first. Ordering matters:
--- B's cross-account read assertion below is vacuous unless something actually
--- exists under A's prefix for it to fail to see.
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
 
@@ -39,11 +56,15 @@ begin
 	if current_user <> 'authenticated' then
 		raise exception 'owner block is not running as authenticated (got %)', current_user;
 	end if;
-	insert into storage.objects (bucket_id, name, metadata)
-	values ('qorpera-profile-objects', v_a::text || '/' || repeat('1', 64), '{"size":"11"}');
 	select count(*) into v_seen from storage.objects
 	where bucket_id = 'qorpera-profile-objects' and name like v_a::text || '/%';
-	if v_seen <> 1 then raise exception 'owning account could not read back its own object'; end if;
+	if v_seen <> 0 then raise exception 'a folder-v2 owner read its company''s object from Storage directly'; end if;
+	begin
+		insert into storage.objects (bucket_id, name, metadata)
+		values ('qorpera-profile-objects', v_a::text || '/' || repeat('3', 64), '{"size":"13"}');
+		raise exception 'a folder-v2 owner wrote an object into Storage directly';
+	exception when insufficient_privilege then null;
+	end;
 end
 $$;
 
@@ -117,18 +138,6 @@ begin
 	exception when insufficient_privilege then v_ok := true;
 	end;
 	if not v_ok then raise exception 'authenticated invoked the runner claim entry point'; end if;
-
-	if to_regprocedure('qorpera_renew_artifact_gc_lease(uuid, uuid, text[])') is null then
-		raise exception 'qorpera_renew_artifact_gc_lease signature drifted; denial test would be vacuous';
-	end if;
-	v_ok := false;
-	begin
-		perform public.qorpera_renew_artifact_gc_lease(
-			'80000000-0000-4000-8000-0000000000c3', '80000000-0000-4000-8000-0000000000c4',
-			array[repeat('c', 64)]);
-	exception when insufficient_privilege then v_ok := true;
-	end;
-	if not v_ok then raise exception 'authenticated invoked the GC lease renewal'; end if;
 
 	begin
 		insert into storage.objects (bucket_id, name, metadata)

@@ -1,0 +1,28 @@
+# One plumbing request (see qorpera-computer-plumb). Root, with only what
+# creating a veth into another namespace needs.
+[Unit]
+Description=Qorpera computer network plumbing
+Requires=qorpera-computer-network.service
+After=qorpera-computer-network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/qorpera/qorpera-computer-plumb
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=20
+UMask=0077
+LimitCORE=0
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SYS_PTRACE
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes

@@ -1138,7 +1138,7 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		);
 	});
 
-	it("routes shell only through the injected contained runner with bounded output and no inherited provider environment", async () => {
+	it("routes shell only through the injected contained runner with bounded output, no inherited provider environment and no display", async () => {
 		const fixture = automationFixture();
 		await fixture.automation.perform(
 			{ kind: "shell", command: "pwd", timeoutMs: 1000 },
@@ -1157,7 +1157,8 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 				workingDirectory: "/srv/workbench",
 				timeoutMs: 1000,
 				maxOutputBytes: 16384,
-				environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+				// The screen's display is for its own tools: a shell command never gets it.
+				environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 			}),
 		);
 		fixture.commands.run = vi.fn(async () => ({ code: 0, stdout: "x".repeat(16_385), stderr: "" }));
