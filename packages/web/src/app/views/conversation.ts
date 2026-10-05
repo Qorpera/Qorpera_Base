@@ -2362,8 +2362,8 @@ export class ConversationView {
 									"div",
 									{ class: "text" },
 									...(item.text
-									? this.#withMentions(item.text, item.quotes, item.unreadQuotes === true)
-									: [t("(empty)")]),
+										? this.#withMentions(item.text, item.quotes, item.unreadQuotes === true)
+										: [t("(empty)")]),
 								),
 							]
 						: []
