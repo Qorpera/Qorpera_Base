@@ -77,18 +77,18 @@ what is published.
 **Base versions** (§2 "The base version of a path": the newest version the writer has seen). The folder program keeps
 the mount's version map: for each path whose content it read, the newest version it read. Every read names its
 version, so the map is exact. The program sends a path's base with each change it asks for, and the service uses it.
-A change's base is:
+A save's base (a file opened for writing, its bit set, or a file renamed over it) is:
 - a path the view read: the newest version it read, even if the feed has moved on since. An editor that read v1,
   while another machine published v2, saves with base v1, by writing the file in place or by renaming a temporary
   file over it, and gets a conflict, not a silent overwrite of v2;
-- a path the view never read: the version the view showed when the boundary's work first touched it (opened for
-  writing, removed, renamed, its bit set). A blind `echo > f` therefore never overwrites a version the view did not
-  see;
+- a path the view never read: the version the view showed when the save began. A blind `echo > f` therefore never
+  overwrites a version the view did not see;
 - a path the view showed as absent: no base, so its write must find it absent.
 
-A removed or renamed folder records the view's position in the feed (`asOfSeq`) at the first such operation. The
-feed keeps moving underneath: a pending path keeps showing the view's own version, and the commit decides. After a
-save the map holds the version the save made.
+A move's or removal's base is the version the name showed when it was made (what `mv` or `rm` saw), and a moved or
+removed folder records the view's position in the feed (`asOfSeq`) then. The feed keeps moving underneath: a pending
+path keeps showing the view's own version, and the commit decides (a removed file another machine changes shows
+again: "A boundary" below). After a save the map holds the version the save made.
 
 **The map lives as long as the programs it protects.** An editor's buffer outlives a restart of the folder service
 or of the folder program, so the map must too; otherwise a save after the restart would take the newest version as
@@ -107,14 +107,15 @@ This replaces §2's "saved with each command's read record": step 3 has no comma
 
 A boundary publishes the view's pending changes as one change set.
 
-**When.** In step 3: when the machine asks (`qorpera-folder publish <mount>`), and, for a mount configured with a
-quiet period, about two seconds after the last change (the desktop rule of §2). Steps 4–6 add theirs: command end
-and output reads, and per-desktop quiet periods.
+**When.** In step 3: when the machine asks (`qorpera-folder publish <mount>`), for a mount configured with a quiet
+period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
+pending published first (below). Steps 4–6 add theirs: command end and output reads, and per-desktop quiet periods.
 
 **What is left out** (§2 "Never published"):
 - a file still open for writing by any process; it waits for a later boundary;
 - lock, swap, backup and trash names (`.~lock.*#`, `~$*`, `*.swp`, `*.swo`, `.#*`, `*~`, `.Trash-*`): they stay
-  pending, visible only in this view, and go when the view closes;
+  pending, visible only in this view, and go when the view closes. A published path cannot be moved there (`EXDEV`;
+  a file manager then offers to delete instead);
 - a path created and removed between two boundaries.
 
 **Units** (§2 "Units"), from the net change per path against its base:
@@ -125,31 +126,47 @@ and output reads, and per-desktop quiet periods.
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
 
-**One change set, no version made inside it needed.** A unit's `expectedVersion` must be known before the commit,
-and a move gives what it moves new versions. So:
-- every unit names live paths as they are before the change set's own moves: a change inside a moved folder lands
-  at its old path first and goes with the folder (the core does not count the change set's own entries as unseen,
-  since they have no sequence number yet);
-- a file both moved and changed in one boundary is published as the removal of its old path and a new file at the
-  new one;
-- the units are ordered so each finds what it needs: a path freed before it is filled, a new folder before what goes
-  in it, what is inside a moving folder before the folder moves, what moves out of a removed folder before it goes;
-- two files that take each other's place become writes of each other's bytes; two folders that do cannot be one
-  change set, and are not applied (rename one at a time);
-- a file still open for writing whose path or folder moves holds the whole boundary until it closes.
+**Nothing the view holds is lost.** The core applies each unit whole or not at all, and the units of one change set
+independently: one may save while another fails. And a unit's `expectedVersion` must be known before its change set,
+while a move gives what it moves new versions. So the view only lets pending changes build up that can be published
+together that way: every unit names a live path as it is, no unit needs a version another unit makes, and no unit's
+failure can lose another's work. The units are ordered so a path is freed before it is filled, and a new folder made
+before what goes in it. Then:
+- **a conflict** keeps this view's version on the receipt (P17's conflict copies, below), and the path shows the
+  live version;
+- **refused, denied, or not applied** (its folder was not made, the save did not get through) for a unit carrying new
+  bytes: the change stays pending in this view, the report says why, and the next boundary tries it again. An agent
+  fixes what was refused (a structured file that does not parse, a folder it may not write) by changing it again, or
+  moving it;
+- a unit that only moves or removes, and fails, loses nothing: what it would have moved or removed is still live,
+  and the view shows it again.
+- **A removal never takes a version the machine did not see.** A removal of a file names the version the name showed;
+  if another machine's change reaches the feed before the boundary, the removal is dropped and the file shows again.
+  A removed or moved folder names the view's position (`asOfSeq`), and the core refuses it if anything in it changed
+  since.
+
+**Changes that publish what is pending first.** A change that could not be published together with what is pending
+first publishes what is pending (a boundary, as when the machine asks), then is made on the live folder. These are:
+- any change inside a folder this view moved (the move publishes first, then the change lands at the new path);
+- moving or removing a folder with changes inside it, or one something was moved out of;
+- reusing a path a moved or removed folder left (`rm -rf D; mkdir D`);
+- changing a file this view moved, or moving a file this view changed;
+- the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`).
+If what blocks it is still pending after that boundary (a file open for writing inside the folder being moved), the
+change fails with `EBUSY`. The machine sees the change take longer; nothing else differs.
 
 **Commit.** As the view's actor, with operation key `folder-view:<viewId>:<boundary id>`, where the boundary id is
 random. The service keeps the exact units until the boundary has an answer, so a commit asked again after a lost
 reply is the same change set under the same key, and the core replays it (the core refuses a key used for different
-units, 22023). If the service dies during a commit, it has landed or not; the mount shows the live folder after the
-program reconnects either way.
+units, 22023). A boundary whose answer never came is asked again, unchanged, before the next one. If the service dies
+during a commit, it has landed or not; the mount shows the live folder after the program reconnects either way.
 
-**Outcomes and the report.** After the commit the view shows exactly the live folder, and the report lists every
-changed path: `saved`; `conflict`, with the receipt that keeps this view's version (P17's conflict copies, below);
-`refused`, with the core's reason (no write authority, a seeded path, a structured file that does not parse); or `not
-applied`, with why (still open, a unit it depended on failed, the save did not get through). The reply to `publish`
-carries it, and the program prints it. A quiet-period report is logged in the machine's journal until step 4 routes
-it to the desktop.
+**Outcomes and the report.** After the boundary the view shows the live folder, except the changes kept pending
+(above), and the report lists every changed path: `saved`; `conflict`, with the receipt that keeps this view's
+version; `refused` or `denied`, with the core's reason (no write authority, a seeded path, a structured file that does
+not parse); `not applied`, with why (still open, a folder it needed was not made, the save did not get through); and
+whether the change is kept pending. The reply to `publish` carries it, and the program prints it. A quiet-period
+report is logged in the machine's journal until step 4 routes it to the desktop.
 
 ## Errors at once
 
@@ -166,8 +183,9 @@ reported, instead of failing at open with `EACCES` as §2 says. Proposal P9 belo
 ## Protocol v2
 
 The hello's answer says whether the view may write (`readOnly`). New requests on the `io` connection, each answered
-with a small JSON reply or `e`. Every change names the base of each existing path it touches (`base`: the version the
-mount last read of it, from its version map; left out for a path it never read):
+with a small JSON reply or `e`. Every change names the base of each existing path it touches (`base`: for a save,
+the version the mount last read of it, from its version map, left out for a path it never read; for a move or a
+removal, the version the name showed):
 
 | Type | Request | Reply |
 | --- | --- | --- |
@@ -210,7 +228,7 @@ extend it.
 | --- | --- | --- |
 | 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
-| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; every ordering case of the units (moves inside moved folders, swaps, a folder made again, moves out of a removed folder) applied to a model of the core's rules ends as the view showed it; the hosted-db script runs the real commit on boundaries the service builds |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |
 | 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
 
