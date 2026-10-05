@@ -135,6 +135,12 @@ begin
 			and run.staff_agent_id = '92400000-0000-4000-8000-000000000031';
 		perform pg_temp.base_assert((select job.status = 'queued' from public.qorpera_execution_runs run
 			join public.qorpera_runner_jobs job on job.id = run.job_id where run.id = v_chat_run), 'Bob''s chat run is queued');
+		-- The chat run's job made older than the routine run's: the read orders the agent's runs by when their jobs were
+		-- made, so without the conversation fence it would show the chat run.
+		update public.qorpera_runner_jobs set created_at = (select job.created_at - interval '1 minute'
+			from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id
+			where run.id = current_setting('qorpera_test.ms_run')::uuid)
+		where id = (select job_id from public.qorpera_execution_runs where id = v_chat_run);
 		perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 		set local role authenticated;
 		perform pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) ->> 'run_id'
