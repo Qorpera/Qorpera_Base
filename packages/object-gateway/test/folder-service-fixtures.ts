@@ -435,8 +435,7 @@ export class FakeCore implements FolderCore {
 			seq = ++this.seq;
 			this.journal.push({ seq, kind: "change_set", changes });
 		}
-		// As the real core answers: no unit carries the version it made (the feed has them).
-		const answer: CommitAnswer = { commitId, seq, units: outcomes.map((o) => ({ ...o, version: null })) };
+		const answer: CommitAnswer = { commitId, seq, units: outcomes };
 		this.copies.set(commitId, kept);
 		this.#answers.set(key, { request, answer });
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "lost") {
