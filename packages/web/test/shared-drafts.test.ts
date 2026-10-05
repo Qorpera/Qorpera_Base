@@ -300,6 +300,23 @@ describe("shared drafts above the composer", () => {
 		expect(status.hidden).toBe(true);
 	});
 
+	it("writes a text shortened just before its panel closes (quotes follow-up F2)", async () => {
+		const s = await setup([draft(userB.id, "Plan", 3)]);
+		s.notches()[0]!.click();
+		await settle();
+		type(s.panelInput(), `Plan ${"æ".repeat(33_000)}`);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(s.put).not.toHaveBeenCalled();
+		s.put.mockResolvedValue({ status: "ok", draft: draft(userB.id, "Plan short", 4, { editorUserId: userA.id }) });
+		type(s.panelInput(), "Plan short");
+		s.panelInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		await settle();
+		expect(s.panel()).toBeNull();
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 3, "Plan short", []);
+	});
+
 	it("keeps a teammate's first words that raced a listing, and never goes back to an older version", async () => {
 		const f = await setup([]);
 		const listing = deferred<RoomDraft[]>();
@@ -537,6 +554,32 @@ describe("one draft kept in step with the cloud", () => {
 		s.set("abc");
 		await vi.advanceTimersByTimeAsync(310);
 		expect(s.writes).toHaveLength(2);
+	});
+
+	it("writes an edit made while a refused text was on its way, and waits for it (quotes follow-up F2)", async () => {
+		const s = sync({ revision: 1, body: "a" });
+		s.set("ab");
+		await vi.advanceTimersByTimeAsync(310);
+		s.set("abc");
+		let flushed = false;
+		void s.sync.flushed().then(() => {
+			flushed = true;
+		});
+		s.writes[0]!.answer.reject(
+			new CloudRpcError("qorpera_put_room_draft", { message: "Draft is invalid", code: "22023" }, 400),
+		);
+		await settle();
+		expect(s.sync.status).toBe("too-long");
+		expect(flushed).toBe(false);
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.writes.map(({ base, body }) => [base, body])).toEqual([
+			[1, "ab"],
+			[1, "abc"],
+		]);
+		s.writes[1]!.answer.resolve({ status: "ok", draft: draft(userB.id, "abc", 2) });
+		await settle();
+		expect(flushed).toBe(true);
+		expect(s.sync.status).toBe("saved");
 	});
 
 	it("tries again later when the cloud does not answer, and stops when the draft is gone", async () => {
