@@ -3,8 +3,8 @@
  * names the machine's CID. Needs the built program, root and /dev/fuse, so it runs only when
  * QORPERA_FOLDER_MOUNT_BIN names the program (the run-on-node step "folder-program" does, in a container). */
 import { type ChildProcess, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { connect, createServer, type Server } from "node:net";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +12,19 @@ import { NasObjects } from "../src/folder-service/objects.ts";
 import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
-import { BRIDGE, ENV, FakeCore, folder, grants, PASS, storeFile } from "./folder-service-fixtures.ts";
+import { FolderStaging } from "../src/folder-service/staging.ts";
+import {
+	BRIDGE,
+	ENV,
+	FakeCore,
+	FakeUploads,
+	folder,
+	grants,
+	hashOf,
+	PASS,
+	storeFile,
+	writableGrants,
+} from "./folder-service-fixtures.ts";
 
 const program = process.env.QORPERA_FOLDER_MOUNT_BIN;
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -142,4 +154,156 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		expect(await exited).toBe(0);
 		expect(await mounted(company)).toBe(false);
 	}, 30_000);
+
+	it("writes through a writable mount, publishes, and keeps stale saves after a service restart as conflicts", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-e2e-"));
+		cleanup.push(() => rm(dir, { recursive: true, force: true }));
+		const root = join(dir, "share");
+		const BIG = 4 * 1024 * 1024;
+		const core = new FakeCore();
+		core.seed([
+			folder("docs"),
+			await storeFile(root, "docs/plan.md", "plan one", 1, BIG),
+			await storeFile(root, "docs/other.md", "other one", 1, BIG),
+		]);
+		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+		const uploads = new FakeUploads(root, core);
+		const serviceSocket = join(dir, "service.sock");
+		// The service, started again on demand: what was pending goes with it, as on a node's restart.
+		let service: FolderService;
+		let server: Server;
+		const sockets = new Set<Socket>();
+		const startService = async (): Promise<void> => {
+			service = new FolderService({
+				core,
+				objects,
+				grants: writableGrants(),
+				staging: new FolderStaging(core, uploads, objects),
+				log: () => {},
+			});
+			server = createFolderServer(service, () => {});
+			server.on("connection", (socket) => {
+				sockets.add(socket);
+				socket.on("close", () => sockets.delete(socket));
+			});
+			await listen(server, serviceSocket);
+		};
+		const stopService = async (): Promise<void> => {
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			service.stop();
+		};
+		await startService();
+		cleanup.push(stopService);
+		const bridgeSocket = join(dir, "bridge.sock");
+		const bridge = createServer((machine) => {
+			const upstream = connect(serviceSocket, () => {
+				upstream.write(encodeJson(Kind.bridge, BRIDGE));
+				machine.pipe(upstream);
+				upstream.pipe(machine);
+			});
+			machine.on("error", () => upstream.destroy());
+			upstream.on("error", () => machine.destroy());
+			machine.on("close", () => upstream.destroy());
+			upstream.on("close", () => machine.destroy());
+		});
+		await listen(bridge, bridgeSocket);
+		cleanup.push(() => new Promise<void>((resolve) => bridge.close(() => resolve())));
+
+		const viewFile = join(dir, "view.json");
+		await writeFile(viewFile, JSON.stringify({ environmentId: ENV, viewId: "proof", pass: PASS }), { mode: 0o600 });
+		await chmod(viewFile, 0o600);
+		const company = join(dir, "company");
+		await mkdir(company);
+		let output = "";
+		const child: ChildProcess = spawn(
+			program!,
+			[
+				"mount",
+				"--view-file",
+				viewFile,
+				"--mountpoint",
+				company,
+				"--connect",
+				`unix:${bridgeSocket}`,
+				"--threads",
+				"4",
+				"--state-dir",
+				join(dir, "state"),
+			],
+			{ stdio: ["ignore", "pipe", "pipe"] },
+		);
+		child.stdout!.on("data", (d: Buffer) => {
+			output += d.toString();
+		});
+		child.stderr!.on("data", (d: Buffer) => {
+			output += d.toString();
+		});
+		const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+		cleanup.push(async () => {
+			if (child.exitCode === null) child.kill("SIGKILL");
+			if (await mounted(company)) spawn("umount", ["-l", company]);
+		});
+		/** `qorpera-folder publish`: its exit code and what it printed. */
+		const publish = (): Promise<{ code: number | null; text: string }> =>
+			new Promise((resolve) => {
+				let text = "";
+				const run = spawn(program!, ["publish", "--view-file", viewFile, "--connect", `unix:${bridgeSocket}`], {
+					stdio: ["ignore", "pipe", "pipe"],
+				});
+				run.stdout!.on("data", (d: Buffer) => {
+					text += d.toString();
+				});
+				run.stderr!.on("data", (d: Buffer) => {
+					text += d.toString();
+				});
+				run.on("exit", (code) => resolve({ code, text }));
+			});
+
+		expect(await eventually(() => mounted(company)), output).toBe(true);
+		expect((await stat(join(company, "docs/plan.md"))).mode & 0o777).toBe(0o644);
+
+		// A new file: there at once, published when the machine asks.
+		await writeFile(join(company, "docs/new.md"), "hello");
+		expect(await readFile(join(company, "docs/new.md"), "utf8")).toBe("hello");
+		expect(core.entries.has("docs/new.md")).toBe(false);
+		let published = await publish();
+		expect(published, output).toMatchObject({ code: 0 });
+		expect(published.text).toMatch(/saved\s+docs\/new\.md/);
+		expect(core.entries.get("docs/new.md")).toMatchObject({ fileSha256: hashOf("hello"), mediaType: "text/markdown" });
+
+		// Two editors read their files (the version map takes version one of each); then the node's service restarts,
+		// and another machine saves both meanwhile.
+		expect(await readFile(join(company, "docs/plan.md"), "utf8")).toBe("plan one");
+		expect(await readFile(join(company, "docs/other.md"), "utf8")).toBe("other one");
+		await stopService();
+		await startService();
+		core.write(await storeFile(root, "docs/plan.md", "plan theirs", 2, BIG));
+		core.write(await storeFile(root, "docs/other.md", "other theirs", 2, BIG));
+		// One saves in place, the other through a temporary file renamed over: both are based on what they read.
+		expect(
+			await eventually(async () => {
+				await writeFile(join(company, "docs/plan.md"), "plan mine");
+				return true;
+			}, 10_000),
+			output,
+		).toBe(true);
+		await writeFile(join(company, "docs/.other.md.tmp"), "other mine");
+		await rename(join(company, "docs/.other.md.tmp"), join(company, "docs/other.md"));
+		published = await publish();
+		expect(published.code, published.text + output).toBe(4);
+		expect(published.text).toMatch(/conflict\s+docs\/plan\.md/);
+		expect(published.text).toMatch(/conflict\s+docs\/other\.md/);
+		// The other machine's versions stay; this machine's are kept on the receipt, and the mount shows the live ones.
+		expect(core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("plan theirs"));
+		expect(core.entries.get("docs/other.md")?.fileSha256).toBe(hashOf("other theirs"));
+		expect(core.entries.has("docs/.other.md.tmp")).toBe(false);
+		expect(
+			await eventually(async () => (await readFile(join(company, "docs/plan.md"), "utf8")) === "plan theirs", 5_000),
+		).toBe(true);
+
+		child.kill("SIGTERM");
+		expect(await exited).toBe(0);
+	}, 60_000);
 });
+

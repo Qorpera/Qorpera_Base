@@ -6,7 +6,7 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -44,14 +44,20 @@ fn mounted(path: &Path) -> bool {
 }
 
 fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
+	start_with(node, None)
+}
+
+/// Mounts with the version map kept in `state` (a mount started again over the same folder reads it back).
+fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 	let mountpoint = node.dir.join("company");
-	std::fs::create_dir(&mountpoint).unwrap();
+	std::fs::create_dir_all(&mountpoint).unwrap();
 	let link = Link::new(
 		node.addr.clone(),
 		View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() },
 		4,
 	);
-	let options = Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false };
+	let options =
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, state };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -193,10 +199,110 @@ fn a_refused_view_is_never_mounted() {
 		View { environment_id: "env".into(), view_id: "view".into(), pass: "wrong".into() },
 		2,
 	);
-	let options = Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false };
+	let options =
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, state: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
 	}
 	assert!(!mounted(&mountpoint));
+}
+
+#[test]
+fn writes_files_and_folders_through_a_writable_mount() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("docs/plan.md", "the plan, version one", false);
+	let (company, runner) = start_with(&node, Some(node.dir.join("state")));
+	assert_eq!(std::fs::metadata(company.join("docs/plan.md")).unwrap().permissions().mode() & 0o777, 0o644);
+
+	// A new file, there at once and on the node.
+	std::fs::write(company.join("docs/new.md"), "hello").unwrap();
+	assert_eq!(std::fs::read_to_string(company.join("docs/new.md")).unwrap(), "hello");
+	assert_eq!(node.content("docs/new.md").unwrap(), b"hello");
+
+	// A file across three chunks, written in pieces.
+	let big: Vec<u8> = (0..9 * 1024 * 1024 + 5).map(|i| (i % 251) as u8).collect();
+	std::fs::write(company.join("big.bin"), &big).unwrap();
+	assert_eq!(node.content("big.bin").unwrap(), big);
+	assert_eq!(std::fs::read(company.join("big.bin")).unwrap(), big);
+
+	// Writes inside chunks already sent (a database's pages), read back before the close.
+	let mut f = std::fs::OpenOptions::new().read(true).write(true).open(company.join("big.bin")).unwrap();
+	f.seek(SeekFrom::Start(4096)).unwrap();
+	f.write_all(b"page").unwrap();
+	f.seek(SeekFrom::Start(5 * 1024 * 1024)).unwrap();
+	f.write_all(b"two").unwrap();
+	let mut back = [0u8; 4];
+	f.seek(SeekFrom::Start(4096)).unwrap();
+	f.read_exact(&mut back).unwrap();
+	assert_eq!(&back, b"page");
+	drop(f);
+	let mut expected = big.clone();
+	expected[4096..4100].copy_from_slice(b"page");
+	expected[5 * 1024 * 1024..5 * 1024 * 1024 + 3].copy_from_slice(b"two");
+	assert_eq!(node.content("big.bin").unwrap(), expected);
+
+	// An editor's save: it read the file, writes a temporary one and renames it over, based on the version it read.
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan, version one");
+	std::fs::write(company.join("docs/.plan.md.new"), "the plan, version two").unwrap();
+	std::fs::rename(company.join("docs/.plan.md.new"), company.join("docs/plan.md")).unwrap();
+	assert_eq!(node.content("docs/plan.md").unwrap(), b"the plan, version two");
+	assert_eq!(node.renames().last().unwrap().to_base.as_deref(), Some("v1"));
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan, version two");
+
+	// Folders: made with what is in them, renamed, removed.
+	std::fs::create_dir_all(company.join("a/b")).unwrap();
+	std::fs::write(company.join("a/b/c.txt"), "c").unwrap();
+	std::fs::rename(company.join("a"), company.join("z")).unwrap();
+	assert_eq!(std::fs::read_to_string(company.join("z/b/c.txt")).unwrap(), "c");
+	assert_eq!(names(&company), ["big.bin", "docs", "z"]);
+	std::fs::remove_dir_all(company.join("z")).unwrap();
+	assert!(!node.exists("z") && !node.exists("z/b/c.txt"));
+
+	// The executable bit, and a file cut short that no one has open.
+	std::fs::set_permissions(company.join("docs/new.md"), std::fs::Permissions::from_mode(0o755)).unwrap();
+	assert!(node.executable("docs/new.md"));
+	assert_eq!(std::fs::metadata(company.join("docs/new.md")).unwrap().permissions().mode() & 0o777, 0o755);
+	let path = std::ffi::CString::new(company.join("big.bin").to_str().unwrap()).unwrap();
+	// SAFETY: a path from CString, and a plain truncate.
+	assert_eq!(unsafe { libc::truncate(path.as_ptr(), 10) }, 0);
+	assert_eq!(node.content("big.bin").unwrap(), &expected[..10]);
+	assert_eq!(std::fs::metadata(company.join("big.bin")).unwrap().len(), 10);
+
+	// What the folder does not hold.
+	assert_eq!(std::os::unix::fs::symlink("x", company.join("link")).unwrap_err().raw_os_error(), Some(libc::EPERM));
+
+	// The machine asks for a boundary.
+	let link = Link::new(node.addr.clone(), View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() }, 1);
+	link.publish().unwrap();
+	assert_eq!(node.publishes(), 1);
+
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn the_version_map_outlives_the_program() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes.md", "first", false);
+	let state = node.dir.join("state");
+	let (company, runner) = start_with(&node, Some(state.clone()));
+	assert_eq!(std::fs::read_to_string(company.join("notes.md")).unwrap(), "first");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+	// Another machine saves while the program is down; the program starts again with the same map.
+	node.reopen_view();
+	node.put("notes.md", "theirs", false);
+	let (company, runner) = start_with(&node, Some(state));
+	// An editor saves its buffer in place: based on the version read before the restart, not the newest.
+	std::fs::write(company.join("notes.md"), "mine").unwrap();
+	assert_eq!(node.opens().last().unwrap(), &("notes.md".to_string(), Some("v1".to_string())));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }

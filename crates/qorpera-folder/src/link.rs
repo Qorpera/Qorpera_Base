@@ -198,30 +198,42 @@ impl Link {
 
 	// ---- Writes (protocol 2) --------------------------------------------------------------------------------------
 
-	/// One change on a pooled connection. Unlike a list or a read it is not sent again when the link breaks after it
-	/// went out: the node may have made it, so the program sees EIO. A connection that could not be made at all is
-	/// tried once more (nothing was sent).
+	/// One change on a pooled connection. Unlike a list or a read it is not sent again once it went out and the link
+	/// broke before the answer: the node may have made it, so the program sees EIO. A connection that could not be made,
+	/// or that would not take the request (a pooled one the node closed, when its service restarted), never delivered
+	/// it: the change goes out once more on a new connection.
 	fn change(&self, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
-		let mut s = match self.take() {
-			Ok(s) => s,
-			Err(Fail::Link(_)) => self.take()?,
-			Err(f) => return Err(f),
-		};
-		match exchange(&mut s, request, payload, answer) {
-			Ok(data) => {
-				self.give(s);
-				Ok(data)
-			}
-			Err(Fail::Remote(e)) => {
-				self.give(s);
-				let f = Fail::Remote(e);
-				self.note(&f);
-				Err(f)
-			}
-			Err(Fail::Link(e)) => {
+		let mut attempt = 0;
+		loop {
+			attempt += 1;
+			let mut s = match self.take() {
+				Ok(s) => s,
+				Err(Fail::Link(_)) if attempt == 1 => continue,
+				Err(f) => return Err(f),
+			};
+			if let Err(e) = write_frame(&mut s, request, payload) {
 				self.lost();
-				Err(Fail::Link(e))
+				if attempt == 1 {
+					continue;
+				}
+				return Err(Fail::Link(e));
 			}
+			return match read_answer(&mut s, answer) {
+				Ok(data) => {
+					self.give(s);
+					Ok(data)
+				}
+				Err(Fail::Remote(e)) => {
+					self.give(s);
+					let f = Fail::Remote(e);
+					self.note(&f);
+					Err(f)
+				}
+				Err(Fail::Link(e)) => {
+					self.lost();
+					Err(Fail::Link(e))
+				}
+			};
 		}
 	}
 
@@ -383,6 +395,10 @@ impl Feed {
 
 fn exchange(s: &mut Stream, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
 	write_frame(s, request, payload).map_err(Fail::Link)?;
+	read_answer(s, answer)
+}
+
+fn read_answer(s: &mut Stream, answer: u8) -> Result<Vec<u8>, Fail> {
 	let (k, body) = read_frame(s).map_err(Fail::Link)?;
 	if k == answer {
 		Ok(body)
