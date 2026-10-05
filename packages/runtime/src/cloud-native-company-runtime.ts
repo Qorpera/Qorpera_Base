@@ -661,9 +661,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											broker: this.#secretBroker,
 										})
 									: []),
-								// The company's own website accounts (A1-4): not a worker's, and a folder company's come
-								// with its connection files (A1-7).
-								...(this.#companyAccounts && !work.isWorker && !context.folder
+								// The company's own website accounts (A1-4): not a worker's. They serve companies on the
+								// company folder only (A1-7, migration 20260930072000), whose vault writes their connection files.
+								...(this.#companyAccounts && !work.isWorker && context.folder
 									? [
 											cloudCompanyAccountTool({
 												binding,
