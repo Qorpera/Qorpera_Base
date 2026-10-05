@@ -1331,7 +1331,7 @@ by a machine.
 - **Takeover drains the whole computer** (#411), so it ends the agent's
   commands. The folder design says so.
 - **Findings sent to #411's session on 2026-09-29.** The first was a real
-  bug, fixed in #411 at 3822194a1 (migration 20260929070200): the new shell
+  bug, fixed in #411 at 3822194a1 (now in migration 20260930029000): the new shell
   arguments were refused by the live `qorpera_native_office_operation`. The
   second is that a takeover ends the command. #411's session keeps that,
   because a command left running could still use the screen the member now
