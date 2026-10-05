@@ -442,7 +442,7 @@ end $$;
 create temporary table acct_code on commit drop as
 select p.proname::text as name, regexp_replace(regexp_replace(p.prosrc, '/\*.*?\*/', '', 'gs'), '--[^\n]*', '', 'g') as src
 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('qorpera_company_account_call',
-	'qorpera_company_account_receipt', 'qorpera_open_company_account', 'qorpera_describe_company_account_open',
+	'qorpera_company_account_receipt', 'qorpera_company_account_locked_for_close', 'qorpera_open_company_account', 'qorpera_describe_company_account_open',
 	'qorpera_use_company_account', 'qorpera_add_company_account_version', 'qorpera_set_company_account_state',
 	'qorpera_fill_company_account', 'qorpera_find_company_accounts', 'qorpera_remove_company_account');
 -- Where a text first (or last) appears in a function's code; null when it does not.
@@ -461,7 +461,7 @@ $$;
 -- The first row lock or advisory lock of a function's own code.
 create function pg_temp.first_lock(p_name text) returns integer language sql as $$
 	select min(nullif(position(m[1] in src), 0)) from acct_code, regexp_matches(src,
-		'(\mfor\s+(?:update|share|no\s+key\s+update|key\s+share)\M|pg_advisory|qorpera_native_tool_locked_run\(|qorpera_folder_company_enter\(|qorpera_company_account_locked\(|qorpera_company_account_receipt\()', 'gi') m
+		'(\mfor\s+(?:update|share|no\s+key\s+update|key\s+share)\M|pg_advisory|qorpera_native_tool_locked_run\(|qorpera_folder_company_enter\(|qorpera_company_account_locked\(|qorpera_company_account_locked_for_close\(|qorpera_company_account_receipt\()', 'gi') m
 	where name = p_name
 $$;
 do $$
@@ -470,7 +470,7 @@ begin
 	-- Exactly the replaced functions and the new receipt helper name the migration.
 	perform pg_temp.base_assert((select array_agg(proname::text order by proname) from pg_proc
 		where pronamespace = 'public'::regnamespace and prosrc ~ '20260930072000') = array['qorpera_add_company_account_version',
-			'qorpera_company_account_call', 'qorpera_company_account_receipt', 'qorpera_describe_company_account_open',
+			'qorpera_company_account_call', 'qorpera_company_account_locked_for_close', 'qorpera_company_account_receipt', 'qorpera_describe_company_account_open',
 			'qorpera_fill_company_account', 'qorpera_find_company_accounts', 'qorpera_open_company_account',
 			'qorpera_remove_company_account', 'qorpera_set_company_account_state', 'qorpera_use_company_account'],
 		'D: the functions naming 20260930072000: ' || (select array_agg(proname::text order by proname) from pg_proc
@@ -507,8 +507,17 @@ begin
 	end loop;
 	perform pg_temp.base_assert(cardinality(pg_temp.code_all_at('qorpera_use_company_account', 'public.qorpera_company_account_receipt(')) = 1
 		and cardinality(pg_temp.code_all_at('qorpera_add_company_account_version', 'public.qorpera_company_account_receipt(')) = 1
-		and cardinality(pg_temp.code_all_at('qorpera_set_company_account_state', 'public.qorpera_company_account_receipt(')) = 2,
+		and cardinality(pg_temp.code_all_at('qorpera_set_company_account_state', 'public.qorpera_company_account_receipt(')) = 3,
 		'D: the receipt calls');
+	-- A close takes its rows (closed ones too) before the receipt it checks when the account was closed meanwhile, and the
+	-- helper takes the secret, then the account.
+	perform pg_temp.base_assert(pg_temp.code_at('qorpera_set_company_account_state', 'public.qorpera_company_account_locked_for_close(')
+			< (pg_temp.code_all_at('qorpera_set_company_account_state', 'public.qorpera_company_account_receipt('))[2]
+		and pg_temp.code_at('qorpera_company_account_locked_for_close', 'from public.qorpera_cloud_secrets')
+			< pg_temp.code_at('qorpera_company_account_locked_for_close', 'from public.qorpera_company_accounts')
+		and (select count(*) from acct_code where name = 'qorpera_company_account_locked_for_close'
+			and src ~* 'qorpera_cloud_secrets\M[^;]*\mfor\s+update[^;]*;[^;]*qorpera_company_accounts\M[^;]*\mfor\s+update') = 1,
+		'D: a close locks the secret, then the account, before the receipt of an account closed meanwhile');
 	perform pg_temp.base_assert(pg_temp.code_at('qorpera_fill_company_account', 'public.qorpera_runtime_offices')
 			< pg_temp.code_at('qorpera_fill_company_account', 'public.qorpera_company_account_locked(')
 		and pg_temp.code_at('qorpera_fill_company_account', 'public.qorpera_company_account_locked(')
