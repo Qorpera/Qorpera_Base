@@ -24,7 +24,7 @@ import {
 	setCompanyStateSettings,
 	writeRoutineFile,
 } from "@qorpera/cloud-client/company-state-files";
-import type { Cloud } from "./client.ts";
+import { type Cloud, CloudRpcError } from "./client.ts";
 import {
 	folderNames,
 	invalid,
@@ -47,6 +47,8 @@ import type { HostedProfile } from "./types.ts";
  * come from the routine index. The file does not say who pays: before a save that needs a login (a new routine, a
  * resume, an edit of what a run pins), the member's account gets today's consent and binding, and the core takes the
  * routine's own login when it still pays for this member, else the member's newest one that pays for unattended work.
+ * From 20260930064000 a routine keeps a login that serves its saver also when it cannot pay, and waits until a member
+ * picks one (`setLogin`); `payer` says who pays and since when.
  */
 
 /** A ChatGPT plan never pays for a file-change or webhook routine (the kernel refuses it too). */
@@ -96,6 +98,37 @@ export type WebRoutine = CloudRoutine & {
 	resumedByUserId?: string;
 };
 
+/** Who pays for a routine, as `qorpera_get_routine_payer` and `qorpera_set_routine_login` answer (migration
+ * 20260930064000): a routine keeps its login, also when that login cannot pay, and only a member's pick moves it. */
+export interface WebRoutinePayer {
+	readonly routineId: string;
+	readonly routineVersion: number;
+	readonly status: CloudRoutine["status"];
+	readonly pauseReason: string | null;
+	/** The login its current version runs on; null when the cloud finds none behind it. */
+	readonly connectionId: string | null;
+	/** A member's own login or a company account; null without a login. */
+	readonly payer: "member" | "company" | null;
+	/** The member whose login pays; null for a company account. */
+	readonly payerUserId: string | null;
+	/** The member the routine runs for: its current version's saver. */
+	readonly savedByUserId: string;
+	/** Whether that login can pay for its work now. One that cannot leaves the routine waiting (needs_model_account)
+	 * until someone picks a login. */
+	readonly canPay: boolean;
+	/** When the payer last changed, else when the routine was made. */
+	readonly since: string;
+	/** Who changed it, and whether by a save or a pick; both null until a change is recorded. */
+	readonly changedByUserId: string | null;
+	readonly changeReason: "save" | "pick" | null;
+}
+
+/** Why the cloud refused a login for a routine: `unavailable` (the member may not change the routine, or it is
+ * retired), `not_yours` (another member's login, or a company account picked by a contributor), `cannot_pay` (the
+ * login cannot pay for work while its member is away now), `plan_listener` (a ChatGPT plan for a file-change or
+ * webhook routine). */
+export type WebRoutineLoginRefusal = "unavailable" | "not_yours" | "cannot_pay" | "plan_listener";
+
 export interface WebRoutines {
 	list(): Promise<WebRoutine[]>;
 	runs(): Promise<CloudRoutineOccurrence[]>;
@@ -121,6 +154,12 @@ export interface WebRoutines {
 		enabled: boolean,
 		saveId: string,
 	): Promise<void>;
+	/** Who pays for a routine now. Null on a cloud without the payer calls, which is then not asked again. */
+	payer(routineId: string): Promise<WebRoutinePayer | null>;
+	/** Runs a routine on one of the member's own logins, which makes them its saver: the login's consent and binding
+	 * first, as a save's, then the pick. A routine that waited for a login runs again. The same null as `payer`; a
+	 * refusal is a `WebRoutineLoginRefusedError`. */
+	setLogin(routineId: string, account: WebMemberConnection): Promise<WebRoutinePayer | null>;
 }
 
 /** The routine has no file this member can change, or its file is gone: nothing was written. */
@@ -132,6 +171,84 @@ export class WebRoutineChangedError extends Error {}
 export class WebRoutineEndedError extends Error {}
 /** The save needs a login and was given no account that can pay: nothing was written. */
 export class WebRoutineNoPayerError extends Error {}
+/** The cloud refused the login picked for a routine: nothing changed. */
+export class WebRoutineLoginRefusedError extends Error {
+	readonly reason: WebRoutineLoginRefusal;
+	constructor(reason: WebRoutineLoginRefusal) {
+		super("The cloud refused this login for the routine.");
+		this.reason = reason;
+	}
+}
+
+/** Clouds without the payer calls (before 20260930064000): asked no more while the page lives. */
+const payerless = new WeakSet<Cloud>();
+const ROUTINE_STATUSES: ReadonlySet<string> = new Set(["active", "paused", "expired", "concluded", "retired"]);
+
+/** A `qorpera.routine-payer/v1` answer for `routineId`. Anything else is not read: a payer that names no member
+ * for a member's login, or one for a company account, is as wrong as a missing field. */
+export function parseRoutinePayer(value: unknown, routineId: string): WebRoutinePayer {
+	const v = record(value);
+	const id = (item: unknown): item is string => typeof item === "string" && UUID_PATTERN.test(item);
+	const optionalId = (item: unknown) => item === null || id(item);
+	const since = v.since;
+	if (
+		v.schema !== "qorpera.routine-payer/v1" ||
+		v.routineId !== routineId ||
+		!Number.isSafeInteger(v.routineVersion) ||
+		(v.routineVersion as number) < 1 ||
+		typeof v.status !== "string" ||
+		!ROUTINE_STATUSES.has(v.status) ||
+		!(v.pauseReason === null || (typeof v.pauseReason === "string" && /^[a-z_]{1,64}$/.test(v.pauseReason))) ||
+		!optionalId(v.connectionId) ||
+		!(v.connectionId === null
+			? v.payer === null && v.payerUserId === null
+			: v.payer === "member"
+				? id(v.payerUserId)
+				: v.payer === "company" && v.payerUserId === null) ||
+		!id(v.savedByUserId) ||
+		typeof v.canPay !== "boolean" ||
+		typeof since !== "string" ||
+		since.length > 64 ||
+		!/^\d{4}-\d{2}-\d{2}T/.test(since) ||
+		!Number.isFinite(Date.parse(since)) ||
+		!optionalId(v.changedByUserId) ||
+		// No change recorded names no one who made it.
+		!(v.changeReason === null ? v.changedByUserId === null : v.changeReason === "save" || v.changeReason === "pick")
+	)
+		throw new Error("Invalid cloud response");
+	return {
+		routineId,
+		routineVersion: v.routineVersion as number,
+		status: v.status as CloudRoutine["status"],
+		pauseReason: v.pauseReason as string | null,
+		connectionId: v.connectionId as string | null,
+		payer: v.payer as WebRoutinePayer["payer"],
+		payerUserId: v.payerUserId as string | null,
+		savedByUserId: v.savedByUserId as string,
+		canPay: v.canPay as boolean,
+		since,
+		changedByUserId: v.changedByUserId as string | null,
+		changeReason: v.changeReason as WebRoutinePayer["changeReason"],
+	};
+}
+
+/** The refusals `qorpera_set_routine_login` names, by code and message; anything else is no refusal of the login. */
+function loginRefusal(error: unknown): WebRoutineLoginRefusal | undefined {
+	if (!(error instanceof CloudRpcError)) return undefined;
+	if (error.code === "22023")
+		return error.message === "This login cannot pay for this routine" ? "cannot_pay" : undefined;
+	if (error.code !== "42501") return undefined;
+	switch (error.message) {
+		case "Routine is unavailable":
+			return "unavailable";
+		case "This login cannot pay for this routine":
+			return "not_yours";
+		case "A ChatGPT plan cannot pay for a listener":
+			return "plan_listener";
+		default:
+			return undefined;
+	}
+}
 
 /** A Claude login is for coding only: it never pays for an agent's routines. */
 export function claudeLogin(account: WebMemberConnection): boolean {
@@ -398,6 +515,23 @@ export function createWebRoutines(
 			throw new WebRoutineChangedError("This routine changed while you were editing it.");
 		return read;
 	};
+	/** A payer call's answer, or null on a cloud without the payer calls: the first such answer stops them for the
+	 * page's life. A pick's refusal is a `WebRoutineLoginRefusedError`. */
+	const payerCall = async (name: string, args: Record<string, unknown>, routineId: string) => {
+		if (payerless.has(cloud)) return null;
+		let value: unknown;
+		try {
+			value = await rpc(name, args);
+		} catch (error) {
+			if (error instanceof CloudRpcError && error.missing) {
+				payerless.add(cloud);
+				return null;
+			}
+			const refusal = name === "qorpera_set_routine_login" ? loginRefusal(error) : undefined;
+			throw refusal ? new WebRoutineLoginRefusedError(refusal) : error;
+		}
+		return parseRoutinePayer(value, routineId);
+	};
 	const saves = new Map<string, SaveState>();
 	/** Sends a change set, kept as the save's pending one until an answer comes. */
 	const send = async (
@@ -641,6 +775,19 @@ export function createWebRoutines(
 				},
 				signal,
 				check,
+			);
+		},
+		payer: (routineId) => payerCall("qorpera_get_routine_payer", { p_routine_id: routineId }, routineId),
+		async setLogin(routineId, account) {
+			if (payerless.has(cloud)) return null;
+			// The pick consents to nothing: it takes a login only with a binding that pays for work while its member is
+			// away. So the login gets a save's consent and binding first (a ChatGPT plan only once its member turned
+			// that on, and then without asking again).
+			await sponsor(account);
+			return payerCall(
+				"qorpera_set_routine_login",
+				{ p_routine_id: routineId, p_connection_id: account.connectionId },
+				routineId,
 			);
 		},
 	};

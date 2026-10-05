@@ -19,6 +19,13 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
   ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001','lra-owner@example.test','Owner','owner'),
   ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000002','lra-member@example.test','Member','contributor'),
   ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000003','lra-other@example.test','Other','contributor');
+-- A folder-v2 company (the company folder core).
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+  values ('30000000-0000-4000-8000-000000000011','30000000-0000-4000-8000-000000000010','Login recovery fixture',1,'30000000-0000-4000-8000-000000000001');
+select pg_temp.claims('service_role');
+select public.qorpera_folder_enable('30000000-0000-4000-8000-000000000011') \g /dev/null
+select pg_temp.ok(public.qorpera_company_is_folder_v2('30000000-0000-4000-8000-000000000010'),'login recovery company is not a folder-v2 company');
+select set_config('request.jwt.claims','',true) \g /dev/null
 insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,owner_user_id,client_identity_id,display_name) values
   ('30000000-0000-4000-8000-000000000020','30000000-0000-4000-8000-000000000010','member','30000000-0000-4000-8000-000000000002','30000000-0000-4000-8000-000000000020','Member identity');
 insert into public.qorpera_identity_recovery_authorities(id,profile_id,signing_public_key,wrapping_public_key,service_origin,capability_sha256)

@@ -46,3 +46,6 @@ supabase/.temp/
 collect.sh
 build/
 output/
+
+# Rust build output (crates/*/Cargo.toml)
+crates/*/target/

@@ -1,13 +1,13 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- The member who started the work pays (20260928230000), on a folder-v2 company (ported from snapshot-v1 in the legacy
 -- sweep): a member's login pays only for work that member started, follow-up work inherits the starter's own login, a
--- company account pays when the starter's login cannot, and one check where runs are created refuses anything else. The
--- base owner (…001) has a login and Alice's live run on it; the contributor (…002) connects one here; the viewer (…003)
--- never has one. (634 covers a folder commit of a coworker run paid by another member's login, and of a coding session
--- whose owner is not its requester; 656 §4 a coworker wake's payer as qorpera_starter_sponsor chooses it; neither covers
--- the rest. A coding session's dispatch through qorpera_manage_agent_worker, and an agent's standing company account, are
--- not checked here: folder-v2 refuses the first, and the second needs a model on the agent's index row, which agent.md
--- does not give.)
+-- company account pays for a starter with no login of their own (20260930059000: never because the starter's login is
+-- at its limit, test 905), an owner may name a company account, never a member's login, as an agent's standing
+-- account, and one check where runs are created refuses anything else. The base owner (…001) has a login and Alice's
+-- live run on it; the contributor (…002) connects one here; the viewer (…003) never has one. (634 covers a folder
+-- commit of a coworker run paid by another member's login, and of a coding session whose owner is not its requester;
+-- 656 §4 a coworker wake's payer as qorpera_starter_sponsor chooses it; neither covers the rest. A coding session's
+-- dispatch through qorpera_manage_agent_worker is not checked here: folder-v2 refuses it.)
 
 do $$
 declare v_function text;
@@ -203,7 +203,8 @@ set local role service_role;
 select public.qorpera_set_provider_execution_policy('openai','api_key','codex-cli','supported','enabled',64,null,null) \g /dev/null
 reset role;
 
--- Now the company pays when the starter has no login of their own, and never before a member's own login.
+-- Now the company pays when the starter has no login of their own, and never before a member's own login; work
+-- that follows a company-paid run stays on the company account (20260930059000).
 do $$
 declare
 	v_profile uuid := '92400000-0000-4000-8000-000000000010';
@@ -215,12 +216,33 @@ begin
 	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'92400000-0000-4000-8000-000000000003',v_agent,v_owner_binding);
 	if v_payer.binding_id is distinct from v_company then
 		raise exception 'the company account did not pay for a starter without a login: %', row_to_json(v_payer); end if;
-	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'92400000-0000-4000-8000-000000000001',v_agent,v_company);
+	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'92400000-0000-4000-8000-000000000001',v_agent,null);
 	if v_payer.binding_id is distinct from v_owner_binding then
 		raise exception 'the company account paid before the starter''s own login: %', row_to_json(v_payer); end if;
+	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'92400000-0000-4000-8000-000000000001',v_agent,v_company);
+	if v_payer.binding_id is distinct from v_company then
+		raise exception 'follow-up work of a company-paid run moved to the starter''s login: %', row_to_json(v_payer); end if;
 	if not public.qorpera_sponsor_serves_requester(v_profile,v_company,1,'92400000-0000-4000-8000-000000000002')
 		or not public.qorpera_sponsor_serves_requester(v_profile,v_company,1,'92400000-0000-4000-8000-000000000003') then
 		raise exception 'a company account does not serve every member';
+	end if;
+end
+$$;
+
+-- An owner may name the company account as an agent's standing account; it is then that agent's company account.
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select public.qorpera_configure_staff_execution_authority('92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000031',(current_setting('qorpera_test.pays_company_sponsor')::jsonb ->> 'binding_id')::uuid,1,null)
+\g /dev/null
+reset role;
+select pg_temp.base_claims('service_role');
+do $$
+begin
+	if (select binding_id from public.qorpera_company_account_sponsor('92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000031')) is distinct from
+		(current_setting('qorpera_test.pays_company_sponsor')::jsonb ->> 'binding_id')::uuid then
+		raise exception 'the configured company account is not the agent''s company account';
 	end if;
 end
 $$;

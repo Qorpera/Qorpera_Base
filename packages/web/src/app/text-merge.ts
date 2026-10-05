@@ -103,6 +103,48 @@ export function transform(a: TextEdit, b: TextEdit): [TextEdit, TextEdit] {
 	return [a2, b2];
 }
 
+/** Edit `a` and then `b`, which edits what `a` made, as one edit of `a`'s text. */
+export function compose(a: TextEdit, b: TextEdit): TextEdit {
+	const out: (number | string)[] = [];
+	const push = (step: number | string) => {
+		if (step === 0 || step === "") return;
+		const last = out[out.length - 1];
+		if (typeof step === "string" && typeof last === "string") out[out.length - 1] = last + step;
+		else if (typeof step === "number" && typeof last === "number" && Math.sign(step) === Math.sign(last))
+			out[out.length - 1] = last + step;
+		else out.push(step);
+	};
+	let i = 0;
+	let j = 0;
+	let stepA: number | string | undefined = a[i++];
+	let stepB: number | string | undefined = b[j++];
+	while (stepA !== undefined || stepB !== undefined) {
+		// What `a` deleted, `b` never saw; what `b` inserted, `a` never had.
+		if (typeof stepA === "number" && stepA < 0) {
+			push(stepA);
+			stepA = a[i++];
+			continue;
+		}
+		if (typeof stepB === "string") {
+			push(stepB);
+			stepB = b[j++];
+			continue;
+		}
+		if (stepA === undefined || stepB === undefined) throw new Error("The edits do not follow each other.");
+		const span = Math.min(typeof stepA === "string" ? stepA.length : stepA, Math.abs(stepB));
+		if (typeof stepA === "string") {
+			// Inserted by `a`: it stays where `b` keeps it.
+			if (stepB > 0) push(stepA.slice(0, span));
+			stepA = span === stepA.length ? a[i++] : stepA.slice(span);
+		} else {
+			push(stepB > 0 ? span : -span);
+			stepA = span === stepA ? a[i++] : stepA - span;
+		}
+		stepB = span === Math.abs(stepB) ? b[j++] : stepB > 0 ? stepB - span : stepB + span;
+	}
+	return out;
+}
+
 /** Where a position in a text lands after an edit of it. Text inserted exactly
  * at the position goes after it, so a caret stays before another member's words. */
 export function moveIndex(index: number, edit: TextEdit): number {

@@ -44,6 +44,14 @@ import { CompanyComputerLinuxCommands } from "./cloud-company-computer-linux-com
 import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-linux-desktop.ts";
 import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linux-host.ts";
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
+import {
+	CompanyComputerLinuxShell,
+	CompanyComputerShellPressureGuard,
+	type CompanyComputerShellReport,
+	companyComputerShellBusy,
+	createCompanyComputerLinuxShellLauncher,
+	readCompanyComputerShellUsage,
+} from "./cloud-company-computer-linux-shell.ts";
 import { parseCompanyComputerNativeDescriptor } from "./cloud-company-computer-native-client.ts";
 import {
 	CompanyComputerGuestSessionRefusedError,
@@ -51,6 +59,7 @@ import {
 } from "./cloud-company-computer-native-gateway.ts";
 import { CloudCompanyComputerPrivateSurfaceControl } from "./cloud-company-computer-private-surface-control.ts";
 import {
+	COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES,
 	COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
 	companyComputerAuthorityUnanswered,
 	type HttpCloudCompanyComputerRegistry,
@@ -121,6 +130,8 @@ interface SharedScreen {
 	/** Polls the dock launcher's request file while the desktop is ready. */
 	requests?: ReturnType<typeof setTimeout>;
 	browser?: ScreenBrowser;
+	/** The screen agent's long-running shell; its commands outlive runs, not the screen. */
+	shell?: CompanyComputerLinuxShell;
 	lifecycle?: CompanyComputerScreenLifetime;
 }
 interface PrivateSurface {
@@ -165,6 +176,67 @@ export interface CompanyComputerLinuxGuestOptions {
 	onFailure(error: Error): void;
 }
 
+/** Shell reports in a row (30 s apart) after which ends the registry keeps refusing are let go. */
+const SHELL_REPORT_ATTEMPTS = 10;
+/** The most commands of each kind (open, ended) one report names for a screen. */
+const SHELL_REPORT_ITEMS = 64;
+
+/** One screen's shell in a report: whole when its lists name every command it has, open and ended. */
+export interface CompanyComputerShellReportScreen {
+	screenId: string;
+	busy: boolean;
+	whole: boolean;
+	open: CompanyComputerShellReport["open"];
+	ended: CompanyComputerShellReport["ended"];
+}
+
+/**
+ * Fits a shell report into one registry request of at most maxBytes for its
+ * screens (the transport's bound less the rest of the request). Every screen
+ * and whether it was busy always go; then the ends the platform has not heard
+ * of, oldest first, then the open commands, latest worked first, as many as
+ * fit, at most SHELL_REPORT_ITEMS of each kind a screen. A screen whose lists
+ * were cut is not whole, so the platform ends none of its commands for being
+ * missing; ends that did not fit go with a later report.
+ */
+export function fitCompanyComputerShellReport(
+	screens: readonly {
+		screenId: string;
+		busy: boolean;
+		open: CompanyComputerShellReport["open"];
+		ended: CompanyComputerShellReport["ended"];
+	}[],
+	maxBytes: number,
+): CompanyComputerShellReportScreen[] {
+	const fitted = screens.map(({ screenId, busy }) => ({
+		screenId,
+		busy,
+		whole: false,
+		open: [] as CompanyComputerShellReport["open"],
+		ended: [] as CompanyComputerShellReport["ended"],
+	}));
+	// Each screen with empty lists, and a comma; "false" is the longer flag, so the count stays an upper bound.
+	let bytes = 2 + fitted.reduce((sum, screen) => sum + Buffer.byteLength(JSON.stringify(screen)) + 1, 0);
+	const fits = (list: readonly unknown[], item: unknown): boolean => {
+		const cost = Buffer.byteLength(JSON.stringify(item)) + 1;
+		if (list.length >= SHELL_REPORT_ITEMS || bytes + cost > maxBytes) return false;
+		bytes += cost;
+		return true;
+	};
+	const ends = screens
+		.flatMap((screen, index) => screen.ended.map((item) => ({ index, item })))
+		.sort((a, b) => a.item.endedAt.localeCompare(b.item.endedAt));
+	for (const { index, item } of ends) if (fits(fitted[index].ended, item)) fitted[index].ended.push(item);
+	const open = screens
+		.flatMap((screen, index) => screen.open.map((item) => ({ index, item })))
+		.sort((a, b) => b.item.workedAt.localeCompare(a.item.workedAt));
+	for (const { index, item } of open) if (fits(fitted[index].open, item)) fitted[index].open.push(item);
+	for (const [index, screen] of fitted.entries())
+		screen.whole =
+			screen.open.length === screens[index].open.length && screen.ended.length === screens[index].ended.length;
+	return fitted;
+}
+
 export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #options: CompanyComputerLinuxGuestOptions;
 	readonly #desktop: CompanyComputerLinuxDesktopLauncher;
@@ -186,6 +258,17 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	#sharedVersion = 0;
 	#gate?: CompanyComputerScreenActionGate;
 	#closing?: Promise<void>;
+	/** Whether the last shell report named a busy screen or an open command. */
+	#shellReported = false;
+	/** Shell reports the registry refused or did not answer, in a row. */
+	#shellReportFailures = 0;
+	/** Each screen's last processor sample of its shell's namespace, for its busy measure. */
+	readonly #shellSamples = new Map<string, { pid: number; cpuTicks: number; ioBytes: number; at: number }>();
+	/** Shells closed with their screens, whose last commands the platform has not heard of yet. */
+	#closedShells: { screenId: string; shell: CompanyComputerLinuxShell }[] = [];
+	readonly #shellActivity: ReturnType<typeof setInterval>;
+	/** Ends the heaviest shell before the machine runs out of memory or tasks. */
+	readonly #shellPressure: CompanyComputerShellPressureGuard;
 
 	constructor(options: CompanyComputerLinuxGuestOptions) {
 		assertCompanyComputerScope(options.scope, options.scope);
@@ -221,6 +304,136 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				},
 			},
 		});
+		this.#shellActivity = setInterval(() => void this.#reportShellActivity(), 30000);
+		this.#shellActivity.unref?.();
+		this.#shellPressure = new CompanyComputerShellPressureGuard({
+			shells: () => [...this.#screens.values()].flatMap((screen) => (screen.shell ? [screen.shell] : [])),
+		});
+	}
+
+	/**
+	 * Every 30 seconds the office tells the platform about each screen's shell:
+	 * whether it was busy since the last sample (the one idle rule: about 5% of
+	 * one core, or about 17 KB a second read or written by its commands), the
+	 * commands still open, and those that ended since, each with the run that
+	 * started it, as many as fit one request (fitCompanyComputerShellReport).
+	 * A busy shell is demand: SQL keeps the computer on,
+	 * and the screen with its agent, while a report is fresh (90 seconds). A
+	 * shell that only waits is not; when the computer sleeps, its commands end
+	 * and their runs are told. A registry without the report (older kernel)
+	 * only loses that demand, never a command.
+	 */
+	async #reportShellActivity(): Promise<void> {
+		// One entry per screen: its open shell, and shells closed with it whose
+		// last ends the platform has not heard of yet.
+		const entries = new Map<string, { shell?: CompanyComputerLinuxShell; closed: CompanyComputerLinuxShell[] }>();
+		for (const screen of this.#screens.values())
+			if (screen.shell) entries.set(screen.binding.screenId, { shell: screen.shell, closed: [] });
+		for (const { screenId, shell } of this.#closedShells) {
+			const entry = entries.get(screenId) ?? { closed: [] };
+			// A screen still draining holds the shell it just closed.
+			if (entry.shell !== shell) entry.closed.push(shell);
+			entries.set(screenId, entry);
+		}
+		const pids = [...entries.values()].flatMap(({ shell }) =>
+			shell?.namespacePid !== undefined ? [shell.namespacePid] : [],
+		);
+		const usage = pids.length ? await readCompanyComputerShellUsage(pids).catch(() => undefined) : undefined;
+		const at = Date.now();
+		const screens = [...entries].map(([screenId, { shell, closed }]) => {
+			const pid = shell?.namespacePid;
+			const now = pid === undefined ? undefined : usage?.get(pid);
+			const before = this.#shellSamples.get(screenId);
+			// The first sample of a namespace is never busy, as on coding machines.
+			const busy =
+				!!now &&
+				before !== undefined &&
+				before.pid === pid &&
+				companyComputerShellBusy(before, { cpuTicks: now.cpuTicks, ioBytes: now.ioBytes, at });
+			if (pid !== undefined && now)
+				this.#shellSamples.set(screenId, { pid, cpuTicks: now.cpuTicks, ioBytes: now.ioBytes, at });
+			else this.#shellSamples.delete(screenId);
+			const report: CompanyComputerShellReport | undefined = shell?.report();
+			return {
+				screenId,
+				busy,
+				open: report?.open ?? [],
+				ended: [...(report?.ended ?? []), ...closed.flatMap((old) => old.report().ended)],
+				shells: shell ? [shell, ...closed] : closed,
+			};
+		});
+		const speaks = screens.some((screen) => screen.busy || screen.open.length > 0 || screen.ended.length > 0);
+		if (!speaks && !this.#shellReported) return;
+		// One request, whatever the screens hold: what does not fit goes with a later report.
+		const request = {
+			p_scope: this.#options.scope,
+			p_computer_generation: this.#options.computerGeneration,
+			p_report: { schema: "qorpera.office-shell-report/v1", screens: [] as CompanyComputerShellReportScreen[] },
+		};
+		const fitted = fitCompanyComputerShellReport(
+			screens,
+			COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES - Buffer.byteLength(JSON.stringify(request)),
+		);
+		request.p_report.screens = fitted;
+		const reported = fitted.map((screen, index) => ({ ended: screen.ended, shells: screens[index].shells }));
+		let response: unknown;
+		try {
+			response = await this.#options.registry.call(
+				"qorpera_report_runtime_office_shell_activity",
+				request,
+				this.#stop.signal,
+			);
+		} catch {
+			// The next report tries again; sleep ends what is still open. Ends that
+			// still fail after SHELL_REPORT_ATTEMPTS reports are let go, so that
+			// nothing in them can hold up the computer's demand for long.
+			if (++this.#shellReportFailures >= SHELL_REPORT_ATTEMPTS) this.#shellReportsDone(reported);
+			return;
+		}
+		this.#shellReportsDone(reported);
+		this.#shellReported = screens.some((screen) => screen.busy || screen.open.length > 0);
+		// The operator paused the company: nothing keeps running in a shell. The
+		// report ended every command as paused, and new commands are refused until the pause ends.
+		if (typeof response !== "object" || response === null || (response as { paused?: unknown }).paused !== true)
+			return;
+		this.#shellReported = false;
+		await Promise.all(
+			[...this.#screens.values()].map((screen) =>
+				screen.shell
+					?.pause("Stopped because the company was paused; start the command again when work resumes.")
+					.catch(() => undefined),
+			),
+		);
+	}
+
+	/** The ends a report carried are done with: delivered, or let go after repeated failures. */
+	#shellReportsDone(
+		screens: readonly { ended: readonly { id: string }[]; shells: readonly CompanyComputerLinuxShell[] }[],
+	): void {
+		this.#shellReportFailures = 0;
+		for (const screen of screens)
+			for (const shell of screen.shells) shell.reported(screen.ended.map((ended) => ended.id));
+		this.#closedShells = this.#closedShells.filter(({ shell }) => shell.report().ended.length > 0);
+	}
+
+	/** The screen agent's shell, created on first use. Its namespace starts with the first command. */
+	#screenShell(screen: SharedScreen): CompanyComputerLinuxShell {
+		if (screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
+		const binding = screen.binding;
+		screen.shell ??= new CompanyComputerLinuxShell(
+			createCompanyComputerLinuxShellLauncher({
+				...this.#options,
+				binding,
+				runtimeRoot: this.#options.displayRuntimeRoot,
+				timeZone: this.#options.desktopTimeZone,
+				boundary: {
+					assertReady: async (exact, signal) => {
+						await this.#assertShared(exact, AbortSignal.any([signal, screen.stop.signal]));
+					},
+				},
+			}),
+		);
+		return screen.shell;
 	}
 	#fail(cause?: unknown): void {
 		void this.close().catch(() => undefined);
@@ -536,6 +749,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let closing: Promise<void> | undefined;
 		let ended = false;
 		let commands: CompanyComputerLinuxCommands | undefined;
+		let shell: CompanyComputerLinuxShell | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
 		/** The screen browser THIS run drives (or is in the middle of joining). A run
 		 * that never touched the browser has no say over a window a member opened. */
@@ -686,6 +900,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					boundary,
 					xSocket: this.#desktop.xSocket(binding),
 				});
+				const screen = this.#screens.get(binding.screenOrdinal);
+				if (!screen) throw new Error("OFFICE_SCREEN_DRAINING");
+				shell ??= this.#screenShell(screen);
 			},
 			automation: {
 				// The gate calls this for every failed or cancelled action of the run,
@@ -744,6 +961,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							return current && !current.isEnded?.() ? current.context : undefined;
 						},
 						commands: commands!,
+						shell,
 						screenshots,
 						fileExports: this.#options.fileExports?.(input.run),
 						fileImports: this.#options.fileImports?.(input.run),
@@ -753,6 +971,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},
+				settle: (action, content, requestSignal, replyBy) =>
+					automation
+						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy)
+						: Promise.resolve(content),
 			},
 		});
 		return {
@@ -1010,9 +1232,20 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				this.#closePrivate(),
 				...sessions.map((session) => session.close()),
 			]);
-			// The screen's browser ends with the screen: after its runs have let go,
-			// before the desktop it draws on stops.
-			if (screen) results.push(...(await Promise.allSettled([this.#closeBrowser(screen)])));
+			// The screen's shell, with the commands still running in it, and its
+			// browser end with the screen: after its runs have let go, before the
+			// desktop they draw on stops. Side by side, within the drain's budget.
+			if (screen)
+				results.push(
+					...(await Promise.allSettled([this.#closeBrowser(screen), screen.shell?.close() ?? Promise.resolve()])),
+				);
+			// Its last commands ended with it: the next report says why, once.
+			if (screen?.shell && screen.shell.report().ended.length > 0)
+				this.#closedShells = [
+					...this.#closedShells,
+					{ screenId: screen.binding.screenId, shell: screen.shell },
+				].slice(-32);
+			if (screen) this.#shellSamples.delete(screen.binding.screenId);
 			if (screen) {
 				await screen.opening.catch(() => undefined);
 				try {
@@ -1035,6 +1268,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	}
 	close(): Promise<void> {
 		this.#stop.abort();
+		clearInterval(this.#shellActivity);
+		this.#shellPressure.close();
 		this.#closing ??= Promise.resolve().then(() =>
 			cloudToolRequest(
 				async () => {

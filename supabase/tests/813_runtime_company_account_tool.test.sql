@@ -1,18 +1,19 @@
 -- @fixture 794_runtime_company_accounts.test.sql until "-- 4. Use, a new version, state changes."
--- Company accounts, A1-4a: the agent's read (its company's accounts and mailboxes, and its todo's id by key) and
--- the rule that an agent's account signs up with a tagged address of one of the company's mailboxes. The 794
--- fixture switches accounts on, gives company 29…10 / environment 29…20 the mailbox agents@nordlys.example, and
--- opens agents+vercel.com@… and then agents+2@… on vercel.com for the agent's open todo 'website-online'.
+-- Company accounts, A1-4a, on the company folder (A1-7, migration 20260930072000): the agent's read (its company's
+-- accounts and mailboxes, and its todo's id by key) and the rule that an agent's account signs up with a tagged address
+-- of one of the company's mailboxes. The 794 fixture (924's folder-v2 company 92…10 / environment 92…20 and Alice's
+-- leased run) switches accounts on, gives the company the mailbox agents@nordlys.example, and opens
+-- agents+vercel.com@… and then agents+2@… on vercel.com for Alice's open todo 'website-online'.
 
 -- The agent's read, as the native host makes it (service role, the run's binding): 'ok:<answer>' or the refusal.
 create function pg_temp.fa_find(p_request text)
 returns text language plpgsql as $$
 declare v_result text;
 begin
-	perform pg_temp.path_claims('service_role');
+	perform pg_temp.base_claims('service_role');
 	set local role service_role;
 	v_result := pg_temp.ca_try(format('select public.qorpera_find_company_accounts('
-		'current_setting(''qorpera_test.path_binding'')::jsonb, %s)', p_request));
+		'current_setting(''qorpera_test.base_binding'')::jsonb, %s)', p_request));
 	reset role;
 	return v_result;
 end
@@ -33,7 +34,7 @@ do $$
 declare v_answer jsonb := pg_temp.fa_answer(pg_temp.fa_find('''{}''::jsonb'));
 begin
 	if v_answer is distinct from jsonb_build_object('schema', 'qorpera.agent-company-accounts/v1',
-		'runId', current_setting('qorpera_test.path_binding')::jsonb ->> 'runId',
+		'runId', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId',
 		'mailboxes', jsonb_build_array('agents@nordlys.example'),
 		'accounts', jsonb_build_array(
 			jsonb_build_object('accountId', current_setting('qorpera_test.ca_account2'), 'site', 'vercel.com',
@@ -54,21 +55,21 @@ select set_config('session_replication_role', 'replica', true);
 insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title, state,
 	requested_by_user_id, created_by_run_id, updated_by_run_id, folder_environment_id, folder_path, folder_path_version,
 	folder_commit_id, folder_retired_at)
-select todo.id, todo.company, todo.environment, '29000000-0000-4000-8000-000000000030', todo.key, 'Elsewhere', 'open',
-	'29000000-0000-4000-8000-000000000001', run.id, run.id,
+select todo.id, todo.company, todo.environment, '92400000-0000-4000-8000-000000000030', todo.key, 'Elsewhere', 'open',
+	'92400000-0000-4000-8000-000000000001', run.id, run.id,
 	case when todo.retired is not null then todo.environment end,
 	case when todo.retired is not null then 'work/todos/retired.md' end,
 	case when todo.retired is not null then '81300000-0000-4000-8000-0000000000c1'::uuid end,
 	case when todo.retired is not null then '81300000-0000-4000-8000-0000000000c2'::uuid end, todo.retired
 from (values
-	('81300000-0000-4000-8000-000000000061'::uuid, '29000000-0000-4000-8000-000000000010'::uuid,
+	('81300000-0000-4000-8000-000000000061'::uuid, '92400000-0000-4000-8000-000000000010'::uuid,
 		'81300000-0000-4000-8000-000000000099'::uuid, 'other-environment', null::timestamptz),
 	('81300000-0000-4000-8000-000000000062'::uuid, '79400000-0000-4000-8000-000000000010'::uuid,
-		'29000000-0000-4000-8000-000000000020'::uuid, 'other-company', null::timestamptz),
-	('81300000-0000-4000-8000-000000000063'::uuid, '29000000-0000-4000-8000-000000000010'::uuid,
-		'29000000-0000-4000-8000-000000000020'::uuid, 'retired', '2026-09-01T00:00:00Z'::timestamptz)
+		'92400000-0000-4000-8000-000000000020'::uuid, 'other-company', null::timestamptz),
+	('81300000-0000-4000-8000-000000000063'::uuid, '92400000-0000-4000-8000-000000000010'::uuid,
+		'92400000-0000-4000-8000-000000000020'::uuid, 'retired', '2026-09-01T00:00:00Z'::timestamptz)
 ) as todo(id, company, environment, key, retired)
-cross join (select (current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')::uuid as id) as run;
+cross join (select (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid as id) as run;
 select set_config('session_replication_role', 'origin', true);
 do $$
 declare v_key text;
@@ -105,22 +106,28 @@ end $$;
 do $$
 declare v_result text;
 begin
-	perform pg_temp.path_claims('service_role');
+	perform pg_temp.base_claims('service_role');
 	set local role service_role;
 	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(null, ''{}''::jsonb)');
 	if v_result is distinct from '22023:company account run binding is malformed' then
 		raise exception 'A missing binding was answered: %', v_result;
 	end if;
 	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(jsonb_set(current_setting('
-		'''qorpera_test.path_binding'')::jsonb, ''{runId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
+		'''qorpera_test.base_binding'')::jsonb, ''{runId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
 	if v_result not like '42501:%' then
 		raise exception 'Another run''s binding was answered: %', v_result;
 	end if;
 	-- The run's own id with another lease: the lease is checked too, not only the run.
 	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(jsonb_set(current_setting('
-		'''qorpera_test.path_binding'')::jsonb, ''{leaseId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
+		'''qorpera_test.base_binding'')::jsonb, ''{leaseId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
 	if v_result not like '42501:%' then
 		raise exception 'Another lease''s binding was answered: %', v_result;
+	end if;
+	-- A binding that names no job is no run's on any core: it raises, never answered as "not on the company folder".
+	v_result := pg_temp.ca_try('select public.qorpera_find_company_accounts(jsonb_set(current_setting('
+		'''qorpera_test.base_binding'')::jsonb, ''{jobId}'', to_jsonb(gen_random_uuid()::text)), ''{}''::jsonb)');
+	if v_result is distinct from '42501:native tool run is unavailable' then
+		raise exception 'A binding naming no job was answered: %', v_result;
 	end if;
 	reset role;
 end $$;
@@ -143,18 +150,18 @@ select set_config('session_replication_role', 'replica', true);
 insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, sign_in_hosts, login, status,
 	opened_by_user_id, created_at, closed_at)
 values
-	('81300000-0000-4000-8000-000000000001', '29000000-0000-4000-8000-000000000010',
-		'29000000-0000-4000-8000-000000000020', 'old.example', '{}', 'agents+old.example@nordlys.example', 'closed',
-		'29000000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z'),
-	('81300000-0000-4000-8000-000000000002', '29000000-0000-4000-8000-000000000010',
+	('81300000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000020', 'old.example', '{}', 'agents+old.example@nordlys.example', 'closed',
+		'92400000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z'),
+	('81300000-0000-4000-8000-000000000002', '92400000-0000-4000-8000-000000000010',
 		'81300000-0000-4000-8000-000000000099', 'vercel.com', '{}', 'staging+vercel.com@nordlys.example', 'pending',
-		'29000000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', null),
+		'92400000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', null),
 	('81300000-0000-4000-8000-000000000003', '79400000-0000-4000-8000-000000000010',
-		'29000000-0000-4000-8000-000000000020', 'vercel.com', '{}', 'team+vercel.com@nordlys.example', 'pending',
+		'92400000-0000-4000-8000-000000000020', 'vercel.com', '{}', 'team+vercel.com@nordlys.example', 'pending',
 		'79400000-0000-4000-8000-000000000001', '2026-09-01T00:00:00Z', null),
-	('81300000-0000-4000-8000-000000000004', '29000000-0000-4000-8000-000000000010',
-		'29000000-0000-4000-8000-000000000020', 'fly.io', '{auth.fly.io}', 'agents+fly.io@nordlys.example', 'pending',
-		'29000000-0000-4000-8000-000000000001', '2026-08-01T00:00:00Z', null);
+	('81300000-0000-4000-8000-000000000004', '92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000020', 'fly.io', '{auth.fly.io}', 'agents+fly.io@nordlys.example', 'pending',
+		'92400000-0000-4000-8000-000000000001', '2026-08-01T00:00:00Z', null);
 update public.qorpera_company_accounts
 set status = 'connected', connected_at = '2026-08-01T00:00:00Z', last_used_at = '2026-08-02T00:00:00Z'
 where secret_id = '81300000-0000-4000-8000-000000000004';
@@ -189,9 +196,9 @@ end $$;
 select set_config('session_replication_role', 'replica', true);
 insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, opened_by_user_id,
 	created_at)
-select ('81300000-0000-4000-8000-0000000001' || lpad(n::text, 2, '0'))::uuid, '29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020', 'site' || n || '.example', 'agents+site' || n || '@nordlys.example',
-	'29000000-0000-4000-8000-000000000001', '2026-07-01T00:00:00Z'::timestamptz + n * interval '1 hour'
+select ('81300000-0000-4000-8000-0000000001' || lpad(n::text, 2, '0'))::uuid, '92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020', 'site' || n || '.example', 'agents+site' || n || '@nordlys.example',
+	'92400000-0000-4000-8000-000000000001', '2026-07-01T00:00:00Z'::timestamptz + n * interval '1 hour'
 from generate_series(1, 20) as n;
 select set_config('session_replication_role', 'origin', true);
 do $$
@@ -204,7 +211,7 @@ begin
 	end if;
 end $$;
 
--- 5. Switched off, and folder companies (accounts come with their connection file): refused.
+-- 5. Switched off, and a company that is not on the company folder (A1-7): refused.
 update public.qorpera_company_account_settings set enabled = false;
 do $$
 begin
@@ -214,15 +221,18 @@ begin
 	end if;
 end $$;
 update public.qorpera_company_account_settings set enabled = true;
+-- The run's company is read as one on the old core for one call (the helper is swapped inside this rolled-back
+-- transaction, then put back): answered as refused, never read.
 select set_config('qorpera_test.fa_job_v2', pg_get_functiondef('public.qorpera_job_is_folder_v2(uuid)'::regprocedure), true);
 create or replace function public.qorpera_job_is_folder_v2(p_job_id uuid)
-returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
-select set_config('qorpera_test.fa_folder', coalesce(pg_temp.fa_refused('''{}''::jsonb'), ''), true);
+returns boolean language sql stable security definer set search_path = '' as $$ select false $$;
+select set_config('qorpera_test.fa_folder', coalesce(pg_temp.fa_find('''{}''::jsonb'), ''), true);
 do $$ begin execute current_setting('qorpera_test.fa_job_v2'); end $$;
 do $$
 begin
-	if current_setting('qorpera_test.fa_folder') not like '0A000:Accounts for folder companies%' then
-		raise exception 'A folder company''s run read accounts: %', current_setting('qorpera_test.fa_folder');
+	if current_setting('qorpera_test.fa_folder') is distinct from
+		'ok:{"schema": "qorpera.agent-company-accounts/v1", "refused": {"code": "0A000", "message": "Accounts need a company on the company folder"}}' then
+		raise exception 'A run of a company on the old core read accounts: %', current_setting('qorpera_test.fa_folder');
 	end if;
 end $$;
 
@@ -235,8 +245,8 @@ insert into public.qorpera_company_mailboxes(hook_id, profile_id, environment_id
 values ('81300000-0000-4000-8000-000000000091', '79400000-0000-4000-8000-000000000010',
 		'81300000-0000-4000-8000-000000000098', 'sales'),
 	('81300000-0000-4000-8000-000000000092', '79400000-0000-4000-8000-000000000010',
-		'29000000-0000-4000-8000-000000000020', 'billing'),
-	('81300000-0000-4000-8000-000000000093', '29000000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000020', 'billing'),
+	('81300000-0000-4000-8000-000000000093', '92400000-0000-4000-8000-000000000010',
 		'81300000-0000-4000-8000-000000000099', 'ops');
 select set_config('session_replication_role', 'origin', true);
 -- What an opening leaves behind, counted before the attempts.
@@ -335,17 +345,17 @@ end $$;
 -- A member's hand-over (no agent, no todo) keeps the login it has.
 insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id,
 	connector_id, secret_name, purpose, current_version, created_by_user_id)
-values ('81300000-0000-4000-8000-000000000050', '29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020', '79400000-0000-4000-8000-000000000040', 'company', null, 'website',
-	'stripe-com', 'Payments', 1, '29000000-0000-4000-8000-000000000001');
+values ('81300000-0000-4000-8000-000000000050', '92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020', '79400000-0000-4000-8000-000000000040', 'company', null, 'website',
+	'stripe-com', 'Payments', 1, '92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
 	envelope_sha256, created_by_user_id)
 values ('81300000-0000-4000-8000-000000000050', 1, '79400000-0000-4000-8000-000000000040', 'company-kek-1',
-	'\x0c'::bytea, pg_temp.ca_sha('\x0c'), '29000000-0000-4000-8000-000000000001');
+	'\x0c'::bytea, pg_temp.ca_sha('\x0c'), '92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_company_accounts(secret_id, profile_id, environment_id, site, login, opened_by_user_id)
-values ('81300000-0000-4000-8000-000000000050', '29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020', 'stripe.com', 'finance@nordlys.example',
-	'29000000-0000-4000-8000-000000000001');
+values ('81300000-0000-4000-8000-000000000050', '92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020', 'stripe.com', 'finance@nordlys.example',
+	'92400000-0000-4000-8000-000000000001');
 
 do $$
 declare
