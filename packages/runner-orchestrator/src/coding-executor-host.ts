@@ -9,6 +9,8 @@ import {
 	type CloudCodingRepository,
 	type CloudCodingStorageBinding,
 	cloudCodingSessionLayout,
+	type IdleRuleSample,
+	idleRuleBusy,
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
 import type { AgentPlug } from "./agent-plug.ts";
@@ -161,11 +163,10 @@ interface Attachment {
 	/** When this process took it on (performance clock). */
 	since: number;
 }
-/** One observation of a session's processor time, to tell a busy command from a waiting one. */
-interface CpuSample {
+/** One observation of a session's work (its slice's processor time and the bytes its processes moved, on the boot's
+ * clock), to tell busy commands from waiting ones. */
+interface SessionSample extends IdleRuleSample {
 	bootId: string;
-	uptimeMs: number;
-	usageUsec: number;
 }
 /** A command whose processes still run, as the guest names it. */
 interface ObservedCommand {
@@ -181,6 +182,7 @@ interface Observed {
 		string,
 		{
 			cpuUsageUsec: number;
+			ioBytes: number;
 			running: ObservedCommand[];
 			/** The watchdog's lease: its generation (the attachment token's digest) and how long it stays live. */
 			lease: { tokenSha256: string; expiresInMs: number } | null;
@@ -219,10 +221,6 @@ const CODING_VM_QUIESCE_MS = 8_000;
  * taking the session off the machine inside the guest, before the power-off or
  * the unplug that stop everything anyway. */
 const CODING_SESSION_QUIESCE_MS = 20_000;
-/** A session's commands are busy when their slice used more than this share of
- * one processor core since the previous observation; a server that only waits
- * uses far less. */
-const CODING_BUSY_CPU_SHARE = 0.05;
 /** How often quiet sessions are looked for (qorpera_archive_quiet_coding_sessions). */
 const CODING_ARCHIVE_SCAN_MS = 600_000;
 /** The guest publishes its observation here (root 0444, boot-local), each
@@ -321,7 +319,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #prepared = new Map<string, Prepared>();
 	readonly #attached = new Map<string, Attached>();
 	readonly #attachments = new Map<string, Attachment>();
-	readonly #samples = new Map<string, CpuSample>();
+	readonly #samples = new Map<string, SessionSample>();
 	readonly #leaseWork = new Map<string, Promise<unknown>>();
 	/** Per session, the serial of the last attach this process recorded: a
 	 * keeper pass leaves a session a turn attached during the pass to that turn. */
@@ -1445,14 +1443,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				continue;
 			}
 			const sample = this.#samples.get(workerId);
-			const usage = seen.cpuUsageUsec;
-			// Busy: the slice used more than a small share of a core since the last look.
-			const busy =
-				sample !== undefined &&
-				sample.bootId === observed.bootId &&
-				observed.uptimeMs > sample.uptimeMs &&
-				usage - sample.usageUsec >= CODING_BUSY_CPU_SHARE * (observed.uptimeMs - sample.uptimeMs) * 1000;
-			this.#samples.set(workerId, { bootId: observed.bootId, uptimeMs: observed.uptimeMs, usageUsec: usage });
+			const now = {
+				bootId: observed.bootId,
+				cpuSeconds: seen.cpuUsageUsec / 1e6,
+				ioBytes: seen.ioBytes,
+				at: observed.uptimeMs,
+			};
+			// Busy by the one idle rule since the last look of this boot (`@qorpera/contracts` idle-rule): at least 5% of
+			// one core, or 512 KiB read or written in 30 seconds. A server that only waits does neither.
+			const busy = sample !== undefined && sample.bootId === observed.bootId && idleRuleBusy(sample, now);
+			this.#samples.set(workerId, now);
 			sessions.push({ workerId, busy, running: seen.running });
 		}
 		const started = performance.now();
@@ -1644,8 +1644,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		return adopted;
 	}
 	/** Runs the pinned storage helper's observe action and reads back what it
-	 * published: per attached session, its slice's processor time, its guest
-	 * lease and (unless `named` is false) the commands still running. */
+	 * published: per attached session, its slice's processor time and the bytes
+	 * its processes moved, its guest lease and (unless `named` is false) the
+	 * commands still running. */
 	async #observe(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal, named = true): Promise<Observed> {
 		const client = this.#options.client,
 			name = lxdCodingMachineName(machine.machineId);
@@ -1684,7 +1685,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		};
 		const value = await published(CODING_GUEST_OBSERVATION);
 		if (
-			value.schema !== "qorpera.coding-guest-observation/v2" ||
+			value.schema !== "qorpera.coding-guest-observation/v3" ||
 			value.bootId !== bootId ||
 			!Number.isSafeInteger(value.uptimeMs) ||
 			!Array.isArray(value.sessions)
@@ -1697,7 +1698,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (
 				typeof session.workerId !== "string" ||
 				!UUID.test(session.workerId) ||
-				!Number.isSafeInteger(session.cpuUsageUsec) ||
+				![session.cpuUsageUsec, session.ioBytes].every(
+					(count) => Number.isSafeInteger(count) && Number(count) >= 0,
+				) ||
 				!Number.isSafeInteger(session.running) ||
 				Number(session.running) < 0 ||
 				(lease !== null &&
@@ -1734,6 +1737,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			sessions.set(session.workerId, {
 				cpuUsageUsec: Number(session.cpuUsageUsec),
+				ioBytes: Number(session.ioBytes),
 				running,
 				lease: lease && { tokenSha256: String(lease.tokenSha256), expiresInMs: Number(lease.expiresInMs) },
 			});

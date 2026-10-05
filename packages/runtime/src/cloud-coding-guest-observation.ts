@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { CLOUD_CODING_GUEST_ROOTS, cloudCodingSessionLayout } from "@qorpera/contracts";
+import { CLOUD_CODING_GUEST_ROOTS, cloudCodingSessionLayout, idleRuleProcessIoBytes } from "@qorpera/contracts";
 
 const executeFile = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -14,23 +14,33 @@ export const CODING_GUEST_OBSERVED_COMMANDS = 64;
 export const CODING_COMMAND_PREVIEW_BYTES = 300;
 /** Every published file fits one read of LXD's file API by the executor. */
 export const CODING_GUEST_OBSERVATION_MAX_BYTES = 65536;
+/** At most this many processes are read for the bytes they moved, in one pass over /proc. */
+export const CODING_GUEST_PROCESSES_READ = 8192;
+/** Where every session's slice sits, as /proc/<pid>/cgroup names it. */
+const CODING_CGROUP = "/qorpera.slice/qorpera-coding.slice/";
+/** The command guest each command unit runs as its relay (cloud-coding-command-guest.ts). */
+const CODING_COMMAND_ENTRYPOINT = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 export interface CodingGuestObservedCommand {
 	commandId: string;
 	turn: number;
 	command: string;
 }
 /** What runs inside the member's machine, per attached session: how many of
- * its commands' processes still run, the processor time its slice has used,
- * and its guest lease. The executor reads it back (it cannot read a command's
- * stdout through LXD), keeps attachments and decides when the machine is quiet
- * enough to sleep. Published at /run/qorpera-coding/observation.json. */
+ * its commands' processes still run, the processor time its slice has used and
+ * the bytes its processes read and wrote, and its guest lease. The executor
+ * reads it back (it cannot read a command's stdout through LXD), keeps
+ * attachments and decides when the machine is quiet enough to sleep (the one
+ * idle rule's two signals). Published at /run/qorpera-coding/observation.json. */
 export interface CodingGuestObservation {
-	schema: "qorpera.coding-guest-observation/v2";
+	schema: "qorpera.coding-guest-observation/v3";
 	bootId: string;
 	uptimeMs: number;
 	sessions: {
 		workerId: string;
 		cpuUsageUsec: number;
+		/** The bytes its running processes passed to read and write calls so far (/proc/<pid>/io rchar + wchar), the
+		 * command relays' aside. */
+		ioBytes: number;
 		running: number;
 		/** The lease the watchdog holds for the session: its attachment generation
 		 * and how long it stays live on this boot's clock. 0 means run out, and a
@@ -52,6 +62,10 @@ export interface CodingGuestObservationPorts {
 	runtimeRoot?: string;
 	custodyRoot?: string;
 	cgroupRoot?: string;
+	/** A kernel file: /proc/<pid>/cgroup, cmdline or io. */
+	readSystemFile?: (path: string) => Promise<string>;
+	/** The names in /proc. */
+	listSystemDirectory?: (path: string) => Promise<string[]>;
 	protectedUid?: number;
 	system?: (executable: string, args: readonly string[]) => Promise<string>;
 	bootId?: () => Promise<string>;
@@ -125,6 +139,35 @@ async function leaseOf(
 		expiresInMs: lease.bootId === bootId ? Math.max(0, Number(lease.expiresAtMonoMs) - uptimeMs) : 0,
 	};
 }
+/** The bytes each session's processes passed to read and write calls so far (/proc/<pid>/io rchar + wchar), by the
+ * session's slice, in one pass over /proc. A command's relay (the command guest's `execute` step, which only copies its
+ * command's output to the log; Linux ends each of its arguments with a NUL) is left out; its command counts. */
+async function sessionIoBytes(ports: CodingGuestObservationPorts): Promise<Map<string, number>> {
+	const file = ports.readSystemFile ?? ((path: string) => readFile(path, "utf8"));
+	const bytes = new Map<string, number>();
+	const pids = (await (ports.listSystemDirectory ?? ((path: string) => readdir(path)))("/proc").catch(() => []))
+		.filter((pid) => /^[1-9][0-9]*$/.test(pid))
+		.slice(0, CODING_GUEST_PROCESSES_READ);
+	for (const pid of pids) {
+		const group =
+			(await file(`/proc/${pid}/cgroup`).catch(() => ""))
+				.split("\n")
+				.find((line) => line.startsWith("0::"))
+				?.slice(3) ?? "";
+		if (!group.startsWith(CODING_CGROUP)) continue;
+		const slice = group.slice(CODING_CGROUP.length).split("/")[0];
+		const argv = (await file(`/proc/${pid}/cmdline`).catch(() => "")).replace(/\0$/, "").split("\0");
+		if (
+			argv.at(-4) === CODING_COMMAND_ENTRYPOINT &&
+			argv.at(-3) === "execute" &&
+			UUID.test(argv.at(-2) ?? "") &&
+			UUID.test(argv.at(-1) ?? "")
+		)
+			continue;
+		bytes.set(slice, (bytes.get(slice) ?? 0) + idleRuleProcessIoBytes(await file(`/proc/${pid}/io`).catch(() => "")));
+	}
+	return bytes;
+}
 async function system(executable: string, args: readonly string[]): Promise<string> {
 	try {
 		return (
@@ -195,6 +238,7 @@ export async function observeCloudCodingGuest(
 			)
 			.map(([unit]) => unit),
 	);
+	const ioBytes = names.length ? await sessionIoBytes(ports) : new Map<string, number>();
 	const sessions: CodingGuestObservation["sessions"] = [];
 	for (const workerId of names) {
 		const layout = cloudCodingSessionLayout(workerId);
@@ -247,6 +291,7 @@ export async function observeCloudCodingGuest(
 		sessions.push({
 			workerId,
 			cpuUsageUsec,
+			ioBytes: ioBytes.get(layout.slice) ?? 0,
 			running: commands.length,
 			lease: await leaseOf(join(runtimeRoot, workerId, "lease.json"), owner, bootId, uptimeMs),
 		});
@@ -258,7 +303,7 @@ export async function observeCloudCodingGuest(
 				if (!missing(error)) throw error;
 			});
 	const observation: CodingGuestObservation = {
-		schema: "qorpera.coding-guest-observation/v2",
+		schema: "qorpera.coding-guest-observation/v3",
 		bootId,
 		uptimeMs,
 		sessions,
