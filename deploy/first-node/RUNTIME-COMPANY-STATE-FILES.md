@@ -192,7 +192,7 @@ first; deleting or moving the file (seeded).
 | `status` | yes | `active` or `archived` |
 | `colour` | no | charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink, gray (the app's `qorpera-<colour>` tokens) |
 | `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, ghost |
-| `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: used when no conversation or routine picks one |
+| `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: the agent's model for its runs; on a native subscription, a conversation's own choice wins in that conversation; gpt-6-astra when the file names none (20260930081000) |
 | `effort` | no | low, medium, high; default low |
 | body | yes | the instructions (today's charter), up to 32768 bytes trimmed; no control character other than tab and line breaks |
 
@@ -858,7 +858,7 @@ of the body, for readers that should not reach the storage server.
 | Kind | Index | Keeps | Stays runtime state |
 | --- | --- | --- | --- |
 | vision | new `qorpera_folder_company_index` row | name, vision version, `vision_seeded`; `qorpera_profiles.name` is copied by the follow-up queue | — |
-| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
+| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status, model (provider `openai`, model id the file's or `gpt-6-astra`; 20260930081000); the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `effort` stays in the parse until the runtime reads it (F2-1b); its `model` is indexed as above |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
 | connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
@@ -971,8 +971,13 @@ of the body, for readers that should not reach the storage server.
   as the default consent an agent's save records today. It takes the run's job and then the login,
   as an agent's routine save does, so it can meet a member switching that login off (40P01): the
   writer retries it.
-- Still to come: the vision in full (read through core C3's folder client), and the file's `model`
-  and `effort` reaching runs.
+- Still to come: the vision in full (read through core C3's folder client), and the file's `effort` reaching runs.
+- The file's `model` reaches runs (20260930081000, the coordinator's gap of 5 October from A1's ports): the index sets
+  the roster row's model provider (`openai`) and model id, the file's or `gpt-6-astra` when it names none, so the
+  provider-model mapping follows and the agent's runs take it. A conversation's own model choice wins only on a native
+  subscription (`qorpera_execution_run_model_authority`); on an API-key account the agent's model applies. Before, a
+  folder-v2 agent had no model of its own: an API-key account could not run it, and an owner could not name an API-key
+  company account as its standing account (22023). Agents indexed earlier took the same from their current file.
 
 **Core C3's folder client** (`packages/runtime/src/cloud-company-folder-client.ts`). The coordinator moved it
 from F1 to F2 on 2026-09-29, and F1 reviewed its shape on #533. It is the run's client of the folder core's four
@@ -1763,6 +1768,41 @@ choices made while building:
 - 65 distinct mutants of the migration, mine and the code review's (each path, person, company, reference, contact,
   lock, index, verify, proof and seeding rule): 64 caught by 803, 785 or 805, and one equivalent (it rewrote the
   final-task check into the same rule).
+
+**Plan (P31): H2c, human-task wakes** (migration 20260930065000, SQL tests 915 and 916; the coordinator's
+decisions of 4 October). It replaces §9's payer rule: nobody pays in someone else's place unless they choose to.
+- **Markers, then wakes.** P29's commit hook (`qorpera_folder_listener_commit`, LISTENER §8) only inserts a
+  pending marker in `qorpera_folder_human_task_wakes` for each change that should wake an agent. It chooses no
+  payer, inserts no wake and locks nothing but its new rows; the targets hook stays empty. A shared folder drain,
+  `human_tasks` (LISTENER §9; after `listen` in the orchestrator's pass), makes every wake, one company per
+  transaction in the core's lock order: ranks 1–3 KEY SHARE (the payer, the agent and its authority), the tasks
+  FOR SHARE at rank 5, the threads, admission, then the markers FOR UPDATE SKIP LOCKED.
+- **What wakes `from`.** done and declined; accepted, returned and cancelled; a new person; a hand-off (the
+  new `from`); a new open task someone else names the agent in (`assigned`); and once per (task, `due`) an
+  overdue open or returned task. Never ticks, `due` moves, moves, restores (a restored task is final) or the
+  agent's own change. When `from` is not active, the Co-Founder is woken, never by its own change. A marker's
+  `expect` holds what the change left in the task's index row; when the drain finds the task moved on, the
+  marker is skipped (`changed`).
+- **No parent run.** The wake is an `agent` wake with source kind `human-task`, its source the task, its key
+  `human-task:<task>:<commit>` or `human-task-due:<task>:<due in µs>`. Its chain is the changing agent (if any)
+  and the woken one. The pin trigger takes the agent, the payer, the thread and the payload from the pending
+  marker and the task, never from the inserter; `qorpera_folder_wake_authorized` checks the marker, and before
+  the run also the task, agent and payer.
+- **Who pays.** The member who started the task (`started_by_user_id`), through `qorpera_starter_sponsor` with
+  no preferred login. A ChatGPT plan never pays (`human-task` is a listener source). When the starter has left,
+  or no login of theirs can pay, the marker stays `unpaid` and nobody is woken in their place. A member may
+  choose to pay: `qorpera_folder_human_task_wake_continue(env, task)` re-arms the task's unpaid markers with
+  them as the payer; `qorpera_member_folder_human_task_waits(env)` lists the unpaid ones (the web's button is
+  Interfaces', later).
+- **The run.** The agent's public thread for the payer, reply optional (`continuation` when there is a
+  thread). The payload is `{schema 'qorpera.human-task-wake/v1', taskId, reason, commitId, dueAt}`, and when the
+  run may read the task's file, its path, title, status and due. Showing them is a read of the task's file: the wake
+  read records it first (once per version, with the authority it was read under), so the run's effects recheck it and
+  erasure finds the run (review r1). The skill text says when an agent is woken.
+- **Runtime (same PR).** The wake bus accepts the source and its closed payload; the prompt's wake protocol
+  explains it; `FOLDER_DRAINS` and `CLOUD_FOLDER_DRAINS` gain `human_tasks`.
+- **Later:** removing old markers (keep those of live wakes); Interfaces lifts the gateway's hold on
+  `human-tasks/` member writes.
 
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F2 widens erasure. A1's takeover becomes a

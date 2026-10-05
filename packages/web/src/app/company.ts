@@ -48,6 +48,7 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { InterfaceFolderState } from "./interface-folder.ts";
 import {
 	appendQuoted,
 	brokenQuotes,
@@ -177,6 +178,10 @@ export interface CompanyState {
 	waitingForHours?: boolean;
 	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
 	hoursWaitUnavailable?: boolean;
+	/** The company's interfaces and tables as its folder holds them (Interfaces step I7; app/interface-folder.ts).
+	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
+	 * draws the library's definitions (app/interfaces.ts). */
+	interfaceFolder?: InterfaceFolderState;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;

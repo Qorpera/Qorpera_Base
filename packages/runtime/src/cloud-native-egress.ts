@@ -10,9 +10,9 @@ export const NATIVE_CODEX_EGRESS_HOSTS = Object.freeze(["chatgpt.com", "auth.ope
  * run, renews the plan's tokens, and the run never uses the Codex login's ChatGPT backend. */
 export const NATIVE_CHATGPT_PLAN_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
 const MAX_HELLO_BYTES = 65_536;
+// Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
+// over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
 const MAX_CONNECTIONS = 8;
-const MAX_ATTEMPTS = 128;
-const MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
 
 export function nativeEgressPublicAddress(address: string): boolean {
 	if (!isIPv4(address)) return false;
@@ -154,10 +154,8 @@ export async function startNativeCodexEgress(options: {
 	const upstreams = new Set<Socket>();
 	const controller = new AbortController();
 	const signal = AbortSignal.any([options.signal, controller.signal]);
-	let attempts = 0;
-	let transferred = 0;
 	const server = createServer((peer) => {
-		if (signal.aborted || peers.size >= MAX_CONNECTIONS || ++attempts > MAX_ATTEMPTS) {
+		if (signal.aborted || peers.size >= MAX_CONNECTIONS) {
 			peer.destroy();
 			return;
 		}
@@ -184,11 +182,6 @@ export async function startNativeCodexEgress(options: {
 			upstream?.destroy();
 		});
 		peer.setTimeout(30_000, close);
-		const account = (bytes: Buffer): void => {
-			transferred += bytes.length;
-			if (transferred > MAX_TRANSFER_BYTES) controller.abort();
-		};
-		peer.on("data", account);
 		const accept = async (): Promise<void> => {
 			if (!host) {
 				const end = buffered.indexOf("\r\n\r\n");
@@ -241,7 +234,6 @@ export async function startNativeCodexEgress(options: {
 				close();
 			});
 			upstream.on("error", close);
-			upstream.on("data", account);
 			upstream.setTimeout(30_000, close);
 			upstream.once("connect", () => {
 				if (attemptSignal.aborted) {

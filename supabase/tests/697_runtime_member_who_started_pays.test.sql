@@ -1,8 +1,9 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- The member who started the work pays (20260928230000): a member's login pays only for work that
--- member started, follow-up work inherits the starter's own login, a company account pays when the
--- starter's login cannot, a coding session runs for the member who asked, and one check where runs
--- are created refuses anything else. The fixture's owner (…001) has a login; the contributor
+-- member started, follow-up work inherits the starter's own login, a company account pays for a
+-- starter with no login of their own (20260930059000: never because the starter's login is at its
+-- limit, test 905), a coding session runs for the member who asked, and one check where runs are
+-- created refuses anything else. The fixture's owner (…001) has a login; the contributor
 -- (…002) connects one here; the viewer (…003) never has one.
 reset role;
 
@@ -206,7 +207,8 @@ set local role service_role;
 select public.qorpera_set_provider_execution_policy('openai','api_key','codex-cli','supported','enabled',64,null,null);
 reset role;
 
--- Now the company pays when the starter has no login of their own, and never before a member's own login.
+-- Now the company pays when the starter has no login of their own, and never before a member's own login; work
+-- that follows a company-paid run stays on the company account (20260930059000).
 do $$
 declare
 	v_profile uuid := '30000000-0000-4000-8000-000000000010';
@@ -218,9 +220,12 @@ begin
 	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'30000000-0000-4000-8000-000000000003',v_agent,v_owner_binding);
 	if v_payer.binding_id is distinct from v_company then
 		raise exception 'the company account did not pay for a starter without a login: %', row_to_json(v_payer); end if;
-	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'30000000-0000-4000-8000-000000000001',v_agent,v_company);
+	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'30000000-0000-4000-8000-000000000001',v_agent,null);
 	if v_payer.binding_id is distinct from v_owner_binding then
 		raise exception 'the company account paid before the starter''s own login: %', row_to_json(v_payer); end if;
+	select * into v_payer from public.qorpera_starter_sponsor(v_profile,'30000000-0000-4000-8000-000000000001',v_agent,v_company);
+	if v_payer.binding_id is distinct from v_company then
+		raise exception 'follow-up work of a company-paid run moved to the starter''s login: %', row_to_json(v_payer); end if;
 	if not public.qorpera_sponsor_serves_requester(v_profile,v_company,1,'30000000-0000-4000-8000-000000000002')
 		or not public.qorpera_sponsor_serves_requester(v_profile,v_company,1,'30000000-0000-4000-8000-000000000003') then
 		raise exception 'a company account does not serve every member';

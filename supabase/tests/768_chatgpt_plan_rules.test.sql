@@ -1,4 +1,4 @@
--- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
+-- @fixture 764_chatgpt_plan_login.test.sql until "-- Both kinds are listed for their account (20260930059000)"
 -- Sign in with ChatGPT, slice 1b (20260928359950): the rules a member's ChatGPT plan login keeps. Test 764's
 -- fixture leaves the member with a completed plan login (not consented for work while they are away) and a
 -- Codex vault login, next to test 160's capsule login that pays for the fixture's run.
@@ -305,21 +305,19 @@ select pg_temp.plan764_expect(pg_temp.plan764_try(
 select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), pg_temp.r768('plan')::text,
 	'a conversation on the plan keeps it at its limit');
 reset role;
--- Not once its login needs a new sign-in: then it cannot pay, and the conversation takes another account.
+-- Also once its login needs a new sign-in: it cannot pay until the member signs in again, and the conversation
+-- never moves to another account on its own (20260930059000).
 update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
 set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(
 	'select public.qorpera_select_member_session_account(''16000000-0000-4000-8000-000000000010'',''16000000-0000-4000-8000-000000000040'')::text'),
 	'ok', 'the conversation''s account');
+select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), pg_temp.r768('plan')::text,
+	'a conversation keeps its plan while its login needs a new sign-in');
 reset role;
-do $$
-begin
-	if current_setting('qorpera_test.plan764_last') = pg_temp.r768('plan')::text then
-		raise exception 'a saved plan whose login needs a new sign-in was kept'; end if;
-end $$;
 update public.qorpera_model_logins set status = 'active' where id = '76400000-0000-4000-8000-000000000150';
 -- The other way round: the plan has room and the Codex login reaches its limit. Work never moves onto the
--- plan because of that: its conversation keeps no account, and its follow-up work stays on it.
+-- plan because of that: its conversation keeps the Codex login, and its follow-up work stays on it.
 delete from public.qorpera_native_provider_account_metadata where connection_id = pg_temp.r768('plan');
 insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
 select pg_temp.r768('capsule'), max(version), jsonb_build_object('observedAt', statement_timestamp() - interval '1 second',
@@ -332,7 +330,7 @@ set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(
 	'select public.qorpera_select_member_session_account(''16000000-0000-4000-8000-000000000010'',''16000000-0000-4000-8000-000000000040'')::text'),
 	'ok', 'the conversation''s account');
-select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), 'null',
+select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'), pg_temp.r768('capsule')::text,
 	'a conversation whose Codex login reached its limit does not move to the plan');
 reset role;
 do $$

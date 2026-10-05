@@ -1,9 +1,10 @@
 -- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
 -- Company folder core, C1c-2c part 2 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6): a folder-v2 run's
--- completion, sponsor handoff and receipt recovery. v6's folder lane completes a run with the disposition its commits
--- give (unchanged, published, review_pending), after its receipts are matched to the commits that carry them; it closes
--- the run's run box views and never reads a source substrate. The handoff accepts receipts satisfied by commits;
--- recovery confirms a receipt with the commit that carries it. Runs are 647's hand-built runs. Races are in 659.
+-- completion and receipt recovery. v6's folder lane completes a run with the disposition its commits give (unchanged,
+-- published, review_pending), after its receipts are matched to the commits that carry them; it closes the run's run
+-- box views and never reads a source substrate. Recovery confirms a receipt with the commit that carries it. (The
+-- sponsor handoff this part also covered is gone since 20260930059000.) Runs are 647's hand-built runs. Races are in
+-- 659.
 
 -- Repairs to a hand-built run so completion's writes pass their foreign-key checks (rows this transaction built with
 -- them off are checked again when updated): the run names a real substrate and snapshot (another company's, which
@@ -148,9 +149,6 @@ begin
 		|| E'\tend if;\n\tend if;\n', E'\t\traise exception ''runner source substrate is inconsistent'' using errcode = ''55000'';\n'
 		|| E'\tend if;\n');
 	if md5(v_def) <> '9e1bda8d68110049d48788c9bda47abc' then raise exception 'v2''s snapshot-v1 text changed'; end if;
-	if md5(replace(pg_get_functiondef('public.qorpera_handoff_run_sponsor(uuid,text)'::regprocedure),
-			' and folder_commit_id is null)))', ')))')) <> 'c5311dfbd68b708e188a82c0a07d45bb' then
-		raise exception 'The handoff''s snapshot-v1 text changed'; end if;
 	v_def := pg_get_functiondef('public.qorpera_resolve_run_operation_receipt(uuid,text,jsonb,uuid,uuid)'::regprocedure);
 	if position(E'\nbegin\n\tif public.qorpera_environment_is_folder_v2((select run.environment_id from public.qorpera_run_operation_receipts receipt' in v_def) = 0
 		or md5(pg_temp.without_guard(v_def)) <> '9d966774a73d2789f2888dcdf10531ff' then
@@ -347,47 +345,7 @@ begin
 	perform pg_temp.path_claims('service_role');
 end $$;
 
--- 7. The sponsor handoff at a usage limit: a revision receipt that a folder commit satisfies may cross the attempt
--- boundary; the same receipt naming no commit may not (as a revision receipt with no snapshot today).
-do $$
-declare h jsonb := pg_temp.human(); b jsonb := h -> 'binding'; p jsonb := h -> 'actor'; c jsonb; v jsonb;
-	v_receipt uuid := extensions.gen_random_uuid();
-begin
-	perform pg_temp.begin(b, v_receipt, 'handoff-save');
-	c := public.qorpera_folder_commit('63400000-0000-4000-8000-000000000020', p, 'handoff-save-1',
-		jsonb_build_array(jsonb_build_object('op','mkdir','path','handed')), null, v_receipt);
-	perform public.qorpera_folder_complete_run_receipt(b, v_receipt, repeat('1', 64), '{"ok":true}'::jsonb, (c ->> 'commitId')::uuid);
-	-- The company's other login on the run's computer identity, and a usage limit on the run's own.
-	set local session_replication_role = replica;
-	insert into public.qorpera_native_credential_capsules(id, profile_id, compute_identity_id, ownership_kind, provider, native_harness,
-		encrypted_capsule_reference, attestation_policy_sha256, created_by_user_id)
-	values ('65800000-0000-4000-8000-0000000000d9', '63400000-0000-4000-8000-000000000010', '64700000-0000-4000-8000-0000000000d1',
-		'company', 'openai', 'codex-cli', 'fixture://not-a-credential-either', repeat('e', 64), '63400000-0000-4000-8000-000000000001');
-	insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, owner_user_id, provider, created_by_user_id)
-	values ('65800000-0000-4000-8000-0000000000b9', '63400000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), null, 'openai',
-		'63400000-0000-4000-8000-000000000001');
-	insert into public.qorpera_provider_connection_versions(connection_id, version, authentication_mode, native_harness, billing_source,
-		consent_version, consented_by_user_id, created_by_user_id, credential_capsule_id, max_native_concurrency, quota_policy, allow_autonomous)
-	values ('65800000-0000-4000-8000-0000000000b9', 1, 'native_subscription', 'codex-cli', 'subscription', 'fixture',
-		'63400000-0000-4000-8000-000000000001', '63400000-0000-4000-8000-000000000001', '65800000-0000-4000-8000-0000000000d9', 8,
-		'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}',
-		true);
-	insert into public.qorpera_provider_connection_usage_signals(profile_id, run_id, job_id, sponsor_binding_id, sponsor_version,
-		provider_connection_id, provider_connection_version, provider, signal_kind, source, observed_at)
-	values ('63400000-0000-4000-8000-000000000010', (b ->> 'runId')::uuid, (b ->> 'jobId')::uuid, '63400000-0000-4000-8000-0000000000b1', 1,
-		'63400000-0000-4000-8000-0000000000b3', 1, 'openai', 'usage_limit', 'native_adapter', statement_timestamp());
-	update public.qorpera_run_operation_receipts set folder_commit_id = null where id = v_receipt;
-	set local session_replication_role = origin;
-	if public.qorpera_handoff_run_sponsor((b ->> 'runId')::uuid, 'usage_limit') is not null then
-		raise exception 'A revision receipt that names no commit must not cross the attempt boundary'; end if;
-	perform pg_temp.fx(format('update public.qorpera_run_operation_receipts set folder_commit_id = %L where id = %L', c ->> 'commitId', v_receipt));
-	v := public.qorpera_handoff_run_sponsor((b ->> 'runId')::uuid, 'usage_limit');
-	if v is null or v ->> 'toConnectionId' is distinct from '65800000-0000-4000-8000-0000000000b9'
-		or (select status from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid) is distinct from 'queued' then
-		raise exception 'A receipt satisfied by a commit crosses the attempt boundary: %', v; end if;
-end $$;
-
--- 8. Privileges: the new functions are postgres-only; the runtime reaches completion through v6 and a member reaches
+-- 7. Privileges: the new functions are postgres-only; the runtime reaches completion through v6 and a member reaches
 -- recovery through its function.
 do $$
 declare v_fn text;

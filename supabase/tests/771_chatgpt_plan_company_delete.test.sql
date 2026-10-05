@@ -1,4 +1,4 @@
--- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
+-- @fixture 764_chatgpt_plan_login.test.sql until "-- Both kinds are listed for their account (20260930059000)"
 -- Sign in with ChatGPT, slice 1c (20260928359960): deleting a company ends its members' ChatGPT plan logins
 -- at OpenAI before the purge. Test 764's fixture leaves the company with a member's plan login and a
 -- Codex vault login, and the company's broker. (Test 773 races the revocation against a run's lease check.)

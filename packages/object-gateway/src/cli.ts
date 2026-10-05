@@ -118,6 +118,15 @@ const handler = createObjectGatewayHandler({
 				},
 			}
 		: {}),
+	// The folder service's puts (F3 step 3): off until its own token is configured.
+	...(process.env.QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN
+		? {
+				folderServiceObjects: {
+					token: required(process.env, "QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN"),
+					authority,
+				},
+			}
+		: {}),
 	...(readLeases
 		? { readLeases, revocationToken: required(process.env, "QORPERA_OBJECT_GATEWAY_REVOCATION_TOKEN") }
 		: {}),

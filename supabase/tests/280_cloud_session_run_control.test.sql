@@ -1,329 +1,257 @@
-begin;
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- A member's Stop of a run in an agent's thread, on folder-v2 (ported from snapshot-v1 in the legacy sweep): the
+-- conversation run control (qorpera_get_session_run_control) and its Stop (qorpera_cancel_session_run). The runs are real:
+-- the contributor's posts in Bob's thread, turned into runs by the folder materializer, and the base's leased run of
+-- Alice's. The read names the conversation's current run, never an older failed or completed one, with public control
+-- fields only. Only the run's creator, while a contributor, or an owner or admin stops it, and only by its exact
+-- conversation and run; a retry or a late Stop never reaches another run, and a Stop writes nothing into the
+-- conversation. A Stop of a leased run takes its execution token and ends its native lease, never the saved login;
+-- completion and failure end that lease the same way; a recovered identity fences the old lease and runner. The grants
+-- (anon none, authenticated both) are 001's allowlist rows.
 
--- Real relational/transition fixtures; no provider calls or runner processes.
-do $$
-declare
-	v_owner uuid := '28000000-0000-4000-8000-000000000001';
-	v_member uuid := '28000000-0000-4000-8000-000000000002';
-	v_profile uuid := '28000000-0000-4000-8000-000000000010';
-	v_environment uuid := '28000000-0000-4000-8000-000000000020';
-	v_workspace uuid := '28000000-0000-4000-8000-000000000030';
-	v_snapshot uuid := '28000000-0000-4000-8000-000000000040';
-	v_substrate uuid := '28000000-0000-4000-8000-000000000050';
-	v_session uuid;
-	v_staff uuid;
-	v_job uuid;
-	v_run uuid;
-	v_provider uuid;
-	v_sponsor uuid;
-	v_index integer;
+-- The contributor's own native login and member sponsor, as the base makes the owner's: a post spends only the
+-- poster's own login. Answers the sponsor's binding.
+create function pg_temp.rc_member_binding() returns uuid language plpgsql as $$
+declare v_claims text := current_setting('request.jwt.claims', true); v_identity jsonb; v_login jsonb; v_connection jsonb;
+	v_sponsor jsonb;
 begin
-	for v_index in 1..5 loop
-		insert into auth.users (id, email) values (
-			('28000000-0000-4000-8000-' || lpad(v_index::text, 12, '0'))::uuid,
-			'run-control-' || v_index || '@example.test'
-		);
-	end loop;
-	insert into public.qorpera_profiles (id, name, created_by_user_id)
-	values (v_profile, 'Run control fixture', v_owner);
-	for v_index in 1..4 loop
-		insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
-		values (v_profile, ('28000000-0000-4000-8000-' || lpad(v_index::text, 12, '0'))::uuid,
-			'run-control-' || v_index || '@example.test', 'Member ' || v_index,
-			(case when v_index = 1 then 'owner' when v_index = 4 then 'viewer' else 'contributor' end)::public.qorpera_profile_role);
-	end loop;
-	perform set_config('request.jwt.claims', jsonb_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
-	insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id)
-	values (v_environment, v_profile, 'Run control', 1, v_owner);
-	insert into public.qorpera_company_workspaces (id, profile_id, environment_id, client_workspace_id, name, created_by_user_id)
-	values (v_workspace, v_profile, v_environment, v_workspace, 'Run control', v_owner);
-	insert into public.qorpera_company_snapshots (
-		id, profile_id, environment_id, workspace_id, client_snapshot_id, tree_manifest_sha256,
-		tree_manifest_bytes, tree_contract_version, file_count, total_bytes, created_by_user_id
-	) values (v_snapshot, v_profile, v_environment, v_workspace, v_snapshot, repeat('a', 64), 2, 3, 0, 0, v_owner);
-	insert into public.qorpera_company_substrate_versions (
-		id, profile_id, environment_id, company_snapshot_id, client_version_id, contract_version,
-		operation_sequence, operation_count, content_sha256, created_by_user_id
-	) values (v_substrate, v_profile, v_environment, v_snapshot, v_substrate, 1, 0, 0, repeat('b', 64), v_owner);
-	for v_index in 0..1 loop
-		v_staff := ('28000000-0000-4000-8000-' || lpad((54 + v_index * 10)::text, 12, '0'))::uuid;
-		v_session := ('28000000-0000-4000-8000-' || lpad((55 + v_index * 10)::text, 12, '0'))::uuid;
-		insert into public.qorpera_profile_staff (
-			profile_id, staff_agent_id, display_name, role, charter, appearance_color, appearance_shape,
-			employment_status, lifecycle_state, model_provider, model_id, created_at, updated_at, updated_by_user_id
-		) values (v_profile, v_staff, 'Agent ' || v_index, 'Operations', 'Run fixture', 'blue', 'round',
-			'active', 'active', 'openai', 'gpt-test', statement_timestamp(), statement_timestamp(), v_owner);
-		insert into public.qorpera_shared_sessions (
-			id, client_session_id, profile_id, environment_id, title, status, created_by_user_id,
-			company_snapshot_id, staff_agent_id, staff_version, execution_scope
-		) values (v_session, v_session, v_profile, v_environment, 'Session ' || v_index, 'open', v_owner,
-			v_snapshot, v_staff, 1, '{}');
-	end loop;
-	v_provider := (public.qorpera_register_provider_connection(
-		v_profile, '28000000-0000-4000-8000-000000000060', null, 'openai', 'api_key', 'openai-responses',
-		'vault://company/provider/openai', 'acct_test', 'run-control-fixture', 'qorpera-provider-consent/v1', null,
-		'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}'
-	) ->> 'connection_id')::uuid;
-	v_sponsor := (public.qorpera_create_execution_sponsor_binding(
-		v_profile, '28000000-0000-4000-8000-000000000061', 'company_api_billing', v_provider, 1, false
-	) ->> 'binding_id')::uuid;
-	insert into public.qorpera_member_compute_identities (id, profile_id, ownership_kind, client_identity_id, display_name)
-	values ('28000000-0000-4000-8000-000000000906', v_profile, 'company',
-		'28000000-0000-4000-8000-000000000906', 'Lease cleanup fixture');
-	for v_index in 1..5 loop
-		v_job := ('28000000-0000-4000-8000-' || lpad((70 + v_index)::text, 12, '0'))::uuid;
-		v_run := ('28000000-0000-4000-8000-' || lpad((80 + v_index)::text, 12, '0'))::uuid;
-		v_session := case when v_index = 5 then '28000000-0000-4000-8000-000000000065'::uuid
-			else '28000000-0000-4000-8000-000000000055'::uuid end;
-		v_staff := case when v_index = 5 then '28000000-0000-4000-8000-000000000064'::uuid
-			else '28000000-0000-4000-8000-000000000054'::uuid end;
-		insert into public.qorpera_runner_jobs (
-			id, profile_id, environment_id, session_id, substrate_version_id, client_job_id,
-			required_capability, job_type, payload, created_by_user_id, status, finished_at, result, created_at
-		) values (v_job, v_profile, v_environment, v_session, v_substrate, v_job,
-			'agent_turn', 'agent_turn', '{}', v_member,
-			case when v_index = 1 then 'failed' when v_index = 4 then 'completed' else 'queued' end,
-			case when v_index in (1, 4) then statement_timestamp() else null end,
-			case when v_index = 4 then '{}'::jsonb else null end,
-			statement_timestamp() - (10 - v_index) * interval '1 minute');
-		insert into public.qorpera_execution_runs (
-			id, profile_id, environment_id, source_kind, source_id, session_id, job_id, substrate_version_id,
-			company_snapshot_id, staff_agent_id, staff_version, input_ids, sponsor_binding_id, sponsor_version,
-			required_capability, job_type, payload_sha256, transcript_start_sequence, created_by_user_id, compute_identity_id
-		) values (v_run, v_profile, v_environment, 'session_turn', v_run, v_session, v_job, v_substrate,
-			v_snapshot, v_staff, 1, array[v_run], v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_member,
-			case when v_index = 5 then '28000000-0000-4000-8000-000000000906'::uuid else null end);
-		update public.qorpera_runner_jobs set run_id = v_run where id = v_job;
-	end loop;
-end
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+	set local role authenticated;
+	v_identity := public.qorpera_upsert_member_compute_identity('92400000-0000-4000-8000-000000000010',
+		'28000000-0000-4000-8000-000000000050', 'Member identity', 'qorpera-member-linux', 'v1', '["agent_turn"]',
+		'{"network":"provider-native-only","credentialExport":false}');
+	v_login := public.qorpera_begin_native_provider_login('92400000-0000-4000-8000-000000000010',
+		'28000000-0000-4000-8000-000000000051', '28000000-0000-4000-8000-000000000052',
+		(v_identity ->> 'compute_identity_id')::uuid, 'openai', 'codex-cli', repeat('c', 64), 900);
+	reset role;
+	perform pg_temp.base_claims('service_role');
+	set local role service_role;
+	v_connection := public.qorpera_complete_native_provider_login((v_login ->> 'login_id')::uuid, repeat('c', 64),
+		'28000000-0000-4000-8000-000000000060', 'object://native-capsules/28000000-0000-4000-8000-000000000060', repeat('d', 64),
+		'fixture-member-account', 'personal-subscription', 'qorpera-native-provider-consent/v1',
+		'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}');
+	reset role;
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+	set local role authenticated;
+	v_sponsor := public.qorpera_create_member_execution_sponsor('92400000-0000-4000-8000-000000000010',
+		'28000000-0000-4000-8000-000000000061', (v_connection ->> 'connection_id')::uuid, 1, false);
+	reset role;
+	perform set_config('request.jwt.claims', coalesce(v_claims, ''), true);
+	return (v_sponsor ->> 'binding_id')::uuid;
+end $$;
+-- An agent's thread conversation.
+create function pg_temp.rc_session(p_staff uuid) returns uuid language sql as $$
+	select session_id from public.qorpera_company_rooms
+	where profile_id = '92400000-0000-4000-8000-000000000010' and bound_staff_agent_id = p_staff
+$$;
+-- The contributor's post in Bob's thread as one run, its job made p_minutes ago (the order the conversation's runs were
+-- made in); answers the run.
+create function pg_temp.rc_post(p_text text, p_minutes integer) returns uuid language plpgsql as $$
+declare v_pass jsonb; v_run uuid;
+begin
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000002', '92400000-0000-4000-8000-000000000031', p_text,
+		current_setting('qorpera_test.rc_member_binding')::uuid);
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1,
+		'Fixture: the post is one run: ' || v_pass::text);
+	v_run := (v_pass -> 'run_ids' ->> 0)::uuid;
+	perform pg_temp.base_assert((select run.source_kind = 'room_delivery' and run.session_id = pg_temp.rc_session(run.staff_agent_id)
+		and run.staff_agent_id = '92400000-0000-4000-8000-000000000031' and job.status = 'queued'
+		and job.created_by_user_id = '92400000-0000-4000-8000-000000000002'
+		from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id where run.id = v_run),
+		'Fixture: the post is a queued run in Bob''s thread, made for the contributor');
+	update public.qorpera_runner_jobs set created_at = statement_timestamp() - make_interval(mins => p_minutes) where run_id = v_run;
+	return v_run;
+end $$;
+create function pg_temp.rc_denied(p_session uuid, p_run uuid) returns void language sql as $$
+	select pg_temp.base_error(format('select public.qorpera_cancel_session_run(%L, %L)', p_session, p_run), '42501',
+		'cloud run cancellation is not allowed')
+$$;
+create function pg_temp.rc_job(p_run text) returns uuid language sql security definer as $$
+	select job_id from public.qorpera_execution_runs where id = current_setting(p_run)::uuid
 $$;
 
-create function pg_temp.assert_true(value boolean, message text) returns void language plpgsql as $$
-begin
-	if value is distinct from true then raise exception '%', message; end if;
-end
-$$;
+-- Another contributor, besides the base's.
+insert into auth.users(id, email) values ('28000000-0000-4000-8000-000000000003', 'rc-other@example.test');
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+values ('92400000-0000-4000-8000-000000000010', '28000000-0000-4000-8000-000000000003', 'rc-other@example.test', 'Other', 'contributor');
 
-create function pg_temp.denied(session_id uuid, run_id uuid) returns void language plpgsql as $$
-begin
-	begin
-		perform public.qorpera_cancel_session_run(session_id, run_id);
-	exception when insufficient_privilege then return;
-	end;
-	raise exception 'unauthorized or rebound cancellation was accepted';
-end
-$$;
-
-select pg_temp.assert_true(not has_function_privilege('anon', 'public.qorpera_cancel_session_run(uuid,uuid)', 'execute'), 'anonymous cancellation exposed');
-select pg_temp.assert_true(not has_function_privilege('anon', 'public.qorpera_get_session_run_control(uuid)', 'execute'), 'anonymous run state exposed');
-select pg_temp.assert_true(has_function_privilege('authenticated', 'public.qorpera_cancel_session_run(uuid,uuid)', 'execute'), 'member cancellation missing');
-
-set role authenticated;
--- Older failed/completed runs do not mask current work. Only closed, public
--- control fields are returned, never job payloads, tokens or provider output.
-select pg_temp.assert_true(
-	public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055') =
-	'{"session_id":"28000000-0000-4000-8000-000000000055","staff_agent_id":"28000000-0000-4000-8000-000000000054","run":{"run_id":"28000000-0000-4000-8000-000000000082","status":"queued","can_cancel":true}}'::jsonb,
-	'active run was masked or leaked extra state'
-);
-
--- Neither another contributor nor a viewer may stop the sponsoring member's run.
-select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000003","role":"authenticated"}', true);
-select pg_temp.assert_true((public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055') #>> '{run,can_cancel}')::boolean = false, 'coworker can stop another member');
-select pg_temp.denied('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082');
-select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000004","role":"authenticated"}', true);
-select pg_temp.denied('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082');
-
--- An outsider cannot read the company's run state or cancel by remembered id.
-select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000005","role":"authenticated"}', true);
-select pg_temp.denied('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082');
+-- Four of the contributor's posts in Bob's thread: the oldest failed, then the current run and its successor, both
+-- queued, then a newer one that completed (completed with triggers off, as a fixture row: its sends are not this test's).
+select set_config('qorpera_test.rc_member_binding', pg_temp.rc_member_binding()::text, true);
 do $$
 begin
-	begin
-		perform public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055');
-	exception when insufficient_privilege then return;
-	end;
-	raise exception 'outsider could read company run state';
-end
-$$;
+	perform set_config('qorpera_test.rc_failed', pg_temp.rc_post('First question.', 9)::text, true);
+	perform set_config('qorpera_test.rc_current', pg_temp.rc_post('Second question.', 8)::text, true);
+	perform set_config('qorpera_test.rc_next', pg_temp.rc_post('Third question.', 7)::text, true);
+	perform set_config('qorpera_test.rc_completed', pg_temp.rc_post('Fourth question.', 6)::text, true);
+	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture failure', finished_at = statement_timestamp()
+	where run_id = current_setting('qorpera_test.rc_failed')::uuid;
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = statement_timestamp()
+	where run_id = current_setting('qorpera_test.rc_completed')::uuid;
+	set local session_replication_role = origin;
+	perform set_config('qorpera_test.rc_bob', pg_temp.rc_session('92400000-0000-4000-8000-000000000031')::text, true);
+	perform set_config('qorpera_test.rc_alice', pg_temp.rc_session('92400000-0000-4000-8000-000000000030')::text, true);
+	perform set_config('qorpera_test.rc_base_run', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', true);
+	perform set_config('qorpera_test.rc_events', (select count(*) from public.qorpera_session_events
+		where session_id in (current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_alice')::uuid))::text, true);
+end $$;
 
--- Current membership is required, even for the creator, on both endpoints.
+-- 1. Older failed and completed runs do not mask current work, and the read returns only the closed public control
+--    fields, never a payload, token or output.
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.base_assert(public.qorpera_get_session_run_control(current_setting('qorpera_test.rc_bob')::uuid) = jsonb_build_object(
+	'session_id', current_setting('qorpera_test.rc_bob'), 'staff_agent_id', '92400000-0000-4000-8000-000000000031',
+	'run', jsonb_build_object('run_id', current_setting('qorpera_test.rc_current'), 'status', 'queued', 'can_cancel', true)),
+	'The current run, with its public control fields only');
+
+-- 2. Neither another contributor nor a viewer may stop the poster's run.
+select pg_temp.base_claims('authenticated', '28000000-0000-4000-8000-000000000003');
+select pg_temp.base_assert((public.qorpera_get_session_run_control(current_setting('qorpera_test.rc_bob')::uuid)
+	#>> '{run,can_cancel}')::boolean = false, 'Another contributor is not offered the Stop');
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_current')::uuid);
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_current')::uuid);
+
+-- 3. An outsider can neither read the company's run state nor stop by a remembered id.
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000005');
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_current')::uuid);
+select pg_temp.base_error(format('select public.qorpera_get_session_run_control(%L)', current_setting('qorpera_test.rc_bob')), '42501',
+	'cloud conversation is unavailable');
 reset role;
+
+-- 4. Current membership is required, even of the run's creator, on both endpoints. (A removed member's login is revoked
+--    and its runs fail with it, so the downgrade and the removal are undone after their checks.)
+select set_config('qorpera_test.rc_current_job', pg_temp.rc_job('qorpera_test.rc_current')::text, true);
+savepoint rc_membership;
 update public.qorpera_profile_members set role = 'viewer'
-where profile_id = '28000000-0000-4000-8000-000000000010' and user_id = '28000000-0000-4000-8000-000000000002';
-set role authenticated;
-select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000002","role":"authenticated"}', true);
-select pg_temp.denied('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082');
-do $$
-begin
-	begin
-		perform public.qorpera_cancel_runner_job('28000000-0000-4000-8000-000000000072');
-	exception when insufficient_privilege then return;
-	end;
-	raise exception 'downgraded creator bypassed session controls';
-end
-$$;
+where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000002';
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_current')::uuid);
+select pg_temp.base_error(format('select public.qorpera_cancel_runner_job(%L)', current_setting('qorpera_test.rc_current_job')), '42501',
+	'runner job cancellation is not allowed');
 reset role;
 delete from public.qorpera_profile_members
-where profile_id = '28000000-0000-4000-8000-000000000010' and user_id = '28000000-0000-4000-8000-000000000002';
-set role authenticated;
-select pg_temp.denied('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082');
-do $$
-begin
-	begin
-		perform public.qorpera_cancel_runner_job('28000000-0000-4000-8000-000000000072');
-	exception when insufficient_privilege then return;
-	end;
-	raise exception 'removed creator bypassed session controls';
-end
-$$;
+where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000002';
+set local role authenticated;
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_current')::uuid);
+select pg_temp.base_error(format('select public.qorpera_cancel_runner_job(%L)', current_setting('qorpera_test.rc_current_job')), '42501',
+	'runner job cancellation is not allowed');
 reset role;
-insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
-values ('28000000-0000-4000-8000-000000000010', '28000000-0000-4000-8000-000000000002', 'run-control-2@example.test', 'Member 2', 'contributor');
-set role authenticated;
+rollback to savepoint rc_membership;
+select pg_temp.base_assert((select status from public.qorpera_runner_jobs where id = current_setting('qorpera_test.rc_current_job')::uuid)
+	= 'queued', 'Refused Stops leave the run queued');
 
--- Exact-session binding is mandatory even when this member may control both.
-select pg_temp.denied('28000000-0000-4000-8000-000000000065', '28000000-0000-4000-8000-000000000082');
-select pg_temp.denied('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000085');
+-- 5. The exact conversation is required, even of an owner, who may stop both runs.
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_alice')::uuid, current_setting('qorpera_test.rc_current')::uuid);
+select pg_temp.rc_denied(current_setting('qorpera_test.rc_bob')::uuid, current_setting('qorpera_test.rc_base_run')::uuid);
 
-select pg_temp.assert_true(
-	public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082') =
-	'{"session_id":"28000000-0000-4000-8000-000000000055","run_id":"28000000-0000-4000-8000-000000000082","status":"cancelled"}'::jsonb,
-	'creator cancellation was not confirmed'
-);
--- Lost receipt retry and late clicks never select the successor.
-select public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082');
-select pg_temp.assert_true(public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000084') ->> 'status' = 'completed', 'late Stop changed a completed run');
-select pg_temp.assert_true(public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000081') ->> 'status' = 'failed', 'late Stop changed a failed run');
-select pg_temp.assert_true(public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055') #>> '{run,run_id}' = '28000000-0000-4000-8000-000000000083', 'stale Stop cancelled a successor');
+-- 6. The creator stops their run, and the Stop is confirmed. A lost receipt's retry and late Stops of ended runs read
+--    back, and none of them selects the successor.
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
+	current_setting('qorpera_test.rc_current')::uuid) = jsonb_build_object('session_id', current_setting('qorpera_test.rc_bob'),
+	'run_id', current_setting('qorpera_test.rc_current'), 'status', 'cancelled'), 'The creator''s Stop is confirmed');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
+	current_setting('qorpera_test.rc_current')::uuid) ->> 'status' = 'cancelled', 'A retried Stop reads back the cancelled run');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
+	current_setting('qorpera_test.rc_completed')::uuid) ->> 'status' = 'completed', 'A late Stop leaves a completed run');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
+	current_setting('qorpera_test.rc_failed')::uuid) ->> 'status' = 'failed', 'A late Stop leaves a failed run');
+select pg_temp.base_assert(public.qorpera_get_session_run_control(current_setting('qorpera_test.rc_bob')::uuid) #>> '{run,run_id}'
+	= current_setting('qorpera_test.rc_next'), 'A stale Stop cancelled no successor');
 
--- The owner can stop another member's exact run; an empty session is explicit.
-select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
-select public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000083');
-select pg_temp.assert_true(public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055') -> 'run' = 'null'::jsonb, 'idle session retained a run');
-
+-- 7. An owner stops another member's exact run; then the conversation reads no run.
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_bob')::uuid,
+	current_setting('qorpera_test.rc_next')::uuid) ->> 'status' = 'cancelled', 'The owner stops another member''s run');
+select pg_temp.base_assert(public.qorpera_get_session_run_control(current_setting('qorpera_test.rc_bob')::uuid) -> 'run' = 'null'::jsonb,
+	'An idle conversation reads no run');
 reset role;
-select pg_temp.assert_true((select count(*) = 1 from public.qorpera_runner_audit_receipts where job_id = '28000000-0000-4000-8000-000000000072' and event_type = 'job_cancelled'), 'retry duplicated cancellation effects');
-select pg_temp.assert_true((select status = 'cancelled' and cancelled_at is not null and finished_at is null and cancelled_by_user_id = '28000000-0000-4000-8000-000000000002' and lease_token_sha256 is null and attempt_count = 0 from public.qorpera_runner_jobs where id = '28000000-0000-4000-8000-000000000072'), 'cancellation failed actor/terminal/lease contract');
-select pg_temp.assert_true((select status = 'queued' from public.qorpera_runner_jobs where id = '28000000-0000-4000-8000-000000000075'), 'another session was affected');
-select pg_temp.assert_true((select count(*) = 0 from public.qorpera_session_events where session_id in ('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000065')), 'Stop manufactured public assistant output');
 
--- A leased run takes the same exact-run path and loses its execution token.
--- FK-complete lease metadata; the actual native model path is verified by the
--- separate live acceptance. This fixture contains no credentials or inference.
+-- 8. The cancellation's effects: one audit receipt despite the retry; the member recorded, no finish, no lease and no
+--    attempt; Alice's run in her thread untouched; no event written into either conversation.
+select pg_temp.base_assert((select count(*) from public.qorpera_runner_audit_receipts
+	where job_id = current_setting('qorpera_test.rc_current_job')::uuid and event_type = 'job_cancelled') = 1,
+	'The retry repeated no cancellation');
+select pg_temp.base_assert((select status = 'cancelled' and cancelled_at is not null and finished_at is null
+	and cancelled_by_user_id = '92400000-0000-4000-8000-000000000002' and lease_token_sha256 is null and attempt_count = 0
+	from public.qorpera_runner_jobs where id = current_setting('qorpera_test.rc_current_job')::uuid),
+	'The Stop records the member, and the job never ran');
+select pg_temp.base_assert((select status from public.qorpera_runner_jobs where run_id = current_setting('qorpera_test.rc_base_run')::uuid)
+	= 'leased', 'Another conversation''s run is untouched');
+select pg_temp.base_assert((select count(*) from public.qorpera_session_events where session_id in (current_setting('qorpera_test.rc_bob')::uuid,
+	current_setting('qorpera_test.rc_alice')::uuid)) = current_setting('qorpera_test.rc_events')::bigint,
+	'A Stop writes no output into the conversation');
+
+-- 9. Alice's leased run (the base's, on a real runner with its native lease). A recovered identity fences the old lease
+--    and runner, even for a caller that knows their tokens (only the fixture's generation moves, and goes back).
 do $$
-declare
-	v_owner uuid := '28000000-0000-4000-8000-000000000001';
-	v_profile uuid := '28000000-0000-4000-8000-000000000010';
-	v_job uuid := '28000000-0000-4000-8000-000000000075';
-	v_run uuid := '28000000-0000-4000-8000-000000000085';
-	v_orchestrator uuid := '28000000-0000-4000-8000-000000000901';
-	v_runner uuid := '28000000-0000-4000-8000-000000000902';
-	v_claim uuid := '28000000-0000-4000-8000-000000000903';
-	v_assignment uuid := '28000000-0000-4000-8000-000000000904';
-	v_capsule uuid := '28000000-0000-4000-8000-000000000905';
-	v_identity uuid := '28000000-0000-4000-8000-000000000906';
-	v_provider uuid;
+declare v_job public.qorpera_runner_jobs;
 begin
-	select sponsor.provider_connection_id into strict v_provider
-	from public.qorpera_execution_sponsor_versions as sponsor
-	join public.qorpera_execution_runs as run on run.sponsor_binding_id = sponsor.binding_id and run.sponsor_version = sponsor.version
-	where run.id = v_run;
-	insert into public.qorpera_native_credential_capsules (
-		id, profile_id, compute_identity_id, ownership_kind, provider, native_harness,
-		encrypted_capsule_reference, attestation_policy_sha256, created_by_user_id
-	) values (v_capsule, v_profile, v_identity, 'company', 'openai', 'codex-cli',
-		'fixture://not-a-credential', repeat('e', 64), v_owner);
-	insert into public.qorpera_runner_orchestrators (id, display_name, provider_adapter, control_token_sha256, control_token_expires_at)
-	values (v_orchestrator, 'Lease cleanup fixture', 'managed', repeat('e', 64), statement_timestamp() + interval '1 hour');
-	insert into public.qorpera_runners (
-		id, profile_id, client_runner_id, display_name, capabilities, status,
-		activation_token_sha256, activation_expires_at, activated_at, session_token_sha256,
-		session_expires_at, registered_by_user_id, compute_identity_id
-	) values (v_runner, v_profile, v_runner, 'Lease cleanup fixture', '["agent_turn"]', 'active',
-		repeat('e', 64), statement_timestamp() + interval '1 hour', statement_timestamp(), repeat('f', 64),
-		statement_timestamp() + interval '1 hour', v_owner, v_identity);
-	update public.qorpera_runners runner set runner_kind='qorpera_computer',
-		worker_class=run.worker_class,template_key=identity.template_key,template_version=identity.template_version,
-		compute_policy_sha256=public.qorpera_compute_policy_sha256(identity.policy)
-	from public.qorpera_execution_runs run,public.qorpera_member_compute_identities identity
-	where runner.id=v_runner and run.id=v_run and identity.id=v_identity;
-	insert into public.qorpera_runner_job_claims (id, orchestrator_id, client_claim_id, job_id, run_id, status, lease_expires_at)
-	values (v_claim, v_orchestrator, v_claim, v_job, v_run, 'accepted', statement_timestamp() + interval '2 minutes');
-	insert into public.qorpera_runner_assignments (id, claim_id, job_id, run_id, runner_id, capability_sha256, status, expires_at, accepted_at)
-	values (v_assignment, v_claim, v_job, v_run, v_runner, repeat('e', 64), 'accepted', statement_timestamp() + interval '2 minutes', statement_timestamp());
-	update public.qorpera_runner_jobs set runner_id = v_runner, client_lease_id = v_assignment where id = v_job;
-	insert into public.qorpera_native_provider_connection_leases (
-		id, run_id, job_id, provider_connection_id, provider_connection_version, credential_capsule_id,
-		compute_identity_id, runner_id, assignment_id, lease_token_sha256, expires_at
-	) values ('28000000-0000-4000-8000-000000000907', v_run, v_job, v_provider, 1, v_capsule,
-		v_identity, v_runner, v_assignment, repeat('d', 64), statement_timestamp() + interval '2 minutes');
-end
-$$;
-update public.qorpera_runner_jobs set status = 'leased', attempt_count = 1,
-	lease_token_sha256 = repeat('d', 64), lease_expires_at = statement_timestamp() + interval '2 minutes'
-where id = '28000000-0000-4000-8000-000000000075';
-savepoint native_terminal_transition;
--- Recovery epochs fence existing leases and runner credentials even when the
--- caller knows their original tokens. Only the fixture generation is advanced.
-update public.qorpera_member_compute_identities set recovery_epoch=1
-where id='28000000-0000-4000-8000-000000000906';
-select pg_temp.assert_true(not (select public.qorpera_execution_compute_available(run)
-  from public.qorpera_execution_runs run where id='28000000-0000-4000-8000-000000000085'),'Old run survived generation change');
-do $$
-begin
-  begin
-    update public.qorpera_native_provider_connection_leases set expires_at=clock_timestamp()+interval '3 minutes'
-    where id='28000000-0000-4000-8000-000000000907';
-    raise exception 'Old native lease renewed after recovery';
-  exception when insufficient_privilege then
-    if sqlerrm <> 'native lease generation is fenced for recovery' then raise; end if;
-  end;
-  begin
-    update public.qorpera_runners set session_expires_at=clock_timestamp()+interval '1 hour'
-    where id='28000000-0000-4000-8000-000000000902';
-    raise exception 'Old runner renewed after recovery';
-  exception when insufficient_privilege then
-    if sqlerrm <> 'runner identity is fenced for recovery' then raise; end if;
-  end;
-end
-$$;
-rollback to savepoint native_terminal_transition;
-set role authenticated;
-select pg_temp.assert_true(public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000065') #>> '{run,status}' = 'leased', 'leased run not projected');
-select public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000065', '28000000-0000-4000-8000-000000000085');
+	select * into strict v_job from public.qorpera_runner_jobs where run_id = current_setting('qorpera_test.rc_base_run')::uuid;
+	perform pg_temp.base_assert(v_job.status = 'leased' and v_job.lease_token_sha256 is not null and v_job.attempt_count > 0,
+		'Fixture: the base run holds its execution token: ' || to_jsonb(v_job)::text);
+	perform set_config('qorpera_test.rc_token', v_job.lease_token_sha256, true);
+	perform set_config('qorpera_test.rc_attempts', v_job.attempt_count::text, true);
+end $$;
+savepoint rc_terminal;
+update public.qorpera_member_compute_identities set recovery_epoch = 1
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'computeIdentityId')::uuid;
+select pg_temp.base_assert(not (select public.qorpera_execution_compute_available(run) from public.qorpera_execution_runs run
+	where id = current_setting('qorpera_test.rc_base_run')::uuid), 'The old run''s compute is gone after recovery');
+select pg_temp.base_error(format('update public.qorpera_native_provider_connection_leases set expires_at = clock_timestamp() + interval ''3 minutes'' where id = %L',
+	current_setting('qorpera_test.base_binding')::jsonb ->> 'leaseId'), '42501', 'native lease generation is fenced for recovery');
+select pg_temp.base_error(format('update public.qorpera_runners set session_expires_at = clock_timestamp() + interval ''1 hour'' where id = %L',
+	current_setting('qorpera_test.base_binding')::jsonb ->> 'runnerId'), '42501', 'runner identity is fenced for recovery');
+rollback to savepoint rc_terminal;
+
+-- 10. A Stop of the leased run takes the same exact-run path: the job loses its execution token and runs no new attempt,
+--     the run's native lease ends, and the saved login stays.
+set local role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.base_assert(public.qorpera_get_session_run_control(current_setting('qorpera_test.rc_alice')::uuid) -> 'run'
+	= jsonb_build_object('run_id', current_setting('qorpera_test.rc_base_run'), 'status', 'leased', 'can_cancel', true),
+	'The leased run is offered');
+select pg_temp.base_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.rc_alice')::uuid,
+	current_setting('qorpera_test.rc_base_run')::uuid) ->> 'status' = 'cancelled', 'The leased run stops');
 reset role;
-select pg_temp.assert_true((select status = 'cancelled' and lease_token_sha256 is null and lease_expires_at is null and terminal_lease_token_sha256 = repeat('d', 64) and attempt_count = 1 from public.qorpera_runner_jobs where id = '28000000-0000-4000-8000-000000000075'), 'leased cancellation retained execution authority or reran work');
-select pg_temp.assert_true((select status = 'revoked' and released_at is not null from public.qorpera_native_provider_connection_leases where id = '28000000-0000-4000-8000-000000000907'), 'cancelled job kept the native connection occupied');
-select pg_temp.assert_true((select status = 'active' from public.qorpera_native_credential_capsules where id = '28000000-0000-4000-8000-000000000905'), 'cancellation revoked the saved connection instead of its run lease');
-select pg_temp.assert_true(not has_function_privilege('authenticated', 'public.qorpera_terminalize_native_provider_lease()', 'execute'), 'internal native cleanup exposed to clients');
+select pg_temp.base_assert((select status = 'cancelled' and lease_token_sha256 is null and lease_expires_at is null
+	and terminal_lease_token_sha256 = current_setting('qorpera_test.rc_token') and attempt_count = current_setting('qorpera_test.rc_attempts')::integer
+	from public.qorpera_runner_jobs where run_id = current_setting('qorpera_test.rc_base_run')::uuid),
+	'A leased Stop keeps no execution authority and reruns nothing');
+select pg_temp.base_assert((select status = 'revoked' and released_at is not null from public.qorpera_native_provider_connection_leases
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'leaseId')::uuid), 'The Stop ends the run''s native lease');
+select pg_temp.base_assert((select status = 'active' from public.qorpera_native_credential_capsules
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'credentialCapsuleId')::uuid),
+	'The Stop ends the run''s lease, not the saved login');
+select pg_temp.base_assert(not has_function_privilege('authenticated', 'public.qorpera_terminalize_native_provider_lease()', 'execute'),
+	'The native lease cleanup is not a client function');
 
--- Completion and failure close the same run-scoped lease without touching the
--- saved connection. Roll back only the fixture transition between cases.
-rollback to savepoint native_terminal_transition;
-select set_config('request.jwt.claims', '{"role":"service_role"}', true);
-select pg_temp.assert_true(public.qorpera_reserve_execution_sponsor_authority('28000000-0000-4000-8000-000000000085'), 'completion fixture sponsor unavailable');
--- The current human-wake protocol requires acknowledgement before final
--- delivery, including when the fixture is only testing terminal lease cleanup.
-select public.qorpera_send_runner_agent_message(
-	'28000000-0000-4000-8000-000000000902', repeat('f', 64),
-	'28000000-0000-4000-8000-000000000075', repeat('d', 64),
-	'28000000-0000-4000-8000-000000000904', 'native-cleanup-ack', 'Checking the fixture.', 'progress'
-);
-select public.qorpera_send_runner_agent_message(
-	'28000000-0000-4000-8000-000000000902', repeat('f', 64),
-	'28000000-0000-4000-8000-000000000075', repeat('d', 64),
-	'28000000-0000-4000-8000-000000000904', 'native-cleanup-final', 'Fixture complete.', 'final'
-);
-update public.qorpera_runner_jobs set status = 'completed', result = '{}',
-	finished_at = statement_timestamp(), lease_token_sha256 = null, lease_expires_at = null
-where id = '28000000-0000-4000-8000-000000000075';
-select pg_temp.assert_true((select status = 'released' and released_at is not null from public.qorpera_native_provider_connection_leases where id = '28000000-0000-4000-8000-000000000907'), 'completed job kept the native connection occupied');
-rollback to savepoint native_terminal_transition;
-update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture failure',
-	finished_at = statement_timestamp(), lease_token_sha256 = null, lease_expires_at = null
-where id = '28000000-0000-4000-8000-000000000075';
-select pg_temp.assert_true((select status = 'revoked' and released_at is not null from public.qorpera_native_provider_connection_leases where id = '28000000-0000-4000-8000-000000000907'), 'failed job kept the native connection occupied');
-select pg_temp.assert_true((select status = 'active' from public.qorpera_native_credential_capsules where id = '28000000-0000-4000-8000-000000000905'), 'terminal cleanup revoked the saved connection');
+-- 11. Completion and failure end the same run lease, never the saved login (the fixture transition is undone between
+--     cases). The run acknowledges and reports first, as a human wake must.
+rollback to savepoint rc_terminal;
+select pg_temp.base_claims('service_role');
+select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'rc-ack') \g /dev/null
+select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'final', 'rc-final') \g /dev/null
+update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = statement_timestamp(),
+	lease_token_sha256 = null, lease_expires_at = null
+where run_id = current_setting('qorpera_test.rc_base_run')::uuid;
+select pg_temp.base_assert((select status = 'released' and released_at is not null from public.qorpera_native_provider_connection_leases
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'leaseId')::uuid), 'Completion releases the run''s native lease');
+rollback to savepoint rc_terminal;
+update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture failure', finished_at = statement_timestamp(),
+	lease_token_sha256 = null, lease_expires_at = null
+where run_id = current_setting('qorpera_test.rc_base_run')::uuid;
+select pg_temp.base_assert((select status = 'revoked' and released_at is not null from public.qorpera_native_provider_connection_leases
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'leaseId')::uuid), 'Failure ends the run''s native lease');
+select pg_temp.base_assert((select status = 'active' from public.qorpera_native_credential_capsules
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'credentialCapsuleId')::uuid),
+	'Failure ends the run''s lease, not the saved login');
 
 rollback;
