@@ -112,6 +112,9 @@ group; sticky, so a creator cannot remove another's).
 
 ## Switching a node on (coordinator, root, after E2 is merged)
 
+The release that carries the exit, its creators (E2c) and its place in placement (E2d) goes on in the order of
+`ROLLOUT.md`, with its preconditions, checks and undos. Steps 1 to 6 here are its steps 1 and 2.
+
 `X` below is `/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh`.
 
 1. `apt-get install --no-install-recommends dnsmasq-base conntrack python3`
