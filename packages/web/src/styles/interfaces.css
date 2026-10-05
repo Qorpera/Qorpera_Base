@@ -51,6 +51,10 @@
 /* The Interfaces tab: the main interface stands on top like the Co-Founder, the rest are rows. */
 .rail-interfaces .interface-home { margin: calc(var(--lift) + 16px) 9px 18.5px; width: auto; }
 .rail-compact .rail-interfaces .interface-home { margin: 6px 0 3px; }
+/* The owners' quiet line when no interface is the main one, or several are; a page that has a problem. */
+.rail-interfaces .rail-note { margin: 12px 10px 4px; color: var(--rail-small); font-size: 12px; line-height: 1.4; }
+.rail-compact .rail-interfaces .rail-note { display: none; }
+.rail-row-interface.is-broken .interface-emblem { opacity: 0.55; }
 .interface-stand { display: grid; place-items: center; }
 /* An emblem floats; it keeps its own soft shadow and no ground shadow. */
 .interface-stand::before { display: none; }
@@ -105,6 +109,12 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-cards .interface-item { padding: 10px 12px; border-radius: 12px; background: var(--warning-soft); }
 .interface-empty { margin: 4px 0 2px; color: var(--text-soft); font-size: 12.5px; }
 .interface-missing { display: grid; gap: 8px; padding: 32px; color: var(--text-muted); }
+/* A page or a table that has a problem: a plain sentence, then the parser's own words, line by line. */
+.interface-problem p, .interface-note p { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.interface-note { margin: 2px 0 8px; color: var(--text-muted); }
+.interface-note p { font-size: 12.5px; }
+.interface-problems { margin: 0; padding-left: 18px; color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.interface-problems li + li { margin-top: 2px; }
 /* A page's views, as tabs under its head. */
 .interface-views {
 	flex: none; display: flex; gap: 2px; padding: 4px 14px 0; overflow-x: auto;

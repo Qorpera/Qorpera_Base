@@ -177,9 +177,11 @@ async function setup() {
 	draft("");
 	await settle();
 	expect(root.querySelector('[aria-label="Model account for this conversation"]')).toBeNull();
+	// The company's interfaces are read from its folder while it is open (Interfaces step I7).
 	const requests = () =>
 		fetcher.mock.calls.filter(
 			([url]) =>
+				!String(url).includes("/qorpera_member_folder_") &&
 				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
 				!String(url).endsWith("/qorpera_select_member_session_account") &&

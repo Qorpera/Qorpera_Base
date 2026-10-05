@@ -7,7 +7,7 @@ import {
 	serializeChatGptPlanLogin,
 } from "./cloud-chatgpt-plan.ts";
 import type { CloudSecretEnvelopeIdentity, CloudSecretKeyring } from "./cloud-secret-crypto.ts";
-import { nativeProviderAccountIdentity } from "./native-provider-account.ts";
+import { chatGptPlanAccountIdentity, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 
 /**
  * Model logins in the vault (Stateless Compute step 1).
@@ -532,10 +532,11 @@ export class CloudModelLoginVault {
 	}
 
 	/** Records the ChatGPT account of each login this broker keeps that has none yet, read from its
-	 * current version (the digest nodes and the vault record for usage). Returns how many it recorded;
-	 * a login it cannot read is tried again at the next pass. */
+	 * current version: a Codex login's account (the digest nodes and the vault record for usage), a plan
+	 * login's verified OpenAI subject (20260930059000), so a member who signs in again with the same one
+	 * keeps what they started. Returns how many it recorded; a login it cannot read is tried again at the
+	 * next pass. */
 	async recordAccounts(signal: AbortSignal): Promise<number> {
-		// The database lists Codex logins only: a plan login names its member by OpenAI's subject.
 		const input = record(await this.#authority.listModelLoginsWithoutAccount(signal), "Model login accounts");
 		if (input.schema !== "qorpera.model-login-accounts/v1" || !Array.isArray(input.logins) || input.logins.length > 8)
 			throw new Error("Model login accounts are invalid");
@@ -549,8 +550,10 @@ export class CloudModelLoginVault {
 					computeIdentityId: uuid(entry.computeIdentityId, "Model login compute identity"),
 				};
 				const opened = await this.#open(login, version(entry.version, "Model login version"), parseEnvelope(entry));
-				if (opened.kind !== "codex") continue;
-				const accountIdentity = nativeProviderAccountIdentity(opened.codex.text);
+				const accountIdentity =
+					opened.kind === "codex"
+						? nativeProviderAccountIdentity(opened.codex.text)
+						: chatGptPlanAccountIdentity(opened.plan.subject);
 				if (!accountIdentity) continue;
 				await this.#authority.recordModelLoginAccount({ loginId: login.loginId, accountIdentity }, signal);
 				recorded += 1;

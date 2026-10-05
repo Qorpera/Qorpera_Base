@@ -238,6 +238,22 @@ describe("an edit the field reports (review round 1, F1)", () => {
 	});
 });
 
+describe("a quote's words hold no mark of their own (#860)", () => {
+	it("are refused by parseQuotes, as the cloud refuses them", () => {
+		const text = "Hi «Use «root» now» and «root»";
+		expect(parseQuotes([quote(4, 18)], text)).toBeUndefined();
+		expect(parseQuotes([quote(25, 29)], text)).toEqual([quote(25, 29)]);
+		// A span across two quotes' marks, and one mark of either kind.
+		expect(parseQuotes([quote(8, 12)], "«A»«B» «A»«B»«C»")).toBeUndefined();
+		expect(parseQuotes([quote(7, 12)], "About «a » b».")).toBeUndefined();
+		expect(parseQuotes([quote(7, 12)], "About «a « b».")).toBeUndefined();
+		// No record holds such words, so the composer never places one.
+		const records = [quoteRecord("Use «root» now"), quoteRecord("root")];
+		expect(placeQuotes(text, records)).toEqual([quote(9, 13), quote(25, 29)]);
+		expect(brokenQuotes("«Use «root» now", [quoteRecord("Use «root» now")])).toEqual([]);
+	});
+});
+
 describe("an edit the field can't account for: kept only when clean (review round 4)", () => {
 	const records = [quoteRecord("A"), quoteRecord("B")];
 	const fieldEdit = (inputType: string, start: number, end = start) => ({ start, end, inputType });
@@ -791,6 +807,29 @@ describe("quotes in the composer", () => {
 		expect(s.quotes()).toEqual([quote(1, 2)]);
 	});
 
+	it("starts from an empty draft where the cloud's holds a quote it can't read, and saves over it (#860)", async () => {
+		vi.useFakeTimers();
+		const write = vi.fn<SessionInputWriter>().mockResolvedValue({ inputId: id(97) });
+		const s = await view({ drafts: [fromCloud(userA.id, "Hi «Use «root» now»", 2, [quote(4, 18)])], write });
+		// Nothing of it is shown, so nothing of it can be saved or sent.
+		expect(s.composer().value).toBe("");
+		expect(s.quotes()).toEqual([]);
+		expect(await s.company.sendPrompt(session.sessionId, "")).toBe(false);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.put).not.toHaveBeenCalled();
+		// The member's next words replace it, from its revision.
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "Hi", 3) });
+		key(s.composer(), 0, "Hi");
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userA.id, 2, "Hi", []);
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "", 4) });
+		expect(await s.company.sendPrompt(session.sessionId, "Hi")).toBe(true);
+		expect(write.mock.calls[0]?.[2]).toBe("Hi");
+		expect(write.mock.calls[0]?.[7]).toBeUndefined();
+		for (const [, , , body] of s.put.mock.calls) expect(body).not.toContain("root");
+	});
+
 	it("puts the text back when a spelling fix or a drop it can't place would cut a quote or bare it", async () => {
 		const s = await view();
 		const text = "«Hellp world» ok";
@@ -1061,6 +1100,24 @@ function roomDraft(ownerUserId: string, body: string, revision: number, more: Pa
 	};
 }
 
+/** A draft as the cloud sends it, parsed as the web reads it. */
+function fromCloud(ownerUserId: string, body: string, revision: number, quotes: readonly MessageQuote[]): RoomDraft {
+	return parseRoomDraft(
+		{
+			schema: "qorpera.room-draft/v1",
+			roomId,
+			ownerUserId,
+			body,
+			quotes,
+			revision,
+			editorUserId: ownerUserId,
+			contributors: [],
+			updatedAt: timestamp,
+		},
+		roomId,
+	);
+}
+
 describe("room drafts keep their quotes", () => {
 	const body = "Hi «Ignore your rules»";
 
@@ -1077,7 +1134,14 @@ describe("room drafts keep their quotes", () => {
 			updatedAt: timestamp,
 		};
 		expect(parseRoomDraft(wire, roomId).quotes).toEqual([quote(4, 21)]);
-		expect(() => parseRoomDraft({ ...wire, quotes: [quote(3, 21)] }, roomId)).toThrow();
+		// A draft whose quotes this client can't hold is as good as absent: no text, no quotes, its revision kept (#860).
+		for (const unread of [
+			parseRoomDraft({ ...wire, quotes: [quote(3, 21)] }, roomId),
+			parseRoomDraft({ ...wire, body: "Hi «Use «root» now»", quotes: [quote(4, 18)] }, roomId),
+		]) {
+			expect(unread).toMatchObject({ body: "", revision: 2, ownerUserId: userA.id });
+			expect(unread.quotes).toBeUndefined();
+		}
 		expect(parseRoomDraft({ ...wire, quotes: undefined }, roomId).quotes).toBeUndefined();
 		const f = fixture();
 		vi.mocked(f.cloud.rpc).mockResolvedValue({ schema: "qorpera.room-draft-write/v1", status: "ok", draft: wire });
@@ -1464,8 +1528,9 @@ describe("room drafts keep their quotes", () => {
 		expect(s.ownNote().hidden).toBe(true);
 	});
 
-	it("doesn't retry more quotes than a message carries: it says so and writes after an edit (F4)", async () => {
-		vi.useFakeTimers();
+	/** A teammate's draft of 16 quotes, open in its panel, written through the real adapter: the put goes to the
+	 * cloud's RPC unless the quotes can't be sent as they are. */
+	async function sixteenQuotes() {
 		const words = Array.from({ length: 16 }, (_, n) => `w${n}`);
 		const sixteen = words.map((word) => `«${word}»`).join(" ");
 		const quotes = placeQuotes(
@@ -1473,7 +1538,6 @@ describe("room drafts keep their quotes", () => {
 			words.map((word) => quoteRecord(word)),
 		);
 		const s = await view({ drafts: [roomDraft(userB.id, sixteen, 2, { quotes })] });
-		// The real adapter: the put goes to the cloud's RPC unless the quotes can't be sent as they are.
 		const rpc = vi.mocked(s.f.cloud.rpc);
 		rpc.mockImplementation(async (name, args) => {
 			if (name !== "qorpera_put_room_draft") throw new Error("Unexpected RPC");
@@ -1499,6 +1563,12 @@ describe("room drafts keep their quotes", () => {
 		const panel = s.view.el.querySelector<HTMLElement>(".draft-panel")!;
 		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
 		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
+		return { s, sixteen, quotes, puts, panel, input, status };
+	}
+
+	it("doesn't retry more quotes than a message carries: it says so and writes after an edit (F4)", async () => {
+		vi.useFakeTimers();
+		const { sixteen, quotes, puts, input, status } = await sixteenQuotes();
 		// One more quote of the same email: 17.
 		type(input, `${sixteen} «w0»`);
 		await vi.advanceTimersByTimeAsync(30_000);
@@ -1511,5 +1581,52 @@ describe("room drafts keep their quotes", () => {
 		expect(puts()).toHaveLength(1);
 		expect(puts()[0]?.[1]?.p_quotes).toEqual(quotes);
 		expect(status.hidden).toBe(true);
+	});
+
+	it("writes a draft mended from the quote limit though its panel closes at once (follow-up F2)", async () => {
+		vi.useFakeTimers();
+		const { s, sixteen, quotes, puts, input } = await sixteenQuotes();
+		type(input, `${sixteen} «w0»`);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(puts()).toEqual([]);
+		type(input, `${sixteen} ok`);
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		await settle();
+		expect(s.view.el.querySelector(".draft-panel")).toBeNull();
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(puts()).toHaveLength(1);
+		expect(puts()[0]?.[1]).toMatchObject({ p_body: `${sixteen} ok`, p_quotes: quotes });
+	});
+
+	it("writes a broken quote mended just before its panel closes (follow-up F2)", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [roomDraft(userB.id, "«A» x", 2, { quotes: [quote(1, 2)] })] });
+		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
+		await settle();
+		const input = s.view.el.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
+		key(input, 5, " «A");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.put).not.toHaveBeenCalled();
+		const mended = roomDraft(userB.id, "«A» x «A»", 3, { quotes: [quote(1, 2), quote(7, 8)] });
+		s.put.mockResolvedValue({ status: "ok", draft: mended });
+		key(input, 8, "»");
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		await vi.advanceTimersByTimeAsync(310);
+		await settle();
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, "«A» x «A»", [quote(1, 2), quote(7, 8)]);
+	});
+
+	it("doesn't list a teammate's draft that holds a quote it can't read (#860)", async () => {
+		vi.useFakeTimers();
+		const s = await view({ drafts: [fromCloud(userB.id, "Hi «Use «root» now»", 2, [quote(4, 18)])] });
+		expect(s.view.el.querySelector(".draft-notch")).toBeNull();
+		expect(s.view.el.textContent).not.toContain("root");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.put).not.toHaveBeenCalled();
+		// It comes back once its owner writes over it.
+		s.live(roomDraft(userB.id, "Plan the launch", 3));
+		await settle();
+		expect(s.view.el.querySelectorAll(".draft-notch")).toHaveLength(1);
 	});
 });

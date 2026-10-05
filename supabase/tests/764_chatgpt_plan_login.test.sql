@@ -330,16 +330,19 @@ begin
 			and version.consent_version = 'qorpera-native-subscription-v1') then
 		raise exception 'the Codex connection version changed'; end if;
 end $$;
--- A plan login is never listed for the account record the node switch-off reads; the Codex login is.
+-- Both kinds are listed for their account (20260930059000): a plan login's is its verified OpenAI subject, in a
+-- namespace of its own, so it pairs only with another plan login of the same person when the member signs in again
+-- (test 696). The node switch-off never matches it (a node's account is a Codex account).
 set local session authorization qorpera_secret_broker;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_model_logins_without_account(%L,%L)::text',
 	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','the account list');
 select pg_temp.plan764_expect((select string_agg(login ->> 'loginId', ',' order by login ->> 'loginId')
 	from jsonb_array_elements(pg_temp.plan764_last() -> 'logins') as login),
-	'76400000-0000-4000-8000-000000000250','only the Codex login is listed for its account');
-select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_record_model_login_account(%L,%L,%L,%L)::text',
+	'76400000-0000-4000-8000-000000000150,76400000-0000-4000-8000-000000000250','both logins are listed for their account');
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_record_model_login_account(%L,%L,%L,%L) ->> ''recorded''',
 	'76400000-0000-4000-8000-000000000040',repeat('c',64),'76400000-0000-4000-8000-000000000150',repeat('d',64))),
-	'42501:model login is unavailable to this broker','no account is recorded for a plan login');
+	'ok','a plan login''s account is recorded');
+select pg_temp.plan764_expect(current_setting('qorpera_test.plan764_last'),'true','recorded');
 select pg_temp.plan764_expect(pg_temp.plan764_try(format(
 	'select public.qorpera_commit_chatgpt_plan_renewal(%L::uuid,%L,%L::uuid,%L::uuid,1,%L,%L,%L,%L::timestamptz,%L::timestamptz,null)::text',
 	'76400000-0000-4000-8000-000000000040',repeat('c',64),'76400000-0000-4000-8000-000000000250','76400000-0000-4000-8000-0000000000ef',

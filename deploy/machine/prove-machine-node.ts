@@ -14,15 +14,17 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 // commands, stop and delete) against the node's LXD, with a small in-memory
 // stand-in for the kernel's custody RPCs. It never calls the database.
 //
-// Run as the coding executor's account (LXD socket, NAS control directory):
+// Run as the coding executor's account (LXD socket, NAS control directory, and the group
+// qorpera-agent-plug: the machine is plugged into the node's agent exit, which must be installed
+// and healthy, deploy/agent-exit/README.md):
 //   node prove-machine-node.mjs <proof.json>
 // proof.json: { policy, helperSha256, storagePolicy, journalRoot, cpus, memoryGiB, diskGiB,
 //               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host:port", ...] }
-// blockedTargets must stay out of reach: a TCP connect to each must time out (the ACL drops
-// it), where an open port would connect and a closed one refuse. A timeout proves a drop only
-// where something would otherwise answer: pick targets that answer or refuse from the node
-// (cloud metadata on bare metal times out with or without the ACL). The default is node 2's
-// NAS, router, Tailscale, cloud metadata and the bridge gateway's SSH.
+// blockedTargets must stay out of reach: a TCP connect to each must fail. Since E2c the machine's
+// traffic leaves through the node's agent exit, which refuses them at once (a TCP reset), so a
+// refusal here no longer tells the exit from a closed port: the exit's own proof
+// (deploy/agent-exit/test/proof.sh, prove-lxd-vm.sh) shows the refusals are its own. The default
+// is node 2's NAS, router, Tailscale, cloud metadata and the exit's own address.
 // The machine is an unregistered instance while it exists: the node's
 // observer reports the node unavailable for the few minutes the proof runs.
 // Run it in an agreed quiet window.
@@ -186,14 +188,14 @@ async function main(path: string): Promise<void> {
 		"192.168.1.1:80",
 		"100.100.100.100:53",
 		"169.254.169.254:80",
-		"10.88.0.1:22",
+		"10.210.0.1:22",
 	];
 	if (!blocked.every((target) => /^[0-9.]+:[0-9]{1,5}$/.test(target))) throw new Error("invalid blocked target");
 	const connect = (target: string) => `timeout 5 bash -c '</dev/tcp/${target.replace(":", "/")}' 2>/dev/null`;
 	// The method sees an open port: without this, a broken probe would pass every drop below.
 	expect((await command(connect("1.1.1.1:443"))).state === "succeeded", "open port connects: 1.1.1.1:443");
 	for (const target of blocked)
-		expect((await command(`${connect(target)}; test $? -eq 124`)).state === "succeeded", `dropped: ${target}`);
+		expect((await command(`! ${connect(target)}`)).state === "succeeded", `not reached: ${target}`);
 	note("nested-kvm", {
 		result: (await command("ls -l /dev/kvm && grep -cE 'vmx|svm' /proc/cpuinfo", 60000)).state,
 	});
