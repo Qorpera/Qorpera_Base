@@ -1,5 +1,6 @@
--- Company state files: an agent's model reaches its runs on folder-v2 (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md
--- §2 "agent.md", §8 "Plan (agent model)"; the coordinator's gap of 5 October 2026, from A1's legacy ports).
+-- Company state files: an agent's model reaches its runs on folder-v2 (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md:
+-- the agent.md table's `model`, the index table's agent row, and the note on the file's model; the coordinator's gap of
+-- 5 October 2026, from A1's legacy ports).
 -- The roster index of agent.md never set qorpera_profile_staff's model columns, so a folder-v2 agent had no model of its
 -- own: a run on a native subscription took the provider's default, a run on an API-key account had none (42501 in
 -- qorpera_execution_run_model_authority), and qorpera_configure_staff_execution_authority refused an API-key company
@@ -9,7 +10,8 @@
 --   columns, so the provider-model mapping (qorpera_sync_staff_primary_provider_model) and the default execution
 --   authority (on model_provider) run for real changes only.
 -- * Agents indexed before this get the same from their current agent.md version.
--- A conversation's or routine's own model still wins over the agent's (qorpera_execution_run_model_authority).
+-- On a native subscription, a conversation's own model choice still wins over the agent's in that conversation
+-- (qorpera_execution_run_model_authority); on an API-key account the agent's model applies.
 -- No lock changes: the index writes the roster row its commit already holds at rank 2. The patched body carries the
 -- marker 20260930081000 for the deploy guard.
 
