@@ -13,9 +13,11 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
+	cloudOperationKeyOf,
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
@@ -269,14 +271,19 @@ export function cloudWorkerTools(
 			throw new Error("Worker tool identity differs");
 		context.signal.throwIfAborted();
 	};
+	// Each tool's first effect: a refusal of it reaches the model as the tool's answer, unless an earlier attempt of the
+	// same operation key ended unknown (control calls, 4 Oct 2026).
+	const refusals = new CloudControlRefusalRelay();
 	const call = (
 		method: "qorpera_manage_agent_todo" | "qorpera_manage_agent_worker" | "qorpera_report_worker_result",
 		request: Record<string, unknown>,
 		signal: AbortSignal,
 	) =>
-		cloudToolRequest(
-			(requestSignal) => control.call(method, { p_binding: admitted, p_request: request }, requestSignal),
-			signal,
+		refusals.call(cloudOperationKeyOf(request), () =>
+			cloudToolRequest(
+				(requestSignal) => control.call(method, { p_binding: admitted, p_request: request }, requestSignal),
+				signal,
+			),
 		) as Promise<Record<string, unknown> | null>;
 
 	const publish = async (

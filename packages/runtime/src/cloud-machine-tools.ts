@@ -19,7 +19,12 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CloudControlRefusalRelay,
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
@@ -120,6 +125,7 @@ export function cloudMachineTools(options: {
 	const worker = options.worker === true;
 	const binding = parseCloudNativeToolBinding(options.binding),
 		identity = Object.freeze({ ...options.identity });
+	const refusals = new CloudControlRefusalRelay();
 	if (
 		Object.entries(binding).some(
 			([key, value]) => key !== "credentialCapsuleId" && identity[key as keyof CloudNativeToolIdentity] !== value,
@@ -675,7 +681,10 @@ export function cloudMachineTools(options: {
 		},
 		async execute(value, context) {
 			check(context);
-			const result = await manage({ action, machine: (value as { machine: string }).machine }, context.signal);
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026), unless an earlier
+			// attempt at the same change ended unknown.
+			const machine = (value as { machine: string }).machine;
+			const result = await refusals.call(`${action}:${machine}`, () => manage({ action, machine }, context.signal));
 			if (
 				result.schema !== "qorpera.machine-change/v1" ||
 				(result.machine === undefined) === (result.refused === undefined)
