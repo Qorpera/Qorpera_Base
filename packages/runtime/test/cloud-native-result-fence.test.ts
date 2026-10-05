@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS,
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
 	startCloudNativeResultFence,
 } from "@qorpera/runtime/cloud-native-result-fence";
@@ -132,7 +133,7 @@ it("bounds stalled provenance recording without requiring a cooperative callback
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const pending = exchange(f.service.path, request());
 	await began;
-	await vi.advanceTimersByTimeAsync(4001);
+	await vi.advanceTimersByTimeAsync(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS + 1);
 	expect(await pending).toBeUndefined();
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
@@ -274,7 +275,7 @@ it("bounds stalled authority independently of whether the authority callback coo
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const pending = exchange(f.service.path, request());
 	await began;
-	await vi.advanceTimersByTimeAsync(4001);
+	await vi.advanceTimersByTimeAsync(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS + 1);
 	expect(await pending).toBeUndefined();
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
