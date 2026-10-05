@@ -1,5 +1,5 @@
 -- @fixture 928_folder_coding_dispatch.test.sql until "-- 1. The refusals"
--- C3b (migration 20260930085000, deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (C3)"): the agent's archive of
+-- C3b (migration 20260930097000, deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §8 "Plan (C3)"): the agent's archive of
 -- a coding session on folder-v2, a run effect like F2's cancel under its own receipt. An active session is cancelled
 -- first and then archived, keeping its branch; a replay answers the first call; a second archive finds it archived; an
 -- in-house worker and a missing one are refused; a follow-up reopens it. 928's helpers on 924's base: Alice's run.

@@ -17,7 +17,7 @@ declare
 	v_begun jsonb; v_result jsonb; v_folder text; v_archived boolean;
 	c_path constant text := '^agents/[a-z0-9]+(-[a-z0-9]+)*/todos/[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*$';
 begin
-	-- 20260930085000 (C3b).
+	-- 20260930097000 (C3b).
 	if jsonb_typeof(p_request) is distinct from 'object'
 		or (select array_agg(k order by k collate "C") from jsonb_object_keys(p_request) k) is distinct from array['folder','operationKey']
 		or coalesce(p_request ->> 'operationKey', '') !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$'
