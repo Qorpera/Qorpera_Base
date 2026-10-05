@@ -134,6 +134,11 @@ impl Tree {
 		self.nodes.contains_key(&ino)
 	}
 
+	/// Whether the inode is what its path shows now (not a version a newer one replaced, nor a removed name).
+	pub fn current(&self, ino: u64) -> bool {
+		self.nodes.get(&ino).is_some_and(|n| !n.detached && self.by_path.get(&n.path) == Some(&ino))
+	}
+
 	/// The cached listing of a folder.
 	pub fn listing(&self, dir: u64) -> Option<&[Child]> {
 		self.dirs.get(&dir).map(|l| l.as_slice())

@@ -618,8 +618,9 @@ impl Filesystem for FolderFs {
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
 		match self.s.link.read(&path, &version, offset, len) {
 			Ok(data) => {
-				// The version map: the newest version this mount read of the path, a save's base.
-				if self.s.writable {
+				// The version map: the newest version this mount read of the path, a save's base. A file still open from
+				// before a newer version arrived reads an older one, which is not the newest seen.
+				if self.s.writable && self.s.tree.lock().unwrap().current(ino) {
 					self.s.versions.lock().unwrap().read(&path, &version);
 				}
 				reply.data(&data)
