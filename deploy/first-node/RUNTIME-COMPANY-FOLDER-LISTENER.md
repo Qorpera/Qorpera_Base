@@ -332,7 +332,7 @@ lease, the hook, the cursor.
 The coordinator (4 October) made the orchestrator step shared: a **folder drains** step before the folder materializer,
 which each per-company drain plugs into as a due list and a per-company action. P29's `listen` is the first. F2-5b-3
 (the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins follow coding
-dispatch on folder-v2 with C3), the one idle rule's check-ins (`machine_checkins`, 20260930066000) and A1's 3l-2
+dispatch on folder-v2 with C3), the one idle rule's check-ins (`machine_checkins`, 20260930091000) and A1's 3l-2
 (office wakes) plug in the same way, adding one entry to two tables and
 touching nothing else here.
 

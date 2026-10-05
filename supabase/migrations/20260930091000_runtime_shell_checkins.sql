@@ -1,4 +1,4 @@
--- 20260930066000: check-ins for the Company Computer's shells under one idle rule for every machine (the 2026-10-03
+-- 20260930091000: check-ins for the Company Computer's shells under one idle rule for every machine (the 2026-10-03
 -- amendment, item 5). Folder-v2 only by the founder's decision of 3 October. A shell that stays busy since its agent
 -- last worked with it (started or typed into any command on that screen) has its agent asked whether it still needs
 -- it, after 1, 3 and 7 hours, then every 24, each time only while busy, in the conversation of the run that worked
@@ -13,7 +13,7 @@
 --    SKIP LOCKED (run-owned rows), the parents' conversations KEY SHARE in id order, and admission; then one wake per
 --    parent with up to 8 questions that still stand. One continuation per parent at a time; a question no longer
 --    standing, or a stopped parent's, is suppressed, a gone parent's undeliverable; a running parent's wait.
--- Every patched or new body names this migration (20260930066000).
+-- Every patched or new body names this migration (20260930091000).
 
 -- 1. Asking ------------------------------------------------------------------------------------------------------------
 
@@ -62,7 +62,7 @@ create function public.qorpera_office_shell_checkins_unasked(p_environment_id uu
 returns table (office_id uuid, screen_id uuid, profile_id uuid, environment_id uuid, staff_agent_id uuid, conversation_run_id uuid,
 	worked_at timestamptz, mark integer)
 language sql stable security definer set search_path = '' as $$
-	-- 20260930066000.
+	-- 20260930091000.
 	select asking.* from (
 		select activity.office_id, activity.screen_id, office.profile_id, office.environment_id, screen.staff_agent_id,
 			latest.conversation_run_id, latest.worked_at,
@@ -94,7 +94,7 @@ create function public.qorpera_ask_busy_office_shells(p_environment_id uuid, p_l
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_shell record; v_body jsonb; v_asked integer := 0; v_count integer;
 begin
-	-- 20260930066000.
+	-- 20260930091000.
 	if p_environment_id is null or p_limit is null or p_limit not between 1 and 256 then
 		raise exception 'Office shell check-in bound is invalid' using errcode = '22023'; end if;
 	for v_shell in select * from public.qorpera_office_shell_checkins_unasked(p_environment_id) unasked
@@ -135,7 +135,7 @@ revoke all on function public.qorpera_ask_busy_office_shells(uuid, integer) from
 -- Company Computer) the shell is busy now, its seat is the same agent's and nobody worked with it since.
 create function public.qorpera_machine_checkin_current(p_checkin public.qorpera_machine_checkins)
 returns boolean language sql stable security definer set search_path = '' as $$
-	-- 20260930066000.
+	-- 20260930091000.
 	select not exists (select 1 from public.qorpera_machine_checkins later where later.machine_kind = p_checkin.machine_kind
 			and later.subject_id = p_checkin.subject_id and later.since = p_checkin.since and later.mark_hours > p_checkin.mark_hours)
 		and case p_checkin.machine_kind
@@ -180,7 +180,7 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare v_checkin public.qorpera_machine_checkins%rowtype; v_parent public.qorpera_execution_runs%rowtype;
 	v_wake public.qorpera_wake_occurrences%rowtype;
 begin
-	-- 20260930066000.
+	-- 20260930091000.
 	select * into v_checkin from public.qorpera_machine_checkins where id = p_wake.source_id;
 	select * into v_parent from public.qorpera_execution_runs where id = p_wake.parent_run_id;
 	select * into v_wake from public.qorpera_wake_occurrences where run_id = v_parent.id;
@@ -205,7 +205,7 @@ revoke all on function public.qorpera_machine_checkin_ancestry(public.qorpera_wa
 -- What a check-in wake carries: the questions, oldest first, and how many more wait for the parent.
 create function public.qorpera_machine_checkin_payload(p_parent_run_id uuid, p_checkin_ids uuid[])
 returns jsonb language sql stable security definer set search_path = '' as $$
-	-- 20260930066000.
+	-- 20260930091000.
 	select jsonb_build_object('schema', 'qorpera.machine-checkin/v1', 'parentRunId', p_parent_run_id,
 		'checkins', (select jsonb_agg(jsonb_build_object('checkinId', checkin.id, 'machineKind', checkin.machine_kind,
 				'since', checkin.since, 'askedAt', checkin.created_at) || checkin.body order by checkin.created_at, checkin.id)
@@ -222,7 +222,7 @@ declare v_wake public.qorpera_wake_occurrences%rowtype; v_parent public.qorpera_
 	v_parent_wake public.qorpera_wake_occurrences%rowtype; v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;
 	v_receipt_count bigint; v_send_count bigint;
 begin
-	-- 20260930066000.
+	-- 20260930091000.
 	select * into v_wake from public.qorpera_wake_occurrences where run_id = p_run.id and source_kind = 'machine-checkin';
 	if not found then return null; end if;
 	if p_depth > 2 then return jsonb_build_object('schema', 'qorpera.machine-checkin-continuation/v1', 'omitted', 'earlier history'); end if;
@@ -293,7 +293,7 @@ select pg_temp.checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedur
 select pg_temp.checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
 	$old$ elsif new.source_kind = 'machine-event' then v_ancestry := public.qorpera_machine_wake_ancestry(new);$old$,
 	$new$ elsif new.source_kind = 'machine-event' then v_ancestry := public.qorpera_machine_wake_ancestry(new);
- elsif new.source_kind = 'machine-checkin' then v_ancestry := public.qorpera_machine_checkin_ancestry(new); -- 20260930066000$new$);
+ elsif new.source_kind = 'machine-checkin' then v_ancestry := public.qorpera_machine_checkin_ancestry(new); -- 20260930091000$new$);
 -- The folder-v2 wake check: in a parent's room conversation as a machine event, and by its own chain.
 select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$(p_wake.source_kind in ('worker-completion', 'machine-event')$old$,
@@ -301,26 +301,26 @@ select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpe
 select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$v_ancestry := public.qorpera_machine_wake_ancestry(p_wake); -- 20260930058000$old$,
 	$new$v_ancestry := public.qorpera_machine_wake_ancestry(p_wake); -- 20260930058000
-		elsif p_wake.source_kind = 'machine-checkin' then v_ancestry := public.qorpera_machine_checkin_ancestry(p_wake); -- 20260930066000$new$);
+		elsif p_wake.source_kind = 'machine-checkin' then v_ancestry := public.qorpera_machine_checkin_ancestry(p_wake); -- 20260930091000$new$);
 -- P28's materializer: continuing work keeps the parent's capability and publication policy.
 select pg_temp.checkin_patch('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure,
 	$old$('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event') then$old$,
-	$new$('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin') then -- 20260930066000$new$);
+	$new$('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin') then -- 20260930091000$new$);
 -- The wake as the run reads it: an internal continuation, with no sender.
 select pg_temp.checkin_patch('public.qorpera_folder_read_wake(jsonb)'::regprocedure,
 	$old$if v_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event') then$old$,
-	$new$if v_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event','machine-checkin') then -- 20260930066000$new$);
+	$new$if v_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event','machine-checkin') then -- 20260930091000$new$);
 -- The wake's reply policy: an agent wake, and in a conversation it reports as a machine event does.
 select pg_temp.checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
 	$old$'worker-dispatch','worker-completion','machine-event')))))$old$,
-	$new$'worker-dispatch','worker-completion','machine-event','machine-checkin'))))) -- 20260930066000$new$);
+	$new$'worker-dispatch','worker-completion','machine-event','machine-checkin'))))) -- 20260930091000$new$);
 select pg_temp.checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
 	$old$if v_wake.source_kind in ('worker-completion','machine-event') and v_wake.session_id is not null$old$,
 	$new$if v_wake.source_kind in ('worker-completion','machine-event','machine-checkin') and v_wake.session_id is not null$new$);
 -- The run's continuation.
 select pg_temp.checkin_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
 	$old$public.qorpera_machine_run_continuation(p_run)); end if;$old$,
-	$new$public.qorpera_machine_run_continuation(p_run), public.qorpera_machine_checkin_continuation(p_run)); end if; -- 20260930066000$new$);
+	$new$public.qorpera_machine_run_continuation(p_run), public.qorpera_machine_checkin_continuation(p_run)); end if; -- 20260930091000$new$);
 
 -- 3. The drain ---------------------------------------------------------------------------------------------------------
 
@@ -332,7 +332,7 @@ create function public.qorpera_folder_machine_checkins_due(p_after_environment u
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_items jsonb; v_count integer; v_last uuid;
 begin
-	-- 20260930066000.
+	-- 20260930091000.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder drain requires service authority' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 500 then
@@ -367,7 +367,7 @@ declare
 	v_sessions uuid[]; v_asked integer := 0; v_delivered integer := 0; v_suppressed integer := 0; v_undeliverable integer := 0;
 	v_error text; v_stale uuid[];
 begin
-	-- 20260930066000.
+	-- 20260930091000.
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if current_setting('transaction_isolation') <> 'read committed' then
