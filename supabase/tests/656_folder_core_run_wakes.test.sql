@@ -183,12 +183,16 @@ begin
 		wake_schema, trigger_id, occurrence_key, scheduled_for, not_before, payload)
 		values (extensions.gen_random_uuid(), %L, %L, 'agent', 'coworker', 'qorpera.unknown/v1', 'coworker', 'folder-control',
 			clock_timestamp(), clock_timestamp(), '{}')$f$, c_profile, c_env), '55000', 'Folder wake admission is required');
-	-- Sources whose ancestry checks lock rows refuse on folder-v2 until they get folder modes, admitted or not.
+	-- An office activation (C1c-3l part 2, 20260930030100) and a machine event (C1c-3i-b, 20260930058000) serve folder-v2:
+	-- an admitted one meets its own ancestry check, so these hand-built ones, with no waiter or event behind them, are
+	-- refused there, not as an unsupported source.
 	perform public.qorpera_folder_admit_wakes(c_profile);
-	-- (An office activation serves folder-v2 since C1c-3l part 2, 20260930030100; a machine event still waits.)
-	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''machine-event'''),
+	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''office-activation'''),
 		'65600000-0000-4000-8000-0000000000e1', '65600000-0000-4000-8000-0000000000e3'), 'admission-test', 'admission-office'),
-		'0A000', 'This wake source does not serve folder-v2 yet');
+		'55000', 'Wake causal ancestry is fenced');
+	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''machine-event'''),
+		'65600000-0000-4000-8000-0000000000e1', '65600000-0000-4000-8000-0000000000e4'), 'admission-test', 'admission-machine'),
+		'55000', 'Wake causal ancestry is fenced');
 	perform set_config('qorpera.folder_wake_admission', '', true);
 	-- A company that is not folder-v2 has no admission row.
 	perform pg_temp.raises_like('select public.qorpera_folder_admit_wakes(''64700000-0000-4000-8000-000000000011'')', '42501',
