@@ -55,6 +55,10 @@ export const ErrorCode = {
 	notPermitted: "NOT_PERMITTED",
 	tooLarge: "TOO_LARGE",
 	readOnly: "READ_ONLY",
+	/** EXDEV: a published path cannot go where nothing is published (a trash folder); a file manager then deletes. */
+	notHere: "NOT_HERE",
+	/** EBUSY: the change needed what was pending published first, and that could not be done now. */
+	busy: "BUSY",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 

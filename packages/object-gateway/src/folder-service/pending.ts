@@ -1,27 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { COMPANY_STATE_SEEDED_PATHS } from "@qorpera/cloud-client/company-state-files";
-import type { WireEntry } from "./protocol.ts";
-import { ErrorCode, ProtocolError } from "./protocol.ts";
+import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
 import { byteOrder, nameOf, parentOf, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
 
 /** The version-2 manifest's limits (C1D §2): chunks of at most 4 MiB, at most 64 of them. */
 export const CHUNK_BYTES = 4 * 1024 * 1024;
 export const MAX_FILE_BYTES = 64 * CHUNK_BYTES;
 
-/** A live entry a pending change starts from: where it was in the live folder (before any of the view's own moves),
- * and the writer's base (RUNTIME-FOLDER-WRITES.md, "Pending changes and base versions"). */
+/** A live entry a pending change starts from: where it is in the live folder, and the writer's base
+ * (RUNTIME-FOLDER-WRITES.md, "Pending changes and base versions"). */
 export interface LiveRef {
 	readonly path: string;
 	readonly kind: "file" | "folder";
-	/** The version the machine last read of it, else the version the view showed when the change began. */
+	/** For a save, the version the machine last read; for a move or removal, the version the name showed then. */
 	readonly version: string;
-	/** A folder's: the view's feed position when it was first moved or removed (the unit's `asOfSeq`). */
+	/** A folder's: the view's feed position when it was moved or removed (the unit's `asOfSeq`). */
 	readonly asOfSeq?: number;
-	/** A file's live entry then: its manifest, for a rename's or a bit's new manifest over the same chunks. */
+	/** A file's live entry then: its manifest, for a new manifest over the same chunks (the executable bit). */
 	readonly entry?: TreeEntry;
-	/** Where the view showed it when it was removed (for the report). */
-	readonly shown?: string;
 }
 
 export interface ChunkRef {
@@ -71,14 +68,14 @@ export interface PendingFolder {
 	mtimeMs: number;
 }
 
-/** Hides a live path the view removed, or moved away (a merged path only). */
+/** Hides a live path the view removed, or moved away. */
 interface Gone {
 	readonly kind: "gone";
 }
 
 type Node = PendingFile | PendingFolder | Gone;
 
-/** What a path shows in the view: a pending node, or a live entry reached through the view's own moves. */
+/** What a path shows in this view: a pending node, or a live entry (inside a moved folder, through its origin). */
 export type Resolved =
 	| {
 			readonly kind: "node";
@@ -88,6 +85,16 @@ export type Resolved =
 			readonly source: string | null;
 	  }
 	| { readonly kind: "live"; readonly path: string; readonly entry: TreeEntry; readonly source: string };
+
+/** A change that cannot join what is pending in one change set without a unit needing a version the change set
+ * itself makes, or one unit's failure losing another's work (RUNTIME-FOLDER-WRITES.md, "Changes that publish what is
+ * pending first"). The service publishes what is pending, then makes the change again. */
+export class PublishFirst extends Error {
+	constructor(why: string) {
+		super(why);
+		this.name = "PublishFirst";
+	}
+}
 
 /** Names a program uses for its own bookkeeping, published never (§2 "Never published"): lock, swap, backup and trash
  * files. They stay in this view, and go when it closes. */
@@ -103,21 +110,33 @@ export function neverPublished(name: string): boolean {
 	);
 }
 
-/** Top-level names only the folder program may use, and `node_modules` anywhere outside code areas (§2). */
-const ADAPTER_ONLY = new Set([".qorpera", ".git", "trail", "inbox", "credentials", "secrets"]);
+/** A path in a place never published: a lock, swap, backup or trash name, or inside a trash folder. */
+export function unpublished(path: string): boolean {
+	return path.split("/").some(neverPublished);
+}
 
 const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
 
-/** The core's folding of a name or path (`qorpera_folder_key`): two names that fold alike are one path. */
+/** The core's folding of a name or path (`qorpera_folder_key`): two paths that fold alike are one path. */
 export function folderKey(path: string): string {
 	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
+}
+
+/** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key. */
+function reserved(key: string): boolean {
+	const parts = key.split("/");
+	return (
+		[".qorpera", "trail", "inbox", "credentials", "secrets"].includes(parts[0]!) ||
+		(parts[0] !== "code" && parts.some((p) => p === ".git" || p === "node_modules"))
+	);
 }
 
 function join(parent: string, name: string): string {
 	return parent === "" ? name : `${parent}/${name}`;
 }
 
-function under(path: string, folder: string): boolean {
+/** `path` is `folder` or below it. */
+function within(path: string, folder: string): boolean {
 	return folder === "" || path === folder || path.startsWith(`${folder}/`);
 }
 
@@ -125,17 +144,14 @@ function fail(code: ErrorCode, message: string): never {
 	throw new ProtocolError(code, message);
 }
 
-/** A new name the folder accepts (`EINVAL` otherwise): the Company File's path rules, and nothing only the folder
- * program may use. */
+/** A new name the folder accepts: the Company File's path rules (`EINVAL`), and not a reserved path (`EPERM`). */
 function checkNewPath(path: string): void {
 	try {
 		parseCloudCompanyPath(path);
 	} catch {
 		fail(ErrorCode.badRequest, "The folder does not accept this name");
 	}
-	const parts = path.split("/");
-	if (ADAPTER_ONLY.has(folderKey(parts[0]!)) || (parts[0] !== "code" && parts.some((p) => p === "node_modules")))
-		fail(ErrorCode.notPermitted, "This name is the folder program's own");
+	if (reserved(folderKey(path))) fail(ErrorCode.notPermitted, "This name is reserved");
 }
 
 /** Seeded paths, a lone `agent.md` or `group.md`, and agent and group folders may not go, or go elsewhere (§2,
@@ -159,9 +175,13 @@ function checkMove(from: string, to: string): void {
 
 /**
  * One view's pending changes over its live tree (RUNTIME-FOLDER-WRITES.md): what the view's own machine sees until a
- * boundary publishes them. Memory only. Paths here are the view's own (merged) paths; a pending node keyed by its
- * path, a removed live path hidden by a gone node, a moved folder showing its live origin's children. Every live
- * entry the view removed is kept by its live path in `#removed`, with its base.
+ * boundary publishes them. Memory only.
+ *
+ * Pending nodes are keyed by the view's paths; a live path the view removed or moved away is hidden by a gone node,
+ * and a moved folder shows its live origin's children. Every live entry the view removed is kept by its live path,
+ * with its base. A change that would need what is pending published first throws `PublishFirst`, so that every
+ * boundary is one change set whose units each name a live path as it is: no unit needs a version another makes, and
+ * no unit's failure loses another's work. Outside a moved folder, the view's paths are the live paths.
  */
 export class PendingView {
 	readonly #live: () => ViewTree;
@@ -172,7 +192,15 @@ export class PendingView {
 	readonly #children = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
-	readonly #handles = new Map<number, { readonly node: PendingFile; dirty: boolean }>();
+	/** Open handles: the file, whether this handle wrote, and the file as it was when the handle opened. */
+	readonly #handles = new Map<
+		number,
+		{
+			readonly node: PendingFile;
+			dirty: boolean;
+			readonly before: Pick<PendingFile, "content" | "version" | "staged" | "executable">;
+		}
+	>();
 	#nextHandle = 1;
 
 	constructor(live: () => ViewTree, seq: () => number, now: () => number = Date.now) {
@@ -285,6 +313,72 @@ export class PendingView {
 		return false;
 	}
 
+	// ---- The rules that keep a boundary one change set -------------------------------------------------------------
+
+	/** A folder above `path` (or `path` itself, with `self`) that the view moved from elsewhere. */
+	#insideMoved(path: string, self = false): boolean {
+		for (let p = self ? path : parentOf(path); p !== ""; p = parentOf(p)) {
+			const node = this.#nodes.get(p);
+			if (node?.kind === "folder" && node.origin) return true;
+		}
+		return false;
+	}
+
+	/** A path a live folder the view moved or removed left, at or above `path` (by folded key). */
+	#freedFolder(path: string): boolean {
+		const key = folderKey(path);
+		const hit = (p: string): boolean => {
+			const k = folderKey(p);
+			return key === k || key.startsWith(`${k}/`);
+		};
+		for (const [p, ref] of this.#removed) if (ref.kind === "folder" && hit(p)) return true;
+		for (const [p, node] of this.#nodes)
+			if (node.kind === "gone" && hit(p) && this.#live().get(p)?.kind === "folder") return true;
+		return false;
+	}
+
+	/** Moving the live entry at `origin` to `target` would close a cycle of moves (a swap, or a longer ring): the entry
+	 * moved away from `target`, the one moved away from where that went, and so on, comes back to `origin`. */
+	#cycle(origin: string, target: string): boolean {
+		const home = folderKey(origin);
+		let at = folderKey(target);
+		const seen = new Set<string>();
+		for (;;) {
+			let next: string | undefined;
+			for (const [p, node] of this.#nodes)
+				if (node.kind !== "gone" && node.origin && folderKey(node.origin.path) === at && folderKey(p) !== at)
+					next = p;
+			if (next === undefined) return false;
+			const key = folderKey(next);
+			if (key === home) return true;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			at = key;
+		}
+	}
+
+	/** Pending changes at or below the live folder `path`: nodes below it, or entries moved out from below it. */
+	#pendingBelow(path: string, live: string): boolean {
+		for (const p of this.#nodes.keys()) if (p !== path && within(p, path)) return true;
+		for (const node of this.#nodes.values())
+			if (node.kind !== "gone" && node.origin && node.origin.path !== live && within(node.origin.path, live))
+				return true;
+		for (const p of this.#removed.keys()) if (p !== live && within(p, live)) return true;
+		return false;
+	}
+
+	#movesOutBelow(live: string): boolean {
+		for (const node of this.#nodes.values())
+			if (node.kind !== "gone" && node.origin && node.origin.path !== live && within(node.origin.path, live))
+				return true;
+		return false;
+	}
+
+	/** A file the view moved here (its origin is another live path). */
+	#moved(path: string, node: PendingFile | PendingFolder): boolean {
+		return node.origin !== undefined && node.origin.path !== path;
+	}
+
 	// ---- Changes -------------------------------------------------------------------------------------------------
 
 	/** Opens a file for writing (creating it when asked) and returns its handle. */
@@ -297,13 +391,13 @@ export class PendingView {
 			readonly base?: string;
 		},
 	): { handle: number; size: number; version: string } {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		const r = this.resolve(path);
 		let node: PendingFile;
 		if (!r) {
 			if (!options.create) fail(ErrorCode.notFound, "No such file");
 			this.#newName(path);
 			node = this.#newFile();
-			this.#dropUnder(path);
 			this.#set(path, node);
 		} else {
 			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
@@ -313,6 +407,7 @@ export class PendingView {
 				this.#set(path, node);
 			} else {
 				if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+				if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
 				node = r.node;
 			}
 			if (options.truncate && (node.content === undefined || node.content.size > 0)) {
@@ -322,7 +417,8 @@ export class PendingView {
 		}
 		node.open++;
 		const handle = this.#nextHandle++;
-		this.#handles.set(handle, { node, dirty: false });
+		const before = { content: node.content, version: node.version, staged: node.staged, executable: node.executable };
+		this.#handles.set(handle, { node, dirty: false, before });
 		return {
 			handle,
 			size: node.content ? node.content.size : (node.origin?.entry?.bytes ?? 0),
@@ -365,38 +461,53 @@ export class PendingView {
 		this.#handles.get(handle)!.dirty = true;
 	}
 
-	/** The handle is closed at `size`. The chunks must tile the file: every one but the last exactly 4 MiB. */
+	/** The handle is closed at `size`. The chunks must tile the file, every one but the last exactly 4 MiB; until they
+	 * do, the close is refused and the handle stays open. */
 	close(handle: number, size: number): PendingFile {
-		const node = this.file(handle);
-		const dirty = this.#handles.get(handle)!.dirty;
+		const open = this.#handles.get(handle);
+		if (!open) fail(ErrorCode.badRequest, "No such handle");
+		const node = open.node;
+		if (node.content !== undefined) {
+			if (!Number.isSafeInteger(size) || size < 0) fail(ErrorCode.badRequest, "Bad size");
+			if (size > MAX_FILE_BYTES) fail(ErrorCode.tooLarge, "The file is too large");
+			const count = Math.ceil(size / CHUNK_BYTES);
+			const chunks = node.content.chunks.slice(0, count);
+			if (
+				chunks.length !== count ||
+				chunks.some(
+					(c, i) =>
+						c === undefined || c.bytes !== (i < count - 1 ? CHUNK_BYTES : size - (count - 1) * CHUNK_BYTES),
+				)
+			)
+				fail(ErrorCode.badRequest, "The file's chunks do not make up its size");
+			const before = node.content;
+			node.content = { chunks, size };
+			if (open.dirty || before.size !== size || before.chunks.length !== chunks.length) this.#changed(node);
+		}
 		this.#handles.delete(handle);
 		node.open--;
-		if (node.content === undefined) return node;
-		if (!Number.isSafeInteger(size) || size < 0) fail(ErrorCode.badRequest, "Bad size");
-		if (size > MAX_FILE_BYTES) fail(ErrorCode.tooLarge, "The file is too large");
-		const count = Math.ceil(size / CHUNK_BYTES);
-		const chunks = node.content.chunks.slice(0, count);
-		if (
-			chunks.length !== count ||
-			chunks.some(
-				(c, i) => c === undefined || c.bytes !== (i < count - 1 ? CHUNK_BYTES : size - (count - 1) * CHUNK_BYTES),
-			)
-		)
-			fail(ErrorCode.badRequest, "The file's chunks do not make up its size");
-		const before = node.content;
-		node.content = { chunks, size };
-		if (dirty || before.size !== size || before.chunks.length !== chunks.length) this.#changed(node);
 		return node;
 	}
 
+	/** The machine's connection ended with the handle still open: what this handle wrote is lost (founder decision 3),
+	 * and the file is as it was when the handle opened (a truncate at open included). */
+	abandon(handle: number): void {
+		const open = this.#handles.get(handle);
+		if (!open) return;
+		this.#handles.delete(handle);
+		open.node.open--;
+		Object.assign(open.node, open.before);
+	}
+
 	mkdir(path: string): void {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		if (this.resolve(path)) fail(ErrorCode.exists, "The path exists");
 		this.#newName(path);
-		this.#dropUnder(path);
 		this.#set(path, { kind: "folder", origin: undefined, version: randomUUID(), mtimeMs: this.#now() });
 	}
 
 	unlink(path: string, base?: string): void {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		const r = this.resolve(path);
 		if (!r) fail(ErrorCode.notFound, "No such file");
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") fail(ErrorCode.notAFile, "Not a file");
@@ -405,12 +516,16 @@ export class PendingView {
 	}
 
 	rmdir(path: string, base?: string): void {
+		if (path === "") fail(ErrorCode.notPermitted, "The folder's root stays");
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		const r = this.resolve(path);
 		if (!r) fail(ErrorCode.notFound, "No such folder");
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) !== "folder") fail(ErrorCode.notAFolder, "Not a folder");
-		if (path === "") fail(ErrorCode.notPermitted, "The folder's root stays");
 		checkRemovable(path);
 		if (this.#hasChildren(path)) fail(ErrorCode.notEmpty, "The folder is not empty");
+		// What moved out of it publishes first: its removal must not be able to take them if their moves fail.
+		if (r.kind === "live" && this.#movesOutBelow(r.source))
+			throw new PublishFirst("removing a folder something was moved out of");
 		this.#remove(r, base);
 	}
 
@@ -423,15 +538,25 @@ export class PendingView {
 		},
 	): void {
 		if (from === to) return;
+		if (from === "" || to === "") fail(ErrorCode.notPermitted, "The folder's root stays");
+		if (this.#insideMoved(from) || this.#insideMoved(to))
+			throw new PublishFirst("a change inside a folder this view moved");
 		const source = this.resolve(from);
 		if (!source) fail(ErrorCode.notFound, "No such path");
-		if (from === "" || to === "") fail(ErrorCode.notPermitted, "The folder's root stays");
 		const kind = source.kind === "live" ? source.entry.kind : source.node.kind;
-		if (kind === "folder" && under(to, from)) fail(ErrorCode.badRequest, "A folder cannot go inside itself");
+		if (kind === "folder" && within(folderKey(to), folderKey(from)))
+			fail(ErrorCode.badRequest, "A folder cannot go inside itself");
 		const parent = this.resolve(parentOf(to));
 		if (!parent || (parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
 			fail(ErrorCode.notFound, "No such folder");
 		checkMove(from, to);
+		const live = source.kind === "live" || source.node.origin !== undefined;
+		// A live entry's move is published as one: it never goes where nothing is published.
+		if (live && unpublished(to)) fail(ErrorCode.notHere, "A published path cannot go where nothing is published");
+		if (source.kind === "node" && source.node.kind === "file" && source.node.origin && source.node.content)
+			throw new PublishFirst("moving a file this view changed");
+		if (source.kind === "live" && source.entry.kind === "folder" && this.#pendingBelow(from, source.source))
+			throw new PublishFirst("moving a folder with changes inside it");
 		const target = this.resolve(to);
 		if (target) {
 			if (options.noReplace) fail(ErrorCode.exists, "The path exists");
@@ -440,7 +565,16 @@ export class PendingView {
 			if (kind === "folder" && targetKind === "file") fail(ErrorCode.notAFolder, "Not a folder");
 			if (targetKind === "folder" && this.#hasChildren(to)) fail(ErrorCode.notEmpty, "The folder is not empty");
 			checkRemovable(to);
-		} else if (folderKey(from) !== folderKey(to)) this.#newName(to);
+			if (target.kind === "live" && target.entry.kind === "folder" && this.#pendingBelow(to, target.source))
+				throw new PublishFirst("replacing a folder with changes inside it");
+		} else {
+			if (folderKey(from) !== folderKey(to)) this.#newName(to);
+			if (this.#freedFolder(to)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
+			// Moves that take each other's places (a swap, a ring) publish one at a time.
+			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
+			if (origin !== undefined && this.#cycle(origin, to))
+				throw new PublishFirst("moves that take each other's places");
+		}
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder;
 		if (source.kind === "node") node = source.node;
@@ -458,12 +592,13 @@ export class PendingView {
 				mtimeMs: source.entry.mtimeMs,
 			};
 		if (target) this.#remove(target, options.toBase);
-		// The nodes under `from` move with it; then `from` is hidden if the live folder still shows something there.
+		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
 		const moved: [string, Node][] = [];
-		for (const [path, n] of this.#nodes) if (path !== from && under(path, from)) moved.push([path, n]);
+		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
 		this.#hide(from);
+		this.#dropUnder(to);
 		this.#set(to, node);
 		for (const [path, n] of moved) this.#set(to + path.slice(from.length), n);
 		node.mtimeMs = this.#now();
@@ -471,10 +606,12 @@ export class PendingView {
 
 	/** chmod: only the executable bit is kept. */
 	setExecutable(path: string, executable: boolean, base?: string): void {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		const r = this.resolve(path);
 		if (!r) fail(ErrorCode.notFound, "No such file");
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") return;
 		if (r.kind === "live" && r.entry.executable === executable) return;
+		if (r.kind === "node" && this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
 		const node = r.kind === "node" ? (r.node as PendingFile) : this.#fromLive(r.entry, r.source, base);
 		if (r.kind === "live") this.#set(path, node);
 		if (node.executable === executable) return;
@@ -482,9 +619,23 @@ export class PendingView {
 		this.#changed(node);
 	}
 
+	/** The feed changed these live paths. A removal whose live entry changed since is dropped, so the view shows the
+	 * newer version again: a removal never takes a version the machine did not see. (A subtree removal or a move
+	 * refuses changes it did not see by its `asOfSeq`; a save conflicts by its base.) */
+	liveChanged(paths: readonly string[]): void {
+		for (const path of paths) {
+			const removed = this.#removed.get(path);
+			if (!removed || removed.kind !== "file") continue;
+			if (this.#live().get(path)?.version === removed.version) continue;
+			this.#removed.delete(path);
+			if (this.#nodes.get(path)?.kind === "gone") this.#unset(path);
+		}
+	}
+
 	// ---- Inside ----------------------------------------------------------------------------------------------------
 
-	/** A new name in an existing folder: allowed, and not a sibling's spelled otherwise (`EEXIST`). */
+	/** A new name in an existing folder: allowed, and not a sibling's spelled otherwise (`EEXIST`); a path a moved or
+	 * removed live folder left publishes what is pending first. */
 	#newName(path: string): void {
 		const parent = this.resolve(parentOf(path));
 		if (!parent) fail(ErrorCode.notFound, "No such folder");
@@ -497,6 +648,7 @@ export class PendingView {
 		for (const name of names)
 			if (name !== nameOf(path) && folderKey(name) === key && this.resolve(join(parentOf(path), name)))
 				fail(ErrorCode.exists, "A path differing only in case exists");
+		if (this.#freedFolder(path)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
 	}
 
 	#newFile(): PendingFile {
@@ -541,27 +693,24 @@ export class PendingView {
 				path: r.source,
 				kind: r.entry.kind,
 				version: base ?? r.entry.version,
-				shown: r.path,
 				...(r.entry.kind === "folder" ? { asOfSeq: this.#seq() } : { entry: r.entry }),
 			});
 		} else {
 			const origin = r.node.origin;
-			if (origin) {
-				const asOf = origin.kind === "folder" ? { asOfSeq: origin.asOfSeq ?? this.#seq() } : {};
-				this.#removed.set(origin.path, { ...origin, ...asOf, shown: r.path });
-			}
-			for (const [path] of [...this.#nodes]) if (path !== r.path && under(path, r.path)) this.#unset(path);
+			if (origin)
+				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+			this.#dropUnder(r.path);
 			this.#unset(r.path);
 		}
 		this.#hide(r.path);
 	}
 
-	/** A new path where a removed folder was: the gone nodes left under it hide nothing now. */
+	/** Nodes left under a path that now holds something else hide nothing there. */
 	#dropUnder(path: string): void {
-		for (const key of [...this.#nodes.keys()]) if (key !== path && under(key, path)) this.#unset(key);
+		for (const key of [...this.#nodes.keys()]) if (key !== path && within(key, path)) this.#unset(key);
 	}
 
-	/** A merged path the live folder would still show something at gets a gone node. */
+	/** A path the live folder would still show something at gets a gone node. */
 	#hide(path: string): void {
 		if (this.resolve(path)) this.#set(path, { kind: "gone" });
 	}
@@ -586,7 +735,7 @@ export class PendingView {
 
 	// ---- What a boundary publishes ------------------------------------------------------------------------------
 
-	/** Every pending node, by path (for planning and tests). */
+	/** Every pending node, by path. */
 	nodes(): ReadonlyMap<string, PendingFile | PendingFolder | { readonly kind: "gone" }> {
 		return this.#nodes;
 	}
@@ -596,29 +745,15 @@ export class PendingView {
 		return this.#removed;
 	}
 
-	/** The live path `path` stands for before any of the view's moves: through the nearest moved folder above it. */
-	livePath(path: string): string {
-		let at = path;
-		const rest: string[] = [];
-		for (;;) {
-			const node = this.#nodes.get(at);
-			if (node?.kind === "folder" && node.origin)
-				return [node.origin.path, ...rest.reverse()].filter((p) => p !== "").join("/");
-			if (at === "") return [...rest.reverse()].join("/");
-			rest.push(nameOf(at));
-			at = parentOf(at);
-		}
-	}
-
-	/** After a boundary: the view shows the live folder again, except the nodes a boundary leaves pending (`keep`:
-	 * files still open for writing, and names never published). Every removal was published, and no node kept hides a
-	 * live path, so the gone nodes go too. */
+	/** After a boundary: the view shows the live folder again, except the nodes the boundary keeps (`keep`: files
+	 * still open, names never published, and new bytes the core did not save). Every removal and move was published
+	 * (saved, or failed losing nothing), so the gone nodes go too. */
 	settle(keep: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
 		this.#removed.clear();
 	}
 
-	/** Forgets everything (the view closed, or the service lost its state). Open handles stay valid but detached. */
+	/** Forgets everything (the view closed). Open handles stay valid but detached. */
 	clear(): void {
 		this.#nodes.clear();
 		this.#children.clear();
