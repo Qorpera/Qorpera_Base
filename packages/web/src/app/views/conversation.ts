@@ -891,14 +891,21 @@ export class ConversationView {
 		target?.focus({ preventScroll: true });
 	}
 
-	/** A coworker's chip as drawn again: on the same line, for the same pair, else the line's first. */
+	/** A coworker's chip as drawn again: the one for the same messages with that coworker, else any for
+	 * that coworker, each on the same line first, as a line can split in two; else the line's first. */
 	#sameChip(chip: HTMLElement): HTMLElement | undefined {
 		const messageId = chip.closest<HTMLElement>(".peer-link")?.dataset.messageId;
 		if (!messageId) return undefined;
-		const chips = [
-			...this.#messages.querySelectorAll<HTMLElement>(`.peer-link[data-message-id="${messageId}"] .peer-chip`),
-		];
-		return chips.find((other) => other.dataset.pairSessionId === chip.dataset.pairSessionId) ?? chips[0];
+		const pair = chip.dataset.pairSessionId;
+		const links = new Set(chip.dataset.linkIds?.split(" "));
+		const chips = [...this.#messages.querySelectorAll<HTMLElement>(".peer-link[data-message-id] .peer-chip")];
+		const onLine = (other: HTMLElement) => other.closest<HTMLElement>(".peer-link")?.dataset.messageId === messageId;
+		const samePair = (other: HTMLElement) => other.dataset.pairSessionId === pair;
+		const sameLinks = (other: HTMLElement) =>
+			samePair(other) && (other.dataset.linkIds?.split(" ") ?? []).some((id) => links.has(id));
+		const first = (match: (other: HTMLElement) => boolean) =>
+			chips.find((other) => onLine(other) && match(other)) ?? chips.find(match);
+		return first(sameLinks) ?? first(samePair) ?? chips.find(onLine);
 	}
 
 	#toggleComputer(): void {
@@ -1935,7 +1942,7 @@ export class ConversationView {
 									{
 										type: "button",
 										class: "peer-chip",
-										dataset: { pairSessionId: item.pairSessionId },
+										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
 										title: `${label} · ${fmtTime(item.createdAt)}`,
 										"aria-label": t("{label}. Open the conversation", { label }),
 										onclick: (event: MouseEvent) =>
@@ -2588,7 +2595,9 @@ export class ConversationView {
 		for (const link of run) latest.set(link.counterpartStaffId, link);
 		const coworkers = [...latest.values()].map((link) => {
 			const staff = this.#company.staffById(link.counterpartStaffId);
-			return { link, staff, name: staff?.displayName ?? t("a coworker") };
+			// The messages its chip stands for, so a focused chip is found again if the line splits.
+			const ids = run.filter((other) => other.counterpartStaffId === link.counterpartStaffId).map(({ id }) => id);
+			return { link, staff, name: staff?.displayName ?? t("a coworker"), ids: ids.join(" ") };
 		});
 		const out = run.every((link) => link.direction === "out");
 		const inward = run.every((link) => link.direction === "in");
@@ -2609,13 +2618,13 @@ export class ConversationView {
 		const names = coworkers.map(({ name }) => name);
 		const count = run.length > coworkers.length ? t("{count} messages", { count: run.length }) : "";
 		const compact = coworkers.length > 2;
-		const chips = coworkers.map(({ link, staff, name }) =>
+		const chips = coworkers.map(({ link, staff, name, ids }) =>
 			h(
 				"button",
 				{
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
-					dataset: { pairSessionId: link.pairSessionId },
+					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
 					title: `${name} · ${fmtTime(link.createdAt)}`,
 					"aria-label": t("{label}. Open the conversation", { label: name }),
 					onclick: (event: MouseEvent) =>

@@ -9,6 +9,7 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { CodingSession } from "../src/cloud/coding-session.ts";
 import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
 import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
@@ -2108,6 +2109,60 @@ describe("messages between two agents (contract 14.6)", () => {
 			} finally {
 				delete (Element.prototype as { getAnimations?: unknown }).getAnimations;
 			}
+		});
+
+		it("finds the coworker's chip again when a coding session splits the line", async () => {
+			const at = (minute: number) => `2026-09-05T10:0${minute}:00Z`;
+			// Started between the two messages: it stands between them once the thread learns of it.
+			const coding: CodingSession = {
+				workerId: id(500),
+				workerKey: "fix-send",
+				title: "Fix the delay after send",
+				agentId: staff.id,
+				ownerUserId: userA.id,
+				harness: "codex",
+				repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+				branch: `qorpera/coding/${id(500)}`,
+				sequence: 1,
+				workerState: "succeeded",
+				phase: "completed",
+				filesChanged: 0,
+				checks: [],
+				artifacts: [],
+				updatedAt: at(1),
+				createdAt: at(1),
+				sessionId: session.sessionId,
+				standby: true,
+				attached: false,
+				runningCommands: 0,
+				machineAsleep: false,
+			};
+			const f = await thread([
+				link(1, helper, "out", { createdAt: at(0) }),
+				link(2, nova, "out", { createdAt: at(2) }),
+			]);
+			const sessions = (codingSessions: CodingSession[]) => {
+				f.company.conversation(session.sessionId).set({ codingSessions });
+				f.view.update();
+			};
+			const novaChip = () =>
+				f.view.el.querySelector<HTMLButtonElement>(`.peer-chip[data-pair-session-id="${pairs.get(nova.id)}"]`)!;
+			expect(f.lines()).toHaveLength(1);
+			novaChip().click();
+			await settle();
+			sessions([coding]);
+			expect(f.lines().map((line) => line.classList.contains("coding-line"))).toEqual([false, true, false]);
+			// Closing Nova's transcript goes back to Nova, now on a line of its own.
+			button(f.view.el.querySelector<HTMLElement>(".pair-transcript")!, "Close Chat").click();
+			expect(document.activeElement).toBe(novaChip());
+			expect(novaChip().getAttribute("aria-label")).toBe("Messaged Nova. Open the conversation");
+			// And a keyboard user on Nova's chip stays on it as the line splits.
+			sessions([]);
+			expect(f.lines()).toHaveLength(1);
+			novaChip().focus();
+			sessions([coding]);
+			expect(f.lines()).toHaveLength(3);
+			expect(document.activeElement).toBe(novaChip());
 		});
 	});
 });
