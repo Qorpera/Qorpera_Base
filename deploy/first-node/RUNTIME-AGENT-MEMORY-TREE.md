@@ -88,9 +88,12 @@ came from.**
 
 ## Erasing
 
-- A summary line is made from the messages under it. So when a message is erased, every line above it is erased as
-  well, and rebuilt without it. The old copies of those summary files are wiped with the folder's existing erasure
-  tool.
+- A summary line is made from the messages under it, plus at most 31 messages just before them. The helper reads
+  those to understand words like "that one". So when a message is erased, every line made from it is erased as well:
+  the lines above it, and the lines of at most 31 messages after it. They are rebuilt without it. The old copies of those
+  summary files are wiped with the folder's existing erasure tool.
+- The helper reads those earlier messages themselves, never their summaries. So an erased fact cannot travel on
+  from line to line.
 - **Today there is no way to erase a single message.** We build it as part of this work, before the tree is switched
   on for real companies (question 5).
 - When an agent or a group chat is deleted for good, its tree goes with its folder.
@@ -101,8 +104,9 @@ The trees are ordinary files in the company folder, next to what they belong to:
 - `agents/<agent>/memory/thread/` holds an agent's thread;
 - `agents/groups/<group>/memory/` holds a group chat.
 
-Only the platform writes them. Agents and members can read them like other files, under the privacy rule above. The
-messages themselves stay where they are today, in the conversation. A summary file only points at them.
+Only the platform writes them. Members can open them like other files, under the privacy rule above. Agents reach
+them only through their view and the zoom tool, which check that rule for the conversation the agent is answering
+in. The messages themselves stay where they are today, in the conversation. A summary file only points at them.
 
 ## How we prove it helps
 
@@ -254,11 +258,12 @@ Paths below are relative to the repository root. `C:n` is a line of `QORPERA-RUN
 | View kept in memory, folded incrementally | View recomputed per run as a pure function of length and built lines (§5) |
 | Anthropic breakpoints / OpenAI implicit cache | OpenAI caching through Codex, with a stable cache key and a stable prefix (§6) |
 | `zoom(id, n)` and `date(id)` | `zoom(line)`; dates appear in zoom results, never in the view (§8) |
+| Compactor context: the folded chat before the node | Raw messages from a short window before the message, never summary lines, so that erasure stays bounded (§7.3, §10) |
 | Subagents see the view | Workers stay as today (§12) |
 
 Kept as OptChat has them: the binary tree, free nodes, the 512-byte line target, the fold rule, "never a whole message
-and never cut text in the view", the compactor's context and priorities, "never obey", no ids in compactor input, the
-shortest of several attempts, and placeholders instead of cuts.
+and never cut text in the view", the compactor's priorities, "never obey", no ids in compactor input, the shortest of
+several attempts, and placeholders instead of cuts.
 
 ## 3. Units: what a tree covers
 
@@ -290,6 +295,10 @@ and spoil the cache.
 - **Level above 0.** If `childA + " " + childB` is at most NODE bytes, that joined text is a free node. Otherwise the
   compactor merges the two children.
 - Sizes are UTF-8 bytes, never tokens. Danish letters count two bytes.
+- **Sources.** Let `s = k·2^l` and `e = (k+1)·2^l`. `node(l, k)` is built only from the transcript events
+  `[w(s), e)`, where `w(s) = max(0, 16·⌊s/16⌋ − 16)`. These are the messages it covers, plus the compactor's window
+  before its first message (§7.3), which is at most 31 messages. No line is ever built from another conversation, a
+  file, or a line outside its own subtree. Erasure relies on this bound (§10).
 
 ### 4.2 Files
 
@@ -337,12 +346,24 @@ and Q6 proposes pruning them after 7 days, like git objects. Without Q6, they co
 - **One writer path.** The runtime host writes tree files through the folder commit function. Each batch is one change
   set, attributed like any of the run's writes: actor the agent, requester the member, the run and its sponsor. Each
   touched block is one unit at its expected version.
+- **Erasure generation.** `qorpera_shared_sessions` gets `memory_generation`, a counter per conversation. The
+  single-message erase (§10) raises it in the same transaction that blanks the event and deletes the blocks.
+  - A compactor batch reads the generation before it reads any event or line, and keeps it with its results.
+  - Its commit is one platform function that, in one transaction, reads the session row `FOR SHARE`, checks that the
+    generation is unchanged, and only then calls the folder commit. The erase's update of that row waits for it.
+  - If the generation moved, the batch is **discarded whole**: it is never merged, retried or partly kept. The next
+    run builds those nodes again from the transcript as it now is.
+  - Every retry below is its own commit, so it makes the same check.
+  - So a result computed before an erasure can never land after it. The level-0 `hash` alone could not show this,
+    because an erased event keeps its hash.
 - **Concurrency** (for example, two members posting in one thread at once). On a version conflict the writer re-reads
   the block and merges by position: a node already built is kept, and the newer duplicate is dropped. It retries up
   to 3 times. Folder commits are transactional, so OptChat's `fsync` and lock rules have no counterpart here.
 - **Platform-only paths.** Writes, moves and deletes under a tree root by members, agents or machines are refused
   (`platform_only`), like owner-only `rules/`. A tree moves or goes only with its owning folder: an agent rename, a
   group folder delete or restore, or erasure.
+- **Platform-only reads for agents and machines.** Agents and machines read tree files only through the composer and
+  `zoom`, which apply §9's rules. Ordinary folder reads skip tree roots for them (§9).
 - **No file-change wakes.** P29 subscriptions never match tree roots, because a tree is derived data.
 
 ### 4.4 The index
@@ -351,7 +372,8 @@ and Q6 proposes pruning them after 7 days, like git objects. Without Q6, they co
 - Columns: environment, conversation, `l`, `k`, `text`, bytes, `seq` and `hash` at level 0, and the source path and
   version.
 - The composer and `zoom` read it in one call each, so a run never opens dozens of block files.
-- `T_built` is the count of its level-0 rows. Events after the newest indexed `seq` come from `qorpera_session_events`.
+- `T` is the transcript's count of included events (§3). The built set is the index's rows; an address with no row is
+  missing, whether it was never built, failed, or was erased (§10). Events are read from `qorpera_session_events`.
 - The composer releases the block paths and versions it used under the hash of the composed context, as notebook
   composition does today (`rt/cloud-folder-notebooks.ts:31-43`). So the view passes the fence as read references, and
   no text is stored.
@@ -366,12 +388,12 @@ and Q6 proposes pruning them after 7 days, like git objects. Without Q6, they co
 | NODE | 512 bytes | target size of one line |
 | VIEW | 96,000 bytes | the run's own conversation (M2 compares it with 48,000) |
 | BRANCHES | 24,000 bytes | all branches together (§5.5) |
-| COMPACT_CONTEXT | 32,000 bytes | the compactor's context (§7.3) |
+| WINDOW | 16 messages | the compactor's window is the previous group of 16 plus the current group up to the message (§7.3) |
+| COMPACT_CONTEXT | 32,000 bytes | the most raw text in that window; each event in it is cut to 1,024 bytes (§7.3) |
 | TRIES | 3 | attempts to bring a line under NODE |
 | JOBS | 4 | compactor threads at once in one run |
 | SETTLE | 20 s | longest wait at run start for missing lines (§5.4) |
 | CLOSE | 60 s | longest time a run spends building lines after its last send (§7.1) |
-| ZOOM_PAGE | 4,096 bytes | text in one zoom result (§8) |
 
 These are bundle constants, not settings. Each line also costs about 12 bytes of address and markup. 96,000 bytes is
 roughly 24k to 48k tokens, depending on language. That is about 380 lines of 250 bytes, the average line size OptChat
@@ -404,7 +426,7 @@ fold(T, built, budget):
 ### 5.3 Rendering
 
 ```
-<conversation ref="." name="Co-Founder (thread)" messages="1024">
+<conversation ref="." name="Co-Founder (thread)">
 0+512|…
 …
 1023+1|…
@@ -412,6 +434,9 @@ fold(T, built, budget):
 ```
 
 - Each part is `start+size|text`, with newlines as spaces.
+- **Nothing that grows goes before the lines.** The opening tag holds only the ref and the name. The message count
+  would change with every message, so it is left out: the last line's address shows it, and the user message carries
+  it as `conversationMessages`.
 - **No dates or times.** They would change the prefix. `zoom` shows them.
 - **Never a whole message, and never cut text.** The new inputs that woke the run still appear in full, as today's
   "current inputs" (up to 16 KiB each). The view covers `[0, T)` before them.
@@ -460,7 +485,8 @@ sent, so that the provider reads them from its cache.
    final-send policy, closing reminder).
 4. Codex's environment context (with the random working directory), after the developer message. M0 checks this
    order.
-5. The user message: `observedAt`, wake, current inputs, branches and the rest, as today without `history`.
+5. The user message: `observedAt`, wake, `conversationMessages`, current inputs, branches and the rest, as today
+   without `history`.
 
 **The cache key.**
 - Our Codex patch sets `prompt_cache_key` to
@@ -473,7 +499,9 @@ login:
 - where 0.155.1 puts the environment context, and whether it adds a date;
 - what it sends as `prompt_cache_key`;
 - that two runs with the same developer instructions and the same key report `cachedInputTokens` for the shared
-  prefix.
+  prefix;
+- the same for a growing conversation: a second run after a few new messages, whose view differs from the first
+  run's only in its last lines, still reads the unchanged start of the view from the cache.
 
 If the provider ignores the key for ChatGPT-login requests, the view still works. It just costs more.
 
@@ -488,7 +516,8 @@ If the provider ignores the key for ChatGPT-login requests, the view still works
   need a member's login outside any run, and would count as "work no member started" (C:4304-4334), which a ChatGPT
   plan never pays for. So lines are built where auto-review already makes its calls: in the run's own Codex
   app-server, one fresh ephemeral thread per call, with no tools, through the reviewer's lane of the fence, and never
-  recorded as the agent's context.
+  recorded as the agent's context. No receipt, card or transcript keeps a call's input or output: its only product is
+  the tree, plus the counts in `memory_compaction`.
 - **Closing.** After the run's last send or card, and before it finishes, the run builds:
   - the level-0 nodes of the events it caused: the inputs that woke it, and its own sends and cards;
   - every merge those nodes make possible.
@@ -496,10 +525,9 @@ If the provider ignores the key for ChatGPT-login requests, the view still works
   It runs up to JOBS calls at once, for at most CLOSE, and commits one batch. The member already has the reply, so
   they do not wait. What is left unbuilt stays missing (§5.4).
 - **Settle** at the next run's start, if Q4 allows (§5.4).
-- **Order.** Level-0 nodes are built in message order. A merge starts once both children exist. As in OptChat, a node
-  is built after everything before its end, so its context is made of real lines. There is one exception: if an
-  earlier node is still missing because its payer hit a limit (and Q4 is no), the context shows that node's
-  placeholder. Otherwise one stuck line would block every later one.
+- **Order.** A level-0 node needs only the transcript (§7.3), so level-0 nodes can be built in any order, and one
+  missing line never blocks a later one. A merge starts once both children exist. Level-0 nodes are started in
+  message order, so that calls in one window share their prefix.
 - **Warm processes.** A warm Codex process (C:2767-2804) serves the closing calls like any other request of the run.
 
 ### 7.2 Model, payer and limits
@@ -518,14 +546,22 @@ If the provider ignores the key for ChatGPT-login requests, the view still works
 
 ### 7.3 One call
 
-- **System**: COMPACT (§7.4), byte-stable.
-- **Block 1**: `<chat>…</chat>`, the fold of `[0, end)` at budget COMPACT_CONTEXT, where `end` is the node's end.
-  - It is folded, not cut, so consecutive calls share a prefix.
-  - It has no ids: `start+size|` is left off, because OptChat saw ids copied into lines.
-  - It resolves references like "do that" or "the file".
-- **Block 2**: a SCALE example, a realistic line of exactly NODE bytes, then the task:
-  - for level 0: "Compress this message into one line of at most 512 bytes", then the rendered event, whole;
-  - for a merge: "Merge these two adjacent lines into one line of at most 512 bytes", then both children.
+- **System**: COMPACT (§7.4), byte-stable, then a SCALE example: a realistic line of exactly NODE bytes.
+- **Level 0, message `i`:**
+  - **Block 1**: `<chat>…</chat>`, the raw rendered events `[w(i), i)` from the transcript, where
+    `w(i) = max(0, 16·⌊i/16⌋ − 16)` (§4.1). That is the previous group of WINDOW messages, plus the current group up
+    to `i`: 0 to 31 events.
+    - Each event is cut to 1,024 bytes with a `[…]` mark, which keeps the block under COMPACT_CONTEXT. This is the
+      compactor's input, not the view, so cutting is allowed here. The message being summarized is never cut.
+    - The window starts at a multiple of 16, so the calls for the messages of one group share a prefix.
+    - It has no ids: OptChat saw ids copied into lines.
+    - It resolves references like "do that" or "the file" to the messages just before.
+    - It holds **raw messages only, never summary lines.** A line built with summary lines in its context could pick
+      up a fact from any earlier message, and pass it on to every later line. Then erasing one message would mean
+      rebuilding everything after it. With raw messages, a line's sources stop 31 messages back (§4.1, §10).
+  - **Block 2**: "Compress this message into one line of at most 512 bytes", then the rendered event, whole.
+- **Merge**: "Merge these two adjacent lines into one line of at most 512 bytes", then both children. A merge sees its
+  two children only. They already carry what their own windows resolved.
 - **Size enforcement**: if the reply is over NODE, the same thread is told its byte count and shown the line cut at
   NODE with a `| ← LIMIT` mark, up to TRIES attempts. The shortest attempt is kept.
 - **Context of a summary is the same conversation only.** A compactor call never sees another conversation, a branch
@@ -550,7 +586,7 @@ OptChat's prompt, adapted for many speakers:
 ## 8. The zoom tool
 
 ```
-zoom({ line: "2184+8", conversation?: "thread:sales", page?: 2 })
+zoom({ line: "2184+8", conversation?: "thread:sales", from?: 3812 })
 ```
 
 - **`line`** is an address as the view shows it. The tool checks that `size` is a power of two, that `start` is a
@@ -560,10 +596,15 @@ zoom({ line: "2184+8", conversation?: "thread:sales", page?: 2 })
 - **`size > 1`** returns the two lines below, each with its date range: `2184+4 (3–4 Oct)|…`. A child that is not
   built is shown as its placeholder.
 - **`size = 1`** returns the original event: `2184|Jonas (2026-10-04 09:12 UTC): …`. It is read from the transcript,
-  never from a summary.
-  - Pages are ZOOM_PAGE bytes, labelled `page 2 of 3`. With the envelope that stays under the fence's 8 KiB limit,
-    which `read_context` already works within (`rt/cloud-native-company-context.ts:686-716`).
-  - An erased event shows `(erased)`.
+  never from a summary. An erased event shows `(erased)`.
+- **Fitted to the fence, never cut by it.** Every result is fitted after encoding, as `fittedContextPage` does for
+  `read_context` (`rt/cloud-native-company-context.ts:685-716`).
+  - The fence JSON-encodes a result and escapes `<`, `>` and `&`, so text full of markup can grow up to six times.
+    A fixed page of text could therefore pass the fence's 8 KiB limit and be cut from the end.
+  - So zoom shortens its text at a code point until the encoded result fits, with the fence's reserve for its
+    provenance. When text is left, the result ends with `nextOffset` (in code points) and the total length.
+  - The agent passes `nextOffset` back as `from`. Nothing is skipped, however costly the text is to encode.
+  - This holds for an original event and for a pair of child lines alike. A line can be up to 2,048 bytes (§4.2).
 - **Authority.** The rules of §9 apply. A refused conversation answers the same way as one that does not exist (the
   folder's rule for unreadable paths).
 - **It is a read.**
@@ -572,7 +613,11 @@ zoom({ line: "2184+8", conversation?: "thread:sales", page?: 2 })
   - Its output goes through the result fence like any tool output.
   - Summary lines are released as folder reads of their block's path and version. Transcript events are released the
     way `read_context` releases its sources.
-  - Its receipt input keeps `(conversation, start, size)`, which erasure uses (§10).
+  - Its receipt input keeps the target conversation's session id (not the ref, which a rename changes), `start`,
+    `size` and `from`. Erasure matches receipts by these (§10).
+  - It reads the conversation's `memory_generation` (§4.3) before it reads, and stores its receipt in a transaction
+    that checks the generation again under the same row lock. If the generation moved, zoom reads again and answers
+    from the new state. So no receipt that holds erased text is stored after the erase.
 - **Light threads.** It runs on the server, with no shell.
 
 ## 9. Visibility
@@ -585,8 +630,8 @@ zoom({ line: "2184+8", conversation?: "thread:sales", page?: 2 })
 - the agent is a party of C; or
 - the agent is the Co-Founder and C is another agent's thread (Q2).
 
-**V2, audience.** A run whose output will be read by audience A may show or open C only if every person and agent in A
-can read C.
+**V2, audience.** A run's audience A is everyone who can read the conversation the run answers in. The run may show
+or open C only if every person and agent in A can read C.
 - Agent threads are readable by every member, so they pass in any run.
 - A group chat passes only in its own runs.
 
@@ -594,11 +639,26 @@ So nothing said in a group chat reaches a wider audience through the tree. V2 is
 an agent read more than its audience and trusts it not to repeat it. A summary is easy to repeat by accident, so the
 tree does not rely on that trust.
 
-**Files follow the same rules.**
-- Thread trees sit under `agents/`, which is readable company-wide, as their conversations are.
-- A group chat's tree root gets a path resource whose readers are the group's agents and people. The `group.md` index
-  keeps it in step when the lists change.
-- So `company_read` and `company_search` cannot reach a group's lines from outside the group.
+**Files: only the tree's own reads check V1 and V2.** Folder authorization checks the member and the agent of a
+request. It does not know which conversation the run answers in, so it cannot enforce V1 or V2. For example, a
+member and an agent who both belong to a group could read the group's tree with `company_read` from the agent's
+company-wide thread. So:
+- **Agents and machines read tree files only through the composer and `zoom`**, which check V1 and V2 against the
+  run's own conversation.
+  - `company_read`, `company_search` and folder listings skip tree roots for agents, and answer as for a path that
+    does not exist.
+  - The search index does not index tree files.
+  - The folder copies on machines ([the company folder on every machine](RUNTIME-COMPANY-FOLDER.md)) leave tree
+    roots out.
+- **Release checks.** The fence's release check for a tree block applies V1 and V2 too. A run may release a block
+  only if V1 and V2 let the run show that block's conversation. So no view or zoom result carrying a group's lines
+  can leave through a run with a wider audience.
+- A group-chat run can still write what it learned into a file that more people read, as it can today with the raw
+  messages in its history. That is the agent's own choice, as with anything said in the group, and not a copy made
+  by the tree.
+- **Members** open tree files in the web app like other files. Thread trees sit under `agents/`, which is readable
+  company-wide, as their conversations are. A group chat's tree root gets a path resource whose readers are the
+  group's people. The `group.md` index keeps it in step when the list changes.
 
 **The database gap.** `qorpera_can_read_session` lets any member read any group chat today (§1). The tree does not
 widen that. Q3 asks to narrow it to the group's people, and M4 does so.
@@ -608,25 +668,44 @@ that conversation. It adds no new reader.
 
 ## 10. Erasure, GC and retention
 
-**The hard rule.** A line built from an erased message is erased, and later rebuilt without it. A line only ever
-derives from the messages it covers, so its sources are known from its address. No "derived from" records are needed.
-Message `i` lies under exactly one node per level: `node(l, i >> l)`.
+**The hard rule.** A line built from an erased message is erased, and later rebuilt without it. A line's sources are
+known from its address alone (§4.1): `node(l, k)` is built only from the events `[w(s), e)`. No "derived from"
+records are needed. Message `i` is a source of `node(l, k)` exactly when `w(s) ≤ i < e`. That is:
+- the node over `i` at each level, `node(l, i >> l)`;
+- the nodes of the rest of `i`'s group of 16 and of the next group, whose compactor windows reach back to `i`, with
+  their parents.
+
+That is at most two blocks per tier, so at most eight blocks in a 4,096-message conversation. The bound holds because
+the compactor's window holds raw messages, never lines (§7.3). With lines in it, a fact could pass from line to line,
+and every later line would depend on every earlier message.
 
 **Erasing one message** (new, M3; Q5 decides who may). One request, for event `i` of conversation C:
 1. **Transcript.** The event's body becomes `{"erased": true}`. Its stored `event_hash` is kept, and chain checks
    treat an erased body as opaque. The speaker and time stay, as attribution (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §1
-   keeps speaker names).
-2. **Tree.** Every block holding a node over `i` is deleted in one change set. That is one node per level, in one block
-   per tier: four blocks in a 4,096-message conversation. In the next change set, each block is written again without
-   those nodes, which gives each block path a new life.
+   keeps speaker names). In the same transaction, C's `memory_generation` goes up by one (§4.3), and step 2 runs.
+2. **Tree.** Every block holding a node with `i` among its sources is deleted in one change set. In the next change
+   set, each block is written again without those nodes, which gives each block path a new life. Both change sets
+   are part of step 1's transaction. A compactor batch or zoom that read before it now fails its generation check
+   (§4.3, §8), so nothing computed from the old text can be written back.
 3. **Old versions.** A P18 request on those block paths erases their earlier lives. P18 already keeps a live path's
    current life and erases its earlier ones (§2.2 there). Their index rows go with them (§5 there).
-4. **Receipts.** `zoom` receipts of runs in C whose `(start, size)` covers `i` get the P18 §6 scrub: the content
-   becomes `[erased]`. They are matched by range rather than by a text needle.
+4. **Receipts.** Every `zoom` receipt **in the whole company** whose target is C and whose result may hold text from
+   `i` gets the P18 §6 scrub: its envelope stays and its `content` becomes `[erased]`.
+   - Matched by the target conversation in the receipt's input, not by the run's own conversation. When the
+     Co-Founder opens a line of Sales's thread, the receipt belongs to a run in the Co-Founder's thread.
+   - Matched by range, not by a text needle: a `size = 1` receipt at `i`, or a `size > 1` receipt for a line whose
+     two children have `i` among their sources. That is, `start+size` overlaps `[i, 16·⌊i/16⌋ + 32)`.
+   - The erasure lists those runs in its run table, as P18 does. A run still live or with an open card stays
+     `pending`, and is scrubbed once it ends (P18 §6). Receipts stored later cannot hold the old text (§8).
 5. **Context views** store digests and read references only (§1), so they need nothing. P18 already keeps view read
-   records.
+   records. Compactor calls keep no copy of their input or output outside the tree (§7.1). A run already under way
+   when the erase lands keeps what its model has read until it ends, as with a file a live run read when P18 erases
+   it. Its receipts are scrubbed once it ends (step 4).
 6. **Rebuild.** The next run in C rebuilds the missing nodes at closing or settle. An erased event renders as
    `<speaker>: (erased)`, a free node.
+
+Erasing a message does not touch later messages that repeated it, such as an agent's reply quoting it. Those are
+messages of their own, which a member erases the same way, as P18 decides for files (below). Their lines then follow.
 
 **Whole conversations.**
 - Deleting an agent for good (contract 14.1, P18b) erases its folder, and its thread tree with it.
@@ -654,7 +733,7 @@ If Q1 is yes:
 | notebook `profile` tier, composed whole (6 KiB) | **kept**: standing instructions and facts the agent must never lose, across all its conversations |
 | notebook `log` tier (two months, 8 KiB composed) | removed: the conversation lives in the tree, and lasting learnings are said in replies |
 | notebook `note` tier (fades after 7 days) | removed |
-| `recall_memory` | removed: `zoom` opens the tree, and `company_search` finds words in tree files and the notebook |
+| `recall_memory` | removed: `zoom` opens the tree, and `company_search` still finds words in the notebook. It does not search tree files (§9). The view is the index, as in OptChat; M2's probe shows whether a word search over a conversation is needed |
 | `update_memory` | kept, profile tier only |
 
 - There are no users, so nothing is migrated. Hiring stops seeding `memory/log/`, and the log composer goes.
@@ -713,11 +792,11 @@ No slots or test numbers are reserved yet. Each step is its own PR with its own 
 
 | Step | What | Proof |
 | --- | --- | --- |
-| **M0** | Probe, no product code: the Codex 0.155.1 request order, `prompt_cache_key`, cross-run `cachedInputTokens` with a fixed prefix; today's real per-run sizes on Live Test from `model_turn` | a short report; decides §6 |
-| **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); fold, rendering and VIEW_DOC; closing compactor; `zoom`; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index and refusals; runtime tests for fold determinism, budget, placeholders, size enforcement and zoom checks; one live run that writes and reads a tree |
+| **M0** | Probe, no product code: the Codex 0.155.1 request order, `prompt_cache_key`, cross-run `cachedInputTokens` with a fixed prefix and with a growing conversation; today's real per-run sizes on Live Test from `model_turn` | a short report; decides §6 |
+| **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; tree roots hidden from agents' folder reads, search and machine copies, and V1 in the release check; fold, rendering and VIEW_DOC; closing compactor with its raw window; `zoom` with fitted results; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index, refusals, hidden reads and the generation check (a batch read before a generation change is discarded); runtime tests for fold determinism, budget, placeholders, size enforcement, zoom checks and a markup-heavy zoom read whole through `from`; one live run that writes and reads a tree |
 | **M2** | Measure and tune: the memory probe, VIEW at 48,000 vs 96,000, Luna low vs medium | probe report against §13's targets |
-| **M3** | Erasing one message (§10), with the tree's rebuild and the receipt scrub | SQL tests; live: erase, then see the lines rebuilt and old versions gone |
-| **M4** | Group chats (path resource, V2, closing the read gap) and Co-Founder branches | SQL tests for the resource and the read check; probe: a group fact never appears in a thread run |
+| **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, and a compactor batch racing the erase; live: erase, then see the lines rebuilt and old versions gone |
+| **M4** | Group chats (path resource, V2 in the composer, `zoom` and the release check, closing the read gap) and Co-Founder branches | SQL tests for the resource and the read check; probe: a group fact never appears in a thread run, even when the member and the agent are both in the group |
 | **M5** | On for every folder-v2 company; notebook trimmed (Q1) | the probe on a fresh company |
 | **M6** | Agent pair transcripts | — |
 
@@ -737,8 +816,12 @@ companies before a message can be erased.
   work no member started (§7.1). It can be revisited when a company account can pay.
 - **The newest messages in full.** OptChat found that one large message forces old lines to merge for good, and
   breaks the budget.
-- **Cutting the compactor's context to its newest bytes.** The window would slide every call and spoil the cache. It
-  is folded instead (§7.3).
+- **OptChat's compactor context: the folded chat before the node.** It resolves more references, but each line could
+  then carry a fact from any earlier message. Erasing one early message would mean rebuilding every line after it,
+  and the view would be placeholders until then. The raw window of §7.3 keeps each line's sources within 31
+  messages before the first message it covers. M2's probe measures what the shorter context costs in quality.
+- **A window that slides by one message.** Each call's prefix would differ from the last one's. The window starts at a
+  multiple of 16 instead, so the calls of one group share it (§7.3).
 - **One file per tree, or one per message.** One file is rewritten whole on every batch, and kept forever. One per
   message gives too many folder entries. Blocks of 16 are the middle way.
 
@@ -747,7 +830,8 @@ companies before a message can be erased.
 "2026-10-xx amendment: conversation memory as a summary tree" would change:
 - **5.4**: memory is the profile page plus the conversation trees; chats remain the audit record, and trees are
   derived from them.
-- **5.6**: tree roots under agent and group folders; platform-only writes.
+- **5.6**: tree roots under agent and group folders; platform-only writes; agents and machines read them only
+  through the view and `zoom`; the erasure generation on the conversation.
 - **9.1**: "recent canonical transcript" becomes "the conversation's view and, where allowed, branches".
 - **14.2**: the Co-Founder may read every agent thread's tree; it still receives no copies (Q2).
 - **15.1**: the notebook tiers (Q1); `zoom`.
@@ -760,7 +844,8 @@ companies before a message can be erased.
   any build.
 - **Usage.** A ChatGPT plan's limit is the real cost to a member. Compaction spends it, and so does a bigger view.
   M2 decides the sizes from measurements.
-- **Line quality** in Danish at low effort is unknown. M2 measures it.
+- **Line quality** in Danish at low effort is unknown, and so is the cost of a compactor window of 16 to 31 raw
+  messages instead of OptChat's folded chat. M2 measures both.
 - **Latency.** Each zoom is one more tool round. Closing compaction holds the slot up to CLOSE after the reply, and the
   run lease must allow that time.
 - **Storage.** Without Q6, block rewrites cost a few KB per message, kept forever.
