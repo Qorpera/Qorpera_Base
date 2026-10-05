@@ -40,6 +40,14 @@ const WEB_RELEASE_CONFIG = JSON.stringify({
 	officeViewerOrigin: "wss://viewer.example.invalid:8443",
 	nativeProviderLoginUrl: "https://project.example.invalid/functions/v1/native-provider-login/",
 });
+/** The Rust image the folder program's tests run in: the test machine has no Rust of its own. 1.95.0 is the
+ * patched Codex builder's toolchain (deploy/first-node/native-codex/source.json). */
+export const RUST_IMAGE =
+	"rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082";
+/** Node for the folder program's run against the folder service: the same Debian release as RUST_IMAGE, so the
+ * program built there runs here. */
+export const NODE_IMAGE = "node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6";
+const FUSE = "--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined";
 const vitest = (workspace, args = "") => `(cd packages/${workspace} && node ../../node_modules/vitest/dist/cli.js --run${args})`;
 const regex = (path) => new RegExp(`^${path.replaceAll(".", "\\.")}$`);
 
@@ -173,6 +181,16 @@ export const STEPS = [
 		commands: [vitest("runner-orchestrator")],
 	},
 	{
+		name: "folder-program",
+		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image, then the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
+		paths: [/^crates\/qorpera-folder\//, /^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/],
+		// Crates are cached in a named volume between runs; the built program passes between the two containers in
+		// a volume of this run's own, removed at the end.
+		commands: [
+			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && cargo build --locked --release && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
+		],
+	},
+	{
 		name: "functions",
 		why: "Supabase functions (web-client.yml, step2-lxd.yml)",
 		paths: [/^supabase\/functions\//],
@@ -208,6 +226,8 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\/wake-policies\.json$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
+			// The folder service's parsers and tree, checked against the folder core's own answers.
+			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree)\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
 			// So does company creation's worker script (P14b).
@@ -283,7 +303,9 @@ export function planChanged(files) {
 
 /** Top-level areas the rules cover (their files may start only the baseline, like a runtime test). */
 function knownRoot(file) {
-	return /^(packages\/(runtime|cloud-client|object-gateway|runner-orchestrator)\/|scripts\/|deploy\/|supabase\/)/.test(file);
+	return /^(packages\/(runtime|cloud-client|object-gateway|runner-orchestrator)\/|crates\/qorpera-folder\/|scripts\/|deploy\/|supabase\/)/.test(
+		file,
+	);
 }
 
 function sample(files) {
