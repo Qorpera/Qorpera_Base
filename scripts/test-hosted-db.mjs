@@ -58,6 +58,7 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-room-history.mjs",
 	"scripts/test-runtime-production-review.mjs",
 	"scripts/test-runtime-wake-bus.mjs",
+	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
 	"scripts/test-object-gateway-connection-files.mjs",
 	"scripts/test-object-gateway-company-creation.mjs",

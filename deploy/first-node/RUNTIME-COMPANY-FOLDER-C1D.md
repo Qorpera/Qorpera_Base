@@ -226,6 +226,8 @@ the migration checks its digest.
     costs one pass, not one authority check per path. Open checks it on the upload's own present objects only: in one statement with the
     company's catalog, a plan that scanned the catalog first ran it on every object the company stores (the C1e load
     test's second finding: uploads took up to 6.8 s of CPU in about one run in three).
+  - Since P17 (migration 20260930042000) a conflict copy at a path counts as an old version of it in the set-based
+    pass, so whoever may read the path can fetch the copy and commit it again.
 
 It returns `{profileId, bytes}`. The bytes never form a read set: the read receipt comes from `qorpera_folder_read`,
 and releases cover what the model sees. The chunks of a version-1 proof (fixtures, and bytes staged before C1d) have no
@@ -361,11 +363,12 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Path versions keep every committed manifest for good.** Pruning them is the git-object exception and erasure,
   both C2. So a committed file's manifest is always rooted, and so are its chunks.
 - **What can lose every root today:** objects staged under an upload intent that was never committed (abandoned or
-  refused uploads, the losing side of a conflict). Their intent expires, and nothing else names them.
+  refused uploads). Their intent expires, and nothing else names them. The losing side of a conflict is kept as a
+  conflict copy since P17 (§9.3), when its bytes would have passed the commit's check.
 - **Objects with no intent history are kept** (a leak, not a loss): objects a company held before it was enabled, and
   anything a future non-folder writer adds. They get no GC row (§9.4).
-- **Later roots come with C2:** proposals and review cards, conflict copies on receipts, retention holds, erasure. C2
-  adds them to the one root check (§9.3) under the rules of §9.4.
+- **Later roots come with C2:** proposals and review cards, retention holds, erasure. C2 adds them to the one root
+  check (§9.3) under the rules of §9.4. Conflict copies on receipts came first (P17, §9.3).
 - **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:221-234; artifact GC
   at :236-251 retains everything for folder-v2). A folder-v2 company has no artifacts: since `20260930041000` every
   path that makes one refuses folder-v2 (§9.3).
@@ -399,7 +402,10 @@ company may have several: test 761 enables a second). An object is rooted when i
   `(environment_id, manifest_sha256)`);
 - an object of an upload intent still in the table whose `expires_at` is after `now() - grace`. So an expired intent
   the sweep hasn't reached yet still protects its objects for the whole grace window (G4 holds even when the sweep
-  falls behind); or
+  falls behind);
+- the manifest of a conflict copy on a receipt in any of those environments (P17, `20260930042000`:
+  `qorpera_folder_conflict_copies`, indexed by `(environment_id, manifest_sha256)`). A copy ends only when erasure
+  removes it, and that end follows §9.4's rule; or
 - a chunk of a rooted manifest, through `qorpera_folder_file_chunks`, read from the chunk side.
 
 The chunk index must be complete for every proof a folder-v2 company holds. Seal writes it for version 2; version-1
@@ -507,7 +513,7 @@ Two places take no lock, and are safe by roots, not by the mark:
   commits, and its put can land after the quarantine rename. That is harmless: the upload's intent was committed by
   `open` before any put, so it is a root, and the finish answers `restore`.
 - **`authorize_object_download`** answers a marked object as missing. A non-platform download is allowed only for an
-  object an entry or path version roots, and those are never collected.
+  object an entry, path version or conflict copy (P17) roots, and those are never collected.
 
 Since the claim marks under `FOR UPDATE`, a locking reference either holds KEY SHARE first (the claim skips the
 object) or is granted it after the mark is committed (and sees it in its next statement). Once GC has finished, the
