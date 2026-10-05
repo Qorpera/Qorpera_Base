@@ -11,6 +11,12 @@ export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; comp
 	listen: Object.freeze({ due: "qorpera_folder_listen_due", company: "qorpera_folder_listen_company", maximum: 256 }),
 	// F2's worker drain (F2-5b-3): starts dispatched workers and revives their parents.
 	workers: Object.freeze({ due: "qorpera_folder_workers_due", company: "qorpera_folder_workers_company", maximum: 32 }),
+	// A company machine's events, delivered to the runs that started the work (C1c-3i-b).
+	machine_events: Object.freeze({
+		due: "qorpera_folder_machine_events_due",
+		company: "qorpera_folder_machine_events_company",
+		maximum: 64,
+	}),
 	// C1c-3l part 2: wake an agent once the Company Computer it started is up (RUNTIME-COMPANY-FOLDER-C1C.md §6.18).
 	office_wakes: Object.freeze({
 		due: "qorpera_folder_office_wakes_due",

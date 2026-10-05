@@ -1911,6 +1911,86 @@ gives the capture its folder-v2 authority (§6.21). Until then nothing reaches t
     - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
       base64 is refused before anything is kept.
 
+### 6.20 C1c-3i part b as built: machine events reach their runs (migration 20260930058000, test 848)
+
+**Before.** A company machine's events (`qorpera_company_machine_events`: a command that ended, a machine that runs, one
+stopped before it ran) never reached a folder-v2 run:
+- the pin trigger refused a `machine-event` wake (0A000);
+- `qorpera_folder_wake_authorized` answered false for it;
+- `qorpera_folder_run_resolve` refused its run (0A000);
+- the legacy drain skipped folder-v2, and since P28 nothing calls it.
+
+**The source kind on folder-v2.**
+- The three refusals lose the `'machine-event'` token only. Each list is found by its own statement and count-checked.
+  A list left empty (A1's C1c-3l removes `'office-activation'`, in either order) drops its whole statement.
+- `qorpera_folder_wake_authorized` admits the event in a parent's room conversation, as a worker's completion is, and
+  checks its chain with `qorpera_machine_wake_ancestry`.
+- The pin trigger's agent branch already takes the parent's conversation, starter sponsor and ancestry for it, and
+  P28's materializer copies the parent's capability and publication.
+
+**Continuing a parent run** (two helpers, for any drain that continues one):
+- `qorpera_folder_parent_continuation(parent, source_kind)`, with no locks:
+  - `ready`;
+  - `running` (its job is queued or leased: wait);
+  - `pending` (a wake of that kind for it is queued, or materialized with its job missing, queued or leased: one at a
+    time);
+  - `stopped` (job cancelled, or revivals stopped: suppress);
+  - `gone` (no run or job: undeliverable).
+- `qorpera_folder_insert_continuation(parent, source_kind, source_id, payload)`: the agent wake, under the caller's
+  admission. The pin trigger fills the conversation, requester, payer and causal chain.
+
+**The drain** (`machine_events` in the shared folder drains, LISTENER §9):
+- **`qorpera_folder_machine_events_due`** lists the folder-v2 environments, not deleting and not paused, with a waiting
+  event whose parent is ready, stopped or gone. A new partial index on waiting events by environment serves it.
+- **`qorpera_folder_machine_events_company(environment, limit ≤ 64)`:**
+  1. plain reads of the parents (oldest event first), each classified;
+  2. the folder fence `KEY SHARE`, rank 0, and the ready parents' requesters, agents and authorities `KEY SHARE`
+     (ranks 1 to 3, as the listener's wakes);
+  3. `deleting` / `paused` answers;
+  4. each parent's events `FOR UPDATE SKIP LOCKED` (run-owned rows, at most 8, oldest first), in parent-id order,
+     classified again under them;
+  5. the parents' conversations `KEY SHARE` in id order, then admission once;
+  6. one wake per parent, its events in at most 6 KiB (as the legacy drain cut them).
+
+  A queued wake marks its events delivered. A pause at admission leaves them waiting. A stopped parent's events are
+  suppressed, and a gone parent's, or one whose wake is refused (42501, P0002, 55000, check, unique, size), are
+  undeliverable; the answer names the last refusal (`lastError`). 55P03 and 40P01 answer `busy`.
+
+**No cycle.** It takes nothing stronger than `KEY SHARE` before its events, and its events are its own rows:
+- effects never wait for it, and it never waits for them;
+- a stop's second phase, a resume or a deletion's finisher (the fence `FOR UPDATE`) makes it wait at the fence while it
+  holds nothing;
+- two steps of one company skip each other's events.
+
+**Not here: quiet coding check-ins.** On folder-v2 they wait for coding dispatch, which `qorpera_company_state_worker_rules`
+refuses ("coding workers come to the company folder with coding machines") until C3. **Hand-over:** whoever opens
+coding dispatch on folder-v2 adds the check-in drain. A check-in is a `worker-completion` wake (folder-v2 serves that
+kind already) for the worker's steering run, through the two helpers above, with the legacy
+`qorpera_ask_quiet_coding_sessions` rules: quiet sessions, a mark so each question is asked once, skipping a pending
+revival.
+
+**b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
+they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.
+
+**Tests.** 848, on 648's committed fixture:
+- A: no folder-v2 refusal names the kind, and a continuation without admission is refused.
+- B: the drain:
+  - a running parent's events wait;
+  - an ended one's oldest 8 go in one authorized wake into its conversation, under one admission;
+  - one continuation at a time, then the rest;
+  - a long batch is cut to 6 KiB;
+  - cancelled and gone parents;
+  - a paused company is left alone, then served after the resume.
+- C: locks:
+  - beside an effect, no wait;
+  - behind a stop's second phase, it waits at the fence holding no event or member row;
+  - held events are skipped;
+  - a lock timeout answers `busy`.
+- D: grants, bounds and the page.
+- E: markers.
+
+656 §1 no longer pins the pin trigger's snapshot-v1 text (no snapshot-v1 pins since 3 October).
+
 ### 6.21 P06d part 2 as built: screenshots on folder-v2, stored nowhere (migration 20260930057000, test 910)
 
 The SQL half of P06d (design approved by the coordinator on 4 October; the runtime half is §6.19). It lifts 3l part 3's
