@@ -20,6 +20,7 @@ import {
 	type CloudCompanyFolderWorkerPage,
 	type CloudCompanyFolderWorkerRequest,
 	CODING_ARCHIVE_REFUSALS,
+	CODING_QUESTION_STALE,
 	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
@@ -604,7 +605,7 @@ export class CloudFolderWorkers {
 				throw new CloudToolRefusal(
 					error.code === "22023"
 						? "Only a coding session can be archived: cancel an in-house worker instead"
-						: "The session has a new turn since you were asked; leave it",
+						: CODING_QUESTION_STALE,
 				);
 			throw error;
 		}
@@ -623,6 +624,8 @@ export class CloudFolderWorkers {
 		};
 	}
 
+	/** A worker's cancel (F2-5b): a coding session with a new turn since the agent was asked about it (C3c) is SQL's
+	 * refusal, in SQL's words. */
 	async #cancel(
 		request: CloudFolderWorkerChange,
 		folder: string,
@@ -634,6 +637,8 @@ export class CloudFolderWorkers {
 		} catch (error) {
 			if (error instanceof CloudCompanyFolderRpcError && error.code === "P0002")
 				throw new CloudToolRefusal(NO_WORKER);
+			if (error instanceof CloudCompanyFolderRpcError && error.code === "55000" && error.detail === CODING_QUESTION_STALE)
+				throw new CloudToolRefusal(CODING_QUESTION_STALE);
 			throw error;
 		}
 		const { folder: path, ...worker } = cancelled.worker;

@@ -22,6 +22,8 @@
 
 ### Added
 
+- The quiet coding check-ins join the shared folder drains (C3c; migration `20260930099000`; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md` §6.20): `CLOUD_FOLDER_DRAINS` runs `coding_checkins` (company limit 8) after `machine_events`, asking the run that started a folder-v2 coding session, once per mark, whether a session quiet for 1, 3 or 7 days can be archived; the edge function's `FOLDER_DRAINS` maps `coding_checkins` to `qorpera_folder_coding_checkins_due` and `qorpera_folder_coding_checkins_company` (maximum 32). An orchestrator ahead of its edge function gets the 400 and pauses that drain alone.
+
 - F2's human-task wakes join the shared folder drains (H2c = P31; migration `20260930065000`): `CLOUD_FOLDER_DRAINS` runs `human_tasks` (company limit 32) after `listen`, which marks the task changes it wakes for, so a change is woken in the pass that heard it; the edge function's `FOLDER_DRAINS` maps `human_tasks` to `qorpera_folder_human_tasks_due` and `qorpera_folder_human_tasks_company` (maximum 32). An orchestrator ahead of its edge function gets the 400 and pauses that drain alone.
 
 - F2's worker drain joins the shared folder drains (F2-5b-3; migration `20260930003100`): `CLOUD_FOLDER_DRAINS` runs `workers` (company limit 32) before `listen`, so a worker started or a parent revived in a pass is materialized in the same pass, and the edge function's `FOLDER_DRAINS` maps `workers` to `qorpera_folder_workers_due` and `qorpera_folder_workers_company` (maximum 32). An orchestrator ahead of its edge function gets the 400 and pauses that drain alone.

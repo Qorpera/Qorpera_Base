@@ -77,6 +77,8 @@ export async function folderWriterFixture(
 		workers?: Record<string, Record<string, unknown>[]>;
 		/** What `qorpera_folder_archive_coding_worker` raises instead of archiving (C3b). */
 		archiveError?: { code: string; message: string };
+		/** What `qorpera_folder_cancel_agent_worker` raises instead of cancelling (C3c). */
+		cancelError?: { code: string; message: string };
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -232,6 +234,8 @@ export async function folderWriterFixture(
 			if (method === "qorpera_folder_cancel_agent_worker") {
 				const request = args.p_request as { folder: string; operationKey: string };
 				cancels.push(structuredClone(args));
+				if (options.cancelError)
+					throw new CloudCompanyFolderRpcError(options.cancelError.code, options.cancelError.message);
 				const found = Object.values(options.workers ?? {})
 					.flat()
 					.find((worker) => worker.folder === request.folder);

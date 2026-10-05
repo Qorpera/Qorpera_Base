@@ -312,6 +312,19 @@ describe("runner orchestrator boundary", () => {
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 65 }),
 		);
+		// A quiet coding session's check-in (C3c): its own RPCs, at most 32 sessions a step.
+		assert.deepEqual(FOLDER_DRAINS.coding_checkins, {
+			due: "qorpera_folder_coding_checkins_due",
+			company: "qorpera_folder_coding_checkins_company",
+			maximum: 32,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "coding_checkins", environmentId, limit: 32 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "coding_checkins", environmentId, limit: 32 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "coding_checkins", environmentId, limit: 33 }),
+		);
 	});
 
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {

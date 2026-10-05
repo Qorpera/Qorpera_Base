@@ -502,6 +502,28 @@ it("cancels a worker as a run effect under its own receipt", async () => {
 			.change({ action: "cancel", operationKey: "cancel-2", todoKey: "market-scan", workerKey: "other" }, f.context),
 		"You have no worker",
 	);
+	// A coding session with a new turn since the agent was asked about it is left alone, in SQL's words (C3c); the
+	// cancel's other 55000 is no refusal of the model's.
+	const stale = await fixture(
+		{},
+		{ cancelError: { code: "55000", message: "The session has a new turn since you were asked; leave it" } },
+	);
+	await refuses(
+		stale
+			.workers()
+			.change({ action: "cancel", operationKey: "cancel-3", todoKey: "market-scan", workerKey: "prices" }, stale.context),
+		"The session has a new turn since you were asked; leave it",
+	);
+	const reconciling = await fixture({}, { cancelError: { code: "55000", message: "Worker operation needs reconciliation" } });
+	const error = await reconciling
+		.workers()
+		.change({ action: "cancel", operationKey: "cancel-4", todoKey: "market-scan", workerKey: "prices" }, reconciling.context)
+		.then(
+			() => null,
+			(thrown: unknown) => thrown,
+		);
+	expect(error).toBeInstanceOf(Error);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
 });
 
 it("archives a coding session as a run effect under its own receipt, and relays its refusals (C3b)", async () => {

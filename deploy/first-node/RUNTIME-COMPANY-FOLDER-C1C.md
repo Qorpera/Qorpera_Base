@@ -1462,7 +1462,7 @@ environment per call, up to 8. It enters their coding workers once, together (`q
 worker's targets merged, so each rank is taken once in its tables' key order, and no rank is taken again after a later
 one, review r2), then archives each session in id order. The legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake
 inserter with no fence that locks other companies' coding rows NOWAIT) run only when the archive entered no company, and
-skip `folder-v2` sessions until 3i-b asks them per company.
+skip `folder-v2` sessions, which C3c's drain asks per company (§6.20).
 
 **The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
 archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
@@ -1861,7 +1861,9 @@ stopped before it ran) never reached a folder-v2 run:
   - `running` (its job is queued or leased: wait);
   - `pending` (a wake of that kind for it is queued, or materialized with its job missing, queued or leased: one at a
     time);
-  - `stopped` (job cancelled, or revivals stopped: suppress);
+  - `stopped` (job cancelled, or revivals stopped: suppress; since C3c a `worker-completion` asks
+    `qorpera_worker_revival_stopped`, which skips the quiet questions, and every other kind
+    `qorpera_machine_revival_stopped`);
   - `gone` (no run or job: undeliverable).
 - `qorpera_folder_insert_continuation(parent, source_kind, source_id, payload)`: the agent wake, under the caller's
   admission. The pin trigger fills the conversation, requester, payer and causal chain.
@@ -1889,12 +1891,28 @@ stopped before it ran) never reached a folder-v2 run:
   holds nothing;
 - two steps of one company skip each other's events.
 
-**Not here: quiet coding check-ins.** On folder-v2 they wait for coding dispatch, which `qorpera_company_state_worker_rules`
-refuses ("coding workers come to the company folder with coding machines") until C3. **Hand-over:** whoever opens
-coding dispatch on folder-v2 adds the check-in drain. A check-in is a `worker-completion` wake (folder-v2 serves that
-kind already) for the worker's steering run, through the two helpers above, with the legacy
-`qorpera_ask_quiet_coding_sessions` rules: quiet sessions, a mark so each question is asked once, skipping a pending
-revival.
+**Quiet coding check-ins** (C3c, migration 20260930099000, test 934; STATE-FILES §8 "Plan (C3)"): the drain
+`coding_checkins`, built once C3a opened coding dispatch on folder-v2. A check-in is a `worker-completion` wake for the
+worker's steering run, classified by `qorpera_folder_parent_continuation`. It is inserted directly rather than through
+`qorpera_folder_insert_continuation`, because it keeps the legacy key, which a new turn and a stopped question read.
+- **`qorpera_folder_coding_checkins_due`** lists the folder-v2 environments, not deleting, not paused and not out of
+  computer hours, with a due session of a worker neither erased nor retired whose parent is ready, stopped or gone.
+- **`qorpera_folder_coding_checkins_company(environment, limit ≤ 32)`:**
+  1. plain reads of the due sessions, longest quiet first, each parent classified;
+  2. the folder fence `KEY SHARE`, rank 0, each session's coding worker rows (`qorpera_coding_worker_targets`, none
+     required) and the ready parents' requesters, agents and authorities `KEY SHARE` (ranks 1 to 5);
+  3. `deleting` / `paused` / `at_zero` answers;
+  4. the ready parents' conversations `KEY SHARE` in id order (rank 10), then the sessions `FOR NO KEY UPDATE` in
+     worker order, each read again under them;
+  5. admission, last, only when a question is to be asked; one question per parent, its parent classified again.
+
+  An erased or retired worker, or a stopped parent, has its mark counted as asked (`suppressed`); a gone parent's, or a
+  refused wake's (42501, P0002, 55000, check, unique, size), is `undeliverable`, and the answer names the last refusal
+  (`lastError`). 55P03 and 40P01 answer `busy`.
+
+**No cycle, for the check-ins.** The step takes a coding worker's rows as every writer of a coding worker does
+(`qorpera_coding_worker_targets`, in rank order under the fence), the session rows after rank 10 as core §3 puts them,
+and admission last.
 
 **b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
 they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.
