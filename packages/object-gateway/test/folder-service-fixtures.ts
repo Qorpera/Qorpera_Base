@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
 	type CommitAnswer,
 	type CommitOutcome,
+	type ConflictCopy,
 	type CoreEntry,
 	type CoreReceipt,
 	CoreRefusal,
@@ -121,6 +122,8 @@ export class FakeCore implements FolderCore {
 	feedPage = 0;
 	feedCalls = 0;
 	failFeedAt: number | undefined;
+	/** The next feed calls that fail. */
+	feedFailures = 0;
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -187,6 +190,10 @@ export class FakeCore implements FolderCore {
 		if (this.deny) throw new CoreRefusal("denied");
 		this.feedCalls++;
 		if (this.failFeedAt === this.feedCalls) throw new Error("The core did not answer this page");
+		if (this.feedFailures > 0) {
+			this.feedFailures--;
+			throw new Error("The core did not answer this page");
+		}
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>
@@ -228,6 +235,15 @@ export class FakeCore implements FolderCore {
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
+	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
+	 * would have passed); the copies kept, by commit. */
+	copyConflicts = true;
+	readonly copies = new Map<string, ConflictCopy[]>();
+	/** Intents the core let lapse (their renewal is refused), the next renewals that do not get through, and every
+	 * renewal asked. */
+	readonly lapsed = new Set<string>();
+	renewFailures = 0;
+	readonly renewals: string[] = [];
 	/** The next commits get no answer: `lost` applies them first (the reply was lost), `down` does not. */
 	commitFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
 
@@ -271,7 +287,14 @@ export class FakeCore implements FolderCore {
 		};
 	}
 
-	async renewUpload() {
+	async renewUpload(environmentId: string, actor: FolderActor, intentId: string) {
+		this.#check(actor, environmentId);
+		this.renewals.push(intentId);
+		if (this.renewFailures > 0) {
+			this.renewFailures--;
+			throw new Error("The database did not answer");
+		}
+		if (this.lapsed.has(intentId) || !this.intents.has(intentId)) throw new CoreRefusal("denied");
 		return new Date(this.now() + 15 * 60_000).toISOString();
 	}
 
@@ -290,6 +313,8 @@ export class FakeCore implements FolderCore {
 			this.commitFailures.count--;
 			throw new Error("The database did not answer");
 		}
+		const commitId = v(this.#nextVersion++);
+		const kept: ConflictCopy[] = [];
 		const changes: FeedChange[] = [];
 		const now = "2026-10-05T12:00:00.000Z";
 		const parentOk = (path: string) => {
@@ -307,11 +332,23 @@ export class FakeCore implements FolderCore {
 			});
 			const path = u.op === "move" ? u.to : u.path;
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
+			const conflict = (reason: string): CommitOutcome => {
+				const files =
+					u.op === "write"
+						? [{ path: u.path, file: u.file }]
+						: u.op === "new_folder"
+							? u.contents.flatMap((c) => (c.file ? [{ path: `${u.path}/${c.path}`, file: c.file }] : []))
+							: [];
+				if (this.copyConflicts)
+					for (const [i, { path, file }] of files.entries())
+						kept.push({ unit, file: i + 1, path, manifestSha256: file.manifestSha256 });
+				return no("conflict", reason);
+			};
 			switch (u.op) {
 				case "write": {
 					const e = this.entries.get(u.path);
 					if (u.expectedVersion !== undefined ? e?.kind !== "file" || e.version !== u.expectedVersion : e)
-						return no("conflict", u.expectedVersion !== undefined ? "version_changed" : "exists");
+						return conflict(u.expectedVersion !== undefined ? "version_changed" : "exists");
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
 					const entry: CoreEntry = {
 						path: u.path,
@@ -326,7 +363,8 @@ export class FakeCore implements FolderCore {
 				}
 				case "mkdir":
 				case "new_folder": {
-					if (this.entries.has(u.path)) return no("conflict", "exists");
+					if (this.entries.has(u.path))
+						return u.op === "new_folder" ? conflict("exists") : no("conflict", "exists");
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
 					const entry: CoreEntry = {
 						path: u.path,
@@ -397,13 +435,20 @@ export class FakeCore implements FolderCore {
 			seq = ++this.seq;
 			this.journal.push({ seq, kind: "change_set", changes });
 		}
-		const answer: CommitAnswer = { commitId: v(this.#nextVersion++), seq, units: outcomes };
+		// As the real core answers: no unit carries the version it made (the feed has them).
+		const answer: CommitAnswer = { commitId, seq, units: outcomes.map((o) => ({ ...o, version: null })) };
+		this.copies.set(commitId, kept);
 		this.#answers.set(key, { request, answer });
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "lost") {
 			this.commitFailures.count--;
 			throw new Error("The answer was lost");
 		}
 		return answer;
+	}
+
+	async conflictCopies(environmentId: string, commitId: string): Promise<readonly ConflictCopy[]> {
+		if (environmentId !== ENV) throw new CoreRefusal("invalid");
+		return this.copies.get(commitId) ?? [];
 	}
 
 	async renewView(viewId: string, pass: string): Promise<ViewRenewal> {
@@ -478,14 +523,14 @@ export class FakeUploads implements FolderUploads {
 	}
 }
 
-/** A writable operator mount of the member, optionally publishing after a quiet period. */
-export function writableGrants(quietMs?: number): MountGrants {
+/** A writable operator mount of the member (or the platform), optionally publishing after a quiet period. */
+export function writableGrants(quietMs?: number, platform = false): MountGrants {
 	return new MountGrants(
 		parseOperatorMounts([
 			{
 				id: "proof",
 				environmentId: ENV,
-				actor: { kind: "member", userId: MEMBER },
+				actor: platform ? { kind: "platform" } : { kind: "member", userId: MEMBER },
 				machine: MACHINE,
 				passSha256: hashOf(PASS),
 				write: true,

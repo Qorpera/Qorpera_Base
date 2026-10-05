@@ -140,7 +140,9 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			}
 			role = hello.role;
 			writes = hello.protocol >= 2 && handle.writable && role === "io";
-			// A chunk's parts are up to 1 MiB: a writing connection takes frames up to the protocol's limit.
+			// A chunk's parts are up to 1 MiB: a writing connection takes frames up to the protocol's limit. `readOnly`
+			// says whether the view takes writes, on either role: the folder program learns it from its feed's hello and
+			// mounts read-write, and its writes then go on `io` connections only.
 			reader.limit = writes ? MAX_PAYLOAD : REQUEST_MAX_PAYLOAD;
 			send(
 				encodeJson(Kind.helloOk, {
