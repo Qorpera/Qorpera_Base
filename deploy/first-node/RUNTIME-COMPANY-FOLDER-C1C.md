@@ -1891,7 +1891,7 @@ stopped before it ran) never reached a folder-v2 run:
   holds nothing;
 - two steps of one company skip each other's events.
 
-**Quiet coding check-ins** (C3c, migration 20260930099000, test 934; STATE-FILES §8 "Plan (C3)"): the drain
+**Quiet coding check-ins** (C3c, migration 20260930099000, tests 934 and 936; STATE-FILES §8 "Plan (C3)"): the drain
 `coding_checkins`, built once C3a opened coding dispatch on folder-v2. A check-in is a `worker-completion` wake for the
 worker's steering run, classified by `qorpera_folder_parent_continuation`. It is inserted directly rather than through
 `qorpera_folder_insert_continuation`, because it keeps the legacy key, which a new turn and a stopped question read.
@@ -1913,6 +1913,15 @@ worker's steering run, classified by `qorpera_folder_parent_continuation`. It is
 **No cycle, for the check-ins.** The step takes a coding worker's rows as every writer of a coding worker does
 (`qorpera_coding_worker_targets`, in rank order under the fence), the session rows after rank 10 as core §3 puts them,
 and admission last.
+
+**Tests of the check-ins.** 934 covers the parents, the marks, the question, the refusals and the answers. 936 (dblink, on
+648's committed fixture) covers the step against other connections:
+- A: locks:
+  - beside an effect, no wait;
+  - behind a stop's second phase, it waits at the fence holding no session, worker, todo or member row.
+- B: one continuation of a parent across transactions. The step and F2's worker drain (either first), and two steps
+  holding different sessions of one parent, meet at admission and leave one queued `worker-completion` wake.
+- C: a lock timeout answers `busy` and marks nothing.
 
 **b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
 they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.

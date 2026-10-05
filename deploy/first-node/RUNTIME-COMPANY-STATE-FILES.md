@@ -2399,7 +2399,7 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     lock, as every coding-session writer takes it (3i-a's claim, begin and complete, the cancel, the drain).
 - **C3b (the runtime):** `cloud-folder-workers.ts` dispatches and follows up coding sessions (the brief's coding
   fields, the request's), and the dispatch's answer names the session's phase.
-- **C3c (migration 20260930099000, SQL test 934; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
+- **C3c (migration 20260930099000, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
   349850's quiet check-ins on folder-v2. After 1, 3 and 7 quiet days, the agent that started a coding session is asked
   once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) still skips folder-v2
   (026000) and stays for the executor's scan.
