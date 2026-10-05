@@ -112,8 +112,11 @@ end $$;
 
 -- Removes 'office-activation' from the one source list that p_head opens and ')' || p_tail closes, keeping every other
 -- token and its spacing, with a marker line before the statement. A list left empty drops its whole statement, which
--- p_statement says p_head and p_tail are; the marker then takes its place on its line. p_tail stops at the statement's
--- own end, so a note after it on the same line (S3's 3i-b adds one there) stays.
+-- p_statement says p_head and p_tail are; the marker then takes its place on its line. A list left empty in a clause
+-- of a larger condition (p_statement false) drops that clause only: the marker takes its line and the statement's end
+-- (p_tail) follows on the next, so this applies in any order with the other sources' edits of the same list (S3's
+-- 'machine-event', Q1's 'event'). p_tail stops at the statement's own end, so a note after it on the same line (S3's
+-- 3i-b adds one there) stays.
 create function pg_temp.c1c3l2_drop_source(p_target regprocedure, p_indent text, p_head text, p_tail text,
 	p_statement boolean) returns void
 language plpgsql as $$
@@ -134,10 +137,10 @@ begin
 			v_kept := replace(v_list, v_token, ''); exit; end if;
 	end loop;
 	if v_kept is null then raise exception 'C1c-3l part 2: office-activation is not once in the list of %', p_target; end if;
-	if btrim(v_kept) = '' and not p_statement then
-		raise exception 'C1c-3l part 2: the list of % would be empty', p_target; end if;
 	execute replace(v_definition, p_head || v_list || ')' || p_tail,
-		case when btrim(v_kept) = '' then rtrim(v_marker, E'\n') else v_marker || p_head || v_kept || ')' || p_tail end);
+		case when btrim(v_kept) <> '' then v_marker || p_head || v_kept || ')' || p_tail
+			when p_statement then rtrim(v_marker, E'\n')
+			else v_marker || p_indent || ltrim(p_tail) end);
 end $$;
 
 do $$
