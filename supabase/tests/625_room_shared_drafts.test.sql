@@ -19,12 +19,16 @@ create function pg_temp.as_user(p_user text) returns void language sql as $$
 		'email', (select email from auth.users where id = p_user::uuid), 'user_metadata', '{}'::jsonb)::text, false)
 $$;
 
-select pg_temp.as_user('96250000-0000-4000-8000-00000000000a');
-set role authenticated;
-select set_config('qorpera_test.draft_company',
-	public.qorpera_create_hosted_profile('Draft QA', 'main', 1)::text, false);
-reset role;
-select set_config('request.jwt.claims', '', false);
+-- A's company is a folder-v2 company, opened the way the company creation opens one (856).
+select set_config('qorpera_test.draft_company', public.qorpera_folder_company_open('96250000-0000-4000-8000-00000000000a',
+	'96250000-0000-4000-8000-0000000000e9', 'Draft QA')::text, false);
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2((current_setting('qorpera_test.draft_company')::jsonb ->> 'profile_id')::uuid) then
+		raise exception 'the draft company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
 select (current_setting('qorpera_test.draft_company')::jsonb ->> 'profile_id')::uuid, member.user_id, member.email, member.name, member.role::public.qorpera_profile_role
@@ -42,14 +46,17 @@ select '96250000-0000-4000-8000-000000000050',
 	'Launch', '96250000-0000-4000-8000-00000000000a', 'company',
 	jsonb_build_object('roomId', '96250000-0000-4000-8000-000000000060');
 
+-- The room is a folder-v2 group chat, as the folder index writes one for agents/groups/launch/group.md (its path,
+-- that path's version and the commit that wrote it; no snapshot source).
 insert into public.qorpera_company_rooms (id, profile_id, environment_id, room_key, name, purpose, status, session_id,
-	version, source_path, source_path_version, source_snapshot_id, source_file_sha256, created_by_user_id)
+	version, source_path, created_by_user_id, folder_environment_id, folder_path, folder_path_version, folder_commit_id)
 select '96250000-0000-4000-8000-000000000060',
 	(current_setting('qorpera_test.draft_company')::jsonb ->> 'profile_id')::uuid,
 	(current_setting('qorpera_test.draft_company')::jsonb ->> 'environment_id')::uuid,
-	'launch', 'Launch', 'Launch planning', 'active', '96250000-0000-4000-8000-000000000050', 1,
-	'organization/rooms/launch.json', '96250000-0000-4000-8000-000000000061', '96250000-0000-4000-8000-000000000062',
-	repeat('d', 64), '96250000-0000-4000-8000-00000000000a';
+	'chat-96250000-0000-4000-8000-000000000060', 'Launch', 'Launch planning', 'active', '96250000-0000-4000-8000-000000000050', 1,
+	'organization/rooms/96250000-0000-4000-8000-000000000060.json', '96250000-0000-4000-8000-00000000000a',
+	(current_setting('qorpera_test.draft_company')::jsonb ->> 'environment_id')::uuid, 'agents/groups/launch/group.md',
+	'96250000-0000-4000-8000-000000000061', '96250000-0000-4000-8000-000000000062';
 
 insert into public.qorpera_company_room_members (room_id, principal_kind, principal_id, status, source_path_version)
 select '96250000-0000-4000-8000-000000000060', 'member', member, 'active', '96250000-0000-4000-8000-000000000061'
