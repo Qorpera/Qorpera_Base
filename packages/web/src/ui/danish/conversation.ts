@@ -92,6 +92,14 @@ export const CONVERSATION: Record<string, string> = {
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
+	// A routine moved off the member's login by someone else (views/execution-notices.ts)
+	"{agent}'s routine no longer runs on your login. {member} moved it to their login.":
+		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til sit eget login.",
+	"{agent}'s routine no longer runs on your login. {member} moved it to the company's account.":
+		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til virksomhedens konto.",
+	"{agent}'s routine no longer runs on your login. {member} moved it to {payer}'s login.":
+		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til {payer}s login.",
+	"another member": "et andet medlem",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)
 	"The agent": "Agenten",

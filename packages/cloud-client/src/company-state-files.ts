@@ -13,7 +13,15 @@
 
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
-import type { InterfaceProblemCode } from "./interfaces.ts";
+import { interfaceLibraryFiles } from "./interface-library.ts";
+import {
+	type InterfaceFile,
+	type InterfaceOrderFile,
+	type InterfaceProblemCode,
+	parseInterfaceStateFile,
+	type TableFile,
+	type TableRowsFile,
+} from "./interfaces.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
@@ -28,7 +36,12 @@ export type CompanyStateFileKind =
 	| "connection"
 	| "rule"
 	| "human-task"
-	| "contact";
+	| "contact"
+	/** Interfaces and tables (./interfaces.ts, RUNTIME-INTERFACES.md §6.1), dispatched to their own parser. */
+	| "interface"
+	| "interface-order"
+	| "table"
+	| "table-rows";
 
 /** One reason a file cannot be saved. Lines count from 1 over the whole file. */
 export interface CompanyStateProblem {
@@ -345,7 +358,11 @@ export type CompanyStateFile =
 	| WorkerBriefFile
 	| WorkerResultsFile
 	| HumanTaskFile
-	| ContactFile;
+	| ContactFile
+	| InterfaceFile
+	| InterfaceOrderFile
+	| TableFile
+	| TableRowsFile;
 
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
@@ -354,7 +371,8 @@ export interface CompanyStatePath {
 	readonly agent: string | null;
 	/** The group's folder name, for `group.md`. */
 	readonly group: string | null;
-	/** The file's own name without `.md`: routine, todo, rule, connection, human-task and contact files. */
+	/** The file's own name without `.md`: routine, todo, rule, connection, human-task and contact files. An
+	 * interface's or a table's folder name for their files. */
 	readonly name: string | null;
 	/** The todo and worker folder names, for a worker's brief and results. */
 	readonly todo: string | null;
@@ -381,6 +399,12 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	if (parts.length === 2 && a === "human-tasks" && stem(b) !== null)
 		return { kind: "human-task", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "contacts" && stem(b) !== null) return { kind: "contact", ...none, name: stem(b) };
+	// Interfaces and tables, by the path's shape alone (P16): a badly named folder's file is still checked, and refused.
+	if (parts.length === 2 && a === "interfaces" && b === "order.md") return { kind: "interface-order", ...none };
+	if (parts.length === 3 && a === "interfaces" && b && c === "interface.toml")
+		return { kind: "interface", ...none, name: b };
+	if (parts.length === 3 && a === "tables" && b && c === "table.toml") return { kind: "table", ...none, name: b };
+	if (parts.length === 3 && a === "tables" && b && c === "rows.csv") return { kind: "table-rows", ...none, name: b };
 	if (a !== "agents" || b === undefined || b === "sections.md") return null;
 	if (b === "groups")
 		return parts.length === 4 && d === "group.md" ? { kind: "group", ...none, group: c ?? null } : null;
@@ -1794,6 +1818,11 @@ function structuredFolderNames(parts: readonly string[]): [number, string][] | n
 	const [a, b, c, d, e] = parts;
 	// The two top folders have no name of their own; they are places so a wrong spelling cannot be made.
 	if (a === "contacts") return parts.length === 1 ? [] : null;
+	// Interfaces and tables (P16): the roots, and one named folder per interface or table.
+	if (a === "interfaces" || a === "tables") {
+		if (parts.length === 1) return [];
+		return parts.length === 2 ? [[1, a === "interfaces" ? "an interface's folder" : "a table's folder"]] : null;
+	}
 	if (a === "human-tasks") {
 		if (parts.length === 1) return [];
 		if (parts.length === 2 || (parts.length === 3 && c === "proof")) return [[1, "a human task's folder"]];
@@ -1838,6 +1867,8 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		if (!where) return [];
 		if (where.kind === "group") named.push([written[2], "a group chat's folder"]);
 		else if (where.agent !== null) named.push([written[1], "an agent's folder"]);
+		else if (where.kind === "interface") named.push([written[1], "an interface's folder"]);
+		else if (where.kind === "table" || where.kind === "table-rows") named.push([written[1], "a table's folder"]);
 		if (where.kind === "routine" || where.kind === "todo") named.push([written[3]?.slice(0, -3), "the file"]);
 		if (
 			where.kind === "rule" ||
@@ -1863,12 +1894,16 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 						"the todo's folder": "todo",
 						"the worker's folder": "worker",
 						"a human task's folder": "task",
+						"an interface's folder": "page",
+						"a table's folder": "table",
 					}[what] ??
 						"file")
 				}`,
 			);
 	const kind = folder ? null : companyStatePath(path)?.kind;
-	if (kind && kind !== "vision" && kind !== "sections" && !written.at(-1)?.endsWith(".md"))
+	// Interface and table files are named by their kind (interface.toml, table.toml, rows.csv, order.md).
+	const fixedName = kind === "interface" || kind === "interface-order" || kind === "table" || kind === "table-rows";
+	if (kind && kind !== "vision" && kind !== "sections" && !fixedName && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
 	else if (!problems.list.length && path !== companyPathKey(path))
 		problems.add("name", null, null, `write the path in lowercase, as ${shown(companyPathKey(path))}`);
@@ -1885,6 +1920,14 @@ export const COMPANY_STATE_MAX_PROBLEMS = 50;
 export function parseCompanyStateFile(path: string, text: string): CompanyStateFileResult | null {
 	const where = companyStatePath(path);
 	if (!where) return null;
+	// Interfaces and tables have their own parser and fixtures (./interfaces.ts, RUNTIME-INTERFACES.md §6.1).
+	if (
+		where.kind === "interface" ||
+		where.kind === "interface-order" ||
+		where.kind === "table" ||
+		where.kind === "table-rows"
+	)
+		return parseInterfaceStateFile(path, text);
 	const problems = new Problems();
 	const refused = () => {
 		const more = problems.list.length - COMPANY_STATE_MAX_PROBLEMS;
@@ -2398,6 +2441,13 @@ export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
 	"contacts",
 	"skills",
 	"rules",
+	// Interfaces and tables (P16, RUNTIME-INTERFACES.md §6.1 rule 2).
+	"interfaces",
+	"interfaces/order.md",
+	"tables",
+	"tables/areas",
+	"tables/areas/table.toml",
+	"tables/areas/rows.csv",
 ] as const);
 
 /** The Co-Founder's instructions when a company is created: a thin job, not the platform's brain
@@ -2435,6 +2485,9 @@ export interface CompanyStateSeedOptions {
 	readonly founders?: readonly CompanyStateSeedFounder[];
 	/** The Co-Founder's first task (decision 2): a todo file in its own folder. */
 	readonly firstTodo?: { readonly id: string; readonly requestedBy: string | null };
+	/** The ids of the library's interfaces and tables (`interfaceLibraryFiles`), random unless given. A creation commits
+	 * whole, so each attempt may draw new ones. */
+	readonly newId?: () => string;
 }
 
 /** The Co-Founder's first todo when the founding table starts the company. */
@@ -2530,7 +2583,28 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 		{ path: "skills/human-task", kind: "folder" },
 		{ path: COMPANY_STATE_HUMAN_TASK_SKILL_PATH, kind: "file", text: COMPANY_STATE_HUMAN_TASK_SKILL },
 		{ path: "rules", kind: "folder" },
+		...seedLibrary(options.newId ?? (() => globalThis.crypto.randomUUID())),
 	];
+}
+
+/** interfaces/ and tables/ with the library's pages and tables (RUNTIME-INTERFACES.md §8), parents before children. */
+function seedLibrary(newId: () => string): CompanyStateSeedEntry[] {
+	const files = interfaceLibraryFiles(newId);
+	const entries: CompanyStateSeedEntry[] = [];
+	const folders = new Set<string>();
+	for (const root of ["interfaces", "tables"]) {
+		entries.push({ path: root, kind: "folder" });
+		folders.add(root);
+		for (const path of Object.keys(files).filter((file) => file.startsWith(`${root}/`))) {
+			const folder = path.slice(0, path.lastIndexOf("/"));
+			if (!folders.has(folder)) {
+				folders.add(folder);
+				entries.push({ path: folder, kind: "folder" });
+			}
+			entries.push({ path, kind: "file", text: files[path] });
+		}
+	}
+	return entries;
 }
 
 // ---------------------------------------------------------------------------------------------

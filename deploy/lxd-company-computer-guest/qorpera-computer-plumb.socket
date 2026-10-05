@@ -1,0 +1,15 @@
+# The office account's private door to qorpera-computer-plumb. The socket is
+# not mounted into any shell, desktop or browser namespace.
+[Unit]
+Description=Qorpera computers' network plumbing (office account only)
+Requires=qorpera-computer-network.service
+After=qorpera-computer-network.service
+
+[Socket]
+ListenStream=/run/qorpera-computer-network/plumb.sock
+SocketUser=qorpera-office
+SocketGroup=qorpera-office
+SocketMode=0600
+DirectoryMode=0755
+Accept=yes
+MaxConnections=16

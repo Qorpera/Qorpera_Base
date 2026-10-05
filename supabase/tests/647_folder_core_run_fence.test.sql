@@ -152,7 +152,8 @@ begin
 		('qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)', 'actor', '3b5736c1cf409a623f10007429aa2f68'),
 		('qorpera_read_company_run_context(jsonb,text,uuid,text,integer,integer)', 'actor', '65725e9941e3dae609539d722faed13f'),
 		('qorpera_native_presence_register(jsonb,uuid,text)', 'actor', '32f9f1dd6f8106351cf53ab012e8b34a'),
-		('qorpera_describe_agent_open_work(jsonb)', 'actor', 'b70d3ac1bbcfe97baf7c9a7baf8f79e3'),
+		-- qorpera_describe_agent_open_work is not pinned: the one idle rule (20260930029000) adds the told list on both
+		-- cores (the founder's decision of 3 October: no old-text pins for folder-v2 work).
 		('qorpera_native_company_object_actor(jsonb,uuid)', 'actor', '57a44af9c107b7c0a3da5bfc6d3eafa7'),
 		('qorpera_company_presence_scope(uuid,jsonb,text[])', 'actor', 'a9398c12528abddb25f91544455da044'),
 		('qorpera_native_presence_subject(uuid,uuid,text[])', 'actor', '0f6897f705023a6b7d6e467aa5346a53'),
