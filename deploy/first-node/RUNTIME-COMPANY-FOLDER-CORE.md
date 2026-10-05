@@ -338,7 +338,12 @@ is never upgraded. The steps:
    6. resources, in ancestors-first order of their paths;
    7. grants;
    8. vault rows;
-   9. unique-key claims, by kind then key.
+   9. unique-key claims, by kind then key. Besides the commit's own claims (below), a per-company transaction advisory
+      lock is a unique-key claim at this rank, after the folder entry (the fence and rank 0) and before any row it then
+      touches: E1's `qorpera.event-hooks:<company>` for hooks and mailboxes, and A1-7's `qorpera.company-accounts:<company>`
+      for opening an account (`pg_advisory_xact_lock(hashtextextended('qorpera.company-accounts:' || <company>, 0))`,
+      migration 20260930072000, C1C §6.23), under which the opening reads its duplicate login and vault name; its receipt
+      and inserts follow.
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
    every session the transaction will write, `FOR UPDATE` in id order: the conversations, then the coding sessions
