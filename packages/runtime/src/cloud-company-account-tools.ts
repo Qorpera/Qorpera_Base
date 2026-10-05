@@ -248,7 +248,7 @@ export const CLOUD_COMPANY_ACCOUNT_TOOL_DESCRIPTION =
 	"state records the website's answer: connected once it accepted the account, needs_person when a step needs a person; closed deletes the company's password and authenticator for good, so close only an account the company no longer needs. " +
 	"The vault's answer, the account or why it refused, is the call's result. An open or a state change with the same operationKey and arguments is the same call; a different one needs a new operationKey.";
 
-/** The tool, for a company run (not a worker, not a folder company: their accounts come with A1-7). */
+/** The tool, for a run of a company on the company folder (not a worker): A1-7. */
 export function cloudCompanyAccountTool(options: {
 	binding: CloudNativeToolBinding;
 	identity: CloudNativeToolIdentity;

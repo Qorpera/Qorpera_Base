@@ -4,9 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-/** Packages the node's folder service (deploy/folder-service): the service bundle, the folder program built by
- * scripts/build-folder-program.mjs (the bridge on the node, the mount in a machine), the units, the two installers
- * and a manifest of every file's sha256. */
+/** Packages the node host's folder service (deploy/folder-service): the service bundle, the folder program built by
+ * scripts/build-folder-program.mjs (here, the vsock bridge), the units, the installer and a manifest of every file's
+ * sha256. The execution host gets the folder program and its mount unit from the shared-execution package. */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE = "Usage: node scripts/package-folder-service.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
@@ -38,13 +38,11 @@ const deployed = [
 	"qorpera-folder-service.socket",
 	"qorpera-folder-service.service",
 	"qorpera-folder-bridge.service",
-	"qorpera-folder-mount@.service",
 	"install-folder-service.sh",
-	"install-folder-mount-guest.sh",
 	"README.md",
 ];
 for (const file of deployed) await copyFile(join(root, "deploy/folder-service", file), join(output, file));
-for (const file of ["install-folder-service.sh", "install-folder-mount-guest.sh"]) await chmod(join(output, file), 0o755);
+await chmod(join(output, "install-folder-service.sh"), 0o755);
 const artifacts = [];
 for (const file of ["qorpera-folder-service.cjs", "qorpera-folder", ...deployed]) {
 	const bytes = await readFile(join(output, file));

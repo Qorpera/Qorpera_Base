@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { TreeEntry } from "./view-tree.ts";
@@ -22,6 +22,14 @@ export class ObjectUnavailableError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "ObjectUnavailableError";
+	}
+}
+
+/** The object is not on the storage server at all: asking again will not find it. */
+export class ObjectMissingError extends ObjectUnavailableError {
+	constructor(message: string) {
+		super(message);
+		this.name = "ObjectMissingError";
 	}
 }
 
@@ -212,9 +220,15 @@ export class NasObjects {
 			handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			throw code === "ELOOP"
-				? new ObjectIntegrityError("Object is a link")
-				: new ObjectUnavailableError(`Object could not be opened (${code ?? "unknown"})`);
+			if (code === "ELOOP") throw new ObjectIntegrityError("Object is a link");
+			if (code === "ENOENT") {
+				// Missing only when the company's objects are there: with no profile folder at all (a share that is not
+				// mounted shows an empty mountpoint) nothing can be read now, and the page fails rather than look empty.
+				if (!(await this.#profileThere(profileId)))
+					throw new ObjectUnavailableError("The company's objects are not on the storage server now");
+				throw new ObjectMissingError("Object is not on the storage server");
+			}
+			throw new ObjectUnavailableError(`Object could not be opened (${code ?? "unknown"})`);
 		}
 		try {
 			const info = await handle.stat();
@@ -234,6 +248,14 @@ export class NasObjects {
 			return bytes;
 		} finally {
 			await handle.close();
+		}
+	}
+
+	async #profileThere(profileId: string): Promise<boolean> {
+		try {
+			return (await stat(resolve(this.#root, profileId))).isDirectory();
+		} catch {
+			return false;
 		}
 	}
 

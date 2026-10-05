@@ -6,6 +6,8 @@ The company folder inside a Qorpera machine, and the node side of its link.
   the folder service of the node the machine runs on. Memory and the kernel's page cache only.
 - `qorpera-folder bridge`: on a node host, takes machines' vsock connections and hands them to the folder service's
   Unix socket, naming each machine's CID.
+- `qorpera-folder relay`: on the execution host, carries a native host's connection (a Node program, without vsock)
+  from its slot's socket to the node's bridge, byte for byte (the node's folder search).
 
 Design, protocol and rollout: `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`. The node side of the protocol is
 `packages/object-gateway/src/folder-service/`.
