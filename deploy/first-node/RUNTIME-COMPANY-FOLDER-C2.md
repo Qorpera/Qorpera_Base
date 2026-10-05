@@ -357,7 +357,8 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   the agent hears that nothing was applied. A receipt that stayed executing would fence the run's later operations.
   A discard that commits while the apply waits for the proposal's lock instead leaves a commit under the receipt that
   saved nothing (every unit `denied`, `review_required`, and no proposal): a retry of the same call replays that
-  commit, the receipt completes with it, and the agent hears the same "nothing was applied".
+  commit, the receipt completes with it, and the agent hears the same "nothing was applied". The not-open path locks
+  the receipt before it looks for that commit, so a retry that overlaps the apply waits for it there.
 - A deny (the reviewer's, or a member's on the card) calls the tool's new `denied` hook with the denial's id, and the
   hook closes the proposal as declined (`qorpera_folder_close_proposal` with `actionReviewId`). The boundary passes
   the id on each denying path; if the hook cannot close it, the denial stands as it was.

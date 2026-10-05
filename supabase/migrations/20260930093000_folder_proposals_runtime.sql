@@ -76,7 +76,8 @@ drop function pg_temp.p40b_replace(regprocedure, text, text);
 -- receipt, the run's own for this proposal's apply, is then still executing with no commit, and nothing will apply under
 -- it: it is cancelled here under its lock (the commit's, FOR NO KEY UPDATE, rank C1C §5.7, taken alone), and the
 -- answer says what the proposal is. A retry with the same receipt answers the same. A discard that lands while the apply
--- waits for the proposal leaves a commit of this key that applied nothing and carries the receipt: a retry replays it.
+-- waits for the proposal leaves a commit of this key that applied nothing and carries the receipt: a retry replays it,
+-- and one that overlaps that apply waits for it at the receipt, which the apply holds to its end.
 create or replace function public.qorpera_folder_apply_proposal(p_environment_id uuid, p_actor jsonb, p_operation_key text,
 	p_proposal_id uuid, p_review_id uuid, p_receipt_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -96,8 +97,13 @@ begin
 		return public.qorpera_folder_commit(p_environment_id, p_actor, p_operation_key, v_proposal.units, p_review_id,
 			p_receipt_id);
 	end if;
-	-- The commit of this key that applied the proposal, or (20260930093000, P40b) the one that carries this call's receipt
-	-- and applied nothing: a discard or an erasure reached the proposal while the apply waited for it.
+	-- 20260930093000 (P40b): no longer open. The call's receipt is locked first (its lock alone): an apply of the same
+	-- call that is still committing holds it to its end, so what follows sees that apply's commit.
+	if p_receipt_id is not null then
+		select * into v_receipt from public.qorpera_run_operation_receipts where id = p_receipt_id for no key update;
+	end if;
+	-- The commit of this key that applied the proposal, or (P40b) the one that carries this call's receipt and applied
+	-- nothing: a discard or an erasure reached the proposal while the apply waited for it.
 	select c.* into v_commit from public.qorpera_folder_operation_keys k
 	join public.qorpera_folder_commits c on c.id = k.commit_id
 	where k.environment_id = p_environment_id and k.scope_id = (p_actor ->> 'runId')::uuid
@@ -116,21 +122,18 @@ begin
 		return jsonb_build_object('schema','qorpera.folder-commit/v1','commitId',v_commit.id,'seq',v_commit.seq,'replay',true,
 			'units',v_commit.units);
 	end if;
-	-- 20260930093000 (P40b): decided or erased before this apply reached it. A decided proposal never opens again, so the
-	-- status read without a lock stands.
-	if p_receipt_id is not null then
-		select * into v_receipt from public.qorpera_run_operation_receipts where id = p_receipt_id for no key update;
-		if found and v_receipt.run_id = (p_actor ->> 'runId')::uuid
-			and v_receipt.logical_operation_key = 'apply_proposal:apply:' || p_proposal_id::text
-			and v_receipt.requires_company_revision and v_receipt.status in ('executing', 'cancelled')
-			and not exists (select 1 from public.qorpera_folder_commits c where c.receipt_id = p_receipt_id) then
-			if v_receipt.status = 'executing' then
-				update public.qorpera_run_operation_receipts set status = 'cancelled', completed_at = clock_timestamp()
-				where id = p_receipt_id;
-			end if;
-			return jsonb_build_object('schema', 'qorpera.folder-proposal-unapplied/v1', 'proposalId', p_proposal_id,
-				'status', coalesce(v_proposal.status, 'erased'), 'receiptId', p_receipt_id);
+	-- (P40b) Decided or erased before this apply reached it. A decided proposal never opens again, so the status read
+	-- without a lock stands; an apply that had not reached the receipt finds it cancelled.
+	if v_receipt.id is not null and v_receipt.run_id = (p_actor ->> 'runId')::uuid
+		and v_receipt.logical_operation_key = 'apply_proposal:apply:' || p_proposal_id::text
+		and v_receipt.requires_company_revision and v_receipt.status in ('executing', 'cancelled')
+		and not exists (select 1 from public.qorpera_folder_commits c where c.receipt_id = p_receipt_id) then
+		if v_receipt.status = 'executing' then
+			update public.qorpera_run_operation_receipts set status = 'cancelled', completed_at = clock_timestamp()
+			where id = p_receipt_id;
 		end if;
+		return jsonb_build_object('schema', 'qorpera.folder-proposal-unapplied/v1', 'proposalId', p_proposal_id,
+			'status', coalesce(v_proposal.status, 'erased'), 'receiptId', p_receipt_id);
 	end if;
 	if v_proposal.id is null then raise exception 'Proposal is unavailable' using errcode = 'P0002'; end if;
 	raise exception 'Proposal is no longer open' using errcode = 'P0002';

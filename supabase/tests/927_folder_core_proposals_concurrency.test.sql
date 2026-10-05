@@ -219,7 +219,8 @@ end $$;
 
 -- F. P40b, with receipts begun for real (run f1's acknowledgement recorded first, as 651 does, so its calls may work).
 -- A member's discard in flight: the apply under its receipt waits at the proposal, then its commit applies nothing and
--- carries the receipt, which a retry replays and the run completes with it. A discard committed before the apply: the
+-- carries the receipt, which a retry replays (one that overlaps the apply waits for it at the receipt) and the run
+-- completes with it. A discard committed before the apply: the
 -- apply cancels the receipt, which no commit carries, and answers the proposal as discarded; the run's next operation
 -- begins (no fence).
 set session_replication_role = replica;
@@ -270,18 +271,32 @@ declare v_state text; pf uuid := current_setting('qorpera_test.pf')::uuid; v_rec
 begin
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', pg_temp.sql_discard(pf)) as t(r text);
+	perform dblink_exec('fence_two', 'begin');
 	perform dblink_send_query('fence_two', pg_temp.sql_apply_under(pf, current_setting('qorpera_test.rf')::uuid, v_receipt));
 	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'F: the apply must wait for the discard'; end if;
 	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_proposals'::regclass then
 		raise exception 'F: the apply must wait at the proposal, not on %', pg_temp.queued_on('fence_two'); end if;
 	perform dblink_exec('fence_one', 'commit');
 	v_state := pg_temp.outcome('fence_two');
+	if v_state <> 'ok' then raise exception 'F: the apply: %', v_state; end if;
+	-- Its answer lost before it commits, the same call again sees the proposal discarded and waits for it at the receipt,
+	-- then replays its commit: the receipt it carries stands for the request.
+	perform dblink_send_query('fence_three', pg_temp.sql_apply_under(pf, current_setting('qorpera_test.rf')::uuid, v_receipt));
+	if not pg_temp.waits_for('fence_three', 'fence_two') then raise exception 'F: an overlapping retry must wait for the apply'; end if;
+	if pg_temp.queued_on('fence_three') is distinct from 'public.qorpera_run_operation_receipts'::regclass then
+		raise exception 'F: an overlapping retry must wait at the receipt, not on %', pg_temp.queued_on('fence_three'); end if;
+	perform dblink_exec('fence_two', 'commit');
+	select r::jsonb into a from dblink_get_result('fence_three') as t(r text);
+	perform * from dblink_get_result('fence_three') as t(r text);
 	select * into v_commit from public.qorpera_folder_commits where environment_id = '64800000-0000-4000-8000-000000000020'
 		and operation_key = 'apply-proposal:' || pf;
 	if v_state <> 'ok' or pg_temp.status(pf) <> 'discarded' or not pg_temp.present('p40-f.txt')
 		or pg_temp.unit_of('apply-proposal:' || pf) <> 'denied:review_required' or v_commit.receipt_id is distinct from v_receipt then
 		raise exception 'F: % % % %', v_state, pg_temp.status(pf), pg_temp.unit_of('apply-proposal:' || pf), to_jsonb(v_commit); end if;
-	-- Its answer lost, the same call again replays that commit: the receipt it carries stands for the request.
+	if a is distinct from jsonb_build_object('schema', 'qorpera.folder-commit/v1', 'commitId', v_commit.id, 'seq', v_commit.seq,
+			'replay', true, 'units', v_commit.units) then
+		raise exception 'F: an overlapping retry replays the commit that carries its receipt: %', a; end if;
+	-- A later retry replays it too.
 	select r::jsonb into a from dblink('fence_two', pg_temp.sql_apply_under(pf, current_setting('qorpera_test.rf')::uuid, v_receipt))
 		as t(r text);
 	if a is distinct from jsonb_build_object('schema', 'qorpera.folder-commit/v1', 'commitId', v_commit.id, 'seq', v_commit.seq,
