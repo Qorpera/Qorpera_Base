@@ -4493,6 +4493,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - The spans are in order and don't overlap. Each is 1 to 2,000 characters.
    - Each span sits inside a pair of marks: the character before `start` is «, and the character at `end` is ».
      The span covers the words inside the marks.
+   - The words hold neither « nor » (amended 5 October 2026): a quote is always «words», with no marks inside, so
+     quotes never nest or cross, and a quote's words can't hide inside another's.
    - `source` says where the words came from, from a closed list. Today that list is only `mail`.
    - `ref` names the record. For `mail` it is the thread's id. It must be a thread that `qorpera_member_mail_thread`
      shows this member, in the conversation's company and environment, with mail switched on.

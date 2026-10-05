@@ -36,6 +36,8 @@ export interface TranscriptMessage {
 	text: string;
 	/** A member's quotes of outside content in `text` (20260928459100): shown as quoted, never as their words. */
 	quotes?: readonly MessageQuote[];
+	/** The message carries quotes this client can't read: it shows as written, with no name in it set apart. */
+	unreadQuotes?: true;
 	attachmentCount: number;
 	attachments?: TranscriptAttachment[];
 	phase?: "progress" | "final";
@@ -194,6 +196,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 		// The input's quotes, kept beside its attachments. A list that doesn't fit the text is left out: the text still
 		// shows its marks.
 		const quotes = admitted && entry.qorperaQuotes !== undefined ? parseQuotes(entry.qorperaQuotes, text) : undefined;
+		const unread = admitted && entry.qorperaQuotes !== undefined && !quotes;
 		if (admitted && Array.isArray(entry.qorperaAttachments)) {
 			const images = entry.qorperaAttachments;
 			let total = 0;
@@ -231,6 +234,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			authorUserId: event.actorUserId,
 			text,
 			...(quotes ? { quotes } : {}),
+			...(unread ? { unreadQuotes: true as const } : {}),
 			attachmentCount: attachments.length,
 			...(attachments.length ? { attachments } : {}),
 			createdAt: event.createdAt,
@@ -473,6 +477,7 @@ export function projectTranscript(
 		// A quoted message has no displayText, so its quotes are spans of the text shown.
 		const quotes =
 			body?.quotes !== undefined && body.displayText === undefined ? parseQuotes(body.quotes, text) : undefined;
+		const unread = body?.quotes !== undefined && !quotes;
 		const images = Array.isArray(body?.images) ? body.images : [];
 		const attachments = images.map((image) => attachmentMetadata({ ...asRecord(image), type: "image" }));
 		waiting.push({
@@ -482,6 +487,7 @@ export function projectTranscript(
 			authorUserId: input.authorUserId,
 			text,
 			...(quotes ? { quotes } : {}),
+			...(unread ? { unreadQuotes: true as const } : {}),
 			attachmentCount: attachments.length,
 			...(attachments.length ? { attachments } : {}),
 			createdAt: input.createdAt,

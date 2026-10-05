@@ -588,6 +588,9 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `qorpera_post_company_room_message`.
   - `start` and `end` are whole numbers counting characters (Unicode code points) from 0, with `end` excluded.
   - Each span sits just inside « and »; spans are in order, apart, and 1 to 2,000 characters long.
+  - A quote's words hold neither « nor » (20260930087000_member_quote_words_hold_no_marks): a quote is always «words»,
+    with no marks inside, so quotes never nest or cross. Such a quote is refused (22023) on every path that takes
+    quotes, room drafts included.
   - `source` is `mail`, and `ref` is a thread id that `qorpera_member_mail_thread` shows the member, never account
     mail.
   - A body with `quotes` carries no `displayText`. Leave `quotes` out when there are none: an empty list is refused.

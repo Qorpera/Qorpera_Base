@@ -1,7 +1,7 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
-import { type MessageQuote, parseQuotes, QUOTES_MAX } from "./quotes.ts";
+import { type MessageQuote, parseQuotes, QUOTES_MAX, unreadableWords } from "./quotes.ts";
 import type { RealtimePhase } from "./realtime.ts";
 
 /* Shared drafts (20260928000500): a room member's unsent message, which the
@@ -15,6 +15,9 @@ export interface RoomDraft {
 	body: string;
 	/** The body's quotes of outside content (20260928469160), when it holds any. */
 	quotes?: readonly MessageQuote[];
+	/** The words of quotes the body holds that this client can't hold (cloud/quotes.ts, unreadableWords): while a text
+	 * holds them it is neither saved nor sent. */
+	blocked?: readonly string[];
 	revision: number;
 	editorUserId: string;
 	contributors: readonly string[];
@@ -37,14 +40,16 @@ export function parseRoomDraft(value: unknown, roomId: string): RoomDraft {
 		throw new CloudShapeError("room draft");
 	if (typeof input.body !== "string" || new TextEncoder().encode(input.body).length > ROOM_DRAFT_BYTES)
 		throw new CloudShapeError("room draft text");
-	// A draft carries `quotes` only when it holds any, checked as a message's are.
+	// A draft carries `quotes` only when it holds any, checked as a message's are. Quotes this client can't hold are
+	// kept as blocked words, never dropped into the member's own: the draft still shows, and waits for them to go.
 	const quotes = input.quotes === undefined ? undefined : parseQuotes(input.quotes, input.body);
-	if (input.quotes !== undefined && !quotes) throw new CloudShapeError("room draft quotes");
+	const blocked = input.quotes !== undefined && !quotes ? unreadableWords(input.quotes, input.body) : [];
 	return {
 		roomId,
 		ownerUserId: uuid(input.ownerUserId, "room draft owner"),
 		body: input.body,
 		...(quotes ? { quotes } : {}),
+		...(blocked.length ? { blocked } : {}),
 		revision: boundedInteger(input.revision, "room draft revision", 0, Number.MAX_SAFE_INTEGER),
 		editorUserId: uuid(input.editorUserId, "room draft editor"),
 		contributors: array(input.contributors, "room draft contributors")
