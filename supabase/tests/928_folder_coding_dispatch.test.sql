@@ -463,9 +463,9 @@ begin
 		'the parent''s wake carries both: ' || to_jsonb(v_wake)::text);
 end $$;
 
--- 8b. A worker whose folder was deleted continues only after a restore -------------------------------------------------
+-- 8b. A worker whose folder or todo was deleted continues only after a restore -----------------------------------------
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_result jsonb;
+declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_result jsonb; v_brief jsonb;
 begin
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-1', jsonb_build_array(jsonb_build_object('op', 'delete',
 		'path', v_folder, 'expectedVersion', pg_temp.base_version(v_folder), 'asOfSeq', (select last_seq
@@ -475,7 +475,7 @@ begin
 		'This session''s folder was deleted; restore it to continue');
 	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).state = 'succeeded'
 		and (pg_temp.c3_session('92800000-0000-4000-8000-0000000000b1')).phase = 'completed', 'nothing turned');
-	-- The todo's file cannot go before its other session's folder, so a live worker's todo is never retired.
+	-- The todo's file cannot go before its other workers' folders.
 	v_result := public.qorpera_folder_commit('92400000-0000-4000-8000-000000000020', pg_temp.base_owner(), 'c3-delete-2',
 		jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'agents/alice/todos/fix-login.md',
 			'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login.md'), 'asOfSeq', (select last_seq
@@ -484,6 +484,32 @@ begin
 		and v_result -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' = 'this todo has workers: delete its folder first, or write a new todo'
 		and (select t.folder_retired_at from public.qorpera_runtime_agent_todos t where t.id = '92800000-0000-4000-8000-0000000000a1') is null,
 		'the todo stays: ' || v_result::text);
+	-- The whole todo goes, its folder and then its file; then session 1's folder alone comes back, whole. It is live
+	-- again under a deleted todo, and does not turn either.
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-3', jsonb_build_array(jsonb_build_object('op', 'delete',
+		'path', 'agents/alice/todos/fix-login', 'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login'),
+		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-4', jsonb_build_array(jsonb_build_object('op', 'delete',
+		'path', 'agents/alice/todos/fix-login.md', 'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login.md'),
+		'asOfSeq', (select last_seq from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-restore-1', jsonb_build_array(jsonb_build_object('op', 'mkdir',
+		'path', 'agents/alice/todos/fix-login')));
+	v_brief := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
+		where v.version = (pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_brief_version);
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-restore-2', jsonb_build_array(jsonb_build_object('op', 'new_folder',
+		'path', v_folder, 'contents', jsonb_build_array(jsonb_build_object('path', 'brief.md', 'kind', 'file',
+			'file', pg_temp.base_stage(v_brief::text))),
+		'structured', jsonb_build_array(pg_temp.c3_entry(v_folder || '/brief.md', v_brief)))));
+	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_retired_at is null
+		and (select t.folder_retired_at from public.qorpera_runtime_agent_todos t where t.id = '92800000-0000-4000-8000-0000000000a1') is not null,
+		'session 1 back under a deleted todo: ' || to_jsonb(pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1'))::text);
+	perform pg_temp.base_error($q$select pg_temp.c3_answer('92800000-0000-4000-8000-0000000000b1', 'One more thing.')$q$, '55000',
+		'This session''s todo was deleted; restore it to continue');
+	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).state = 'succeeded'
+		and (pg_temp.c3_session('92800000-0000-4000-8000-0000000000b1')).phase = 'completed', 'nothing turned under the deleted todo');
+	-- The claim and the begin skip it by the same test.
+	perform pg_temp.base_assert(public.qorpera_coding_worker_retired(pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')),
+		'retired by its todo');
 end $$;
 
 -- 8c. The payer: the login that pays is held to the plan rule when the index takes it --------------------------------
@@ -517,7 +543,8 @@ do $$
 declare v_fn text;
 begin
 	foreach v_fn in array array['public.qorpera_coding_owner_login(uuid,uuid,text)',
-		'public.qorpera_coding_owner_problem(uuid,uuid,text,uuid)', 'public.qorpera_coding_owner_payer(uuid,uuid,text,uuid)'] loop
+		'public.qorpera_coding_owner_problem(uuid,uuid,text,uuid)', 'public.qorpera_coding_owner_payer(uuid,uuid,text,uuid)',
+		'public.qorpera_coding_worker_retired(public.qorpera_runtime_workers)'] loop
 		perform pg_temp.base_assert(not has_function_privilege('anon', v_fn, 'execute')
 			and not has_function_privilege('authenticated', v_fn, 'execute')
 			and not has_function_privilege('service_role', v_fn, 'execute'), v_fn || ' is postgres-only');

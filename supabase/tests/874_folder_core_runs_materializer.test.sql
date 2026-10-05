@@ -146,14 +146,16 @@ begin
 		raise exception 'The first run and the post were not materialized in one pass: %', v_result; end if;
 	select * into strict v_request from public.qorpera_session_turn_requests where id = current_setting('qorpera_test.request')::uuid;
 	select * into strict v_run from public.qorpera_execution_runs where id = v_request.id;
-	-- No substrate or snapshot: the folder clock's pin.
+	-- No substrate or snapshot: the folder clock's pin. The model is the Co-Founder's: its agent.md names none, so the
+	-- platform's default by the agent's mapping (20260930081000), not the provider's default.
 	if v_run.source_kind <> 'session_turn' or v_run.source_id <> v_request.id or v_run.substrate_version_id is not null
 		or v_run.company_snapshot_id is not null or v_run.company_seq is null or v_run.company_seq < 1
 		or v_run.company_seq is distinct from (select last_seq from public.qorpera_folder_clocks where environment_id = v_env)
 		or v_run.environment_id <> v_env or v_run.session_id <> v_request.session_id or v_run.staff_agent_id <> v_cofounder
 		or v_run.staff_version <> (select version from public.qorpera_profile_staff where profile_id = v_profile and staff_agent_id = v_cofounder)
 		or v_run.input_ids <> array[v_request.input_id] or v_run.requested_by_user_id <> '85600000-0000-4000-8000-000000000001'
-		or v_run.model_id is distinct from 'provider-default' or v_run.compute_identity_id is distinct from v_request.compute_identity_id then
+		or v_run.model_id is distinct from 'gpt-6-astra' or v_run.model_selection is distinct from 'provider_mapping'
+		or v_run.compute_identity_id is distinct from v_request.compute_identity_id then
 		raise exception 'The first run is not pinned as agreed: %', to_jsonb(v_run); end if;
 	select * into strict v_job from public.qorpera_runner_jobs where id = v_run.job_id;
 	if v_job.substrate_version_id is not null or v_job.run_id <> v_run.id or v_job.status <> 'queued' or v_job.client_job_id <> v_request.id

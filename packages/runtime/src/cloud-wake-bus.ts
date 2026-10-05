@@ -35,6 +35,27 @@ export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** A folder version's op, as a file wake's change names it (folder core P29). */
 const FOLDER_FILE_WAKE_OPS: ReadonlySet<string> = new Set(["write", "mkdir", "delete", "move_out", "move_in", "copy"]);
+/** Why a human task woke its agent (H2c, migration 20260930065000): a change by someone else, or its due passing. */
+const HUMAN_TASK_WAKE_REASONS: ReadonlySet<string> = new Set([
+	"done",
+	"declined",
+	"accepted",
+	"returned",
+	"cancelled",
+	"person",
+	"handoff",
+	"assigned",
+	"overdue",
+]);
+const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
+	"open",
+	"done",
+	"accepted",
+	"returned",
+	"declined",
+	"cancelled",
+]);
+const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud wake");
@@ -198,7 +219,8 @@ export interface CloudWakeEnvelope {
 			| "worker-dispatch"
 			| "worker-completion"
 			| "machine-event"
-			| "event";
+			| "event"
+			| "human-task";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -300,7 +322,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		!source.occurrenceKey ||
 		Buffer.byteLength(source.occurrenceKey) > 256 ||
 		typeof time.utc !== "string" ||
-		!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/.test(time.utc) ||
+		!WAKE_TIME.test(time.utc) ||
 		!Number.isFinite(Date.parse(time.utc)) ||
 		typeof time.local !== "string" ||
 		!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}$/.test(time.local) ||
@@ -636,6 +658,44 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				throw new Error("Invalid machine event wake");
 			uuid(event.machineId);
 		}
+	} else if (wake.kind === "agent" && source.kind === "human-task") {
+		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
+		// the task itself, when the run may read its file, says what to do next.
+		const change = closed(payloadBody, ["schema", "taskId", "reason", "commitId", "dueAt", "task"]);
+		const overdue = change.reason === "overdue";
+		const task = change.task === null ? null : closed(change.task, ["path", "title", "status", "due"]);
+		if (
+			change.schema !== "qorpera.human-task-wake/v1" ||
+			uuidKey(change.taskId) !== uuidKey(source.id) ||
+			typeof change.reason !== "string" ||
+			!HUMAN_TASK_WAKE_REASONS.has(change.reason) ||
+			parentRunId !== null ||
+			wake.routine !== null ||
+			(actorStaffId !== null && uuidKey(actorStaffId) === uuidKey(identity.staffAgentId)) ||
+			(overdue && (change.commitId !== null || actorStaffId !== null || actorUserId !== null)) ||
+			(overdue
+				? typeof change.dueAt !== "string" ||
+					!WAKE_TIME.test(change.dueAt) ||
+					!new RegExp(`^human-task-due:${uuidKey(source.id)}:-?\\d{1,20}$`).test(
+						source.occurrenceKey.toLowerCase(),
+					)
+				: change.dueAt !== null ||
+					source.occurrenceKey.toLowerCase() !== `human-task:${uuidKey(source.id)}:${uuidKey(change.commitId)}`) ||
+			// Its own thread for the member who pays, where it may answer; without one it has no mouth.
+			(audience.sessionId === null) !== (policy.final === "forbidden") ||
+			(audience.sessionId !== null && policy.initial !== "optional") ||
+			(task !== null &&
+				(typeof task.path !== "string" ||
+					!task.path.startsWith("human-tasks/") ||
+					Buffer.byteLength(task.path) > 4096 ||
+					typeof task.title !== "string" ||
+					Buffer.byteLength(task.title) > 4096 ||
+					typeof task.status !== "string" ||
+					!HUMAN_TASK_STATUSES.has(task.status) ||
+					typeof task.due !== "string" ||
+					!WAKE_TIME.test(task.due)))
+		)
+			throw new Error("Invalid human task wake");
 	} else if (wake.kind === "agent") {
 		// A coworker message. Delivered into the agent's own shared thread (the
 		// session is the agent's thread and the policy is the pair policy) since
