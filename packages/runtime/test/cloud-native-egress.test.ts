@@ -116,7 +116,7 @@ async function relay(transport: NativeEgressTransport, hosts?: readonly string[]
 		client.destroy();
 	});
 	await once(client, "connect");
-	return { client, abort };
+	return { client, abort, path: server.path };
 }
 
 async function rejected(client: Socket, bytes: Buffer | string): Promise<void> {
@@ -240,6 +240,75 @@ describe("private native egress relay", () => {
 			startNativeCodexEgress({ root, signal: new AbortController().signal, hosts: ["evil.test"] }),
 		).rejects.toThrow("Unsupported native egress hosts");
 	});
+	it("carries any number of connections and bytes over a run's life, eight at a time (no caps on runs)", async () => {
+		// Each connection answers 520 KiB: 130 in a row move 66 MiB, past the old 64 MiB and 128-connection totals.
+		const answer = Buffer.alloc(520 * 1024, 7);
+		const target = createServer((socket) => {
+			socket.once("data", () => socket.write(answer));
+			socket.on("error", () => undefined);
+		});
+		target.listen(0, "127.0.0.1");
+		await once(target, "listening");
+		cleanup.push(() => new Promise<void>((resolve) => target.close(() => resolve())));
+		const address = target.address();
+		if (!address || typeof address === "string") throw new Error("Missing listener");
+		const transport = {
+			resolve: vi.fn(async () => ["93.184.216.34"]),
+			connect: vi.fn(() => createConnection(address.port, "127.0.0.1")),
+		};
+		const { client, path } = await relay(transport);
+		client.destroy();
+		const established = Buffer.byteLength("HTTP/1.1 200 Connection Established\r\n\r\n");
+		const open = async (): Promise<Socket> => {
+			const socket = createConnection(path);
+			socket.on("error", () => undefined);
+			await once(socket, "connect");
+			return socket;
+		};
+		// One connection through the relay: its CONNECT and ClientHello, then the whole answer back.
+		const through = async (): Promise<number> => {
+			const socket = await open();
+			let bytes = 0;
+			const done = new Promise<void>((resolve, reject) => {
+				socket.on("data", (chunk: Buffer) => {
+					bytes += chunk.length;
+					if (bytes >= established + answer.length) resolve();
+				});
+				socket.once("close", () =>
+					bytes >= established + answer.length ? resolve() : reject(new Error("closed early")),
+				);
+			});
+			socket.write(
+				Buffer.concat([Buffer.from("CONNECT chatgpt.com:443 HTTP/1.1\r\nHost: chatgpt.com:443\r\n\r\n"), hello()]),
+			);
+			await done;
+			socket.destroy();
+			return bytes - established;
+		};
+		let moved = 0;
+		for (let connection = 0; connection < 130; connection += 1) moved += await through();
+		expect(moved).toBeGreaterThan(64 * 1024 * 1024);
+		expect(transport.connect).toHaveBeenCalledTimes(130);
+		// The relay is still up, and still holds eight at once: a ninth waiting one is refused, and a slot frees.
+		const held = await Promise.all(Array.from({ length: 8 }, open));
+		const ninth = createConnection(path);
+		ninth.on("error", () => undefined);
+		await once(ninth, "close");
+		held[0]?.destroy();
+		await vi.waitFor(async () => {
+			const socket = await open();
+			const closed = once(socket, "close");
+			const alive = await Promise.race([
+				closed.then(() => false),
+				new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 50)),
+			]);
+			socket.destroy();
+			expect(alive).toBe(true);
+		});
+		for (const socket of held) socket.destroy();
+		await vi.waitFor(async () => expect(await through()).toBe(answer.length));
+	});
+
 	it("cancels an unresolved DNS request without opening a connection", async () => {
 		let resolving: () => void = () => undefined;
 		const started = new Promise<void>((resolve) => {

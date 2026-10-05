@@ -542,7 +542,8 @@ checked by each slice's functional test (647, 652, 656, 658).
     (every existing row met the old one, which the new one only widens).
 - **`handoff_run_sponsor`** refuses a run whose revision receipts have no snapshot. Its `folder-v2` mode accepts
   receipts satisfied by commits (C1c-2c part 2: one more condition, `folder_commit_id is null`, which only
-  `folder-v2` receipts can fail).
+  `folder-v2` receipts can fail). Removed by 20260930059000 (the payer never changes without the member; test 658's
+  handoff part went with it).
 - **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks
   executing receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
   `qorpera_folder_resolve_run_receipt`: `confirmed_completed` records the commit that carries the receipt (one per
@@ -2087,6 +2088,68 @@ receipt fences the run's later operations.
     key answers it again with no receipt. A plain `CloudToolRefusal` there, or the refusal after the receipt began,
     stays an unknown outcome and keeps its fence;
   - `cloud-native-tool-boundary.test.ts`: the model gets `REFUSED: <message>`.
+
+### 6.23 Company accounts on folder-v2 as built (migration 20260930072000, test 925)
+
+A1-7, the design `a1-scratch/accounts-folder-v2-design.md`, approved by the coordinator on 4 October with three
+conditions (below). Until now every account function refused a folder-v2 company (0A000, "Accounts for folder companies
+come with their connection file"); since 3 October every company is folder-v2, so accounts were unusable. Each ported
+function now serves folder-v2 only and refuses any other company with 0A000 "Accounts need a company on the company
+folder", read before any lock: through the run's job (the broker calls and the agent's read) or the account's
+environment (a removal). No snapshot-v1 path is left, and no account function reaches the gc fence. The connection file
+already worked on folder-v2 (P22): opening marks it, closing revokes the secret and the writer deletes the file.
+
+| Function | Order on folder-v2 |
+|---|---|
+| `qorpera_company_account_call` (every broker call but the fill) | plain reads (the switch, the authority, the job of the authority's company), the core through the job, the run check (`qorpera_native_tool_locked_run` → `qorpera_folder_tool_run`: the run mutex, the job and the fence `KEY SHARE`, the company row `KEY SHARE` at rank 0, the run's principals), then the call's own arguments. It no longer reads the receipt. |
+| `qorpera_company_account_receipt` (new, internal) | the receipt `FOR UPDATE` with exactly the call's old checks: this run's executing `cloud_tool` receipt, the input and downstream digests, the key `company_account:<action>:<account>:<key>`, every comparison null-safe |
+| use, a new version, the state | the call; the secret, then the account (`qorpera_company_account_locked`, rank 8); then the receipt; then the work. A close of a closed account answers it after checking its receipt, with no vault row locked |
+| describe-open | the call, then the receipt (no vault row) |
+| open | the call; the company's account claim (rank 9); under it the repeat, the id, the todo, the duplicate login and the vault name; the receipt; the inserts. A repeat answers its account after checking its receipt |
+| fill | plain reads and the core as the call; the envelope; the run check; the computer (office, screen, activation) by plain reads; the secret, then the account; then the receipt |
+| find | the core through the job (a job of the old core is answered `refused` 0A000; a binding that names no job raises 42501), then the run check (a folder-v2 binding is now validated: the refusal came first until now), then plain reads |
+| remove (owner, admin) | plain checks (the role, the account, the core); `qorpera_folder_company_enter` (the pause refused, the fence `KEY SHARE` with the pause read again, the company row `KEY SHARE` at rank 0, the caller's member row `KEY SHARE` at rank 1, required); the deletion and the role again; the secret, then the account `FOR UPDATE`; the revoke and close as before |
+
+Unchanged: the list, `qorpera_company_account_mail`, the triggers, the descriptor, `qorpera_company_account_locked`, and
+the operator switch (`qorpera_company_account_settings.enabled`). The runtime still hides the `company_account` tool on
+folder companies (`!context.folder`); offering it is the next PR (TypeScript, a later train).
+
+- **The receipt after the vault rows.** Core §3 puts run-owned rows after rank 9 (§5.7); the account calls locked the
+  receipt first. No path held a secret and then waited for a receipt, so this keeps one order rather than fixing a known
+  deadlock. The call still refuses a missing receipt id, digest or (after the opening) account before any vault row,
+  with the receipt's refusal, so "a missing account is a broker fault, never 'no such account'" (794) holds.
+- **The company's account claim** (the coordinator's conditions): `pg_advisory_xact_lock(hashtextextended(
+  'qorpera.company-accounts:' || <company>, 0))`, transaction-scoped, built as E1's per-company lock for hooks and
+  mailboxes (`'qorpera.event-hooks:' || <company>`, #815) so the two namespaces never share a key. E1 has no shared helper,
+  so each names its namespace once, inline. It is listed in core §3 step 4 at rank 9: test 838 lists no lock-order sites
+  or advisory locks (its checks are the gc fence, the job, the run mutex, the folder fence's modes and deferred
+  constraints), so the rank list is the record. It replaces the old company lock that kept the duplicate check and the
+  vault-name loop free of races. A race now waits for the claim and answers "already has this account" or the replay.
+- **The unique indexes stay the final guard.** A 23505 on `qorpera_company_accounts_open_login` or
+  `qorpera_cloud_secrets_active_name` (a writer that took no claim) answers the duplicate check's own refusal, 23505
+  "The company already has this account; use it"; any other conflict (the secret's primary key: the broker's chosen id)
+  stays a broker fault in Postgres' words.
+- **Error order.** A call that is not its receipt's is still refused, now after the vault rows (use, version, state,
+  fill) or after the checks under the claim (open): an opening for a login the company already has answers "already has
+  this account" before its receipt is checked. Nothing is written before the receipt.
+- **Tests.**
+  - **925** (924's base: Alice's leased run): A, every function end to end (describe, open with Alice's todo and a live
+    company mailbox, find, use, a version, connected, needs_person, a fill into the computer, the list, closed, an
+    owner's removal; the connection files marked); B, a real snapshot-v1 company (its own authority, job and account) is
+    refused by each ported function, writing nothing; C, a 23505 on either index answers the duplicate's refusal, forced in
+    one session by a `BEFORE INSERT` trigger that writes the conflicting row after the plain check (and the primary key
+    stays raw); D, the bodies: exactly the ten functions name the migration, the core before any lock, the vault rows
+    before the receipt, the claim before the receipt and the inserts, the removal's enter before its vault rows; E, a
+    removal on a paused company is refused (55000) and changes nothing.
+  - **794, 813, 807** move onto 924's base in place (807 keeps its directly written computer rows: the fill only reads
+    them), each with its cases; the folder-v2 refusal they checked is now the old core's refusal. 809 moves in B3 (#841).
+  - **797** moves onto 648's committed fixture: 1 and 2 as before; 3, a removal against a use: the use's run check no
+    longer takes the company row `FOR UPDATE`, so they meet at rank 8 in one order (the removal holds the secret and waits
+    for the account, the use waits for the secret holding neither the account nor its receipt), the removal lands and
+    the use is refused; 4, a held secret makes a use wait before it locks its receipt (a `NOWAIT` probe finds the receipt
+    free); 5, a held claim makes an opening wait with its receipt free, and it answers its replay (5a) or "already has this
+    account" (5b); a writer without the claim is caught by the login's (5c) and the vault name's (5d) indexes, their
+    23505 answered the same way.
 
 ## 7. Traps for C1c-2 and C1c-3
 

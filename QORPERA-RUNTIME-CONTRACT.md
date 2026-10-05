@@ -76,7 +76,9 @@ department model is replaced by responsibilities (section 14); the Company
 File is worked on as one live document with presence and object versions,
 never copies (5.2); one shared working world per company may be served by
 more than one Company Computer (section 12); usage-limit notification and
-recorded same-principal sponsor handoff (section 17); a failure-model chapter
+recorded same-principal sponsor handoff (section 17; since 2026-10-01 a usage
+limit stops the work, and since 2026-10-04 the payer never changes without the
+member); a failure-model chapter
 whose implementation is deferred to partner testing (section 23); Company
 File implementation caps are defects (5.5); gated decisions queue until an
 authorized member is online (16.2); kernel ceilings and a founder stop (7.4);
@@ -2046,7 +2048,7 @@ execution authority names a company account only; it never pays with a
 member's login. A coding session runs for the member who asked, on their
 account; the model cannot name another member. A member cannot ask another
 member to pay for a turn. Every run is checked where it is created and where
-a handoff moves it: a member-connection sponsor must be owned by the run's
+its sponsor is moved: a member-connection sponsor must be owned by the run's
 requester; a company sponsor serves any member. Unattended use stays granted
 by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
 work. A company account is a company-owned account added by an owner or
@@ -2071,11 +2073,9 @@ no longer makes a sponsor handoff (migration 20260928349910): the paragraphs
 above that describe one, and the old text of acceptance 29, are superseded for
 every login. A rate limit or a provider outage is still not a usage limit: it
 neither stops the work as one nor shows the usage-limit message. Choosing the
-payer for new work is unchanged by this amendment: a member's next turn and
-follow-up work still take a login with room left first, which can be the
-member's other login, and routines and coding turns follow the handoff
-versions made before this change (no new ones are made). Whether new work
-must also stay on the exhausted login is a separate decision.
+payer for new work was left unchanged by this amendment (a member's next turn
+and follow-up work still took a login with room left first, which could be the
+member's other login); the 2026-10-04 amendment below settles it.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -2096,6 +2096,45 @@ or rotated; is retried, for a failed run or a change's review, only by the
 member whose plan pays; and is not used while its company is being deleted. A
 run in progress is never handed to another login (the amendment above, #601).
 Codex logins are unchanged by this amendment.
+
+2026-10-04 amendment: the payer never changes without the member (founder
+decision: "the system should never be able to swap what member pays without
+permission"; migration 20260930059000). For every kind of login, not only
+ChatGPT plans, in a conversation's choice and in the payer of work that
+follows a run:
+
+- A conversation keeps its login, also at its usage limit (sending waits
+  until it resets), while the login needs a new sign-in, while its computer
+  recovers and while an owner or admin has it disabled. When the member signs
+  in again, the conversation follows its binding to their new connection for
+  the same account (every sign-in makes a new connection; the vault's upkeep
+  pass moves the member's pins from the older node or vault login of the same
+  kind and account to it, then switches the old one off; a ChatGPT plan's
+  account is its verified OpenAI subject). When the login is
+  disconnected (revoked, by the member or
+  by an owner or admin), the conversation has no account and says "Choose a
+  login to continue" until the member picks one of their own logins by hand:
+  ending a login is no permission to use another. Only a new conversation takes a first choice, the
+  member's login with the most room left.
+- Work that follows a run (a coworker's, a worker's or another agent wake, a
+  review of the run's change and its retry) stays on that run's login or
+  company account, also at its usage limit, which then stops it there. When
+  that login or account can no longer pay at all (disconnected, or its consent
+  to work while the member is away switched off), the work does not start; it
+  never moves to another login or to another account.
+- New work there with no run to follow takes the requester's own login with
+  the most room left, then their used-up login, whose limit stops the work. A
+  company account pays only for a member with no login of their own and never
+  stands in for a login at its limit. A first run and a new conversation take
+  only a login with room left, and wait while every login is at its limit.
+- The sponsor handoff is removed. Moving work to another login is the member's
+  own act; today that is starting a new conversation.
+
+This supersedes the follow-up order of the 2026-09-28 amendment above (the
+requester's login with room left first, then a company account). Still open:
+a folder-v2 routine's payer when it is saved, an agent-made routine's payer,
+and a coding worker's payer still choose among the member's logins and company
+accounts themselves (until then, the 2026-10-01 coding rule above holds).
 
 ## 18. Short constitution
 
@@ -3005,13 +3044,27 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    when members started the run, their latest earlier messages in the
    conversation), and the rules that apply (all company rules and the
    personal rules of the member the run works for), never the agent's own
-   words or any tool result, and answers allow, ask or deny. A review that cannot
-   run is never an approval: the call does not run.
+   words (apart from the one message below) or any tool result, and answers
+   allow, ask or deny. A review that cannot run is never an approval: the call
+   does not run.
    Amended 2026-10-02 (not built yet): a quote of outside content inside a
    member's message is not what the member asked for, and the reviewer never
    reads the quoted words. See the [quote provenance
    amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
    item 5.
+   Amended 2026-10-04 (the coordinator's decision, after live run 22b287a3
+   denied a hire the founder had agreed to with "Agreed, hire both."):
+   - When members started the run, the reviewer also reads what the member was
+     answering, bounded and marked as the agent's words:
+     - for a card answer, the card the agent asked (found by its interaction
+       id), or nothing;
+     - for a message, the agent's latest message or card before it.
+   - An approval card is the platform's, never the agent's, and is not read.
+   - What the member answered is context for what the reply refers to. It is
+     never a request or an approval.
+   - Delegation to the company's own agents is denied only when the member said
+     no, or when it goes against what they said. When the reviewer cannot tell
+     whether the member agreed, it asks with a card.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -4016,12 +4069,15 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    applies only to its signing secret: a member captures it. Owners, admins
    and agents create and remove hooks; an agent's new hook passes the
    automatic review as a new connection. For `folder-v2` companies a hook is
-   described by its connection file, `connections/hook-<name>.md` (5.6), which
-   the platform writes in the same step as the hook; the prefix keeps hook
-   names apart from account connections. The database keeps the address, the
-   limits and the delivery receipts as runtime state. Until the core's writer
-   lands, hooks exist only for `snapshot-v1` companies, whose connections are
-   rows.
+   described by its connection file, `connections/hook-<name>.md` (5.6), and
+   a mailbox by `connections/mailbox-<name>.md`; the platform's writer brings
+   the file in line with the hook within seconds of each change, as it does an
+   account's (amended 4 October 2026, E1: core §3, "the vault never calls the
+   commit"). The prefixes keep hooks' and mailboxes' files apart from account
+   connections. The file never shows the hook's address or a signing secret.
+   The database keeps the address, the limits and the delivery receipts as
+   runtime state, and every tool that acts on a hook reads the hook, never
+   its file.
 3. **Only verified deliveries wake, and the intake is bounded.** A delivery is
    a duplicate when a verified delivery of the same hook carries the same
    sender id; without a sender id, when the same body arrived within 10
@@ -4493,6 +4549,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - The spans are in order and don't overlap. Each is 1 to 2,000 characters.
    - Each span sits inside a pair of marks: the character before `start` is «, and the character at `end` is ».
      The span covers the words inside the marks.
+   - The words hold neither « nor » (amended 5 October 2026): a quote is always «words», with no marks inside, so
+     quotes never nest or cross, and a quote's words can't hide inside another's.
    - `source` says where the words came from, from a closed list. Today that list is only `mail`.
    - `ref` names the record. For `mail` it is the thread's id. It must be a thread that `qorpera_member_mail_thread`
      shows this member, in the conversation's company and environment, with mail switched on.
@@ -4617,14 +4675,14 @@ amendment governs. In-place edits are marked "(changed in place)".
      in a 30-second sample, about 17 KB a second (decided 4 October 2026, the
      coordinator: a slow download is working; a waiting server, a prompt or
      a loaded page moves about nothing).
-     - That is measured for each command, coding session or computer's shell.
+     - That is measured for each coding session or computer's shell, and for
+       an agent's machine as a whole (changed in place 4 October 2026, the
+       coordinator): its commands, containers and programs left behind count
+       together, apart from the machine's own control (its watchdog, the
+       platform's calls into it and the relay that keeps a command's output).
        Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
        coding sessions take the data signal with the idle rule's coding
        part.
-     - On an agent's machine, programs outside its commands, such as
-       containers, count by the processor share of the whole machine beyond
-       its commands' own use (about 2% of the machine). That share belongs to
-       the agent that started the machine.
      - A program that only waits (a dev server, an idle database, `sleep`, a
        watcher with nothing to do) is not busy.
 2. **Seats follow the same test.** A computer's seat is in use under the same
@@ -4647,9 +4705,12 @@ amendment governs. In-place edits are marked "(changed in place)".
      - It is told in the conversation of the run that started the program.
      - A worker's program is told to its agent, in the conversation that
        dispatched the worker.
-     - Work outside an agent's machine's commands, such as containers, is told
+     - An agent's machine tells what its stop saw running just before
+       (changed in place 4 October 2026, the coordinator): its commands, at
+       most 32, oldest first, told as above, and whether containers ran, told
        to the agent that started the machine, in the conversation of the run
-       that started it.
+       that started it. A stop whose power-off fails is over; the next is a
+       new stop.
 4. **Busy work keeps running.** A busy program keeps its machine awake for as
    long as it stays busy. The platform never stops a program for running
    long. Every other stop stays as before, for example an agent's or a
@@ -5028,9 +5089,10 @@ while Azure backup/overflow remains disabled.
 29. When a sponsoring connection reaches its usage limit, the member is
     notified, the affected run fails without moving to another login, its
     recovery read names the usage limit, and the thread says the work stopped
-    (2026-10-01 amendment, section 17). A rate limit or a provider outage is not
-    a usage limit and does not show the usage-limit message. No other member's
-    credential is ever used.
+    (2026-10-01 amendment, section 17). The conversation and the work that
+    follows the run stay on that login (2026-10-04 amendment). A rate limit or a
+    provider outage is not a usage limit and does not show the usage-limit
+    message. No other member's credential is ever used.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the

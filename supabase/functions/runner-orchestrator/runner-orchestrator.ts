@@ -11,6 +11,12 @@ export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; comp
 	listen: Object.freeze({ due: "qorpera_folder_listen_due", company: "qorpera_folder_listen_company", maximum: 256 }),
 	// F2's worker drain (F2-5b-3): starts dispatched workers and revives their parents.
 	workers: Object.freeze({ due: "qorpera_folder_workers_due", company: "qorpera_folder_workers_company", maximum: 32 }),
+	// F2's human-task wakes (H2c, P31): a task's changes the listener marked, and overdue tasks.
+	human_tasks: Object.freeze({
+		due: "qorpera_folder_human_tasks_due",
+		company: "qorpera_folder_human_tasks_company",
+		maximum: 32,
+	}),
 	// A company machine's events, delivered to the runs that started the work (C1c-3i-b).
 	machine_events: Object.freeze({
 		due: "qorpera_folder_machine_events_due",
