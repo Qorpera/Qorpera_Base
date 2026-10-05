@@ -1,0 +1,208 @@
+# Writes through the mount (F3 step 3): the plan
+
+Status: plan, for review before any of it is built. The design it follows is
+[RUNTIME-COMPANY-FOLDER.md](RUNTIME-COMPANY-FOLDER.md) §2 ("Writes: change sets") and its build order (step 3), as
+the 2 October amendment "light threads" changed them. The read path it extends is
+[RUNTIME-FOLDER-SERVICE.md](RUNTIME-FOLDER-SERVICE.md) (step 1, #647). Where this page differs from §2, it says so
+and why.
+
+## What step 3 delivers
+
+A program on a machine changes files under `/company`, and the change lands in the company folder as change sets:
+new and changed files, new folders, moves, renames and deletes, each with its outcome reported back. Two machines on
+two nodes can edit the same folder, and a same-path edit becomes a conflict, never a lost write.
+
+Since light threads, no chat turn has a shell. The writers are machines: company machines (step 4), coding machines
+(step 5) and test machines (step 6). Step 3 builds what all three share: the write protocol, the folder service's
+pending changes, staging, publishing and the report. Each later step adds its view kind, where its boundaries come
+from, and who its saves are credited to.
+
+**Who writes in step 3.** The mounts step 1 configures by hand (an operator's mount of a member or the platform),
+now read-write. A member's and the platform's units pass no automatic review (contract 5.6), so step 3 needs none.
+A view whose saves would need review (an agent's: a company machine's holder, a shell command's run, a coding session,
+a test machine's command) stays read-only until its step wires review in. So nothing skips review on the way.
+
+**Not in step 3:** review of an agent's deletes, moves and delegation units, and proposals (steps 4–6, with the run
+that owns the view); per-command attribution (steps 4 and 6); desktop notifications (step 4); code areas (step 5);
+restore in the web app (the Interfaces session's file page; below).
+
+## The parts
+
+| Part | Step 3 adds |
+| --- | --- |
+| Folder program (`crates/qorpera-folder`, in the machine) | write operations; the bytes of each file open for writing, cut into chunks, with at most one partial chunk in memory per file; the `publish` command |
+| Folder service (node host) | each view's pending changes (names and chunk lists, never bytes); base versions; staging; boundaries; the report |
+| Object gateway | a byte route for the folder service, on its own token |
+| Folder core (SQL) | an upload holds the bytes its actor put under its own earlier intents (3a); everything else is live |
+
+## Pending bytes
+
+Written bytes go to the NAS as chunks before they are published, and are not part of the folder until then
+(§2 "How pending bytes are handled"; founder decision 3: nothing on a node).
+
+- **Chunks are cut in the machine.** The folder program keeps, for each file open for writing, the one chunk being
+  written (at most 4 MiB, the version-2 manifest's chunk size). When a write moves past it, or the file is closed,
+  the program hashes the chunk and sends it to the service, which streams it to the gateway. The gateway checks the
+  hash, as for every put. The service holds only frame buffers; the node keeps no bytes.
+- **A write inside a chunk already sent** (a database file, an editor saving in place): the program reads that chunk
+  back (the service serves the view's own pending chunks), changes it in memory, and it becomes the file's partial
+  chunk. Sequential writes, the common case, never read back.
+- **Staging needs the manifest first.** An upload intent lists its manifest and chunks when it opens (C1D §3), but a
+  big file's first chunks are sent long before its manifest is known. So each chunk sent while the file is still
+  open goes under an intent of its own: a one-chunk manifest, opened, the chunk put, never sealed. That intent roots
+  the chunk for 15 minutes; the service renews it while the file stays pending.
+- **At close** the file's manifest is known. The service opens the file's own intent with it, puts the manifest and
+  any chunk not yet sent, and seals it. A boundary then only commits. A file changed again before the boundary is
+  staged again; the earlier intent lapses.
+- **3a, the one core change.** At open, `present` lists the objects the actor may already read. A chunk the same
+  actor put under its own earlier intent is not readable yet (no path names it), so today it would be put a second
+  time. 3a marks such an object `held` as well: the catalog has it, and an unexpired intent of the same actor (kind
+  and scope) in the same environment has it `put`. That is C1D §3's possession rule ("bytes it put under its own
+  intent; the gateway checked their hash"), applied across intents. It takes the same `KEY SHARE` in hash order and
+  the same GC mark check as today's `present`. No new lock.
+- **Small files** (most) are one chunk: sent and sealed at close, in one intent.
+
+Media type: a path that has a version keeps its media type; a new path takes it from its extension (a fixed table
+in the service; the turn tools' rule, `.md` as `text/markdown`, is its first line), else `application/octet-stream`.
+The executable bit is `chmod +x`. A structured file (`agent.md`, `group.md`, a routine file, `sections.md`, …) is
+read back by hash and parsed at the boundary, as core §3 "Before the transaction" says.
+
+## Pending changes and base versions
+
+The service keeps, per view and in memory only, the view's pending changes on top of the live tree it already
+holds: created, changed and deleted paths, renames, the executable bit, and each pending file's chunk list. Listings,
+attributes and reads served to that view include them, so a program sees its own work at once. Other views see only
+what is published.
+
+**Base versions** (§2 "The base version of a path"): the first time a boundary's work touches a path (opened for
+writing, removed, renamed, its bit set), the service records the version that view showed then. A path the view
+showed as absent has no base, so its write must find it absent. A blind `echo > f` therefore never overwrites a
+version the view did not see. A removed or renamed folder records the view's position in the feed (`asOfSeq`) at
+the first such operation. The feed keeps moving underneath: a pending path keeps showing the view's own version,
+and the commit decides.
+
+This replaces §2's "version map saved with each command's read record". Step 3 has no commands, and a restarted
+service loses the pending work anyway (below).
+
+## A boundary
+
+A boundary publishes the view's pending changes as one change set.
+
+**When.** In step 3: when the machine asks (`qorpera-folder publish <mount>`), and, for a mount configured with a
+quiet period, about two seconds after the last change (the desktop rule of §2). Steps 4–6 add theirs: command end
+and output reads, and per-desktop quiet periods.
+
+**What is left out** (§2 "Never published"):
+- a file still open for writing by any process; it waits for a later boundary;
+- lock, swap, backup and trash names (`.~lock.*#`, `~$*`, `*.swp`, `*.swo`, `.#*`, `*~`, `.Trash-*`): they stay
+  pending, visible only in this view, and go when the view closes;
+- a path created and removed between two boundaries.
+
+**Units** (§2 "Units"), from the net change per path against its base:
+- a file created or changed: `write` (with `expectedVersion` when it had a base);
+- a rename or move, of a file or a folder: `move`; a temporary file renamed over its target is a `write` of the
+  target;
+- a new folder with everything created inside it: one `new_folder`;
+- a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
+- `mkdir` of an empty folder: `mkdir`.
+
+A path moved and then changed in the same boundary needs the version the move creates, which no one knows before
+the commit. Such a boundary commits in two change sets: the moves first, then the writes that depend on them, with
+the versions the first one returned. Every other boundary is one change set.
+
+**Commit.** As the view's actor, with operation key `folder-view:<viewId>:<boundary id>`, where the boundary id is
+random and kept until the boundary has an answer, so a commit asked again after a lost reply is the same commit and
+the core replays it. If the service dies during a commit, the commit has landed or not; the mount shows the live
+folder after the program reconnects either way.
+
+**Outcomes and the report.** After the commit the view shows exactly the live folder, and the report lists every
+changed path: `saved`; `conflict`, with the receipt that keeps this view's version (P17's conflict copies); `refused`,
+with the core's reason (no write authority, a seeded path, a structured file that does not parse); or `not
+applied`, with why (still open, a unit it depended on failed, the save did not get through). The reply to `publish`
+carries it, and the program prints it. A quiet-period report is logged in the machine's journal until step 4 routes
+it to the desktop.
+
+## Errors at once
+
+As §2 "Errors that happen at once", decided in the program or the service before anything is sent:
+- names the folder forbids (`EINVAL`), the adapter-only prefixes, symlinks, hard links, devices, FIFOs and sockets
+  (`EPERM`), a file over 256 MiB, the version-2 manifest's limit (`EFBIG`);
+- deleting or moving a seeded path, a lone `agent.md` or `group.md`, or an agent's or group's folder out of place
+  (`EPERM`);
+- `rename` with `RENAME_EXCHANGE` (`EINVAL`); a name that differs only in case from a sibling (`EEXIST`).
+
+What needs the core is decided at the boundary. A path the view may read but not write is refused there and
+reported, instead of failing at open with `EACCES` as §2 says. Proposal P9 below would move that to open.
+
+## Protocol v2
+
+The hello's answer says whether the view may write (`readOnly`). New requests on the `io` connection, each answered
+with a small JSON reply or `e`:
+
+| Type | Request | Reply |
+| --- | --- | --- |
+| `O` | open for writing `{path, create, exclusive, truncate}` | `{handle, size, version}` |
+| `K` | a chunk `{handle, index, sha256, bytes}`, then its bytes in `d` frames | `{}` once the gateway has it |
+| `G` | read back a pending chunk `{handle, index}` | its bytes |
+| `C` | close `{handle, size, chunks}` (the last chunk sent with it) | `{}` once staged |
+| `T` | truncate a path that is not open `{path, size}` | `{}` |
+| `M`, `U`, `D` | mkdir, unlink, rmdir `{path}` | `{}` |
+| `N` | rename `{from, to, noReplace}` | `{}` |
+| `X` | the executable bit `{path, executable}` | `{}` |
+| `P` | publish | the report |
+
+Frames stay at most 2 MiB, so a 4 MiB chunk is three frames. The service still handles one request at a time per
+connection, with the socket paused, so a machine can never make it buffer more than one frame of its bytes.
+
+## The gateway's route for the folder service
+
+Today's folder byte route (`/v1/folder-objects/`) takes a run's binding on the native token. The folder service gets
+a route of its own, `/v1/folder-service-objects/<environmentId>/<sha256>`, on a token only the folder service holds,
+naming the view's actor in a header (`member`, `platform`, and later `view`). The gateway passes that actor to the
+same SQL checks (`qorpera_folder_authorize_object_upload` and `_confirm_object`) and stores through
+`uploadWithAuthority` as today. The folder service already holds the database's service credential, so the route
+trusts it with no more than it has; the separate token keeps the native credential (runs, the office service) away
+from it, which fits the coordinator's planned narrowing of the office service's native token.
+
+Only node 1 runs an object gateway today. Node 2's folder service reaches it over the nodes' private link until S3
+adds one per node, as runs on node 2 already do.
+
+## Slices
+
+Each is its own PR with an exact-head review, in this order; 3b and 3d can be built side by side.
+
+| Slice | What | Tests |
+| --- | --- | --- |
+| 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | an intent's chunk is `present` in the same actor's next intent and not in another actor's; an expired or other-environment intent does not count; a marked object still refuses |
+| 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway; the hosted-db script runs the real commit on boundaries the service builds |
+| 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names); the end-to-end test against the service |
+| 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
+
+**Live proof (3e)**, from the design's §10 "Ordinary work" and "Conflict":
+- `sed -i` on a document, `mv reports/2026 archive/`, `mkdir -p` for a new folder, and a Python script that writes 200
+  CSV files each land as one change set, and the web app's history shows them;
+- the same file edited on both machines: one save, one conflict with its copy on the receipt;
+- the other machine sees each save within about a second;
+- numbers: the time to publish the 200 files, and a 200 MiB file's throughput (step 0 measured 12 small files a second
+  to the NAS one at a time and 67 with eight at once, so staging runs eight to sixteen at once);
+- `git status` and `git commit` in a repository in the mount, LibreOffice saving a document, and SQLite writing a
+  database (in-place writes), as step 0 measured reads.
+
+§2's build order puts a separate write spike first. Step 0 already measured the NAS's write rates, and 3c and 3d are
+the code a spike would have to write anyway, so this plan has none: 3e is the spike, on the real program, and its
+numbers decide whether step 4 needs more (packing small files, batching intents).
+
+**Restore in the web app** (§9 step 3) is a write of an old version's file reference through the member commit route.
+The core already lets an actor reference bytes of an old version it may read (C1D §7), so it needs no core change.
+It belongs with the web file page and history (P27, the Interfaces session).
+
+## Proposals and questions
+
+- **P9.** Listings carry whether the actor may write each entry, so a read-only path fails at open (`EACCES`, §2)
+  rather than at the boundary. Core work (F1's), not needed for step 3.
+- **P10.** Batch staging: one call that opens the intents of many small files. Only if 3e's numbers ask for it.
+- **Q1 (coordinator).** Step 3's mounts are operator-configured, as step 1's. Which test company, which machines, and
+  whether a member or the platform is the actor.
+- **Q2 (folder core owners).** 3a widens possession across intents of the same actor. Confirm this is the reading of
+  C1D §3 you want, or say if a seal-time re-check is preferred.
