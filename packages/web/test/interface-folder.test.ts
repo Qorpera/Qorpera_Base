@@ -414,6 +414,31 @@ line = "{text}"
 			});
 			expect(table().querySelector(".interface-note")).toBeNull();
 		});
+
+		it("draws a page on screen again when its table recovers with no rows at all", async () => {
+			vi.useFakeTimers();
+			const fake = seeded();
+			fake.put("interfaces/ledger/interface.toml", LEDGER);
+			// Only the first line: a table with no rows, which reads the same as one that can't be read but for that.
+			fake.put("tables/numbers/rows.csv", rows());
+			fake.failDownload("tables/numbers/rows.csv");
+			const { controller } = company();
+			const { hint } = await follow(fake, controller);
+			// On the page, so a redraw with the same key keeps what is on screen.
+			const main = h("main");
+			document.body.append(main);
+			const draw = () => renderInterface(main, controller, "ledger");
+			cleanup.push(controller.store.subscribe(draw));
+			draw();
+			const table = () => main.querySelectorAll<HTMLElement>(".interface-block")[1]!;
+			expect(table().querySelector(".interface-note p")?.textContent).toBe("This table can't be read.");
+			fake.heal("tables/numbers/rows.csv");
+			await hint();
+			await vi.waitFor(() =>
+				expect(table().querySelector(".interface-empty")?.textContent).toBe("Nothing here right now."),
+			);
+			expect(table().querySelector(".interface-note")).toBeNull();
+		});
 	});
 
 	describe("live", () => {

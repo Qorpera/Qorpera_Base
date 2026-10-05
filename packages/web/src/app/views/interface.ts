@@ -428,7 +428,16 @@ export function renderInterfaceFile(
 		widths,
 		agentLooks,
 		memberNames,
-		blocks.map(({ block, rows, open, problems }) => [block.title, rows, open?.key ?? null, problems]),
+		// Each block's source as drawn beside its rows: whether it can be read (a table that recovers with no rows
+		// still draws again) and what its columns hold, which a table's definition says outside the page's.
+		blocks.map(({ block, source, rows, open, readable, problems }) => [
+			block.title,
+			rows,
+			open?.key ?? null,
+			readable,
+			problems,
+			(interfaceSource(company, source)?.columns ?? []).map((column) => idColumn(company, source, column)),
+		]),
 	]);
 	const context: BlockContext = {
 		company,
