@@ -15,6 +15,7 @@ import {
 } from "../src/coding-machine.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInstanceRecord } from "../src/lxd-client.ts";
+import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const mocked = vi.hoisted(() => ({
 	reconcile: vi.fn(),
@@ -175,7 +176,7 @@ async function fixture() {
 		imageFingerprint: "b".repeat(64),
 		bootstrapSha256: "c".repeat(64),
 		storagePool: "coding",
-		network: "coding",
+		network: "qagent0",
 		cpus: 4,
 		memoryBytes: 8589934592,
 		rootDiskBytes: 34359738368,
@@ -202,7 +203,12 @@ async function fixture() {
 	])
 		files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(content) });
 	// The member's machine as LXD holds it.
-	const lxd = { exists: false, running: false, devices: { ...plan.request.devices } as Devices };
+	// The plan's base devices with the agent card as the plug made it (its MAC).
+	const base = {
+		...plan.request.devices,
+		network: { ...plan.request.devices.network, hwaddr: testAgentMac },
+	} as Devices;
+	const lxd = { exists: false, running: false, devices: { ...base } };
 	const state = {
 		guestUid: 200000 as number | null,
 		runRefusal: null as string | null,
@@ -500,6 +506,7 @@ async function fixture() {
 		repositoryCredentials: {
 			withRepositoryToken: vi.fn(async (_scope, _repository, use) => use("test-token-never-sent-to-guest")),
 		},
+		agentPlug: testAgentPlug,
 	};
 	const host = new LxdCodingExecutorHost(options),
 		signal = new AbortController().signal;
@@ -556,6 +563,7 @@ async function fixture() {
 		state,
 		machine,
 		plan,
+		base,
 		placement,
 		sessionDevices,
 		layout,
@@ -616,13 +624,10 @@ describe("a coding turn on its member's machine", () => {
 		expect(reconciled()).toEqual(["running"]);
 		const journal = (mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions).plan;
 		expect(journal).toMatchObject({ machineId: f.machine.machineId, journalName: f.machine.machineId });
+		// The node's agent plug, for the create.
+		expect((mocked.reconcile.mock.calls[0]?.[0] as CodingMachineReconcileOptions).plug).toBe(testAgentPlug);
 		expect(vi.mocked(f.client.replaceInstanceDevices).mock.calls).toEqual([
-			[
-				"coding",
-				f.plan.request.name,
-				{ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) },
-				f.signal,
-			],
+			["coding", f.plan.request.name, { ...f.base, ...f.sessionDevices(f.claim.workerId) }, f.signal],
 		]);
 		const layout = f.layout(f.claim.workerId);
 		// The guest is up (agent, watchdog, pinned helpers, no self-update) before anything is hot-plugged.
@@ -700,7 +705,7 @@ describe("a coding turn on its member's machine", () => {
 		const workspace = await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
 		expect(workspace.vmId).toBe(f.machine.machineId);
 		expect(f.lxd.devices).toEqual({
-			...f.plan.request.devices,
+			...f.base,
 			...f.sessionDevices(f.claim.workerId),
 			...f.sessionDevices(second.workerId),
 		});
@@ -709,7 +714,7 @@ describe("a coding turn on its member's machine", () => {
 		await f.host.detachSession(second, f.signal);
 		expect(Object.keys(f.lxd.devices)).toEqual(
 			Object.keys({
-				...f.plan.request.devices,
+				...f.base,
 				...f.sessionDevices(f.claim.workerId),
 				...f.sessionDevices(second.workerId),
 			}),
@@ -729,7 +734,7 @@ describe("a coding turn on its member's machine", () => {
 				{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
 			]),
 		);
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 		expect(f.lxd.running).toBe(true);
 		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
 		await expect(f.host.commandTransport(f.scope(second), async () => undefined, f.signal)).rejects.toThrow(
@@ -755,7 +760,7 @@ describe("a coding turn on its member's machine", () => {
 		expect(maximum).toBe(1);
 		expect(Object.keys(f.lxd.devices).sort()).toEqual(
 			Object.keys({
-				...f.plan.request.devices,
+				...f.base,
 				...f.sessionDevices(f.claim.workerId),
 				...f.sessionDevices(second.workerId),
 			}).sort(),
@@ -1000,7 +1005,7 @@ describe("a coding turn on its member's machine", () => {
 		const token = f.attachments.get(f.claim.workerId);
 		f.host.endTurn(f.claim);
 		// Standing by: still plugged in, nothing unplugged at the end of the turn.
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 		await expect(f.host.commandTransport(f.scope(), async () => undefined, f.signal)).rejects.toThrow("NOT_PREPARED");
 		f.renew(f.claim);
 		f.claim.sequence = 2;
@@ -1111,7 +1116,7 @@ describe("a coding turn on its member's machine", () => {
 						imageFingerprint: "b".repeat(64),
 						bootstrapSha256: "c".repeat(64),
 						storagePool: "coding",
-						network: "coding",
+						network: "qagent0",
 						cpus: 4,
 						memoryBytes: 8589934592,
 						rootDiskBytes: 34359738368,
@@ -1349,7 +1354,7 @@ describe("a session between its turns", () => {
 		expect(await f.host.keep(f.signal)).toEqual([
 			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
 		]);
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 		expect(mocked.leaseTransports.map((transport) => transport.open)).toEqual([true, false]);
 		const [keep] = f.calls("qorpera_keep_coding_attachments");
 		expect(keep).toMatchObject({
@@ -1403,7 +1408,7 @@ describe("a session between its turns", () => {
 			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-command-guest.mjs", "cancel", f.claim.workerId, command],
 			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "detach", f.claim.workerId],
 		]);
-		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		expect(f.lxd.devices).toEqual(f.base);
 		expect(f.lxd.running).toBe(true);
 		const custody = f.calls("qorpera_authorize_coding_machine_custody");
 		expect(custody).toHaveLength(2);
@@ -1430,9 +1435,9 @@ describe("a session between its turns", () => {
 		const f = await fixture();
 		mocked.seedFetch.mockRejectedValueOnce(new Error("CODING_GIT_SEED_UNCONFIRMED"));
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("SEED_UNCONFIRMED");
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 		await f.host.detachSession(f.claim, f.signal);
-		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		expect(f.lxd.devices).toEqual(f.base);
 		expect(f.execs().at(-1)).toEqual([
 			"/usr/bin/node",
 			"/opt/qorpera-coding/cloud-coding-storage-guest.mjs",
@@ -1451,7 +1456,7 @@ describe("a session between its turns", () => {
 		);
 		g.state.runRefusal = null;
 		await g.host.detachSession(g.claim, g.signal);
-		expect(g.lxd.devices).toEqual(g.plan.request.devices);
+		expect(g.lxd.devices).toEqual(g.base);
 	});
 	it("starts no new command once its turn has ended", async () => {
 		const f = await fixture();
@@ -1484,7 +1489,7 @@ describe("a session between its turns", () => {
 		expect(await pass(f)).toEqual([
 			{ ...takenOff(f), state: "failed", code: "CODING_GUEST_SESSION_STOP_UNCONFIRMED" },
 		]);
-		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		expect(f.lxd.devices).toEqual(f.base);
 		// Not recorded as detached: the next pass takes it off again.
 		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([]);
 	});
@@ -1495,7 +1500,7 @@ describe("a session between its turns", () => {
 		expect(await pass(f)).toEqual([{ ...takenOff(f), state: "failed", code: "CODING_SESSION_DETACH_UNCONFIRMED" }]);
 		f.state.applyDevices = true;
 		expect(await pass(f)).toEqual([takenOff(f)]);
-		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		expect(f.lxd.devices).toEqual(f.base);
 	});
 	it("skips the guest step on a machine that is not running and is done when the machine is gone", async () => {
 		const f = await fixture();
@@ -1505,7 +1510,7 @@ describe("a session between its turns", () => {
 		f.lxd.running = false;
 		await f.host.detachSession(f.claim, f.signal);
 		expect(f.client.execInstance).not.toHaveBeenCalled();
-		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		expect(f.lxd.devices).toEqual(f.base);
 		const g = await fixture();
 		mocked.seedFetch.mockRejectedValueOnce(new Error("CODING_GIT_SEED_UNCONFIRMED"));
 		await expect(g.host.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow("SEED_UNCONFIRMED");
@@ -1520,7 +1525,7 @@ describe("a session between its turns", () => {
 		f.state.custodyRefusal = "SESSION_ATTACHED";
 		expect(await pass(f)).toEqual([{ ...takenOff(f), state: "not-now", code: "SESSION_ATTACHED" }]);
 		expect(f.execs()).toEqual([["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "observe"]]);
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 	});
 	it("keeps renewing a session whose renewal only failed once", async () => {
 		const f = await fixture();
@@ -1540,7 +1545,7 @@ describe("a session between its turns", () => {
 		expect(await f.host.keep(f.signal)).toEqual([
 			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
 		]);
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 	});
 	it("leaves out a session whose guest lease ran out for good, so SQL releases it and it is taken off", async () => {
 		const f = await fixture();
@@ -1569,7 +1574,7 @@ describe("a session between its turns", () => {
 			(f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { sessions: unknown[] } }).p_observation
 				.sessions,
 		).toEqual([]);
-		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+		expect(f.lxd.devices).toEqual(f.base);
 		// What it had running is SQL's to name: the watchdog stopped it before this look.
 		expect(f.calls("qorpera_record_coding_session_detached").at(-1)).toMatchObject({
 			p_reason: "EXPIRED",
@@ -1601,7 +1606,7 @@ describe("a session between its turns", () => {
 		});
 		expect(mocked.leaseTransports.at(-1)).toMatchObject({ scope: f.scope(), open: true });
 		// Never taken off: the folders stay, and the turn's commands run under the new generation.
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([]);
 		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
 	});
@@ -1768,7 +1773,7 @@ describe("housekeeping of a member's machines", () => {
 		expect(vi.mocked(f.client.execInstance).mock.invocationCallOrder.at(-1)).toBeLessThan(
 			mocked.reconcile.mock.invocationCallOrder[0]!,
 		);
-		expect(f.lxd).toMatchObject({ exists: true, running: false, devices: f.plan.request.devices });
+		expect(f.lxd).toMatchObject({ exists: true, running: false, devices: f.base });
 		const stops = f.calls("qorpera_authorize_coding_machine_custody");
 		expect(stops.length).toBeGreaterThanOrEqual(2);
 		for (const args of stops)
@@ -2066,7 +2071,7 @@ describe("housekeeping of a member's machines", () => {
 		expect(
 			f.calls("qorpera_authorize_coding_machine_run").filter((args) => args.p_worker_id === second.workerId),
 		).toEqual([]);
-		expect(f.lxd.devices).toEqual({ ...f.plan.request.devices, ...f.sessionDevices(f.claim.workerId) });
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
 	});
 	it("asks for stop custody only after a running turn's lifecycle step on the same machine", async () => {
 		const f = await fixture();

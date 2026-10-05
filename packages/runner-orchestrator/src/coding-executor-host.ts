@@ -11,6 +11,7 @@ import {
 	cloudCodingSessionLayout,
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
+import type { AgentPlug } from "./agent-plug.ts";
 import { LxdCodingCommandTransport } from "./coding-command-transport.ts";
 import type {
 	CodingExecutorHost,
@@ -130,6 +131,8 @@ export interface LxdCodingExecutorHostOptions {
 	attachTimeoutMs?: number;
 	/** How long one machine's keeper step (observe, keep, renew) may take (default 15 s). */
 	keepDeadlineMs?: number;
+	/** The node's agent plug (default: its plug tool, deploy/agent-exit). */
+	agentPlug?: AgentPlug;
 }
 /** A session this process hot-plugged into its member's machine during a turn,
  * before the turn recorded its attachment in SQL: a failure until then
@@ -555,6 +558,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				client: this.#options.client,
 				authorize,
 				signal: checked,
+				plug: this.#options.agentPlug,
 			});
 			checked.throwIfAborted();
 			if (result.state === "pending") {
@@ -1987,7 +1991,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				);
 				if (sessions.length) {
 					await this.#custody(journal, text, "stop", budget);
-					const base = lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).request.devices;
+					// The base devices, with the machine's own agent card (its plug MAC is not in the plan).
+					const base = {
+						...lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).request.devices,
+						network: stopped.devices.network,
+					};
 					try {
 						await client.replaceInstanceDevices(journal.project, journal.name, base, budget);
 					} catch {

@@ -5,6 +5,7 @@ import {
 	type CloudCodingNasPolicy,
 	createCloudCodingStorageBinding,
 } from "@qorpera/contracts";
+import { AGENT_BRIDGE, agentPlugCard, isAgentPlugCard } from "./agent-plug.ts";
 import type { CodingMachineJournalPlan } from "./coding-machine.ts";
 import type { LxdCreateInstanceRequest, LxdInstanceRecord } from "./lxd-client.ts";
 
@@ -92,7 +93,9 @@ export function parseCompanyMachinePolicy(value: unknown): Readonly<CompanyMachi
 		![input.providerPolicySha256, input.imageFingerprint, input.bootstrapSha256].every(
 			(sha) => typeof sha === "string" && SHA.test(sha),
 		) ||
-		![input.project, input.storagePool, input.network].every((name) => typeof name === "string" && NAME.test(name))
+		![input.project, input.storagePool, input.network].every((name) => typeof name === "string" && NAME.test(name)) ||
+		// An agent road machine: its only card is on the agents' bridge (deploy/agent-exit).
+		input.network !== AGENT_BRIDGE
 	)
 		throw new Error("INVALID_COMPANY_MACHINE_POLICY");
 	return Object.freeze(
@@ -194,15 +197,10 @@ export function lxdCompanyMachinePlan(
 			},
 			devices: {
 				root: { type: "disk", path: "/", pool: binding.storagePool, size: String(binding.rootDiskBytes) },
-				// Machines never reach each other or pretend to be another address.
-				network: {
-					type: "nic",
-					network: binding.network,
-					name: "eth0",
-					"security.mac_filtering": "true",
-					"security.ipv4_filtering": "true",
-					"security.port_isolation": "true",
-				},
+				// On the agents' bridge: machines never reach each other or pretend to be another machine (LXD's MAC
+				// filter and port isolation, and the exit's bridge rules). Its MAC comes from the agent plug right before
+				// the create (withAgentPlug).
+				network: agentPlugCard("eth0"),
 				...(binding.repositoryWorkerId === null || !storage
 					? {}
 					: {
@@ -220,17 +218,20 @@ export function lxdCompanyMachinePlan(
 }
 
 /** The instance is this machine exactly: its name, configuration and
- * devices, with nothing added. */
+ * devices, with nothing added; its agent card carries a plug MAC. */
 export function assertLxdCompanyMachineInstance(
 	request: LxdCreateInstanceRequest,
 	imageFingerprint: string,
 	instance: LxdInstanceRecord,
 ): void {
+	const { network, ...devices } = instance.devices;
+	const { network: card, ...expected } = request.devices;
 	if (
 		instance.name !== request.name ||
 		instance.type !== "virtual-machine" ||
 		!isDeepStrictEqual(instance.profiles, []) ||
-		!isDeepStrictEqual(instance.devices, request.devices) ||
+		!isAgentPlugCard(network, card) ||
+		!isDeepStrictEqual(devices, expected) ||
 		!isDeepStrictEqual(instance.devices, instance.expandedDevices)
 	)
 		throw new Error("COMPANY_MACHINE_DRIFTED");
@@ -261,6 +262,17 @@ export function lxdCompanyMachineJournalPlan(
 		journalName: plan.binding.placementId,
 		binding: plan.binding,
 		request: plan.request,
+		agentPlug: {
+			claim: {
+				kind: "machine" as const,
+				companyId: plan.binding.companyId,
+				machineId: plan.binding.machineId,
+				memberUserId: null,
+				project: plan.binding.project,
+				instance: plan.request.name,
+			},
+			device: "network",
+		},
 		// Scratch: LXD's view settles what the journal cannot (a poweroff inside, a node reboot, a failed create).
 		disposable: true,
 		text: plan.text,
