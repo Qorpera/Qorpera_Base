@@ -1766,6 +1766,41 @@ choices made while building:
   lock, index, verify, proof and seeding rule): 64 caught by 803, 785 or 805, and one equivalent (it rewrote the
   final-task check into the same rule).
 
+**Plan (P31): H2c, human-task wakes** (migration 20260930065000, SQL tests 915 and 916; the coordinator's
+decisions of 4 October). It replaces §9's payer rule: nobody pays in someone else's place unless they choose to.
+- **Markers, then wakes.** P29's commit hook (`qorpera_folder_listener_commit`, LISTENER §8) only inserts a
+  pending marker in `qorpera_folder_human_task_wakes` for each change that should wake an agent. It chooses no
+  payer, inserts no wake and locks nothing but its new rows; the targets hook stays empty. A shared folder drain,
+  `human_tasks` (LISTENER §9; after `listen` in the orchestrator's pass), makes every wake, one company per
+  transaction in the core's lock order: ranks 1–3 KEY SHARE (the payer, the agent and its authority), the tasks
+  FOR SHARE at rank 5, the threads, admission, then the markers FOR UPDATE SKIP LOCKED.
+- **What wakes `from`.** done and declined; accepted, returned and cancelled; a new person; a hand-off (the
+  new `from`); a new open task someone else names the agent in (`assigned`); and once per (task, `due`) an
+  overdue open or returned task. Never ticks, `due` moves, moves, restores (a restored task is final) or the
+  agent's own change. When `from` is not active, the Co-Founder is woken, never by its own change. A marker's
+  `expect` holds what the change left in the task's index row; when the drain finds the task moved on, the
+  marker is skipped (`changed`).
+- **No parent run.** The wake is an `agent` wake with source kind `human-task`, its source the task, its key
+  `human-task:<task>:<commit>` or `human-task-due:<task>:<due in µs>`. Its chain is the changing agent (if any)
+  and the woken one. The pin trigger takes the agent, the payer, the thread and the payload from the pending
+  marker and the task, never from the inserter; `qorpera_folder_wake_authorized` checks the marker, and before
+  the run also the task, agent and payer.
+- **Who pays.** The member who started the task (`started_by_user_id`), through `qorpera_starter_sponsor` with
+  no preferred login. A ChatGPT plan never pays (`human-task` is a listener source). When the starter has left,
+  or no login of theirs can pay, the marker stays `unpaid` and nobody is woken in their place. A member may
+  choose to pay: `qorpera_folder_human_task_wake_continue(env, task)` re-arms the task's unpaid markers with
+  them as the payer; `qorpera_member_folder_human_task_waits(env)` lists the unpaid ones (the web's button is
+  Interfaces', later).
+- **The run.** The agent's public thread for the payer, reply optional (`continuation` when there is a
+  thread). The payload is `{schema 'qorpera.human-task-wake/v1', taskId, reason, commitId, dueAt}`, and when the
+  run may read the task's file, its path, title, status and due. Showing them is a read of the task's file: the wake
+  read records it first (once per version, with the authority it was read under), so the run's effects recheck it and
+  erasure finds the run (review r1). The skill text says when an agent is woken.
+- **Runtime (same PR).** The wake bus accepts the source and its closed payload; the prompt's wake protocol
+  explains it; `FOLDER_DRAINS` and `CLOUD_FOLDER_DRAINS` gain `human_tasks`.
+- **Later:** removing old markers (keep those of live wakes); Interfaces lifts the gateway's hold on
+  `human-tasks/` member writes.
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F2 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
