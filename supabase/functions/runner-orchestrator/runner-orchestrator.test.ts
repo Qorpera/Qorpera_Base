@@ -258,8 +258,21 @@ describe("runner orchestrator boundary", () => {
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId, limit: 32 }),
 			{ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId, limit: 32 },
 		);
+		// F2's worker drain, with its own maximum.
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "workers", environmentId, limit: 32 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "workers", environmentId, limit: 32 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "workers", environmentId, limit: 33 }),
+		);
+		assert.deepEqual(FOLDER_DRAINS.workers, {
+			due: "qorpera_folder_workers_due",
+			company: "qorpera_folder_workers_company",
+			maximum: 32,
+		});
 		// A drain this edge function does not know is refused (400): the orchestrator pauses that drain alone.
-		for (const drain of ["workers", "", 7, undefined, "__proto__", "toString"]) {
+		for (const drain of ["machines", "", 7, undefined, "__proto__", "toString"]) {
 			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain, limit: 1 }));
 		}
 		for (const limit of [0, 501, "10"]) {
@@ -272,6 +285,19 @@ describe("runner orchestrator boundary", () => {
 		}
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "listen", environmentId: "x", limit: 1 }),
+		);
+		// A company machine's events (C1c-3i-b): its own RPCs, at most 64 parents a step.
+		assert.deepEqual(FOLDER_DRAINS.machine_events, {
+			due: "qorpera_folder_machine_events_due",
+			company: "qorpera_folder_machine_events_company",
+			maximum: 64,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 64 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 64 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 65 }),
 		);
 	});
 

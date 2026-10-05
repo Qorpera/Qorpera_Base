@@ -11,10 +11,16 @@ values
 	('95000000-0000-4000-8000-00000000000c', 'picture-friend@example.test', statement_timestamp()),
 	('95000000-0000-4000-8000-00000000000d', 'picture-stranger@example.test', statement_timestamp());
 
-select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-select set_config('qorpera_test.picture_profile', public.qorpera_create_hosted_profile('Pictures', 'main', 1) ->> 'profile_id', false);
-reset role;
+-- The owner's company is a folder-v2 company, opened the way the company creation opens one (856).
+select set_config('qorpera_test.picture_profile', public.qorpera_folder_company_open('95000000-0000-4000-8000-00000000000a',
+	'95000000-0000-4000-8000-0000000000e1', 'Pictures') ->> 'profile_id', false);
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.picture_profile')::uuid) then
+		raise exception 'the pictures company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 -- The colleague shares the company; the "friend" has only sent the owner a
 -- request, which the owner has not accepted yet.

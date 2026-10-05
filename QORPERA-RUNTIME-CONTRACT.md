@@ -794,9 +794,11 @@ subscriptions, which self-limit.
 >   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing runs until
 >   Stop, as in Codex CLI and Claude Code. It no longer keeps a company,
->   coding or agent's machine awake, unless it hangs inside a model request:
->   a run with no progress for 15 minutes is idle (changed in place, by the
->   2026-10-03 amendment "one idle rule for every machine"). A run with no
+>   coding or agent's machine awake: a run with no progress for 15 minutes
+>   is idle, one that hangs inside a model request two hours after the
+>   request's context view (changed in place, by the 2026-10-03 amendment
+>   "one idle rule for every machine"; the two hours decided 4 October 2026,
+>   the coordinator). A run with no
 >   progress for 15 minutes, also one inside a model request, is shown as one
 >   with no progress, and a member is told (2026-10-03, session-buildup audit
 >   gap 4); nothing stops it;
@@ -3003,13 +3005,27 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    when members started the run, their latest earlier messages in the
    conversation), and the rules that apply (all company rules and the
    personal rules of the member the run works for), never the agent's own
-   words or any tool result, and answers allow, ask or deny. A review that cannot
-   run is never an approval: the call does not run.
+   words (apart from the one message below) or any tool result, and answers
+   allow, ask or deny. A review that cannot run is never an approval: the call
+   does not run.
    Amended 2026-10-02 (not built yet): a quote of outside content inside a
    member's message is not what the member asked for, and the reviewer never
    reads the quoted words. See the [quote provenance
    amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
    item 5.
+   Amended 2026-10-04 (the coordinator's decision, after live run 22b287a3
+   denied a hire the founder had agreed to with "Agreed, hire both."):
+   - When members started the run, the reviewer also reads what the member was
+     answering, bounded and marked as the agent's words:
+     - for a card answer, the card the agent asked (found by its interaction
+       id), or nothing;
+     - for a message, the agent's latest message or card before it.
+   - An approval card is the platform's, never the agent's, and is not read.
+   - What the member answered is context for what the reply refers to. It is
+     never a request or an approval.
+   - Delegation to the company's own agents is denied only when the member said
+     no, or when it goes against what they said. When the reviewer cannot tell
+     whether the member agreed, it asks with a card.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -4581,21 +4597,44 @@ amendment governs. In-place edits are marked "(changed in place)".
    a computer opens.
    - **A run** counts while it makes progress or has a model request in
      flight. So does its lease on a computer.
-     - Its progress clock is the newest of its last recorded tool call, its
-       last native context view (recorded before every model request, by the
-       2026-09-29 amendment "one call before a model request") and its job
-       start. Lease renewals never count.
+     - Its progress clock is the newest of its last record (a tool call, a
+       result fence or one of the runtime's own checks; "writing" pulses are
+       skipped), its last native context view (recorded before every model
+       request, by the 2026-09-29 amendment "one call before a model
+       request"), its last assignment and its job start. Lease renewals never
+       count. A tool call counts when it starts and when it ends; a computer
+       action still running keeps its computer awake on its own (its
+       resources are not yet drained).
      - A model request is in flight from its context view until the run's next
-       tool call, its next context view or its end. So a long single request
-       never makes a run idle; a harness that hangs inside a request keeps the
-       machine awake until its run ends.
+       tool call, its next context view or its end, for at most two hours. So
+       a long single request keeps its run in use for up to two hours; a
+       harness that hangs inside a request keeps the machine awake for at most
+       two hours from the request's context view, then the run counts by its
+       progress clock (decided 4 October 2026, the
+       coordinator: the longest real requests take well under an hour, and
+       this bounds only how long a silent run holds a machine awake, never the
+       work). The run's records arrive in order, so the platform reads it from
+       them: a request is in flight while the newest record other than a
+       "writing" pulse is its result fence (recorded around its context view),
+       or while the newest record is a pulse of its reply. Any durable receipt
+       the run writes after the view also ends it. These records are
+       diagnostics: if a request's own records are lost, it counts only
+       through its context view, for 15 minutes; if the records after it are
+       lost, it stays in flight until the two hours or the run's next receipt.
      - A run with neither progress nor a model request for 15 minutes is
        idle. The same clock drives the run's "no progress for 15 minutes"
-       notice.
+       notice. The notice also covers a run inside a model request, while the
+       idle rule keeps that machine awake.
      - A coding turn is a run.
    - **A program** counts while it is busy: while it uses more than about 5%
-     of one processor core.
+     of one processor core, or moves data, at least 512 KiB read or written
+     in a 30-second sample, about 17 KB a second (decided 4 October 2026, the
+     coordinator: a slow download is working; a waiting server, a prompt or
+     a loaded page moves about nothing).
      - That is measured for each command, coding session or computer's shell.
+       Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
+       coding sessions take the data signal with the idle rule's coding
+       part.
      - On an agent's machine, programs outside its commands, such as
        containers, count by the processor share of the whole machine beyond
        its commands' own use (about 2% of the machine). That share belongs to

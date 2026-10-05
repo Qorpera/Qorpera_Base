@@ -114,6 +114,8 @@ Real PostgreSQL (task-local 18.6 on `company41-node-02`; CI runs the pinned
   requesting owner's name; an existing agent document, another proposal and
   ordinary paths stay closed; a fourth hire in one run is refused; a group chat
   is created with its members.
+  (Deleted in the legacy sweep, step B2: it ran on a snapshot-v1 company. On the
+  company folder, a run's hire is tested in `774_folder_state_run_hire.test.sql`.)
 - The other 52 SQL test files pass unchanged with these migrations. Six files
   fail identically with and without them on that host (loopback connections
   and time zone data of the task-local server); CI is authoritative.

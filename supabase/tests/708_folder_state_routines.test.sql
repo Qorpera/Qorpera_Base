@@ -345,7 +345,8 @@ begin
 	x := pg_temp.rt(e1);
 	if x.status is distinct from 'active' or x.pause_reason is not null or x.authorization_failures is distinct from 0 then
 		raise exception 'A resume clears the failures: %', to_jsonb(x); end if;
-	-- An ended routine expires; a save revives it (the sweep expires it again while it has ended).
+	-- An end that has passed ends the routine at the save (20260930056000; the sweep finds nothing left to do); a save
+	-- with a later end revives it.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'record-0004', jsonb_build_array(pg_temp.routine('agents/nora/routines/inbox.md',
 		pg_temp.rparse(e1, 'Inbox, weekdays', pg_temp.every(30), '{"effort":"high","ends":"2020-01-01T00:00:00Z"}')))), 1, 'saved');
 	perform public.qorpera_expire_cloud_routines();

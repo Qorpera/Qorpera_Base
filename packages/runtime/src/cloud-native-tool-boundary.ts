@@ -184,6 +184,16 @@ export class CloudToolRefusal extends Error {
 		this.name = "CloudToolRefusal";
 	}
 }
+/**
+ * The registry's refusal of an operation at its authorize, in words for the model (C1c-3l part 3). The operation
+ * executor relays it only from the authorize before the receipt; anywhere else it stays an unknown outcome.
+ */
+export class CloudToolAuthorizeRefusal extends CloudToolRefusal {
+	constructor(message: string) {
+		super(message);
+		this.name = "CloudToolAuthorizeRefusal";
+	}
+}
 /** Printable ASCII and Latin-1 letters: no control, invisible, bidi or separator character. */
 const REFUSAL_PLAIN = /^[\u0020-\u007e\u00c0-\u00ff]*$/;
 

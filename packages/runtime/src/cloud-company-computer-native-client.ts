@@ -26,8 +26,10 @@ import {
 import { CloudCompanyComputerEffectControl } from "./cloud-company-computer-effect-control.ts";
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import {
+	type CloudCompanyComputerScreenshots,
 	createHttpCompanyComputerScreenshots,
 	parseCompanyComputerCaptureGateway,
+	parseCompanyComputerScreenshotAsset,
 } from "./cloud-company-computer-screenshots.ts";
 import {
 	createCompanyComputerStartSession,
@@ -49,6 +51,8 @@ export interface CompanyComputerAccountFills {
 export const COMPANY_COMPUTER_NATIVE_SCHEMA = "qorpera.company-computer-native/v1";
 export const COMPANY_COMPUTER_NATIVE_MAX_REQUEST = 96 * 1024;
 export const COMPANY_COMPUTER_NATIVE_MAX_RESPONSE = 48 * 1024;
+/** A screenshot's perform answer may carry its PNG (at most 8 MiB, as base64) when nothing stores it (folder-v2, P06d). */
+export const COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE = 11 * 1024 * 1024;
 export function officeNativeRecord(value: unknown, keys: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
 		throw new Error("INVALID_OFFICE_NATIVE_MESSAGE");
@@ -122,6 +126,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	readonly #token: string;
 	readonly #fetch: typeof fetch;
 	readonly #accountFills: CompanyComputerAccountFills | undefined;
+	readonly #screenshots: Pick<CloudCompanyComputerScreenshots, "holdInline"> | undefined;
 	readonly #leases = new Map<string, CompanyComputerScreenLease>();
 	#closed = false;
 
@@ -133,6 +138,8 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		registry: HttpCloudCompanyComputerRegistry;
 		fetch?: typeof fetch;
 		accountFills?: CompanyComputerAccountFills;
+		/** The run's capture reader, which keeps a screenshot's pixels from its perform answer for the model. */
+		screenshots?: Pick<CloudCompanyComputerScreenshots, "holdInline">;
 	}) {
 		const descriptor = parseCompanyComputerNativeDescriptor(options.descriptor, options.run);
 		const endpoint = parseCompanyComputerNativeUrl(options.url);
@@ -149,6 +156,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		this.#token = options.token;
 		this.#fetch = options.fetch ?? fetch;
 		this.#accountFills = options.accountFills;
+		this.#screenshots = options.screenshots;
 		this.#effects = new CloudCompanyComputerEffectControl({
 			run: options.run,
 			scope: descriptor.scope,
@@ -185,7 +193,11 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		if (!isDeepStrictEqual(identity, this.#run.identity)) throw new Error("OFFICE_NATIVE_IDENTITY_CHANGED");
 		await this.#effects.assertAuthorized({ operation, identity, lease, receipt: null }, signal);
 	}
-	async #call(body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+	async #call(
+		body: Record<string, unknown>,
+		signal: AbortSignal,
+		maxResponse = COMPANY_COMPUTER_NATIVE_MAX_RESPONSE,
+	): Promise<unknown> {
 		const encoded = JSON.stringify({
 			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
 			nativeBinding: this.#run.binding,
@@ -207,7 +219,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 						void response.body?.cancel().catch(() => undefined);
 						throw new Error("unconfirmed");
 					}
-					const bytes = await readBoundedCloudResponse(response, COMPANY_COMPUTER_NATIVE_MAX_RESPONSE, s);
+					const bytes = await readBoundedCloudResponse(response, maxResponse, s);
 					s.throwIfAborted();
 					return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
 				},
@@ -267,18 +279,23 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		// Retain cleanup after ambiguous delivery. Never mark a remote session
 		// unused just because its response was lost or its caller was cancelled.
 		this.#leases.set(lease.leaseId, structuredClone(lease));
+		const screenshot = operation.tool === "computer_screenshot";
+		const answer = await this.#call(
+			{
+				action: "perform",
+				operation,
+				lease,
+				receipt: { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey },
+				...(fill ? { fill } : {}),
+			},
+			signal,
+			screenshot ? COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE : COMPANY_COMPUTER_NATIVE_MAX_RESPONSE,
+		);
+		// Only a screenshot's answer may carry its pixels (folder-v2: the PNG is stored nowhere).
+		const inline = screenshot && !!answer && typeof answer === "object" && "image" in answer;
 		const response = officeNativeRecord(
-			await this.#call(
-				{
-					action: "perform",
-					operation,
-					lease,
-					receipt: { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey },
-					...(fill ? { fill } : {}),
-				},
-				signal,
-			),
-			"content,idempotencyKey,receiptId,schema",
+			answer,
+			inline ? "content,idempotencyKey,image,receiptId,schema" : "content,idempotencyKey,receiptId,schema",
 		);
 		if (
 			response.schema !== COMPANY_COMPUTER_NATIVE_SCHEMA ||
@@ -292,6 +309,19 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 			(content.kind === "text" && typeof content.value !== "string")
 		)
 			throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+		if (inline) {
+			// Kept for the model only when they are exactly the published capture's, under this operation's receipt.
+			if (
+				typeof response.image !== "string" ||
+				response.image.length % 4 !== 0 ||
+				!/^[A-Za-z0-9+/]*={0,2}$/.test(response.image) ||
+				content.kind !== "json"
+			)
+				throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+			const asset = parseCompanyComputerScreenshotAsset(content.value);
+			if (asset.assetId !== context.receiptId || !this.#screenshots) throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+			this.#screenshots.holdInline(asset, Buffer.from(response.image, "base64"));
+		}
 		await this.#run.assertActive(signal);
 		return structuredClone(content) as unknown as CompanyComputerToolContent;
 	}
@@ -356,7 +386,22 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		}
 		if (!reaches(descriptor.scope.companyComputerId)) return undefined;
 		const url = route.urlFor(descriptor.scope.companyComputerId);
-		const remote = new HttpCompanyComputerNativeEndpoint({ ...options, url, run, descriptor });
+		// One capture reader for the run: the endpoint keeps a screenshot's pixels there, and the boundary reads them.
+		const screenshots = objectGateway
+			? createHttpCompanyComputerScreenshots({
+					run,
+					scope: descriptor.scope,
+					registry: options.registry,
+					objectGateway,
+				})
+			: undefined;
+		const remote = new HttpCompanyComputerNativeEndpoint({
+			...options,
+			url,
+			run,
+			descriptor,
+			...(screenshots ? { screenshots } : {}),
+		});
 		const session = createCloudCompanyComputerSession({
 			run,
 			operations,
@@ -366,18 +411,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		});
 		return {
 			tools: session.tools,
-			...(objectGateway
-				? {
-						captures: new CloudNativeCaptureImages(
-							createHttpCompanyComputerScreenshots({
-								run,
-								scope: descriptor.scope,
-								registry: options.registry,
-								objectGateway,
-							}),
-						),
-					}
-				: {}),
+			...(screenshots ? { captures: new CloudNativeCaptureImages(screenshots) } : {}),
 			close: async () => {
 				try {
 					await remote.close();

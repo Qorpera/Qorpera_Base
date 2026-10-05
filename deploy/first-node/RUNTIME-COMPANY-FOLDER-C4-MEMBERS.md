@@ -291,7 +291,9 @@ it:
   changed while you were editing it" and the form reloads. A transport failure resends the same request with the same
   operation key (a replay); only an answer that saved nothing frees the key. A replay that saved is "saved"; a draft
   changed since is then written on top of what that request wrote, at the version its answer gives, so a change by
-  someone else meanwhile meets `version_changed` and the check above.
+  someone else meanwhile meets `version_changed` and the check above. When that request made a new routine, the
+  check's stop ends the save id too: the form, found in the list again by the file's id, opens on the routine's file
+  with the changed-while-editing line, and the next Save edits it.
 - **Pause:** `status: paused`, no login needed; nothing is written when the file already says `paused`.
 - **Resume:** the login first (above); then `status: active`. When the file already says `active` (a pause the
   platform recorded in the index only: a member's Stop, a failing login, a wait for one, and P15's `agent_archived`

@@ -470,6 +470,48 @@ begin
 	if (r ->> 'replay')::boolean is not true then raise exception 'The second release replays: %', r; end if;
 end $$;
 
+-- K. A commit that saves nothing but keeps a conflict copy (P17, 20260930042000) publishes bytes, so it passes the same
+-- authority check: a narrowing that commits while it decides refuses it (folder_authority_changed), and no copy is
+-- left; a retry with the same operation key keeps the copy. The fixture rows and member 2's possession are committed
+-- first, so the other connections see them.
+select pg_temp.commit(pg_temp.member(1), 'copy-race-seed-1', jsonb_build_array(jsonb_build_object('op','mkdir','path','copy-area'),
+	jsonb_build_object('op','write','path','copy-race.md','file',pg_temp.stage('copy race one')))) \g /dev/null
+select set_config('qorpera_test.copy_old', (select version::text from public.qorpera_folder_entries
+	where environment_id = '63500000-0000-4000-8000-000000000020' and key_text = 'copy-race.md'), false) \g /dev/null
+select pg_temp.commit(pg_temp.member(1), 'copy-race-seed-2', jsonb_build_array(jsonb_build_object('op','write',
+	'path','copy-race.md','file',pg_temp.stage('copy race two'),'expectedVersion',current_setting('qorpera_test.copy_old')))) \g /dev/null
+select set_config('qorpera_test.copy_units', jsonb_build_array(jsonb_build_object('op','write','path','copy-race.md',
+	'file',pg_temp.stage('copy race mine'),'expectedVersion',current_setting('qorpera_test.copy_old')))::text, false) \g /dev/null
+select pg_temp.possess('63500000-0000-4000-8000-000000000020', pg_temp.member(2),
+	current_setting('qorpera_test.copy_units')::jsonb) \g /dev/null
+do $$
+declare
+	c_env constant uuid := '63500000-0000-4000-8000-000000000020';
+	v_units jsonb := current_setting('qorpera_test.copy_units')::jsonb; v_state text; r jsonb;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', $q$select 1 from public.qorpera_profile_members
+		where user_id = '63500000-0000-4000-8000-000000000002' for update$q$) as t(x integer);
+	perform dblink_send_query('auth_two', format('select public.qorpera_folder_commit(%L, %L, %L, %L)', c_env,
+		pg_temp.member(2)::text, 'copy-race-1', v_units::text));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The copy commit did not reach rank 1'; end if;
+	perform dblink_send_query('auth_three', pg_temp.sql_mutate('set_resource', c_env::text, pg_temp.member(1)::text, 'copy-area',
+		'subtree', 'company_shared', 'normal'));
+	if not pg_temp.finishes_unblocked('auth_three', 'auth_two') then raise exception 'A narrowing waited for a copy commit in flight'; end if;
+	v_state := pg_temp.outcome('auth_three');
+	if v_state <> 'ok' then raise exception 'The narrowing: %', v_state; end if;
+	perform dblink_exec('auth_one', 'rollback');
+	v_state := pg_temp.outcome('auth_two');
+	if v_state not like 'PGRST %folder_authority_changed%' then
+		raise exception 'A commit that only keeps a copy must refuse with folder_authority_changed, got %', v_state; end if;
+	if exists (select 1 from public.qorpera_folder_conflict_copies where environment_id = c_env) then
+		raise exception 'The refused commit left a conflict copy'; end if;
+	r := pg_temp.commit(pg_temp.member(2), 'copy-race-1', v_units);
+	if r -> 'units' -> 0 ->> 'outcome' <> 'conflict' or r ->> 'seq' is not null
+		or (select count(*) from public.qorpera_folder_conflict_copies where commit_id = (r ->> 'commitId')::uuid) <> 1 then
+		raise exception 'The retry keeps the copy, with no seq: %', r; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database.
@@ -482,6 +524,7 @@ delete from public.qorpera_folder_journal where environment_id = '63500000-0000-
 delete from public.qorpera_folder_path_versions where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_reviews where environment_id = '63500000-0000-4000-8000-000000000020';
+delete from public.qorpera_folder_conflict_copies where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_commits where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_operation_keys where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_wake_occurrences where profile_id = '63500000-0000-4000-8000-000000000010';

@@ -77,17 +77,6 @@ describe("company notices member read", () => {
 			},
 			{ kind: "company_ceiling_tripped", subject: full.subject },
 			{
-				kind: "sponsor_handoff",
-				subject: {
-					schema: "qorpera.member-notification.sponsor-handoff/v1",
-					runId: id(11),
-					fromConnectionId: id(12),
-					toConnectionId: id(14),
-					reason: "usage_limit",
-					at: timestamp,
-				},
-			},
-			{
 				kind: "run_no_progress",
 				subject: {
 					schema: "qorpera.member-notification.run-no-progress/v1",
@@ -105,11 +94,11 @@ describe("company notices member read", () => {
 			Response.json(subjects.map((v, i) => ({ ...full, ...v, notification_id: id(100 + i) }))),
 		);
 		const result = await f.client.listNotifications();
-		expect(result).toHaveLength(4);
+		expect(result).toHaveLength(3);
 		expect(result[0]!.subject).not.toHaveProperty("private");
 		expect(result[1]!.subject).toMatchObject({ dimension: "machines", used: 2, ceiling: 2 });
 		// A run with no progress for 15 minutes (gap 4): its run, agent, thread (none for a worker) and last progress.
-		expect(result[3]!.subject).toEqual({
+		expect(result[2]!.subject).toEqual({
 			schema: "qorpera.member-notification.run-no-progress/v1",
 			runId: id(11),
 			staffAgentId: id(15),
@@ -229,6 +218,78 @@ describe("company notices member read", () => {
 			f = setup();
 			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));
 			await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+		}
+	});
+	it("reads a routine moved off the member's login (20260930064000), and fails the read for a bad one", async () => {
+		const moved = (subject: Record<string, unknown> = {}, n = 100) => ({
+			...full,
+			notification_id: id(n),
+			kind: "routine_payer_changed",
+			subject: {
+				schema: "qorpera.member-notification.routine-payer-changed/v1",
+				routineId: id(71),
+				routineVersion: 3,
+				staffAgentId: id(70),
+				payer: "member",
+				payerUserId: userB.id,
+				changedByUserId: userB.id,
+				reason: "save",
+				at: timestamp,
+				...subject,
+			},
+		});
+		let f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json([
+				moved(),
+				moved(
+					{ payer: "company", payerUserId: null, changedByUserId: null, reason: "pick", private: "hidden" },
+					101,
+				),
+			]),
+		);
+		const [member, company] = await f.client.listNotifications();
+		expect(member).toMatchObject({ notificationId: id(100), kind: "routine_payer_changed" });
+		expect(member!.subject).toEqual({
+			schema: "qorpera.member-notification.routine-payer-changed/v1",
+			routineId: id(71),
+			routineVersion: 3,
+			staffAgentId: id(70),
+			payer: "member",
+			payerUserId: userB.id,
+			changedByUserId: userB.id,
+			reason: "save",
+			at: timestamp,
+		});
+		// A company account names no member; nothing beyond the published fields is kept.
+		expect(company!.subject).toEqual({
+			schema: "qorpera.member-notification.routine-payer-changed/v1",
+			routineId: id(71),
+			routineVersion: 3,
+			staffAgentId: id(70),
+			payer: "company",
+			payerUserId: null,
+			changedByUserId: null,
+			reason: "pick",
+			at: timestamp,
+		});
+		for (const bad of [
+			moved({ schema: undefined }),
+			moved({ schema: "qorpera.member-notification.routine-payer-changed/v2" }),
+			{ ...moved(), kind: "routine_suspended_payer" },
+			moved({ routineId: "routine" }),
+			moved({ routineVersion: 0 }),
+			moved({ staffAgentId: null }),
+			moved({ payer: "agent" }),
+			moved({ payerUserId: null }),
+			moved({ payer: "company" }),
+			moved({ changedByUserId: "someone" }),
+			moved({ reason: "swap" }),
+			moved({ at: "yesterday" }),
+		]) {
+			f = setup();
+			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));
+			await expect(f.client.listNotifications(), JSON.stringify(bad)).rejects.toThrow("invalid response");
 		}
 	});
 	it("fails the read for a retired notice from another company, under another kind or envelope", async () => {

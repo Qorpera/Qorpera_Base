@@ -104,7 +104,7 @@ test("a migration, the folder load test or its fixture puts one folder-v2 compan
 		"supabase/tests/648_folder_core_run_fence_concurrency.test.sql",
 	])
 		assert.ok(names([file]).includes("folder-core-load"), file);
-	assert.ok(!names(["supabase/tests/745_company_fence_shared_readers.test.sql"]).includes("folder-core-load"));
+	assert.ok(!names(["supabase/tests/850_folder_core_vault_lock_order.test.sql"]).includes("folder-core-load"));
 	assert.ok(!names(["packages/runtime/src/cloud-company-path-control.ts"]).includes("folder-core-load"));
 	const load = STEPS.find((step) => step.name === "folder-core-load").commands.join(" ");
 	assert.equal(load, "node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check");
