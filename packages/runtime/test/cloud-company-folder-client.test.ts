@@ -1087,6 +1087,202 @@ describe("reviewed change sets (C2 R1)", () => {
 	});
 });
 
+describe("changes saved from a computer that wait for review (P40b)", () => {
+	const PROPOSAL = "5b0c2d3e-1111-4111-8111-111111111111";
+	const units = [
+		{
+			unit: 1,
+			op: "new_folder",
+			path: "agents/nora",
+			items: 1,
+			structured: [
+				{ path: "agents/nora/agent.md", kind: "agent", parse: { kind: "agent", id: AGENT_ID, name: "Nora" } },
+			],
+		},
+		{ unit: 2, op: "move", path: "docs/a.md", to: "docs/b.md" },
+	] as const;
+	const proposal = (extra: Record<string, unknown> = {}) => ({
+		proposalId: PROPOSAL,
+		createdAt: "2026-10-05T10:00:00+00:00",
+		viewKind: "computer_desktop",
+		effect: "delegation",
+		createsAgent: true,
+		unitCount: 3,
+		units,
+		moreUnits: 1,
+		...extra,
+	});
+	const page = (extra: Record<string, unknown> = {}) => ({
+		schema: "qorpera.folder-agent-proposals/v1",
+		proposals: [proposal()],
+		moreProposals: 0,
+		nextCursor: null,
+		...extra,
+	});
+	const listed = {
+		proposalId: PROPOSAL,
+		createdAt: "2026-10-05T10:00:00+00:00",
+		viewKind: "computer_desktop",
+		effect: "delegation",
+		createsAgent: true,
+		unitCount: 3,
+		units: [
+			{ ...units[0], to: null },
+			{ ...units[1], items: null, structured: [] },
+		],
+		moreUnits: 1,
+	} as const;
+
+	it("lists the run's open proposals as the kernel pages them, and refuses any other shape", async () => {
+		const answers: unknown[] = [page()];
+		const { client, calls } = fixture(() => answers.shift());
+		await expect(client.agentProposals({ cursor: PROPOSAL }, signal())).resolves.toEqual({
+			proposals: [listed],
+			moreProposals: 0,
+			nextCursor: null,
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_folder_agent_proposals",
+			args: { p_request: { cursor: PROPOSAL } },
+		});
+		for (const bad of [
+			page({ schema: "qorpera.folder-agent-proposals/v2" }),
+			page({ proposals: [proposal(), proposal(), proposal(), proposal(), proposal()] }),
+			// The count is the listed units and the rest.
+			page({ proposals: [proposal({ moreUnits: 0 })] }),
+			page({ proposals: [proposal({ units: [] })] }),
+			page({ proposals: [proposal({ units: [units[1], units[0]] })] }),
+			page({ proposals: [proposal({ units: [{ ...units[0], op: "chmod" }, units[1]] })] }),
+			page({ proposals: [proposal({ effect: "external" })] }),
+			page({ proposals: [proposal({ note: "x" })] }),
+			// A cursor comes with more, and is the last listed id.
+			page({ moreProposals: 2 }),
+			page({ moreProposals: 2, nextCursor: "5b0c2d3e-9999-4999-8999-999999999999" }),
+		]) {
+			answers.push(bad);
+			await expect(client.agentProposals({}, signal()), JSON.stringify(bad)).rejects.toThrow(/invalid/);
+		}
+	});
+
+	it("records the approval as the review of the proposal's own units, and says when it is no longer open", async () => {
+		const actionReviewId = randomUUID();
+		const reviewId = randomUUID();
+		const answers: unknown[] = [{ schema: "qorpera.folder-review/v1", reviewId, approvedBy: null, units: 3 }];
+		const { client, calls, binding } = fixture(() => {
+			const next = answers.shift();
+			if (next instanceof Error) throw next;
+			return next;
+		});
+		const approval = { actionReviewId, argumentSha256: sha("call") };
+		await expect(client.recordProposalReview(approval, listed, signal())).resolves.toBe(reviewId);
+		expect(calls[0]).toEqual({
+			method: "qorpera_folder_record_review",
+			args: {
+				p_binding: binding,
+				p_request: { actionReviewId, tool: "apply_proposal", argumentSha256: sha("call"), proposalId: PROPOSAL },
+			},
+		});
+		answers.push(sqlError("42501", "This proposal is not open for this run"));
+		await expect(client.recordProposalReview(approval, listed, signal())).resolves.toBeNull();
+		// Any other refusal is not this one, and a review of another number of units is not this proposal's.
+		answers.push(sqlError("42501", "Run authority is unavailable"));
+		await expect(client.recordProposalReview(approval, listed, signal())).rejects.toThrow();
+		answers.push({ schema: "qorpera.folder-review/v1", reviewId, approvedBy: null, units: 2 });
+		await expect(client.recordProposalReview(approval, listed, signal())).rejects.toThrow(/invalid/);
+		const before = calls.length;
+		await expect(
+			client.recordProposalReview({ ...approval, actionReviewId: "nope" }, listed, signal()),
+		).rejects.toThrow("Invalid action review");
+		expect(calls).toHaveLength(before);
+	});
+
+	it("applies a proposal under its receipt, with each unit's result, every unit counted", async () => {
+		const reviewId = randomUUID();
+		const receiptId = randomUUID();
+		const commitId = randomUUID();
+		const results = [
+			{ unit: 1, op: "new_folder", path: "agents/nora", outcome: "saved", version: randomUUID() },
+			{ unit: 2, op: "move", path: "docs/a.md", to: "docs/b.md", outcome: "conflict", reason: "version_changed" },
+			// Past the list, any op.
+			{ unit: 3, op: "delete", path: "docs/c.md", outcome: "conflict", reason: "missing" },
+		];
+		const answers: unknown[] = [
+			{ schema: "qorpera.folder-commit/v1", commitId, seq: 9, replay: false, units: results },
+		];
+		const { client, calls } = fixture(() => answers.shift());
+		const committed = await client.applyProposal(
+			`apply-proposal:${PROPOSAL}`,
+			listed,
+			{ reviewId, receiptId },
+			signal(),
+		);
+		expect(committed).toMatchObject({ commitId, seq: 9, replay: false });
+		expect(committed.units.map((unit) => [unit.outcome, unit.to, unit.reason])).toEqual([
+			["saved", null, null],
+			["conflict", "docs/b.md", "version_changed"],
+			["conflict", null, "missing"],
+		]);
+		// As the run's actor, like a commit.
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_folder_apply_proposal",
+			args: {
+				p_operation_key: `apply-proposal:${PROPOSAL}`,
+				p_proposal_id: PROPOSAL,
+				p_review_id: reviewId,
+				p_receipt_id: receiptId,
+			},
+		});
+		const failed = results.map(({ version: _, ...unit }) => ({ ...unit, outcome: "conflict", reason: "exists" }));
+		for (const bad of [
+			// Every unit of the proposal answers, the listed ones with their own op.
+			{ seq: 9, units: results.slice(0, 2) },
+			{ seq: 9, units: [{ ...results[0], op: "write" }, results[1], results[2]] },
+			// A sequence number exactly when something was saved.
+			{ seq: null, units: results },
+			{ seq: 9, units: failed },
+		]) {
+			answers.push({ schema: "qorpera.folder-commit/v1", commitId, replay: false, ...bad });
+			await expect(
+				client.applyProposal(`apply-proposal:${PROPOSAL}`, listed, { reviewId, receiptId }, signal()),
+				JSON.stringify(bad),
+			).rejects.toThrow(/invalid/);
+		}
+		answers.push({ schema: "qorpera.folder-commit/v1", commitId, seq: null, replay: true, units: failed });
+		await expect(
+			client.applyProposal(`apply-proposal:${PROPOSAL}`, listed, { reviewId, receiptId }, signal()),
+		).resolves.toMatchObject({ seq: null, replay: true });
+	});
+
+	it("closes a proposal as declined with the denial's id, else as discarded, and answers a decided one as it stands", async () => {
+		const actionReviewId = randomUUID();
+		const answers: unknown[] = [
+			{ schema: "qorpera.folder-proposal/v1", proposalId: PROPOSAL, status: "declined" },
+			{ schema: "qorpera.folder-proposal/v1", proposalId: PROPOSAL, status: "applied" },
+			sqlError("P0002", "Proposal is unavailable"),
+			{ schema: "qorpera.folder-proposal/v1", proposalId: PROPOSAL, status: "open" },
+			{ schema: "qorpera.folder-proposal/v1", proposalId: AGENT_ID, status: "discarded" },
+		];
+		const { client, calls, binding } = fixture(() => {
+			const next = answers.shift();
+			if (next instanceof Error) throw next;
+			return next;
+		});
+		await expect(client.closeProposal(PROPOSAL, actionReviewId, signal())).resolves.toBe("declined");
+		await expect(client.closeProposal(PROPOSAL, undefined, signal())).resolves.toBe("applied");
+		expect(calls.map((call) => call.args)).toEqual([
+			{ p_binding: binding, p_request: { proposalId: PROPOSAL, actionReviewId } },
+			{ p_binding: binding, p_request: { proposalId: PROPOSAL } },
+		]);
+		await expect(client.closeProposal(PROPOSAL, undefined, signal())).resolves.toBeNull();
+		await expect(client.closeProposal(PROPOSAL, undefined, signal())).rejects.toThrow(/invalid/);
+		await expect(client.closeProposal(PROPOSAL, undefined, signal())).rejects.toThrow(/invalid/);
+		await expect(client.closeProposal(PROPOSAL.toUpperCase(), undefined, signal())).rejects.toThrow(
+			"Invalid Company folder proposal",
+		);
+	});
+});
+
 describe("routines (thin writers W4c)", () => {
 	const routine = (routineKey: string, extra: Record<string, unknown> = {}) => {
 		const id = randomUUID();

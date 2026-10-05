@@ -250,7 +250,7 @@ Runtime:
 - The SQL and the runtime ship in one cut. The runtime calls the recorder only from a writer, and none does before W4,
   so the change is inert until then.
 
-## 8. R2: change sets no tool call carried (P40a built; P40b, the runtime, next)
+## 8. R2: change sets no tool call carried (P40a and P40b built; P40c, the web, next)
 
 An agent can also change delegation paths without a reviewed tool: a computer or shell edit saved through a view
 (C1b-3). Until P40 such units were denied. The coordinator chose shape B on 4 October 2026 (registry 05:51Z): the
@@ -322,10 +322,34 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   under a root in between makes it retry (QRC01);
 - the parking commit only inserts.
 
-**Left for P40b and later:**
-- P40b (runtime): list at the start of a turn, review each proposal through the gate with an action summary built from
-  the changes (not a file list), record, apply, and tell the agent. It also fixes the boundary's "proposed" observation
-  for folder-v2 results.
+**The runtime (P40b, migration `20260930093000`, SQL test 320 extended; `CloudFolderProposals`):**
+- At the start of a turn, a run that can raise a card lists the first page: a folder-v2 company run with a session,
+  not a worker, and not a wake from a room other than its own thread. The prompt gets a `proposals` block just before
+  `skills`: each proposal's id, when and from where it was saved, and its first 20 changes as one line each with its
+  path ("Hire “Mira” as Bookkeeper", "Delete “Q3 plan” from “Old”"; a path is cut at 512 bytes), with the rest counted
+  (`moreChanges`, `moreWaiting`). A listing that fails or is malformed leaves the block and the tools out.
+- The tools `apply_proposal` and `discard_proposal` exist only for a run that listed something, and take only a listed
+  id (lower case). Their arguments are exactly `{"proposalId":"<id>"}`, so the boundary's digest is the one the
+  layering checks.
+- `apply_proposal` goes through the gate with the proposal's effect (`delegation` or `destructive`). Its card is built
+  from the changes, never from the files: one change shows as its own card (a hire's title, name, role and intent);
+  more show "Apply N changes saved from …", the first 8 changes in order, the rest counted (with the units past the
+  list's page), and each shown change's quoted text. An allow records the review with the proposal
+  (`qorpera_folder_record_review`, before the receipt), then applies it as one operation (`apply:<id>`, tool version
+  `folder-v2/1`, the company's revision required) and tells the agent what saved, whom it hired (to wake with
+  `send_coworker_message`), and up to 20 units that did not save, with their reasons. A proposal that is no longer open
+  answers that nothing was applied now, and starts nothing.
+- A deny (the reviewer's, or a member's on the card) calls the tool's new `denied` hook with the denial's id, and the
+  hook closes the proposal as declined (`qorpera_folder_close_proposal` with `actionReviewId`). The boundary passes
+  the id on each denying path; if the hook cannot close it, the denial stands as it was.
+- `discard_proposal` closes without a review id (an internal effect). A decided proposal says how it was decided, and
+  nothing changes.
+- The boundary's observation records a folder-v2 file tool result whose `qorpera.company-folder-result/v1` text says
+  `proposed` as `proposed` (`protected_path`), not `succeeded`.
+- The migration lets the native host make the run's three calls (the list and the apply with the folder scope, the
+  close with the binding's; G2-1's scopes) and names the two tools in observations. No table and no lock.
+
+**Left for P40c and later:**
 - P40c (web): open proposals in the agent's thread, and a member's discard.
 - A proposal waiting for a removed member, or for an archived agent, stays open until an owner or admin discards it.
 

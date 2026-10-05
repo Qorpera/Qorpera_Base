@@ -313,25 +313,30 @@ export class CloudFolderProposals {
 	/** What the review reads and the card shows: the changes, in order, never their files. */
 	card(proposal: CloudCompanyFolderProposal): JsonValue {
 		const from = SAVED_FROM[proposal.viewKind] ?? "a computer";
-		const saved: CardDetail = { key: "saved", value: `Saved earlier from ${from}; nothing of it applies until this is allowed` };
+		const saved: CardDetail = {
+			key: "saved",
+			value: `Saved earlier from ${from}; nothing of it applies until this is allowed`,
+		};
 		const changes = proposal.units.map((unit) => changeOf(unit, proposal.createsAgent));
 		const only = proposal.unitCount === 1 ? changes[0] : undefined;
+		const shown = changes.slice(0, CARD_CHANGES);
+		// The rest, counted: past the card's list, and past the list's own page (`moreUnits`).
+		const more = proposal.unitCount - shown.length;
 		const details: CardDetail[] = only
 			? [...only.details, saved]
 			: [
 					saved,
-					...changes.slice(0, CARD_CHANGES).map((change, index) => ({ key: `change ${index + 1}`, value: change.text })),
-					...(proposal.unitCount > CARD_CHANGES
-						? [{ key: "more", value: `${proposal.unitCount - CARD_CHANGES} more changes` }]
-						: []),
+					...shown.map((change, index) => ({ key: `change ${index + 1}`, value: change.text })),
+					...(more > 0 ? [{ key: "more", value: `${more} more ${more === 1 ? "change" : "changes"}` }] : []),
 					// Each change's own text, as a member reads it before deciding: the first quote is the card's.
-					...changes
-						.slice(0, CARD_CHANGES)
-						.flatMap((change, index) =>
-							change.details
-								.filter((detail) => detail.quoted)
-								.map((detail) => ({ ...detail, key: index === 0 ? detail.key : `${detail.key} (change ${index + 1})` })),
-						),
+					...shown.flatMap((change, index) =>
+						change.details
+							.filter((detail) => detail.quoted)
+							.map((detail) => ({
+								...detail,
+								key: index === 0 ? detail.key : `${detail.key} (change ${index + 1})`,
+							})),
+					),
 				];
 		return {
 			proposalId: proposal.proposalId,

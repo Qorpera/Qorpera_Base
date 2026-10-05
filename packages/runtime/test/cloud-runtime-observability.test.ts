@@ -603,6 +603,25 @@ describe("tool outcome diagnostics", () => {
 		expect(rows[1].errorCategory).toBe("protected_path");
 		expect(JSON.stringify(rows)).not.toMatch(/PRIVATE_PATH|PRIVATE_CONTENT|call-private/);
 	});
+	it("records a folder-v2 change parked for review as proposed, from the file tool's text (P40b)", async () => {
+		const text = (value: Record<string, unknown>) =>
+			tool(async () => ({ kind: "text", value: JSON.stringify(value) }));
+		const parked = await invoke(
+			text({ schema: "qorpera.company-folder-result/v1", state: "proposed", path: "PRIVATE_PATH" }),
+			{},
+		);
+		expect(parked.rows[1].status).toBe("proposed");
+		expect(parked.rows[1].errorCategory).toBe("protected_path");
+		expect(JSON.stringify(parked.rows)).not.toContain("PRIVATE_PATH");
+		// Saved, another schema, or not JSON: a completed call.
+		for (const definition of [
+			text({ schema: "qorpera.company-folder-result/v1", state: "applied" }),
+			text({ schema: "qorpera.other-result/v1", state: "proposed" }),
+			tool(async () => ({ kind: "text", value: '{"state":"proposed"' })),
+			tool(async () => ({ kind: "text", value: "proposed" })),
+		])
+			expect((await invoke(definition, {})).rows[1].status).toBe("succeeded");
+	});
 	it("retains exact trusted byte/read metadata and never content", async () => {
 		const readId = randomUUID();
 		const { rows } = await invoke(
