@@ -66,7 +66,9 @@ reads only. On a writing connection frames may carry up to 2 MiB, and these requ
 | `P` | publish `{}` | `p` the report `{commitId, seq, paths: [{path, outcome, reason?, receipt?, kept?}]}` |
 
 A truncate of a file not open is an open, the chunk that ends it, and a close; a file whose manifest is not on the
-4 MiB grid is changed whole (open it with truncate), not chunk by chunk.
+4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
+the connection that opened it (the folder program pools its connections); a file still open when the view's last
+connection ends is abandoned, and what it held at its last close stays pending.
 
 Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_FOLDER` ENOTDIR, `NOT_A_FILE` EISDIR,
 `STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`

@@ -136,6 +136,9 @@ class View {
 	readonly uploads = new Map<string, ChunkUpload>();
 	/** The intents chunks went under, and when each was last renewed. */
 	readonly chunkIntents = new Map<string, number>();
+	/** The write handles open on the view. The machine's program pools its connections, so any of them may use a
+	 * handle; they are abandoned when the view's last connection ends. */
+	readonly handles = new Set<number>();
 
 	constructor(grant: Grant) {
 		this.key = grant.key;
@@ -298,16 +301,15 @@ export class FolderService {
 		view.idleSince = undefined;
 		let released = false;
 		let mine: FeedSink | undefined;
-		/** The write handles this connection opened: abandoned if it ends with them open. */
-		const handles = new Set<number>();
 		const release = (): void => {
 			if (released) return;
 			released = true;
 			if (mine) view.sinks.delete(mine);
-			for (const handle of handles) this.#abandon(view, handle);
-			handles.clear();
 			view.connections--;
 			if (view.connections > 0) return;
+			// No connection is left to finish a file: its program ended (or lost the link), and what it was writing goes.
+			for (const handle of view.handles) this.#abandon(view, handle);
+			view.handles.clear();
 			view.idleSince = this.#now();
 			// A core view no machine holds is dropped at once (with its pass): its lease is not renewed while idle, so
 			// a machine that comes back lists it again and renews at once.
@@ -347,21 +349,21 @@ export class FolderService {
 						...(request.base ? { base: request.base } : {}),
 					}),
 				);
-				handles.add(opened.handle);
+				view.handles.add(opened.handle);
 				return opened;
 			},
 			chunk: async (part) => {
-				if (!handles.has(part.handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
+				if (!view.handles.has(part.handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
 				await this.#chunk(view, part);
 			},
 			getChunk: async (handle, index) => {
-				if (!handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
+				if (!view.handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
 				return this.#getChunk(view, handle, index);
 			},
 			close: async (handle, size) => {
-				if (!handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
+				if (!view.handles.has(handle)) throw new ProtocolError(ErrorCode.badRequest, "No such handle");
 				const node = await this.#change(view, (pending) => pending.close(handle, size));
-				handles.delete(handle);
+				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				if (node.open === 0) await this.#stage(view, node).catch(() => undefined);
 				return { version: node.version };
@@ -467,6 +469,7 @@ export class FolderService {
 		if (view.quiet) clearTimeout(view.quiet);
 		for (const upload of view.uploads.values()) upload.upload?.abort();
 		view.uploads.clear();
+		view.handles.clear();
 		// The pass goes with it: a closed view makes no more calls.
 		view.lease = undefined;
 		if (this.#views.get(view.key) === view) this.#views.delete(view.key);

@@ -333,6 +333,34 @@ describe("writes through the mount", () => {
 		expect(core.entries.has("quiet.txt")).toBe(true);
 	});
 
+	it("takes a write handle on any connection of the view, and abandons it when the last one ends", async () => {
+		const { core, open } = await fixture();
+		// The folder program pools its connections: a file opened on one goes on through another.
+		const first = await open();
+		const second = await open();
+		const { handle } = await first.open({ path: "pooled.txt", create: true, exclusive: false, truncate: true });
+		const data = Buffer.from("pooled");
+		await second.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		await first.close(handle, data.byteLength);
+		const left = await second.open({ path: "pooled.txt", create: false, exclusive: false, truncate: true });
+		first.release();
+		await second.chunk({
+			handle: left.handle,
+			index: 0,
+			sha256: hashOf("x"),
+			bytes: 1,
+			offset: 0,
+			data: Buffer.from("x"),
+		});
+		// The last connection ends with the file open: it is abandoned, and the bytes closed before stay.
+		second.release();
+		const third = await open();
+		await refused(third.close(left.handle, 1), "BAD_REQUEST");
+		expect(await read(third, "pooled.txt")).toBe("pooled");
+		expect((await third.publish()).paths).toEqual([{ path: "pooled.txt", outcome: "saved" }]);
+		expect(core.entries.get("pooled.txt")?.fileSha256).toBe(hashOf("pooled"));
+	});
+
 	it("takes no writes on a read-only view", async () => {
 		const { open } = await fixture({ readOnly: true });
 		const view = await open();
