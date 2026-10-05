@@ -11,9 +11,9 @@
 //! The map is not authority: a base can only claim to have seen a version, and the core checks every unit.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -38,10 +38,14 @@ struct Line {
 }
 
 pub struct VersionMap {
-	map: HashMap<String, Entry>,
+	/// By path, in order, so a folder's paths are one range.
+	map: BTreeMap<String, Entry>,
 	/// Where it is written through; None keeps it in memory only.
 	file: Option<(PathBuf, File)>,
 	lines: usize,
+	/// The file's length up to its last whole line, and whether a failed write may have left part of a line after it.
+	length: u64,
+	torn: bool,
 	/// A write that failed is reported once; the map goes on in memory.
 	failed: bool,
 }
@@ -49,29 +53,37 @@ pub struct VersionMap {
 impl VersionMap {
 	/// A map kept in memory only.
 	pub fn memory() -> VersionMap {
-		VersionMap { map: HashMap::new(), file: None, lines: 0, failed: false }
+		VersionMap { map: BTreeMap::new(), file: None, lines: 0, length: 0, torn: false, failed: false }
 	}
 
 	/// The map of the mount whose state folder is `dir` (made 0700 if missing), with what an earlier program wrote.
 	pub fn open(dir: &Path) -> io::Result<VersionMap> {
 		std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
 		let path = dir.join(FILE);
-		let mut map = HashMap::new();
+		let mut map = BTreeMap::new();
 		let mut lines = 0;
-		if let Ok(file) = File::open(&path) {
-			for line in BufReader::new(file).lines() {
-				// A line cut short by a crash mid-write is the last one: it is skipped.
-				let Ok(line) = line else { break };
-				let Ok(l) = serde_json::from_str::<Line>(&line) else { continue };
-				lines += 1;
-				match l.v {
-					Some(version) => map.insert(l.p, Entry { version, made: l.m }),
-					None => map.remove(&l.p),
-				};
-			}
+		let text = match std::fs::read(&path) {
+			Ok(text) => text,
+			Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+			Err(e) => return Err(e),
+		};
+		// Whole lines only: what follows the last newline was cut short (a crash, or a write that failed) and is cut off
+		// the file, so the next line written starts a line of its own. A line that does not read is skipped alone.
+		let whole = text.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+		for line in text[..whole].split(|b| *b == b'\n') {
+			let Ok(l) = serde_json::from_slice::<Line>(line) else { continue };
+			lines += 1;
+			match l.v {
+				Some(version) => map.insert(l.p, Entry { version, made: l.m }),
+				None => map.remove(&l.p),
+			};
+		}
+		if whole < text.len() {
+			OpenOptions::new().write(true).open(&path)?.set_len(whole as u64)?;
 		}
 		let file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
-		let mut out = VersionMap { map, file: Some((path, file)), lines, failed: false };
+		let mut out =
+			VersionMap { map, file: Some((path, file)), lines, length: whole as u64, torn: false, failed: false };
 		out.compact_if_due();
 		Ok(out)
 	}
@@ -93,7 +105,9 @@ impl VersionMap {
 		self.map.is_empty()
 	}
 
-	/// The mount read `version` of `path`. Reading back what its own save made keeps it marked as made.
+	/// The mount read `version` of `path`: the caller tells only of reads of the version the path shows now (a file
+	/// still open from before a newer version arrived reads an older one, which is not the newest the mount has seen).
+	/// Reading back what its own save made keeps it marked as made.
 	pub fn read(&mut self, path: &str, version: &str) {
 		if self.map.get(path).is_some_and(|e| e.version == version) {
 			return;
@@ -126,7 +140,9 @@ impl VersionMap {
 	/// `path` was removed: it, and for a folder everything under it, is forgotten.
 	pub fn removed(&mut self, path: &str) {
 		let prefix = format!("{path}/");
-		let under: Vec<String> = self.map.keys().filter(|p| p.as_str() == path || p.starts_with(&prefix)).cloned().collect();
+		let mut under: Vec<String> =
+			self.map.range(prefix.clone()..).map(|(p, _)| p).take_while(|p| p.starts_with(&prefix)).cloned().collect();
+		under.push(path.to_string());
 		for p in under {
 			self.forget(&p);
 		}
@@ -150,13 +166,23 @@ impl VersionMap {
 		let Some((path, file)) = &mut self.file else { return };
 		let mut text = serde_json::to_string(line).expect("a line always serializes");
 		text.push('\n');
+		// A write that failed may have left part of its line: the file goes back to its last whole line first, so this
+		// line is read on its own.
+		if self.torn && file.set_len(self.length).is_ok() {
+			self.torn = false;
+		}
 		match file.write_all(text.as_bytes()) {
-			Ok(()) => self.lines += 1,
+			Ok(()) if !self.torn => {
+				self.lines += 1;
+				self.length += text.len() as u64;
+			}
+			Ok(()) => {}
 			Err(e) => {
 				if !self.failed {
 					eprintln!("qorpera-folder: the version map could not be written to {}: {e}", path.display());
 				}
 				self.failed = true;
+				self.torn = true;
 			}
 		}
 		self.compact_if_due();
@@ -183,8 +209,10 @@ impl VersionMap {
 		})();
 		match result {
 			Ok(file) => {
+				self.length = file.metadata().map_or(0, |m| m.len());
 				self.file = Some((path, file));
 				self.lines = self.map.len();
+				self.torn = false;
 			}
 			Err(e) => {
 				let _ = std::fs::remove_file(&fresh);
@@ -230,13 +258,21 @@ mod tests {
 	}
 
 	#[test]
-	fn a_line_cut_short_is_skipped() {
+	fn a_line_cut_short_is_cut_off_and_what_follows_is_kept() {
 		let dir = tempdir();
 		std::fs::create_dir_all(&dir).unwrap();
-		std::fs::write(dir.join(FILE), "{\"p\":\"a\",\"v\":\"1\"}\n{\"p\":\"b\",\"v\":").unwrap();
+		// A line that does not read is skipped alone; the last one was cut short mid-character.
+		let mut text = b"{\"p\":\"a\",\"v\":\"1\"}\nnot json\n{\"p\":\"c\",\"v\":\"3\"}\n{\"p\":\"b\",\"v\":\"\xc3".to_vec();
+		std::fs::write(dir.join(FILE), &text).unwrap();
+		{
+			let mut map = VersionMap::open(&dir).unwrap();
+			assert_eq!((map.base("a").as_deref(), map.base("c").as_deref(), map.base("b")), (Some("1"), Some("3"), None));
+			map.read("d", "4");
+		}
+		// The next program reads what was written after the cut too.
 		let map = VersionMap::open(&dir).unwrap();
-		assert_eq!(map.base("a").as_deref(), Some("1"));
-		assert_eq!(map.base("b"), None);
+		assert_eq!((map.base("a").as_deref(), map.base("c").as_deref(), map.base("d").as_deref()), (Some("1"), Some("3"), Some("4")));
+		text.truncate(0);
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 

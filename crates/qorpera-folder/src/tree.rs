@@ -343,9 +343,13 @@ impl Tree {
 	/// version the next listing is compared with, so it is not taken for someone else's newer version.
 	pub fn set_local(&mut self, ino: u64, attr: Attr) {
 		self.changes += 1;
-		if let Some(n) = self.nodes.get_mut(&ino).filter(|n| !n.detached) {
-			n.attr = Some(attr.clone());
-			n.seen = attr;
+		let Some(n) = self.nodes.get_mut(&ino).filter(|n| !n.detached) else { return };
+		n.attr = Some(attr.clone());
+		n.seen = attr.clone();
+		// A lookup answers from the folder's cached listing: it names the inode with what it is now.
+		let parent = n.parent;
+		if let Some(child) = self.dirs.get_mut(&parent).and_then(|l| l.iter_mut().find(|c| c.ino == ino)) {
+			child.attr = attr;
 		}
 	}
 
@@ -674,11 +678,15 @@ mod tests {
 		t.set_local(n, Attr { size: 3, version: "p1".into(), ..t.attr(n).unwrap() });
 		let (kids, _) = t.install(d, vec![file("new.md", 3, "p1")], t.changes(), true, Some("new.md"));
 		assert_eq!(ino_of(&kids, "new.md"), n);
+		// A save of a file its folder's cached listing names: a lookup from that listing gives what the save made.
+		t.set_local(n, Attr { size: 9, version: "p2".into(), ..t.attr(n).unwrap() });
+		let listed = t.listing(d).unwrap().iter().find(|c| c.ino == n).unwrap();
+		assert_eq!((listed.attr.size, listed.attr.version.as_str()), (9, "p2"));
 		// A rename keeps the inode at its new path; the file it replaced keeps its version for whoever holds it.
 		t.renamed_local("d/new.md", "f", ROOT);
 		assert_eq!(t.path(n), Some("f"));
 		assert_eq!(t.attr(f).unwrap().version, "v1");
-		let (kids, _) = t.install(ROOT, vec![folder("d"), file("f", 3, "p1")], t.changes(), true, Some("f"));
+		let (kids, _) = t.install(ROOT, vec![folder("d"), file("f", 9, "p2")], t.changes(), true, Some("f"));
 		assert_eq!(ino_of(&kids, "f"), n);
 		// A folder's move takes what is under it along.
 		let (kids, _) = t.install(d, vec![file("x", 1, "1")], t.changes(), true, Some("x"));

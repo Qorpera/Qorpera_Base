@@ -69,11 +69,22 @@ export class GatewayUploads implements FolderUploads {
 		});
 		void answer.catch(() => undefined);
 		return {
+			// A part the socket cannot take yet waits for it to drain; a request that fails, times out or is aborted
+			// meanwhile fails the wait too (every such end closes it), so nothing hangs on a put that ended.
 			write: (part) =>
 				new Promise<void>((resolve, reject) => {
 					if (request.destroyed) return reject(uploadError(0));
-					if (request.write(part)) resolve();
-					else request.once("drain", () => resolve());
+					if (request.write(part)) return resolve();
+					const drained = (): void => {
+						request.off("close", closed);
+						resolve();
+					};
+					const closed = (): void => {
+						request.off("drain", drained);
+						reject(uploadError(0));
+					};
+					request.once("drain", drained);
+					request.once("close", closed);
 				}),
 			end: async () => {
 				request.end();
@@ -172,13 +183,35 @@ export class FolderStaging {
 		return { intentId: open.intentId, present: open.present.includes(sha256) };
 	}
 
+	/** Holds a pending chunk again under a new intent of its own, after its intent lapsed: put again from the share
+	 * when the actor no longer holds it. Returns the new intent. */
+	async holdChunk(
+		environmentId: string,
+		actor: FolderActor,
+		profileId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<string> {
+		const open = await this.openChunk(environmentId, actor, sha256, bytes);
+		if (!open.present)
+			await this.#put(
+				environmentId,
+				actor,
+				open.intentId,
+				sha256,
+				await this.#objects.chunk(profileId, sha256, bytes),
+			);
+		return open.intentId;
+	}
+
 	/** Starts streaming a chunk under its intent. */
 	upload(environmentId: string, actor: FolderActor, intentId: string, sha256: string, bytes: number): Upload {
 		return this.#uploads.start(environmentId, actor, intentId, sha256, bytes);
 	}
 
 	/** Stages a whole file: its hash from its chunks on the share, its manifest, any chunk the actor does not hold, and
-	 * the seal. */
+	 * the seal. Returns the file's reference and the sealed intent that holds its bytes until it is published (renewed
+	 * by the caller while it waits). */
 	async stageFile(
 		environmentId: string,
 		actor: FolderActor,
@@ -186,7 +219,7 @@ export class FolderStaging {
 		content: Content,
 		mediaType: string,
 		executable: boolean,
-	): Promise<FileRef> {
+	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const hash = createHash("sha256");
 		for (const c of content.chunks) hash.update(await this.#objects.chunk(profileId, c.sha256, c.bytes));
 		const text = manifestText({
@@ -215,7 +248,7 @@ export class FolderStaging {
 			if (!present.has(manifestSha256))
 				await this.#put(environmentId, actor, open.intentId, manifestSha256, manifest);
 			const seal = await this.#core.sealUpload(environmentId, actor, open.intentId);
-			if (seal.state === "sealed") return seal.file;
+			if (seal.state === "sealed") return { file: seal.file, intentId: open.intentId };
 		}
 		throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be saved now");
 	}

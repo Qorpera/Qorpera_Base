@@ -185,7 +185,8 @@ impl Writer {
 		Ok(out)
 	}
 
-	/// The file's new size: cut short, or grown with zeros.
+	/// The file's new size: cut short, or grown with zeros. A cut on the 4 MiB grid (or to nothing) sends no chunk: the
+	/// node cuts the file's chunks at the close, from its origin's when no chunk of it was sent (folder service, close).
 	pub fn truncate(&mut self, store: &impl Chunks, size: u64) -> Result<(), Fail> {
 		if size > MAX_CHUNKS * CHUNK {
 			return Err(too_large());
