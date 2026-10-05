@@ -6,6 +6,7 @@ import type {
 	CloudCompanyFolderProposal,
 	CloudCompanyFolderProposalPage,
 	CloudCompanyFolderProposalUnit,
+	CloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import {
 	type CloudNativeTool,
@@ -15,7 +16,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
-import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import { type CloudNativeToolOperations, CloudToolOperationSettled } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 /*
@@ -26,8 +27,10 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  * - apply_proposal {proposalId}: the arguments are exactly the proposal's id, so the call's digest is the one the
  *   kernel checks (SHA-256 of ["qorpera","apply_proposal",'{"proposalId":"…"}']). The gate reviews it with the
  *   proposal's own effect, and its card shows the changes, never a file list (`card`). On an approval, R1's recorder
- *   records the review of the proposal's units before the receipt, so a proposal no longer open is a refusal and never
- *   a held receipt; the run then applies it under its receipt. On a denial (the reviewer's, or a member's on the card)
+ *   records the review of the proposal's units before the receipt, so a proposal no longer open is a refusal; the run
+ *   then applies it under its receipt. A member's discard (or an erasure) that lands between the two leaves nothing to
+ *   apply: the kernel cancels that receipt and says so, and the call ends refused, never a held receipt that would fence
+ *   the run. On a denial (the reviewer's, or a member's on the card)
  *   the boundary hands the denial to `denied`, which closes the proposal as declined.
  * - discard_proposal {proposalId}: the agent drops one. The kernel answers a decided proposal as it stands.
  * Both are offered only while the list has proposals, and refuse an id it did not show before any review.
@@ -284,6 +287,12 @@ export class CloudFolderProposals {
 		};
 	}
 
+	/** Every path the listed proposals name, with the authority the list was decided on: the run releases them with the
+	 * context that shows them, before its first model request, so a grant revoked since fences the run. */
+	get reads(): readonly CloudCompanyFolderRelease[] {
+		return this.#page.proposals.flatMap((proposal) => proposal.reads);
+	}
+
 	/** The listed proposal a call names: its parsed arguments carry the id. */
 	#proposal(value: JsonValue): CloudCompanyFolderProposal {
 		const id = (value as { proposalId?: unknown } | null)?.proposalId;
@@ -308,7 +317,37 @@ export class CloudFolderProposals {
 		return proposal;
 	}
 
-	/** What the review reads and the card shows: the changes, in order, never their files. */
+	/** A proposal the review can read in full: the list carries each one's first changes, and one with more is never
+	 * applied here, since its review would judge a part of what it applies. */
+	#whole(proposal: CloudCompanyFolderProposal): CloudCompanyFolderProposal {
+		if (proposal.moreUnits > 0 || proposal.units.length !== proposal.unitCount)
+			throw new CloudToolArgumentRefusal(
+				"This proposal has more changes than its review can read in full, so it cannot be applied here. Discard it if it is no longer wanted, or tell the member",
+			);
+		return proposal;
+	}
+
+	/** Everything an apply would change, as the automatic review reads it beside the card: each change, with its files'
+	 * whole parses, which the card cuts. A proposal listed only in part has none. */
+	contents(proposal: CloudCompanyFolderProposal): JsonValue {
+		const whole = this.#whole(proposal);
+		return {
+			proposalId: whole.proposalId,
+			savedFrom: whole.viewKind,
+			createsAgent: whole.createsAgent,
+			changes: whole.units.map((unit) => ({
+				op: unit.op,
+				path: unit.path,
+				...(unit.to === null ? {} : { to: unit.to }),
+				...(unit.items === null ? {} : { items: unit.items }),
+				...(unit.structured.length > 0
+					? { files: unit.structured.map(({ path, kind, parse }) => ({ path, kind, parse })) }
+					: {}),
+			})),
+		} as unknown as JsonValue;
+	}
+
+	/** What the card shows, and the review reads beside the contents: the changes, in order, never their files. */
 	card(proposal: CloudCompanyFolderProposal): JsonValue {
 		const from = SAVED_FROM[proposal.viewKind] ?? "a computer";
 		const saved: CardDetail = {
@@ -359,7 +398,8 @@ export class CloudFolderProposals {
 				description:
 					"Apply one of the changes listed in proposals: changes you saved from a computer that need a review before they take effect. It is reviewed like any action, so it may wait for a member's approval on a card; once allowed, its changes are saved. A file that changed since you saved it keeps its current version, and that change is not applied. Use it only for changes that are still wanted, with the proposalId exactly as listed.",
 				inputSchema: proposalId,
-				parseArguments: (value) => this.card(this.#parse(value)),
+				parseArguments: (value) => this.card(this.#whole(this.#parse(value))),
+				reviewContents: (value) => this.contents(this.#proposal(value)),
 				execute: (value, context) => this.#apply(this.#proposal(value), operations, context),
 				denied: (value, context) => this.#decline(this.#proposal(value), context),
 			},
@@ -413,6 +453,9 @@ export class CloudFolderProposals {
 					{ reviewId, receiptId },
 					signal,
 				);
+				// Decided or erased after the review was recorded: the kernel cancelled this call's receipt, nothing applied.
+				if ("unapplied" in committed)
+					throw new CloudToolOperationSettled(receiptId, new CloudToolRefusal(NOT_WAITING));
 				return {
 					content: { kind: "text", value: applied(proposal, receiptId, committed) },
 					folderCommitId: committed.commitId,

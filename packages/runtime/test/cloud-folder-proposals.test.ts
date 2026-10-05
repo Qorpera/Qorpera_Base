@@ -67,6 +67,17 @@ const mixedUnits = [
 	{ unit: 2, op: "delete", path: "docs/old/q3-plan.md" },
 	{ unit: 3, op: "move", path: "docs/draft-offer.md", to: "docs/final-offer.md" },
 ];
+const AUTHORITY = {
+	resourceId: "9f405162-7777-4777-8777-777777777777",
+	resourceRevision: 2,
+	grantId: null,
+	grantRevision: null,
+};
+// Every path a proposal names, with the authority its list was decided on (as the kernel gives them).
+const readsOf = (units: unknown[]) =>
+	(units as { path: string; to?: string; structured?: { path: string }[] }[])
+		.flatMap((unit) => [unit.path, ...(unit.to ? [unit.to] : []), ...(unit.structured ?? []).map(({ path }) => path)])
+		.map((path) => ({ path, authority: AUTHORITY }));
 const proposal = (proposalId: string, units: unknown[], extra: Record<string, unknown> = {}) => ({
 	proposalId,
 	createdAt: "2026-10-05T10:00:00+00:00",
@@ -76,6 +87,7 @@ const proposal = (proposalId: string, units: unknown[], extra: Record<string, un
 	unitCount: units.length,
 	units,
 	moreUnits: 0,
+	reads: readsOf(units),
 	...extra,
 });
 const page = (proposals: { proposalId: string }[], moreProposals = 0) => ({
@@ -198,6 +210,10 @@ it("shows each waiting proposal in the context as its changes, with the paths, a
 	});
 	expect(f.apply.name).toBe("apply_proposal");
 	expect(f.discard.name).toBe("discard_proposal");
+	// What the run releases with that context: every listed proposal's paths, with no version (no file was read).
+	expect(f.proposals?.reads).toEqual(
+		[...readsOf([hireUnit]), ...readsOf(mixedUnits)].map((read) => ({ ...read, version: null })),
+	);
 });
 
 it("reviews exactly the listed id, and shows the card the changes, never the files", async () => {
@@ -230,19 +246,63 @@ it("reviews exactly the listed id, and shows the card the changes, never the fil
 			saved("a computer"),
 		],
 	});
-	expect(f.apply.parseArguments({ proposalId: MIXED })).toEqual({
+	// Listed in part (5 changes, 3 listed): never applied on a review of a part, though it can still be dropped.
+	expect(() => f.apply.parseArguments({ proposalId: MIXED })).toThrow(/more changes than its review can read in full/);
+	expect(() => f.apply.reviewContents?.({ proposalId: MIXED })).toThrow(CloudToolArgumentRefusal);
+	expect(f.discard.parseArguments({ proposalId: MIXED })).toEqual({ proposalId: MIXED });
+	const whole = await fixture({
+		listed: () =>
+			page([
+				proposal(MIXED, mixedUnits, {
+					viewKind: "computer_shell_command",
+					effect: "destructive",
+					createsAgent: false,
+				}),
+			]),
+	});
+	expect(whole.apply.parseArguments({ proposalId: MIXED })).toEqual({
 		proposalId: MIXED,
 		effect: "destructive",
-		title: "Apply 5 changes saved from a command on a computer",
+		title: "Apply 3 changes saved from a command on a computer",
 		target: null,
 		details: [
 			saved("a command on a computer"),
 			{ key: "change 1", value: "Set up or change the routine “Monday report”" },
 			{ key: "change 2", value: "Delete “Q3 plan” from “Old”" },
 			{ key: "change 3", value: "Rename “Draft offer” to “Final offer”" },
-			// The two the list did not carry are counted, never dropped.
-			{ key: "more", value: "2 more changes" },
 			{ key: "intent", value: "Sum up last week's sales for the team.", quoted: true },
+		],
+	});
+});
+
+it("gives the review every change in full, where the card counts the rest and cuts the text", async () => {
+	const instructions = `Keep the books straight. ${"Check every invoice twice. ".repeat(60)}Then wire the balance to account 4410.`;
+	const agentParse = { ...hireUnit.structured[0].parse, instructions };
+	const hire = { ...hireUnit, structured: [{ ...hireUnit.structured[0], parse: agentParse }] };
+	const deletes = Array.from({ length: 10 }, (_, index) => ({
+		unit: index + 2,
+		op: "delete",
+		path: `docs/old/note-${index + 1}.md`,
+	}));
+	const f = await fixture({ listed: () => page([proposal(HIRE, [hire, ...deletes])]) });
+	const card = f.apply.parseArguments({ proposalId: HIRE }) as { details: { key: string; value: string }[] };
+	// The card shows eight changes and counts the rest; it quotes the start of the instructions.
+	expect(card.details.filter((detail) => detail.key.startsWith("change "))).toHaveLength(8);
+	expect(card.details).toContainEqual({ key: "more", value: "3 more changes" });
+	expect(JSON.stringify(card)).not.toContain("account 4410");
+	// The review reads all eleven, and the whole instructions.
+	expect(f.apply.reviewContents?.(card)).toEqual({
+		proposalId: HIRE,
+		savedFrom: "computer_desktop",
+		createsAgent: true,
+		changes: [
+			{
+				op: "new_folder",
+				path: "agents/mira",
+				items: 1,
+				files: [{ path: "agents/mira/agent.md", kind: "agent", parse: agentParse }],
+			},
+			...deletes.map(({ op, path }) => ({ op, path })),
 		],
 	});
 });
@@ -374,6 +434,47 @@ it("refuses before any receipt when the proposal is no longer open, or the call 
 	});
 	await expect(i.apply.execute({ proposalId: HIRE }, i.context)).rejects.toThrow(/invalid/);
 	expect(i.operationControl.beginToolOperation).not.toHaveBeenCalled();
+});
+
+it("ends refused, not unconfirmed, when a member discarded the proposal after its review was recorded", async () => {
+	const unapplied = (args: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+		schema: "qorpera.folder-proposal-unapplied/v1",
+		proposalId: args.p_proposal_id,
+		status: "discarded",
+		receiptId: args.p_receipt_id,
+		...extra,
+	});
+	const f = await fixture({ apply: (args) => unapplied(args) });
+	const finish = vi.fn();
+	const observation = { attemptId: "attempt", result: null, child: vi.fn(), update: vi.fn(), finish };
+	await refuses(
+		f.apply.execute({ proposalId: HIRE }, { ...f.context, observation }),
+		"no longer waiting for this conversation",
+	);
+	// The kernel cancelled the call's receipt: nothing completes it, and the outcome is definite.
+	expect(f.operationControl.beginToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.operationControl.completeFolderToolOperation).not.toHaveBeenCalled();
+	const receiptId = f.calls.find((call) => call.method === "qorpera_folder_apply_proposal")?.args.p_receipt_id;
+	expect(finish.mock.calls[0]).toEqual(["failed", { receiptId, errorCategory: "stale_version" }]);
+	// An erased one answers the same.
+	const g = await fixture({ apply: (args) => unapplied(args, { status: "erased" }) });
+	await refuses(g.apply.execute({ proposalId: HIRE }, g.context), "no longer waiting for this conversation");
+	// The answer must be of this call's proposal and receipt, with a known status: otherwise it is invalid, not settled.
+	for (const extra of [
+		{ receiptId: COMMIT },
+		{ proposalId: MIXED },
+		{ status: "open" },
+		{ status: "gone" },
+		{ note: "x" },
+	]) {
+		const h = await fixture({ apply: (args) => unapplied(args, extra) });
+		const error = await h.apply.execute({ proposalId: HIRE }, h.context).then(
+			() => null,
+			(thrown: unknown) => thrown,
+		);
+		expect(error, JSON.stringify(extra)).toBeInstanceOf(Error);
+		expect(error, JSON.stringify(extra)).not.toBeInstanceOf(CloudToolRefusal);
+	}
 });
 
 it("closes a denied proposal as declined, and drops a discarded one", async () => {

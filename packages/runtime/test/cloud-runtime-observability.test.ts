@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	assertCloudRuntimeObservationBatchReceipt,
@@ -15,6 +16,7 @@ import {
 	parseCloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import { describe, expect, it, vi } from "vitest";
+import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 function syntheticTool(
 	name: string,
@@ -603,24 +605,36 @@ describe("tool outcome diagnostics", () => {
 		expect(rows[1].errorCategory).toBe("protected_path");
 		expect(JSON.stringify(rows)).not.toMatch(/PRIVATE_PATH|PRIVATE_CONTENT|call-private/);
 	});
-	it("records a folder-v2 change parked for review as proposed, from the file tool's text (P40b)", async () => {
-		const text = (value: Record<string, unknown>) =>
-			tool(async () => ({ kind: "text", value: JSON.stringify(value) }));
-		const parked = await invoke(
-			text({ schema: "qorpera.company-folder-result/v1", state: "proposed", path: "PRIVATE_PATH" }),
-			{},
+	it("records a folder-v2 write parked for review as proposed through the receipt executor (P40b)", async () => {
+		const f = await folderWriterFixture(
+			{ folders: ["docs"] },
+			{
+				hook: (path) =>
+					path === "docs/parked.md" ? { outcome: "waiting_for_review", reason: "review_required" } : null,
+			},
 		);
-		expect(parked.rows[1].status).toBe("proposed");
-		expect(parked.rows[1].errorCategory).toBe("protected_path");
-		expect(JSON.stringify(parked.rows)).not.toContain("PRIVATE_PATH");
-		// Saved, another schema, or not JSON: a completed call.
-		for (const definition of [
-			text({ schema: "qorpera.company-folder-result/v1", state: "applied" }),
-			text({ schema: "qorpera.other-result/v1", state: "proposed" }),
-			tool(async () => ({ kind: "text", value: '{"state":"proposed"' })),
-			tool(async () => ({ kind: "text", value: "proposed" })),
-		])
-			expect((await invoke(definition, {})).rows[1].status).toBe("succeeded");
+		try {
+			const write = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity })[2];
+			const call = async (path: string, operationKey: string) => {
+				const { rows, response } = await invoke(write as CloudNativeTool, {
+					path,
+					operationKey,
+					expectedVersion: null,
+					text: "PRIVATE_CONTENT",
+				});
+				const finish = rows.find((row) => row.operation === write?.name && row.phase === "finish");
+				return { rows, response, finish };
+			};
+			const parked = await call("docs/parked.md", "parked-1");
+			expect(parked.response.success).toBe(true);
+			expect(parked.finish).toMatchObject({ status: "proposed", errorCategory: "protected_path" });
+			expect(parked.finish?.receiptId).toEqual(expect.any(String));
+			expect(JSON.stringify(parked.rows)).not.toMatch(/PRIVATE_CONTENT|parked\.md|call-private/);
+			const saved = await call("docs/saved.md", "saved-1");
+			expect(saved.finish).toMatchObject({ status: "succeeded", errorCategory: null });
+		} finally {
+			f.run.close();
+		}
 	});
 	it("retains exact trusted byte/read metadata and never content", async () => {
 		const readId = randomUUID();

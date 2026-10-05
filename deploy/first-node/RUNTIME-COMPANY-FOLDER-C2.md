@@ -322,30 +322,45 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   under a root in between makes it retry (QRC01);
 - the parking commit only inserts.
 
-**The runtime (P40b, migration `20260930093000`, SQL test 320 extended; `CloudFolderProposals`):**
+**The runtime (P40b, migration `20260930093000`, SQL tests 320, 926 and 927 extended; `CloudFolderProposals`):**
 - At the start of a turn, a run that can raise a card lists the first page: a folder-v2 company run with a session,
   not a worker, and not a wake from a room other than its own thread. The prompt gets a `proposals` block just before
   `skills`: each proposal's id, when and from where it was saved, and its first 20 changes as one line each with its
   path ("Hire “Mira” as Bookkeeper", "Delete “Q3 plan” from “Old”"; a path is cut at 512 bytes), with the rest counted
   (`moreChanges`, `moreWaiting`). A listing that fails or is malformed leaves the block and the tools out.
+- The listing gives each proposal's `reads`: every path it names, with the authority the list was decided on, in the
+  same snapshot as the filter that lists only what the member can read (`qorpera_folder_proposal_reads`). The run
+  releases them with no version (no file was read) under the composed context's hash, with what composition read,
+  before its first model request. `record_release` and the run's fence then treat them as any read: a grant revoked
+  after the listing fails the release (the turn fails closed), or fences the run's later operations once released.
 - The tools `apply_proposal` and `discard_proposal` exist only for a run that listed something, and take only a listed
   id (lower case). Their arguments are exactly `{"proposalId":"<id>"}`, so the boundary's digest is the one the
   layering checks.
 - `apply_proposal` goes through the gate with the proposal's effect (`delegation` or `destructive`). Its card is built
   from the changes, never from the files: one change shows as its own card (a hire's title, name, role and intent);
-  more show "Apply N changes saved from …", the first 8 changes in order, the rest counted (with the units past the
-  list's page), and each shown change's quoted text. An allow records the review with the proposal
+  more show "Apply N changes saved from …", the first 8 changes in order, the rest counted, and each shown change's
+  quoted text. The reviewer also reads the proposal in full beside the card: every change with its files' whole
+  parses (the tool's new `reviewContents` hook, which the gate adds to the action as `contents`; a tool that cannot
+  give all of it fails the review closed). A proposal the list carries only in part (over 50 units) is never applied
+  on a review of a part: its arguments are refused, and it can still be discarded. An allow records the review with the proposal
   (`qorpera_folder_record_review`, before the receipt), then applies it as one operation (`apply:<id>`, tool version
   `folder-v2/1`, the company's revision required) and tells the agent what saved, whom it hired (to wake with
   `send_coworker_message`), and up to 20 units that did not save, with their reasons. A proposal that is no longer open
   answers that nothing was applied now, and starts nothing.
+- A member's discard (or an erasure) can land after the review is recorded and before the apply commits. The apply
+  then finds the proposal decided without its commit, cancels the call's own receipt (executing, of this run, with the
+  key `apply_proposal:apply:<id>`, and carried by no commit) and answers
+  `{schema: "qorpera.folder-proposal-unapplied/v1", proposalId, status, receiptId}` (`status` is `erased` for an
+  erased one). The executor finishes that call as failed (`stale_version`) through `CloudToolOperationSettled`, and
+  the agent hears that nothing was applied. A receipt that stayed executing would fence the run's later operations.
 - A deny (the reviewer's, or a member's on the card) calls the tool's new `denied` hook with the denial's id, and the
   hook closes the proposal as declined (`qorpera_folder_close_proposal` with `actionReviewId`). The boundary passes
   the id on each denying path; if the hook cannot close it, the denial stands as it was.
 - `discard_proposal` closes without a review id (an internal effect). A decided proposal says how it was decided, and
   nothing changes.
-- The boundary's observation records a folder-v2 file tool result whose `qorpera.company-folder-result/v1` text says
-  `proposed` as `proposed` (`protected_path`), not `succeeded`.
+- A change that waits for review is observed as `proposed` (`protected_path`), not `succeeded`: a folder-v2 file tool
+  tells the operation executor before it finishes the call's observation, and the boundary reads the path gateway's
+  `qorpera.company-path-result/v1` answer.
 - The migration lets the native host make the run's three calls (the list and the apply with the folder scope, the
   close with the binding's; G2-1's scopes) and names the two tools in observations. No table and no lock.
 

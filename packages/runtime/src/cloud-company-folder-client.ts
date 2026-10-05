@@ -208,6 +208,9 @@ export interface CloudCompanyFolderProposal {
 	readonly unitCount: number;
 	readonly units: readonly CloudCompanyFolderProposalUnit[];
 	readonly moreUnits: number;
+	/** Every path it names, as the run releases them with the context that shows them (P40b): a revoked grant then
+	 * fences the run as for any read. */
+	readonly reads: readonly CloudCompanyFolderRelease[];
 }
 
 export interface CloudCompanyFolderProposalPage {
@@ -328,6 +331,12 @@ export interface CloudCompanyFolderCommitResult {
 	readonly units: readonly CloudCompanyFolderUnitResult[];
 }
 
+/** `applyProposal`'s answer for a proposal decided or erased before the apply reached it (a member discarded it after
+ * the run recorded its review): nothing applied, and the kernel cancelled the call's receipt. */
+export interface CloudCompanyFolderProposalUnapplied {
+	readonly unapplied: "applied" | "not_applied" | "declined" | "discarded" | "erased";
+}
+
 /** A worker tool's request, which the folder core's hook checks against exactly the units it names (F2-5b §3): the
  * worker's folder `agents/<agent>/todos/<todo>/<worker>`, and the action's own fields as the files hold them. */
 export type CloudCompanyFolderWorkerRequest =
@@ -386,7 +395,8 @@ export interface CloudCompanyFolderWorkerPage {
 /** A read released to the model: its path, the version read, and the receipt it was read under. */
 export interface CloudCompanyFolderRelease {
 	readonly path: string;
-	readonly version: string;
+	/** The version read; null for a path the context names without reading a file (a proposal's, P40b). */
+	readonly version: string | null;
 	readonly authority: CloudCompanyFolderAuthority;
 	/** Audit data only (contract 9.1): the file's content hash, when a file's content was released. */
 	readonly fileSha256?: string;
@@ -1149,8 +1159,11 @@ export class CloudCompanyFolderClient {
 				"unitCount",
 				"units",
 				"moreUnits",
+				"reads",
 			]);
 			if (
+				!Array.isArray(proposal.reads) ||
+				proposal.reads.length < 1 ||
 				typeof proposal.createdAt !== "string" ||
 				typeof proposal.viewKind !== "string" ||
 				(proposal.effect !== "delegation" && proposal.effect !== "destructive") ||
@@ -1197,6 +1210,12 @@ export class CloudCompanyFolderClient {
 			const moreUnits = counter(proposal.moreUnits);
 			const unitCount = counter(proposal.unitCount);
 			if (unitCount !== units.length + moreUnits) invalid();
+			// Each path it names, with the authority the list was decided on: no file was read, so no version.
+			const reads = (proposal.reads as unknown[]).map((item): CloudCompanyFolderRelease => {
+				const read = record(item, ["path", "authority"]);
+				if (typeof read.path !== "string" || !read.path) invalid();
+				return { path: read.path, version: null, authority: authority(read.authority) };
+			});
 			return {
 				proposalId: uuid(proposal.proposalId),
 				createdAt: proposal.createdAt,
@@ -1206,6 +1225,7 @@ export class CloudCompanyFolderClient {
 				unitCount,
 				units,
 				moreUnits,
+				reads,
 			};
 		});
 		const moreProposals = counter(input.moreProposals);
@@ -1264,30 +1284,41 @@ export class CloudCompanyFolderClient {
 
 	/** Applies an open proposal's units as the run, with the review `recordProposalReview` made of them (P40a,
 	 * `qorpera_folder_apply_proposal`): one commit decides each unit (a moved base is a conflict, kept as a copy where a
-	 * file's bytes differ) and closes the proposal, applied when a unit saved, else not applied. A retry with the same
-	 * key, review and receipt replays it; this call retries a lost answer as `commit` does. */
+	 * file's bytes differ) and closes the proposal, applied when a unit saved, else not applied. A proposal decided before
+	 * the apply reached it applies nothing: the kernel cancels the call's receipt and answers with the proposal's status
+	 * (P40b). A retry with the same key, review and receipt replays either; this call retries a lost answer as `commit`
+	 * does. */
 	async applyProposal(
 		operationKey: string,
 		proposal: Pick<CloudCompanyFolderProposal, "proposalId" | "unitCount" | "units">,
 		options: { readonly reviewId: string; readonly receiptId: string },
 		signal: AbortSignal,
-	): Promise<CloudCompanyFolderCommitResult> {
+	): Promise<CloudCompanyFolderCommitResult | CloudCompanyFolderProposalUnapplied> {
 		checkCommit(operationKey, options);
 		if (!UUID.test(proposal.proposalId)) throw new Error("Invalid Company folder proposal");
-		const input = record(
-			await this.#retried(
-				"qorpera_folder_apply_proposal",
-				{
-					p_operation_key: operationKey,
-					p_proposal_id: proposal.proposalId,
-					p_review_id: options.reviewId,
-					p_receipt_id: options.receiptId,
-				},
-				COMMIT_RETRY,
-				signal,
-			),
-			["schema", "commitId", "seq", "replay", "units"],
+		const answer = await this.#retried(
+			"qorpera_folder_apply_proposal",
+			{
+				p_operation_key: operationKey,
+				p_proposal_id: proposal.proposalId,
+				p_review_id: options.reviewId,
+				p_receipt_id: options.receiptId,
+			},
+			COMMIT_RETRY,
+			signal,
 		);
+		if ((answer as { schema?: unknown } | null)?.schema === "qorpera.folder-proposal-unapplied/v1") {
+			const unapplied = record(answer, ["schema", "proposalId", "status", "receiptId"]);
+			const status = unapplied.status as CloudCompanyFolderProposalUnapplied["unapplied"];
+			if (
+				unapplied.proposalId !== proposal.proposalId ||
+				unapplied.receiptId !== options.receiptId ||
+				!(status === "erased" || (PROPOSAL_STATUSES as readonly unknown[]).includes(status))
+			)
+				invalid();
+			return { unapplied: status };
+		}
+		const input = record(answer, ["schema", "commitId", "seq", "replay", "units"]);
 		if (
 			input.schema !== "qorpera.folder-commit/v1" ||
 			typeof input.replay !== "boolean" ||
@@ -1666,7 +1697,10 @@ export class CloudCompanyFolderClient {
 		if (!UUID.test(releaseId) || !SHA.test(outputSha256) || reads.length > MAX_RELEASED)
 			throw new Error("Invalid Company folder release");
 		const sent = reads.map((read) => {
-			if (!UUID.test(read.version) || (read.fileSha256 !== undefined && !SHA.test(read.fileSha256)))
+			if (
+				(read.version !== null && !UUID.test(read.version)) ||
+				(read.fileSha256 !== undefined && !SHA.test(read.fileSha256))
+			)
 				throw new Error("Invalid Company folder release");
 			return {
 				path: parseCloudCompanyPath(read.path),

@@ -1101,6 +1101,11 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		},
 		{ unit: 2, op: "move", path: "docs/a.md", to: "docs/b.md" },
 	] as const;
+	// Every path it names, with its authority (the third unit's too, though it is not listed).
+	const reads = ["agents/nora", "agents/nora/agent.md", "docs/a.md", "docs/b.md", "docs/c.md"].map((path) => ({
+		path,
+		authority: RECEIPT,
+	}));
 	const proposal = (extra: Record<string, unknown> = {}) => ({
 		proposalId: PROPOSAL,
 		createdAt: "2026-10-05T10:00:00+00:00",
@@ -1110,6 +1115,7 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		unitCount: 3,
 		units,
 		moreUnits: 1,
+		reads,
 		...extra,
 	});
 	const page = (extra: Record<string, unknown> = {}) => ({
@@ -1131,6 +1137,8 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			{ ...units[1], items: null, structured: [] },
 		],
 		moreUnits: 1,
+		// No file was read: no version.
+		reads: reads.map((read) => ({ ...read, version: null })),
 	} as const;
 
 	it("lists the run's open proposals as the kernel pages them, and refuses any other shape", async () => {
@@ -1156,6 +1164,14 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			page({ proposals: [proposal({ units: [{ ...units[0], op: "chmod" }, units[1]] })] }),
 			page({ proposals: [proposal({ effect: "external" })] }),
 			page({ proposals: [proposal({ note: "x" })] }),
+			// Its reads: at least one, each a path and a whole authority.
+			page({ proposals: [proposal({ reads: undefined })] }),
+			page({ proposals: [proposal({ reads: [] })] }),
+			page({ proposals: [proposal({ reads: [{ path: "", authority: RECEIPT }] })] }),
+			page({
+				proposals: [proposal({ reads: [{ path: "docs/a.md", authority: { ...RECEIPT, grantRevision: null } }] })],
+			}),
+			page({ proposals: [proposal({ reads: [{ path: "docs/a.md", authority: RECEIPT, version: randomUUID() }] })] }),
 			// A cursor comes with more, and is the last listed id.
 			page({ moreProposals: 2 }),
 			page({ moreProposals: 2, nextCursor: "5b0c2d3e-9999-4999-8999-999999999999" }),
@@ -1218,6 +1234,7 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			signal(),
 		);
 		expect(committed).toMatchObject({ commitId, seq: 9, replay: false });
+		if ("unapplied" in committed) throw new Error("not applied");
 		expect(committed.units.map((unit) => [unit.outcome, unit.to, unit.reason])).toEqual([
 			["saved", null, null],
 			["conflict", "docs/b.md", "version_changed"],
@@ -1252,6 +1269,26 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		await expect(
 			client.applyProposal(`apply-proposal:${PROPOSAL}`, listed, { reviewId, receiptId }, signal()),
 		).resolves.toMatchObject({ seq: null, replay: true });
+		// Decided or erased before the apply reached it: the kernel cancelled this receipt, and says what the proposal is.
+		const unapplied = { schema: "qorpera.folder-proposal-unapplied/v1", proposalId: PROPOSAL, receiptId };
+		for (const status of ["discarded", "erased", "applied"]) {
+			answers.push({ ...unapplied, status });
+			await expect(
+				client.applyProposal(`apply-proposal:${PROPOSAL}`, listed, { reviewId, receiptId }, signal()),
+			).resolves.toEqual({ unapplied: status });
+		}
+		for (const bad of [
+			{ status: "open" },
+			{ status: "discarded", receiptId: randomUUID() },
+			{ status: "discarded", proposalId: AGENT_ID },
+			{ status: "discarded", commitId },
+		]) {
+			answers.push({ ...unapplied, ...bad });
+			await expect(
+				client.applyProposal(`apply-proposal:${PROPOSAL}`, listed, { reviewId, receiptId }, signal()),
+				JSON.stringify(bad),
+			).rejects.toThrow(/invalid/);
+		}
 	});
 
 	it("closes a proposal as declined with the denial's id, else as discarded, and answers a decided one as it stands", async () => {
@@ -1491,6 +1528,21 @@ describe("releases", () => {
 			"Company folder response is invalid",
 		);
 		await expect(client.release(randomUUID(), [{ ...entry, fileSha256: "x" }], sha("out"), signal())).rejects.toThrow(
+			"Invalid Company folder release",
+		);
+	});
+
+	it("releases a path the context names without reading a file with no version (a proposal's, P40b)", async () => {
+		const { client, calls } = fixture((_method, args) => ({
+			schema: "qorpera.folder-release/v1",
+			releaseId: args.p_release_id,
+			reads: 1,
+			replay: false,
+		}));
+		const named = { path: "docs/a.md", version: null, authority: RECEIPT };
+		await expect(client.release(randomUUID(), [named], sha("out"), signal())).resolves.toMatchObject({ reads: 1 });
+		expect(calls[0]).toMatchObject({ method: "qorpera_folder_record_release", args: { p_reads: [named] } });
+		await expect(client.release(randomUUID(), [{ ...named, version: "v1" }], sha("out"), signal())).rejects.toThrow(
 			"Invalid Company folder release",
 		);
 	});

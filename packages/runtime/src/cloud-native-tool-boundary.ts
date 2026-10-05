@@ -73,27 +73,6 @@ function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
 	while (store.size > limit) store.delete(store.keys().next().value as K);
 }
 
-/** Whether a Company File change waits for a member's review: the path gateway's JSON result, or a folder-v2 file
- * tool's text (cloud-folder-file-tools.ts, `qorpera.company-folder-result/v1`). */
-function proposedResult(content: CloudToolContent): boolean {
-	let value: unknown = content.value;
-	if (content.kind === "text") {
-		if (!content.value.startsWith('{"')) return false;
-		try {
-			value = JSON.parse(content.value);
-		} catch {
-			return false;
-		}
-		if ((value as { schema?: unknown } | null)?.schema !== "qorpera.company-folder-result/v1") return false;
-	} else if ((value as { schema?: unknown } | null)?.schema !== "qorpera.company-path-result/v1") return false;
-	return (
-		value !== null &&
-		typeof value === "object" &&
-		!Array.isArray(value) &&
-		(value as { state?: unknown }).state === "proposed"
-	);
-}
-
 export interface CloudToolContext {
 	readonly companyId: string;
 	readonly runId: string;
@@ -115,6 +94,10 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** A required, closed parser: native provider schema hints are not validation. */
 	parseArguments(value: JsonValue): JsonValue;
+	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
+	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
+	 * never reviewed on a part. */
+	reviewContents?(parsed: JsonValue): JsonValue;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
 	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
@@ -761,7 +744,12 @@ export class CloudNativeToolBoundary {
 			const proposed =
 				tool.source === "company_file" &&
 				["company_write", "company_mkdir", "company_delete"].includes(tool.name) &&
-				proposedResult(content);
+				content.kind === "json" &&
+				content.value !== null &&
+				typeof content.value === "object" &&
+				!Array.isArray(content.value) &&
+				content.value.schema === "qorpera.company-path-result/v1" &&
+				content.value.state === "proposed";
 			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
 			return response;
 		} catch (error) {

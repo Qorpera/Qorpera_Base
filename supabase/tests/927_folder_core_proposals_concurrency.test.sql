@@ -3,7 +3,8 @@
 -- row is rank 7c. Two applies of one proposal take turns there and the second applies nothing; a member's discard and an
 -- apply take turns in both orders; an erasure and an apply take turns in both orders; a proposal parked under a root
 -- while an erasure waited for the root makes the erasure retry; and a parking commit passes the authority check, so a
--- narrowing that commits while it decides leaves no proposal. Run f1 of 648's committed fixture (Ada, for the member)
+-- narrowing that commits while it decides leaves no proposal; and (P40b) a discard before or during an apply under a
+-- real receipt leaves that receipt settled, never a fence. Run f1 of 648's committed fixture (Ada, for the member)
 -- applies; its run box parks. Waits are detected with pg_blocking_pids. The fixture is removed at the end, as 770's.
 
 select set_config('qorpera_test.actor', jsonb_build_object('kind','run','runId','64800000-0000-4000-8000-0000000000f1',
@@ -214,6 +215,94 @@ begin
 	perform * from dblink('fence_two', v_sql) as t(r text);
 	if not exists (select 1 from public.qorpera_folder_proposal_paths q where q.environment_id = '64800000-0000-4000-8000-000000000020'
 		and q.path = 'p40-e.txt') then raise exception 'E: the retry parks'; end if;
+end $$;
+
+-- F. P40b, with receipts begun for real (run f1's acknowledgement recorded first, as 651 does, so its calls may work).
+-- A member's discard in flight: the apply under its receipt waits at the proposal, then its commit applies nothing and
+-- carries the receipt, which the run completes with it. A discard committed before the apply: the apply cancels the
+-- receipt, which no commit carries, and answers the proposal as discarded; the run's next operation begins (no fence).
+set session_replication_role = replica;
+with e as (
+	insert into public.qorpera_session_events(session_id, sequence, event_id, event_type, actor_user_id, body, event_hash, created_at,
+		execution_kind, execution_id, execution_claimant_id, runner_assignment_id)
+	select '64800000-0000-4000-8000-0000000000f7', coalesce(max(sequence), 0) + 1, extensions.gen_random_uuid(), 'message',
+		'64800000-0000-4000-8000-000000000002', '{"schema":"qorpera.runner-transcript-entry/v1"}', repeat('0', 64), statement_timestamp(),
+		'run', '64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-0000000000f5'
+	from public.qorpera_session_events where session_id = '64800000-0000-4000-8000-0000000000f7'
+	returning event_id)
+insert into public.qorpera_agent_sends(event_id, run_id, session_id, assignment_id, idempotency_key, phase, text_sha256, body_sha256)
+select e.event_id, '64800000-0000-4000-8000-0000000000f1', '64800000-0000-4000-8000-0000000000f7', '64800000-0000-4000-8000-0000000000f5',
+	'p40b-ack', 'progress', repeat('1', 64), repeat('2', 64) from e;
+set session_replication_role = origin;
+
+create function pg_temp.begin_receipt(p_key text) returns uuid language plpgsql as $$
+declare v_id uuid := extensions.gen_random_uuid(); x jsonb;
+begin
+	x := public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, v_id, p_key, repeat('a', 64),
+		repeat('b', 64), true);
+	if x ->> 'state' <> 'executing' or x ->> 'receipt_id' <> v_id::text then raise exception 'Fixture begin: %', x; end if;
+	return v_id;
+end $$;
+create function pg_temp.sql_apply_under(p_proposal uuid, p_review uuid, p_receipt uuid) returns text language sql as $$
+	select format('select public.qorpera_folder_apply_proposal(%L, %L, %L, %L, %L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		current_setting('qorpera_test.actor'), 'apply-proposal:' || p_proposal, p_proposal, p_review, p_receipt)
+$$;
+
+select pg_temp.commit(pg_temp.owner(), 'p40b-race-files', (select jsonb_agg(jsonb_build_object('op','write','path',p,
+	'file',pg_temp.stage('p40b race ' || p))) from unnest(array['p40-f.txt','p40-g.txt']) p)) \g /dev/null
+do $$
+begin
+	perform set_config('qorpera_test.pf', pg_temp.park('p40b-park-f', 'p40-f.txt')::text, false);
+	perform set_config('qorpera_test.pg', pg_temp.park('p40b-park-g', 'p40-g.txt')::text, false);
+end $$;
+do $$
+begin
+	perform set_config('qorpera_test.rf', pg_temp.approval('p40b-apply-f', current_setting('qorpera_test.pf')::uuid)::text, false);
+	perform set_config('qorpera_test.rg', pg_temp.approval('p40b-apply-g', current_setting('qorpera_test.pg')::uuid)::text, false);
+end $$;
+select set_config('qorpera_test.receipt_f', pg_temp.begin_receipt('apply_proposal:apply:' || current_setting('qorpera_test.pf'))::text,
+	false) \g /dev/null
+
+do $$
+declare v_state text; pf uuid := current_setting('qorpera_test.pf')::uuid; v_receipt uuid := current_setting('qorpera_test.receipt_f')::uuid;
+	v_commit public.qorpera_folder_commits;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	perform * from dblink('fence_one', pg_temp.sql_discard(pf)) as t(r text);
+	perform dblink_send_query('fence_two', pg_temp.sql_apply_under(pf, current_setting('qorpera_test.rf')::uuid, v_receipt));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'F: the apply must wait for the discard'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_proposals'::regclass then
+		raise exception 'F: the apply must wait at the proposal, not on %', pg_temp.queued_on('fence_two'); end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_state := pg_temp.outcome('fence_two');
+	select * into v_commit from public.qorpera_folder_commits where environment_id = '64800000-0000-4000-8000-000000000020'
+		and operation_key = 'apply-proposal:' || pf;
+	if v_state <> 'ok' or pg_temp.status(pf) <> 'discarded' or not pg_temp.present('p40-f.txt')
+		or pg_temp.unit_of('apply-proposal:' || pf) <> 'denied:review_required' or v_commit.receipt_id is distinct from v_receipt then
+		raise exception 'F: % % % %', v_state, pg_temp.status(pf), pg_temp.unit_of('apply-proposal:' || pf), to_jsonb(v_commit); end if;
+	-- The run completes the receipt with the commit that carries it, as for any commit.
+	if public.qorpera_folder_complete_run_receipt(current_setting('qorpera_test.binding')::jsonb, v_receipt, repeat('a', 64),
+			'{"ok":true}', v_commit.id) ->> 'state' <> 'completed' then
+		raise exception 'F: the receipt completes with its commit'; end if;
+end $$;
+
+select set_config('qorpera_test.receipt_g', pg_temp.begin_receipt('apply_proposal:apply:' || current_setting('qorpera_test.pg'))::text,
+	false) \g /dev/null
+select * from dblink('fence_one', pg_temp.sql_discard(current_setting('qorpera_test.pg')::uuid)) as t(r text) \g /dev/null
+do $$
+declare pg uuid := current_setting('qorpera_test.pg')::uuid; v_receipt uuid := current_setting('qorpera_test.receipt_g')::uuid; a jsonb;
+	v_row public.qorpera_run_operation_receipts;
+begin
+	select r::jsonb into a from dblink('fence_two', pg_temp.sql_apply_under(pg, current_setting('qorpera_test.rg')::uuid, v_receipt)) as t(r text);
+	select * into v_row from public.qorpera_run_operation_receipts where id = v_receipt;
+	if a is distinct from jsonb_build_object('schema', 'qorpera.folder-proposal-unapplied/v1', 'proposalId', pg, 'status', 'discarded',
+			'receiptId', v_receipt)
+		or v_row.status <> 'cancelled' or v_row.completed_at is null
+		or exists (select 1 from public.qorpera_folder_commits c where c.receipt_id = v_receipt)
+		or pg_temp.status(pg) <> 'discarded' or not pg_temp.present('p40-g.txt') then
+		raise exception 'G: % %', a, to_jsonb(v_row); end if;
+	-- The run is not fenced: its next operation begins.
+	perform pg_temp.begin_receipt('p40b-after-g');
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

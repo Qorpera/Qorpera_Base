@@ -1135,6 +1135,42 @@ describe("the review step", () => {
 		});
 	});
 
+	it("gives the reviewer everything a call would change when its arguments only name it, and never reviews a part", async () => {
+		const { calls, review } = gate({});
+		const control: CloudActionReviewControl = {
+			call: async (method, args) => {
+				calls.push({ method, args });
+				return method === "qorpera_begin_action_review"
+					? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, rules: [] }
+					: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." };
+			},
+		};
+		const instance = new CloudActionReviewGate({ binding, control, reviewer: { review }, request: "", holdMs: 0 });
+		const contents = { changes: [{ op: "delete", path: "docs/old/note-9.md" }] };
+		const check = (reviewContents: () => JsonValue) =>
+			instance.check(
+				{
+					tool: { ...tool("apply_proposal"), reviewContents },
+					parsed: { proposalId: "p", effect: "destructive", title: "Apply 9 changes", target: null, details: [] },
+					argumentsText: '{"proposalId":"p"}',
+					argumentSha256: "a".repeat(64),
+					callId: "call_1",
+				},
+				new AbortController().signal,
+			);
+		await expect(check(() => contents)).resolves.toEqual({ run: true });
+		expect(JSON.parse(review.mock.calls[0][0].prompt).action.contents).toEqual(contents);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("When the action has contents");
+		// A tool that cannot give all of it fails the check, which the boundary ends REVIEW_UNAVAILABLE: no verdict on a part.
+		await expect(
+			check(() => {
+				throw new Error("Proposal is not listed in full");
+			}),
+		).rejects.toThrow("not listed in full");
+		expect(review).toHaveBeenCalledTimes(1);
+		expect(calls.filter((call) => call.method === "qorpera_record_action_review")).toHaveLength(1);
+	});
+
 	it("names a group chat's coworkers and the member it acts for on the card and to the reviewer", async () => {
 		const maja = randomUUID();
 		const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];

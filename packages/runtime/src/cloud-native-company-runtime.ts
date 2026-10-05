@@ -442,8 +442,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
-			// What composition read from the folder is released under the composed context before any model request.
-			await notebooks?.releaseComposition(contextSha256, signal);
+			// What composition read from the folder is released under the composed context before any model request, with
+			// the paths of the proposals it shows (P40b).
+			await notebooks?.releaseComposition(contextSha256, signal, proposals?.reads);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
