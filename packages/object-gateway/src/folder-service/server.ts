@@ -239,8 +239,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				break;
 			case Kind.executable: {
 				const request = parseExecutable(frame.payload);
-				await handle.setExecutable(request.path, request.executable, request.base);
-				break;
+				send(encodeJson(Kind.done, await handle.setExecutable(request.path, request.executable, request.base)));
+				return;
 			}
 			case Kind.publish:
 				parsePublish(frame.payload);

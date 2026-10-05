@@ -342,7 +342,8 @@ describe("writes through the mount", () => {
 		const data = Buffer.from("pooled");
 		await second.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 		await first.close(handle, data.byteLength);
-		const left = await second.open({ path: "pooled.txt", create: false, exclusive: false, truncate: true });
+		// Opened again without truncating (a truncate is fixed at once, as O_TRUNC is), and changed in place.
+		const left = await second.open({ path: "pooled.txt", create: false, exclusive: false, truncate: false });
 		first.release();
 		await second.chunk({
 			handle: left.handle,
@@ -359,6 +360,53 @@ describe("writes through the mount", () => {
 		expect(await read(third, "pooled.txt")).toBe("pooled");
 		expect((await third.publish()).paths).toEqual([{ path: "pooled.txt", outcome: "saved" }]);
 		expect(core.entries.get("pooled.txt")?.fileSha256).toBe(hashOf("pooled"));
+	});
+
+	it("bases a save on the machine's own published save when it names the version that save made", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([folder("docs")]);
+		const view = await open();
+		// What the folder program's version map holds after a save: the version the close (or the bit) answered.
+		const save = async (path: string, text: string, base?: string) => {
+			const { handle } = await view.open({
+				path,
+				create: true,
+				exclusive: false,
+				truncate: true,
+				...(base ? { base } : {}),
+			});
+			const data = Buffer.from(text);
+			await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+			return (await view.close(handle, data.byteLength)).version;
+		};
+		const byPath = (paths: readonly { path: string }[]) => [...paths].sort((a, b) => (a.path < b.path ? -1 : 1));
+		const first = await save("docs/a.md", "one");
+		await view.mkdir("new");
+		const inner = await save("new/b.md", "b1");
+		await view.publish();
+		const [liveA, liveB] = [core.entries.get("docs/a.md")!.version, core.entries.get("new/b.md")!.version];
+		expect([liveA, liveB]).not.toContain(first);
+		// The next saves name the versions the machine's own saves made: based on what those published, they save.
+		const bit = (await view.setExecutable("new/b.md", true, inner)).version;
+		const second = await save("docs/a.md", "two", first);
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "docs/a.md", outcome: "saved" },
+			{ path: "new/b.md", outcome: "saved" },
+		]);
+		expect(byPath(core.commits.at(-1)!.units as readonly { path: string }[])).toEqual([
+			expect.objectContaining({ path: "docs/a.md", expectedVersion: liveA }),
+			expect.objectContaining({ path: "new/b.md", expectedVersion: liveB }),
+		]);
+		await save("new/b.md", "b2", bit);
+		expect((await view.publish()).paths).toEqual([{ path: "new/b.md", outcome: "saved" }]);
+		// Another machine's change after that: a save based on the machine's own last save is a conflict.
+		core.write(await storeFile(root, "docs/a.md", "theirs", 50, BIG));
+		await service.poll();
+		await service.settled();
+		await save("docs/a.md", "three", second);
+		expect((await view.publish()).paths).toEqual([
+			{ path: "docs/a.md", outcome: "conflict", reason: "version_changed", receipt: expect.any(String) },
+		]);
 	});
 
 	it("takes no writes on a read-only view", async () => {

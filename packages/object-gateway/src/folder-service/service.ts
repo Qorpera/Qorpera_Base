@@ -1,7 +1,14 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { memberFolderStructured } from "../member-folder-commits.ts";
-import { type CommitAnswer, CoreRefusal, type FeedCursor, type FolderActor, type FolderCore } from "./core.ts";
+import {
+	type CommitAnswer,
+	CoreRefusal,
+	type FeedCursor,
+	type FeedEvent,
+	type FolderActor,
+	type FolderCore,
+} from "./core.ts";
 import type { Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
@@ -132,7 +139,19 @@ class View {
 	/** One boundary at a time. */
 	publishing: Promise<Report> = Promise.resolve({ commitId: null, seq: null, paths: [] });
 	/** A boundary whose commit got no answer: asked again, unchanged, before the next one. */
-	unanswered: { readonly key: string; readonly units: readonly CommitUnit[]; readonly plan: BoundaryPlan } | undefined;
+	unanswered:
+		| {
+				readonly key: string;
+				readonly units: readonly CommitUnit[];
+				readonly plan: BoundaryPlan;
+				readonly made: ReadonlyMap<string, string>;
+		  }
+		| undefined;
+	/** What this view's saves published, by path: the version a save made while pending (the one the machine's
+	 * version map holds after it) and the version its change set gave the path. */
+	readonly published = new Map<string, { readonly made: string; readonly live: string }>();
+	/** While a boundary's change set may reach the feed: the versions each change set wrote, by seq. */
+	recording: Map<number, Map<string, string>> | undefined;
 	readonly uploads = new Map<string, ChunkUpload>();
 	/** The intents chunks went under, and when each was last renewed. */
 	readonly chunkIntents = new Map<string, number>();
@@ -185,7 +204,8 @@ export interface ViewHandle {
 	unlink(path: string, base: string | undefined): Promise<void>;
 	rmdir(path: string, base: string | undefined): Promise<void>;
 	rename(request: RenameRequest): Promise<void>;
-	setExecutable(path: string, executable: boolean, base: string | undefined): Promise<void>;
+	/** The version the path shows after: the bit makes a new one, which the machine's version map takes. */
+	setExecutable(path: string, executable: boolean, base: string | undefined): Promise<{ version: string }>;
 	publish(): Promise<Report>;
 }
 
@@ -340,15 +360,18 @@ export class FolderService {
 				view.sinks.add(sink);
 			},
 			release,
+			// Bases are read when the change is made (after any boundary it waited for, which may have published the save
+			// a base names).
 			open: async (request) => {
-				const opened = await this.#change(view, (pending) =>
-					pending.openWrite(request.path, {
+				const opened = await this.#change(view, (pending) => {
+					const base = this.#base(view, request.path, request.base);
+					return pending.openWrite(request.path, {
 						create: request.create,
 						exclusive: request.exclusive,
 						truncate: request.truncate,
-						...(request.base ? { base: request.base } : {}),
-					}),
-				);
+						...(base ? { base } : {}),
+					});
+				});
 				view.handles.add(opened.handle);
 				return opened;
 			},
@@ -369,18 +392,26 @@ export class FolderService {
 				return { version: node.version };
 			},
 			mkdir: async (path) => this.#change(view, (pending) => pending.mkdir(path)),
-			unlink: async (path, base) => this.#change(view, (pending) => pending.unlink(path, base)),
-			rmdir: async (path, base) => this.#change(view, (pending) => pending.rmdir(path, base)),
+			unlink: async (path, base) =>
+				this.#change(view, (pending) => pending.unlink(path, this.#base(view, path, base))),
+			rmdir: async (path, base) =>
+				this.#change(view, (pending) => pending.rmdir(path, this.#base(view, path, base))),
 			rename: async (request) =>
-				this.#change(view, (pending) =>
+				this.#change(view, (pending) => {
+					const fromBase = this.#base(view, request.from, request.fromBase);
+					const toBase = this.#base(view, request.to, request.toBase);
 					pending.rename(request.from, request.to, {
 						noReplace: request.noReplace,
-						...(request.fromBase ? { fromBase: request.fromBase } : {}),
-						...(request.toBase ? { toBase: request.toBase } : {}),
-					}),
-				),
+						...(fromBase ? { fromBase } : {}),
+						...(toBase ? { toBase } : {}),
+					});
+				}),
 			setExecutable: async (path, executable, base) =>
-				this.#change(view, (pending) => pending.setExecutable(path, executable, base)),
+				this.#change(view, (pending) => {
+					pending.setExecutable(path, executable, this.#base(view, path, base));
+					// The version the path shows now: a save, so the machine's version map takes it.
+					return { version: pending.get(path)?.version ?? "" };
+				}),
 			publish: async () => this.#publish(view),
 		};
 	}
@@ -550,6 +581,7 @@ export class FolderService {
 					// Every file version the change replaces or removes stays readable for files opened before, the
 					// descendants of a folder it moves away or deletes included.
 					for (const change of event.changes) changed.push(...tree.apply(change, (old) => this.#keep(view, old)));
+					this.#record(view, event);
 				}
 				view.seq = page.next.afterSeq;
 				view.cursor = page.next.cursor;
@@ -559,6 +591,22 @@ export class FolderService {
 			view.pending?.liveChanged(changed);
 			if (!told) this.#push(view, changed);
 		}
+	}
+
+	/** Notes the versions a change set wrote while a boundary of the view may be in it. */
+	#record(view: View, event: FeedEvent): void {
+		if (!view.recording || event.kind !== "change_set") return;
+		const writes = view.recording.get(event.seq) ?? new Map<string, string>();
+		for (const change of event.changes) if (change.op === "write") writes.set(change.path, change.version);
+		view.recording.set(event.seq, writes);
+	}
+
+	/** A base as the machine sent it, except that the version one of this view's saves made, published since, is read
+	 * as the version its change set gave the path: the machine's version map holds the first (RUNTIME-FOLDER-WRITES.md,
+	 * "After a save the map holds the version the save made"). */
+	#base(view: View, path: string, base: string | undefined): string | undefined {
+		const published = view.published.get(path);
+		return base !== undefined && published?.made === base ? published.live : base;
 	}
 
 	/** Keeps a replaced file version readable for the files opened on it (at most SUPERSEDED_PER_PATH per path). */
@@ -590,7 +638,10 @@ export class FolderService {
 			}
 			for (const event of page.events) {
 				if (event.kind === "authority") again = true;
-				else for (const change of event.changes) tree.apply(change);
+				else {
+					for (const change of event.changes) tree.apply(change);
+					this.#record(view, event);
+				}
 			}
 			position = page.next;
 			if (!page.more) break;
@@ -923,10 +974,21 @@ export class FolderService {
 	async #boundary(view: View): Promise<Report> {
 		const pending = view.pending;
 		if (!pending || view.closed) return { commitId: null, seq: null, paths: [] };
+		// From before a commit until its answer is settled (an unanswered one's included), the feed's change sets are
+		// noted, so the versions this view's saves published are known whichever feed round brings them.
+		try {
+			return await this.#boundaryRecorded(view, pending);
+		} finally {
+			if (!view.unanswered) view.recording = undefined;
+		}
+	}
+
+	async #boundaryRecorded(view: View, pending: PendingView): Promise<Report> {
 		const entries: ReportEntry[] = [];
 		// A boundary whose answer never came goes first, unchanged.
 		if (view.unanswered) {
 			const earlier = view.unanswered;
+			view.recording ??= new Map();
 			const answer = await this.#commit(view, earlier.key, earlier.units);
 			if (!answer)
 				return {
@@ -942,7 +1004,7 @@ export class FolderService {
 					),
 				};
 			view.unanswered = undefined;
-			entries.push(...(await this.#settle(view, earlier.plan, answer)));
+			entries.push(...(await this.#settle(view, earlier.plan, earlier.made, answer)));
 		}
 		await this.#stageAll(view);
 		const plan = planBoundary(pending, (node) =>
@@ -964,15 +1026,24 @@ export class FolderService {
 			plan.units.map((u) => u.unit),
 		);
 		const key = `folder-view:${view.key}:${randomUUID()}`;
+		// The version each file this boundary publishes bytes for has now, as the machine heard it.
+		const made = new Map<string, string>();
+		for (const u of plan.units)
+			if (u.bytes)
+				for (const path of u.paths) {
+					const node = pending.nodes().get(path);
+					if (node?.kind === "file") made.set(path, node.version);
+				}
+		view.recording ??= new Map();
 		const answer = await this.#commit(view, key, units);
 		if (!answer) {
-			view.unanswered = { key, units, plan };
+			view.unanswered = { key, units, plan, made };
 			for (const u of plan.units)
 				for (const path of u.paths)
 					entries.push({ path, outcome: "not_applied", reason: "the save did not get through yet", kept: true });
 			return { commitId: null, seq: null, paths: entries };
 		}
-		entries.push(...(await this.#settle(view, plan, answer)));
+		entries.push(...(await this.#settle(view, plan, made, answer)));
 		return { commitId: answer.commitId, seq: answer.seq, paths: entries };
 	}
 
@@ -1061,7 +1132,12 @@ export class FolderService {
 
 	/** After an answer: the view catches up with the feed, then shows the live folder again, keeping what the boundary
 	 * keeps and every unit with new bytes the core neither saved nor kept as a conflict copy. */
-	async #settle(view: View, plan: BoundaryPlan, answer: CommitAnswer): Promise<ReportEntry[]> {
+	async #settle(
+		view: View,
+		plan: BoundaryPlan,
+		made: ReadonlyMap<string, string>,
+		answer: CommitAnswer,
+	): Promise<ReportEntry[]> {
 		const entries: ReportEntry[] = [];
 		const keep = new Set(plan.keep);
 		const saved = new Set<string>();
@@ -1083,6 +1159,13 @@ export class FolderService {
 		if (answer.seq !== null) {
 			this.#queue(view, () => this.#advance(view));
 			await view.work;
+			// What each saved file's version became, from the change set itself (not the tree, which a later change
+			// set may have moved on): a save the machine bases on its own pending version is based on it.
+			const written = view.recording?.get(answer.seq);
+			for (const [path, version] of made) {
+				const live = saved.has(path) ? written?.get(path) : undefined;
+				if (live) view.published.set(path, { made: version, live });
+			}
 		}
 		this.#settleNodes(
 			view,
