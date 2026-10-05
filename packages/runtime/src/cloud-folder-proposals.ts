@@ -1,4 +1,4 @@
-import type { JsonValue } from "@qorpera/contracts";
+import { isUuid, type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import { cloudActionFileName } from "./cloud-action-review.ts";
 import type {
 	CloudCompanyFolderClient,
@@ -34,8 +34,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  */
 
 const TOOL_VERSION = "folder-v2/1";
-/** A proposal's id as the kernel writes it, and as the digest it checks covers it: lower case. */
-const PROPOSAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Where the agent saved a proposal, by its view's kind. */
 const SAVED_FROM: Readonly<Record<string, string>> = {
 	computer_desktop: "a computer",
@@ -301,8 +299,8 @@ export class CloudFolderProposals {
 			typeof value !== "object" ||
 			Array.isArray(value) ||
 			Object.keys(value).some((key) => key !== "proposalId") ||
-			typeof value.proposalId !== "string" ||
-			!PROPOSAL_ID.test(value.proposalId)
+			// The kernel writes a proposal's id in lower case, and the digest it checks covers it that way.
+			!isUuid(value.proposalId)
 		)
 			throw new CloudToolArgumentRefusal("proposalId must be the id of a listed proposal, exactly as listed");
 		const proposal = this.#listed.get(value.proposalId);
@@ -352,7 +350,7 @@ export class CloudFolderProposals {
 			type: "object",
 			additionalProperties: false,
 			required: ["proposalId"],
-			properties: { proposalId: { type: "string", pattern: PROPOSAL_ID.source } },
+			properties: { proposalId: { type: "string", pattern: UUID_PATTERN.source } },
 		} satisfies { [key: string]: JsonValue };
 		return [
 			{
