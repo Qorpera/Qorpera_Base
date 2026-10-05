@@ -83,11 +83,11 @@ end $$;
 -- A group chat with Bob and Carol, saved by the owner (as 777's chats are): another conversation with the same agent.
 select pg_temp.base_commit(pg_temp.base_owner(), 'ms-chat-0001', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/groups'),
 	jsonb_build_object('op', 'new_folder', 'path', 'agents/groups/launch', 'contents', jsonb_build_array(jsonb_build_object('path', 'group.md',
-		'kind', 'file', 'file', pg_temp.base_stage(E'---\nid: 37800000-0000-4000-8000-0000000000c1\nname: Launch\nagents:\n  - 92400000-0000-4000-8000-000000000031\n  - 92400000-0000-4000-8000-000000000032\npeople: []\n---\nPlan the launch.\n'))),
+		'kind', 'file', 'file', pg_temp.base_stage(E'---\nid: 37800000-0000-4000-8000-0000000000c1\nname: Launch\nagents:\n  - 92400000-0000-4000-8000-000000000031\n  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n---\nPlan the launch.\n'))),
 	'structured', jsonb_build_array(jsonb_build_object('path', 'agents/groups/launch/group.md', 'kind', 'group',
-		'text', E'---\nid: 37800000-0000-4000-8000-0000000000c1\nname: Launch\nagents:\n  - 92400000-0000-4000-8000-000000000031\n  - 92400000-0000-4000-8000-000000000032\npeople: []\n---\nPlan the launch.\n',
+		'text', E'---\nid: 37800000-0000-4000-8000-0000000000c1\nname: Launch\nagents:\n  - 92400000-0000-4000-8000-000000000031\n  - 92400000-0000-4000-8000-000000000032\npeople:\n  - 92400000-0000-4000-8000-000000000001\n---\nPlan the launch.\n',
 		'parse', jsonb_build_object('kind', 'group', 'id', '37800000-0000-4000-8000-0000000000c1', 'name', 'Launch', 'subtitle', null,
-			'agents', jsonb_build_array('92400000-0000-4000-8000-000000000031', '92400000-0000-4000-8000-000000000032'), 'people', '[]'::jsonb,
+			'agents', jsonb_build_array('92400000-0000-4000-8000-000000000031', '92400000-0000-4000-8000-000000000032'), 'people', jsonb_build_array('92400000-0000-4000-8000-000000000001'),
 			'purpose', 'Plan the launch.'), 'parserVersion', 1))))) \g /dev/null
 do $$
 declare v_chat uuid;
@@ -101,7 +101,8 @@ begin
 end $$;
 
 -- 1. The owner sees the queued routine run in Bob's thread and may stop it. Only that conversation: neither Bob's group
---    chat nor Carol's thread shows the run or stops it.
+--    chat nor Carol's thread shows the run or stops it, and Bob's thread neither shows nor stops Bob's own run in the
+--    group chat.
 set local role authenticated;
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) = jsonb_build_object(
@@ -110,6 +111,39 @@ select pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_chat
 	'Another conversation with the same agent does not show the run');
 select pg_temp.ms_denied(current_setting('qorpera_test.ms_chat')::uuid, current_setting('qorpera_test.ms_run')::uuid);
 select pg_temp.ms_denied(current_setting('qorpera_test.ms_carol')::uuid, current_setting('qorpera_test.ms_run')::uuid);
+-- A run of Bob's in the group chat: the same agent in another conversation, so only the exact-conversation fence keeps
+-- Bob's thread from it. The owner's post there names Bob, the materializer makes Bob's chat run, and Bob's thread neither
+-- shows it nor stops it. Rolled back, so the sections below see no chat run.
+do $$
+declare v_result jsonb; v_chat_run uuid; v_room uuid;
+begin
+	begin
+		reset role;
+		select id into strict v_room from public.qorpera_company_rooms where session_id = current_setting('qorpera_test.ms_chat')::uuid;
+		perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+		set local role authenticated;
+		v_result := public.qorpera_post_company_room_message(v_room, extensions.gen_random_uuid(),
+			jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', '@Bob, is the launch list ready?'),
+			(current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid, 1);
+		reset role;
+		perform pg_temp.base_materialize();
+		select occurrence.run_id into strict v_chat_run from public.qorpera_wake_occurrences occurrence
+		join public.qorpera_execution_runs run on run.id = occurrence.run_id
+		where occurrence.id in (select jsonb_array_elements_text(v_result -> 'occurrenceIds')::uuid)
+			and occurrence.staff_agent_id = '92400000-0000-4000-8000-000000000031' and occurrence.status = 'materialized'
+			and run.session_id = current_setting('qorpera_test.ms_chat')::uuid
+			and run.staff_agent_id = '92400000-0000-4000-8000-000000000031';
+		perform pg_temp.base_assert((select job.status = 'queued' from public.qorpera_execution_runs run
+			join public.qorpera_runner_jobs job on job.id = run.job_id where run.id = v_chat_run), 'Bob''s chat run is queued');
+		perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+		set local role authenticated;
+		perform pg_temp.base_assert(pg_temp.ms_read(current_setting('qorpera_test.ms_thread')::uuid) ->> 'run_id'
+			= current_setting('qorpera_test.ms_run'), 'Bob''s thread still shows its own run, not Bob''s chat run');
+		perform pg_temp.ms_denied(current_setting('qorpera_test.ms_thread')::uuid, v_chat_run);
+		raise exception using errcode = 'QTR78', message = 'the chat run is rolled back';
+	exception when sqlstate 'QTR78' then null;
+	end;
+end $$;
 
 -- 2. A contributor who did not save the routine and a viewer see the run and cannot stop it; an outsider reads nothing
 --    and cannot stop it by a remembered id.
