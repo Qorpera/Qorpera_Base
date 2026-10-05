@@ -457,6 +457,55 @@ describe("a view's pending changes", () => {
 		expect(before!.open).toBe(0);
 	});
 
+	it("never removes a version the machine did not see", () => {
+		const f = setup({ D: null, "D/f": "v1", "D/g": "g" });
+		const seen = f.tree().get("D/f")!.version;
+		f.change("D/f", "v2");
+		// The machine's name still showed v1: the removal is refused, and it looks again.
+		refused(() => f.view.unlink("D/f", seen), "STALE");
+		// A save over it with a stale base keeps that base (it would conflict); if the saved file then goes and the
+		// folder with it, the folder's removal is not published, since it would take v2 unseen.
+		write(f.view, "D/t", "mine");
+		f.view.rename("D/t", "D/f", { noReplace: false, toBase: seen });
+		f.view.unlink("D/f");
+		f.view.unlink("D/g");
+		f.view.rmdir("D");
+		const plan = f.plan();
+		expect(plan.units).toEqual([]);
+		expect(plan.dropped.map((d) => d.path).sort()).toEqual(["D", "D/f", "D/g"]);
+	});
+
+	it("moves no file open for writing or changed: an open one is busy, a changed one publishes first", () => {
+		const f = setup({ a: "a", x: "x" });
+		const { handle } = f.view.openWrite("a", { create: false, exclusive: false, truncate: false });
+		refused(() => f.view.rename("a", "b"), "BUSY");
+		f.view.close(handle, 3);
+		f.view.setExecutable("x", true);
+		publishFirst(() => f.view.rename("x", "y"));
+	});
+
+	it("keeps what another handle closed when one handle's connection ends", () => {
+		const f = setup({ log: "l" });
+		const a = f.view.openWrite("log", { create: false, exclusive: false, truncate: false });
+		const b = f.view.openWrite("log", { create: false, exclusive: false, truncate: true });
+		f.view.setChunk(b.handle, 0, chunk("from b"));
+		const node = f.view.close(b.handle, 6);
+		const version = node.version;
+		f.view.abandon(a.handle);
+		expect(node.version).toBe(version);
+		expect(node.content).toEqual({ chunks: [chunk("from b")], size: 6 });
+		expect(node.open).toBe(0);
+	});
+
+	it("renames a folder only in case, with what is in it", () => {
+		const f = setup({ Docs: null, "Docs/a": "a" });
+		f.view.rename("Docs", "docs");
+		expect(Object.keys(shown(f.view)).sort()).toEqual(["docs", "docs/a"]);
+		expect(f.publish()).toEqual([
+			{ op: "move", from: "Docs", to: "docs", expectedVersion: expect.any(String), asOfSeq: 10 },
+		]);
+	});
+
 	it("refuses at once what the folder never takes, folded as the core folds", () => {
 		const f = setup({
 			vision: null,

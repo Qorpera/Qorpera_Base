@@ -37,6 +37,8 @@ export interface BoundaryPlan {
 	readonly units: readonly PlannedUnit[];
 	/** Paths this boundary leaves pending, and why. */
 	readonly waiting: readonly { readonly path: string; readonly reason: string }[];
+	/** Changes this boundary drops without publishing (the view shows the live folder there again), and why. */
+	readonly dropped: readonly { readonly path: string; readonly reason: string }[];
 	/** The nodes the boundary leaves pending whatever its units' outcomes. */
 	readonly keep: ReadonlySet<string>;
 }
@@ -69,6 +71,7 @@ function below(path: string, folder: string): boolean {
 export function planBoundary(view: PendingView, staged: (node: PendingFile) => FileRef | undefined): BoundaryPlan {
 	const keep = new Set<string>();
 	const waiting: { path: string; reason: string }[] = [];
+	const dropped: { path: string; reason: string }[] = [];
 	const writes: (Item & { kind: "write" })[] = [];
 	const creates: (Item & { kind: "create" })[] = [];
 	const moves: (Item & { kind: "move" })[] = [];
@@ -119,8 +122,16 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 	const deletes: (Item & { kind: "delete" })[] = [];
 	for (const [path, ref] of removed) {
 		if (removedFolder(path)) continue;
-		const paths = [path, ...[...removed.keys()].filter((p) => below(p, path))];
-		deletes.push({ kind: "delete", path, ref, paths });
+		const inside = [...removed].filter(([p]) => below(p, path));
+		// A folder's removal takes everything in it as of its position: a file in it whose live version is not the one
+		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
+		// unseen, so the folder stays, and so does what was removed in it.
+		if (inside.some(([p, r]) => r.kind === "file" && view.liveVersion(p) !== r.version)) {
+			for (const p of [path, ...inside.map(([q]) => q)])
+				dropped.push({ path: p, reason: "something in the folder changed since the machine saw it" });
+			continue;
+		}
+		deletes.push({ kind: "delete", path, ref, paths: [path, ...inside.map(([p]) => p)] });
 	}
 
 	// A new file where the view removed a live file (its folder still there) is that file's next version: an editor's
@@ -165,7 +176,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 	];
 	const units: PlannedUnit[] = [];
 	for (const item of schedule(items, waiting, keep)) units.push(unitOf(item));
-	return { units, waiting, keep };
+	return { units, waiting, dropped, keep };
 }
 
 function unitOf(item: Item): PlannedUnit {

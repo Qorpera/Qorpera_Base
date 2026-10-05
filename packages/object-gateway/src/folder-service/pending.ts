@@ -489,14 +489,15 @@ export class PendingView {
 		return node;
 	}
 
-	/** The machine's connection ended with the handle still open: what this handle wrote is lost (founder decision 3),
-	 * and the file is as it was when the handle opened (a truncate at open included). */
+	/** The machine's connection ended with the handle still open: what it wrote and no close fixed is lost (founder
+	 * decision 3). The file goes back to how it was when the handle opened (a truncate at open included), unless
+	 * another handle is still open on it or closed since: their writes share the file, so it stays as they left it. */
 	abandon(handle: number): void {
 		const open = this.#handles.get(handle);
 		if (!open) return;
 		this.#handles.delete(handle);
 		open.node.open--;
-		Object.assign(open.node, open.before);
+		if (open.node.open === 0 && open.node.version === open.before.version) Object.assign(open.node, open.before);
 	}
 
 	mkdir(path: string): void {
@@ -544,7 +545,7 @@ export class PendingView {
 		const source = this.resolve(from);
 		if (!source) fail(ErrorCode.notFound, "No such path");
 		const kind = source.kind === "live" ? source.entry.kind : source.node.kind;
-		if (kind === "folder" && within(folderKey(to), folderKey(from)))
+		if (kind === "folder" && folderKey(to).startsWith(`${folderKey(from)}/`))
 			fail(ErrorCode.badRequest, "A folder cannot go inside itself");
 		const parent = this.resolve(parentOf(to));
 		if (!parent || (parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
@@ -553,8 +554,12 @@ export class PendingView {
 		const live = source.kind === "live" || source.node.origin !== undefined;
 		// A live entry's move is published as one: it never goes where nothing is published.
 		if (live && unpublished(to)) fail(ErrorCode.notHere, "A published path cannot go where nothing is published");
-		if (source.kind === "node" && source.node.kind === "file" && source.node.origin && source.node.content)
-			throw new PublishFirst("moving a file this view changed");
+		if (source.kind === "node" && source.node.kind === "file" && source.node.origin) {
+			// A file open for writing cannot move: what it writes after would be a change to a moved file.
+			if (source.node.open > 0) fail(ErrorCode.busy, "The file is open for writing");
+			if (source.node.content || source.node.executable !== source.node.origin.entry?.executable)
+				throw new PublishFirst("moving a file this view changed");
+		}
 		if (source.kind === "live" && source.entry.kind === "folder" && this.#pendingBelow(from, source.source))
 			throw new PublishFirst("moving a folder with changes inside it");
 		const target = this.resolve(to);
@@ -591,7 +596,7 @@ export class PendingView {
 				version: source.entry.version,
 				mtimeMs: source.entry.mtimeMs,
 			};
-		if (target) this.#remove(target, options.toBase);
+		if (target) this.#remove(target, options.toBase, true);
 		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
 		const moved: [string, Node][] = [];
 		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
@@ -687,8 +692,12 @@ export class PendingView {
 
 	/** Takes whatever `path` shows out of the view: a live entry is recorded as removed at the writer's base, a pending
 	 * one's origin with it. */
-	#remove(r: Resolved, base: string | undefined): void {
+	#remove(r: Resolved, base: string | undefined, save = false): void {
 		if (r.kind === "live") {
+			// The machine removes what its name showed; a newer version it never saw is not taken (ESTALE: it looks again).
+			// A file replaced by a save keeps the save's base, so the save conflicts instead.
+			if (!save && r.entry.kind === "file" && base !== undefined && base !== r.entry.version)
+				fail(ErrorCode.stale, "The file changed since the machine saw it");
 			this.#removed.set(r.source, {
 				path: r.source,
 				kind: r.entry.kind,
@@ -697,12 +706,20 @@ export class PendingView {
 			});
 		} else {
 			const origin = r.node.origin;
-			if (origin)
+			// A changed file whose live version moved on since its base is not removed with it: the change goes, and the
+			// newer version shows again, as a conflict would have left it.
+			const current = origin && this.#live().get(origin.path)?.version === origin.version;
+			if (origin && current)
 				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
 			this.#dropUnder(r.path);
 			this.#unset(r.path);
 		}
 		this.#hide(r.path);
+	}
+
+	/** The live version now at a live path (the planner checks a removal it would fold into its folder's). */
+	liveVersion(path: string): string | undefined {
+		return this.#live().get(path)?.version;
 	}
 
 	/** Nodes left under a path that now holds something else hide nothing there. */
