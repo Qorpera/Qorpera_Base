@@ -511,13 +511,22 @@ it("cancels a worker as a run effect under its own receipt", async () => {
 	await refuses(
 		stale
 			.workers()
-			.change({ action: "cancel", operationKey: "cancel-3", todoKey: "market-scan", workerKey: "prices" }, stale.context),
+			.change(
+				{ action: "cancel", operationKey: "cancel-3", todoKey: "market-scan", workerKey: "prices" },
+				stale.context,
+			),
 		"The session has a new turn since you were asked; leave it",
 	);
-	const reconciling = await fixture({}, { cancelError: { code: "55000", message: "Worker operation needs reconciliation" } });
+	const reconciling = await fixture(
+		{},
+		{ cancelError: { code: "55000", message: "Worker operation needs reconciliation" } },
+	);
 	const error = await reconciling
 		.workers()
-		.change({ action: "cancel", operationKey: "cancel-4", todoKey: "market-scan", workerKey: "prices" }, reconciling.context)
+		.change(
+			{ action: "cancel", operationKey: "cancel-4", todoKey: "market-scan", workerKey: "prices" },
+			reconciling.context,
+		)
 		.then(
 			() => null,
 			(thrown: unknown) => thrown,

@@ -637,7 +637,11 @@ export class CloudFolderWorkers {
 		} catch (error) {
 			if (error instanceof CloudCompanyFolderRpcError && error.code === "P0002")
 				throw new CloudToolRefusal(NO_WORKER);
-			if (error instanceof CloudCompanyFolderRpcError && error.code === "55000" && error.detail === CODING_QUESTION_STALE)
+			if (
+				error instanceof CloudCompanyFolderRpcError &&
+				error.code === "55000" &&
+				error.detail === CODING_QUESTION_STALE
+			)
 				throw new CloudToolRefusal(CODING_QUESTION_STALE);
 			throw error;
 		}
