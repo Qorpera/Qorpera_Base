@@ -8,7 +8,9 @@ technical spec. Where this page and `QORPERA-RUNTIME-CONTRACT.md` differ, the co
 
 Revised on 5 October after Jonas's correction: memory is **company-first and agent-first, with no compromise.**
 Members are not a boundary. Everything is stored as if all members were one, and every agent may read every
-conversation. The earlier draft's reader rules per member and per group chat are gone (§9, §15).
+conversation. The earlier draft's reader rules per member and per group chat are gone (§9, §15). Jonas then answered
+the two open questions, yes to both: the tree replaces the notebook's diary and "the last 32 messages" (§11), and old
+copies of summary files are pruned after 7 days (§10). Part 1 ends with these decisions.
 
 # Part 1: the short version
 
@@ -69,7 +71,7 @@ Why this works:
   Co-Founder can follow what every agent does without being sent every message.
 - **Any agent can zoom into any conversation in the company**, not just its own.
 - **The notebook** keeps its small profile page: standing instructions and facts the agent must never forget. The
-  diary part is no longer needed, because the tree remembers (question 1).
+  diary part goes, because the tree remembers (decided 5 October).
 
 ## Company first
 
@@ -114,6 +116,9 @@ The trees are ordinary files in the company folder, next to what they belong to:
 Only the platform writes them. Members, agents and machines read and search them like any other company file. The
 messages themselves stay where they are today, in the conversation. A summary file only points at them.
 
+A summary file is rewritten as its summaries grow. An old copy is thrown away 7 days after a newer one replaced it, as
+we do with old git objects. The copies are rebuilt data, so nothing is lost.
+
 ## How we prove it helps
 
 We measure on the Qorpera Live Test company:
@@ -129,20 +134,20 @@ We measure on the Qorpera Live Test company:
 
 1. A short test on the test machine: check that the provider reuses its cache between answers, the way we run Codex.
 2. Trees for agents' own threads, on the Live Test company only. Measure.
-3. Erasing a single message, with its summaries.
+3. Erasing a single message, with its summaries. Then the 7-day cleanup of old copies.
 4. Group chats, each agent's other conversations in its view, and the Co-Founder's branches.
 5. Switch it on for every company, and shrink the notebook.
 
-## Questions for Jonas
+## Decided by Jonas (5 October)
 
-1. **Should the tree replace the agent's diary?** The diary is the dated facts and short notes in its notebook. The
-   tree would also replace "the last 32 messages". The small profile page stays. *Recommendation: yes.*
-2. **May old copies of summary files be thrown away after 7 days, as we do with old git objects?** They are rebuilt
-   data, and keeping every rewrite forever wastes storage. *Recommendation: yes.*
+1. **The tree replaces the agent's diary**, the dated facts and short notes in its notebook. It also replaces "the
+   last 32 messages". The small profile page stays.
+2. **Old copies of summary files are thrown away 7 days after they are replaced**, as we do with old git objects.
+   They are rebuilt data. Erasing a message still wipes its copies at once.
+3. **Company first, with no compromise.** Group chats are company-wide. The Co-Founder sees every agent's thread. Any
+   run writes missing summaries on its own login. Owners and admins erase messages, as they erase files.
 
-Settled by the company-first rule (5 October), so no longer questions: group chats are company-wide; the Co-Founder
-sees every agent's thread; any run writes missing summaries on its own login; owners and admins erase messages, as
-they erase files.
+No questions are left open.
 
 # Part 2: technical spec
 
@@ -349,7 +354,7 @@ t2/…                       tier 2: levels 8–11 of 4,096 messages each
 
 **Why blocks.** Rewriting one growing file per conversation would store a new copy of it on every batch, kept forever
 (§1, folder writes). Small blocks bound each rewrite to about 10 KB. Old versions of a block are only rewrite noise,
-and Q2 proposes pruning them after 7 days, like git objects. Without Q2, they cost a few KB per message.
+so they are pruned 7 days after they are replaced, like git objects (§10, GC; Jonas, 5 October).
 
 ### 4.3 Writes and refusals
 
@@ -752,15 +757,24 @@ conversations are free text that a member removes. So the tree, built only from 
 results never enter the tree (§2), so a summary never quotes a file that the conversation itself did not quote. To
 remove such a quote, an owner or admin erases the message, and the tree follows it.
 
-**GC.** Tree files are ordinary folder files with ordinary roots. With Q2, superseded versions under a tree root are
-pruned 7 days after they are superseded, the same rule as old git objects (core §2). Erasure stays immediate.
+**GC** (decided by Jonas, 5 October). Tree files are ordinary folder files with ordinary roots. Versions are kept for
+good (core §2), with one more exception next to old git objects: a version of a path under a tree root (§4.2) that a
+later write of the same path replaced is pruned 7 days after that write. It runs beside the git-object prune, through
+the same shared helper (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §4 step 5).
+- A path's current version is kept, and so is its last version before a delete or a move. So restoring a deleted
+  group folder, or an agent's, brings its tree back.
+- Only tree roots are covered. The notebook (`agents/<agent>/memory/` outside `thread/`) and every other file keep all
+  their versions.
+- A pruned version can no longer be restored, the same trade as for git objects. A tree is derived from the
+  transcript, so a node that is missing is rebuilt by the next run in the conversation (step 6 above).
+- Erasure stays immediate (step 3 above); it does not wait for the prune.
 
 **Retention.** A tree lives as long as its conversation and its owning folder. Nothing is trimmed by age: old lines
 just get coarser in the view.
 
 ## 11. What the tree replaces in today's memory
 
-If Q1 is yes:
+Decided by Jonas on 5 October: the tree replaces the diary and `history`, and the profile page stays.
 
 | Today | After |
 | --- | --- |
@@ -773,7 +787,8 @@ If Q1 is yes:
 
 - There are no users, so nothing is migrated. Hiring stops seeding `memory/log/`, and the log composer goes.
 - Contract 5.4 and 15.1 change with it (§16).
-- If Q1 is no, the notebook stays as it is and the tree only replaces `history`.
+- The notebook is trimmed at M5, once the probe has met §13's targets. Until then a company with the tree on keeps
+  its notebook as it is, and the tree replaces only `history`.
 
 ## 12. Routines, workers, coding, review and onboarding
 
@@ -833,12 +848,13 @@ No slots or test numbers are reserved yet. Each step is its own PR with its own 
 | **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; fold, rendering and VIEW_DOC; closing compactor with its raw window, and settle that fills gaps any run left; `zoom` into any agent's thread, with fitted results; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index, write refusals, ordinary reads and search of tree files, and the generation check (a batch read before a generation change is discarded), and a dblink race of a batch commit and a zoom receipt against a payer's role change (`qorpera_folder_member_change_enter`) that ends with no deadlock; runtime tests for fold determinism, budget, placeholders, size enforcement, a zoom by an agent into another agent's thread whose result is the same whichever member the run works for, and a markup-heavy zoom read whole through `from`; one live run that writes and reads a tree |
 | **M2** | Measure and tune: the memory probe, VIEW at 48,000 vs 96,000, Luna low vs medium | probe report against §13's targets |
 | **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, a compactor batch and a zoom receipt racing the erase (each either lands before it and is deleted or scrubbed, or is discarded and redone at the new generation), and an erase racing a role change, with no deadlock; live: erase, then see the lines rebuilt and old versions gone |
+| **M3b** | The 7-day prune of replaced tree versions (§10, GC) | SQL tests: a block version replaced more than 7 days ago is pruned; the current version, one replaced less than 7 days ago, the last version before a delete, and old versions of a notebook file are kept |
 | **M4** | Group chats, branches of every conversation the agent takes part in, and the Co-Founder's branches of every agent's thread | runtime tests for branch choice and budget; probe: a fact said in a group chat is recalled in the agent's own thread, and the Co-Founder recalls a fact from another agent's thread |
-| **M5** | On for every folder-v2 company; notebook trimmed (Q1) | the probe on a fresh company |
+| **M5** | On for every folder-v2 company; notebook trimmed to its profile page (§11) | the probe on a fresh company |
 | **M6** | Agent pair transcripts | — |
 
 M3 must be live before M5. Without it, the hard erasure rule has nothing to act on, but the tree must not reach real
-companies before a message can be erased.
+companies before a message can be erased. M3b comes before M5 too, so no real company keeps rewrite noise for good.
 
 ## 15. Alternatives we rejected
 
@@ -877,7 +893,9 @@ companies before a message can be erased.
 - **9.1**: "recent canonical transcript" becomes "the conversation's view and branches of the agent's other
   conversations".
 - **14.2**: the Co-Founder's view holds branches of every agent's thread; it still receives no copies.
-- **15.1**: the notebook tiers (Q1); `zoom`, which reads any conversation of the company.
+- **15.1**: the notebook keeps only its profile tier (§11); `zoom`, which reads any conversation of the company.
+- **Folder versions** (the 2026-09-27 amendment, item 9; core §2): next to old git objects, versions under a tree root
+  that a later write replaced are pruned 7 days after that write (§10, GC). Jonas approved this on 5 October.
 - **17**: a run's summaries, and the gaps it fills, are part of its work and are paid by its payer.
 - **P18**: erasing one message by an owner or admin, and the tree's rebuild after it.
 - **Company-wide conversations**: every member and agent of the company may read every conversation and its tree.
@@ -895,5 +913,6 @@ companies before a message can be erased.
   messages instead of OptChat's folded chat. M2 measures both.
 - **Latency.** Each zoom is one more tool round. Closing compaction holds the slot up to CLOSE after the reply, and the
   run lease must allow that time.
-- **Storage.** Without Q2, block rewrites cost a few KB per message, kept forever.
+- **Storage.** Block rewrites cost a few KB per message, kept for 7 days (§10, GC). A busy conversation holds a week
+  of them.
 - **The fence's 8 KiB envelope** bounds zoom pages. A long message takes several calls to read in full.
