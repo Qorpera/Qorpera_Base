@@ -163,7 +163,7 @@ grant select, insert on realtime.messages to anon, authenticated, service_role;
 grant execute on function storage.foldername(text) to anon, authenticated, service_role;
 
 -- Test databases only (never a migration): every node the tests observe also reports a healthy agent exit
--- (deploy/agent-exit; migration 20260930052000). From 20260930052100 on, a node without one takes no new Company
+-- (deploy/agent-exit; migration 20260930089000). From 20260930089100 on, a node without one takes no new Company
 -- Computer or agent's machine and no new coding machine, so without this every test that places one would need its
 -- own exit report. The node's observation row is the moment: each insert or update of it reports a healthy exit for
 -- that node, as current as the observation (a test that ages the observation ages the exit with it). Tests of the exit's health itself switch this off for their transaction with

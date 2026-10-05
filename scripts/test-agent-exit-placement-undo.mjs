@@ -4,15 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostedDatabase, MIGRATIONS, migrationNames } from "./test-hosted-db-cluster.mjs";
 
-// Migration 20260930052100 and its undo (deploy/agent-exit/undo-20260930052100.sql, ROLLOUT.md step 6) on a database
+// Migration 20260930089100 and its undo (deploy/agent-exit/undo-20260930089100.sql, ROLLOUT.md step 6) on a database
 // just before it. The migration refuses while an enabled node has no healthy exit. After the migration and the undo,
 // the four placement functions' text, grants and owner are exactly what they were. A second undo is refused and
 // changes nothing, and the migration applies again, to the same text as the first time.
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "agent_exit_undo";
-const placement = "20260930052100_runtime_node_agent_exit_placement.sql";
-const undoFile = "deploy/agent-exit/undo-20260930052100.sql";
+const placement = "20260930089100_runtime_node_agent_exit_placement.sql";
+const undoFile = "deploy/agent-exit/undo-20260930089100.sql";
 const FUNCTIONS = [
 	"public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)",
 	"public.qorpera_company_machine_candidates(bigint,bigint,bigint,text,uuid)",

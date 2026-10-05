@@ -1,5 +1,5 @@
 -- @fixture 628_runtime_company_machines.test.sql until "-- 4. Full: the next machine waits in line, unplaced, with its place and its reason."
--- Agent exit E2d part 2 (20260930052100): a node whose exit is not healthy takes no new agent road machine.
+-- Agent exit E2d part 2 (20260930089100): a node whose exit is not healthy takes no new agent road machine.
 --   * Agents' machines: no new one is placed there (it waits as for room), a sleeping one does not wake there (refused
 --     NODE_AGENT_EXIT_UNHEALTHY) and moves to a node whose exit is healthy; one already reserved keeps going, and one
 --     tied to its repository's node wakes there. A node that never reported its exit takes nothing. An observer that

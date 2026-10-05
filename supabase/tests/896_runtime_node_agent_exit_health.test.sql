@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Agent exit E2d part 1 (20260930052000): the node observer posts the exit's own health check
+-- Agent exit E2d part 1 (20260930089000): the node observer posts the exit's own health check
 -- (qorpera_observe_runtime_node_agent_exit), and a node's exit is ready while its latest answer is healthy and
 -- current. Only the observer's service role may post or read it; a healthy answer needs the exit's check and no
 -- problem; the host and policy must be the node's; an answer that is not current, or older than the one kept, never
