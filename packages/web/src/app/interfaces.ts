@@ -263,7 +263,8 @@ export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnB
 function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 	return file.needs.every((need) => {
 		if (need === "team") return (company.store.get().team?.members.length ?? 0) >= 2;
-		// A table is there when its folder holds its definition (step I7).
+		// A table is there when its folder holds its definition (step I7), or may be when its read failed: the page is
+		// listed and its table says it can't be read.
 		if (need.startsWith("table:"))
 			return company.store.get().interfaceFolder?.tables.has(need.slice("table:".length)) === true;
 		// No member can read the company's mail yet (Q1's member read, step I5a), nor its connections here.

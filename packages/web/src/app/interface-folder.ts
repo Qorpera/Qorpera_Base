@@ -45,7 +45,9 @@ export type FolderPage =
 
 /** A table as its blocks read it: its definition, the rows that fit it and a problem for each row that doesn't
  * (`parseTableRows`). When its definition doesn't parse, or its rows file can't be read at all (a wrong first line),
- * it has no rows and is not `readable`; its problems say why. A table without a rows file yet has no rows (§5). */
+ * it has no rows and is not `readable`; its problems say why. So it is when one of its files failed to read and was
+ * never read before, with no problems: the next sync reads it again. A table without a rows file yet has no rows
+ * (§5). */
 export interface FolderTable {
 	readonly table: TableFile | null;
 	readonly rows: readonly TableRow[];
@@ -419,8 +421,12 @@ export class CompanyInterfaceFolder {
 		const listed = parseInterfaceOrderFile(order.text);
 		const { tables: tableNames, files: filePaths } = this.#sources();
 		const tables = new Map<string, FolderTable>();
+		// Every file a source names has been tried by now: undefined is a read that failed, which is not a file that
+		// isn't there (null). A table whose files could not be read can't be read until the next sync reads them.
+		const unread: FolderTable = { table: null, rows: [], problems: [], readable: false };
 		for (const name of tableNames) {
 			const definition = this.#readOf(tablePath(name));
+			if (definition === undefined) tables.set(name, unread);
 			if (!definition) continue;
 			const parsed = parseTableFile(definition.text);
 			if (!parsed.ok) {
@@ -428,6 +434,11 @@ export class CompanyInterfaceFolder {
 				continue;
 			}
 			const rows = this.#readOf(rowsPath(name));
+			if (rows === undefined) {
+				tables.set(name, { ...unread, table: parsed.file });
+				continue;
+			}
+			// A table without its rows file yet has no rows (§5).
 			const read = rows ? parseTableRows(parsed.file, rows.text) : { rows: [], problems: [], readable: true };
 			tables.set(name, {
 				table: parsed.file,

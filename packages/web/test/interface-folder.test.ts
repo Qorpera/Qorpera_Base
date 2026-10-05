@@ -390,6 +390,30 @@ line = "{text}"
 			expect(texts(main, ".interface-block h2")).toEqual(["Alpha list", "Today"]);
 			expect(texts(main, ".interface-block:nth-child(2) .interface-item strong")).toEqual(["Ship the **ledger**."]);
 		});
+
+		it("says a table can't be read when its rows failed to download, never that it is empty, until a read lands", async () => {
+			vi.useFakeTimers();
+			const fake = seeded();
+			fake.put("interfaces/ledger/interface.toml", LEDGER);
+			fake.put("tables/numbers/rows.csv", rows(`Revenue,2026-10-01T09:00Z,1200,€,,${ada.id}`));
+			fake.failDownload("tables/numbers/rows.csv");
+			const { controller } = company();
+			const { hint } = await follow(fake, controller);
+			const main = h("main");
+			renderInterface(main, controller, "ledger");
+			const table = () => main.querySelectorAll<HTMLElement>(".interface-block")[1]!;
+			expect(table().querySelector(".interface-note p")?.textContent).toBe("This table can't be read.");
+			expect(table().querySelector(".interface-note li")).toBeNull();
+			expect(table().querySelector(".interface-table, .interface-empty, .interface-filter")).toBeNull();
+			// The next sync reads everything again, the rows this time.
+			fake.heal("tables/numbers/rows.csv");
+			await hint();
+			await vi.waitFor(() => {
+				renderInterface(main, controller, "ledger");
+				expect(texts(table(), ".interface-table tbody td:nth-child(2)")).toEqual(["1200"]);
+			});
+			expect(table().querySelector(".interface-note")).toBeNull();
+		});
 	});
 
 	describe("live", () => {
@@ -414,10 +438,10 @@ fields = ["number", "value"]
 		const csv = (revenue: number) =>
 			`number,at,value,unit,target,kept_by\nRevenue,2026-10-01T09:00Z,${revenue},€,,${ada.id}\nChurn,2026-10-01T09:00Z,3,%,5,${ada.id}\n`;
 
-		async function live() {
+		async function live(text = LEDGER) {
 			vi.useFakeTimers();
 			const fake = seeded();
-			fake.put("interfaces/ledger/interface.toml", LEDGER);
+			fake.put("interfaces/ledger/interface.toml", text);
 			fake.put("tables/numbers/rows.csv", csv(1200));
 			const { f, controller } = company();
 			const followed = await follow(fake, controller);
@@ -428,6 +452,47 @@ fields = ["number", "value"]
 			draw();
 			return { fake, f, controller, main, ...followed };
 		}
+
+		/** A page whose list of what waits has a message button, beside a table of the numbers. */
+		const DESK = (columns: string, text: string) =>
+			page(
+				ids.ledger,
+				"Ledger",
+				"",
+				`buttons = ["ask"]
+
+[[view.block]]
+kind = "table"
+title = "Numbers"
+from = "table:numbers"
+columns = ${columns}
+
+[[button]]
+id = "ask"
+verb = "message"
+label = "Ask {from}"
+to = "{from}"
+text = "${text}"
+`,
+			);
+
+		it("draws a changed definition even when its rows and titles stay the same", async () => {
+			const { fake, controller, main, hint } = await live(DESK('["number", "value"]', "About {title}: "));
+			expect(texts(main, ".interface-table thead th")).toEqual(["Number", "Value"]);
+			expect(texts(main, ".interface-actions button")).toEqual(["Ask Ada"]);
+			// Only the table's columns and the button's text change: no row, title or label does.
+			fake.put("interfaces/ledger/interface.toml", DESK('["number", "kept_by"]', "Please look at {title}: "));
+			await hint();
+			await vi.waitFor(() => expect(texts(main, ".interface-table thead th")).toEqual(["Number", "Kept by"]));
+			expect(texts(main, ".interface-table tbody td:nth-child(2)")).toEqual(["Ada", "Ada"]);
+			expect(texts(main, ".interface-block h2")).toEqual(["Ledger list", "Numbers"]);
+			// The button on screen is the new definition's: it puts the new text in the composer.
+			vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+			main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
+			await vi.waitFor(() =>
+				expect(controller.conversation(session.sessionId).get().draft).toBe("Please look at Ada needs you: "),
+			);
+		});
 
 		it("reads again only the files whose paths changed, and redraws the open page in place", async () => {
 			const { fake, main, hint, joined } = await live();
@@ -480,6 +545,43 @@ fields = ["number", "value"]
 			await hint();
 			await vi.waitFor(() => expect(fake.folder.list).toHaveBeenCalled());
 			expect(names(controller)).toEqual(["pulse", "ledger"]);
+		});
+
+		/** A message whose thread fails to open only after the page's file changed. */
+		async function lateFailure(change: (text: string) => string) {
+			const text = DESK('["number", "value"]', "About {title}: ");
+			const { fake, controller, main, hint } = await live(text);
+			let fail!: (error: Error) => void;
+			vi.spyOn(controller, "openStaffConversation").mockReturnValue(
+				new Promise<string>((_resolve, reject) => {
+					fail = reject;
+				}),
+			);
+			main.querySelector<HTMLButtonElement>(".interface-actions button")!.click();
+			fake.put("interfaces/ledger/interface.toml", change(text));
+			await hint();
+			return { controller, main, fail };
+		}
+
+		it("draws a message's late failure on the page's current definition, never the one it was clicked on", async () => {
+			const relabel = (text: string) => text.replace('label = "Ask {from}"', 'label = "Query {from}"');
+			const { main, fail } = await lateFailure(relabel);
+			await vi.waitFor(() => expect(texts(main, ".interface-actions button")).toEqual(["Query Ada"]));
+			fail(new Error("agent threads unavailable"));
+			await vi.waitFor(() =>
+				expect(main.querySelector(".notice")?.textContent).toContain("agent threads unavailable"),
+			);
+			expect(texts(main, ".interface-actions button")).toEqual(["Query Ada"]);
+		});
+
+		it("keeps a page that broke while a message was on its way broken when the message fails", async () => {
+			const breakIt = (text: string) => text.replace('name = "Ledger"', 'name = "Ledger"\ncolour = "plaid"');
+			const { main, fail } = await lateFailure(breakIt);
+			await vi.waitFor(() => expect(main.querySelector(".interface-problem")).not.toBeNull());
+			fail(new Error("agent threads unavailable"));
+			await vi.advanceTimersByTimeAsync(10);
+			expect(main.querySelector(".interface-problem p")?.textContent).toBe("This page has a problem.");
+			expect(main.querySelector(".interface-list, .interface-table, .interface-actions, .notice, button")).toBeNull();
 		});
 	});
 

@@ -200,7 +200,20 @@ export function renderInterface(container: HTMLElement, company: CompanyControll
 		renderBrokenInterface(container, company, name, entry.problems);
 		return;
 	}
-	renderInterfaceFile(container, company, name, entry.file);
+	// Every redraw the page asks for (a tab, a sort, an opened row, a message that failed after the file changed)
+	// finds the definition again, so a page never draws a definition the company has since changed or broken.
+	renderInterfaceFile(container, company, name, entry.file, () => renderInterface(container, company, name));
+}
+
+/** Each definition as JSON, made once: a page is drawn again whenever anything it is drawn from changes. */
+const definitions = new WeakMap<InterfaceFile, string>();
+function definitionKey(file: InterfaceFile): string {
+	let key = definitions.get(file);
+	if (key === undefined) {
+		key = JSON.stringify(file);
+		definitions.set(file, key);
+	}
+	return key;
 }
 
 /** A parser's problems, each with its line, in its own words under the client's. */
@@ -223,6 +236,11 @@ function renderBrokenInterface(
 	problems: readonly FolderProblem[],
 ): void {
 	const profileId = company.profile.profileId;
+	// An error from before the text broke (a message that failed) belongs to a page that is gone: it isn't shown
+	// when the page parses again.
+	const page = pageState(`${company.userId}/${profileId}/${name}`);
+	page.error = null;
+	page.errorShown = false;
 	show(container, JSON.stringify(["broken", profileId, presentationLocale(), name, problems]), () =>
 		h(
 			"section",
@@ -264,18 +282,19 @@ interface DrawnBlock {
 	readonly problems: readonly FolderProblem[];
 }
 
-/** Draws an interface definition. `renderInterface` finds the definition; tests pass one directly. */
+/** Draws an interface definition. `renderInterface` finds the definition, and finds it again for every redraw the
+ * page asks for (`redraw`); tests pass one directly, and redraw that one. */
 export function renderInterfaceFile(
 	container: HTMLElement,
 	company: CompanyController,
 	name: string,
 	file: InterfaceFile,
+	redraw: () => void = () => renderInterfaceFile(container, company, name, file),
 ): void {
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
 	const locale = presentationLocale();
 	const page = pageState(`${company.userId}/${profileId}/${name}`);
-	const redraw = () => renderInterfaceFile(container, company, name, file);
 	const views = interfaceViews(file)
 		.map((view) => ({ name: view.name, blocks: viewBlocks(view, company) }))
 		.filter((view) => view.blocks.length > 0);
@@ -384,6 +403,8 @@ export function renderInterfaceFile(
 	const moveFocus = page.focus ?? undefined;
 	page.focus = null;
 	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
+	// The whole definition, so a change to anything drawn from it (a table's columns, a list's line, a button's
+	// text) draws the page again with the handlers of the new one, even when the rows and titles stay the same.
 	const key = JSON.stringify([
 		profileId,
 		company.userId,
@@ -391,8 +412,7 @@ export function renderInterfaceFile(
 		presentationTimeZone(),
 		clock.startOfToday,
 		name,
-		file.name,
-		file.about,
+		definitionKey(file),
 		live ? "live" : [state.realtime, state.realtimeError ?? ""],
 		views.map((candidate) => candidate.name),
 		view.name,
@@ -587,14 +607,14 @@ function cellText(drawn: DrawnBlock, column: string, value: TableValue | undefin
 }
 
 /** A source's own problems at the top of its block: the rows of a table that don't fit its definition are left out
- * and listed here, and a table that can't be read at all shows only this. */
+ * and listed here, and a table that can't be read at all shows only this (with no list when its read failed). */
 function sourceNote(drawn: DrawnBlock): HTMLElement | null {
-	if (!drawn.problems.length) return null;
+	if (drawn.readable && !drawn.problems.length) return null;
 	return h(
 		"div",
 		{ class: "interface-note" },
 		h("p", null, drawn.readable ? t("Some rows can't be shown.") : t("This table can't be read.")),
-		problemList(drawn.problems),
+		drawn.problems.length ? problemList(drawn.problems) : null,
 	);
 }
 

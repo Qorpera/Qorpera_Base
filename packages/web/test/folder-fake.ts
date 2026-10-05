@@ -74,10 +74,14 @@ export function folderFake(
 	const listsRoutines = options.listsRoutines ?? true;
 	const nodes = new Map<string, Node>();
 	const texts = new Map<string, string>();
+	/** The path each handed-out file's bytes were read from, by hash. */
+	const paths = new Map<string, string>();
 	const answers: Answer[] = [];
 	const replays = new Map<string, { units: string; answer: CloudMemberFolderCommit }>();
 	const denied = new Set<string>();
 	const failing = new Map<string, unknown>();
+	/** Roots whose files' bytes fail to download (the object gateway), while their entries still read. */
+	const failingBytes = new Set<string>();
 	const commits: FolderCommitCall[] = [];
 	/** The feed: each seq's changed paths, or a change to what the member may read. */
 	const feed: { seq: number; changes: { path: string; kind: "file" | "folder"; version: string }[] | "authority" }[] =
@@ -107,9 +111,10 @@ export function folderFake(
 		for (const [root, error] of failing) if (key(path) === key(root) || under(path, root)) throw error;
 	};
 
-	function reference(text: string): CloudMemberFolderFile {
+	function reference(text: string, path: string): CloudMemberFolderFile {
 		const hash = (++hashes).toString(16).padStart(64, "0");
 		texts.set(hash, text);
+		paths.set(hash, path);
 		return {
 			manifestSha256: hash,
 			fileSha256: hash,
@@ -126,7 +131,7 @@ export function folderFake(
 			version: node.version,
 			seq: node.seq,
 			updatedAt: "2026-10-04T09:00:00Z",
-			file: node.kind === "file" ? reference(node.text ?? "") : null,
+			file: node.kind === "file" ? reference(node.text ?? "", node.path) : null,
 		};
 	}
 
@@ -317,6 +322,9 @@ export function folderFake(
 				signal.throwIfAborted();
 				if (file.bytes > maximumBytes)
 					throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
+				const path = paths.get(file.fileSha256) ?? "";
+				if ([...failingBytes].some((root) => key(path) === key(root) || under(path, root)))
+					throw new CloudMemberFolderError("Company folder bytes are unavailable (503)", 503);
 				const text = texts.get(file.fileSha256);
 				if (text === undefined)
 					throw new CloudMemberFolderError("Company folder object failed integrity verification");
@@ -514,9 +522,14 @@ export function folderFake(
 		): void {
 			failing.set(root, error);
 		},
-		/** Reads under `root` answer again. */
+		/** Reads under `root` answer again, and their bytes download again. */
 		heal(root: string): void {
 			failing.delete(root);
+			failingBytes.delete(root);
+		},
+		/** The bytes of files at or under `root` fail to download; their entries still read. */
+		failDownload(root: string): void {
+			failingBytes.add(root);
 		},
 	};
 	for (const path of options.seed ?? SEEDED) fake.mkdir(path);
