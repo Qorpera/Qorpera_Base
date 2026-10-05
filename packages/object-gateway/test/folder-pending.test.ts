@@ -491,6 +491,15 @@ describe("a view's pending changes", () => {
 		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
 	});
 
+	it("shows the newer version again when a moved file whose origin moved on is removed", () => {
+		const f = setup({ D: null, "D/f": "v1" });
+		f.view.rename("D/f", "out");
+		f.change("D/f", "v2");
+		f.view.unlink("out");
+		expect(shown(f.view)).toEqual({ D: "folder", "D/f": hash("manifest:v2") });
+		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+	});
+
 	it("removes a folder as of the oldest position of the folders removed in it", () => {
 		const f = setup({ D: null, "D/sub": null });
 		f.view.rmdir("D/sub");
@@ -532,6 +541,15 @@ describe("a view's pending changes", () => {
 		f.view.abandon(c.handle);
 		expect(node.version).toBe(closed);
 		expect(node.content).toEqual({ chunks: [chunk("from d")], size: 6 });
+		// A handle that wrote nothing closing after another wrote: the shared bytes changed, so the version does too.
+		const g = f.view.openWrite("log", { create: false, exclusive: false, truncate: false });
+		const h = f.view.openWrite("log", { create: false, exclusive: false, truncate: false });
+		f.view.setChunk(g.handle, 0, chunk("from g"));
+		f.view.close(h.handle, 6);
+		expect(node.version).not.toBe(closed);
+		expect(node.staged).toBeUndefined();
+		f.view.abandon(g.handle);
+		expect(node.content).toEqual({ chunks: [chunk("from g")], size: 6 });
 	});
 
 	it("renames a folder only in case, with what is in it", () => {

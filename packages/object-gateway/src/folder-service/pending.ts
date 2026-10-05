@@ -192,8 +192,10 @@ export class PendingView {
 	readonly #children = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
-	/** Open handles: the file, and whether this handle wrote. */
-	readonly #handles = new Map<number, { readonly node: PendingFile; dirty: boolean }>();
+	/** Open handles, and the file each writes. */
+	readonly #handles = new Map<number, { readonly node: PendingFile }>();
+	/** Files with chunks written, through any handle, since their state was last fixed. */
+	readonly #unfixed = new WeakSet<PendingFile>();
 	/** Each file open for writing as its last close (or its open, a truncate included) fixed it: what an abandoned
 	 * handle goes back to. Writes no close fixed are not in it. */
 	readonly #fixed = new WeakMap<PendingFile, Pick<PendingFile, "content" | "version" | "staged" | "executable">>();
@@ -415,7 +417,7 @@ export class PendingView {
 		if (node.open === 0) this.#fix(node);
 		node.open++;
 		const handle = this.#nextHandle++;
-		this.#handles.set(handle, { node, dirty: false });
+		this.#handles.set(handle, { node });
 		return {
 			handle,
 			size: node.content ? node.content.size : (node.origin?.entry?.bytes ?? 0),
@@ -455,7 +457,7 @@ export class PendingView {
 		chunks[index] = chunk;
 		node.content = { chunks, size: node.content.size };
 		node.mtimeMs = this.#now();
-		this.#handles.get(handle)!.dirty = true;
+		this.#unfixed.add(node);
 	}
 
 	/** The handle is closed at `size`. The chunks must tile the file, every one but the last exactly 4 MiB; until they
@@ -479,7 +481,9 @@ export class PendingView {
 				fail(ErrorCode.badRequest, "The file's chunks do not make up its size");
 			const before = node.content;
 			node.content = { chunks, size };
-			if (open.dirty || before.size !== size || before.chunks.length !== chunks.length) this.#changed(node);
+			// Any handle's writes since the last fix make a new version: writes share the file.
+			if (this.#unfixed.has(node) || before.size !== size || before.chunks.length !== chunks.length)
+				this.#changed(node);
 		}
 		this.#handles.delete(handle);
 		node.open--;
@@ -500,9 +504,11 @@ export class PendingView {
 		const fixed = this.#fixed.get(open.node);
 		if (fixed) Object.assign(open.node, fixed);
 		this.#fixed.delete(open.node);
+		this.#unfixed.delete(open.node);
 	}
 
 	#fix(node: PendingFile): void {
+		this.#unfixed.delete(node);
 		this.#fixed.set(node, {
 			content: node.content,
 			version: node.version,
@@ -725,7 +731,11 @@ export class PendingView {
 			const current = origin && this.#live().get(origin.path)?.version === origin.version;
 			this.#dropUnder(r.path);
 			this.#unset(r.path);
-			if (origin && !current) return;
+			if (origin && !current) {
+				// Its live origin moved on: the newer version shows again where it is, not hidden by this change's move.
+				if (this.#nodes.get(origin.path)?.kind === "gone") this.#unset(origin.path);
+				return;
+			}
 			if (origin)
 				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
 		}
