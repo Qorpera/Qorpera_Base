@@ -270,7 +270,10 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		let published = await publish();
 		expect(published, output).toMatchObject({ code: 0 });
 		expect(published.text).toMatch(/saved\s+docs\/new\.md/);
-		expect(core.entries.get("docs/new.md")).toMatchObject({ fileSha256: hashOf("hello"), mediaType: "text/markdown" });
+		expect(core.entries.get("docs/new.md")).toMatchObject({
+			fileSha256: hashOf("hello"),
+			mediaType: "text/markdown",
+		});
 
 		// Two editors read their files (the version map takes version one of each); then the node's service restarts,
 		// and another machine saves both meanwhile.
@@ -306,4 +309,3 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		expect(await exited).toBe(0);
 	}, 60_000);
 });
-
