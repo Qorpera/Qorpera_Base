@@ -77,51 +77,7 @@ begin
 	if position(E'\nbegin\n\tif public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;' in v_def) = 0
 		or md5(pg_temp.without_guard(v_def)) <> '38c1993cf99b1aba48809bdc9bee678a' then
 		raise exception 'The wake read''s snapshot-v1 body changed'; end if;
-	-- P29 (20260930020000) gives folder-v2 file wakes their own branches; reversed first.
-	v_text := replace(replace(replace(replace(pg_get_functiondef('public.qorpera_pin_wake_occurrence()'::regprocedure),
-		E'\t\t\tor (new.source_kind = ''company-file'' and not public.qorpera_company_is_folder_v2(new.profile_id)\n'
-		|| E'\t\t\t\tand (v_trigger ->> ''kind'' <> ''listener'' or new.file_event_id is null))\n'
-		|| E'\t\t\t-- 20260930020000 (P29): a folder-v2 file wake names its change set, never a snapshot event.\n'
-		|| E'\t\t\tor (new.source_kind = ''company-file'' and public.qorpera_company_is_folder_v2(new.profile_id)\n'
-		|| E'\t\t\t\tand (v_trigger ->> ''kind'' <> ''file-change'' or new.file_event_id is not null or new.source_id is null))',
-		E'\t\t\tor (new.source_kind = ''company-file'' and (v_trigger ->> ''kind'' <> ''listener'' or new.file_event_id is null))'),
-		E'\t\t\twhen new.source_kind = ''company-file'' and public.qorpera_company_is_folder_v2(new.profile_id) then new.source_id\n', ''),
-		E'\t\tif new.source_kind = ''company-file'' and public.qorpera_company_is_folder_v2(new.profile_id) then\n'
-		|| E'\t\t\t-- 20260930020000 (P29): the change set''s run, or a coding session''s turn run (C1B as amended), is the parent;\n'
-		|| E'\t\t\t-- its agent is the actor.\n'
-		|| E'\t\t\tselect coalesce(c.run_id, c.turn_run_id), case when c.actor_kind = ''staff_agent'' then c.actor_id end\n'
-		|| E'\t\t\tinto new.parent_run_id, v_actor from public.qorpera_folder_commits c\n'
-		|| E'\t\t\twhere c.id = new.source_id and c.environment_id = new.environment_id and c.seq is not null;\n'
-		|| E'\t\t\tif not found then raise exception ''Wake event is unavailable'' using errcode = ''42501''; end if;\n'
-		|| E'\t\telsif new.source_kind = ''company-file'' then\n',
-		E'\t\tif new.source_kind = ''company-file'' then\n'),
-		E' else v_ancestry := public.qorpera_wake_ancestry(new.parent_run_id,v_actor,new.staff_agent_id,\n'
-		|| E'\tcoalesce(new.file_event_id,case when new.source_kind = ''company-file'' then new.source_id end,new.id)); end if; -- 20260930020000',
-		E' else v_ancestry := public.qorpera_wake_ancestry(new.parent_run_id,v_actor,new.staff_agent_id,coalesce(new.file_event_id,new.id)); end if;');
-	v_text := replace(replace(replace(v_text,
-		E' if public.qorpera_company_is_folder_v2(new.profile_id) then\n'
-		|| E'\t\tif current_setting(''qorpera.folder_wake_admission'', true) is distinct from new.profile_id::text then\n'
-		|| E'\t\t\traise exception ''Folder wake admission is required'' using errcode = ''55000''; end if;\n'
-		|| E'\t\tif new.source_kind in (''office-activation'', ''machine-event'') then\n'
-		|| E'\t\t\traise exception ''This wake source does not serve folder-v2 yet'' using errcode = ''0A000''; end if;\n'
-		|| E'\telse\n'
-		|| E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'
-		|| E'\tend if;\n',
-		E' perform public.qorpera_serialize_wake_admission(new.profile_id);\n'),
-		E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
-		|| E'\t\tselect * into v_staff from public.qorpera_profile_staff where profile_id = new.profile_id\n'
-		|| E'\t\t\tand staff_agent_id = new.staff_agent_id and employment_status = ''active'';\n'
-		|| E'\telse\n'
-		|| E'\tselect * into v_staff from public.qorpera_profile_staff where profile_id = new.profile_id\n'
-		|| E'\t\tand staff_agent_id = new.staff_agent_id and employment_status = ''active'' for share;\n'
-		|| E'\tend if;\n',
-		E'\tselect * into v_staff from public.qorpera_profile_staff where profile_id = new.profile_id\n'
-		|| E'\t\tand staff_agent_id = new.staff_agent_id and employment_status = ''active'' for share;\n'),
-		E'\t\tnew.session_id := case when public.qorpera_company_is_folder_v2(new.profile_id)\n'
-		|| E'\t\t\tthen public.qorpera_folder_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id)\n'
-		|| E'\t\t\telse public.qorpera_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id) end;\n',
-		E'\t\tnew.session_id := public.qorpera_wake_public_session(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id);\n');
-	if md5(v_text) <> '2a577812246baee7f79e7f4089077dc8' then raise exception 'The pin trigger''s snapshot-v1 text changed'; end if;
+	-- The pin trigger's snapshot-v1 text is no longer pinned (C1c-3i-b, 20260930058000: no snapshot-v1 pins since 3 Oct).
 	v_text := replace(pg_get_functiondef('public.qorpera_routine_occurrence_lifecycle()'::regprocedure),
 		E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
 		|| E'\t\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for no key update;\n'

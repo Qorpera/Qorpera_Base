@@ -128,28 +128,7 @@ select public.qorpera_confirm_profile_object_upload(
 	'nas-object-gateway'
 );
 
-do $$
-declare
-	v_denied boolean := false;
-begin
-	begin
-		perform public.qorpera_set_account_entitlement(
-			'80000000-0000-4000-8000-00000000000c',
-			'freemium',
-			'free',
-			'standard',
-			'metered',
-			'test-suite',
-			'downgrade must not strand over-allocation data'
-		);
-	exception when check_violation then
-		v_denied := true;
-	end;
-	if not v_denied then
-		raise exception 'over-allocation internal account was downgraded to freemium';
-	end if;
-end
-$$;
+-- A downgrade under over-allocation data is refused by the folder quota's count (20260930068000): test 920.
 reset role;
 
 select set_config(

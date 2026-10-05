@@ -460,7 +460,8 @@ begin
 		'Released; the machine lives on in its new placement: '||v_released::text);
 end $$;
 
--- 10. A task machine sleeps when idle, unless a command runs; asleep past the removal delay it is deleted.
+-- 10. A task machine sleeps when idle, unless the machine is busy (the one idle rule, 20260930055000: a command that
+--     only waits keeps nothing awake); asleep past the removal delay it is deleted.
 do $$
 declare v_boot uuid := extensions.gen_random_uuid(); v_released jsonb; v_place public.qorpera_company_machine_placements;
 begin
@@ -470,12 +471,13 @@ begin
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
 	perform pg_temp.mc_run('62800000-0000-4000-8000-000000000503','server',repeat('7',64),'wait','npm run dev',false);
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
-	perform pg_temp.base_assert(not (pg_temp.mc_listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean
-		and pg_temp.mc_custody('wait','stop') ->> 'reason' = 'MACHINE_IN_USE','A running command keeps it awake');
+	perform pg_temp.base_assert((pg_temp.mc_listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,
+		'A command that only waits keeps nothing awake');
 	perform pg_temp.mc_record('wait',v_boot,'[{"commandId":"62800000-0000-4000-8000-000000000503","state":"cancelled"}]',false);
 	perform pg_temp.base_assert((pg_temp.mc_listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,'Idle: sleep is due');
 	perform pg_temp.mc_record('wait',v_boot,'[]',true);
-	perform pg_temp.base_assert(not (pg_temp.mc_listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,'A busy machine is in use');
+	perform pg_temp.base_assert(not (pg_temp.mc_listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean
+		and pg_temp.mc_custody('wait','stop') ->> 'reason' = 'MACHINE_IN_USE','A busy machine is in use');
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
 	perform pg_temp.base_assert(pg_temp.mc_custody('wait','stop') ->> 'intent' = 'stop' and (pg_temp.mc_machine('wait')).desired_state = 'stopped'
 		and (pg_temp.mc_machine('wait')).desired_by = 'kernel','The kernel puts it to sleep');

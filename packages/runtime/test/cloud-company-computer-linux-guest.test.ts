@@ -11,7 +11,11 @@ import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-compan
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerLinuxCommands } from "@qorpera/runtime/cloud-company-computer-linux-commands";
 import { CompanyComputerLinuxGuest } from "@qorpera/runtime/cloud-company-computer-linux-guest";
-import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
+import {
+	COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES,
+	CompanyComputerRegistryUnansweredError,
+	HttpCloudCompanyComputerRegistry,
+} from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { CompanyComputerScreenLifecyclePublisher } from "@qorpera/runtime/cloud-company-computer-screen-lifecycle";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,6 +64,84 @@ vi.mock("../src/cloud-company-computer-linux-browser.ts", () => ({
 vi.mock("../src/cloud-company-computer-linux-private-surface.ts", () => ({
 	startCompanyComputerLinuxPrivateSurface: physical.privateStart,
 }));
+/** Each screen's long-running shell; the real one has its own tests and Linux probe. */
+type FixtureShellCommand = { id: string; runId: string; receiptId: string; command: string; startedAt: string };
+const shells = vi.hoisted(
+	() =>
+		[] as {
+			namespacePid: number | undefined;
+			open: (FixtureShellCommand & { workedAt: string })[];
+			ended: (FixtureShellCommand & { reason: string; endedAt: string })[];
+			start: ReturnType<typeof vi.fn>;
+			result: ReturnType<typeof vi.fn>;
+			close: ReturnType<typeof vi.fn>;
+			pause: ReturnType<typeof vi.fn>;
+			reported: ReturnType<typeof vi.fn>;
+		}[],
+);
+/** The processor time of each shell namespace, and the bytes its commands moved, as /proc would show them. */
+const shellTicks = vi.hoisted(() => new Map<number, number>());
+const shellBytes = vi.hoisted(() => new Map<number, number>());
+vi.mock("../src/cloud-company-computer-linux-shell.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/cloud-company-computer-linux-shell.ts")>();
+	return {
+		companyComputerShellBusy: actual.companyComputerShellBusy,
+		readCompanyComputerShellUsage: async (pids: readonly number[]) =>
+			new Map(
+				pids.map((pid) => [
+					pid,
+					{ memoryBytes: 0, tasks: 1, cpuTicks: shellTicks.get(pid) ?? 0, ioBytes: shellBytes.get(pid) ?? 0 },
+				]),
+			),
+		createCompanyComputerLinuxShellLauncher: () => async () => {
+			throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
+		},
+		CompanyComputerShellPressureGuard: class {
+			close() {}
+		},
+		CompanyComputerLinuxShell: class {
+			namespacePid: number | undefined = undefined;
+			open: (FixtureShellCommand & { workedAt: string })[] = [];
+			ended: (FixtureShellCommand & { reason: string; endedAt: string })[] = [];
+			start = vi.fn(async (input: { command: string; runId: string; key: string }) => {
+				this.namespacePid = 4200 + shells.indexOf(this);
+				const at = new Date().toISOString();
+				this.open.push({
+					id: "00000000-0000-4000-8000-0000000000a1",
+					runId: input.runId,
+					receiptId: input.key,
+					command: input.command,
+					startedAt: at,
+					workedAt: at,
+				});
+				return { sessionId: "00000000-0000-4000-8000-0000000000a1" };
+			});
+			result = vi.fn(async (input: { sessionId: string }) => ({
+				sessionId: input.sessionId,
+				state: "running",
+				output: "building\n",
+			}));
+			close = vi.fn(async () => {
+				this.namespacePid = undefined;
+				const endedAt = new Date().toISOString();
+				this.ended.push(
+					...this.open.map(({ workedAt: _workedAt, ...open }) => ({ ...open, reason: "closed", endedAt })),
+				);
+				this.open = [];
+			});
+			pause = vi.fn(async () => undefined);
+			reported = vi.fn((ids: readonly string[]) => {
+				this.ended = this.ended.filter((ended) => !ids.includes(ended.id));
+			});
+			report = () => ({ open: [...this.open], ended: [...this.ended] });
+			known = () => true;
+			list = () => ({ commands: [], processes: 0 });
+			constructor() {
+				shells.push(this);
+			}
+		},
+	};
+});
 const runs: CloudNativeToolRun[] = [];
 const guests: CompanyComputerLinuxGuest[] = [];
 const displays: { stop: ReturnType<typeof vi.fn>; exited: ReturnType<typeof computerDeferred<void>> }[] = [];
@@ -82,6 +164,9 @@ const windows = {
 	}),
 };
 beforeEach(() => {
+	shells.length = 0;
+	shellTicks.clear();
+	shellBytes.clear();
 	windows.pages = [];
 	windows.state = "maximized";
 	browsers.length = 0;
@@ -218,6 +303,14 @@ async function fixture(options: { browser?: boolean; desktop?: boolean } = {}) {
 			return { state: "authorized", grant: browserGrant, validForMs: 5000 };
 		}
 		if (method === "qorpera_native_office_browser_grant") return { state: "authorized" };
+		if (method === "qorpera_report_runtime_office_shell_activity")
+			return {
+				schema: "qorpera.office-shell-activity/v1",
+				screens: (args.p_report as { screens: { screenId: string; busy: boolean }[] }).screens
+					.filter((screen) => screen.busy)
+					.map((screen) => screen.screenId),
+				paused: false,
+			};
 		if (method === "qorpera_native_office_operation") {
 			if (args.p_action === "authorize") return { state: "authorized" };
 			if (args.p_action === "finish") return { state: "drained" };
@@ -368,6 +461,308 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(physical.launch).toHaveBeenCalledOnce();
 		expect(f.failure).not.toHaveBeenCalled();
 	});
+	it("runs a shell command in the screen's own shell and waits for it after the effect, outside the gate", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		const action = { kind: "shell", action: "start", command: "npm run build", waitMs: 5000 };
+		const content = await session.endpoint.perform(f.operation(action), f.lease, f.effect());
+		expect(content).toEqual({
+			kind: "json",
+			value: { sessionId: "00000000-0000-4000-8000-0000000000a1", state: "running", output: "building\n" },
+		});
+		expect(shells).toHaveLength(1);
+		expect(shells[0].start).toHaveBeenCalledWith(expect.objectContaining({ command: "npm run build" }));
+		expect(shells[0].result).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: "00000000-0000-4000-8000-0000000000a1", waitMs: 5000 }),
+		);
+		// The run ends; its command does not. A later run on the screen reuses the shell.
+		await session.close();
+		expect(shells[0].close).not.toHaveBeenCalled();
+		const next = await f.create();
+		await next.endpoint.perform(f.operation(action), f.lease, f.effect());
+		expect(shells).toHaveLength(1);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("reports each shell every 30 seconds: busy by processor time or data moved, its commands, and each end once", async () => {
+		// The busy measure divides by the wall-clock time between samples, so the clock moves with the timers.
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "npm run dev", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		expect(shells[0].start).toHaveBeenCalledWith(
+			expect.objectContaining({ command: "npm run dev", runId: f.run.identity.runId, key: expect.any(String) }),
+		);
+		// The receipt the platform matches is the start effect's own.
+		expect(shells[0].open[0].receiptId).toBe(shells[0].start.mock.calls[0][0].key);
+		const pid = shells[0].namespacePid!;
+		const reports = () =>
+			f.call.mock.calls
+				.filter(([method]) => method === "qorpera_report_runtime_office_shell_activity")
+				.map(([, args]) => args.p_report as { schema: string; screens: Record<string, unknown>[] });
+		const command = {
+			id: "00000000-0000-4000-8000-0000000000a1",
+			runId: f.run.identity.runId,
+			receiptId: expect.any(String),
+			command: "npm run dev",
+			startedAt: expect.any(String),
+		};
+		// The first sample of a namespace is never busy; the open command is reported.
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()).toEqual([
+			{
+				schema: "qorpera.office-shell-report/v1",
+				screens: [
+					{
+						screenId: f.binding.screenId,
+						busy: false,
+						whole: true,
+						open: [{ ...command, workedAt: expect.any(String) }],
+						ended: [],
+					},
+				],
+			},
+		]);
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_report_runtime_office_shell_activity",
+			{
+				p_scope: expect.objectContaining({ companyComputerId: f.binding.companyComputerId }),
+				p_computer_generation: 1,
+				p_report: expect.objectContaining({ schema: "qorpera.office-shell-report/v1" }),
+			},
+			expect.any(AbortSignal),
+		);
+		// Ten processor-seconds since the last sample: busy.
+		shellTicks.set(pid, 1000);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[1].screens[0]).toMatchObject({ busy: true });
+		// Waiting again: not busy, still open.
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[2].screens[0]).toMatchObject({
+			busy: false,
+			open: [expect.objectContaining({ id: command.id })],
+		});
+		// A slow download: almost no processor, but a megabyte moved in the sample: busy.
+		shellTicks.set(pid, 1001);
+		shellBytes.set(pid, 1024 * 1024);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[3].screens[0]).toMatchObject({ busy: true });
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[4].screens[0]).toMatchObject({ busy: false });
+		// The command exits: its end is reported once, then nothing is left to say.
+		const { workedAt: _exitedWorkedAt, ...exited } = shells[0].open[0];
+		shells[0].ended.push({ ...exited, reason: "exited", endedAt: new Date().toISOString() });
+		shells[0].open = [];
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[5].screens).toEqual([
+			{
+				screenId: f.binding.screenId,
+				busy: false,
+				whole: true,
+				open: [],
+				ended: [{ ...command, reason: "exited", endedAt: expect.any(String) }],
+			},
+		]);
+		expect(shells[0].reported).toHaveBeenLastCalledWith([command.id]);
+		await vi.advanceTimersByTimeAsync(60000);
+		expect(reports()).toHaveLength(6);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
+	it("reports what a screen's shell was running when it closed with the screen, once", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "sleep 600", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const reports = () =>
+			f.call.mock.calls
+				.filter(([method]) => method === "qorpera_report_runtime_office_shell_activity")
+				.map(([, args]) => (args.p_report as { screens: Record<string, unknown>[] }).screens);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()).toHaveLength(1);
+		await session.close();
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		expect(shells[0].close).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(reports()[1]).toEqual([
+			{
+				screenId: f.binding.screenId,
+				busy: false,
+				whole: true,
+				open: [],
+				ended: [expect.objectContaining({ command: "sleep 600", reason: "closed" })],
+			},
+		]);
+		await vi.advanceTimersByTimeAsync(60000);
+		expect(reports()).toHaveLength(2);
+	});
+
+	it("keeps an end it could not report for the next report", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "npm test", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const { workedAt: _pressedWorkedAt, ...pressed } = shells[0].open[0];
+		shells[0].ended.push({ ...pressed, reason: "pressure", endedAt: new Date().toISOString() });
+		shells[0].open = [];
+		const original = f.call.getMockImplementation()!;
+		let refused = 0;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_report_runtime_office_shell_activity" && refused < 1) {
+				refused++;
+				throw new Error("request timed out");
+			}
+			return original(method, args);
+		});
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].reported).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].reported).toHaveBeenCalledExactlyOnceWith(["00000000-0000-4000-8000-0000000000a1"]);
+		expect(shells[0].ended).toEqual([]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
+	it("lets go of ends the registry keeps refusing, after ten reports, and reports again", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "npm test", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const { workedAt: _refusedWorkedAt, ...refused } = shells[0].open[0];
+		shells[0].ended.push({ ...refused, reason: "exited", endedAt: new Date().toISOString() });
+		shells[0].open = [];
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_report_runtime_office_shell_activity")
+				throw new Error("Invalid office shell activity");
+			return original(method, args);
+		});
+		await vi.advanceTimersByTimeAsync(9 * 30000);
+		expect(shells[0].reported).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].reported).toHaveBeenCalledExactlyOnceWith([refused.id]);
+		expect(shells[0].ended).toEqual([]);
+		f.call.mockImplementation(original);
+		const calls = f.call.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(60000);
+		// Nothing is left to say: no open command, nothing busy.
+		expect(
+			f.call.mock.calls.slice(calls).filter(([method]) => method === "qorpera_report_runtime_office_shell_activity"),
+		).toEqual([]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
+	it("fits a full shell into one registry request: ends first, the cut screen not whole, the rest next time", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "sleep 600", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		// 64 commands still open and 64 ended, each 300 four-byte characters: about 180 KB, more than one request holds.
+		const long = "🛠".repeat(300);
+		const at = (n: number) => new Date(Date.UTC(2026, 9, 4, 12, 0, n)).toISOString();
+		const item = (n: number) => ({
+			id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+			runId: f.run.identity.runId,
+			receiptId: randomUUID(),
+			command: long,
+			startedAt: at(0),
+		});
+		shells[0].open = Array.from({ length: 64 }, (_, n) => ({ ...item(n + 1), workedAt: at(n) }));
+		shells[0].ended = Array.from({ length: 64 }, (_, n) => ({ ...item(n + 101), reason: "exited", endedAt: at(n) }));
+		// The real transport, with its size bound, carries every report.
+		const bodies: string[] = [];
+		const transport = new HttpCloudCompanyComputerRegistry({
+			supabaseUrl: "https://control.example.test",
+			serviceRoleKey: "sb_secret_fixture",
+			fetch: async (_url, init) => {
+				bodies.push(String(init?.body));
+				return Response.json({ schema: "qorpera.office-shell-activity/v1", screens: [], paused: false });
+			},
+		});
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) =>
+			method === "qorpera_report_runtime_office_shell_activity"
+				? transport.call(method, args, new AbortController().signal)
+				: original(method, args),
+		);
+		type Sent = { p_report: { screens: { whole: boolean; open: { id: string }[]; ended: { id: string }[] }[] } };
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(bodies).toHaveLength(1);
+		expect(Buffer.byteLength(bodies[0])).toBeLessThanOrEqual(COMPANY_COMPUTER_REGISTRY_REQUEST_MAX_BYTES);
+		const first = (JSON.parse(bodies[0]) as Sent).p_report.screens[0];
+		// Every end the platform has not heard of goes first; the open commands fill what is left, so the list is cut.
+		expect(first.ended).toHaveLength(64);
+		expect(first.open.length).toBeGreaterThan(0);
+		expect(first.open.length).toBeLessThan(64);
+		expect(first.whole).toBe(false);
+		// The latest worked first.
+		expect(first.open.map((open) => open.id)).toEqual(
+			Array.from({ length: first.open.length }, (_, n) => item(64 - n).id),
+		);
+		expect(shells[0].reported).toHaveBeenCalledExactlyOnceWith(first.ended.map((ended) => ended.id));
+		// With the ends delivered, every open command fits: the screen is whole again.
+		await vi.advanceTimersByTimeAsync(30000);
+		const second = (JSON.parse(bodies[1]) as Sent).p_report.screens[0];
+		expect(second.ended).toEqual([]);
+		expect(second.open).toHaveLength(64);
+		expect(second.whole).toBe(true);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
+	it("stops every shell, with the reason, when a report finds the company paused", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(
+			f.operation({ kind: "shell", action: "start", command: "sleep 600", waitMs: 0 }),
+			f.lease,
+			f.effect(),
+		);
+		const original = f.call.getMockImplementation()!;
+		const answer = { paused: false };
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) =>
+			method === "qorpera_report_runtime_office_shell_activity"
+				? answer.paused
+					? { schema: "qorpera.office-shell-activity/v1", screens: [], paused: true }
+					: original(method, args)
+				: original(method, args),
+		);
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].pause).not.toHaveBeenCalled();
+		answer.paused = true;
+		await vi.advanceTimersByTimeAsync(30000);
+		expect(shells[0].pause).toHaveBeenCalledExactlyOnceWith(
+			"Stopped because the company was paused; start the command again when work resumes.",
+		);
+		// The shell itself stays, so the agent can read why and start again after the pause.
+		expect(shells[0].close).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
+
 	it("keeps the desktop, its browser and the agent's session when one authority check gets no answer", async () => {
 		const f = await fixture({ browser: true });
 		const session = await f.create();

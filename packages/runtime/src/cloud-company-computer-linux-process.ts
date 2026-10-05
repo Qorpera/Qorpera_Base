@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import type { FileHandle } from "node:fs/promises";
+import { type FileHandle, readdir, readFile } from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
 /** Bubblewrap's monitor can fork before its PID-1 child has armed PDEATHSIG.
@@ -20,6 +20,12 @@ export function spawnCompanyComputerLinuxProcess(options: {
 	/** Dedicated measured Bubblewrap copy permits Chromium's nested sandbox on AppArmor hosts. */
 	browserSandbox?: { appArmor: boolean };
 	stdin: "pipe" | "ignore";
+	/**
+	 * Runs once the namespace exists and before its program may start, with the
+	 * namespace's PID 1 as this service sees it (a computer's network is added
+	 * here). A failure stops the namespace before anything ran.
+	 */
+	beforeStart?: (namespacePid: number) => Promise<void>;
 }): { child: ChildProcess; started: Promise<void>; stop(): void } {
 	const pipeCount = options.pipeCount ?? 0;
 	const permissionFd = 3 + pipeCount + options.files.length;
@@ -103,13 +109,26 @@ export function spawnCompanyComputerLinuxProcess(options: {
 				return;
 			}
 			armed = true;
-			if (cancelled) {
-				stop();
-				rejectStarted(new Error("OFFICE_PROCESS_GATE_CANCELLED"));
-			} else {
-				permission.end("start\n");
-				resolveStarted();
+			const grant = (): void => {
+				if (cancelled) {
+					stop();
+					rejectStarted(new Error("OFFICE_PROCESS_GATE_CANCELLED"));
+				} else {
+					permission.end("start\n");
+					resolveStarted();
+				}
+			};
+			const { beforeStart } = options;
+			if (!beforeStart || cancelled) {
+				grant();
+				return;
 			}
+			void companyComputerNamespacePid(child.pid!)
+				.then(beforeStart)
+				.then(grant, () => {
+					stop();
+					rejectStarted(new Error("OFFICE_PROCESS_SETUP_FAILED"));
+				});
 		}
 	});
 	child.once("error", () => {
@@ -124,4 +143,20 @@ export function spawnCompanyComputerLinuxProcess(options: {
 		if (!armed) rejectStarted(new Error("OFFICE_PROCESS_EXITED_BEFORE_START"));
 	});
 	return { child, started, stop };
+}
+
+/**
+ * The PID 1 of a Bubblewrap namespace, as this service sees it: the monitor's
+ * one child. Read from the kernel's child list, or found by parent in /proc.
+ */
+export async function companyComputerNamespacePid(monitorPid: number): Promise<number> {
+	const listed = await readFile(`/proc/${monitorPid}/task/${monitorPid}/children`, "utf8").catch(() => undefined);
+	const children = listed?.trim().split(/\s+/).filter(Boolean).map(Number) ?? [];
+	if (children.length === 1 && Number.isSafeInteger(children[0])) return children[0];
+	for (const name of await readdir("/proc")) {
+		if (!/^[0-9]+$/.test(name)) continue;
+		const stat = await readFile(`/proc/${name}/stat`, "utf8").catch(() => "");
+		if (Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) === monitorPid) return Number(name);
+	}
+	throw new Error("OFFICE_NAMESPACE_PID_UNAVAILABLE");
 }

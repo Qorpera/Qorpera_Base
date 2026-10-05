@@ -281,7 +281,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). A screenshot never reaches `_capture` on folder-v2: its operation is refused at authorize since 3l part 3 (§6.22) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). The capture serves folder-v2 since P06d part 2 (§6.21), storing nothing (3l part 3 refused screenshots before it, §6.22) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
@@ -1793,7 +1793,7 @@ machine lock in L.
 The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
 office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
 The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.22) and
-gives the capture its folder-v2 authority. Until then nothing reaches this path.
+gives the capture its folder-v2 authority (§6.21). Until then nothing reaches this path.
 
 - **The office service** (`CloudCompanyComputerScreenshots.publish`):
   - when the capture's authorize answers `{state: "authorized", storage: "none"}`, it uploads nothing;
@@ -1837,7 +1837,137 @@ gives the capture its folder-v2 authority. Until then nothing reaches this path.
     - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
       base64 is refused before anything is kept.
 
+### 6.20 C1c-3i part b as built: machine events reach their runs (migration 20260930058000, test 848)
+
+**Before.** A company machine's events (`qorpera_company_machine_events`: a command that ended, a machine that runs, one
+stopped before it ran) never reached a folder-v2 run:
+- the pin trigger refused a `machine-event` wake (0A000);
+- `qorpera_folder_wake_authorized` answered false for it;
+- `qorpera_folder_run_resolve` refused its run (0A000);
+- the legacy drain skipped folder-v2, and since P28 nothing calls it.
+
+**The source kind on folder-v2.**
+- The three refusals lose the `'machine-event'` token only. Each list is found by its own statement and count-checked.
+  A list left empty (A1's C1c-3l removes `'office-activation'`, in either order) drops its whole statement.
+- `qorpera_folder_wake_authorized` admits the event in a parent's room conversation, as a worker's completion is, and
+  checks its chain with `qorpera_machine_wake_ancestry`.
+- The pin trigger's agent branch already takes the parent's conversation, starter sponsor and ancestry for it, and
+  P28's materializer copies the parent's capability and publication.
+
+**Continuing a parent run** (two helpers, for any drain that continues one):
+- `qorpera_folder_parent_continuation(parent, source_kind)`, with no locks:
+  - `ready`;
+  - `running` (its job is queued or leased: wait);
+  - `pending` (a wake of that kind for it is queued, or materialized with its job missing, queued or leased: one at a
+    time);
+  - `stopped` (job cancelled, or revivals stopped: suppress);
+  - `gone` (no run or job: undeliverable).
+- `qorpera_folder_insert_continuation(parent, source_kind, source_id, payload)`: the agent wake, under the caller's
+  admission. The pin trigger fills the conversation, requester, payer and causal chain.
+
+**The drain** (`machine_events` in the shared folder drains, LISTENER §9):
+- **`qorpera_folder_machine_events_due`** lists the folder-v2 environments, not deleting and not paused, with a waiting
+  event whose parent is ready, stopped or gone. A new partial index on waiting events by environment serves it.
+- **`qorpera_folder_machine_events_company(environment, limit ≤ 64)`:**
+  1. plain reads of the parents (oldest event first), each classified;
+  2. the folder fence `KEY SHARE`, rank 0, and the ready parents' requesters, agents and authorities `KEY SHARE`
+     (ranks 1 to 3, as the listener's wakes);
+  3. `deleting` / `paused` answers;
+  4. each parent's events `FOR UPDATE SKIP LOCKED` (run-owned rows, at most 8, oldest first), in parent-id order,
+     classified again under them;
+  5. the parents' conversations `KEY SHARE` in id order, then admission once;
+  6. one wake per parent, its events in at most 6 KiB (as the legacy drain cut them).
+
+  A queued wake marks its events delivered. A pause at admission leaves them waiting. A stopped parent's events are
+  suppressed, and a gone parent's, or one whose wake is refused (42501, P0002, 55000, check, unique, size), are
+  undeliverable; the answer names the last refusal (`lastError`). 55P03 and 40P01 answer `busy`.
+
+**No cycle.** It takes nothing stronger than `KEY SHARE` before its events, and its events are its own rows:
+- effects never wait for it, and it never waits for them;
+- a stop's second phase, a resume or a deletion's finisher (the fence `FOR UPDATE`) makes it wait at the fence while it
+  holds nothing;
+- two steps of one company skip each other's events.
+
+**Not here: quiet coding check-ins.** On folder-v2 they wait for coding dispatch, which `qorpera_company_state_worker_rules`
+refuses ("coding workers come to the company folder with coding machines") until C3. **Hand-over:** whoever opens
+coding dispatch on folder-v2 adds the check-in drain. A check-in is a `worker-completion` wake (folder-v2 serves that
+kind already) for the worker's steering run, through the two helpers above, with the legacy
+`qorpera_ask_quiet_coding_sessions` rules: quiet sessions, a mark so each question is asked once, skipping a pending
+revival.
+
+**b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
+they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.
+
+**Tests.** 848, on 648's committed fixture:
+- A: no folder-v2 refusal names the kind, and a continuation without admission is refused.
+- B: the drain:
+  - a running parent's events wait;
+  - an ended one's oldest 8 go in one authorized wake into its conversation, under one admission;
+  - one continuation at a time, then the rest;
+  - a long batch is cut to 6 KiB;
+  - cancelled and gone parents;
+  - a paused company is left alone, then served after the resume.
+- C: locks:
+  - beside an effect, no wait;
+  - behind a stop's second phase, it waits at the fence holding no event or member row;
+  - held events are skipped;
+  - a lock timeout answers `busy`.
+- D: grants, bounds and the page.
+- E: markers.
+
+656 §1 no longer pins the pin trigger's snapshot-v1 text (no snapshot-v1 pins since 3 October).
+
+### 6.21 P06d part 2 as built: screenshots on folder-v2, stored nowhere (migration 20260930057000, test 910)
+
+The SQL half of P06d (design approved by the coordinator on 4 October; the runtime half is §6.19). It lifts 3l part 3's
+refusal (§6.22): an agent's screenshot on a folder-v2 company now works, and nothing stores it. **Apply it only after
+every office runs the P06d part 1 office code** (v172 or later, by package or image): an older office service fails
+on `storage: none` and leaves its receipt open. The coordinator settles the office lane before v173.
+
+- **The operation.** `qorpera_native_office_operation` no longer refuses a screenshot on folder-v2. At begin, a folder-v2
+  screenshot's office resource keeps the resources it is taken under, in a new column `target_resources`: the office
+  grant and its version, the privacy version, and the browser profile, grant and version for a browser screenshot.
+- **The capture** (`qorpera_native_office_capture`), folder-v2 branch:
+  - authorize answers `{state: "authorized", storage: "none"}`, so the office service uploads nothing;
+  - publish answers the screenshot's identity under the operation's receipt (`assetId` is the receipt id), after the
+    operation's own check, as the stored path does;
+  - no artifact, capture row, retention hold or company object is made. The receipt, completed with that identity, is
+    the screenshot's record.
+- **The check** (`qorpera_folder_office_captures_checked(binding, authority, assets)`, plain reads, no lock). The caller
+  reads the run's authority once for the whole set (review r1's H1 on #793: per-screenshot reads took about 3 s for
+  64). Each screenshot must be:
+  - this run's completed `computer_screenshot:` receipt, with exactly that identity as its answer;
+  - with its office resource drained, on the same run and screen;
+  - taken under resources that are still current: the computer still the company's and shared, at the same privacy
+    version; the agent's access active at the same grant and version; for a browser screenshot, the browser grant
+    still active at the same version on the same prepared profile (review r1's M1).
+
+  It does **not** ask that the computer be running (the coordinator's decision of 4 October): an idle power-off must
+  not end a run that took a screenshot. A grant change, a privacy change or a member's private session still withdraws
+  it, because the image may show private data; the run then ends at its next model request, as on the stored path.
+- **Its users.** The capture read and the capture-set check answer through it on folder-v2. The folder-v2 context view
+  (`qorpera_folder_record_context_view`) now takes a screenshot output: it checks the output's shape in its loop
+  (22023 "Native capture invalid") and the view's screenshots as one set after it. Before, it refused any screenshot
+  with 0A000.
+- **Tests:**
+  - 910 (648's committed fixture; the computer up and Ada's screen acquired):
+    - A: Ada's desktop screenshot runs through the operation and the capture with nothing stored, and its resource
+      keeps the descriptor's resources;
+    - B: the read and the set check answer it; a changed identity, an unknown one, and another run's screenshot (its
+      receipt and resource both naming that run) are refused;
+    - C: a computer that is not running does not withdraw it;
+    - D: a privacy version change, a private session, a changed grant version, a revoked access, and a browser grant
+      it was taken under that is no longer active each withdraw it;
+    - E: the context view records a view with it and refuses a changed one;
+    - F: a set of 64 is checked within 2 s;
+    - G: the markers.
+  - 652's screenshot case now expects the shape refusal; 647 no longer pins the capture;
+  - 891 (3l part 3's refusal) is retired.
+
 ### 6.22 C1c-3l part 3 as built: no screenshot on folder-v2 yet (migration 20260930030200, test 891)
+
+P06d part 2 (§6.21) lifts this refusal and replaces test 891 with 910. The runtime's relay of a refusal at authorize
+(`CloudToolAuthorizeRefusal`) stays for any later use.
 
 The coordinator's P06c, third PR. Before, an agent's `computer_screenshot` on a folder-v2 company was authorized and its
 receipt began; only then did `qorpera_native_office_capture` refuse with 0A000. The receipt stayed open, and an open

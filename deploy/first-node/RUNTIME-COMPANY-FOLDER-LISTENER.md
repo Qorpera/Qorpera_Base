@@ -331,8 +331,9 @@ lease, the hook, the cursor.
 
 The coordinator (4 October) made the orchestrator step shared: a **folder drains** step before the folder materializer,
 which each per-company drain plugs into as a due list and a per-company action. P29's `listen` is the first. F2-5b-3
-(the worker drain), S3's 3i-b (machine events and the quiet coding check-ins) and A1's 3l-2 (office wakes) plug in
-the same way, adding one entry to two tables and touching nothing else here.
+(the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins follow coding
+dispatch on folder-v2 with C3) and A1's 3l-2 (office wakes) plug in the same way, adding one entry to two tables and
+touching nothing else here.
 
 **SQL, per drain `<x>`** (both service_role only, revoked from every other role):
 - **The due list:** `qorpera_folder_<x>_due(p_after_environment uuid default null, p_limit integer default 100) returns
@@ -351,7 +352,10 @@ the same way, adding one entry to two tables and touching nothing else here.
 
 **The edge function** (`supabase/functions/runner-orchestrator/runner-orchestrator.ts`):
 - the closed table `FOLDER_DRAINS` maps a drain name (`^[a-z][a-z0-9_]{0,31}$`) to `{due, company, maximum}`:
-  today `listen: {due: 'qorpera_folder_listen_due', company: 'qorpera_folder_listen_company', maximum: 256}`;
+  today `listen: {due: 'qorpera_folder_listen_due', company: 'qorpera_folder_listen_company', maximum: 256}`,
+  `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}` and
+  `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
+  maximum: 64}`;
 - two generic actions:
   - `folder_drain_due {orchestratorId, drain, afterEnvironmentId?, limit ≤ 500}` calls `due` with
     `{p_after_environment, p_limit}`;
@@ -361,7 +365,7 @@ the same way, adding one entry to two tables and touching nothing else here.
 
 **The orchestrator** (`CloudFolderDrains` in `packages/runner-orchestrator/src/orchestrator.ts`):
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
-  `[{name: 'listen', companyLimit: 32}]`;
+  `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'machine_events', companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
@@ -383,6 +387,11 @@ function gets the 400 and pauses only that drain.
 **P29's due list:** `qorpera_folder_listen_due` lists the folder-v2 environments whose clock is ahead of their cursor
 (an absent cursor counts as behind) or that have a recorded hook failure whose wait is over (§8), leaving out companies
 being deleted, through the clock, the cursor and the failures.
+
+**3i-b's due list** (`machine_events`, C1C §6.20): the folder-v2 environments with a waiting machine event whose
+parent run is ready for it, has stopped or is gone, leaving out companies being deleted or paused (the step does
+nothing while paused). A parent still running, or one whose last continuation has not run yet, asks nothing, so a long
+run's events cost no request per pass. One step delivers up to 8 parents' events, a wake each.
 
 Commits do not nudge the orchestrator. A file wake waits one 2 s pass while one step's window covers the company's
 backlog; with N listeners a step reads 512/N seqs (at most 32), and each company gets one step per pass, so a large
@@ -539,3 +548,10 @@ again; an expired routine alone and a `required` routine with no session; the 46
 builds it by hand); a SQL-built folder-v2 file wake envelope run through the TypeScript parser (887 checks the
 payload's keys, `cloud-wake-bus.test.ts` the parser; `scripts/test-runtime-wake-bus.mjs` dropped its snapshot-v1 File
 envelope); the drain against routine firing and against the materializer.
+
+**Who writes a listener** (4 October, after the live check on 10c3ee8c):
+- **Agents:** `manage_routine` on folder-v2 takes `file_change` (Q1, #837). It writes `when: file-change`, `watch`, `match`
+  and the time zone into the routine's file, and its description gives the rules of §2.
+  - Before this, the tool refused the trigger and told agents that file routines were not available, so nothing could make
+    a listener: runs d59f0a93 and 231d7f2c.
+- **Members:** the web routine editor offers it next (Interfaces), once the runtime part has shipped.

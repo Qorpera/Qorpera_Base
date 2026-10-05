@@ -1,0 +1,56 @@
+#!/usr/sbin/nft -f
+# Each computer's shell and desktop has a network of its own: a veth named
+# qcmp<ordinal><s|d> whose other end lives in that namespace (added by
+# qorpera-computer-plumb). Everything public goes out, on any port and
+# protocol. Nothing of ours is reachable: every private, shared, link-local,
+# loopback, documentation and special range (the NAS and node LAN, Tailscale,
+# cloud metadata, the LXD bridges and this machine's own networks), this
+# machine itself and the other computers. Nothing comes in, and the machine
+# forwards nothing else. qorpera-computer-plumb keeps the same ranges in each
+# computer's own filter.
+
+table inet qorpera_computers
+delete table inet qorpera_computers
+
+table inet qorpera_computers {
+	set blocked {
+		type ipv4_addr
+		flags interval
+		elements = {
+			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			192.0.0.0/24, 192.0.2.0/24, 192.88.99.0/24, 192.168.0.0/16, 198.18.0.0/15,
+			198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4
+		}
+	}
+
+	# Connections one computer holds at once, and all computers together. Far
+	# above real work; they only keep computers from filling the machine's
+	# connection table (262,144), which would stop new connections for every
+	# computer and the office service alike.
+	set connections {
+		type ipv4_addr
+		size 256
+		flags dynamic
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		iifname "qcmp*" oifname "qcmp*" drop
+		iifname "qcmp*" ip saddr != 10.253.0.0/16 drop
+		iifname "qcmp*" ip daddr @blocked drop
+		iifname "qcmp*" ct state new add @connections { ip saddr ct count over 16384 } drop
+		iifname "qcmp*" ct state new ct count over 196608 drop
+		iifname "qcmp*" meta nfproto ipv4 accept
+		oifname "qcmp*" ct state established,related accept
+	}
+
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "qcmp*" drop
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.253.0.0/16 oifname != "qcmp*" masquerade
+	}
+}
