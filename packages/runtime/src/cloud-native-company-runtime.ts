@@ -34,6 +34,7 @@ import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
 import { CloudFolderSidebar } from "./cloud-folder-sidebar.ts";
 import { CloudFolderTodos } from "./cloud-folder-todos.ts";
+import { CloudFolderWorkers } from "./cloud-folder-workers.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import type { CloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { cloudMachineTools } from "./cloud-machine-tools.ts";
@@ -660,9 +661,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											broker: this.#secretBroker,
 										})
 									: []),
-								// The company's own website accounts (A1-4): not a worker's, and a folder company's come
-								// with its connection files (A1-7).
-								...(this.#companyAccounts && !work.isWorker && !context.folder
+								// The company's own website accounts (A1-4): not a worker's. They serve companies on the
+								// company folder only (A1-7, migration 20260930072000), whose vault writes their connection files.
+								...(this.#companyAccounts && !work.isWorker && context.folder
 									? [
 											cloudCompanyAccountTool({
 												binding,
@@ -825,6 +826,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 																operations,
 																identity,
 																handle: folder.handle,
+															}),
+															folderWorkers: new CloudFolderWorkers({
+																folder: folder.client,
+																operations,
+																identity,
+																handle: folder.handle,
+																// A worker run's own folder, where it reports.
+																...(work.isWorker && typeof wake.payload.outputFolder === "string"
+																	? { outputFolder: wake.payload.outputFolder }
+																	: {}),
 															}),
 														}
 													: {}),

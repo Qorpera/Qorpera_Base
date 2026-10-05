@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CloudNativeToolBoundary,
+	CloudToolAuthorizeRefusal,
+	CloudToolRefusal,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CLOUD_NATIVE_TOOL_REMEMBERED_OPERATIONS,
 	type CloudNativeToolOperation,
@@ -357,6 +362,31 @@ it("leaves no operation or effect when target authorization denies admission", a
 	expect(f.perform).not.toHaveBeenCalled();
 });
 
+it("relays the registry's refusal at the authorize before the receipt, and no other failure", async () => {
+	const f = await fixture();
+	const message = "Screenshots are not available on this computer yet";
+	f.authorize.mockRejectedValueOnce(new CloudToolAuthorizeRefusal(message));
+	const refused = f.execute();
+	await expect(refused).rejects.toBeInstanceOf(CloudToolAuthorizeRefusal);
+	await expect(refused).rejects.toThrow(message);
+	// The same key answers the same refusal; nothing began.
+	await expect(f.execute()).rejects.toBeInstanceOf(CloudToolAuthorizeRefusal);
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	// Any other refusal there stays an unknown outcome, and so does the registry's refusal once the receipt began.
+	f.authorize.mockRejectedValueOnce(new CloudToolRefusal(message));
+	await expect(f.execute({ operation: { ...f.operation, logicalOperationKey: "job-document-2" } })).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+	f.authorize
+		.mockImplementationOnce(async () => undefined)
+		.mockRejectedValueOnce(new CloudToolAuthorizeRefusal(message));
+	await expect(f.execute({ operation: { ...f.operation, logicalOperationKey: "job-document-3" } })).rejects.toThrow(
+		"outcome unconfirmed",
+	);
+	expect(f.perform).not.toHaveBeenCalled();
+	expect([...f.ledger.values()].map((receipt) => receipt.state)).toEqual(["executing"]);
+});
+
 it("retains the fence when authority is revoked after reservation but before the effect", async () => {
 	const f = await fixture();
 	f.authorize.mockImplementationOnce(async () => undefined).mockRejectedValueOnce(new Error("PRIVATE_REVOKED"));
@@ -705,9 +735,25 @@ it("names a timeout in the permission check before the receipt as its own child 
 it("names a timeout in the run's own recheck before the receipt, although the run then closes", async () => {
 	const f = await fixture();
 	const observed = observe(f.binding.assignmentId);
-	f.reader.describeToolAuthority.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("timeout"));
+	// A timeout is asked again (control calls, 4 Oct 2026): one that lasts until the run's authority would lapse is the
+	// recheck's answer. Both clocks move together.
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	let now = performance.now();
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
 	const span = observed.observability.start("connector");
-	await expect(f.execute({ observation: span })).rejects.toThrow();
+	try {
+		f.reader.describeToolAuthority.mockRejectedValue(new CloudRuntimeDiagnosticError("timeout"));
+		const executed = expect(f.execute({ observation: span })).rejects.toThrow();
+		for (let step = 0; step < 140; step += 1) {
+			now += 250;
+			await vi.advanceTimersByTimeAsync(250);
+		}
+		await executed;
+		expect(f.reader.describeToolAuthority.mock.calls.length).toBeGreaterThan(2);
+	} finally {
+		clock.mockRestore();
+		vi.useRealTimers();
+	}
 	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	await observed.observability.close();
 	expect(

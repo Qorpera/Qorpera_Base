@@ -1,6 +1,7 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
+import { type MessageQuote, parseQuotes } from "./quotes.ts";
 
 export interface RoomMessageInput {
 	roomId: string;
@@ -10,6 +11,8 @@ export interface RoomMessageInput {
 	text: string;
 	/** Staged uploads of this input: an agent thread takes them, a group chat since 20260928030000. */
 	images?: readonly { objectSha256: string; bytes: number; mediaType: string }[];
+	/** The text's quotes of outside content (20260928459100); a message without any leaves them out. */
+	quotes?: readonly MessageQuote[];
 	sponsorBindingId: string;
 	sponsorVersion: number;
 }
@@ -75,12 +78,13 @@ export function createWebRoomMessages(
 									"clientInputId",
 									"text",
 									"images",
+									"quotes",
 									"sponsorBindingId",
 									"sponsorVersion",
 								].includes(key),
 						)
 					)
-						throw new Error("Room messages support text and images only.");
+						throw new Error("Room messages support text, images and quotes only.");
 					const images = request.images ?? [];
 					if (
 						images.length > 5 ||
@@ -111,6 +115,9 @@ export function createWebRoomMessages(
 						request.sponsorVersion < 1
 					)
 						throw new Error("Room message is invalid.");
+					// Quotes are checked as the cloud checks them; a message without any leaves them out.
+					const quotes = request.quotes?.length ? parseQuotes(request.quotes, request.text) : undefined;
+					if (request.quotes?.length && !quotes) throw new Error("Room message quotes are invalid.");
 					const rpc = async (
 						method: "qorpera_list_company_rooms" | "qorpera_post_company_room_message",
 						args: Record<string, unknown>,
@@ -191,6 +198,7 @@ export function createWebRoomMessages(
 								schema: "qorpera.session-prompt/v1",
 								text: request.text,
 								images: images.map((image) => ({ ...image })),
+								...(quotes ? { quotes } : {}),
 							},
 							p_sponsor_binding_id: request.sponsorBindingId,
 							p_sponsor_version: request.sponsorVersion,

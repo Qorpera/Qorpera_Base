@@ -6,7 +6,13 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CloudControlRefusalRelay,
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudOperationKeyOf,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const ACTIONS = ["list", "create_section", "rename_section", "delete_section", "move_agent"] as const;
@@ -57,6 +63,7 @@ export function cloudSidebarTools(
 	const folderSidebar = options.folderSidebar;
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
+	const refusals = new CloudControlRefusalRelay();
 	if (
 		Object.entries(admitted).some(
 			([key, value]) => key !== "credentialCapsuleId" && expected[key as keyof CloudNativeToolIdentity] !== value,
@@ -118,10 +125,17 @@ export function cloudSidebarTools(
 			const request = value as Record<string, unknown>;
 			// A folder-v2 company's sections are a file; the folder core decides each save.
 			if (folderSidebar) return folderSidebar.run(request as unknown as CloudFolderSidebarRequest, context);
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call("qorpera_manage_agent_sidebar", { p_binding: admitted, p_request: request }, requestSignal),
-				context.signal,
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
+			const result = await refusals.call(cloudOperationKeyOf(request), () =>
+				cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_manage_agent_sidebar",
+							{ p_binding: admitted, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				),
 			);
 			const r = result as Record<string, unknown> | null;
 			if (

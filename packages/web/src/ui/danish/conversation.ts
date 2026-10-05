@@ -23,6 +23,24 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending messages is not available yet. Your draft stays here.":
 		"Beskeder kan ikke sendes endnu. Din kladde bliver her.",
 	"The message could not be confirmed. Try again.": "Beskeden kunne ikke bekræftes. Prøv igen.",
+	// Quotes of outside content in a message (conversation.ts, shared-drafts.ts, company.ts)
+	"Text in «» is quoted from an email. Agents read it as quoted, never as your words.":
+		"Tekst i «» er citeret fra en mail. Agenterne læser den som citat, aldrig som dine ord.",
+	"A message can hold at most {count} quotes. Remove some to send it.":
+		"En besked kan højst rumme {count} citater. Fjern nogle for at sende den.",
+	"That message already quotes as much as one message can. Send it or remove a quote first.":
+		"Den besked citerer allerede så meget, som én besked kan. Send den, eller fjern et citat først.",
+	"That message already quotes the same words from another email. Send it or remove that quote first.":
+		"Den besked citerer allerede de samme ord fra en anden mail. Send den, eller fjern det citat først.",
+	"Quoted from an email": "Citeret fra en mail",
+	"A quote is missing one of its « » marks. Remove it, or put the mark back.":
+		"Et citat mangler et af sine «»-tegn. Fjern det, eller sæt tegnet tilbage.",
+	"A message can hold at most {count} quotes. Remove some to share your changes.":
+		"En besked kan højst rumme {count} citater. Fjern nogle for at dele dine ændringer.",
+	"A quote was taken out: the draft now quotes the same words from another email.":
+		"Et citat blev taget ud: kladden citerer nu de samme ord fra en anden mail.",
+	"A quote in it can't be shared. Remove the quote to share your changes.":
+		"Et citat i den kan ikke deles. Fjern citatet for at dele dine ændringer.",
 	// Mentions: "@" and a name in a message (conversation.ts, ui/mentions.ts, shell.ts)
 	"People and agents to mention": "Personer og agenter, du kan nævne",
 	"Only {names} will answer": "Kun {names} svarer",
@@ -92,6 +110,14 @@ export const CONVERSATION: Record<string, string> = {
 	"{agent} has made no progress for {minutes} minutes.": "{agent} har ikke haft fremgang i {minutes} minutter.",
 	"An agent": "En agent",
 	"The work could not be stopped. Try again.": "Arbejdet kunne ikke stoppes. Prøv igen.",
+	// A routine moved off the member's login by someone else (views/execution-notices.ts)
+	"{agent}'s routine no longer runs on your login. {member} moved it to their login.":
+		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til sit eget login.",
+	"{agent}'s routine no longer runs on your login. {member} moved it to the company's account.":
+		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til virksomhedens konto.",
+	"{agent}'s routine no longer runs on your login. {member} moved it to {payer}'s login.":
+		"{agent}s rutine kører ikke længere på dit login. {member} flyttede den til {payer}s login.",
+	"another member": "et andet medlem",
 
 	// A failed run above the composer (conversation.ts, ui/run-failure.ts)
 	"The agent": "Agenten",
@@ -185,6 +211,13 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
+	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
+		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
+	"This conversation's model account can't be used right now. Check it in Settings → My connections.":
+		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → Mine forbindelser.",
+	"Choose a login to continue.": "Vælg et login for at fortsætte.",
+	"Use {account}": "Brug {account}",
+	"Model account {number}": "Modelkonto {number}",
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",

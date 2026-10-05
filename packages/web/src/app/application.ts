@@ -25,9 +25,10 @@ import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { FoundingController } from "./founding.ts";
+import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
-import { currentRoute, navigate, type Route } from "./router.ts";
+import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -212,6 +213,8 @@ export function mountApplication(
 
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
+	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
+	let interfaceFolder: CompanyInterfaceFolder | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
@@ -348,6 +351,8 @@ export function mountApplication(
 		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
+		interfaceFolder?.dispose();
+		interfaceFolder = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
@@ -584,9 +589,24 @@ export function mountApplication(
 				const userId = auth.userId!;
 				if (founding?.controller.profileId !== route.profileId) {
 					teardownFounding();
-					const controller = new FoundingController(api, userId, route.profileId, {
+					const profileId = route.profileId;
+					const controller = new FoundingController(api, userId, profileId, {
 						currentUserId: () => auth.userId,
 						onSeatChanged: () => void hub.refresh(),
+						// Still on this table's page: open the company, which opens its Co-Founder's thread. The table's
+						// page leaves the history, so Back does not return to a table that is done. A company list read
+						// before the company was made may still be out, and opening a company it leaves out would fail:
+						// open only after a read that started after this one, and only once it lists the company (else
+						// the table's own Open button stays).
+						onCompanyReady: () => {
+							const page = routeHash({ name: "found", profileId });
+							const currentHub = hub;
+							void currentHub.refreshAfter().then(() => {
+								if (disposed || hub !== currentHub || location.hash !== page) return;
+								if (currentHub.store.get().profiles.some((item) => item.profileId === profileId))
+									navigate({ name: "company", profileId, section: "home" }, true);
+							});
+						},
 					});
 					founding = { controller, view: new FoundingView(controller) };
 					let companyListed = false;
@@ -781,6 +801,8 @@ export function mountApplication(
 		if (state.accessLost) {
 			notices?.dispose();
 			notices = undefined;
+			interfaceFolder?.dispose();
+			interfaceFolder = undefined;
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
@@ -860,8 +882,40 @@ export function mountApplication(
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
 				api,
+				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 			);
 			executionNotices.append(notices.el);
+		}
+		// The company's interfaces come from its folder, read with the member's own access as the Company File page
+		// reads it, and followed while the company is open; until the first read lands the rail draws the library's.
+		if (interfaceFolder && !state.team?.capabilities.read) {
+			interfaceFolder.dispose();
+			interfaceFolder = undefined;
+		}
+		if (!interfaceFolder && state.team?.capabilities.read) {
+			const files = new WebCompanyFiles(
+				cloud,
+				controller.profile,
+				controller.userId,
+				state.team.role,
+				controller.signal,
+				() => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.read
+					)
+						throw new Error(t("Company access changed."));
+				},
+			);
+			const reader = new CompanyInterfaceFolder(files, (folder) => {
+				if (interfaceFolder === reader) controller.store.set({ interfaceFolder: folder });
+			});
+			interfaceFolder = reader;
+			void reader.open();
 		}
 		if (route.section !== "chat") {
 			conversation?.dispose();

@@ -175,6 +175,29 @@ describe("machine tools", () => {
 		}
 	});
 
+	it("tells agents the one idle rule: a busy program keeps a task machine awake, a waiting server stops with it", () => {
+		const agent = fixture();
+		const helper = fixture(undefined, true);
+		try {
+			for (const tools of [agent.tools, helper.tools]) {
+				const start = tools.find((tool) => tool.name === "machine_start")!;
+				const run = tools.find((tool) => tool.name === "machine_run")!;
+				expect(start.description).toContain(
+					"only a busy program (over about 5% of one core, or moving data) keeps it awake",
+				);
+				expect(start.description).toContain(
+					"a server that only waits stops when it sleeps, and your next run is told",
+				);
+				expect(start.description).toContain("use it to keep a server up");
+				expect(run.description).toContain("keep a server up on an always-on machine");
+				for (const tool of tools) expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
+			}
+		} finally {
+			agent.boundary.close();
+			helper.boundary.close();
+		}
+	});
+
 	it("offers waiting to workers only: an agent is woken instead", () => {
 		const agent = fixture();
 		const helper = fixture(undefined, true);
