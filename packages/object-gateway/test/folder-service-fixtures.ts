@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
 	type CommitAnswer,
 	type CommitOutcome,
+	type ConflictCopy,
 	type CoreEntry,
 	type CoreReceipt,
 	CoreRefusal,
@@ -216,11 +217,10 @@ export class FakeCore implements FolderCore {
 		return new Map(environmentIds.filter((id) => id === ENV).map((id) => [id, this.seq]));
 	}
 
-	async objectProfile(environmentId: string, actor: FolderActor, manifestSha256?: string) {
+	async objectProfile(environmentId: string, actor: FolderActor) {
 		this.profileCalls++;
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		this.#check(actor, environmentId);
-		if (manifestSha256 && this.unreadable.has(manifestSha256)) throw new CoreRefusal("denied");
 		return PROFILE;
 	}
 
@@ -236,9 +236,9 @@ export class FakeCore implements FolderCore {
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
 	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
-	 * would have passed). When not, those files are unreadable to the actor, as they are to the real core. */
+	 * would have passed); the copies kept, by commit. */
 	copyConflicts = true;
-	readonly unreadable = new Set<string>();
+	readonly copies = new Map<string, ConflictCopy[]>();
 	/** Intents the core let lapse (their renewal is refused), the next renewals that do not get through, and every
 	 * renewal asked. */
 	readonly lapsed = new Set<string>();
@@ -313,6 +313,8 @@ export class FakeCore implements FolderCore {
 			this.commitFailures.count--;
 			throw new Error("The database did not answer");
 		}
+		const commitId = v(this.#nextVersion++);
+		const kept: ConflictCopy[] = [];
 		const changes: FeedChange[] = [];
 		const now = "2026-10-05T12:00:00.000Z";
 		const parentOk = (path: string) => {
@@ -332,10 +334,14 @@ export class FakeCore implements FolderCore {
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
 			const conflict = (reason: string): CommitOutcome => {
 				const files =
-					u.op === "write" ? [u.file] : u.op === "new_folder" ? u.contents.flatMap((c) => c.file ?? []) : [];
-				for (const file of files)
-					if (this.copyConflicts) this.unreadable.delete(file.manifestSha256);
-					else this.unreadable.add(file.manifestSha256);
+					u.op === "write"
+						? [{ path: u.path, file: u.file }]
+						: u.op === "new_folder"
+							? u.contents.flatMap((c) => (c.file ? [{ path: `${u.path}/${c.path}`, file: c.file }] : []))
+							: [];
+				if (this.copyConflicts)
+					for (const [i, { path, file }] of files.entries())
+						kept.push({ unit, file: i + 1, path, manifestSha256: file.manifestSha256 });
 				return no("conflict", reason);
 			};
 			switch (u.op) {
@@ -429,13 +435,20 @@ export class FakeCore implements FolderCore {
 			seq = ++this.seq;
 			this.journal.push({ seq, kind: "change_set", changes });
 		}
-		const answer: CommitAnswer = { commitId: v(this.#nextVersion++), seq, units: outcomes };
+		// As the real core answers: no unit carries the version it made (the feed has them).
+		const answer: CommitAnswer = { commitId, seq, units: outcomes.map((o) => ({ ...o, version: null })) };
+		this.copies.set(commitId, kept);
 		this.#answers.set(key, { request, answer });
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "lost") {
 			this.commitFailures.count--;
 			throw new Error("The answer was lost");
 		}
 		return answer;
+	}
+
+	async conflictCopies(environmentId: string, commitId: string): Promise<readonly ConflictCopy[]> {
+		if (environmentId !== ENV) throw new CoreRefusal("invalid");
+		return this.copies.get(commitId) ?? [];
 	}
 
 	async renewView(viewId: string, pass: string): Promise<ViewRenewal> {
@@ -510,14 +523,14 @@ export class FakeUploads implements FolderUploads {
 	}
 }
 
-/** A writable operator mount of the member, optionally publishing after a quiet period. */
-export function writableGrants(quietMs?: number): MountGrants {
+/** A writable operator mount of the member (or the platform), optionally publishing after a quiet period. */
+export function writableGrants(quietMs?: number, platform = false): MountGrants {
 	return new MountGrants(
 		parseOperatorMounts([
 			{
 				id: "proof",
 				environmentId: ENV,
-				actor: { kind: "member", userId: MEMBER },
+				actor: platform ? { kind: "platform" } : { kind: "member", userId: MEMBER },
 				machine: MACHINE,
 				passSha256: hashOf(PASS),
 				write: true,

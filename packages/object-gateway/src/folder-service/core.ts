@@ -106,6 +106,16 @@ export interface FolderCore {
 		units: readonly unknown[],
 		signal?: AbortSignal,
 	): Promise<CommitAnswer>;
+	/** The files one commit kept as conflict copies on its receipt (P17), by unit and file. */
+	conflictCopies(environmentId: string, commitId: string, signal?: AbortSignal): Promise<readonly ConflictCopy[]>;
+}
+
+/** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
+export interface ConflictCopy {
+	readonly unit: number;
+	readonly file: number;
+	readonly path: string;
+	readonly manifestSha256: string;
 }
 
 export interface UploadOpen {
@@ -206,6 +216,24 @@ export function parseCommitAnswer(value: unknown, units: number): CommitAnswer {
 			};
 		}),
 	};
+}
+
+export function parseConflictCopies(value: unknown): ConflictCopy[] {
+	if (!Array.isArray(value)) invalidAnswer("conflict copies");
+	return value.map((item) => {
+		const c = answerRecord(item, "conflict copy");
+		const count = (n: unknown): number => {
+			if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1) invalidAnswer("conflict copy");
+			return n;
+		};
+		if (typeof c.path !== "string") invalidAnswer("conflict copy");
+		return {
+			unit: count(c.unit),
+			file: count(c.file),
+			path: c.path,
+			manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest"),
+		};
+	});
 }
 
 export type ViewRenewal =
@@ -601,6 +629,16 @@ export class SupabaseFolderCore implements FolderCore {
 				signal,
 			),
 			units.length,
+		);
+	}
+
+	async conflictCopies(environmentId: string, commitId: string, signal?: AbortSignal) {
+		return parseConflictCopies(
+			await this.#rpc(
+				"qorpera_folder_conflict_copies_of",
+				{ p_environment_id: environmentId, p_commit_id: commitId },
+				signal,
+			),
 		);
 	}
 

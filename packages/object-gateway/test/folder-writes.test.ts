@@ -47,7 +47,7 @@ afterEach(async () => {
 const BIG = 4 * 1024 * 1024;
 const hello: Hello = { protocol: 2, environmentId: ENV, viewId: "proof", pass: PASS, role: "io" };
 
-async function fixture(options: { quietMs?: number; readOnly?: boolean; now?: () => number } = {}) {
+async function fixture(options: { quietMs?: number; readOnly?: boolean; now?: () => number; platform?: boolean } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-"));
 	const core = new FakeCore();
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
@@ -56,7 +56,7 @@ async function fixture(options: { quietMs?: number; readOnly?: boolean; now?: ()
 		new FolderService({
 			core,
 			objects,
-			grants: options.readOnly ? grants() : writableGrants(options.quietMs),
+			grants: options.readOnly ? grants() : writableGrants(options.quietMs, options.platform),
 			staging: new FolderStaging(core, uploads, objects),
 			log: () => undefined,
 			...(options.now ? { now: options.now } : {}),
@@ -118,6 +118,10 @@ async function save(view: ViewHandle, path: string, text: string, base?: string)
 	const data = Buffer.from(text);
 	await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 	return (await view.close(handle, data.byteLength)).version;
+}
+
+function byPath<T extends { path: string }>(paths: readonly T[]): T[] {
+	return [...paths].sort((a, b) => (a.path < b.path ? -1 : 1));
 }
 
 async function refused(promise: Promise<unknown>, code: string): Promise<void> {
@@ -397,7 +401,6 @@ describe("writes through the mount", () => {
 			await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 			return (await view.close(handle, data.byteLength)).version;
 		};
-		const byPath = (paths: readonly { path: string }[]) => [...paths].sort((a, b) => (a.path < b.path ? -1 : 1));
 		const first = await save("docs/a.md", "one");
 		await view.mkdir("new");
 		const inner = await save("new/b.md", "b1");
@@ -429,8 +432,9 @@ describe("writes through the mount", () => {
 		]);
 	});
 
-	it("keeps a conflicting save pending until the core holds it on the receipt", async () => {
-		const { root, core, service, open } = await fixture();
+	it("keeps a conflicting save pending until the core holds it on the receipt, a platform mount's too", async () => {
+		// The platform may download any catalogued object, so only the receipt's own rows say a copy was kept.
+		const { root, core, service, open } = await fixture({ platform: true });
 		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
 		const view = await open();
 		const read1 = core.entries.get("plan.md")!.version;
@@ -531,6 +535,74 @@ describe("writes through the mount", () => {
 			mediaType: "text/markdown",
 		});
 		expect(core.entries.get("notes.md")).toMatchObject({ fileSha256: hashOf("notes"), mediaType: "text/markdown" });
+	});
+
+	it("settles a new folder's files with the versions its change set gave them, after a failed feed and a reload", async () => {
+		const { root, core, open, service } = await fixture();
+		const view = await open();
+		await view.mkdir("new");
+		const made = await save(view, "new/f.md", "one");
+		// The feed fails each time the service asks it to settle the boundary.
+		core.feedFailures = 3;
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "new", outcome: "saved" },
+			{ path: "new/f.md", outcome: "saved" },
+		]);
+		// Another machine commits, and an access change has the view listed again past the boundary's change set.
+		core.write(await storeFile(root, "other.md", "other", 7, BIG));
+		core.authority(() => false);
+		await service.poll();
+		await service.settled();
+		// The machine saves again on the version its close answered: based on the version the new folder gave the file.
+		await save(view, "new/f.md", "two", made);
+		expect((await view.publish()).paths).toEqual([{ path: "new/f.md", outcome: "saved" }]);
+		expect(core.entries.get("new/f.md")?.fileSha256).toBe(hashOf("two"));
+		expect((await view.read({ path: "new/f.md", version: made, offset: 0, length: 16 })).toString()).toBe("one");
+	});
+
+	it("keeps a save's own version readable for as long as the version it published is", async () => {
+		const { open } = await fixture();
+		const view = await open();
+		const made: string[] = [];
+		for (let i = 1; i <= 18; i++) {
+			made.push(await save(view, "log.md", `${i}`, made.at(-1)));
+			await view.publish();
+		}
+		// The current version and the 16 replaced before it are readable: the 2nd save's own version still reads.
+		expect((await view.read({ path: "log.md", version: made[1]!, offset: 0, length: 16 })).toString()).toBe("2");
+		await refused(view.read({ path: "log.md", version: made[0]!, offset: 0, length: 16 }), "STALE");
+	});
+
+	it("lets go of the intents of bytes nothing needs any more", async () => {
+		let now = Date.now();
+		const { core, open, service } = await fixture({ now: () => now });
+		const view = await open();
+		// A swap file saved three times and never published: only its last version's bytes are held.
+		for (const text of ["one", "two", "three"]) await write(view, "draft.md~", text);
+		const opened = [...core.intents.keys()];
+		expect(opened).toHaveLength(6);
+		now += 10 * 60_000;
+		await service.renewIntents();
+		expect(core.renewals).toEqual(opened.slice(4));
+	});
+
+	it("cuts a file at its close, on the grid or to nothing, with no chunk sent", async () => {
+		const { root, core, open } = await fixture();
+		const big = "x".repeat(10 * 1024 * 1024);
+		core.seed([await storeFile(root, "big.bin", big, 1, BIG), await storeFile(root, "log.txt", "lines", 1, BIG)]);
+		const view = await open();
+		// `truncate -s 8M` and `truncate -s 0`: opened without truncating, cut, closed.
+		const bin = await view.open({ path: "big.bin", create: false, exclusive: false, truncate: false });
+		await view.close(bin.handle, 8 * 1024 * 1024);
+		const log = await view.open({ path: "log.txt", create: false, exclusive: false, truncate: false });
+		await view.close(log.handle, 0);
+		expect(await read(view, "log.txt")).toBe("");
+		await view.publish();
+		expect(core.entries.get("big.bin")).toMatchObject({
+			bytes: 8 * 1024 * 1024,
+			fileSha256: hashOf(big.slice(0, 8 * 1024 * 1024)),
+		});
+		expect(core.entries.get("log.txt")).toMatchObject({ bytes: 0, fileSha256: hashOf("") });
 	});
 
 	it("takes no writes on a read-only view", async () => {
